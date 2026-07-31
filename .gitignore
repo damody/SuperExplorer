@@ -1,0 +1,10 @@
+/.superpowers/
+/file_explorer_reference/
+/target/
+/dist/
+*.log
+*.pdb
+/.cache/
+/.github/workflows/
+__pycache__/
+*.py[cod]

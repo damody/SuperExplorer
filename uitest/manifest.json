@@ -1,0 +1,1142 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "workspace-format",
+      "description": "驗證整個 workspace 的 Rust 格式不會漂移。",
+      "suites": ["quick"],
+      "program": "cargo.exe",
+      "arguments": ["fmt", "--all", "--", "--check"],
+      "timeout_seconds": 300,
+      "prerequisites": [{"kind": "command", "name": "cargo.exe"}]
+    },
+    {
+      "id": "workspace-tests",
+      "description": "執行 workspace 全部 target 的回歸測試。",
+      "suites": ["quick"],
+      "program": "cargo.exe",
+      "arguments": ["test", "--workspace", "--all-targets", "--locked", "--", "--test-threads=1"],
+      "timeout_seconds": 1800,
+      "prerequisites": [{"kind": "command", "name": "cargo.exe"}],
+      "covers": [
+        "add-lua-automation-deepseek/*",
+        "canonicalize-filesystem-address-paths/canonical-address-paths/pure-namespaces-preserve-shell-identity"
+      ]
+    },
+    {
+      "id": "large-directory-release",
+      "description": "Render and scroll 100,000 deterministic entries in list and wrapped GPUI view families under Release latency gates.",
+      "suites": ["quick", "full"],
+      "program": "cargo.exe",
+      "arguments": ["test", "--release", "-p", "explorer-ui", "--test", "large_directory_render", "--", "--nocapture"],
+      "timeout_seconds": 300,
+      "prerequisites": [{"kind": "command", "name": "cargo.exe"}],
+      "covers": ["optimize-large-folder-virtualization-shared-icons/*"]
+    },
+    {
+      "id": "workspace-clippy",
+      "description": "以 warnings-as-errors 執行 workspace Clippy。",
+      "suites": ["quick"],
+      "program": "cargo.exe",
+      "arguments": ["clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings"],
+      "timeout_seconds": 1800,
+      "prerequisites": [{"kind": "command", "name": "cargo.exe"}]
+    },
+    {
+      "id": "workspace-doc-tests",
+      "description": "執行 workspace 文件測試。",
+      "suites": ["quick"],
+      "program": "cargo.exe",
+      "arguments": ["test", "--workspace", "--doc", "--locked"],
+      "timeout_seconds": 900,
+      "prerequisites": [{"kind": "command", "name": "cargo.exe"}]
+    },
+    {
+      "id": "ui-token-audit",
+      "description": "禁止 production UI 重新引入散落的顏色、尺寸與座標 magic numbers。",
+      "suites": ["quick"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\check_ui_tokens.ps1"],
+      "timeout_seconds": 180,
+      "prerequisites": [{"kind": "windows"}]
+    },
+    {
+      "id": "visual-comparator-tests",
+      "description": "驗證 Explorer reference 與 baseline comparator 的 region/color/icon/typography 判定。",
+      "suites": ["quick", "visual"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-uitest", "tests::visual_comparator_contract", "--locked", "--", "--exact"],
+      "timeout_seconds": 180,
+      "prerequisites": [{"kind": "command", "name": "cargo.exe"}]
+    },
+    {
+      "id": "windows-lifecycle",
+      "description": "驗證一般權限啟動、視窗生命週期、診斷 log 與程序正常離開。",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_windows_lifecycle.ps1", "-SkipBuild"],
+      "timeout_seconds": 120,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}, {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}],
+      "exclusive_resources": ["gui"]
+    },
+    {
+      "id": "windows-repeated-lifecycle",
+      "description": "重複啟動與關閉應保持程序、GDI、USER 資源乾淨。",
+      "suites": ["full", "soak"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_windows_repeated.ps1", "-Runs", "3", "-SkipBuild"],
+      "timeout_seconds": 300,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}, {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}],
+      "exclusive_resources": ["gui"]
+    },
+    {
+      "id": "panic-diagnostics-contract",
+      "description": "驗證 panic 報告、production panic policy 與 ANSI-free 背景 log。",
+      "suites": ["quick", "full"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-app", "--test", "panic_report", "--test", "production_panic_policy"],
+      "timeout_seconds": 300,
+      "prerequisites": [{"kind": "command", "name": "cargo.exe"}]
+    },
+    {
+      "id": "context-menu-contracts",
+      "description": "驗證背景、單選、多選、逾時、取消與原生資源釋放。",
+      "suites": ["full", "interop"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-shell-win", "context_menu", "--", "--nocapture"],
+      "timeout_seconds": 300,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
+      "exclusive_resources": ["ole"]
+    },
+    {
+      "id": "accessibility-headful",
+      "description": "驗證 UI Automation 名稱、角色、焦點與選取模式。",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_accessibility.ps1", "-SkipBuild", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 180,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}],
+      "exclusive_resources": ["gui"],
+      "required_artifacts": ["report.json", "raw-tree.json"]
+    },
+    {
+      "id": "ime-headful",
+      "description": "驗證網址列、搜尋列與重新命名的 IME 輸入。",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_ime.ps1", "-SkipBuild", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 180,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}],
+      "exclusive_resources": ["gui"],
+      "required_artifacts": ["report.json"]
+    },
+    {
+      "id": "inline-rename-headful",
+      "description": "驗證跨資料夾切換後 F2 仍可重新命名且編輯框幾何正確。",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_inline_rename_capture.ps1", "-SkipBuild", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 180,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}],
+      "exclusive_resources": ["gui", "cursor"],
+      "required_artifacts": ["report.json", "**/*.png"],
+      "covers": ["complete-shell-context-and-locked-delete-parity/complete-shell-context-menu/native-properties-inline-rename-and-start-pin-ownership"]
+    },
+    {
+      "id": "navigation-history-tabs-headful",
+      "description": "Verify genuine secondary-click Back/Forward history menus, pointer-following neutral-gray hover, inherited tab history, Ctrl+T, and physical middle-click tab close.",
+      "suites": ["full", "interop", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_navigation_history_tabs.ps1", "-SkipBuild", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 180,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}, {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}],
+      "exclusive_resources": ["gui", "cursor"],
+      "required_artifacts": ["report.json", "back-history-menu.png", "back-history-hover-first.png", "back-history-hover-second.png"],
+      "covers": [
+        "complete-shell-context-and-locked-delete-parity/complete-shell-context-menu/explorer-navigation-history-menus-and-inherited-new-tabs",
+        "fix-navigation-dialog-address-interaction/navigation-dialog-address-interaction/navigation-history-focus-follows-the-active-input-target",
+        "match-explorer-visual-address-parity/explorer-visual-parity/explorer-tab-strip-pointer-and-focus-parity"
+      ]
+    },
+    {
+      "id": "scrollbar-headful",
+      "description": "驗證捲軸拖曳捕捉、滾輪與固定詳細資料標題。",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_scrollbar_capture.ps1", "-SkipBuild", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 240,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}],
+      "exclusive_resources": ["gui", "cursor"],
+      "required_artifacts": ["report.json", "**/*.png"],
+      "covers": [
+        "fix-scrollbar-dpi-drag-ratio/dpi-correct-scrollbar-dragging/dpi-correct-native-scrollbar-dragging",
+        "fix-scrollbar-dpi-drag-ratio/dpi-correct-scrollbar-dragging/existing-scrollbar-interaction-contracts-remain-intact",
+        "fix-scrollbar-dpi-drag-ratio/dpi-correct-scrollbar-dragging/quantitative-multi-file-scrollbar-regression"
+      ]
+    },
+    {
+      "id": "icon-view-layout-headful",
+      "description": "驗證內容檢視格線與等距列、Details→Tiles→Content，以及四組各三階的 Ctrl+滾輪圖示尺寸。",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_icon_view_layout.ps1", "-SkipBuild", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 180,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}],
+      "exclusive_resources": ["gui", "cursor"],
+      "required_artifacts": ["report.json", "small-icons.png", "medium-icons.png", "large-icons.png", "adaptive-grid-wide.png", "adaptive-grid-narrow.png", "content-grid.png", "thumbnail-aspect-layout.png", "medium-icon-long-name-layout.png", "shell-icons-native-resolution.png"],
+      "covers": [
+        "match-explorer-visual-address-parity/explorer-visual-parity/content-view-matches-explorer-row-contract",
+        "match-explorer-visual-address-parity/explorer-visual-parity/continuous-wheel-zoom-exposes-every-explorer-notch",
+        "match-explorer-visual-address-parity/explorer-visual-parity/thumbnail-aspect-ratio-never-overlaps-labels",
+        "match-explorer-visual-address-parity/explorer-visual-parity/stacked-icon-filenames-never-enter-adjacent-cells",
+        "match-explorer-visual-address-parity/explorer-visual-parity/wrapped-icon-columns-fit-the-usable-viewport",
+        "match-explorer-visual-address-parity/explorer-visual-parity/enlarged-file-icons-use-native-resolution-shell-pixels"
+      ]
+    },
+    {
+      "id": "visual-reference-capture",
+      "description": "擷取固定尺寸、明亮配色、真實資料夾的視覺證據。",
+      "suites": ["visual"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\capture_visual_fixture.ps1", "-SkipBuild", "-AllowDpiMismatch", "-RealPath", "{workspace_root}", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 180,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}],
+      "exclusive_resources": ["gui"],
+      "required_artifacts": ["screenshot.png", "metadata.json", "diagnostics.json"]
+    },
+    {
+      "id": "high-contrast-headful",
+      "description": "在系統高對比狀態下驗證顏色與可讀性；狀態不符時腳本明確報告。",
+      "suites": ["visual"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_high_contrast.ps1", "-SkipBuild", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 180,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}],
+      "exclusive_resources": ["gui"],
+      "required_artifacts": ["report.json"]
+    },
+    {
+      "id": "dpi-matrix-headful",
+      "description": "驗證 100/125/150/175/200% DPI 矩陣並保留每一級截圖與診斷。",
+      "suites": ["visual"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\capture_dpi_matrix.ps1", "-SkipBuild", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 600,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}],
+      "exclusive_resources": ["gui"],
+      "required_artifacts": ["report.json", "**/*.png"]
+    },
+    {
+      "id": "mixed-monitor-visual-capture",
+      "description": "只在至少兩個螢幕時執行混合螢幕視覺擷取，否則以明確原因 SKIP。",
+      "suites": ["visual"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\capture_visual_fixture.ps1", "-SkipBuild", "-AllowDpiMismatch", "-RealPath", "{workspace_root}", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 180,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}, {"kind": "monitor_count", "minimum": 2}],
+      "exclusive_resources": ["gui"],
+      "required_artifacts": ["screenshot.png", "metadata.json", "diagnostics.json"]
+    },
+    {
+      "id": "runner-unit-tests",
+      "description": "驗證 manifest、OpenSpec 掃描、coverage gate、timeout 與報告核心。",
+      "suites": ["quick"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-uitest"],
+      "timeout_seconds": 120,
+      "prerequisites": [{"kind": "command", "name": "cargo.exe"}],
+      "exclusive_resources": [],
+      "covers": ["add-comprehensive-uitest-runner/openspec-regression-runner/*"]
+    },
+    {
+      "id": "workspace-check",
+      "description": "編譯整個 workspace 與所有 target，作為全部 active OpenSpec 的靜態回歸底線。",
+      "suites": ["quick"],
+      "program": "cargo.exe",
+      "arguments": ["check", "--workspace", "--all-targets", "--locked"],
+      "timeout_seconds": 900,
+      "prerequisites": [{"kind": "command", "name": "cargo.exe"}],
+      "exclusive_resources": [],
+      "covers": [
+        "build-rust-gpui-windows-explorer/explorer-shell-ui/*",
+        "build-rust-gpui-windows-explorer/file-search/*",
+        "build-rust-gpui-windows-explorer/native-file-operations/*",
+        "build-rust-gpui-windows-explorer/parity-verification/*",
+        "build-rust-gpui-windows-explorer/shell-data-transfer-and-menus/*",
+        "build-rust-gpui-windows-explorer/tabbed-folder-navigation/*",
+        "build-rust-gpui-windows-explorer/windows-app-foundation/*",
+        "match-explorer-visual-address-parity/explorer-visual-parity/*",
+        "match-explorer-visual-address-parity/interactive-breadcrumb-address/*",
+        "prevent-crashes-with-error-log/recoverable-operation-boundaries/*",
+        "prevent-crashes-with-error-log/resilient-error-diagnostics/*"
+      ]
+    },
+    {
+      "id": "architecture-policy",
+      "description": "執行架構與 workspace 邊界檢查。",
+      "suites": ["quick"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\check_architecture.ps1"],
+      "timeout_seconds": 180,
+      "prerequisites": [{"kind": "windows"}],
+      "exclusive_resources": [],
+      "covers": ["build-rust-gpui-windows-explorer/windows-app-foundation/*"]
+    },
+    {
+      "id": "cross-drive-shortcut-matrix",
+      "description": "在 C: 與 D: 專用資料夾用真實 UI 驗證 Backspace、Ctrl、Shift、F2、Delete、分頁與搜尋快捷鍵。",
+      "suites": ["full", "interop"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_cross_drive_shortcuts.ps1", "-SkipBuild", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 120,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "C:\\"},
+        {"kind": "path", "path": "D:\\"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "clipboard"],
+      "covers": [
+        "build-rust-gpui-windows-explorer/explorer-shell-ui/*",
+        "build-rust-gpui-windows-explorer/native-file-operations/*",
+        "build-rust-gpui-windows-explorer/shell-data-transfer-and-menus/*",
+        "build-rust-gpui-windows-explorer/tabbed-folder-navigation/*",
+        "match-explorer-visual-address-parity/explorer-visual-parity/*",
+        "match-explorer-visual-address-parity/interactive-breadcrumb-address/*",
+        "canonicalize-filesystem-address-paths/canonical-address-paths/filesystem-backed-shell-locations-publish-canonical-paths",
+        "canonicalize-filesystem-address-paths/canonical-address-paths/editable-address-is-portable",
+        "canonicalize-filesystem-address-paths/canonical-address-paths/friendly-browsing-labels-remain-unchanged"
+      ],
+      "required_artifacts": ["report.json"]
+    },
+    {
+      "id": "superexplorer-window-title",
+      "description": "在 C: 與 D: 隔離資料夾間導覽，驗證 native HWND、UIA 與工作列可見標題始終等於作用中完整路徑。",
+      "suites": ["quick", "full", "interop", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_superexplorer_window_title.ps1", "-SkipBuild", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 120,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "C:\\"},
+        {"kind": "path", "path": "D:\\"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "clipboard"],
+      "covers": ["rename-app-superexplorer-dynamic-title/superexplorer-product-identity/*"],
+      "required_artifacts": ["report.json", "window-title-cross-drive.png"]
+    },
+    {
+      "id": "superexplorer-product-identity",
+      "description": "驗證 Cargo package/binary 分離、SuperExplorer VERSIONINFO、production consumer 名稱及既有持久化資料根相容契約。",
+      "suites": ["quick", "full"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-app", "--test", "product_identity", "--locked"],
+      "timeout_seconds": 180,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "command", "name": "cargo.exe"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": [],
+      "covers": ["rename-app-superexplorer-dynamic-title/superexplorer-product-identity/*"]
+    },
+    {
+      "id": "keyboard-focus-traversal",
+      "description": "驗證 Tab/Shift+Tab、Home/End、Ctrl+L、Ctrl+F 與 Alt+F4 的 headful 焦點路徑。",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_keyboard_navigation.ps1", "-SkipBuild", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 120,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}],
+      "exclusive_resources": ["gui"],
+      "covers": ["build-rust-gpui-windows-explorer/explorer-shell-ui/*"],
+      "required_artifacts": ["report.json"]
+    },
+    {
+      "id": "breadcrumb-address-uia",
+      "description": "驗證 breadcrumb segment、chevron overlay、空白編輯與實際路徑提交。",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_breadcrumb_uia.ps1", "-SkipBuild", "-UseIconFixture", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 150,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}],
+      "exclusive_resources": ["gui", "cursor"],
+      "covers": [
+        "match-explorer-visual-address-parity/interactive-breadcrumb-address/*",
+        "match-explorer-visual-address-parity/interactive-breadcrumb-address/stable-local-drive-breadcrumb-name",
+        "use-shell-native-breadcrumb-icons/shell-native-breadcrumb-icons/*"
+      ],
+      "required_artifacts": ["report.json", "breadcrumb-shell-icons.png"]
+    },
+    {
+      "id": "breadcrumb-git-overlay-search-hint",
+      "description": "Use a real modified Git working tree to verify TortoiseGit breadcrumb overlays survive a C:\\ navigation round trip and the localized search hint follows the current folder.",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_breadcrumb_git_overlay_search.ps1", "-SkipBuild", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 180,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "C:\\Program Files\\TortoiseGit\\bin\\TortoiseGitProc.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor"],
+      "covers": [
+        "match-explorer-visual-address-parity/interactive-breadcrumb-address/breadcrumb-shell-overlays-survive-navigation-round-trips",
+        "match-explorer-visual-address-parity/explorer-visual-parity/search-hint-names-the-current-folder-in-traditional-chinese"
+      ],
+      "required_artifacts": ["report.json", "git-before.png", "plain-folder.png", "git-after.png"]
+    },
+    {
+      "id": "tab-breadcrumb-hover-visual",
+      "description": "Use two real tabs, UIA bounds, physical pointer movement and pixel evidence to verify active/content continuity, no top focus line, plain New Tab strip styling, and breadcrumb hover tracking.",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_tab_breadcrumb_hover_visual.ps1", "-SkipBuild", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 150,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}],
+      "exclusive_resources": ["gui", "cursor"],
+      "covers": [
+        "match-tab-breadcrumb-hover-parity/tab-breadcrumb-interaction-parity/*",
+        "match-explorer-visual-address-parity/explorer-visual-parity/explorer-tab-strip-pointer-and-focus-parity"
+      ],
+      "required_artifacts": ["report.json", "tab-surface.png", "breadcrumb-hover-first.png", "breadcrumb-hover-second.png"]
+    },
+    {
+      "id": "mouse-command-controls",
+      "description": "驗證 command bar 點擊、選取與滑鼠控制不造成非預期捲動。",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_mouse_controls.ps1", "-SkipBuild", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 120,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}],
+      "exclusive_resources": ["gui", "cursor"],
+      "covers": ["match-explorer-visual-address-parity/explorer-visual-parity/*"]
+    },
+    {
+      "id": "sort-columns-headful",
+      "description": "驗證欄位排序、方向與欄寬拖曳。",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_sort_columns.ps1", "-SkipBuild", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 120,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}],
+      "exclusive_resources": ["gui", "cursor"],
+      "covers": ["match-explorer-visual-address-parity/explorer-visual-parity/*"],
+      "required_artifacts": ["report.json"]
+    },
+    {
+      "id": "view-panes-headful",
+      "description": "驗證檢視模式、詳細資料窗格與預覽窗格。",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_view_panes.ps1", "-SkipBuild", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 120,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}],
+      "exclusive_resources": ["gui", "cursor"],
+      "covers": ["match-explorer-visual-address-parity/explorer-visual-parity/*"],
+      "required_artifacts": ["report.json"]
+    },
+    {
+      "id": "command-menu-anchor-headful",
+      "description": "驗證排序與檢視 popup 依各自按鈕實際座標定位，且不回歸視窗左上角。",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_command_menu_anchor.ps1", "-SkipBuild", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 120,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}],
+      "exclusive_resources": ["gui", "cursor"],
+      "covers": [
+        "match-explorer-visual-address-parity/explorer-visual-parity/*",
+        "match-explorer-visual-address-parity/explorer-visual-parity/command-menu-hover-follows-the-pointer"
+      ],
+      "required_artifacts": [
+        "report.json",
+        "sort-hover-first.png",
+        "sort-hover-second.png",
+        "view-hover-first.png",
+        "view-hover-second.png",
+        "more-hover-first.png",
+        "more-hover-second.png",
+        "extensions-idle.png",
+        "extensions-hover.png"
+      ]
+    },
+    {
+      "id": "pinned-details-header",
+      "description": "驗證捲動後 Details 標題固定置頂與捲軸拖曳。",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_details_header_scroll.ps1", "-SkipBuild", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 120,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}],
+      "exclusive_resources": ["gui", "cursor"],
+      "covers": ["match-explorer-visual-address-parity/explorer-visual-parity/*"],
+      "required_artifacts": ["report.json"]
+    },
+    {
+      "id": "tortoisegit-shell-overlays",
+      "description": "以真實 Git 工作樹驗證 TortoiseGit Shell overlay 像素與持久化圖示快取。",
+      "suites": ["full", "interop", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_tortoisegit_overlays.ps1", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 180,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "command", "name": "git.exe"},
+        {"kind": "path", "path": "C:\\Program Files\\TortoiseGit\\bin\\TortoiseGitProc.exe"}
+      ],
+      "exclusive_resources": [],
+      "covers": ["match-explorer-visual-address-parity/explorer-visual-parity/*"],
+      "required_artifacts": ["report.json", "cargo-test.log", "registry-audit\\report.json"]
+    },
+    {
+      "id": "explorer-ole-drag-interop-app-to-explorer",
+      "description": "驗證 Explorer 與本程式間真實 OLE drag-and-drop。",
+      "suites": ["interop"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_explorer_drag_interop.ps1", "-SkipBuild", "-Direction", "app-to-explorer", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 180,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}],
+      "exclusive_resources": ["gui", "cursor", "clipboard", "ole", "explorer"],
+      "covers": ["build-rust-gpui-windows-explorer/shell-data-transfer-and-menus/*"]
+    },
+    {
+      "id": "explorer-ole-drag-interop-explorer-move",
+      "description": "驗證真實 Explorer 至本程式的 OLE 移動。",
+      "suites": ["interop"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_explorer_drag_interop.ps1", "-SkipBuild", "-Direction", "explorer-to-app", "-ExplorerScenario", "move", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 180,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}],
+      "exclusive_resources": ["gui", "cursor", "clipboard", "ole", "explorer"],
+      "covers": ["build-rust-gpui-windows-explorer/shell-data-transfer-and-menus/*"]
+    },
+    {
+      "id": "explorer-ole-drag-interop-explorer-copy",
+      "description": "驗證真實 Explorer 至本程式的 OLE 複製。",
+      "suites": ["interop"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_explorer_drag_interop.ps1", "-SkipBuild", "-Direction", "explorer-to-app", "-ExplorerScenario", "copy", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 180,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}],
+      "exclusive_resources": ["gui", "cursor", "clipboard", "ole", "explorer"],
+      "covers": ["build-rust-gpui-windows-explorer/shell-data-transfer-and-menus/*"]
+    },
+    {
+      "id": "explorer-ole-drag-interop-explorer-cancel",
+      "description": "驗證真實 Explorer 至本程式的左右鍵 OLE 取消。",
+      "suites": ["interop"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_explorer_drag_interop.ps1", "-SkipBuild", "-Direction", "explorer-to-app", "-ExplorerScenario", "cancel", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 180,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}],
+      "exclusive_resources": ["gui", "cursor", "clipboard", "ole", "explorer"],
+      "covers": ["build-rust-gpui-windows-explorer/shell-data-transfer-and-menus/*"]
+    },
+    {
+      "id": "capability-soak",
+      "description": "執行多分頁、十萬筆、檔案操作、Clipboard/OLE、右鍵選單與搜尋長時壓力測試。",
+      "suites": ["soak"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\run_capability_soak.ps1", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 3600,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}],
+      "exclusive_resources": ["gui", "cursor", "clipboard", "ole", "explorer"],
+      "covers": [
+        "build-rust-gpui-windows-explorer/file-search/*",
+        "build-rust-gpui-windows-explorer/native-file-operations/*",
+        "build-rust-gpui-windows-explorer/shell-data-transfer-and-menus/*",
+        "build-rust-gpui-windows-explorer/tabbed-folder-navigation/*"
+      ]
+    },
+    {
+      "id": "roadmap-session-settings",
+      "description": "以 UIA 驗證三個 mixed-location 分頁、獨立 history/view、active tab、window bounds、screenshots 與 10 次 clean/crash restart 的完整 before/after restore。",
+      "suites": ["quick", "full", "visual", "soak"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\run_roadmap_session_validation.ps1", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 1800,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "path", "path": "{workspace_root}\\scripts\\run_roadmap_session_validation.ps1"}
+      ],
+      "exclusive_resources": ["gui"],
+      "covers": ["complete-explorer-post-parity-roadmap/session-settings-persistence/*"],
+      "required_artifacts": ["report.json"]
+    },
+    {
+      "id": "roadmap-async-thumbnails",
+      "description": "分階段驗證 thumbnail contracts、Shell sources、cache、DPI/visual 與 1,000 次 soak；script 尚未交付時明確 SKIP。",
+      "suites": ["quick", "full", "interop", "visual", "soak"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\run_roadmap_thumbnail_validation.ps1", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 3600,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "path", "path": "{workspace_root}\\scripts\\run_roadmap_thumbnail_validation.ps1"}
+      ],
+      "exclusive_resources": ["gui", "explorer"],
+      "covers": ["complete-explorer-post-parity-roadmap/async-thumbnail-cache/*"],
+      "required_artifacts": ["report.json"]
+    },
+    {
+      "id": "roadmap-shell-namespace",
+      "description": "分階段驗證 Home、Quick Access、Known Folder、ZIP、Library、Recycle、Network 與第三方 namespace；script 尚未交付時明確 SKIP。",
+      "suites": ["quick", "full", "interop", "visual", "soak"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\run_roadmap_namespace_validation.ps1", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 3600,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\scripts\\run_roadmap_namespace_validation.ps1"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "clipboard", "ole", "explorer"],
+      "covers": ["complete-explorer-post-parity-roadmap/shell-namespace-navigation/*"],
+      "required_artifacts": ["report.json"]
+    },
+    {
+      "id": "roadmap-extension-broker",
+      "description": "分階段驗證 broker protocol、process isolation、quarantine、migration、installer 與 hostile-worker soak；script 尚未交付時明確 SKIP。",
+      "suites": ["quick", "full", "interop", "soak"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\run_roadmap_broker_validation.ps1", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 3600,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "path", "path": "{workspace_root}\\scripts\\run_roadmap_broker_validation.ps1"}
+      ],
+      "exclusive_resources": ["ole", "explorer"],
+      "covers": [
+        "complete-explorer-post-parity-roadmap/cross-process-extension-broker/*",
+        "fix-persistent-extension-broker-lifecycle/persistent-extension-broker-lifecycle/*"
+      ],
+      "required_artifacts": ["report.json"]
+    },
+    {
+      "id": "persistent-broker-headful-context-menu",
+      "description": "Open and cancel one real brokered Windows Shell context menu, proving that only the intended popup is visible and the persistent supervisor remains console-free.",
+      "suites": ["full", "interop"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-extension-broker", "--test", "process_boundary", "brokered_real_popup_appears_without_console_and_cancels_cleanly", "--locked", "--", "--ignored", "--nocapture", "--exact"],
+      "timeout_seconds": 60,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "command", "name": "cargo.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "ole", "explorer"],
+      "covers": ["fix-persistent-extension-broker-lifecycle/persistent-extension-broker-lifecycle/non-blocking-bounded-context-menu-latency"]
+    },
+    {
+      "id": "roadmap-preview-handler",
+      "description": "分階段驗證 preview lifecycle、broker host、focus/UIA、DPI/visual、real handlers 與 crash/hang soak；script 尚未交付時明確 SKIP。",
+      "suites": ["quick", "full", "interop", "visual", "soak"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\run_roadmap_preview_validation.ps1", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 3600,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\scripts\\run_roadmap_preview_validation.ps1"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "ole", "explorer"],
+      "covers": ["complete-explorer-post-parity-roadmap/preview-handler-host/*"],
+      "required_artifacts": ["report.json"]
+    },
+    {
+      "id": "selected-image-preview-exact",
+      "description": "Open the supplied image in a two-tab Explorer session across different paths and verify that the preview pane exposes a loaded UIA Image.",
+      "suites": ["full", "visual", "interop"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_view_panes.ps1", "-Profile", "release", "-InitialPath", "E:\\av_out", "-ExpectedPreviewFile", "E:\\av_out\\326KJN-003.mp4.jpg", "-SecondaryPath", "D:\\test", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
+      "timeout_seconds": 120,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\scripts\\smoke_view_panes.ps1"},
+        {"kind": "path", "path": "{workspace_root}\\target\\release\\SuperExplorer.exe"},
+        {"kind": "path", "path": "E:\\av_out\\326KJN-003.mp4.jpg"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "ole", "explorer"],
+      "covers": ["complete-explorer-command-new-menu-parity/explorer-command-menu-parity/selected-image-preview"],
+      "required_artifacts": ["report.json"]
+    },
+    {
+      "id": "lazy-search-provider-contracts",
+      "description": "Validate parsed Everything query translation, bounded provider behavior, lazy SQLite scope/cancellation, and adaptive search fallback contracts.",
+      "suites": ["quick", "full"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-search", "-p", "explorer-shell-win", "--locked", "--", "--test-threads=1"],
+      "timeout_seconds": 600,
+      "prerequisites": [{"kind": "command", "name": "cargo.exe"}],
+      "covers": [
+        "add-everything-lazy-search-details-columns/everything-search-provider/*",
+        "add-everything-lazy-search-details-columns/lazy-local-search-index/*"
+      ]
+    },
+    {
+      "id": "details-navigation-this-pc-contracts",
+      "description": "Validate Details column/menu state, adaptive sizes, interactive navigation-tree state, tab isolation, and owned This PC presentation contracts.",
+      "suites": ["quick", "full"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-ui", "--locked", "--", "--test-threads=1"],
+      "timeout_seconds": 600,
+      "prerequisites": [{"kind": "command", "name": "cargo.exe"}],
+      "covers": [
+        "add-everything-lazy-search-details-columns/explorer-details-columns/*",
+        "add-everything-lazy-search-details-columns/explorer-navigation-tree/*",
+        "add-everything-lazy-search-details-columns/explorer-this-pc/*",
+        "complete-explorer-command-new-menu-parity/explorer-command-menu-parity/*"
+      ]
+    },
+    {
+      "id": "search-context-navigation-headful",
+      "description": "Use UTIT/UI Automation to delete search text back to the directory snapshot, dismiss app-owned and selected-item Shell menus with Escape or outside click, verify foreground restoration, prove canonical volume roots are unique, and expand a navigation drive.",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_search_context_navigation.ps1", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
+      "timeout_seconds": 180,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "clipboard"],
+      "covers": [
+        "add-everything-lazy-search-details-columns/everything-search-provider/everything-cancellation-and-failover",
+        "add-everything-lazy-search-details-columns/everything-search-provider/empty-search-text-restores-directory-state",
+        "add-everything-lazy-search-details-columns/lazy-local-search-index/cancellation-stops-index-growth",
+        "add-everything-lazy-search-details-columns/explorer-details-columns/details-header-context-menu",
+        "add-everything-lazy-search-details-columns/explorer-details-columns/immediate-complete-column-visibility-menu",
+        "add-everything-lazy-search-details-columns/explorer-details-columns/selected-item-shell-menu-dismissal",
+        "add-everything-lazy-search-details-columns/explorer-navigation-tree/interactive-lazy-navigation-tree"
+      ],
+      "required_artifacts": ["report.json", "search-context-navigation.png"]
+    },
+    {
+      "id": "navigation-shell-icons-headful",
+      "description": "Capture canonical drive icons before and after opening This PC, select C: and prove the selected drive plus sibling drive icons remain visible, then expand D: and prove ordinary navigation folders use non-empty Windows Shell generic folder pixels.",
+      "suites": ["full", "visual", "interop"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_navigation_shell_icons.ps1", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
+      "timeout_seconds": 150,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor"],
+      "covers": [
+        "use-shell-native-breadcrumb-icons/shell-native-breadcrumb-icons/shell-native-navigation-pane-icons",
+        "match-explorer-visual-address-parity/explorer-visual-parity/selected-navigation-drives-retain-their-windows-shell-icon"
+      ],
+      "required_artifacts": ["report.json", "navigation-icons-before-this-pc.png", "navigation-icons-after-this-pc.png", "navigation-icons-after-selecting-c.png", "navigation-generic-folder-icons.png"]
+    },
+    {
+      "id": "this-pc-drive-status-headful",
+      "description": "Open This PC and switch through Details, Small/Medium/Large icons, and Content; verify Explorer-specific columns, bounded drive cards, full-width content rows, truthful capacity labels, screenshots, and normal drive activation.",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_this_pc_drive_status.ps1", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
+      "timeout_seconds": 180,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor"],
+      "covers": [
+        "add-everything-lazy-search-details-columns/explorer-this-pc/*",
+        "match-explorer-visual-address-parity/explorer-visual-parity/this-pc-adapts-to-explorer-view-modes"
+      ],
+      "required_artifacts": ["report.json", "this-pc-drive-status.png", "this-pc-details.png", "this-pc-small-icons.png", "this-pc-medium-icons.png", "this-pc-large-icons.png", "this-pc-content.png"]
+    },
+    {
+      "id": "navigation-delete-refresh-headful",
+      "description": "Expand the active folder in the navigation pane, delete owned child folders externally and through Shift+Delete, and verify watcher and operation-terminal reconciliation remove stale rows without manual refresh.",
+      "suites": ["full", "interop", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_navigation_delete_refresh.ps1", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
+      "timeout_seconds": 180,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor"],
+      "covers": [
+        "complete-explorer-post-parity-roadmap/shell-namespace-navigation/explorer-navigation-semantics",
+        "add-everything-lazy-search-details-columns/explorer-navigation-tree/interactive-lazy-navigation-tree"
+      ],
+      "required_artifacts": ["report.json", "navigation-delete-refresh.png"]
+    },
+    {
+      "id": "filesystem-corpus-contract",
+      "description": "Validate deterministic disposable filesystem corpus generation, Unicode and long paths, content controls, attributes, and cleanup scope guards.",
+      "suites": ["quick", "full", "interop"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\test_filesystem_corpus_contract.ps1", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 120,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "path", "path": "{workspace_root}\\build\\tools\\lua\\lua.exe"},
+        {"kind": "path", "path": "{workspace_root}\\build\\tools\\lua\\lfs.dll"}
+      ],
+      "required_artifacts": ["report.json", "fixture-manifest.json", "before.json"]
+    },
+    {
+      "id": "installer-build-handoff-contract",
+      "description": "Validate non-waiting Unicode process launch, structured rejection, exact post-validation installer handoff, no stale-output fallback, and non-blocking BAT exit-code forwarding without opening a real installer.",
+      "suites": ["quick", "full"],
+      "program": "{workspace_root}\\build\\tools\\lua\\lua.exe",
+      "arguments": ["{workspace_root}\\scripts\\test_installer_build_handoff.lua", "{evidence_dir}"],
+      "timeout_seconds": 60,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "path", "path": "{workspace_root}\\build\\tools\\lua\\lua.exe"},
+        {"kind": "path", "path": "{workspace_root}\\build\\tools\\lua\\lfs.dll"}
+      ],
+      "exclusive_resources": [],
+      "covers": ["launch-installer-after-build/installer-build-handoff/*"],
+      "required_artifacts": ["report.json", "Unicode 啟動 fixture/child marker.txt", "process-run.log", "process-run-failure.log"]
+    },
+    {
+      "id": "filesystem-corpus-headful",
+      "description": "Exercise real filesystem enumeration, icon/list/details views, Unicode names, search refresh, and deep navigation against the generated corpus.",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_filesystem_corpus_headful.ps1", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
+      "timeout_seconds": 240,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "clipboard"],
+      "required_artifacts": ["report.json", "fixture-manifest.json", "filesystem-corpus.png"]
+    },
+    {
+      "id": "ntfs-semantics-interop",
+      "description": "Probe real NTFS hard links, alternate data streams, junction cycle guards, and privilege-dependent symbolic links with truthful skips.",
+      "suites": ["full", "interop"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\test_ntfs_semantics_interop.ps1", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 120,
+      "prerequisites": [{"kind": "windows"}],
+      "required_artifacts": ["report.json", "fixture-manifest.json"]
+    },
+    {
+      "id": "mutation-safety-matrix",
+      "description": "Verify F2 Unicode rename, Shift/Ctrl selection, Ctrl+A, copy, cut, paste, Backspace, Delete, Shift+Delete cancel/confirm, and F5 using disposable disk-state oracles.",
+      "suites": ["full", "interop"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_mutation_safety_matrix.ps1", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
+      "timeout_seconds": 240,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "clipboard", "ole"],
+      "required_artifacts": ["report.json", "fixture-manifest.json", "before.json", "after.json", "mutation-safety.png"]
+    },
+    {
+      "id": "shift-delete-headful",
+      "description": "Verify Shift+Delete opens an accessible modal with neutral-gray Cancel/Delete focus, Tab+Enter and pointer Cancel preserve the file, focused Enter removes it exactly once, and the native request never enables recycle or undo flags.",
+      "suites": ["quick", "full", "interop"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_shift_delete.ps1", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
+      "timeout_seconds": 120,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor"],
+      "covers": [
+        "complete-explorer-command-new-menu-parity/explorer-command-menu-parity/confirmed-permanent-deletion",
+        "fix-navigation-dialog-address-interaction/navigation-dialog-address-interaction/permanent-delete-confirmation-owns-accessible-button-focus"
+      ],
+      "required_artifacts": ["report.json", "shift-delete.png", "shift-delete-focus-default.png", "shift-delete-focus-tab.png", "shift-delete-hover-cancel.png"]
+    },
+    {
+      "id": "new-menu-headful",
+      "description": "Verify New menu population and pointer activation with collision-safe text naming plus real Folder and bounded Data recipe disk effects.",
+      "suites": ["quick", "full", "interop"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_new_menu.ps1", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
+      "timeout_seconds": 120,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor"],
+      "covers": [
+        "complete-explorer-command-new-menu-parity/explorer-command-menu-parity/explorer-like-safe-new-menu",
+        "complete-explorer-command-new-menu-parity/explorer-command-menu-parity/typed-safe-new-item-creation"
+      ],
+      "required_artifacts": ["report.json", "new-menu.png"]
+    },
+    {
+      "id": "large-directory-cancel-cache",
+      "description": "Validate a 2,000-item directory, refresh-generation convergence, cold/warm startup, cache corruption recovery, and bounded process resources.",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_large_directory_cancel_cache.ps1", "-Mode", "full", "-Count", "2000", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
+      "timeout_seconds": 360,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor"],
+      "required_artifacts": ["report.json", "resources.json", "fixture-manifest.json", "large-directory-cold.png", "large-directory-warm.png"]
+    },
+    {
+      "id": "large-directory-cancel-cache-soak",
+      "description": "Run the opt-in 20,000-item large-directory, refresh cancellation, cache recovery, and resource-bound soak.",
+      "suites": ["soak"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_large_directory_cancel_cache.ps1", "-Mode", "soak", "-Count", "20000", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
+      "timeout_seconds": 900,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor"],
+      "required_artifacts": ["report.json", "resources.json", "fixture-manifest.json", "large-directory-cold.png", "large-directory-warm.png"]
+    },
+    {
+      "id": "toolbar-extensions-tortoisegit-refresh",
+      "description": "Open the labeled Other and Extensions controls, prove popup exclusivity, validate installed/unavailable TortoiseGit state, invoke refresh, and preserve visible state.",
+      "suites": ["full", "interop", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_toolbar_extensions.ps1", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
+      "timeout_seconds": 240,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "command", "name": "git.exe"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "explorer"],
+      "covers": ["add-toolbar-extensions-tortoisegit-refresh/toolbar-shell-extensions/*"],
+      "required_artifacts": ["report.json", "toolbar-extensions.png", "uia-buttons.txt"]
+    },
+    {
+      "id": "host-built-in-context-command-contracts",
+      "description": "Verify Open, Cut, Copy, Copy path, Create shortcut, Delete, Rename, Share, Quick access pin, and Properties are returned as typed host commands where applicable and routed through long-lived Explorer actions.",
+      "suites": ["quick", "full", "interop"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-model", "-p", "explorer-extension-broker", "-p", "explorer-shell-win", "-p", "explorer-ui", "-p", "explorer-app", "--locked", "host_context_command", "--", "--nocapture", "--test-threads=1"],
+      "timeout_seconds": 240,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
+      "exclusive_resources": ["ole"],
+      "covers": ["complete-shell-context-and-locked-delete-parity/complete-shell-context-menu/host-owned-built-in-verbs", "complete-shell-context-and-locked-delete-parity/complete-shell-context-menu/exact-pointer-target-and-actionable-command-audit"]
+    },
+    {
+      "id": "host-built-in-context-command-headful",
+      "description": "Use genuine DPI-correct right-clicks on non-first rows, then invoke Cut, Copy, Create shortcut, Delete, Rename, and Properties; validate exact targets plus owner-centered, work-area-safe native property sheets.",
+      "suites": ["full", "interop", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_context_menu_builtin_commands.ps1", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
+      "timeout_seconds": 240,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "ole", "explorer"],
+      "covers": [
+        "complete-shell-context-and-locked-delete-parity/complete-shell-context-menu/host-owned-built-in-verbs",
+        "complete-shell-context-and-locked-delete-parity/complete-shell-context-menu/exact-pointer-target-and-actionable-command-audit",
+        "complete-shell-context-and-locked-delete-parity/complete-shell-context-menu/native-properties-inline-rename-and-start-pin-ownership",
+        "fix-context-menu-properties-lifecycle/context-menu-properties-lifecycle/context-menu-remains-usable-after-properties",
+        "fix-context-menu-properties-lifecycle/context-menu-properties-lifecycle/host-owned-shell-commands-use-a-persistent-sta",
+        "fix-context-menu-properties-lifecycle/context-menu-properties-lifecycle/properties-uses-the-immutable-popup-target-and-a-real-native-menu",
+        "fix-context-menu-properties-lifecycle/file-row-selection-outline/selected-file-rows-use-an-outline-without-a-full-row-fill",
+        "fix-context-menu-properties-lifecycle/file-row-selection-outline/selection-visuals-remain-interaction-neutral",
+        "center-properties-window/properties-window-placement/*"
+      ],
+      "required_artifacts": [
+        "report.json",
+        "context-menu-builtins.png",
+        "properties-file-dialog.png",
+        "properties-file-tree.json",
+        "properties-folder-dialog.png",
+        "properties-folder-tree.json",
+        "properties-multi-dialog.png",
+        "properties-multi-tree.json",
+        "properties-executable-dialog.png",
+        "properties-executable-tree.json",
+        "properties-script-dialog.png",
+        "properties-script-tree.json",
+        "properties-placement.json"
+      ]
+    },
+    {
+      "id": "editable-pointer-input-headful",
+      "description": "Use genuine pointer clicks and partial drag selection in the address, padded search, and inline rename editors; require stable caret insertion, near-full-height selection with symmetric physical-pixel margins, selected glyph coverage, dark unselected glyphs, exact padded hit-testing, and opaque Explorer Highlight pixels.",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_editable_pointer_inputs.ps1", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
+      "timeout_seconds": 120,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "explorer"],
+      "covers": [
+        "complete-shell-context-and-locked-delete-parity/complete-shell-context-menu/target-complete-properties-and-explorer-like-editable-text",
+        "fix-navigation-dialog-address-interaction/navigation-dialog-address-interaction/editable-address-selection-preserves-balanced-contrast",
+        "unify-editable-selection-vertical-metrics/editable-selection-vertical-metrics/near-full-height-selected-text-geometry",
+        "unify-editable-selection-vertical-metrics/editable-selection-vertical-metrics/symmetric-vertical-selection-margins",
+        "unify-editable-selection-vertical-metrics/editable-selection-vertical-metrics/editing-colors-and-interactions-remain-intact",
+        "unify-editable-selection-vertical-metrics/editable-selection-vertical-metrics/automated-coverage-for-every-editor"
+      ],
+      "required_artifacts": ["report.json", "address-partial-selection.png", "search-partial-selection.png", "rename-partial-selection.png"]
+    },
+    {
+      "id": "complete-shell-context-menu-direct",
+      "description": "Capture every real ordinary and Shift menu entry for background, file, folder, and multi-selection targets; require unique bounded actionable IDs and classify each as application-owned or provider-owned.",
+      "suites": ["quick", "full", "interop", "visual"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-shell-win", "--locked", "context_menu", "--", "--nocapture", "--test-threads=1"],
+      "timeout_seconds": 420,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
+      "exclusive_resources": ["ole"],
+      "covers": ["complete-shell-context-and-locked-delete-parity/complete-shell-context-menu/*"]
+    },
+    {
+      "id": "complete-shell-context-menu-broker",
+      "description": "Compare brokered and direct native context-menu results and validate one async supervisor, serialized disposable workers, timeout, crash, cancellation, and console-free process isolation.",
+      "suites": ["full", "interop", "soak"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-extension-broker", "--locked", "--test", "process_boundary", "context", "--", "--nocapture", "--test-threads=1"],
+      "timeout_seconds": 420,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
+      "exclusive_resources": ["ole"],
+      "covers": ["complete-shell-context-and-locked-delete-parity/complete-shell-context-menu/*"]
+    },
+    {
+      "id": "extension-worker-external-command-launch",
+      "description": "Prove the constrained extension worker can launch a user-selected external Shell command without inheriting the one-process Job limit or returning ERROR_NOT_ENOUGH_QUOTA.",
+      "suites": ["quick", "full", "interop"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-extension-broker", "--bin", "explorer-extension-broker", "tests::worker_job_allows_user_invoked_shell_command_child_to_break_away", "--locked", "--", "--exact", "--nocapture"],
+      "timeout_seconds": 120,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
+      "exclusive_resources": ["explorer"],
+      "covers": ["complete-shell-context-and-locked-delete-parity/complete-shell-context-menu/complete-target-appropriate-shell-menu"]
+    },
+    {
+      "id": "context-menu-selection-replacement-headful",
+      "description": "Use genuine pointer input to replace an open native popup, prove the exact second target through Clipboard results, preserve background/multi-selection/dismissal behavior, and enforce ten-cycle resource bounds.",
+      "suites": ["full", "interop", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_context_menu_replacement.ps1", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
+      "timeout_seconds": 120,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "explorer"],
+      "covers": [
+        "complete-shell-context-and-locked-delete-parity/complete-shell-context-menu/native-menu-isolation-and-lifecycle",
+        "fix-native-context-menu-replacement/native-context-menu-replacement/open-native-popup-is-replaced-by-a-second-genuine-right-click",
+        "fix-native-context-menu-replacement/native-context-menu-replacement/replacement-input-has-a-clean-bounded-lifecycle",
+        "fix-native-context-menu-replacement/native-context-menu-replacement/replacement-preserves-exact-explorer-selection-semantics",
+        "fix-native-context-menu-replacement/native-context-menu-replacement/replacement-remains-isolated-and-resource-bounded"
+      ],
+      "required_artifacts": ["report.json", "popup-sessions.json", "context-menu-replacement.png"]
+    },
+    {
+      "id": "restored-drive-root-context-menu-headful",
+      "description": "Restore a two-tab high-DPI session containing a bare drive designator, physically right-click a non-first item without topmost assistance, and prove native popup plus canonical root persistence.",
+      "suites": ["full", "interop"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_restored_drive_root_context_menu.ps1", "-Profile", "debug", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 120,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\explorer-session-fixture.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "explorer"],
+      "covers": ["fix-restored-drive-root-context-menu/restored-drive-root-context-menu/*"],
+      "required_artifacts": ["result.json", "restored-drive-root.png"]
+    },
+    {
+      "id": "navigation-icon-context-target-contracts",
+      "description": "Verify expanded navigation children retry missing Shell icons and pointer context menus target the stable hit item identity instead of a stale or first row index.",
+      "suites": ["quick", "full", "interop", "visual"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-ui", "--locked", "navigation_context_regression", "--", "--nocapture", "--test-threads=1"],
+      "timeout_seconds": 180,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
+      "exclusive_resources": ["explorer"],
+      "covers": ["complete-shell-context-and-locked-delete-parity/complete-shell-context-menu/exact-pointer-target-and-actionable-command-audit"]
+    },
+    {
+      "id": "locked-delete-recovery-contracts",
+      "description": "Validate structured lock classification, bounded Restart Manager discovery, protected-owner policy, modal reducer races, retry identity, and destructive semantics.",
+      "suites": ["quick", "full", "interop", "visual", "soak"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-model", "-p", "explorer-shell-win", "-p", "explorer-ui", "--locked", "lock", "--", "--nocapture", "--test-threads=1"],
+      "timeout_seconds": 420,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
+      "exclusive_resources": ["explorer"],
+      "covers": ["complete-shell-context-and-locked-delete-parity/locked-delete-recovery/*"]
+    },
+    {
+      "id": "locked-delete-recovery-headful",
+      "description": "Use real locked owned files and Restart Manager helpers to verify modal UIA, keyboard focus trapping, Retry, Escape, pointer Cancel, multiple owners, graceful Close programs and exactly-once delete retry.",
+      "suites": ["full", "interop", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_locked_delete_recovery.ps1", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
+      "timeout_seconds": 300,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\explorer-lock-holder.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "explorer"],
+      "covers": [
+        "complete-shell-context-and-locked-delete-parity/locked-delete-recovery/accessible-lock-owner-recovery-dialog",
+        "complete-shell-context-and-locked-delete-parity/locked-delete-recovery/safe-graceful-close-and-retry",
+        "complete-shell-context-and-locked-delete-parity/locked-delete-recovery/locked-delete-destructive-and-resource-evidence"
+      ],
+      "required_artifacts": ["report.json", "locked-delete-recovery.png", "lock-recovery-uia.txt"]
+    },
+    {
+      "id": "context-lock-resource-soak",
+      "description": "Run ten native popup cancellation and ten Restart Manager helper cycles while proving menu/window, helper, worker, session, drag, handle, GDI, and USER resources return to baseline.",
+      "suites": ["full", "interop", "soak"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-shell-win", "--lib", "--locked", "soak", "--", "--nocapture", "--test-threads=1"],
+      "timeout_seconds": 600,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "command", "name": "cargo.exe"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\explorer-lock-holder.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "ole", "explorer"],
+      "covers": [
+        "complete-shell-context-and-locked-delete-parity/complete-shell-context-menu/native-menu-isolation-and-lifecycle",
+        "complete-shell-context-and-locked-delete-parity/locked-delete-recovery/locked-delete-destructive-and-resource-evidence"
+      ]
+    }
+  ]
+}

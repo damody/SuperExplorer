@@ -1,0 +1,38 @@
+[package]
+name = "explorer-extension-broker"
+version = "0.1.0"
+description = "Disposable-process supervisor for Windows Shell extension work."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+explorer-common = { path = "../explorer-common" }
+explorer-extension-protocol = { path = "../explorer-extension-protocol" }
+explorer-model = { path = "../explorer-model" }
+explorer-shell-win = { path = "../explorer-shell-win" }
+thiserror.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
+[build-dependencies]
+embed-resource.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[bin]]
+name = "explorer-extension-broker"
+path = "src/main.rs"
+
+[[bin]]
+name = "explorer-extension-worker"
+path = "src/bin/worker.rs"
+
+[lints]
+workspace = true

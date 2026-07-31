@@ -1,0 +1,17 @@
+[package]
+name = "explorer-jobs"
+version = "0.1.0"
+description = "Bounded scheduling primitives for Explorer CPU and file I/O jobs."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+crossbeam-channel.workspace = true
+explorer-common = { path = "../explorer-common" }
+explorer-model = { path = "../explorer-model" }
+
+[lints]
+workspace = true

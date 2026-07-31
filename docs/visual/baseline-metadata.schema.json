@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/damody/file_explorer/schemas/visual-baseline-metadata-v1.json",
+  "title": "Rust GPUI Explorer visual baseline metadata",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "capture_kind",
+    "windows",
+    "explorer",
+    "app",
+    "gpui",
+    "dpi",
+    "theme",
+    "window",
+    "font",
+    "placeholder_state",
+    "captured_utc",
+    "screenshot_sha256",
+    "diagnostics_sha256"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "capture_kind": { "enum": ["application", "windows-explorer"] },
+    "windows": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["edition", "version", "build"],
+      "properties": {
+        "edition": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "build": { "type": "string", "minLength": 1 }
+      }
+    },
+    "explorer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file_version"],
+      "properties": { "file_version": { "type": "string", "minLength": 1 } }
+    },
+    "app": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "commit", "dirty"],
+      "properties": {
+        "version": { "type": "string", "minLength": 1 },
+        "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "dirty": { "type": "boolean" }
+      }
+    },
+    "gpui": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "revision"],
+      "properties": {
+        "repository": { "const": "https://github.com/gpui-ce/gpui-ce.git" },
+        "revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+      }
+    },
+    "dpi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expected_percent", "actual_window_dpi", "actual_scale_factor", "matches_expectation"],
+      "properties": {
+        "expected_percent": { "enum": [100, 125, 150, 200] },
+        "actual_window_dpi": { "type": "integer", "minimum": 96 },
+        "actual_scale_factor": { "type": "number", "exclusiveMinimum": 0 },
+        "matches_expectation": { "type": "boolean" }
+      }
+    },
+    "theme": { "enum": ["light", "dark"] },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["logical_width", "logical_height", "captured_width", "captured_height"],
+      "properties": {
+        "logical_width": { "type": "number", "minimum": 640 },
+        "logical_height": { "type": "number", "minimum": 480 },
+        "captured_width": { "type": "integer", "minimum": 1 },
+        "captured_height": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "font": { "const": "Microsoft JhengHei UI" },
+    "placeholder_state": { "const": "m1-disconnected" },
+    "captured_utc": { "type": "string", "format": "date-time" },
+    "screenshot_sha256": { "type": "string", "pattern": "^[0-9A-F]{64}$" },
+    "diagnostics_sha256": { "type": "string", "pattern": "^[0-9A-F]{64}$" }
+  }
+}

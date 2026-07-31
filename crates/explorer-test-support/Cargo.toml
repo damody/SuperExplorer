@@ -1,0 +1,19 @@
+[package]
+name = "explorer-test-support"
+version = "0.1.0"
+description = "Deterministic services and owned temporary datasets for Explorer tests."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+explorer-common = { path = "../explorer-common" }
+explorer-model = { path = "../explorer-model" }
+tempfile.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

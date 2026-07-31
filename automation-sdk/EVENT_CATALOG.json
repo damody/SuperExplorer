@@ -1,0 +1,23 @@
+{
+  "api_version": "explorer-automation/v1",
+  "event_schema_version": 1,
+  "envelope": ["name", "version", "sequence", "timestamp_unix_ms", "source", "context", "data"],
+  "events": [
+    "app.started", "app.stopping",
+    "window.opened", "window.closed", "window.activated", "window.deactivated", "window.moved", "window.resized", "window.minimized", "window.maximized", "theme.changed",
+    "navigation.started", "navigation.completed", "navigation.failed", "directory.entered", "directory.refreshed", "tab.opened", "tab.closed", "tab.activated", "tab.reordered", "selection.changed", "item.opened", "search.started", "search.completed", "search.cancelled", "search.failed",
+    "file_operation.started", "file_operation.progress", "file_operation.completed", "file_operation.cancelled", "file_operation.failed", "file.created", "file.renamed", "file.copied", "file.moved", "file.recycled", "file.deleted", "clipboard.copy", "clipboard.cut", "clipboard.paste",
+    "fs.created", "fs.modified", "fs.removed", "fs.renamed", "fs.attributes_changed", "fs.security_changed", "watch.started", "watch.stopped", "watch.overflow", "watch.error",
+    "input.key_down", "input.key_up", "input.mouse_down", "input.mouse_up", "input.mouse_move", "input.mouse_wheel", "input.mouse_hwheel", "hotkey.triggered",
+    "system.foreground_changed", "system.window_created", "system.window_destroyed", "system.window_shown", "system.window_hidden", "system.window_location_changed", "system.window_title_changed", "clipboard.changed", "clipboard.text_available", "clipboard.files_available", "system.session_locked", "system.session_unlocked", "system.suspend", "system.resume", "system.display_changed", "system.dpi_changed", "system.device_arrived", "system.device_removed", "system.network_changed",
+    "task.started", "task.completed", "task.cancelled", "task.failed", "process.started", "process.stdout", "process.stderr", "process.exited", "process.timed_out", "schedule.fired", "schedule.missed", "ai.started", "ai.streaming_delta", "ai.completed", "ai.cancelled", "ai.failed", "ai.output_written"
+  ],
+  "payload_families": {
+    "path": ["path", "previous_path", "watch_root"],
+    "key": ["virtual_key", "scan_code", "modifiers", "repeated", "injected"],
+    "mouse": ["x", "y", "button", "wheel_delta", "injected"],
+    "window": ["native_window_id", "process_id", "title_utf8_bytes"],
+    "process": ["process_id", "exit_code", "stream_bytes", "truncated"],
+    "ai": ["provider", "model", "input_bytes", "output_bytes"]
+  }
+}

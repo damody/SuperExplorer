@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "pixel": {
+    "max_channel_delta": 18,
+    "max_changed_pixel_ratio": 0.015,
+    "alpha_is_strict": true
+  },
+  "diagnostics": {
+    "layout_max_absolute_delta": 0.01,
+    "semantic_colors_exact": true
+  },
+  "masks": [
+    {
+      "name": "outer-window-frame-and-shadow",
+      "kind": "edge",
+      "thickness_pixels": 8,
+      "reason": "DWM border/shadow and OS activation rendering vary independently of app layout"
+    }
+  ],
+  "text_antialiasing_policy": "Pixel deltas up to max_channel_delta are tolerated; layout diagnostics and semantic RGBA values remain strict."
+}
