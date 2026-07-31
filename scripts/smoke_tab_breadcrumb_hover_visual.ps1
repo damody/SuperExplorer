@@ -103,6 +103,40 @@ function Get-PlainAddGlyphEvidence(
     }
 }
 
+function Get-TabFolderIconEvidence(
+    [string]$Path,
+    [Windows.Rect]$WindowBounds,
+    [Windows.Rect]$IconBounds,
+    $Background
+) {
+    $bitmap = [Drawing.Bitmap]::FromFile($Path)
+    try {
+        $left = [Math]::Max(0, [int][Math]::Floor($IconBounds.Left - $WindowBounds.Left))
+        $top = [Math]::Max(0, [int][Math]::Floor($IconBounds.Top - $WindowBounds.Top))
+        $right = [Math]::Min($bitmap.Width - 1, [int][Math]::Ceiling($IconBounds.Right - $WindowBounds.Left))
+        $bottom = [Math]::Min($bitmap.Height - 1, [int][Math]::Ceiling($IconBounds.Bottom - $WindowBounds.Top))
+        $ink = 0
+        foreach ($y in $top..$bottom) {
+            foreach ($x in $left..$right) {
+                $color = $bitmap.GetPixel($x, $y)
+                $distance = [Math]::Max(
+                    [Math]::Abs([int]$color.R - [int]$Background.r),
+                    [Math]::Max(
+                        [Math]::Abs([int]$color.G - [int]$Background.g),
+                        [Math]::Abs([int]$color.B - [int]$Background.b)))
+                if ($distance -gt 25) { $ink++ }
+            }
+        }
+        if ($IconBounds.Width -lt 16 -or $IconBounds.Height -lt 16) {
+            throw "active tab folder icon bounds are too small: $($IconBounds.Width)x$($IconBounds.Height)"
+        }
+        if ($ink -lt 20) { throw "active tab folder icon is visually empty: ink=$ink" }
+        [ordered]@{ ink=$ink; visible=$true; bounds=[ordered]@{ left=$IconBounds.Left; top=$IconBounds.Top; right=$IconBounds.Right; bottom=$IconBounds.Bottom } }
+    } finally {
+        $bitmap.Dispose()
+    }
+}
+
 function Get-ElementEvidence([Windows.Automation.AutomationElement]$Element) {
     $bounds = $Element.Current.BoundingRectangle
     [ordered]@{
@@ -141,6 +175,15 @@ try {
         $element.Current.AutomationId -eq 'new-tab-button' -or $element.Current.Name -eq 'New tab'
     }
     $newTabBounds = $newTabButton.Current.BoundingRectangle
+    $activeTabIcon = Find-UitestElement -Root $root -Description 'active tab folder icon' -Predicate {
+        param($element)
+        $bounds = $element.Current.BoundingRectangle
+        ($element.Current.AutomationId -eq 'active-tab-location-icon' -or
+            $element.Current.Name -like '* folder icon') -and
+            $bounds.Left -ge $activeBounds.Left -and $bounds.Right -le $activeBounds.Right -and
+            $bounds.Top -ge $activeBounds.Top -and $bounds.Bottom -le $activeBounds.Bottom
+    }
+    $activeTabIconBounds = $activeTabIcon.Current.BoundingRectangle
 
     $windowBounds = $root.Current.BoundingRectangle
     if (-not [RustExplorerUitest.Native]::SetCursorPosDpiAware(
@@ -151,9 +194,9 @@ try {
     Start-Sleep -Milliseconds 250
     $tabCapture = Join-Path $output 'tab-surface.png'
     Save-UitestScreenshot -Root $root -Path $tabCapture
-    $activeX = [int][Math]::Round($activeBounds.Left + 9)
+    $activeX = [int][Math]::Round($activeBounds.Left + 5)
     $activeY = [int][Math]::Round($activeBounds.Top + $activeBounds.Height / 2)
-    $inactiveX = [int][Math]::Round($inactiveBounds.Left + 9)
+    $inactiveX = [int][Math]::Round($inactiveBounds.Left + 5)
     $inactiveY = [int][Math]::Round($inactiveBounds.Top + $inactiveBounds.Height / 2)
     $stripX = [int][Math]::Round(($inactiveBounds.Right + $activeBounds.Left) / 2)
     $stripY = $inactiveY
@@ -174,6 +217,7 @@ try {
     $activeTopBodyDistance = Get-ColorDistance $activeTop $activeBody
     $newTabStripDistance = Get-ColorDistance $newTabBackground $stripFill
     $newTabGlyph = Get-PlainAddGlyphEvidence $tabCapture $windowBounds $newTabBounds $newTabBackground
+    $tabFolderIcon = Get-TabFolderIconEvidence $tabCapture $windowBounds $activeTabIconBounds $activeFill
     if ($activeContentDistance -gt 3) { throw "active tab does not match content: distance=$activeContentDistance" }
     if ($activeBoundaryDistance -gt 3) { throw "active tab bottom divider remains visible: distance=$activeBoundaryDistance" }
     if ($inactiveStripDistance -gt 3) { throw "inactive tab does not match strip: distance=$inactiveStripDistance" }
@@ -221,6 +265,22 @@ try {
     if ($idleRestoreDistance -gt 3) { throw "previous breadcrumb row did not return to menu fill: distance=$idleRestoreDistance" }
     if ($highlightContrast -lt 5) { throw "breadcrumb hover gray is not visually distinguishable: distance=$highlightContrast" }
 
+    $firstEvidence = Get-ElementEvidence $first
+    $secondEvidence = Get-ElementEvidence $second
+    Invoke-UitestClick -Element $first
+    $nestedSearchCapture = Join-Path $output 'search-scope-alpha.png'
+    Start-Sleep -Milliseconds 350
+    Save-UitestScreenshot -Root $root -Path $nestedSearchCapture
+    $nestedSearch = Find-UitestElement -Root $root -Description "search hint for nested Alpha folder" -Predicate {
+        param($element)
+        $element.Current.ControlType -eq [Windows.Automation.ControlType]::Edit -and
+            $element.Current.Name -like '*Alpha*'
+    }
+    $nestedSearchEvidence = Get-ElementEvidence $nestedSearch
+    if ($nestedSearchEvidence.name -notlike '*Alpha*') {
+        throw "nested folder search hint did not follow the committed location: $($nestedSearchEvidence.name)"
+    }
+
     [ordered]@{
         schema='superexplorer.tab-breadcrumb-hover.v1'
         physical_pointer_input=$true
@@ -234,15 +294,21 @@ try {
             no_top_focus_line=$true
             new_tab_matches_strip=$true
             new_tab_glyph=$newTabGlyph
+            folder_icon=$tabFolderIcon
         }
         breadcrumb=[ordered]@{
-            first=$(Get-ElementEvidence $first)
-            second=$(Get-ElementEvidence $second)
+            first=$firstEvidence
+            second=$secondEvidence
             colors=[ordered]@{ first_hovered=$firstHovered; second_idle=$secondIdle; first_idle=$firstIdle; second_hovered=$secondHovered }
             distance=[ordered]@{ highlight_swap=$highlightSwapDistance; idle_restore=$idleRestoreDistance; highlight_contrast=$highlightContrast }
             highlight_followed_pointer=$true
         }
-        artifacts=@('tab-surface.png','breadcrumb-hover-first.png','breadcrumb-hover-second.png')
+        search_scope=[ordered]@{
+            nested_folder='Alpha'
+            element=$nestedSearchEvidence
+            follows_committed_location=$true
+        }
+        artifacts=@('tab-surface.png','breadcrumb-hover-first.png','breadcrumb-hover-second.png','search-scope-alpha.png')
     } | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 -LiteralPath (Join-Path $output 'report.json')
 
     Write-Host "Tab and breadcrumb hover visual smoke passed: $output"

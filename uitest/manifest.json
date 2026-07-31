@@ -392,7 +392,7 @@
     },
     {
       "id": "tab-breadcrumb-hover-visual",
-      "description": "Use two real tabs, UIA bounds, physical pointer movement and pixel evidence to verify active/content continuity, no top focus line, plain New Tab strip styling, and breadcrumb hover tracking.",
+      "description": "Use two real tabs, UIA bounds, physical pointer movement and pixel evidence to verify current-folder tab icons, active/content continuity, breadcrumb hover tracking, and that navigation into a nested folder updates the Explorer-style search scope hint.",
       "suites": ["full", "visual"],
       "program": "powershell.exe",
       "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_tab_breadcrumb_hover_visual.ps1", "-SkipBuild", "-OutputDirectory", "{evidence_dir}"],
@@ -403,7 +403,7 @@
         "match-tab-breadcrumb-hover-parity/tab-breadcrumb-interaction-parity/*",
         "match-explorer-visual-address-parity/explorer-visual-parity/explorer-tab-strip-pointer-and-focus-parity"
       ],
-      "required_artifacts": ["report.json", "tab-surface.png", "breadcrumb-hover-first.png", "breadcrumb-hover-second.png"]
+      "required_artifacts": ["report.json", "tab-surface.png", "breadcrumb-hover-first.png", "breadcrumb-hover-second.png", "search-scope-alpha.png"]
     },
     {
       "id": "mouse-command-controls",
