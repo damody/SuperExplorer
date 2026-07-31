@@ -1516,6 +1516,13 @@ impl ExplorerRoot {
                                     )),
                                     _ => None,
                                 };
+                                let active_search_scope_changed = matches!(
+                                    &event,
+                                    explorer_model::ExplorerEvent::LocationResolved {
+                                        context,
+                                        ..
+                                    } if context.tab_id == this.state.tabs().active_tab_id()
+                                );
                                 // Capture the affected navigation parents before watcher recovery
                                 // advances the tab generation. The replacement tree requests are
                                 // created afterwards so they share the refreshed generation.
@@ -1528,6 +1535,19 @@ impl ExplorerRoot {
                                 let refresh_after_action =
                                     this.state.service_event_requires_active_refresh(&event);
                                 let outcome = this.state.apply_service_event(event);
+                                if outcome == explorer_model::WindowEventOutcome::Applied
+                                    && active_search_scope_changed
+                                    && matches!(
+                                        this.state.tabs().active_tab().search,
+                                        explorer_model::TabSearchState::Idle
+                                    )
+                                {
+                                    // GPUI's editable text element retains its original
+                                    // placeholder with the input entity. Recreate an empty idle
+                                    // input when the committed location changes so the visible
+                                    // Explorer search scope follows the new folder immediately.
+                                    this.reset_search_input(String::new(), cx);
+                                }
                                 if outcome == explorer_model::WindowEventOutcome::Applied
                                     && let Some(action) = delegated_action
                                 {
@@ -1735,6 +1755,13 @@ impl ExplorerRoot {
         .into_iter()
         .filter_map(|item| item.icon_location)
         .chain(self.state.navigation_icon_locations())
+        .chain(
+            self.state
+                .tabs()
+                .tabs()
+                .iter()
+                .filter_map(|tab| tab.history.current().map(|entry| entry.location.clone())),
+        )
         .map(|location| navigation_pane::shell_icon_key(&location, theme, self.shell_icon_dpi))
         .chain(std::iter::once(
             navigation_pane::generic_breadcrumb_folder_icon_key(
@@ -2349,6 +2376,21 @@ impl ExplorerRoot {
                 snapshot.insert(key, texture);
             }
         }
+        for location in self
+            .state
+            .tabs()
+            .tabs()
+            .iter()
+            .filter_map(|tab| tab.history.current().map(|entry| &entry.location))
+        {
+            if let Some((key, texture)) = self.shell_icons.get_compatible_navigation_icon(
+                location,
+                theme,
+                self.shell_icon_dpi,
+            ) {
+                snapshot.insert(key, texture);
+            }
+        }
         let address = &self.state.tabs().active_tab().view.address;
         for location in address
             .resolved_ancestry
@@ -2773,6 +2815,22 @@ impl ExplorerRoot {
         let ((), measurement) = measure_callback(action.name(), || {
             dispatch_action(&mut self.state, action.clone(), source);
         });
+        if matches!(
+            &action,
+            ExplorerAction::NewTab
+                | ExplorerAction::CloseActiveTab
+                | ExplorerAction::ActivateTab { .. }
+                | ExplorerAction::CloseTab { .. }
+                | ExplorerAction::NextTab
+                | ExplorerAction::PreviousTab
+        ) && matches!(
+            self.state.tabs().active_tab().search,
+            explorer_model::TabSearchState::Idle
+        ) {
+            // Each tab owns an independent search scope. A fresh empty input makes GPUI consume
+            // the newly active tab's current-folder placeholder without touching real queries.
+            self.reset_search_input(String::new(), cx);
+        }
         if let ExplorerAction::UpdatePreviewHostBoundary {
             parent_window,
             left_physical,
@@ -5701,6 +5759,64 @@ mod tests {
                 .count(),
             locations.len()
         );
+    }
+
+    #[test]
+    fn navigation_initialization_requests_each_open_tab_location_icon_once() {
+        let service = Arc::new(RecordingService::default());
+        let first_location = explorer_model::LocationDescriptor::file_system(r"C:\first");
+        let second_location = explorer_model::LocationDescriptor::file_system(r"D:\second");
+        let first = explorer_model::TabState::new(explorer_model::HistoryEntry::new(
+            first_location.clone(),
+            "first",
+        ));
+        let second = explorer_model::TabState::new(explorer_model::HistoryEntry::new(
+            second_location.clone(),
+            "second",
+        ));
+        let active = second.id;
+        let tabs = explorer_model::ExplorerWindowState::from_restored_tabs(
+            vec![first, second],
+            active,
+            explorer_model::HistoryEntry::new(
+                explorer_model::LocationDescriptor::file_system(r"C:\fallback"),
+                "fallback",
+            ),
+        )
+        .expect("valid two-tab window");
+        let mut root = ExplorerRoot {
+            state: AppViewState::with_restored_window_and_drag_threshold(tabs, (4.0, 4.0)),
+            service: Some(service.clone()),
+            ..ExplorerRoot::default()
+        };
+
+        root.submit_navigation_icon_loads();
+        root.submit_navigation_icon_loads();
+
+        let expected = [first_location, second_location].map(|location| {
+            crate::navigation_pane::shell_icon_key(
+                &location,
+                explorer_model::ShellIconTheme::Light,
+                root.shell_icon_dpi,
+            )
+        });
+        let commands = service.0.lock().unwrap();
+        for key in expected {
+            assert_eq!(
+                commands
+                    .iter()
+                    .filter(|command| matches!(
+                        command,
+                        explorer_model::ExplorerCommand::LoadShellIcon {
+                            key: requested,
+                            ..
+                        } if requested == &key
+                    ))
+                    .count(),
+                1,
+                "each visible tab location is requested and deduplicated"
+            );
+        }
     }
 
     #[test]
