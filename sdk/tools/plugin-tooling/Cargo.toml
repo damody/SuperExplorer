@@ -1,0 +1,12 @@
+[package]
+name="superexplorer-plugin-tooling"
+version="0.1.0"
+edition="2024"
+rust-version="1.97.1"
+publish=false
+[dependencies]
+serde={version="=1.0.229",features=["derive"]}
+serde_json="=1.0.151"
+superexplorer-ui-abi-fingerprint={path="../ui-abi-fingerprint"}
+toml="=0.8.23"
+[workspace]

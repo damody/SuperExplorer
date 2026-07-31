@@ -1,0 +1,16 @@
+[package]
+name = "p0-consumer"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.97.1"
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[profile.release]
+panic = "unwind"
+lto = "thin"
+codegen-units = 1
+
+[workspace]

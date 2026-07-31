@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "requirements": [
+    {
+      "requirement_id": "build-extensible-plugin-platform/rust-plugin-abi-and-ui-toolchain/offline-sdk-bundle",
+      "evidence": {
+        "unit": ["plugin-root-unit"],
+        "integration": ["plugin-load-compatible"],
+        "uitest": ["plugin-options-visible"],
+        "security": ["fingerprint-mismatch-rejected"],
+        "docs": ["clean-readme-reproduction"]
+      }
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+[net]
+offline=true
+[source.crates-io]
+replace-with="cargo-sources"
+[source.cargo-sources]
+directory="../../vendor/cargo-sources"

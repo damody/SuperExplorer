@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "package", "publisher", "sdk", "rust", "features", "contributions", "payloads", "verification"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "package": { "$ref": "#/$defs/package" },
+    "publisher": { "$ref": "#/$defs/publisher" },
+    "sdk": { "$ref": "#/$defs/sdk" },
+    "rust": { "$ref": "#/$defs/rust" },
+    "features": { "type": "array", "items": { "$ref": "#/$defs/feature" } },
+    "contributions": { "type": "array", "items": { "$ref": "#/$defs/contribution" } },
+    "payloads": { "type": "array", "items": { "$ref": "#/$defs/payload" } },
+    "verification": { "$ref": "#/$defs/verification" }
+  },
+  "$defs": {
+    "package": {
+      "type": "object", "additionalProperties": false, "required": ["id", "version"],
+      "properties": { "id": { "type": "string" }, "version": { "type": "string" } }
+    },
+    "publisher": {
+      "type": "object", "additionalProperties": false, "required": ["id", "display_name", "contacts"],
+      "properties": {
+        "id": { "type": "string" }, "display_name": { "type": "string" },
+        "contacts": { "type": "array", "items": { "$ref": "#/$defs/contact" } }
+      }
+    },
+    "contact": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "value"],
+      "properties": { "kind": { "enum": ["support", "security"] }, "value": { "type": "string" } }
+    },
+    "sdk": {
+      "type": "object", "additionalProperties": false,
+      "required": ["bundle_id", "target", "abi_schema", "gpui", "ui_abi_fingerprint"],
+      "properties": {
+        "bundle_id": { "type": "string" },
+        "target": { "const": "x86_64-pc-windows-msvc" },
+        "abi_schema": { "type": "integer", "minimum": 1 },
+        "gpui": { "type": "boolean" },
+        "ui_abi_fingerprint": { "type": ["string", "null"] }
+      }
+    },
+    "rust": {
+      "type": "object", "additionalProperties": false, "required": ["crate_name", "entrypoint", "root_module"],
+      "properties": { "crate_name": { "type": "string" }, "entrypoint": { "type": "string" }, "root_module": { "type": "string" } }
+    },
+    "feature": {
+      "type": "object", "additionalProperties": false, "required": ["id", "capabilities"],
+      "properties": { "id": { "type": "string" }, "capabilities": { "type": "array", "items": { "type": "string" } } }
+    },
+    "contribution": {
+      "type": "object", "additionalProperties": false, "required": ["id", "feature_id", "kind", "capabilities", "payload"],
+      "properties": {
+        "id": { "type": "string" }, "feature_id": { "type": "string" },
+        "kind": { "enum": ["abi-root", "gpui"] },
+        "capabilities": { "type": "array", "items": { "type": "string" } },
+        "payload": { "type": "string" }
+      }
+    },
+    "payload": {
+      "type": "object", "additionalProperties": false, "required": ["path", "size", "sha256", "kind"],
+      "properties": {
+        "path": { "type": "string" }, "size": { "type": "integer", "minimum": 0 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "kind": { "enum": ["rust-source", "license", "notice", "locale", "dll"] }
+      }
+    },
+    "verification": {
+      "type": "object", "additionalProperties": false, "required": ["requirements"],
+      "properties": { "requirements": { "type": "array", "items": { "$ref": "#/$defs/requirement" } } }
+    },
+    "requirement": {
+      "type": "object", "additionalProperties": false, "required": ["requirement_id", "evidence"],
+      "properties": { "requirement_id": { "type": "string" }, "evidence": { "$ref": "#/$defs/evidence" } }
+    },
+    "evidence": {
+      "type": "object", "additionalProperties": false, "required": ["unit", "integration", "uitest", "security", "docs"],
+      "properties": {
+        "unit": { "$ref": "#/$defs/id_list" }, "integration": { "$ref": "#/$defs/id_list" },
+        "uitest": { "$ref": "#/$defs/id_list" }, "security": { "$ref": "#/$defs/id_list" },
+        "docs": { "$ref": "#/$defs/id_list" }
+      }
+    },
+    "id_list": { "type": "array", "items": { "type": "string" } }
+  }
+}

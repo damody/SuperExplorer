@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "valid", "diagnostics"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "valid": { "type": "boolean" },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "severity", "phase", "path", "message"],
+        "properties": {
+          "code": { "type": "string", "pattern": "^SESDK-[A-Z]+-[0-9]{3}$" },
+          "severity": { "const": "error" },
+          "phase": { "type": "string" },
+          "path": { "type": "string" },
+          "message": { "type": "string" }
+        }
+      }
+    }
+  }
+}
