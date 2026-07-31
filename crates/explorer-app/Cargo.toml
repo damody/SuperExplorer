@@ -1,0 +1,46 @@
+[package]
+name = "explorer-app"
+version = "0.1.0"
+description = "Windows-only GPUI Explorer application composition root."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "SuperExplorer"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+explorer-common = { path = "../explorer-common" }
+explorer-extension-broker = { path = "../explorer-extension-broker" }
+explorer-automation = { path = "../explorer-automation" }
+explorer-automation-win = { path = "../explorer-automation-win" }
+explorer-jobs = { path = "../explorer-jobs" }
+explorer-model = { path = "../explorer-model" }
+explorer-search = { path = "../explorer-search" }
+explorer-shell-win = { path = "../explorer-shell-win" }
+explorer-ui = { path = "../explorer-ui" }
+gpui.workspace = true
+gpui_windows.workspace = true
+image.workspace = true
+raw-window-handle.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+explorer-test-support = { path = "../explorer-test-support" }
+tempfile.workspace = true
+
+[build-dependencies]
+embed-resource.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
+[lints]
+workspace = true

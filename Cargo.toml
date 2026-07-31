@@ -1,0 +1,108 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/explorer-ai",
+    "crates/explorer-app",
+    "crates/explorer-automation",
+    "crates/explorer-automation-win",
+    "crates/explorer-common",
+    "crates/explorer-extension-protocol",
+    "crates/explorer-extension-broker",
+    "crates/explorer-jobs",
+    "crates/explorer-model",
+    "crates/explorer-search",
+    "crates/explorer-shell-win",
+    "crates/explorer-test-support",
+    "crates/explorer-ui",
+    "crates/explorer-uitest",
+]
+default-members = ["crates/explorer-app"]
+exclude = ["vendor/gpui-ce"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.97.1"
+license = "LicenseRef-SuperExplorer-Proprietary"
+repository = "https://github.com/damody/file_explorer"
+publish = false
+
+[workspace.dependencies]
+anyhow = "1.0"
+chrono = "0.4.45"
+chrono-tz = "0.10.4"
+crossbeam-channel = "0.5"
+cron = "0.17.0"
+embed-resource = "3.0"
+abi_stable = { version = "=0.11.3", default-features = false }
+gpui = { path = "vendor/gpui-ce/crates/gpui", version = "=0.2.2", default-features = false }
+gpui_elements = { path = "vendor/gpui-ce/crates/gpui_elements", version = "=0.1.0" }
+gpui_windows = { path = "vendor/gpui-ce/crates/gpui_windows", version = "=0.1.0" }
+raw-window-handle = "0.6"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+image = "0.25.10"
+libloading = "0.8"
+mlua = { version = "0.11.6", features = ["async", "lua54", "send", "serialize", "vendored"] }
+globset = "0.4.16"
+notify = "8.2.0"
+reqwest = { version = "0.12.22", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+smallvec = "1.15.2"
+tempfile = "3.20"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1.17", features = ["serde", "v4", "v5"] }
+windows = { version = "=0.61.3", features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_Security_Credentials",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_DataExchange",
+    "Win32_System_IO",
+    "Win32_System_JobObjects",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_ProcessStatus",
+    "Win32_System_RestartManager",
+    "Win32_System_Recovery",
+    "Win32_System_Console",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_Registry",
+    "Win32_System_Search",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+    "Win32_System_Time",
+    "Win32_System_Variant",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_UI_Accessibility",
+    "Win32_UI_Controls",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+windows-core = "=0.61.2"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

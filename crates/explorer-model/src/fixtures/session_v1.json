@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "checksum": 18158480726034743748,
+  "write_generation": 7,
+  "provenance": {
+    "app_version": "0.1.0",
+    "app_revision": "fixture",
+    "windows_build": "26200"
+  },
+  "payload": {
+    "restore_enabled": true,
+    "window": {
+      "normal_bounds": { "left": 100, "top": 100, "width": 1120, "height": 720 },
+      "source_work_area": { "left": 0, "top": 0, "width": 2560, "height": 1440 },
+      "source_dpi": 168,
+      "maximized": false
+    },
+    "tabs": [
+      {
+        "tab_id": "003975bb-a832-4d23-8eaa-7da969874d5e",
+        "current": { "location": { "FileSystem": "D:\\fixture" }, "display_title": "fixture", "anchor_item": null, "anchor_offset_logical_pixels": 0 },
+        "back": [],
+        "forward": [],
+        "view_settings": {
+          "mode": "details", "details_pane": false, "preview_pane": false,
+          "item_check_boxes": false, "file_name_extensions": true, "hidden_items": false,
+          "compact_view": false, "always_show_icons": false,
+          "sort": { "column": "name", "direction": "ascending" },
+          "group_by": null,
+          "details_column_order": ["name", "date_modified", "type", "size"],
+          "details_columns": { "name": 280, "date_modified": 150, "item_type": 115, "size": 90 },
+          "details_pane_width": 293, "preview_pane_width": 293
+        }
+      },
+      {
+        "tab_id": "17d967f6-2bf8-408d-add7-92edaaf6df7c",
+        "current": { "location": { "FileSystem": "D:\\fixture" }, "display_title": "fixture", "anchor_item": null, "anchor_offset_logical_pixels": 0 },
+        "back": [],
+        "forward": [],
+        "view_settings": {
+          "mode": "details", "details_pane": false, "preview_pane": false,
+          "item_check_boxes": false, "file_name_extensions": true, "hidden_items": false,
+          "compact_view": false, "always_show_icons": false,
+          "sort": { "column": "name", "direction": "ascending" },
+          "group_by": null,
+          "details_column_order": ["name", "date_modified", "type", "size"],
+          "details_columns": { "name": 280, "date_modified": 150, "item_type": 115, "size": 90 },
+          "details_pane_width": 293, "preview_pane_width": 293
+        }
+      }
+    ],
+    "active_tab_id": "17d967f6-2bf8-408d-add7-92edaaf6df7c",
+    "quick_access": [
+      { "location": { "ParsingName": "super-explorer:home" }, "display_name": "Home", "order": 0 }
+    ]
+  }
+}

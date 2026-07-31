@@ -1,0 +1,32 @@
+#define APP_VERSION 0,1,0,0
+#define APP_VERSION_TEXT "0.1.0\0"
+
+1 VERSIONINFO
+FILEVERSION APP_VERSION
+PRODUCTVERSION APP_VERSION
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0x0L
+FILEOS 0x40004L
+FILETYPE 0x1L
+FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "Rust GPUI Explorer Contributors\0"
+            VALUE "FileDescription", "Rust GPUI Explorer Extension Broker\0"
+            VALUE "FileVersion", APP_VERSION_TEXT
+            VALUE "InternalName", "explorer-extension-broker\0"
+            VALUE "OriginalFilename", "explorer-extension-broker.exe\0"
+            VALUE "ProductName", "Rust GPUI Windows Explorer\0"
+            VALUE "ProductVersion", APP_VERSION_TEXT
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END
+
+1 24 "broker.manifest"

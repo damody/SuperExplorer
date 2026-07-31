@@ -1,0 +1,28 @@
+[package]
+name = "explorer-shell-win"
+version = "0.1.0"
+description = "Windows Shell, COM, OLE, watcher, and native operation adapters."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+explorer-common = { path = "../explorer-common" }
+explorer-model = { path = "../explorer-model" }
+explorer-search = { path = "../explorer-search" }
+thiserror.workspace = true
+tracing.workspace = true
+libloading.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+windows-core.workspace = true
+
+[dev-dependencies]
+explorer-test-support = { path = "../explorer-test-support" }
+tempfile.workspace = true
+
+[lints]
+workspace = true

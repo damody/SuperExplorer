@@ -1,0 +1,38 @@
+{
+  "schema_version": 2,
+  "profile": "windows-11-26200-explorer-26100.8875-zh-tw-light-175-d-drive-details",
+  "coordinate_space": { "width": 2685, "height": 1621 },
+  "regions": [
+    { "id": "explorer-window", "parent": null, "state": "active", "physical_rect": { "x": 0, "y": 0, "width": 2685, "height": 1621 } },
+    { "id": "window-chrome", "parent": "explorer-window", "state": "active", "physical_rect": { "x": 0, "y": 0, "width": 2685, "height": 70 }, "typography_reference": { "profile": "windows-11-26200-explorer-26100.8875-zh-tw-175", "family": "Microsoft JhengHei UI", "size": 12, "weight": 400, "line_height": 16, "baseline": 13 } },
+    { "id": "navigation-bar", "parent": "explorer-window", "state": "normal", "physical_rect": { "x": 0, "y": 70, "width": 2685, "height": 85 } },
+    { "id": "command-bar", "parent": "explorer-window", "state": "normal", "physical_rect": { "x": 0, "y": 155, "width": 2685, "height": 84 }, "typography_reference": { "profile": "windows-11-26200-explorer-26100.8875-zh-tw-175", "family": "Microsoft JhengHei UI", "size": 12, "weight": 400, "line_height": 16, "baseline": 13 } },
+    { "id": "navigation-pane", "parent": "explorer-window", "state": "normal", "physical_rect": { "x": 0, "y": 239, "width": 512, "height": 1352 }, "typography_reference": { "profile": "windows-11-26200-explorer-26100.8875-zh-tw-175", "family": "Microsoft JhengHei UI", "size": 12, "weight": 400, "line_height": 16, "baseline": 13 } },
+    { "id": "navigation-divider", "parent": "explorer-window", "state": "normal", "physical_rect": { "x": 512, "y": 239, "width": 14, "height": 1352 } },
+    { "id": "file-view-host", "parent": "explorer-window", "state": "normal", "physical_rect": { "x": 526, "y": 239, "width": 2159, "height": 1352 } },
+    { "id": "details-header", "parent": "file-view-host", "state": "normal", "physical_rect": { "x": 526, "y": 239, "width": 2159, "height": 49 }, "typography_reference": { "profile": "windows-11-26200-explorer-26100.8875-zh-tw-175", "family": "Microsoft JhengHei UI", "size": 11, "weight": 400, "line_height": 16, "baseline": 13 } },
+    { "id": "file-row-0", "parent": "file-view-host", "state": "normal", "physical_rect": { "x": 526, "y": 288, "width": 2159, "height": 52 }, "typography_reference": { "profile": "windows-11-26200-explorer-26100.8875-zh-tw-175", "family": "Microsoft JhengHei UI", "size": 12, "weight": 400, "line_height": 16, "baseline": 13 } },
+    { "id": "status-bar", "parent": "explorer-window", "state": "normal", "physical_rect": { "x": 0, "y": 1591, "width": 2685, "height": 30 }, "typography_reference": { "profile": "windows-11-26200-explorer-26100.8875-zh-tw-175", "family": "Microsoft JhengHei UI", "size": 11, "weight": 400, "line_height": 14, "baseline": 11 } },
+    { "id": "breadcrumb-address-editor", "parent": "navigation-bar", "state": "browsing", "physical_rect": { "x": 365, "y": 82, "width": 1615, "height": 57 }, "typography_reference": { "profile": "windows-11-26200-explorer-26100.8875-zh-tw-175", "family": "Microsoft JhengHei UI", "size": 12, "weight": 400, "line_height": 16, "baseline": 13 } },
+    { "id": "search-box", "parent": "navigation-bar", "state": "idle", "physical_rect": { "x": 1994, "y": 82, "width": 671, "height": 57 }, "icon_bounds": { "x": 2606, "y": 98, "width": 28, "height": 28 }, "typography_reference": { "profile": "windows-11-26200-explorer-26100.8875-zh-tw-175", "family": "Microsoft JhengHei UI", "size": 12, "weight": 400, "line_height": 16, "baseline": 13 } },
+    { "id": "caption-minimize", "parent": "window-chrome", "state": "enabled", "physical_rect": { "x": 2430, "y": 0, "width": 81, "height": 70 }, "icon_bounds": { "x": 2457, "y": 13, "width": 28, "height": 28 } },
+    { "id": "caption-maximize", "parent": "window-chrome", "state": "enabled", "physical_rect": { "x": 2511, "y": 0, "width": 81, "height": 70 }, "icon_bounds": { "x": 2538, "y": 13, "width": 28, "height": 28 } },
+    { "id": "caption-close", "parent": "window-chrome", "state": "enabled", "physical_rect": { "x": 2592, "y": 0, "width": 81, "height": 70 }, "icon_bounds": { "x": 2619, "y": 13, "width": 28, "height": 28 } }
+  ],
+  "gap_checks": [
+    { "id": "navigation-to-command", "first": "navigation-bar", "second": "command-bar", "axis": "vertical", "expected": 3, "reason": "diagnostic child bounds exclude the 2 logical px parent border" },
+    { "id": "pane-to-divider", "first": "navigation-pane", "second": "navigation-divider", "axis": "horizontal", "expected": 3, "reason": "diagnostic child bounds exclude the 2 logical px parent border" },
+    { "id": "divider-to-file-view", "first": "navigation-divider", "second": "file-view-host", "axis": "horizontal", "expected": 0, "reason": "file view has no full-panel focus border in the matching reference state" },
+    { "id": "address-to-search", "first": "breadcrumb-address-editor", "second": "search-box", "axis": "horizontal" }
+  ],
+  "color_samples": [
+    { "id": "window-chrome", "point": { "x": 1800, "y": 30 }, "channel_tolerance": 12 },
+    { "id": "navigation-bar", "point": { "x": 1800, "y": 75 }, "channel_tolerance": 12 },
+    { "id": "command-bar", "point": { "x": 1800, "y": 190 }, "channel_tolerance": 12 },
+    { "id": "file-view", "point": { "x": 1800, "y": 1200 }, "channel_tolerance": 12 }
+  ],
+  "pixel_masks": [
+    { "kind": "dynamic-content", "reason": "favorites and pinned item text may differ while pane geometry remains measured", "rect": { "x": 20, "y": 250, "width": 470, "height": 900 } },
+    { "kind": "typography-edge", "reason": "ClearType edge rasterization only; typography geometry remains measured", "rect": { "x": 530, "y": 240, "width": 1100, "height": 620 } }
+  ]
+}

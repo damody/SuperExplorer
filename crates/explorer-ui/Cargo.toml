@@ -1,0 +1,31 @@
+[package]
+name = "explorer-ui"
+version = "0.1.0"
+description = "GPUI Explorer chrome, panes, file view, theme, and actions."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+explorer-common = { path = "../explorer-common" }
+explorer-automation = { path = "../explorer-automation" }
+explorer-model = { path = "../explorer-model" }
+explorer-jobs = { path = "../explorer-jobs" }
+explorer-search = { path = "../explorer-search" }
+gpui.workspace = true
+gpui_elements.workspace = true
+raw-window-handle.workspace = true
+serde.workspace = true
+tracing.workspace = true
+image.workspace = true
+smallvec.workspace = true
+
+[dev-dependencies]
+explorer-test-support = { path = "../explorer-test-support" }
+gpui = { workspace = true, features = ["test-support"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,18 @@
+Component: LuaBinaries 5.4.8 Release 1, Windows x64 tools
+Upstream: https://sourceforge.net/projects/luabinaries/files/5.4.8/Tools%20Executables/lua-5.4.8_Win64_bin.zip/download
+Archive SHA-256: 20321E893509E575D2454DD7BBF05342C1F3CB1B3788C0EC5A55AE4279DDE169
+
+Vendored files:
+lua.exe (upstream lua54.exe): 8C95679E6210E5C3972EA473D248607D41B2CB734AF67A60DD9EEC4BF3CA237D
+lua54.dll: A842F0D33C897CE08411EA2565E8C19859B45A2374B905DE2D56434C7FA4D732
+
+License: MIT; see LICENSE.txt.
+
+Component: LuaFileSystem 1.9.0 with Windows UTF-8 path support
+Upstream source: https://github.com/lunarmodules/luafilesystem tag v1_9_0
+Unicode fork: https://github.com/damody/luafilesystem-unicode
+Unicode commit: 625a36c0eb4dd289cb8075dbb86be79cbed936ef
+Build script: scripts/build_luafilesystem_utf8.ps1
+Compiler: MinGW-w64 GCC x64, optimized shared library
+lfs.dll SHA-256: 36EC676FA4EA89F0A82C9EA1125EAA4B0E717C40390A1565ED3F8556BC02A80A
+License: MIT; see LUAFILESYSTEM_LICENSE.txt.

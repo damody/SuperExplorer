@@ -1,0 +1,7 @@
+# GPUI render components intentionally receive the Copy token bundle by value and keep complete
+# declarative element trees/event routers together. These limits remain finite so genuinely large
+# APIs and functions still fail the warnings-as-errors gate.
+pass-by-value-size-limit = 512
+too-many-arguments-threshold = 12
+too-many-lines-threshold = 300
+single-char-binding-names-threshold = 6

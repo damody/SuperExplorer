@@ -1,0 +1,10 @@
+Project: LuaFileSystem
+Repository: https://github.com/lunarmodules/luafilesystem
+Tag: v1_9_0
+Commit: a186cca5833691e830ed255e38ace8ff6b870dbf
+Local changes: Windows UTF-8 paths are converted strictly to UTF-16 and passed to wide Win32 APIs.
+
+Lua headers:
+Version: 5.4.8
+Source: https://www.lua.org/ftp/lua-5.4.8.tar.gz
+SHA-256: 4f18ddae154e793e46eeab727c59ef1c0c0c2b744e7b94219710d76f530629ae
