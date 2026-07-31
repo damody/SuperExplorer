@@ -7,6 +7,11 @@ Set-StrictMode -Version Latest
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $support = Join-Path $repo 'sdk\scripts\update-gpui-snapshot-support.psm1'
 Import-Module $support -Force
+$gitCommand = Get-Command git -CommandType Application | Select-Object -First 1
+$gitRoot = Split-Path (Split-Path $gitCommand.Source -Parent) -Parent
+$gitUnixBin = Join-Path $gitRoot 'usr\bin'
+$savedPath = $env:PATH
+if (Test-Path -LiteralPath $gitUnixBin) { $env:PATH = "$gitUnixBin;$savedPath" }
 
 function Invoke-Git {
     param([string]$Directory, [string[]]$Arguments)
@@ -125,6 +130,7 @@ try {
     if (Test-Path -LiteralPath $created) { throw 'rollback retained a created file' }
 } finally {
     if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force }
+    $env:PATH = $savedPath
 }
 
 # Keep this contract coupled to the production race guard rather than a test-only imitation.
