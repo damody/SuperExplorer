@@ -83,6 +83,46 @@ function Get-ColorDistance($Left, $Right) {
             [Math]::Abs([int]$Left.b - [int]$Right.b)))
 }
 
+function Measure-NavigationGlyph(
+    [string]$Path,
+    [Windows.Rect]$WindowBounds,
+    [Windows.Automation.AutomationElement]$Element
+) {
+    $bounds = $Element.Current.BoundingRectangle
+    $centerX = [int][Math]::Round($bounds.Left + $bounds.Width / 2) - [int]$WindowBounds.Left
+    $centerY = [int][Math]::Round($bounds.Top + $bounds.Height / 2) - [int]$WindowBounds.Top
+    $bitmap = [Drawing.Bitmap]::FromFile($Path)
+    try {
+        $background = $bitmap.GetPixel(
+            [int][Math]::Round($bounds.Left - $WindowBounds.Left + 3),
+            [int][Math]::Round($bounds.Top - $WindowBounds.Top + 3))
+        $inkPixels = 0
+        $inkWeight = 0
+        foreach ($x in (($centerX - 12)..($centerX + 11))) {
+            foreach ($y in (($centerY - 12)..($centerY + 11))) {
+                $pixel = $bitmap.GetPixel($x, $y)
+                $distance = [Math]::Max(
+                    [Math]::Abs([int]$pixel.R - [int]$background.R),
+                    [Math]::Max(
+                        [Math]::Abs([int]$pixel.G - [int]$background.G),
+                        [Math]::Abs([int]$pixel.B - [int]$background.B)))
+                if ($distance -ge 6) {
+                    $inkPixels += 1
+                    $inkWeight += $distance
+                }
+            }
+        }
+        [ordered]@{
+            ink_pixels = $inkPixels
+            ink_weight = $inkWeight
+            mean_ink_distance = if ($inkPixels -gt 0) { [Math]::Round($inkWeight / $inkPixels, 2) } else { 0 }
+            background = [ordered]@{ r=[int]$background.R; g=[int]$background.G; b=[int]$background.B }
+        }
+    } finally {
+        $bitmap.Dispose()
+    }
+}
+
 function Invoke-HistoryItem([Windows.Automation.AutomationElement]$Element) {
     $pattern = $null
     if ($Element.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
@@ -118,6 +158,18 @@ try {
     Open-ChildFolder -FolderName 'history-c' -ExpectedMarker 'marker-c.txt'
 
     $back = Find-ByAutomationId 'navigation-back' 'Back button' 'Back'
+    $forwardDisabled = Find-ByAutomationId 'navigation-forward' 'Forward button' 'Forward'
+    $windowBounds = $context.Root.Current.BoundingRectangle
+    $availabilityCapture = Join-Path $output 'navigation-availability.png'
+    Save-UitestScreenshot -Root $context.Root -Path $availabilityCapture
+    $enabledBackGlyph = Measure-NavigationGlyph $availabilityCapture $windowBounds $back
+    $disabledForwardGlyph = Measure-NavigationGlyph $availabilityCapture $windowBounds $forwardDisabled
+    if ($enabledBackGlyph.ink_weight -lt [int]($disabledForwardGlyph.ink_weight * 1.5)) {
+        throw "enabled Back is not sufficiently darker than disabled Forward: enabled=$($enabledBackGlyph.ink_weight) disabled=$($disabledForwardGlyph.ink_weight)"
+    }
+    if ($enabledBackGlyph.ink_pixels -le $disabledForwardGlyph.ink_pixels) {
+        throw "enabled Back is not slightly thicker than disabled Forward: enabled=$($enabledBackGlyph.ink_pixels) disabled=$($disabledForwardGlyph.ink_pixels)"
+    }
     Invoke-UitestClick -Element $back -Right
     @($context.Root.FindAll(
         [Windows.Automation.TreeScope]::Descendants,
@@ -136,7 +188,6 @@ try {
     if ($backItems[0].Current.Name -notlike '*history-b*' -or $backItems[1].Current.Name -notlike '*history-a*') {
         throw "Back history order is not nearest-first: $(@($backItems | ForEach-Object { $_.Current.Name }) -join ', ')"
     }
-    $windowBounds = $context.Root.Current.BoundingRectangle
     $firstBounds = $backItems[0].Current.BoundingRectangle
     $secondBounds = $backItems[1].Current.BoundingRectangle
     $sampleX = [int][Math]::Round([Math]::Min($firstBounds.Right, $secondBounds.Right) - 12)
@@ -228,6 +279,10 @@ try {
         plus_inherited_forward_history = $true
         escape_closed_history_menu = $true
         history_hover_followed_pointer = $true
+        navigation_availability_visual = [ordered]@{
+            enabled_back=$enabledBackGlyph
+            disabled_forward=$disabledForwardGlyph
+        }
         history_hover_colors = [ordered]@{
             first_hovered=$firstHovered
             second_idle=$secondIdle
