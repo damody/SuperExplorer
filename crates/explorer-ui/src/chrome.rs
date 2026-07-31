@@ -8001,10 +8001,11 @@ fn editable_focus_field(
         .multiline(false)
         .placeholder(visible_text)
         .caret_blink_interval_500ms()
-        .caret_height(px(typography.size.value()))
-        .caret_top_offset(px((typography.line_height.value()
+        .caret_height(px(typography.line_height.value()))
+        .caret_top_offset(px(((typography.line_height.value()
             - typography.size.value())
-        .max(0.0)))
+            / 2.0)
+            .max(0.0)))
         .w_full()
         .h(px(selection_metrics.line_height))
         .flex_none()
@@ -9684,8 +9685,14 @@ mod tests {
             .split("#[cfg(test)]")
             .next()
             .expect("production source precedes tests");
-        assert!(production.contains(".caret_height(px(typography.size.value()))"));
-        assert!(production.contains(".caret_top_offset(px("));
+        let compact_production = production
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        assert!(compact_production.contains(".caret_height(px(typography.line_height.value()))"));
+        assert!(compact_production.contains(
+            ".caret_top_offset(px(((typography.line_height.value()-typography.size.value())/2.0).max(0.0)))"
+        ));
     }
 
     #[test]

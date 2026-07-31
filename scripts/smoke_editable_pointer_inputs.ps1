@@ -296,26 +296,29 @@ function Measure-EditorCaretGeometry(
     if ($glyphTop -eq [int]::MaxValue -or $glyphBottom -le $glyphTop) {
         throw 'address glyph bounds were not measurable'
     }
-    $maximumHeight = [int][Math]::Ceiling($controlHeight * 0.48)
-    if ($bestHeight -gt $maximumHeight) {
-        throw "address caret still uses the line box height: caret=$bestHeight control=$controlHeight maximum=$maximumHeight"
+    $glyphHeight = $glyphBottom - $glyphTop + 1
+    # Explorer keeps the insertion caret at the full edit-line height.  Require visible
+    # ascender/descender room beyond the measured glyph pixels so a glyph-height caret
+    # cannot pass while allowing for DPI rasterization rounding.
+    $minimumHeight = $glyphHeight + 3
+    if ($bestHeight -lt $minimumHeight) {
+        throw "address caret was incorrectly reduced to glyph height: caret=$bestHeight glyph=$glyphHeight minimum=$minimumHeight"
     }
     $caretBottom = $bestTop + $bestHeight - 1
-    $topDifference = [Math]::Abs($bestTop - $glyphTop)
     $bottomDifference = [Math]::Abs($caretBottom - $glyphBottom)
-    if ($topDifference -gt 3 -or $bottomDifference -gt 4) {
-        throw "address caret is not aligned to the rendered glyph bounds: caret=$bestTop..$caretBottom glyph=$glyphTop..$glyphBottom topDifference=$topDifference bottomDifference=$bottomDifference"
+    if ($bottomDifference -gt 4) {
+        throw "address caret bottom is not aligned to the rendered glyph depth: caret=$bestTop..$caretBottom glyph=$glyphTop..$glyphBottom bottomDifference=$bottomDifference"
     }
     [pscustomobject][ordered]@{
         capture = [IO.Path]::GetFileName($CapturePath)
         caret_height = $bestHeight
         control_height = $controlHeight
-        maximum_allowed_height = $maximumHeight
+        glyph_height = $glyphHeight
+        minimum_required_height = $minimumHeight
         caret_top = $bestTop
         caret_bottom = $caretBottom
         glyph_top = $glyphTop
         glyph_bottom = $glyphBottom
-        top_difference = $topDifference
         bottom_difference = $bottomDifference
     }
 }
