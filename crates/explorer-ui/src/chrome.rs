@@ -375,6 +375,14 @@ impl RenderOnce for ExplorerWindow {
                                 file_icons,
                                 self.shell_icon_dpi,
                                 self.state.details_column_menu(),
+                                self.state.details_filter_menu(),
+                                self.state.active_details_filters(),
+                                explorer_model::SortColumn::ALL
+                                    .into_iter()
+                                    .map(|column| {
+                                        (column, self.state.details_filter_options(column))
+                                    })
+                                    .collect(),
                                 self.on_action.clone(),
                             ))
                             .when_some(self.file_scroll.clone(), |element, handle| {
@@ -2020,7 +2028,10 @@ fn command_extensions_menu(
         div()
             .absolute()
             .top(px(tokens.layout.minimum_hit_target.value()))
+            .left_0()
             .right_0()
+            .flex()
+            .justify_center()
             .child(menu),
     )
     .with_priority(140)
@@ -2165,7 +2176,10 @@ fn command_more_menu_v2(
         div()
             .absolute()
             .top(px(tokens.layout.minimum_hit_target.value()))
+            .left_0()
             .right_0()
+            .flex()
+            .justify_center()
             .child(menu),
     )
     .with_priority(140)
@@ -2248,11 +2262,13 @@ fn command_more_menu(
             on_action,
         ));
     deferred(
-        anchored()
-            .anchor(Anchor::TopRight)
-            .position_mode(AnchoredPositionMode::Local)
-            .offset(point(px(0.0), px(tokens.layout.minimum_hit_target.value())))
-            .snap_to_window()
+        div()
+            .absolute()
+            .top(px(tokens.layout.minimum_hit_target.value()))
+            .left_0()
+            .right_0()
+            .flex()
+            .justify_center()
             .child(menu),
     )
     .with_priority(120)
@@ -2410,7 +2426,10 @@ fn sort_menu(
         div()
             .absolute()
             .top(px(layout.minimum_hit_target.value()))
+            .left_0()
             .right_0()
+            .flex()
+            .justify_center()
             .child(menu),
     )
     .with_priority(90)
@@ -2510,7 +2529,10 @@ fn view_menu(
         div()
             .absolute()
             .top(px(layout.minimum_hit_target.value()))
+            .left_0()
             .right_0()
+            .flex()
+            .justify_center()
             .child(menu),
     )
     .with_priority(90)
@@ -4591,6 +4613,10 @@ pub struct FileViewHost {
     shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
     shell_icon_dpi: u16,
     details_column_menu: Option<explorer_model::SortColumn>,
+    details_filter_menu: Option<explorer_model::SortColumn>,
+    details_filters: crate::file_view::DetailsFilters,
+    details_filter_options:
+        HashMap<explorer_model::SortColumn, Vec<crate::file_view::DetailsFilterOption>>,
     on_action: Option<ActionCallback>,
 }
 
@@ -4621,6 +4647,12 @@ impl FileViewHost {
         shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
         shell_icon_dpi: u16,
         details_column_menu: Option<explorer_model::SortColumn>,
+        details_filter_menu: Option<explorer_model::SortColumn>,
+        details_filters: crate::file_view::DetailsFilters,
+        details_filter_options: HashMap<
+            explorer_model::SortColumn,
+            Vec<crate::file_view::DetailsFilterOption>,
+        >,
         on_action: Option<ActionCallback>,
     ) -> Self {
         Self {
@@ -4647,6 +4679,9 @@ impl FileViewHost {
             shell_icons,
             shell_icon_dpi,
             details_column_menu,
+            details_filter_menu,
+            details_filters,
+            details_filter_options,
             on_action,
         }
     }
@@ -4668,6 +4703,9 @@ impl RenderOnce for FileViewHost {
         let selection_active = file_row_selection_active(window_active, self.context_menu_pending);
         let layout = self.tokens.layout;
         let on_action = self.on_action;
+        let details_filter_menu = self.details_filter_menu;
+        let details_filters = self.details_filters;
+        let details_filter_options = self.details_filter_options;
         let background_drop = on_action.clone();
         let zoom_action = on_action.clone();
         let rename_editor = self.rename_editor;
@@ -4806,6 +4844,7 @@ impl RenderOnce for FileViewHost {
         let header_action = on_action.clone();
         let column_menu = self.details_column_menu;
         let column_menu_action = on_action.clone();
+        let filter_menu_dismiss = on_action.clone();
         let column_menu_dismiss = on_action.clone();
         let shell_icons = self.shell_icons;
         let shell_icon_dpi = self.shell_icon_dpi;
@@ -5969,11 +6008,35 @@ impl RenderOnce for FileViewHost {
                                 self.tokens,
                                 view_settings,
                                 drive_view,
+                                details_filter_menu,
+                                &details_filters,
+                                &details_filter_options,
                                 header_action,
                             )),
                     )
                 },
             );
+        let rendered = rendered.when_some(
+            details_filter_menu.zip(filter_menu_dismiss),
+            |element, (_, callback)| {
+                let right_callback = callback.clone();
+                element.child(
+                    div()
+                        .id("details-filter-menu-dismiss-layer")
+                        .absolute()
+                        .inset_0()
+                        .occlude()
+                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                            callback(&ExplorerAction::CloseDetailsFilterMenu, window, cx);
+                            cx.stop_propagation();
+                        })
+                        .on_mouse_down(MouseButton::Right, move |_, window, cx| {
+                            right_callback(&ExplorerAction::CloseDetailsFilterMenu, window, cx);
+                            cx.stop_propagation();
+                        }),
+                )
+            },
+        );
         let rendered = rendered.when_some(column_menu, |element, target| {
             element
                 .when_some(column_menu_dismiss, |element, callback| {
@@ -6554,6 +6617,12 @@ fn details_header(
     tokens: UiTokens,
     settings: explorer_model::ViewSettings,
     this_pc: bool,
+    filter_menu: Option<explorer_model::SortColumn>,
+    filters: &crate::file_view::DetailsFilters,
+    filter_options: &HashMap<
+        explorer_model::SortColumn,
+        Vec<crate::file_view::DetailsFilterOption>,
+    >,
     on_action: Option<ActionCallback>,
 ) -> gpui::AnyElement {
     if this_pc {
@@ -6630,7 +6699,17 @@ fn details_header(
             .into_iter()
             .filter(|(_, _, column)| settings.details_column_visibility & column.bit() != 0)
             .map(|(id, label, column)| {
-                details_header_column(id, label, column, settings, on_action.clone(), tokens)
+                details_header_column(
+                    id,
+                    label,
+                    column,
+                    settings,
+                    filter_menu,
+                    filters,
+                    filter_options.get(&column).cloned().unwrap_or_default(),
+                    on_action.clone(),
+                    tokens,
+                )
             }),
         )
         .into_any_element()
@@ -6824,15 +6903,109 @@ const fn column_label(column: explorer_model::SortColumn) -> &'static str {
     }
 }
 
+fn details_filter_menu(
+    tokens: UiTokens,
+    column: explorer_model::SortColumn,
+    options: Vec<crate::file_view::DetailsFilterOption>,
+    filters: &crate::file_view::DetailsFilters,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let colors = tokens.theme.colors;
+    let rows = options.into_iter().map(|option| {
+        let selected = filters.is_selected(column, &option.key);
+        let callback = on_action.clone();
+        div()
+            .id(format!("details-filter-{}", option.key))
+            .role(Role::MenuItem)
+            .aria_label(format!(
+                "{}, {}",
+                option.label,
+                if selected { "checked" } else { "unchecked" }
+            ))
+            .aria_selected(selected)
+            .h(px(tokens.layout.minimum_hit_target.value()))
+            .px(px(tokens.layout.content_spacing.value()))
+            .flex()
+            .items_center()
+            .gap(px(tokens.layout.content_spacing.value()))
+            .hover(move |style| style.bg(colors.control_hover.to_gpui()))
+            .when_some(callback, move |element, callback| {
+                let key = option.key.clone();
+                element.on_click(move |_, window, cx| {
+                    callback(
+                        &ExplorerAction::ToggleDetailsFilter {
+                            column,
+                            key: key.clone(),
+                        },
+                        window,
+                        cx,
+                    );
+                    cx.stop_propagation();
+                })
+            })
+            .child(if selected { "☑" } else { "☐" })
+            .child(option.label)
+    });
+    let clear_callback = on_action.clone();
+    deferred(
+        div()
+            .id(format!("details-filter-menu-{column:?}"))
+            .role(Role::Menu)
+            .aria_label(format!("Filter {}", column_label(column)))
+            .absolute()
+            .top(px(tokens.layout.details_header_height.value()))
+            .left_0()
+            .min_w(px(220.0))
+            .p(px(4.0))
+            .rounded(px(tokens.layout.corner_radius.value()))
+            .border(px(1.0))
+            .border_color(colors.divider.to_gpui())
+            .bg(colors.surface.to_gpui())
+            .shadow_md()
+            .occlude()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .children(rows)
+            .when(filters.is_active(column), |element| {
+                element.child(
+                    div()
+                        .id("details-filter-clear")
+                        .role(Role::MenuItem)
+                        .aria_label("Clear filter")
+                        .h(px(tokens.layout.minimum_hit_target.value()))
+                        .px(px(tokens.layout.content_spacing.value()))
+                        .flex()
+                        .items_center()
+                        .hover(move |style| style.bg(colors.control_hover.to_gpui()))
+                        .when_some(clear_callback, move |element, callback| {
+                            element.on_click(move |_, window, cx| {
+                                callback(
+                                    &ExplorerAction::ClearDetailsFilter { column },
+                                    window,
+                                    cx,
+                                );
+                                cx.stop_propagation();
+                            })
+                        })
+                        .child("清除篩選"),
+                )
+            }),
+    )
+}
+
 fn details_header_column(
     id: &'static str,
     label: &'static str,
     column: explorer_model::SortColumn,
     settings: explorer_model::ViewSettings,
+    filter_menu: Option<explorer_model::SortColumn>,
+    filters: &crate::file_view::DetailsFilters,
+    filter_options: Vec<crate::file_view::DetailsFilterOption>,
     on_action: Option<ActionCallback>,
     tokens: UiTokens,
 ) -> impl IntoElement {
     let active = settings.sort.column == column;
+    let filter_open = filter_menu == Some(column);
+    let filter_active = filters.is_active(column);
     let separator_id = match column {
         explorer_model::SortColumn::Name => "details-column-name-separator",
         explorer_model::SortColumn::DateModified => "details-column-date-modified-separator",
@@ -6858,10 +7031,12 @@ fn details_header_column(
     let decrement_callback = on_action.clone();
     let increment_callback = on_action.clone();
     let context_callback = on_action.clone();
+    let sort_callback = on_action.clone();
+    let filter_callback = on_action.clone();
     div()
         .id(id)
         .debug_selector(move || id.to_owned())
-        .role(Role::Button)
+        .role(Role::Group)
         .aria_label(if active {
             format!("{label}, sorted {indicator}")
         } else {
@@ -6877,7 +7052,6 @@ fn details_header_column(
         .flex_none()
         .flex()
         .items_center()
-        .px(px(tokens.layout.content_spacing.value() / 2.0))
         .hover(move |style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .when_some(context_callback, move |element, callback| {
@@ -6890,12 +7064,70 @@ fn details_header_column(
                 );
             })
         })
-        .when_some(on_action, move |element, callback| {
-            element.on_click(move |_, window, cx| {
-                callback(&ExplorerAction::SetSortColumn(column), window, cx);
-            })
+        .child(
+            div()
+                .id(format!("{id}-sort"))
+                .role(Role::Button)
+                .aria_label(if active {
+                    format!("{label}, sorted {indicator}")
+                } else {
+                    format!("Sort by {label}")
+                })
+                .h_full()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .px(px(tokens.layout.content_spacing.value() / 2.0))
+                .when_some(sort_callback, move |element, callback| {
+                    element.on_click(move |_, window, cx| {
+                        callback(&ExplorerAction::SetSortColumn(column), window, cx);
+                        cx.stop_propagation();
+                    })
+                })
+                .child(format!("{label}{indicator}")),
+        )
+        .child(
+            div()
+                .id(format!("{id}-filter"))
+                .role(Role::Button)
+                .aria_label(format!("Filter {label}"))
+                .aria_expanded(filter_open)
+                .h_full()
+                .w(px(tokens.layout.minimum_hit_target.value()))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(filter_active, |element| {
+                    element.text_color(tokens.theme.colors.accent.to_gpui())
+                })
+                .hover(move |style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
+                .when_some(filter_callback, move |element, callback| {
+                    element.on_click(move |_, window, cx| {
+                        callback(
+                            &ExplorerAction::OpenDetailsFilterMenu { column },
+                            window,
+                            cx,
+                        );
+                        cx.stop_propagation();
+                    })
+                })
+                .child(chrome_icon(
+                    format!("{id}-filter-chevron"),
+                    ExplorerIcon::ChevronDown,
+                    tokens,
+                )),
+        )
+        .when(filter_open, |element| {
+            element.child(details_filter_menu(
+                tokens,
+                column,
+                filter_options,
+                filters,
+                on_action.clone(),
+            ))
         })
-        .child(format!("{label}{indicator}"))
         .child(
             div()
                 .id(separator_id)
@@ -7769,6 +8001,7 @@ fn editable_focus_field(
         .multiline(false)
         .placeholder(visible_text)
         .caret_blink_interval_500ms()
+        .caret_height(px(typography.size.value()))
         .w_full()
         .h(px(selection_metrics.line_height))
         .flex_none()
@@ -9444,6 +9677,11 @@ mod tests {
         assert!(super::M1_ADDRESS_INPUT_MODE.accepts_ime());
         assert!(super::M1_SEARCH_INPUT_MODE.accepts_ime());
         assert!(!super::PlaceholderInputMode::FocusOnly.accepts_ime());
+        let production = include_str!("chrome.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source precedes tests");
+        assert!(production.contains(".caret_height(px(typography.size.value()))"));
     }
 
     #[test]
@@ -9543,6 +9781,23 @@ mod tests {
         assert!(production.contains(".debug_selector(|| \"view-menu\".to_owned())"));
         assert!(production.contains(".top(px(layout.minimum_hit_target.value()))"));
         assert!(production.contains(".right_0()"));
+        for menu_fn in [
+            "fn command_extensions_menu(",
+            "fn command_more_menu_v2(",
+            "fn sort_menu(",
+            "fn view_menu(",
+        ] {
+            let local = production
+                .split(menu_fn)
+                .nth(1)
+                .unwrap_or_else(|| panic!("missing popup builder: {menu_fn}"))
+                .split("\nfn ")
+                .next()
+                .expect("popup builder boundary");
+            assert!(local.contains(".left_0()"), "{menu_fn} left anchor");
+            assert!(local.contains(".right_0()"), "{menu_fn} right anchor");
+            assert!(local.contains(".justify_center()"), "{menu_fn} centered");
+        }
         assert!(!production.contains("px(-layout.minimum_hit_target.value() * 6.0)"));
         assert!(!production.contains("px(-layout.minimum_hit_target.value() * 4.0)"));
         for action in [

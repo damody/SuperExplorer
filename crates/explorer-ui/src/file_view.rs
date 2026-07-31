@@ -1,10 +1,153 @@
 //! Cached directory presentation and deterministic viewport realization geometry.
 
-use std::{cmp::Ordering, ops::Range, sync::Arc};
+use std::{
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+    ops::Range,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use explorer_model::{DirectorySnapshot, FileEntry, SortColumn, SortDescriptor, SortDirection};
 
 pub const MAX_STANDARD_REALIZED_ITEMS: usize = 250;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DetailsFilterOption {
+    pub key: String,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DetailsFilters {
+    selected: HashMap<SortColumn, HashSet<String>>,
+}
+
+impl DetailsFilters {
+    pub fn is_active(&self, column: SortColumn) -> bool {
+        self.selected
+            .get(&column)
+            .is_some_and(|values| !values.is_empty())
+    }
+
+    pub fn is_selected(&self, column: SortColumn, key: &str) -> bool {
+        self.selected
+            .get(&column)
+            .is_some_and(|values| values.contains(key))
+    }
+
+    pub fn toggle(&mut self, column: SortColumn, key: String) {
+        let values = self.selected.entry(column).or_default();
+        if !values.insert(key.clone()) {
+            values.remove(&key);
+        }
+        if values.is_empty() {
+            self.selected.remove(&column);
+        }
+    }
+
+    pub fn clear(&mut self, column: SortColumn) {
+        self.selected.remove(&column);
+    }
+
+    pub fn clear_all(&mut self) {
+        self.selected.clear();
+    }
+
+    pub fn options(snapshot: &DirectorySnapshot, column: SortColumn) -> Vec<DetailsFilterOption> {
+        let mut options = snapshot
+            .entries()
+            .iter()
+            .map(|entry| filter_value(entry, column))
+            .collect::<Vec<_>>();
+        options.sort_by(|left, right| left.1.cmp(&right.1));
+        options.dedup_by(|left, right| left.0 == right.0);
+        options
+            .into_iter()
+            .map(|(key, label)| DetailsFilterOption { key, label })
+            .collect()
+    }
+
+    fn matches(&self, entry: &FileEntry) -> bool {
+        self.selected.iter().all(|(column, selected)| {
+            let (key, _) = filter_value(entry, *column);
+            selected.contains(&key)
+        })
+    }
+}
+
+fn filter_value(entry: &FileEntry, column: SortColumn) -> (String, String) {
+    match column {
+        SortColumn::Name => match entry
+            .display_name
+            .chars()
+            .next()
+            .map(|c| c.to_ascii_uppercase())
+        {
+            Some('A'..='H') => ("name:a-h".into(), "A–H".into()),
+            Some('I'..='P') => ("name:i-p".into(), "I–P".into()),
+            Some('Q'..='Z') => ("name:q-z".into(), "Q–Z".into()),
+            _ => ("name:other".into(), "其他".into()),
+        },
+        SortColumn::Size => match entry.metadata.size_bytes {
+            Some(bytes) if bytes <= 16 * 1024 => ("size:tiny".into(), "極小 (0–16 KB)".into()),
+            Some(bytes) if bytes <= 1024 * 1024 => ("size:small".into(), "小 (16 KB–1 MB)".into()),
+            Some(bytes) if bytes <= 128 * 1024 * 1024 => {
+                ("size:medium".into(), "中 (1–128 MB)".into())
+            }
+            Some(_) => ("size:large".into(), "大 (>128 MB)".into()),
+            None => ("size:none".into(), "未指定".into()),
+        },
+        SortColumn::DateModified => date_filter_value(entry.metadata.modified_sort_key),
+        SortColumn::DateCreated => date_filter_value(entry.metadata.created_sort_key),
+        SortColumn::Type => text_filter_value(
+            entry
+                .metadata
+                .type_display
+                .as_deref()
+                .or(if entry.is_container {
+                    Some("檔案資料夾")
+                } else {
+                    None
+                }),
+            "type",
+        ),
+        SortColumn::Authors => {
+            text_filter_value(entry.metadata.authors_display.as_deref(), "authors")
+        }
+        SortColumn::Tags => text_filter_value(entry.metadata.tags_display.as_deref(), "tags"),
+        SortColumn::Title => text_filter_value(entry.metadata.title_display.as_deref(), "title"),
+    }
+}
+
+fn text_filter_value(value: Option<&str>, prefix: &str) -> (String, String) {
+    let label = value.filter(|value| !value.is_empty()).unwrap_or("未指定");
+    (
+        format!("{prefix}:{}", label.to_lowercase()),
+        label.to_owned(),
+    )
+}
+
+fn date_filter_value(filetime: Option<u64>) -> (String, String) {
+    const WINDOWS_TO_UNIX_SECONDS: u64 = 11_644_473_600;
+    const TICKS_PER_SECOND: u64 = 10_000_000;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let Some(seconds) = filetime
+        .and_then(|value| value.checked_div(TICKS_PER_SECOND))
+        .and_then(|value| value.checked_sub(WINDOWS_TO_UNIX_SECONDS))
+    else {
+        return ("date:none".into(), "未指定".into());
+    };
+    match now.saturating_sub(seconds) / 86_400 {
+        0 => ("date:today".into(), "今天".into()),
+        1 => ("date:yesterday".into(), "昨天".into()),
+        2..=6 => ("date:this-week".into(), "這星期初".into()),
+        _ => ("date:earlier".into(), "較早".into()),
+    }
+}
 
 /// Immutable sorted/filtered indices into shared directory entry storage.
 #[derive(Clone, Debug)]
@@ -12,15 +155,28 @@ pub struct DirectoryPresentation {
     revision: u64,
     hidden_items: bool,
     sort: SortDescriptor,
+    filters: DetailsFilters,
     entries: Arc<Vec<FileEntry>>,
     ordered_indices: Arc<Vec<usize>>,
 }
 
 impl DirectoryPresentation {
     pub fn build(snapshot: &DirectorySnapshot, hidden_items: bool, sort: SortDescriptor) -> Self {
+        Self::build_filtered(snapshot, hidden_items, sort, DetailsFilters::default())
+    }
+
+    pub fn build_filtered(
+        snapshot: &DirectorySnapshot,
+        hidden_items: bool,
+        sort: SortDescriptor,
+        filters: DetailsFilters,
+    ) -> Self {
         let entries = snapshot.shared_entries();
         let mut ordered_indices = (0..entries.len())
             .filter(|index| {
+                if !filters.matches(&entries[*index]) {
+                    return false;
+                }
                 let metadata = &entries[*index].metadata;
                 // Windows reports drive roots with HIDDEN/SYSTEM bits (for example 0x16 or
                 // 0x36). Those bits describe the root object, not a user-hidden child. This PC
@@ -40,6 +196,7 @@ impl DirectoryPresentation {
             revision: snapshot.revision(),
             hidden_items,
             sort,
+            filters,
             entries,
             ordered_indices: Arc::new(ordered_indices),
         }
@@ -77,10 +234,12 @@ impl DirectoryPresentation {
         snapshot: &DirectorySnapshot,
         hidden_items: bool,
         sort: SortDescriptor,
+        filters: &DetailsFilters,
     ) -> bool {
         self.revision == snapshot.revision()
             && self.hidden_items == hidden_items
             && self.sort == sort
+            && &self.filters == filters
             && Arc::ptr_eq(&self.entries, &snapshot.shared_entries())
     }
 }
@@ -99,14 +258,25 @@ impl DirectoryPresentationCache {
         hidden_items: bool,
         sort: SortDescriptor,
     ) -> DirectoryPresentation {
+        self.resolve_filtered(snapshot, hidden_items, sort, DetailsFilters::default())
+    }
+
+    pub fn resolve_filtered(
+        &mut self,
+        snapshot: &DirectorySnapshot,
+        hidden_items: bool,
+        sort: SortDescriptor,
+        filters: DetailsFilters,
+    ) -> DirectoryPresentation {
         if let Some(current) = self
             .current
             .as_ref()
-            .filter(|current| current.matches(snapshot, hidden_items, sort))
+            .filter(|current| current.matches(snapshot, hidden_items, sort, &filters))
         {
             return current.clone();
         }
-        let presentation = DirectoryPresentation::build(snapshot, hidden_items, sort);
+        let presentation =
+            DirectoryPresentation::build_filtered(snapshot, hidden_items, sort, filters);
         self.current = Some(presentation.clone());
         self.rebuilds = self.rebuilds.saturating_add(1);
         presentation
@@ -418,6 +588,59 @@ mod tests {
         );
         assert_eq!(cache.rebuilds(), 3);
         assert_eq!(descending.entry(0).unwrap().1.display_name, "Alpha.txt");
+    }
+
+    #[test]
+    fn details_filters_group_values_and_apply_before_sorting() {
+        let mut alpha = entry(1, "Alpha.txt");
+        alpha.metadata.size_bytes = Some(8 * 1024);
+        alpha.metadata.type_display = Some("Text Document".into());
+        let mut zebra = entry(2, "Zebra.log");
+        zebra.metadata.size_bytes = Some(2 * 1024 * 1024);
+        zebra.metadata.type_display = Some("Log File".into());
+        let mut snapshot = DirectorySnapshot::default();
+        snapshot.upsert(zebra);
+        snapshot.upsert(alpha);
+        let sort = SortDescriptor {
+            column: SortColumn::Name,
+            direction: SortDirection::Ascending,
+        };
+
+        let mut filters = DetailsFilters::default();
+        filters.toggle(SortColumn::Name, "name:a-h".into());
+        filters.toggle(SortColumn::Size, "size:tiny".into());
+        let presentation = DirectoryPresentation::build_filtered(&snapshot, false, sort, filters);
+        assert_eq!(presentation.len(), 1);
+        assert_eq!(presentation.entry(0).unwrap().1.display_name, "Alpha.txt");
+
+        let name_options = DetailsFilters::options(&snapshot, SortColumn::Name);
+        assert!(name_options.iter().any(|option| option.label == "A–H"));
+        assert!(name_options.iter().any(|option| option.label == "Q–Z"));
+    }
+
+    #[test]
+    fn changing_details_filters_invalidates_presentation_cache() {
+        let mut snapshot = DirectorySnapshot::default();
+        snapshot.upsert(entry(1, "Alpha.txt"));
+        snapshot.upsert(entry(2, "Zebra.txt"));
+        let sort = SortDescriptor {
+            column: SortColumn::Name,
+            direction: SortDirection::Ascending,
+        };
+        let mut cache = DirectoryPresentationCache::default();
+        let all = cache.resolve_filtered(&snapshot, false, sort, DetailsFilters::default());
+        assert_eq!(all.len(), 2);
+        let mut filters = DetailsFilters::default();
+        filters.toggle(SortColumn::Name, "name:q-z".into());
+        let filtered = cache.resolve_filtered(&snapshot, false, sort, filters.clone());
+        let reused = cache.resolve_filtered(&snapshot, false, sort, filters);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered.entry(0).unwrap().1.display_name, "Zebra.txt");
+        assert_eq!(cache.rebuilds(), 2);
+        assert!(Arc::ptr_eq(
+            filtered.ordered_indices(),
+            reused.ordered_indices()
+        ));
     }
 
     #[test]

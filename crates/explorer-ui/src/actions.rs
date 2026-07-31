@@ -371,6 +371,17 @@ pub enum ExplorerAction {
         column: explorer_model::SortColumn,
     },
     CloseDetailsColumnMenu,
+    OpenDetailsFilterMenu {
+        column: explorer_model::SortColumn,
+    },
+    CloseDetailsFilterMenu,
+    ToggleDetailsFilter {
+        column: explorer_model::SortColumn,
+        key: String,
+    },
+    ClearDetailsFilter {
+        column: explorer_model::SortColumn,
+    },
     ToggleDetailsColumn(explorer_model::SortColumn),
     AutoSizeAllDetailsColumns,
     BeginDetailsColumnResize {
@@ -576,6 +587,10 @@ impl ExplorerAction {
             Self::AutoSizeDetailsColumn { .. } => "AutoSizeDetailsColumn",
             Self::OpenDetailsColumnMenu { .. } => "OpenDetailsColumnMenu",
             Self::CloseDetailsColumnMenu => "CloseDetailsColumnMenu",
+            Self::OpenDetailsFilterMenu { .. } => "OpenDetailsFilterMenu",
+            Self::CloseDetailsFilterMenu => "CloseDetailsFilterMenu",
+            Self::ToggleDetailsFilter { .. } => "ToggleDetailsFilter",
+            Self::ClearDetailsFilter { .. } => "ClearDetailsFilter",
             Self::ToggleDetailsColumn(_) => "ToggleDetailsColumn",
             Self::AutoSizeAllDetailsColumns => "AutoSizeAllDetailsColumns",
             Self::BeginDetailsColumnResize { .. } => "BeginDetailsColumnResize",
@@ -904,6 +919,19 @@ pub fn dispatch_action(
             | ExplorerAction::ToggleViewShowSubmenu
     );
     let preserve_extensions_menu = matches!(&action, ExplorerAction::ToggleExtensionsMenu);
+    let preserve_details_column_menu = matches!(
+        &action,
+        ExplorerAction::OpenDetailsColumnMenu { .. }
+            | ExplorerAction::ToggleDetailsColumn(_)
+            | ExplorerAction::AutoSizeDetailsColumn { .. }
+            | ExplorerAction::AutoSizeAllDetailsColumns
+    );
+    let preserve_details_filter_menu = matches!(
+        &action,
+        ExplorerAction::OpenDetailsFilterMenu { .. }
+            | ExplorerAction::ToggleDetailsFilter { .. }
+            | ExplorerAction::ClearDetailsFilter { .. }
+    );
     let preserve_navigation_history = matches!(
         &action,
         ExplorerAction::OpenNavigationHistory { .. }
@@ -937,6 +965,12 @@ pub fn dispatch_action(
         }
         if !preserve_extensions_menu {
             state.close_extensions_menu();
+        }
+        if !preserve_details_column_menu {
+            state.close_details_column_menu();
+        }
+        if !preserve_details_filter_menu {
+            state.close_details_filter_menu();
         }
         if !preserve_navigation_history {
             state.close_navigation_history_menu();
@@ -1162,6 +1196,10 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::AutoSizeDetailsColumn { .. }
         | ExplorerAction::OpenDetailsColumnMenu { .. }
         | ExplorerAction::CloseDetailsColumnMenu
+        | ExplorerAction::OpenDetailsFilterMenu { .. }
+        | ExplorerAction::CloseDetailsFilterMenu
+        | ExplorerAction::ToggleDetailsFilter { .. }
+        | ExplorerAction::ClearDetailsFilter { .. }
         | ExplorerAction::ToggleDetailsColumn(_)
         | ExplorerAction::AutoSizeAllDetailsColumns
         | ExplorerAction::BeginDetailsColumnResize { .. }
@@ -1791,6 +1829,22 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         }
         ExplorerAction::CloseDetailsColumnMenu => {
             state.close_details_column_menu();
+            FocusSurface::FileView
+        }
+        ExplorerAction::OpenDetailsFilterMenu { column } => {
+            state.open_details_filter_menu(column);
+            FocusSurface::FileView
+        }
+        ExplorerAction::CloseDetailsFilterMenu => {
+            state.close_details_filter_menu();
+            FocusSurface::FileView
+        }
+        ExplorerAction::ToggleDetailsFilter { column, key } => {
+            state.toggle_details_filter(column, key);
+            FocusSurface::FileView
+        }
+        ExplorerAction::ClearDetailsFilter { column } => {
+            state.clear_details_filter(column);
             FocusSurface::FileView
         }
         ExplorerAction::ToggleDetailsColumn(column) => {
