@@ -846,6 +846,21 @@
       "required_artifacts": ["report.json", "fixture-manifest.json", "before.json", "after.json", "mutation-safety.png"]
     },
     {
+      "id": "same-name-folder-conflict-prompt",
+      "description": "Copy a folder onto a same-named destination folder, require the native Explorer conflict chooser, and prove Cancel preserves both destination-only and conflicting content.",
+      "suites": ["full", "interop", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_folder_conflict_prompt.ps1", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
+      "timeout_seconds": 120,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "clipboard", "ole", "explorer"],
+      "required_artifacts": ["report.json", "folder-conflict-prompt.png"]
+    },
+    {
       "id": "shift-delete-headful",
       "description": "Verify Shift+Delete opens an accessible modal with neutral-gray Cancel/Delete focus, Tab+Enter and pointer Cancel preserve the file, focused Enter removes it exactly once, and the native request never enables recycle or undo flags.",
       "suites": ["quick", "full", "interop"],
