@@ -8002,9 +8002,9 @@ fn editable_focus_field(
         .placeholder(visible_text)
         .caret_blink_interval_500ms()
         .caret_height(px(typography.size.value()))
-        .caret_top_offset(px(
-            (typography.baseline.value() - typography.size.value()).max(0.0)
-        ))
+        .caret_top_offset(px((typography.line_height.value()
+            - typography.size.value())
+        .max(0.0)))
         .w_full()
         .h(px(selection_metrics.line_height))
         .flex_none()

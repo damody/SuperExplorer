@@ -240,6 +240,8 @@ function Measure-EditorCaretGeometry(
     $bestHeight = 0
     $bestTop = 0
     $controlHeight = 0
+    $glyphTop = [int]::MaxValue
+    $glyphBottom = [int]::MinValue
     foreach ($attempt in 1..5) {
         Save-UitestScreenshot -Root $context.Root -Path $CapturePath
         $bitmap = [Drawing.Bitmap]::FromFile($CapturePath)
@@ -271,6 +273,19 @@ function Measure-EditorCaretGeometry(
                     }
                 }
             }
+            for ($y = $top + 3; $y -le $bottom - 3; $y++) {
+                $darkPixels = 0
+                for ($x = $left + 8; $x -le $right - 8; $x++) {
+                    $pixel = $bitmap.GetPixel($x, $y)
+                    if ($pixel.R -lt 80 -and $pixel.G -lt 80 -and $pixel.B -lt 80) {
+                        $darkPixels++
+                    }
+                }
+                if ($darkPixels -ge 3) {
+                    $glyphTop = [Math]::Min($glyphTop, $y)
+                    $glyphBottom = [Math]::Max($glyphBottom, $y)
+                }
+            }
         } finally {
             $bitmap.Dispose()
         }
@@ -278,15 +293,30 @@ function Measure-EditorCaretGeometry(
         Start-Sleep -Milliseconds 120
     }
     if ($bestHeight -lt 6) { throw "address caret was not measurable: height=$bestHeight" }
+    if ($glyphTop -eq [int]::MaxValue -or $glyphBottom -le $glyphTop) {
+        throw 'address glyph bounds were not measurable'
+    }
     $maximumHeight = [int][Math]::Ceiling($controlHeight * 0.48)
     if ($bestHeight -gt $maximumHeight) {
         throw "address caret still uses the line box height: caret=$bestHeight control=$controlHeight maximum=$maximumHeight"
+    }
+    $caretBottom = $bestTop + $bestHeight - 1
+    $topDifference = [Math]::Abs($bestTop - $glyphTop)
+    $bottomDifference = [Math]::Abs($caretBottom - $glyphBottom)
+    if ($topDifference -gt 3 -or $bottomDifference -gt 4) {
+        throw "address caret is not aligned to the rendered glyph bounds: caret=$bestTop..$caretBottom glyph=$glyphTop..$glyphBottom topDifference=$topDifference bottomDifference=$bottomDifference"
     }
     [pscustomobject][ordered]@{
         capture = [IO.Path]::GetFileName($CapturePath)
         caret_height = $bestHeight
         control_height = $controlHeight
         maximum_allowed_height = $maximumHeight
+        caret_top = $bestTop
+        caret_bottom = $caretBottom
+        glyph_top = $glyphTop
+        glyph_bottom = $glyphBottom
+        top_difference = $topDifference
+        bottom_difference = $bottomDifference
     }
 }
 
