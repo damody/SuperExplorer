@@ -16,6 +16,7 @@
 
 pub mod application;
 pub mod automation_service;
+pub mod branding;
 mod brokered_service;
 mod pointer_capture;
 pub mod session_lifecycle;

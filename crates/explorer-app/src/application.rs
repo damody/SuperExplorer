@@ -203,6 +203,8 @@ impl ApplicationLifecycle {
             .and_then(|value| value.parse::<u64>().ok())
             .map(Duration::from_millis);
         let visual_fixture = VisualFixtureConfig::from_environment()?;
+        let show_splash =
+            crate::branding::should_show_splash(visual_fixture.is_some(), auto_close.is_some());
         let initial_location = configured_initial_location()?;
         let (restored_tabs, restored_placement) = if visual_fixture.is_none() {
             load_session_restore(&diagnostics, initial_location.clone())
@@ -219,7 +221,7 @@ impl ApplicationLifecycle {
         let platform = gpui_windows::WindowsPlatform::new(false)
             .context("failed to initialize GPUI-CE Windows platform")?;
         gpui::Application::with_platform(Rc::new(platform))
-            .with_assets(explorer_ui::ExplorerAssets)
+            .with_assets(crate::branding::AppAssets)
             .run(move |cx| {
                 if visual_fixture.is_some() {
                     cx.set_global(explorer_ui::diagnostics::RegionDiagnosticsRecorder::default());
@@ -269,7 +271,7 @@ impl ApplicationLifecycle {
                 let quick_access_for_window = quick_access.clone();
                 let fixture_diagnostics = diagnostics.clone();
                 let tokens = fixture_tokens(fixture_for_window.as_ref());
-                match cx.open_window(window_options, move |window, cx| {
+                let main_window = match cx.open_window(window_options, move |window, cx| {
                     let drag_threshold = system_drag_threshold(window);
                     let visual_state = fixture_for_window
                         .as_ref()
@@ -300,8 +302,9 @@ impl ApplicationLifecycle {
                         )
                     })
                 }) {
-                    Ok(_) => {
+                    Ok(handle) => {
                         let _ = diagnostics.record_event("window_ready", &[]);
+                        handle
                     }
                     Err(error) => {
                         let mut launch_error = closure_error
@@ -311,6 +314,17 @@ impl ApplicationLifecycle {
                         cx.quit();
                         return;
                     }
+                };
+
+                if show_splash && let Err(error) = crate::branding::open_splash(cx, main_window) {
+                    tracing::warn!(%error, "startup splash could not be created");
+                    diagnostics.record_error(
+                        ErrorSeverity::Warning,
+                        "application",
+                        "open_startup_splash",
+                        error.as_ref(),
+                        Some(file!()),
+                    );
                 }
 
                 if let Some(delay) = auto_close {
