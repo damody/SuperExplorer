@@ -7,5 +7,6 @@
 /.cache/
 /.github/workflows/*
 !/.github/workflows/sdk-offline-windows.yml
+!/.github/workflows/update-gpui-snapshot.yml
 __pycache__/
 *.py[cod]

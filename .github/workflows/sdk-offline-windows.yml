@@ -1,13 +1,27 @@
 name: sdk-offline-windows
 on:
   workflow_dispatch:
-  push:
-    paths: ['sdk/**', '.github/workflows/sdk-offline-windows.yml']
+permissions:
+  contents: read
 jobs:
   offline:
+    environment: sdk-offline-release
     runs-on: [self-hosted, windows, x64, hyperv-offline]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Run runner-owned offline guest gate
         shell: powershell
-        run: '& C:\ProgramData\SuperExplorerCI\Invoke-OfflineSdkGuest.ps1 -RepositoryRoot "$env:GITHUB_WORKSPACE" -AttestationPath "$env:GITHUB_WORKSPACE\sdk\offline-attestation.json"'
+        run: '& C:\ProgramData\SuperExplorerCI\Invoke-OfflineSdkGuest.ps1 -RepositoryRoot "$env:GITHUB_WORKSPACE" -AttestationPath "$env:RUNNER_TEMP\offline-attestation.json"'
+      - name: Validate offline attestation
+        shell: powershell
+        run: |
+          $attestation = Get-Content "$env:RUNNER_TEMP\offline-attestation.json" -Raw | ConvertFrom-Json
+          $expected = (Get-FileHash "$env:GITHUB_WORKSPACE\sdk\bundle-manifest.json" -Algorithm SHA256).Hash.ToLower()
+          if ($attestation.schema_version -ne 1 -or $attestation.bundle_sha256 -ne $expected -or
+              $attestation.network.before_nics -ne 0 -or $attestation.network.after_nics -ne 0 -or
+              @($attestation.network.routes).Count -ne 0 -or $attestation.egress_attempts.direct -ne 'blocked' -or
+              $attestation.egress_attempts.child -ne 'blocked') { throw 'Offline attestation validation failed.' }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sdk-offline-attestation
+          path: ${{ runner.temp }}\offline-attestation.json
