@@ -338,6 +338,8 @@ pub struct AppViewState {
     view_show_submenu_open: bool,
     details_column_resize: Option<DetailsColumnResizeSession>,
     details_column_menu: Option<explorer_model::SortColumn>,
+    details_filter_menu: Option<explorer_model::SortColumn>,
+    details_filters: HashMap<TabId, crate::file_view::DetailsFilters>,
     side_pane_resize: Option<SidePaneResizeSession>,
     scrollbar_drag: Option<ScrollbarDragSession>,
     marquee: Option<MarqueeSelectionSession>,
@@ -481,6 +483,11 @@ impl AppViewState {
             view_show_submenu_open: false,
             details_column_resize: None,
             details_column_menu: None,
+            details_filter_menu: None,
+            details_filters: HashMap::from([(
+                initial_tab_id,
+                crate::file_view::DetailsFilters::default(),
+            )]),
             side_pane_resize: None,
             scrollbar_drag: None,
             marquee: None,
@@ -1244,6 +1251,8 @@ impl AppViewState {
     pub(crate) fn toggle_sort_menu(&mut self) {
         self.sort_menu_open = !self.sort_menu_open;
         if self.sort_menu_open {
+            self.details_column_menu = None;
+            self.details_filter_menu = None;
             self.sort_menu_index = 0;
             self.close_view_menu();
             self.more_menu_open = false;
@@ -1255,6 +1264,8 @@ impl AppViewState {
     pub(crate) fn toggle_new_menu(&mut self) {
         self.new_menu_open = !self.new_menu_open;
         if self.new_menu_open {
+            self.details_column_menu = None;
+            self.details_filter_menu = None;
             self.new_menu_index = 0;
             self.sort_menu_open = false;
             self.close_view_menu();
@@ -1294,6 +1305,8 @@ impl AppViewState {
     pub(crate) fn toggle_more_menu(&mut self) {
         self.more_menu_open = !self.more_menu_open;
         if self.more_menu_open {
+            self.details_column_menu = None;
+            self.details_filter_menu = None;
             self.more_menu_index = 0;
             self.sort_menu_open = false;
             self.close_view_menu();
@@ -1309,6 +1322,8 @@ impl AppViewState {
     pub(crate) fn toggle_extensions_menu(&mut self) {
         self.extensions_menu_open = !self.extensions_menu_open;
         if self.extensions_menu_open {
+            self.details_column_menu = None;
+            self.details_filter_menu = None;
             self.sort_menu_open = false;
             self.more_menu_open = false;
             self.close_view_menu();
@@ -1413,6 +1428,8 @@ impl AppViewState {
     pub(crate) fn toggle_view_menu(&mut self) {
         self.view_menu_open = !self.view_menu_open;
         if self.view_menu_open {
+            self.details_column_menu = None;
+            self.details_filter_menu = None;
             self.view_menu_index = 0;
             self.sort_menu_open = false;
             self.more_menu_open = false;
@@ -1575,6 +1592,7 @@ impl AppViewState {
     }
     pub fn open_details_column_menu(&mut self, column: explorer_model::SortColumn) {
         self.details_column_menu = Some(column);
+        self.details_filter_menu = None;
         self.sort_menu_open = false;
         self.view_menu_open = false;
         self.more_menu_open = false;
@@ -1583,6 +1601,75 @@ impl AppViewState {
     }
     pub fn close_details_column_menu(&mut self) {
         self.details_column_menu = None;
+    }
+
+    pub const fn details_filter_menu(&self) -> Option<explorer_model::SortColumn> {
+        self.details_filter_menu
+    }
+
+    pub fn open_details_filter_menu(&mut self, column: explorer_model::SortColumn) {
+        self.details_filter_menu = if self.details_filter_menu == Some(column) {
+            None
+        } else {
+            Some(column)
+        };
+        if self.details_filter_menu.is_some() {
+            self.details_column_menu = None;
+            self.sort_menu_open = false;
+            self.close_view_menu();
+            self.more_menu_open = false;
+            self.extensions_menu_open = false;
+            self.new_menu_open = false;
+        }
+    }
+
+    pub fn close_details_filter_menu(&mut self) {
+        self.details_filter_menu = None;
+    }
+
+    pub fn details_filter_options(
+        &self,
+        column: explorer_model::SortColumn,
+    ) -> Vec<crate::file_view::DetailsFilterOption> {
+        self.tabs
+            .active_tab()
+            .visible_snapshot()
+            .map_or_else(Vec::new, |snapshot| {
+                crate::file_view::DetailsFilters::options(snapshot, column)
+            })
+    }
+
+    pub fn details_filter_selected(&self, column: explorer_model::SortColumn, key: &str) -> bool {
+        self.details_filters
+            .get(&self.tabs.active_tab_id())
+            .is_some_and(|filters| filters.is_selected(column, key))
+    }
+
+    pub fn details_filter_active(&self, column: explorer_model::SortColumn) -> bool {
+        self.details_filters
+            .get(&self.tabs.active_tab_id())
+            .is_some_and(|filters| filters.is_active(column))
+    }
+
+    pub fn active_details_filters(&self) -> crate::file_view::DetailsFilters {
+        self.details_filters
+            .get(&self.tabs.active_tab_id())
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn toggle_details_filter(&mut self, column: explorer_model::SortColumn, key: String) {
+        self.details_filters
+            .entry(self.tabs.active_tab_id())
+            .or_default()
+            .toggle(column, key);
+    }
+
+    pub fn clear_details_filter(&mut self, column: explorer_model::SortColumn) {
+        self.details_filters
+            .entry(self.tabs.active_tab_id())
+            .or_default()
+            .clear(column);
     }
     pub fn toggle_details_column(&mut self, column: explorer_model::SortColumn) {
         if column == explorer_model::SortColumn::Name {
@@ -2689,7 +2776,18 @@ impl AppViewState {
                 WindowEventOutcome::IgnoredStale
             };
         }
-        self.tabs.apply_event(event)
+        let resolved_tab = match &event {
+            ExplorerEvent::LocationResolved { context, .. } => Some(context.tab_id),
+            _ => None,
+        };
+        let outcome = self.tabs.apply_event(event);
+        if outcome == WindowEventOutcome::Applied {
+            if let Some(tab_id) = resolved_tab {
+                self.details_filters.entry(tab_id).or_default().clear_all();
+                self.details_filter_menu = None;
+            }
+        }
+        outcome
     }
 
     pub(crate) fn begin_file_operation(
@@ -2996,10 +3094,14 @@ impl AppViewState {
             self.presentation_cache
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .resolve(
+                .resolve_filtered(
                     snapshot,
                     tab.view.settings.hidden_items,
                     tab.view.settings.sort,
+                    self.details_filters
+                        .get(&self.tabs.active_tab_id())
+                        .cloned()
+                        .unwrap_or_default(),
                 ),
         )
     }
@@ -3930,6 +4032,9 @@ impl AppViewState {
             .insert(self.tabs.active_tab_id(), self.focus.current());
         let id = self.tabs.new_tab();
         self.navigation_trees.entry(id).or_default();
+        self.details_filters.entry(id).or_default();
+        self.details_column_menu = None;
+        self.details_filter_menu = None;
         self.pending_new_tab_command = self.begin_active_location_load();
         self.tab_focus.insert(id, FocusSurface::TabStrip);
         self.focus.restore_context(FocusSurface::TabStrip);
@@ -3951,6 +4056,8 @@ impl AppViewState {
         self.clear_external_drag();
         self.close_navigation_history_menu();
         self.close_address_menu();
+        self.details_column_menu = None;
+        self.details_filter_menu = None;
         self.tab_focus
             .insert(self.tabs.active_tab_id(), self.focus.current());
         if !self.tabs.activate(id) {
@@ -3982,6 +4089,9 @@ impl AppViewState {
         if outcome == TabCloseOutcome::Closed {
             self.tab_focus.remove(&id);
             self.navigation_focus.remove(&id);
+            self.details_filters.remove(&id);
+            self.details_column_menu = None;
+            self.details_filter_menu = None;
             if let Some(tree) = self.navigation_trees.remove(&id) {
                 for node in tree.nodes.into_values() {
                     if let Some(request) = node.request {
@@ -6419,6 +6529,25 @@ mod tests {
         assert!(state.folder_options().is_none());
         assert!(state.view_settings().hidden_items);
         assert!(!state.view_settings().file_name_extensions);
+    }
+
+    #[test]
+    fn command_and_details_header_menus_are_mutually_exclusive() {
+        let mut state = AppViewState::default();
+        state.open_details_column_menu(explorer_model::SortColumn::Name);
+        state.toggle_view_menu();
+        assert!(state.details_column_menu().is_none());
+        assert!(state.view_menu_open());
+
+        state.open_details_filter_menu(explorer_model::SortColumn::Size);
+        assert!(!state.view_menu_open());
+        assert_eq!(
+            state.details_filter_menu(),
+            Some(explorer_model::SortColumn::Size)
+        );
+        state.toggle_sort_menu();
+        assert!(state.details_filter_menu().is_none());
+        assert!(state.sort_menu_open());
     }
 
     #[test]

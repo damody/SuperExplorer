@@ -55,6 +55,25 @@ function Find-Element([Windows.Automation.AutomationElement]$Root, [Windows.Auto
     throw "UIA element not found: $Name"
 }
 
+function Find-ById([Windows.Automation.AutomationElement]$Root, [string]$Id) {
+    return $Root.FindFirst([Windows.Automation.TreeScope]::Descendants,
+        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::AutomationIdProperty, $Id))
+}
+
+function Invoke-Element([Windows.Automation.AutomationElement]$Element) {
+    $pattern = $null
+    if (-not $Element.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
+        $bounds = $Element.Current.BoundingRectangle
+        [void][DetailsHeaderScroll.Native]::SetCursorPos([int](($bounds.Left + $bounds.Right) / 2), [int](($bounds.Top + $bounds.Bottom) / 2))
+        [DetailsHeaderScroll.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        [DetailsHeaderScroll.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 200
+        return
+    }
+    ([Windows.Automation.InvokePattern]$pattern).Invoke()
+    Start-Sleep -Milliseconds 200
+}
+
 function Read-Scroll([Windows.Automation.AutomationElement]$Root) {
     $scrollbar = Find-Element $Root ([Windows.Automation.ControlType]::ScrollBar) 'File view vertical scroll bar'
     $pattern = $null
@@ -99,6 +118,23 @@ try {
     $root = [Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle)
     $nameLabel = -join ([char]0x540D, [char]0x7A31)
     $header = Find-Element $root ([Windows.Automation.ControlType]::Button) $nameLabel
+    $filterButtons = @($root.FindAll([Windows.Automation.TreeScope]::Descendants,
+        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Button)) |
+        Where-Object { $_.Current.Name -like 'Filter *' })
+    if ($filterButtons.Count -lt 4) { throw "expected filter buttons on every visible details column, found $($filterButtons.Count)" }
+    $nameFilter = $filterButtons | Sort-Object { $_.Current.BoundingRectangle.Left } | Select-Object -First 1
+    if ($null -eq $nameFilter) { throw 'Name filter button not found' }
+    Invoke-Element $nameFilter
+    $filterMenu = Find-Element $root ([Windows.Automation.ControlType]::Menu) 'Filter Name'
+    $nameGroup = $filterMenu.FindAll([Windows.Automation.TreeScope]::Descendants,
+        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::MenuItem)) | Select-Object -First 1
+    if ($null -eq $nameGroup) { throw 'Name filter did not expose grouped options' }
+    Invoke-Element $nameGroup
+    Invoke-Element $nameFilter
+    $filterMenu = Find-Element $root ([Windows.Automation.ControlType]::Menu) 'Filter Name'
+    $clearFilter = Find-Element $filterMenu ([Windows.Automation.ControlType]::MenuItem) 'Clear filter'
+    Invoke-Element $clearFilter
+
     $row = Find-Element $root ([Windows.Automation.ControlType]::ListItem) 'item-'
     $headerTopBefore = $header.Current.BoundingRectangle.Top
     $scrollBefore = Read-Scroll $root
@@ -136,6 +172,7 @@ try {
         fixture_item_count=240
         scroll=[ordered]@{ before=$scrollBefore; after_wheel=$scrollAfterWheel; after_end=$scrollAfterEnd }
         header_top=[ordered]@{ before=$headerTopBefore; after_wheel=$headerTopAfterWheel; after_end=$headerTopAfterEnd }
+        details_filter_buttons=$filterButtons.Count
     } | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 -LiteralPath (Join-Path $OutputDirectory 'report.json')
     Write-Output "Details header scroll smoke passed: $OutputDirectory"
 } finally {
