@@ -21,3 +21,6 @@ gitlink/tree identity, and the resolved production feature graph:
 ```powershell
 powershell -NoProfile -File sdk/tests/gpui-baseline-contract.ps1
 ```
+
+GPUI snapshot updates run only in protected CI and produce a candidate artifact;
+non-fast-forward changes require an expiring JSON approval.

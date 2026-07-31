@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "bundle_id": "sdk-2d8caabdd0c31a059a932950",
-  "inventory_root_sha256": "00003e44797436404599314df3da5783bf5ce49336b6aaddca516f590531a7bd",
+  "bundle_id": "sdk-2e5c1631f877dd40cef07e71",
+  "inventory_root_sha256": "f1bc73a9799bfc5981615e2040ec3bdd90c6a85f0f40a07fcb4109bda511a1bb",
   "toolchain": {
     "rustc_release": "1.97.1",
     "rustc_commit_hash": "8bab26f4f68e0e26f0bb7960be334d5b520ea452",
@@ -14856,8 +14856,16 @@
       "sha256": "8dafd53d8219871c89c55d92b24b1e112d78baa10e476390c7882b65b51b3898"
     },
     {
+      "path": "sdk/PLUGIN_DIAGNOSTICS.md",
+      "sha256": "5c267762d153c7685e535e39cd3e9187d235703a1d26321d1930ea8dc3c91c1d"
+    },
+    {
+      "path": "sdk/PLUGIN_TOOLING.md",
+      "sha256": "719513c4db9158c744a44ffd745e446c4cd7b2e5dce886a7f3e5268d569c3ea2"
+    },
+    {
       "path": "sdk/README.md",
-      "sha256": "e3da61cfe9307389ba3010f6b52c2a6c01c652fba9b711aa8ecd41384b8b050d"
+      "sha256": "a8ff09319f12887ec7a747c0adc06e4516ecd69632942b97e348f4b032eec867"
     },
     {
       "path": "sdk/build-policy.json",
@@ -14865,7 +14873,11 @@
     },
     {
       "path": "sdk/ci/Invoke-OfflineSdkGuest.template.ps1",
-      "sha256": "b4a5540d0005396d204e9c0fd206bad192d5afe3c325a1a8607ffa1616e88525"
+      "sha256": "f5ddc7e0121009e1cf5a99753beb8869f3cef437a860abe7802045e1601d9bf2"
+    },
+    {
+      "path": "sdk/ci/plugin-gates.json",
+      "sha256": "7139f0eb9084dae969d6673c57cafea62d347319bc97b7da654508de68bdedd0"
     },
     {
       "path": "sdk/fixtures/.gitignore",
@@ -14928,6 +14940,22 @@
       "sha256": "04feead6d398e9e971d5677caa2ca915bc3fec46c020fd9c4f51ce5e37df1ab7"
     },
     {
+      "path": "sdk/fixtures/p0-consumer/Cargo.lock",
+      "sha256": "a101a10009c54f390b08cd1e203d4691795a1377f7c2cd1d858cfbbf467b98b6"
+    },
+    {
+      "path": "sdk/fixtures/p0-consumer/Cargo.toml",
+      "sha256": "6b73d47cf2e3d6fd128abf1b30557d25f153c701eacd8178b096bf657e6b942b"
+    },
+    {
+      "path": "sdk/fixtures/p0-consumer/plugin-project.json",
+      "sha256": "6ba262567e6ba3b612087c7c36fc2add1821a7fff11b47da6b405bf04185a26d"
+    },
+    {
+      "path": "sdk/fixtures/p0-consumer/src/lib.rs",
+      "sha256": "db9fbe3567090f8070ebf4371eddb24f7eeaaa6b6ffe2f3e40fd6244d8d20e34"
+    },
+    {
       "path": "sdk/fixtures/ui-fingerprint-loader/.cargo/config.toml",
       "sha256": "71aa780668e8d22e0577cc4ad686390313b05996e8264bd291d6bc13484a3347"
     },
@@ -14948,8 +14976,40 @@
       "sha256": "a75df8dc7f4afb2f0e1ebff4744dceff22338c18b040bca0294b1bf9183faf4e"
     },
     {
+      "path": "sdk/schemas/gpui-update-approval.schema.json",
+      "sha256": "1c56e7ccf5f4263a46ec3899175961d53c7bf3931b1fd5dde96d0a480d030790"
+    },
+    {
       "path": "sdk/schemas/offline-build-attestation.schema.json",
       "sha256": "76b35cf0a982c2c6e6c2736448ce23e22833b0a9253c6167dc7c3f2ac0018b3a"
+    },
+    {
+      "path": "sdk/schemas/p0-diagnostics.schema.json",
+      "sha256": "1238e669a594929b2fb165d06c5f6daf0f567c389347cf17d998a28593f1b7fc"
+    },
+    {
+      "path": "sdk/schemas/p0-manifest.schema.json",
+      "sha256": "e70acdf3f81fb62ee0be9353f65cd3a84e8d9b1f06c01f72484276d8eeff229f"
+    },
+    {
+      "path": "sdk/scripts/build-plugin.ps1",
+      "sha256": "2fd0b8cd508bba142b7b0618f56f8ab86156869d77c489e8bae918767fe73c6b"
+    },
+    {
+      "path": "sdk/scripts/package-plugin.ps1",
+      "sha256": "94cf18825799e367ed029a538afda2f5aaa8244bdf526591559c7104431ed213"
+    },
+    {
+      "path": "sdk/scripts/update-gpui-snapshot-support.psm1",
+      "sha256": "1fdccc444535806c510e25115e4f331ca571f196ca6f5348ca8db4db80ae7a7b"
+    },
+    {
+      "path": "sdk/scripts/update-gpui-snapshot.ps1",
+      "sha256": "5e18e1504cf9416cf8ed4675cf3e17fe1e0e6d262c128ef80c6d5c2d6ca4da97"
+    },
+    {
+      "path": "sdk/scripts/validate-plugin.ps1",
+      "sha256": "2429906a59bef81323ae7f2e9bf834842f8cc14a62072d852b58c5f112c79dd2"
     },
     {
       "path": "sdk/snapshot/approved-gpui.json",
@@ -14996,6 +15056,10 @@
       "sha256": "72c228f86d8bff7a47de38f48f223105bd7f7b5ab9a9b606f54762b6808f7c9a"
     },
     {
+      "path": "sdk/tests/plugin-tooling-self-test.ps1",
+      "sha256": "3c9b933188919a7447b52fe20b83657fb83c14b90ef0e7a295673cc4d8cf807d"
+    },
+    {
       "path": "sdk/tests/protected-dependency-contract-self-test.ps1",
       "sha256": "ae96465614249b5c0f8870297ce03e3de4d1d0dfd721bfbdb3a8d8b9a59bba0c"
     },
@@ -15006,6 +15070,10 @@
     {
       "path": "sdk/tests/protected-dependency-test-support.psm1",
       "sha256": "c7170826131544ce03e12a1e81900e090477d8eaf1b140b550d5f7b30c49e19e"
+    },
+    {
+      "path": "sdk/tests/release-freeze-contract.ps1",
+      "sha256": "b2b80644d5f6a5ac574f69323c589546dfd4db32ba8ec89007e6b97b6547627a"
     },
     {
       "path": "sdk/tests/temp-allocation-cleanup-self-test.ps1",
@@ -15022,6 +15090,14 @@
     {
       "path": "sdk/tests/ui-abi-fingerprint-contract.ps1",
       "sha256": "d44863196b62da6f20e5ec62c0108b2814a83c093e6c266c9ec01d4408f1596a"
+    },
+    {
+      "path": "sdk/tests/update-gpui-snapshot-self-test.ps1",
+      "sha256": "5e42465a63c9656c5878243df7bdaad09773b64db7788d62ee2339351655cb03"
+    },
+    {
+      "path": "sdk/tests/update-gpui-snapshot-support.psm1",
+      "sha256": "b15a7a3024292c7b1d6d6792bd912ad3214bc960f7e19078105d4402b5286576"
     },
     {
       "path": "sdk/tools/bundle-generator/.cargo/config.toml",
@@ -15044,6 +15120,46 @@
       "sha256": "830fd911cff5c57c9bc96e7360e78828d1bfb2f40abd6d664da99f5768ff62a6"
     },
     {
+      "path": "sdk/tools/plugin-tooling/.cargo/config.toml",
+      "sha256": "43d94f9310c089b6dae998a0de7ad205113c1c9a1f769234fd844f1ab99b2c79"
+    },
+    {
+      "path": "sdk/tools/plugin-tooling/Cargo.lock",
+      "sha256": "b66de4792eff457d5a87419b3fadbe585deb9e769e23bc8d2cdad762512c851f"
+    },
+    {
+      "path": "sdk/tools/plugin-tooling/Cargo.toml",
+      "sha256": "5198ec5dede29270119b7397b785f8bcedfb53f585d3220d89faf8f76744d9ae"
+    },
+    {
+      "path": "sdk/tools/plugin-tooling/src/lib.rs",
+      "sha256": "f8bb4b119692565031ff7b9a7cb8a8941b312ee571e5ff9072e85aa7f89a2a33"
+    },
+    {
+      "path": "sdk/tools/plugin-tooling/src/main.rs",
+      "sha256": "64ff69afd05b0e833373329d3e9ae2461d67ebd47343926ce15ce277f16961fc"
+    },
+    {
+      "path": "sdk/tools/release-freeze-validator/.cargo/config.toml",
+      "sha256": "43d94f9310c089b6dae998a0de7ad205113c1c9a1f769234fd844f1ab99b2c79"
+    },
+    {
+      "path": "sdk/tools/release-freeze-validator/Cargo.lock",
+      "sha256": "e0bdcba4fc6aaaa742a36097e3654ebefc202b5fee24fe55dacc43d4bbeeb4d5"
+    },
+    {
+      "path": "sdk/tools/release-freeze-validator/Cargo.toml",
+      "sha256": "a4e6849979803e15717a2392d55f9faa4a5fb12aca151831c5c6c846b39b926b"
+    },
+    {
+      "path": "sdk/tools/release-freeze-validator/src/lib.rs",
+      "sha256": "c3c5b9e92a97fe2944a48477ad8901c8a22f8304ca9b5fc1004bbd611f4b1e29"
+    },
+    {
+      "path": "sdk/tools/release-freeze-validator/src/main.rs",
+      "sha256": "ef0134802272c187bef222b4530be9ce0f509577d37468aa9923fa0e25ee9bb2"
+    },
+    {
       "path": "sdk/tools/ui-abi-fingerprint/.cargo/config.toml",
       "sha256": "8b1286124d92eb395274a0480f8171d055e9de449323e833083f39c49f08c63c"
     },
@@ -15057,7 +15173,7 @@
     },
     {
       "path": "sdk/tools/ui-abi-fingerprint/src/lib.rs",
-      "sha256": "ac4ecb68c41a4721a58035e4445a3a6b0e289082a15094130c815d1e6a52a8b6"
+      "sha256": "b5974a9dd2ff09d8a73fb924bb7eb18460405f35b56b35ad7a3dd36d0a7d59ad"
     },
     {
       "path": "sdk/tools/ui-abi-fingerprint/src/main.rs",

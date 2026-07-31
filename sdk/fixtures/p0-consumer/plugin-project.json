@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "package": { "id": "p0-consumer", "version": "0.1.0" },
+  "publisher": {
+    "id": "example-publisher",
+    "display_name": "Example Publisher",
+    "contacts": [{ "kind": "support", "value": "mailto:support@example.invalid" }]
+  },
+  "sdk": {
+    "bundle_id": "@SDK_BUNDLE_ID@",
+    "target": "x86_64-pc-windows-msvc",
+    "abi_schema": @ABI_SCHEMA@,
+    "gpui": true,
+    "ui_abi_fingerprint": "@UI_ABI_FINGERPRINT@"
+  },
+  "rust": {
+    "crate_name": "p0-consumer",
+    "entrypoint": "plugin.dll",
+    "root_module": "plugin_root"
+  },
+  "features": [{ "id": "main", "capabilities": ["abi", "ui.render"] }],
+  "contributions": [
+    {
+      "id": "abi-root",
+      "feature_id": "main",
+      "kind": "abi-root",
+      "capabilities": ["abi"],
+      "payload": "src/lib.rs"
+    },
+    {
+      "id": "gpui-view",
+      "feature_id": "main",
+      "kind": "gpui",
+      "capabilities": ["ui.render"],
+      "payload": "src/lib.rs"
+    }
+  ],
+  "payloads": [
+    {
+      "path": "src/lib.rs",
+      "size": @SOURCE_SIZE@,
+      "sha256": "@SOURCE_SHA256@",
+      "kind": "rust-source"
+    }
+  ],
+  "verification": {
+    "requirements": [
+      {
+        "requirement_id": "build-extensible-plugin-platform/rust-plugin-abi-and-ui-toolchain/offline-sdk-bundle",
+        "evidence": {
+          "unit": ["plugin-root-unit"],
+          "integration": ["plugin-load-compatible"],
+          "uitest": ["plugin-options-visible"],
+          "security": ["fingerprint-mismatch-rejected"],
+          "docs": ["clean-readme-reproduction"]
+        }
+      }
+    ]
+  }
+}
