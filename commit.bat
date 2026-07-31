@@ -1,9 +1,9 @@
 @echo off
-setlocal
+setlocal EnableExtensions
 
-rem The prompt is UTF-8 text encoded as Base64 so cmd.exe only parses ASCII.
-set "CODEX_PROMPT_B64=5LiN6KaB5L+u5pS55Lu75L2V54++5pyJ5qqU5qGI77yM5Y+q6IO95YiG5p6Q44CB5pqr5a2Y44CB5o+Q5Lqk6IiH5o6o6YCB55uu5YmN5bey5a2Y5Zyo55qE5pS55YuV44CC5a6M5pW05qqi5p+l5Li75YCJ5bqr5Y+K5omA5pyJIHN1Ym1vZHVsZXPvvIjljIXlkKvlt6Lni4Agc3VibW9kdWxlc++8ieeahCBHaXQg54uA5oWL44CB5bey5pqr5a2Y6IiH5pyq5pqr5a2Y5beu55Ww5Y+K5pyq6L+96Lmk5qqU5qGI44CC6L6o6K2Y5Lim5o6S6Zmk5omA5pyJ57eo6K2v44CB5bu6572u44CB5ris6Kmm44CB5b+r5Y+W44CB6KiY6YyE44CB5aWX5Lu25oiW5bel5YW355Si55Sf55qE5pqr5a2Y5qqU6IiH55Si54mp77yM5LiN5b6X5o+Q5Lqk6YCZ5Lqb5qqU5qGI77yM5Lmf5LiN5b6X54K65q2k5L+u5pS5IC5naXRpZ25vcmXjgILlsIflhbbppJjmlLnli5Xkvp3lip/og73oiIfpl5zoga/mgKfliIbpoZ7vvIzliIbmiJDlpJrnrYbnr4TlnI3muIXmpZrnmoQgY29tbWl077yb5LiN5Y+v5oqK5LiN55u46Zec5Yqf6IO95re35Zyo5ZCM5LiA562G44CC5q+P562GIGNvbW1pdCDlv4XpoIjkvb/nlKjkuK3mlocgc3ViamVjdO+8jOS4puWMheWQq+ips+e0sOS4reaWhyBib2R577yM6Kqq5piO6K6K5pu05YWn5a6544CB55uu55qE5Y+K6YeN6KaB5b2x6Z+/44CCc3VibW9kdWxlIOWFp+WmguacieespuWQiOaineS7tueahOaUueWLle+8jOWFiOWcqOipsiBzdWJtb2R1bGUg55qE55uu5YmN5YiG5pSv5YiG5om5IGNvbW1pdCDkuKYgcHVzaO+8jOWGjeaWvOS4u+WAieW6q+aPkOS6pOabtOaWsOW+jOeahCBzdWJtb2R1bGUg5oyH5qiZ77yb5L6d55u45L6d6aCG5bqP5o6o6YCB5omA5pyJ5Y+X5b2x6Z+/5YCJ5bqr55qE55uu5YmN5YiG5pSv44CC5o+Q5Lqk5YmN5YaN5qyh5qqi5p+l5ZCE57WEIGRpZmbvvIzpgb/lhY3mlY/mhJ/os4fmlpnjgIHmmqvlrZjmqpTmiJbkuI3lsazmlrzoqbLlip/og73nmoTlhaflrrnooqvntI3lhaXjgILoi6XmspLmnInlj6/mj5DkuqTmlLnli5XvvIznm7TmjqXmmI7norrlm57loLHjgILoi6XnvLrlsJHpgaDnq6/jgIF1cHN0cmVhbeOAgeasiumZkOaIlumBh+WIsOeEoeazleWuieWFqOWIpOaWt+eahOaDheazge+8jOS4jeW+l+aTheiHquS/ruaUueaqlOahiOaIluatt+WPsu+8jOaHieWBnOatouebuOmXnOaTjeS9nOS4pua4healmuiqquaYjuOAguaOqOmAgeWJjeW/hemgiOWFiOaqouafpSByZW1vdGXvvJvlj6rog73mjqjpgIHliLDnm67liY3luLPomZ/lj6/lr6vlhaXnmoQgZm9ya++8iOmAmuW4uOaYryBvcmlnaW7vvInvvIzkuI3lvpflmJfoqabmjqjpgIHllK/oroAgdXBzdHJlYW3jgILljbPkvb/nm67liY3liIbmlK/ov73ouaQgdXBzdHJlYW3vvIzkuZ/opoHlsIcgSEVBRCDmjqjpgIHliLAgb3JpZ2luIOeahOWQjOWQjeWIhuaUr+OAgiDlhajpg6jlrozmiJDlvozliJflh7rlu7rnq4vnmoQgY29tbWl0c+OAgeacquaPkOS6pOmgheebruWPiuWQhCBwdXNoIOe1kOaenOOAgg=="
-set "CODEX_PROMPT_SUFFIX_B64=IOS4u+WAieW6q+W/hemgiOWcqOaJgOacieaPkOS6pOWujOaIkOW+jO+8jOS7pSBnaXQgcHVzaCBvcmlnaW4gSEVBRDptYXN0ZXIg5piO56K65o6o6YCB5YiwIG9yaWdpbi9tYXN0ZXLjgII="
+rem Always run Codex against the repository that contains this batch file.
+set "REPO_DIR=%~dp0."
+set "CODEX_PROMPT_FILE=%TEMP%\superexplorer-codex-prompt-%RANDOM%-%RANDOM%.txt"
 
 where codex >nul 2>&1
 if errorlevel 1 (
@@ -11,16 +11,49 @@ if errorlevel 1 (
     exit /b 9009
 )
 
-set "CODEX_PROMPT_FILE=%TEMP%\superexplorer-codex-prompt-%RANDOM%-%RANDOM%.txt"
-powershell.exe -NoLogo -NoProfile -NonInteractive -Command "$prompt = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:CODEX_PROMPT_B64)) + [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:CODEX_PROMPT_SUFFIX_B64)); [IO.File]::WriteAllText($env:CODEX_PROMPT_FILE, $prompt, [Text.UTF8Encoding]::new($false))"
-if errorlevel 1 (
-    echo Failed to prepare the Codex prompt.
-    if exist "%CODEX_PROMPT_FILE%" del /q "%CODEX_PROMPT_FILE%" >nul 2>&1
+rem Keep this prompt ASCII-only so cmd.exe can parse the batch file reliably.
+rem Codex is explicitly instructed to write every Git commit message in Chinese.
+> "%CODEX_PROMPT_FILE%" (
+    echo Execute the complete Git commit and push workflow now. Do not only describe a plan.
+    echo Do not edit, generate, format, or delete any existing project file.
+    echo You may only inspect existing changes, stage them, commit them, and push them.
+    echo Inspect the parent repository and every initialized submodule, including nested submodules.
+    echo Review staged changes, unstaged changes, and untracked files before committing anything.
+    echo Exclude compilation outputs, build outputs, test artifacts, caches, logs, package outputs, and tool-generated temporary files.
+    echo Do not modify .gitignore to hide generated files.
+    echo Group eligible changes into separate commits according to feature and functional relationship.
+    echo Never combine unrelated functionality in the same commit.
+    echo Every commit subject and detailed commit body must be written in Traditional Chinese.
+    echo Each commit body must explain the changes, purpose, and important effects.
+    echo Review every staged diff before committing and exclude secrets or unrelated content.
+    echo For each changed submodule, commit eligible changes inside that submodule before updating the parent repository pointer.
+    echo Inspect submodule remotes before pushing. Push only to a writable fork remote, normally origin.
+    echo Never attempt to push to a read-only upstream remote.
+    echo If a submodule branch tracks upstream, push HEAD to the same branch name on origin instead.
+    echo Push all changed submodules successfully before committing their updated pointers in the parent repository.
+    echo After all parent repository commits are complete, run git push origin HEAD:master.
+    echo The required final destination for the parent repository is origin/master.
+    echo If there are no eligible changes, report that clearly without creating an empty commit.
+    echo If a remote, branch, permission, or safety problem cannot be resolved without editing files or rewriting history, stop that unsafe action and report the exact problem.
+    echo Continue working until all eligible commits and required pushes have completed or a concrete blocking error occurs.
+    echo Finish with a list of created commits, intentionally uncommitted files, and every push result.
+)
+
+if not exist "%CODEX_PROMPT_FILE%" (
+    echo Failed to create the Codex prompt file.
     exit /b 1
 )
 
-call codex -a never -s danger-full-access -m gpt-5.3-codex-spark -c model_reasoning_effort="low" -C "%~dp0." exec --ignore-user-config --ignore-rules - < "%CODEX_PROMPT_FILE%"
+for %%A in ("%CODEX_PROMPT_FILE%") do if %%~zA EQU 0 (
+    echo The Codex prompt file is empty.
+    del /q "%CODEX_PROMPT_FILE%" >nul 2>&1
+    exit /b 1
+)
+
+rem CALL is required because npm installs Codex as codex.cmd on Windows.
+call codex -a never -s danger-full-access -m gpt-5.3-codex-spark -c model_reasoning_effort="low" -C "%REPO_DIR%" exec --ignore-user-config --ignore-rules - < "%CODEX_PROMPT_FILE%"
 set "CODEX_EXIT_CODE=%ERRORLEVEL%"
+
 del /q "%CODEX_PROMPT_FILE%" >nul 2>&1
 
 if not "%CODEX_EXIT_CODE%"=="0" (
