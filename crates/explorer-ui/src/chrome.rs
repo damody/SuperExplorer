@@ -252,6 +252,7 @@ impl RenderOnce for ExplorerWindow {
         let window_active = window.is_window_active();
         let file_icons = self.shell_icons.clone();
         let navigation_icons = self.shell_icons.clone();
+        let tab_icons = self.shell_icons.clone();
         let view_settings = self.state.view_settings();
         let show_side_pane = f32::from(window.bounds().size.width)
             >= self.tokens.layout.compact_window_width.value()
@@ -289,12 +290,15 @@ impl RenderOnce for ExplorerWindow {
             .text_size(px(self.tokens.typography.file_row.size.value()))
             .line_height(px(self.tokens.typography.file_row.line_height.value()))
             .child(region_probe(EXPLORER_WINDOW_ID, None, "normal"))
-            .child(WindowChrome::new(
-                self.tokens,
-                self.state.clone(),
-                window_active,
-                self.on_action.clone(),
-            ))
+            .child(
+                WindowChrome::new(
+                    self.tokens,
+                    self.state.clone(),
+                    window_active,
+                    self.on_action.clone(),
+                )
+                .with_shell_icons(tab_icons, self.shell_icon_dpi),
+            )
             .child(NavigationBar::new(
                 self.tokens,
                 self.state.clone(),
@@ -1658,7 +1662,7 @@ pub struct CommandBar {
 }
 
 impl CommandBar {
-    pub const fn new(
+    pub fn new(
         tokens: UiTokens,
         state: CommandBarViewModel,
         on_action: Option<ActionCallback>,
@@ -3766,6 +3770,7 @@ impl RenderOnce for SearchBox {
             .and_then(gpui::WeakEntity::upgrade)
             .map(|input| input.read(cx).focus_handle(cx));
         let search_hint = localized_search_placeholder(
+            self.state.tabs().active_tab().history.current(),
             &presentation.address_title,
             &self.state.tabs().active_tab().view.address,
         );
@@ -3867,14 +3872,27 @@ impl RenderOnce for SearchBox {
 }
 
 fn localized_search_placeholder(
+    current: Option<&explorer_model::HistoryEntry>,
     address_title: &str,
     address: &explorer_model::AddressBarState,
 ) -> String {
-    let folder_name = address
+    let committed_path_leaf = current
+        .and_then(|entry| entry.location.path())
+        .and_then(std::path::Path::file_name)
+        .and_then(std::ffi::OsStr::to_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty());
+    let breadcrumb_leaf = address
         .resolved_ancestry
         .last()
         .map(|segment| segment.display_name.trim())
-        .filter(|name| !name.is_empty())
+        .filter(|name| !name.is_empty());
+    let committed_title = current
+        .map(|entry| entry.display_title.trim())
+        .filter(|name| !name.is_empty());
+    let folder_name = committed_path_leaf
+        .or(breadcrumb_leaf)
+        .or(committed_title)
         .unwrap_or(address_title);
     format!("搜尋 {folder_name}")
 }
@@ -7929,11 +7947,13 @@ pub struct WindowChrome {
     tokens: UiTokens,
     state: WindowChromeViewModel,
     window_active: bool,
+    shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+    shell_icon_dpi: u16,
     on_action: Option<ActionCallback>,
 }
 
 impl WindowChrome {
-    pub const fn new(
+    pub fn new(
         tokens: UiTokens,
         state: WindowChromeViewModel,
         window_active: bool,
@@ -7943,8 +7963,21 @@ impl WindowChrome {
             tokens,
             state,
             window_active,
+            shell_icons: HashMap::new(),
+            shell_icon_dpi: 96,
             on_action,
         }
+    }
+
+    #[must_use]
+    pub fn with_shell_icons(
+        mut self,
+        shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+        shell_icon_dpi: u16,
+    ) -> Self {
+        self.shell_icons = shell_icons;
+        self.shell_icon_dpi = shell_icon_dpi;
+        self
     }
 }
 
@@ -7958,20 +7991,38 @@ impl RenderOnce for WindowChrome {
             ExplorerIcon::Maximize
         };
         let active_tab_id = self.state.tabs().active_tab_id();
+        let shell_icon_theme = match self.tokens.theme.mode {
+            crate::theme::ThemeMode::Light => explorer_model::ShellIconTheme::Light,
+            crate::theme::ThemeMode::Dark => explorer_model::ShellIconTheme::Dark,
+        };
+        let generic_shell_icon = self.shell_icons.iter().find_map(|(key, texture)| {
+            is_generic_breadcrumb_folder_icon_key(key).then(|| Arc::clone(texture))
+        });
         let tabs: Vec<_> = self
             .state
             .tabs()
             .tabs()
             .iter()
             .map(|tab| {
-                let title = tab.history.current().map_or_else(
+                let current = tab.history.current();
+                let title = current.map_or_else(
                     || "Untitled".to_owned(),
                     |entry| entry.display_title.clone(),
                 );
+                let shell_icon = current.and_then(|entry| {
+                    breadcrumb_location_shell_texture(
+                        &self.shell_icons,
+                        &entry.location,
+                        shell_icon_theme,
+                        self.shell_icon_dpi,
+                    )
+                });
                 explorer_tab(
                     self.tokens,
                     tab.id,
                     title,
+                    shell_icon,
+                    generic_shell_icon.clone(),
                     tab.id == active_tab_id,
                     self.on_action.clone(),
                 )
@@ -8084,6 +8135,8 @@ fn explorer_tab(
     tokens: UiTokens,
     tab_id: TabId,
     title: String,
+    shell_icon: Option<Arc<RenderImage>>,
+    generic_shell_icon: Option<Arc<RenderImage>>,
     active: bool,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
@@ -8103,6 +8156,12 @@ fn explorer_tab(
     } else {
         format!("close-tab-{tab_id:?}")
     };
+    let icon_id = if active {
+        "active-tab-location-icon".to_owned()
+    } else {
+        format!("background-tab-location-icon-{tab_id:?}")
+    };
+    let icon_label = format!("{title} folder icon");
     div()
         .id(id.clone())
         .debug_selector(move || debug_id.clone())
@@ -8158,7 +8217,26 @@ fn explorer_tab(
             Some(TAB_STRIP_ID),
             if active { "active" } else { "background" },
         ))
-        .child(title)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(layout.content_spacing.value()))
+                .overflow_hidden()
+                .child(
+                    div()
+                        .id(icon_id.clone())
+                        .debug_selector(move || icon_id.clone())
+                        .role(Role::Image)
+                        .aria_label(icon_label)
+                        .child(breadcrumb_shell_icon(
+                            shell_icon,
+                            generic_shell_icon,
+                            tokens,
+                        )),
+                )
+                .child(div().overflow_hidden().whitespace_nowrap().child(title)),
+        )
         .child(
             div()
                 .id(close_id.clone())
@@ -8771,22 +8849,63 @@ mod tests {
         );
         let mut address = explorer_model::AddressBarState::for_entry(&entry);
         assert_eq!(
-            localized_search_placeholder("file_explorer_reference", &address),
+            localized_search_placeholder(Some(&entry), "file_explorer_reference", &address),
             "搜尋 file_explorer_reference"
         );
 
         address.enter_editing();
         assert!(address.update_draft(r"C:\temporary-draft".to_owned()));
         assert_eq!(
-            localized_search_placeholder(r"C:\temporary-draft", &address),
+            localized_search_placeholder(Some(&entry), r"C:\temporary-draft", &address),
             "搜尋 file_explorer_reference",
             "an address draft must not replace the resolved current-folder hint"
         );
 
         address.resolved_ancestry.clear();
         assert_eq!(
-            localized_search_placeholder("尚未解析", &address),
-            "搜尋 尚未解析"
+            localized_search_placeholder(Some(&entry), "尚未解析", &address),
+            "搜尋 file_explorer_reference"
+        );
+    }
+
+    #[test]
+    fn search_hint_uses_committed_path_leaf_when_title_and_ancestry_are_stale() {
+        let entry = explorer_model::HistoryEntry::new(
+            explorer_model::LocationDescriptor::file_system(r"D:\ProgramData\QuarkCloudDrive"),
+            "D:",
+        );
+        let stale_root = explorer_model::HistoryEntry::new(
+            explorer_model::LocationDescriptor::file_system(r"D:\"),
+            "D:",
+        );
+        let address = explorer_model::AddressBarState::for_entry(&stale_root);
+
+        assert_eq!(
+            localized_search_placeholder(Some(&entry), "D:", &address),
+            "搜尋 QuarkCloudDrive"
+        );
+    }
+
+    #[test]
+    fn search_hint_keeps_drive_root_and_namespace_fallbacks() {
+        let drive = explorer_model::HistoryEntry::new(
+            explorer_model::LocationDescriptor::file_system(r"D:\"),
+            "D:",
+        );
+        let drive_address = explorer_model::AddressBarState::for_entry(&drive);
+        assert_eq!(
+            localized_search_placeholder(Some(&drive), "D:", &drive_address),
+            "搜尋 D:"
+        );
+
+        let namespace = explorer_model::HistoryEntry::new(
+            explorer_model::LocationDescriptor::ParsingName("shell:Downloads".to_owned()),
+            "下載",
+        );
+        let namespace_address = explorer_model::AddressBarState::for_entry(&namespace);
+        assert_eq!(
+            localized_search_placeholder(Some(&namespace), "下載", &namespace_address),
+            "搜尋 下載"
         );
     }
 
@@ -9398,7 +9517,8 @@ mod tests {
         assert!(production.contains("列出 {segment_name} 的子資料夾，載入中"));
         assert!(production.contains("breadcrumb_location_id(&location)"));
         assert!(!production.contains("breadcrumb-child-{index}"));
-        assert_eq!(production.matches("breadcrumb_shell_icon(").count(), 6);
+        assert_eq!(production.matches("breadcrumb_shell_icon(").count(), 7);
+        assert!(production.contains("active-tab-location-icon"));
         assert!(
             production.contains("select_breadcrumb_shell_icon(shell_icon, generic_shell_icon)")
         );
