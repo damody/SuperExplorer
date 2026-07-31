@@ -998,7 +998,7 @@
     },
     {
       "id": "editable-pointer-input-headful",
-      "description": "Use genuine pointer clicks and partial drag selection in the address, padded search, and inline rename editors; require stable caret insertion, near-full-height selection with symmetric physical-pixel margins, selected glyph coverage, dark unselected glyphs, exact padded hit-testing, and opaque Explorer Highlight pixels.",
+      "description": "Use genuine pointer clicks and partial drag selection in the address, padded search, and inline rename editors; require a baseline-sized address caret, stable caret insertion, near-full-height selection with symmetric physical-pixel margins, selected glyph coverage, dark unselected glyphs, exact padded hit-testing, and opaque Explorer Highlight pixels.",
       "suites": ["full", "visual"],
       "program": "powershell.exe",
       "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_editable_pointer_inputs.ps1", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
@@ -1017,7 +1017,7 @@
         "unify-editable-selection-vertical-metrics/editable-selection-vertical-metrics/editing-colors-and-interactions-remain-intact",
         "unify-editable-selection-vertical-metrics/editable-selection-vertical-metrics/automated-coverage-for-every-editor"
       ],
-      "required_artifacts": ["report.json", "address-partial-selection.png", "search-partial-selection.png", "rename-partial-selection.png"]
+      "required_artifacts": ["report.json", "address-caret.png", "address-partial-selection.png", "search-partial-selection.png", "rename-partial-selection.png"]
     },
     {
       "id": "complete-shell-context-menu-direct",

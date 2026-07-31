@@ -2061,6 +2061,39 @@ mod tests {
     }
 
     #[test]
+    fn details_filter_selection_survives_global_pointer_terminal_then_closes_on_focus_change() {
+        let mut state = writable_state();
+        state.open_details_filter_menu(explorer_model::SortColumn::Name);
+
+        dispatch_action(
+            &mut state,
+            ExplorerAction::EndDetailsColumnResize,
+            ActionSource::Mouse,
+        );
+        assert!(state.details_filter_menu().is_none());
+
+        dispatch_action(
+            &mut state,
+            ExplorerAction::ToggleDetailsFilter {
+                column: explorer_model::SortColumn::Name,
+                key: "name:a-h".to_owned(),
+            },
+            ActionSource::Mouse,
+        );
+        assert_eq!(
+            state.details_filter_menu(),
+            Some(explorer_model::SortColumn::Name)
+        );
+
+        dispatch_action(
+            &mut state,
+            ExplorerAction::FocusAddress,
+            ActionSource::Mouse,
+        );
+        assert!(state.details_filter_menu().is_none());
+    }
+
+    #[test]
     fn view_menu_actions_mutate_real_per_tab_settings() {
         let mut state = AppViewState::default();
         assert!(!state.view_menu_open());
