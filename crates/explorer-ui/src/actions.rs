@@ -2452,6 +2452,47 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn editable_text_bindings_include_windows_shift_selection_chords() {
+        let text_bindings = super::gpui_text_input_bindings();
+        for (key, action_suffix) in [
+            ("home", "::SelectLineStart"),
+            ("end", "::SelectLineEnd"),
+            ("left", "::SelectLeft"),
+            ("right", "::SelectRight"),
+        ] {
+            assert!(
+                text_bindings.iter().any(|binding| {
+                    binding.keystrokes().len() == 1
+                        && binding.keystrokes()[0].key() == key
+                        && binding.keystrokes()[0].modifiers().shift
+                        && !binding.keystrokes()[0].modifiers().control
+                        && !binding.keystrokes()[0].modifiers().alt
+                        && !binding.keystrokes()[0].modifiers().platform
+                        && binding.action().name().ends_with(action_suffix)
+                        && binding.predicate().is_some()
+                }),
+                "missing scoped Shift+{key} binding for {action_suffix}"
+            );
+        }
+
+        let window_bindings = super::gpui_key_bindings();
+        for key in ["home", "end", "left", "right"] {
+            assert!(
+                !window_bindings.iter().any(|binding| {
+                    binding.keystrokes().len() == 1
+                        && binding.keystrokes()[0].key() == key
+                        && binding.keystrokes()[0].modifiers().shift
+                        && !binding.keystrokes()[0].modifiers().control
+                        && !binding.keystrokes()[0].modifiers().alt
+                        && !binding.keystrokes()[0].modifiers().platform
+                }),
+                "window binding must not consume Shift+{key} from a focused editor"
+            );
+        }
+    }
+
     #[test]
     fn scrollbar_drag_actions_are_typed_exclusive_and_idempotent() {
         use crate::interaction::{ScrollbarKind, ScrollbarTerminal};

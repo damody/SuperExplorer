@@ -31,11 +31,11 @@ The window-level Explorer action dispatcher must not implement these commands. K
 
 1. Shared component unit tests verify line-start and line-end selection, left/right extension and contraction, anchor crossing, and grapheme boundaries.
 2. Explorer UI binding tests verify that all four Windows chords are present in the scoped editable-text binding set and are not replaced by window commands.
-3. A dedicated UTIT manifest item launches the real app, focuses editable controls, emits genuine Windows keyboard input, and uses copy-to-clipboard as the selection oracle. It verifies full-line selection with both Home/End directions and one-character extension/contraction with Left/Right. The headful test exercises the shared behavior through representative address, search, and inline rename editors.
+3. A dedicated UTIT manifest item launches the real app, focuses editable controls, emits genuine Windows keyboard input, and replaces the selected range with a marker as the exact selection oracle. It verifies full-line selection with both Home/End directions and one-character extension/contraction with Left/Right. The headful test exercises the shared behavior through representative address, search, and inline rename editors.
 
 ## Failure Handling
 
-The UTIT script uses a disposable fixture directory, bounded UI Automation waits, explicit focus restoration, and guaranteed process cleanup. A mismatch reports the editor, chord sequence, expected selected text, and clipboard result so failures are actionable.
+The UTIT script uses a disposable fixture directory, bounded UI Automation waits, explicit focus restoration, and guaranteed process cleanup. A mismatch reports the editor, chord sequence, expected replacement value, and actual editor value so failures are actionable.
 
 ## Scope
 

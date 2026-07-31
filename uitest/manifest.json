@@ -1020,6 +1020,22 @@
       "required_artifacts": ["report.json", "address-caret.png", "address-partial-selection.png", "search-partial-selection.png", "rename-partial-selection.png"]
     },
     {
+      "id": "editable-keyboard-selection-headful",
+      "description": "Use genuine Windows keyboard input in the address, search, and inline rename editors; verify Shift+Home, Shift+End, Shift+Left, and Shift+Right through exact selected-range replacement assertions, including full-line selection and selection contraction.",
+      "suites": ["quick", "full", "interop"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_editable_keyboard_selection.ps1", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
+      "timeout_seconds": 120,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "explorer", "clipboard"],
+      "covers": ["fix-editable-shift-selection/editable-keyboard-selection/*"],
+      "required_artifacts": ["report.json"]
+    },
+    {
       "id": "complete-shell-context-menu-direct",
       "description": "Capture every real ordinary and Shift menu entry for background, file, folder, and multi-selection targets; require unique bounded actionable IDs and classify each as application-owned or provider-owned.",
       "suites": ["quick", "full", "interop", "visual"],
