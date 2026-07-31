@@ -16,7 +16,10 @@ use crate::{
     actions::{ExplorerAction, NavigationHistoryDirection},
     diagnostics::{TypographyObservation, region_probe, typography_probe},
     focus::FocusSurface,
-    icons::{ExplorerIcon, chrome_icon, navigation_icon, unavailable_navigation_icon},
+    icons::{
+        ExplorerIcon, chrome_icon, navigation_history_icon, navigation_icon,
+        unavailable_navigation_icon,
+    },
     navigation_pane::{
         NavigationItem, NavigationItemAvailability, NavigationItemKind,
         is_generic_breadcrumb_folder_icon_key, is_selected, shell_icon_key,
@@ -7658,7 +7661,7 @@ fn navigation_history_button(
             None,
             if enabled { "enabled" } else { "disabled" },
         ))
-        .child(chrome_icon(id, icon, tokens))
+        .child(navigation_history_icon(id, icon, enabled, tokens))
         .child(semantic_tooltip(semantic_label))
         .when(menu_open, |element| {
             element.child(navigation_history_menu(

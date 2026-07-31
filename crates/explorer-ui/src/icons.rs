@@ -122,6 +122,52 @@ pub fn chrome_icon(
         )
 }
 
+/// Back/Forward glyph treatment matching Explorer's availability affordance.
+/// Disabled history stays a single light regular glyph; enabled history gains a
+/// subpixel duplicate that makes the same Fluent path only slightly heavier.
+pub const NAVIGATION_HISTORY_ENABLED_EMBOLDEN_OFFSET: f32 = 0.35;
+
+pub(crate) fn navigation_history_icon_color(
+    enabled: bool,
+    tokens: UiTokens,
+) -> crate::theme::Rgba8 {
+    if enabled {
+        tokens.theme.colors.text_primary
+    } else {
+        tokens.theme.colors.text_disabled
+    }
+}
+
+pub fn navigation_history_icon(
+    region_id: impl Into<String>,
+    icon: ExplorerIcon,
+    enabled: bool,
+    tokens: UiTokens,
+) -> impl IntoElement {
+    let region_id = region_id.into();
+    let size = tokens.layout.maximum_visible_glyph.value().min(16.0);
+    let color = navigation_history_icon_color(enabled, tokens).to_gpui();
+    let glyph = move || svg().path(icon.asset_path()).size_full().text_color(color);
+
+    div()
+        .relative()
+        .w(px(size))
+        .h(px(size))
+        .flex_none()
+        .child(icon_probe(region_id))
+        .child(glyph())
+        .when(enabled, |element| {
+            element.child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left(px(NAVIGATION_HISTORY_ENABLED_EMBOLDEN_OFFSET))
+                    .size_full()
+                    .child(glyph()),
+            )
+        })
+}
+
 /// Geometry-stable colorful fallback for Shell-owned navigation icons. The
 /// 20x20 box is also the exact box used by asynchronously supplied Shell
 /// bitmaps, so loading never shifts labels.
@@ -259,7 +305,10 @@ pub fn unavailable_navigation_icon(tokens: UiTokens) -> impl IntoElement {
 
 #[cfg(test)]
 mod tests {
-    use super::ExplorerIcon;
+    use super::{
+        ExplorerIcon, NAVIGATION_HISTORY_ENABLED_EMBOLDEN_OFFSET, navigation_history_icon_color,
+    };
+    use crate::{UiTokens, theme::ThemeTokens};
 
     #[test]
     fn icon_contract_has_unique_stable_names_and_sources() {
@@ -267,6 +316,34 @@ mod tests {
         for icon in ExplorerIcon::ALL {
             assert!(names.insert(icon.stable_name()));
             assert!(!icon.source().is_empty());
+        }
+    }
+
+    #[test]
+    fn enabled_navigation_history_glyph_uses_only_a_subpixel_embolden_offset() {
+        assert!(NAVIGATION_HISTORY_ENABLED_EMBOLDEN_OFFSET > 0.0);
+        assert!(NAVIGATION_HISTORY_ENABLED_EMBOLDEN_OFFSET < 0.5);
+    }
+
+    #[test]
+    fn navigation_history_glyph_uses_primary_when_enabled_and_disabled_semantic_color_otherwise() {
+        for theme in [ThemeTokens::light(), ThemeTokens::dark()] {
+            let tokens = UiTokens {
+                theme,
+                ..UiTokens::default()
+            };
+            assert_eq!(
+                navigation_history_icon_color(true, tokens),
+                theme.colors.text_primary
+            );
+            assert_eq!(
+                navigation_history_icon_color(false, tokens),
+                theme.colors.text_disabled
+            );
+            assert_ne!(
+                navigation_history_icon_color(true, tokens),
+                navigation_history_icon_color(false, tokens)
+            );
         }
     }
 }
