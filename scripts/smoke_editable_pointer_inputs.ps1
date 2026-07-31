@@ -231,6 +231,65 @@ function Measure-EditorSelectionGeometry(
     }
 }
 
+function Measure-EditorCaretGeometry(
+    [Windows.Automation.AutomationElement]$Editor,
+    [string]$CapturePath,
+    [double]$ExpectedOffsetX
+) {
+    $bounds = $Editor.Current.BoundingRectangle
+    $bestHeight = 0
+    $bestTop = 0
+    $controlHeight = 0
+    foreach ($attempt in 1..5) {
+        Save-UitestScreenshot -Root $context.Root -Path $CapturePath
+        $bitmap = [Drawing.Bitmap]::FromFile($CapturePath)
+        try {
+            $scaleX = $bitmap.Width / $window.Width
+            $scaleY = $bitmap.Height / $window.Height
+            $left = [int][Math]::Floor(($bounds.Left - $window.Left) * $scaleX)
+            $top = [int][Math]::Floor(($bounds.Top - $window.Top) * $scaleY)
+            $right = [int][Math]::Ceiling(($bounds.Right - $window.Left) * $scaleX) - 1
+            $bottom = [int][Math]::Ceiling(($bounds.Bottom - $window.Top) * $scaleY) - 1
+            $controlHeight = $bottom - $top + 1
+            $scanCenter = $left + [int][Math]::Round($ExpectedOffsetX * $scaleX)
+            $scanLeft = [Math]::Max($left + 4, $scanCenter - 20)
+            $scanRight = [Math]::Min($right - 4, $scanCenter + 20)
+            for ($x = $scanLeft; $x -le $scanRight; $x++) {
+                $run = 0
+                $runTop = 0
+                for ($y = $top + 3; $y -le $bottom - 3; $y++) {
+                    $pixel = $bitmap.GetPixel($x, $y)
+                    if ($pixel.R -eq 0 -and $pixel.G -eq 120 -and $pixel.B -eq 212) {
+                        if ($run -eq 0) { $runTop = $y }
+                        $run++
+                        if ($run -gt $bestHeight) {
+                            $bestHeight = $run
+                            $bestTop = $runTop
+                        }
+                    } else {
+                        $run = 0
+                    }
+                }
+            }
+        } finally {
+            $bitmap.Dispose()
+        }
+        if ($bestHeight -ge 6) { break }
+        Start-Sleep -Milliseconds 120
+    }
+    if ($bestHeight -lt 6) { throw "address caret was not measurable: height=$bestHeight" }
+    $maximumHeight = [int][Math]::Ceiling($controlHeight * 0.48)
+    if ($bestHeight -gt $maximumHeight) {
+        throw "address caret still uses the line box height: caret=$bestHeight control=$controlHeight maximum=$maximumHeight"
+    }
+    [pscustomobject][ordered]@{
+        capture = [IO.Path]::GetFileName($CapturePath)
+        caret_height = $bestHeight
+        control_height = $controlHeight
+        maximum_allowed_height = $maximumHeight
+    }
+}
+
 try {
     $context = Start-UitestExplorer -InitialPath $fixture -OutputDirectory $output -Profile $Profile -SkipBuild:$SkipBuild
     [void][RustExplorerUitest.Native]::SetWindowPos($context.Hwnd, [IntPtr](-1), 0, 0, 0, 0, 0x0003)
@@ -272,6 +331,8 @@ try {
     $address.SetFocus()
     Set-EditorTextWithPasteRetry -Editor $address -Text 'C:\portable\alpha'
     Click-EditorAt -Editor $address -OffsetX 72
+    $addressCaretCapture = Join-Path $output 'address-caret.png'
+    $addressCaretMetrics = Measure-EditorCaretGeometry -Editor $address -CapturePath $addressCaretCapture -ExpectedOffsetX 72
     Send-UitestKey -Key 0x58 -Modifiers @(0x10) -DelayMilliseconds 180
     $addressAfter = Get-EditorValue $address
     if ($addressAfter.Length -ne 'C:\portable\alpha'.Length + 1 -or
@@ -369,6 +430,7 @@ try {
         schema = 'superexplorer.editable-pointer-input.v2'
         genuine_pointer_input = $true
         address_editor_entity_preserved = $true
+        address_caret_geometry = $addressCaretMetrics
         address_value = $addressAfter
         address_pointer_drag_selection = $true
         address_drag_removed_character_count = $addressDragRemovedCharacterCount

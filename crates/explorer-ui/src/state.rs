@@ -1663,6 +1663,7 @@ impl AppViewState {
             .entry(self.tabs.active_tab_id())
             .or_default()
             .toggle(column, key);
+        self.details_filter_menu = Some(column);
     }
 
     pub fn clear_details_filter(&mut self, column: explorer_model::SortColumn) {
@@ -1670,6 +1671,7 @@ impl AppViewState {
             .entry(self.tabs.active_tab_id())
             .or_default()
             .clear(column);
+        self.details_filter_menu = Some(column);
     }
     pub fn toggle_details_column(&mut self, column: explorer_model::SortColumn) {
         if column == explorer_model::SortColumn::Name {

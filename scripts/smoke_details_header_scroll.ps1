@@ -23,6 +23,8 @@ New-Item -ItemType Directory -Path $fixtureRoot | Out-Null
 1..240 | ForEach-Object {
     [IO.File]::WriteAllText((Join-Path $fixtureRoot ('item-{0:D3}.txt' -f $_)), "fixture $_")
 }
+[IO.File]::WriteAllText((Join-Path $fixtureRoot 'Alpha.txt'), 'alpha')
+[IO.File]::WriteAllText((Join-Path $fixtureRoot 'Zebra.log'), 'zebra')
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -58,6 +60,13 @@ function Find-Element([Windows.Automation.AutomationElement]$Root, [Windows.Auto
 function Find-ById([Windows.Automation.AutomationElement]$Root, [string]$Id) {
     return $Root.FindFirst([Windows.Automation.TreeScope]::Descendants,
         [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::AutomationIdProperty, $Id))
+}
+
+function Find-OptionalElement([Windows.Automation.AutomationElement]$Root, [Windows.Automation.ControlType]$Type, [string]$Name) {
+    foreach ($element in $Root.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)) {
+        if ($element.Current.ControlType -eq $Type -and $element.Current.Name -like "*$Name*") { return $element }
+    }
+    return $null
 }
 
 function Invoke-Element([Windows.Automation.AutomationElement]$Element) {
@@ -126,14 +135,23 @@ try {
     if ($null -eq $nameFilter) { throw 'Name filter button not found' }
     Invoke-Element $nameFilter
     $filterMenu = Find-Element $root ([Windows.Automation.ControlType]::Menu) 'Filter Name'
-    $nameGroup = $filterMenu.FindAll([Windows.Automation.TreeScope]::Descendants,
-        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::MenuItem)) | Select-Object -First 1
-    if ($null -eq $nameGroup) { throw 'Name filter did not expose grouped options' }
-    Invoke-Element $nameGroup
-    Invoke-Element $nameFilter
+    $nameGroups = @($filterMenu.FindAll([Windows.Automation.TreeScope]::Descendants,
+        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::MenuItem)))
+    if ($nameGroups.Count -lt 3) { throw "Name filter did not expose A-H, I-P and Q-Z groups: $($nameGroups.Count)" }
+    Invoke-Element $nameGroups[0]
     $filterMenu = Find-Element $root ([Windows.Automation.ControlType]::Menu) 'Filter Name'
-    $clearFilter = Find-Element $filterMenu ([Windows.Automation.ControlType]::MenuItem) 'Clear filter'
-    Invoke-Element $clearFilter
+    $nameGroups = @($filterMenu.FindAll([Windows.Automation.TreeScope]::Descendants,
+        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::MenuItem)))
+    Invoke-Element $nameGroups[1]
+    if ($null -eq (Find-OptionalElement $root ([Windows.Automation.ControlType]::Menu) 'Filter Name')) {
+        throw 'filter menu closed while selecting multiple options'
+    }
+
+    $outside = Find-Element $root ([Windows.Automation.ControlType]::ListItem) 'item-'
+    Invoke-Element $outside
+    if ($null -ne (Find-OptionalElement $root ([Windows.Automation.ControlType]::Menu) 'Filter Name')) {
+        throw 'filter menu remained open after focus left the popup'
+    }
 
     $row = Find-Element $root ([Windows.Automation.ControlType]::ListItem) 'item-'
     $headerTopBefore = $header.Current.BoundingRectangle.Top
@@ -169,10 +187,12 @@ try {
     [ordered]@{
         schema_version=1
         captured_utc=[DateTime]::UtcNow.ToString('o')
-        fixture_item_count=240
+        fixture_item_count=242
         scroll=[ordered]@{ before=$scrollBefore; after_wheel=$scrollAfterWheel; after_end=$scrollAfterEnd }
         header_top=[ordered]@{ before=$headerTopBefore; after_wheel=$headerTopAfterWheel; after_end=$headerTopAfterEnd }
         details_filter_buttons=$filterButtons.Count
+        details_filter_multi_select_persisted=$true
+        details_filter_closed_on_focus_leave=$true
     } | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 -LiteralPath (Join-Path $OutputDirectory 'report.json')
     Write-Output "Details header scroll smoke passed: $OutputDirectory"
 } finally {

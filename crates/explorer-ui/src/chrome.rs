@@ -8002,6 +8002,9 @@ fn editable_focus_field(
         .placeholder(visible_text)
         .caret_blink_interval_500ms()
         .caret_height(px(typography.size.value()))
+        .caret_top_offset(px(
+            (typography.baseline.value() - typography.size.value()).max(0.0)
+        ))
         .w_full()
         .h(px(selection_metrics.line_height))
         .flex_none()
@@ -9682,6 +9685,7 @@ mod tests {
             .next()
             .expect("production source precedes tests");
         assert!(production.contains(".caret_height(px(typography.size.value()))"));
+        assert!(production.contains(".caret_top_offset(px("));
     }
 
     #[test]
