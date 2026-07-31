@@ -7,7 +7,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
-        mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError},
+        mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, TrySendError},
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -47,6 +47,18 @@ static ACTIVE_STA_THREADS: AtomicUsize = AtomicUsize::new(0);
 static ACTIVE_CONTROL_CHANNELS: AtomicUsize = AtomicUsize::new(0);
 static ACTIVE_JOIN_HANDLES: AtomicUsize = AtomicUsize::new(0);
 static ACTIVE_BREADCRUMB_WORKERS: AtomicUsize = AtomicUsize::new(0);
+static ACTIVE_FILE_OPERATION_WORKERS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+#[derive(Clone)]
+struct FileOperationTestGate {
+    request_id: RequestId,
+    started: SyncSender<()>,
+    release: Arc<AtomicBool>,
+}
+
+#[cfg(test)]
+static FILE_OPERATION_TEST_GATE: Mutex<Option<FileOperationTestGate>> = Mutex::new(None);
 
 /// Observable lifecycle of the dedicated Shell apartment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -131,6 +143,8 @@ pub struct StaResourceSnapshot {
     pub active_join_handles: usize,
     /// Isolated breadcrumb provider workers that have not returned yet.
     pub active_breadcrumb_workers: usize,
+    /// Background file-operation apartments that have not returned yet.
+    pub active_file_operation_workers: usize,
 }
 
 impl StaResourceSnapshot {
@@ -141,6 +155,7 @@ impl StaResourceSnapshot {
             active_control_channels: ACTIVE_CONTROL_CHANNELS.load(Ordering::Acquire),
             active_join_handles: ACTIVE_JOIN_HANDLES.load(Ordering::Acquire),
             active_breadcrumb_workers: ACTIVE_BREADCRUMB_WORKERS.load(Ordering::Acquire),
+            active_file_operation_workers: ACTIVE_FILE_OPERATION_WORKERS.load(Ordering::Acquire),
         }
     }
 }
@@ -151,6 +166,12 @@ enum ControlMessage {
         queued_at: Instant,
     },
     Shutdown,
+}
+
+struct FileOperationCompletion {
+    context: explorer_model::RequestContext,
+    outcome: OperationTerminal,
+    clipboard_paste: bool,
 }
 
 /// Non-blocking command/event endpoint failures.
@@ -215,6 +236,7 @@ impl ShellStaHandle {
         let thread_pump_cycles = Arc::clone(&pump_cycles);
         let (control_tx, control_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
+        let (file_operation_tx, file_operation_rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let (done_tx, done_rx) = mpsc::sync_channel(1);
         ACTIVE_CONTROL_CHANNELS.fetch_add(1, Ordering::AcqRel);
@@ -250,12 +272,21 @@ impl ShellStaHandle {
 
                 let mut runtime = StaRuntime::default();
                 loop {
+                    while let Ok(completion) = file_operation_rx.try_recv() {
+                        finish_background_file_operation(completion, &event_tx, &mut runtime);
+                    }
                     match control_rx.recv_timeout(MESSAGE_PUMP_INTERVAL) {
                         Ok(ControlMessage::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
                         Ok(ControlMessage::Command { command, queued_at }) => {
                             let outcome =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    process_command(&command, queued_at, &event_tx, &mut runtime);
+                                    process_command(
+                                        &command,
+                                        queued_at,
+                                        &event_tx,
+                                        &file_operation_tx,
+                                        &mut runtime,
+                                    );
                                 }));
                             if let Err(payload) = outcome {
                                 let message = panic_payload_message(payload.as_ref());
@@ -542,6 +573,7 @@ fn process_command(
     command: &ExplorerCommand,
     queued_at: Instant,
     events: &SyncSender<ExplorerEvent>,
+    file_operations: &Sender<FileOperationCompletion>,
     runtime: &mut StaRuntime,
 ) {
     let Some(context) = command.context().cloned() else {
@@ -580,88 +612,103 @@ fn process_command(
                         .map_err(|error| event_send_error(&error))
                 }),
         },
-        ExplorerCommand::ExecuteFileOperation { request, .. } => {
-            let outcome = operation_terminal(
-                crate::file_operation::execute(&context, request, events),
-                "execute_file_operation",
-            );
-            events
-                .try_send(ExplorerEvent::OperationFinished {
-                    context: context.clone(),
-                    outcome,
-                })
-                .map_err(|error| event_send_error(&error))
-        }
-        ExplorerCommand::DataTransfer { request, .. } => {
-            let result = match request {
-                DataTransferRequest::Copy { items } => runtime
-                    .clipboard
-                    .copy_or_cut(items.clone(), ClipboardMode::Copy)
-                    .map(|state| {
-                        let _ = events.try_send(ExplorerEvent::ClipboardChanged { state });
-                        OperationTerminal::Finished
-                    }),
-                DataTransferRequest::Cut { items } => runtime
-                    .clipboard
-                    .copy_or_cut(items.clone(), ClipboardMode::Cut)
-                    .map(|state| {
-                        let _ = events.try_send(ExplorerEvent::ClipboardChanged { state });
-                        OperationTerminal::Finished
-                    }),
-                DataTransferRequest::Paste {
-                    destination,
-                    conflict,
-                } => runtime
-                    .clipboard
-                    .paste_request(destination.clone(), *conflict)
-                    .and_then(|(operation, data, mode)| {
-                        let outcome = crate::file_operation::execute(&context, &operation, events)?;
-                        runtime.clipboard.complete_paste(&data, mode, &outcome);
-                        let _ = events.try_send(ExplorerEvent::ClipboardChanged {
-                            state: runtime.clipboard.state(),
-                        });
-                        Ok(outcome)
-                    }),
-                DataTransferRequest::BeginDrag {
-                    items,
-                    allowed_effects,
-                    button,
-                } => crate::drag_drop::begin_native_drag(
-                    items,
-                    *allowed_effects,
-                    *button,
-                    context.cancellation.clone(),
-                )
-                .map_err(|_| {
-                    ExplorerError::new(
-                        ExplorerErrorKind::Availability,
-                        "begin OLE drag",
+        ExplorerCommand::ExecuteFileOperation { request, .. } => start_file_operation_worker(
+            context.clone(),
+            request.clone(),
+            events.clone(),
+            file_operations.clone(),
+            false,
+        ),
+        ExplorerCommand::DataTransfer { request, .. } => match request {
+            DataTransferRequest::Paste {
+                destination,
+                conflict,
+            } => runtime
+                .clipboard
+                .begin_background_paste(context.request_id, destination.clone(), *conflict)
+                .and_then(|operation| {
+                    start_file_operation_worker(
+                        context.clone(),
+                        operation,
+                        events.clone(),
+                        file_operations.clone(),
                         true,
-                        "拖放服務尚未啟動。",
-                        "drag request reached clipboard-only dispatch",
                     )
+                    .inspect_err(|_| {
+                        runtime
+                            .clipboard
+                            .abandon_background_paste(context.request_id);
+                    })
                 }),
-                DataTransferRequest::DropExternal {
-                    sources,
-                    destination,
-                    effect,
-                    conflict,
-                } => crate::drag_drop::external_drop_request(
-                    sources,
-                    destination.clone(),
-                    *effect,
-                    *conflict,
+            DataTransferRequest::DropExternal {
+                sources,
+                destination,
+                effect,
+                conflict,
+            } => crate::drag_drop::external_drop_request(
+                sources,
+                destination.clone(),
+                *effect,
+                *conflict,
+            )
+            .and_then(|operation| {
+                start_file_operation_worker(
+                    context.clone(),
+                    operation,
+                    events.clone(),
+                    file_operations.clone(),
+                    false,
                 )
-                .and_then(|operation| crate::file_operation::execute(&context, &operation, events)),
-            };
-            let outcome = operation_terminal(result, "data_transfer");
-            events
-                .try_send(ExplorerEvent::OperationFinished {
-                    context: context.clone(),
-                    outcome,
-                })
-                .map_err(|error| event_send_error(&error))
-        }
+            }),
+            request => {
+                let result = match request {
+                    DataTransferRequest::Copy { items } => runtime
+                        .clipboard
+                        .copy_or_cut(items.clone(), ClipboardMode::Copy)
+                        .map(|state| {
+                            let _ = events.try_send(ExplorerEvent::ClipboardChanged { state });
+                            OperationTerminal::Finished
+                        }),
+                    DataTransferRequest::Cut { items } => runtime
+                        .clipboard
+                        .copy_or_cut(items.clone(), ClipboardMode::Cut)
+                        .map(|state| {
+                            let _ = events.try_send(ExplorerEvent::ClipboardChanged { state });
+                            OperationTerminal::Finished
+                        }),
+                    DataTransferRequest::BeginDrag {
+                        items,
+                        allowed_effects,
+                        button,
+                    } => crate::drag_drop::begin_native_drag(
+                        items,
+                        *allowed_effects,
+                        *button,
+                        context.cancellation.clone(),
+                    )
+                    .map_err(|_| {
+                        ExplorerError::new(
+                            ExplorerErrorKind::Availability,
+                            "begin OLE drag",
+                            true,
+                            "拖放服務尚未啟動。",
+                            "drag request reached clipboard-only dispatch",
+                        )
+                    }),
+                    DataTransferRequest::Paste { .. }
+                    | DataTransferRequest::DropExternal { .. } => {
+                        unreachable!("background transfers are handled before synchronous dispatch")
+                    }
+                };
+                let outcome = operation_terminal(result, "data_transfer");
+                events
+                    .try_send(ExplorerEvent::OperationFinished {
+                        context: context.clone(),
+                        outcome,
+                    })
+                    .map_err(|error| event_send_error(&error))
+            }
+        },
         ExplorerCommand::ShowContextMenu { request, .. } => {
             if request.requested_verb.as_deref().is_some_and(|verb| {
                 verb.eq_ignore_ascii_case("properties")
@@ -839,6 +886,109 @@ fn operation_terminal(
             OperationTerminal::Failed(error)
         }
     }
+}
+
+struct FileOperationWorkerGuard;
+
+impl Drop for FileOperationWorkerGuard {
+    fn drop(&mut self) {
+        ACTIVE_FILE_OPERATION_WORKERS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn background_file_operation_error(operation: &'static str, detail: String) -> ExplorerError {
+    ExplorerError::new(
+        ExplorerErrorKind::Availability,
+        operation,
+        true,
+        "無法啟動背景檔案作業。",
+        detail,
+    )
+}
+
+fn start_file_operation_worker(
+    context: explorer_model::RequestContext,
+    request: explorer_model::FileOperationRequest,
+    events: SyncSender<ExplorerEvent>,
+    completions: Sender<FileOperationCompletion>,
+    clipboard_paste: bool,
+) -> Result<(), ExplorerError> {
+    let worker_name = format!("file-operation-{:?}", context.request_id);
+    thread::Builder::new()
+        .name(worker_name)
+        .spawn(move || {
+            ACTIVE_FILE_OPERATION_WORKERS.fetch_add(1, Ordering::AcqRel);
+            let _worker_guard = FileOperationWorkerGuard;
+            #[cfg(test)]
+            if let Some(gate) = FILE_OPERATION_TEST_GATE
+                .lock()
+                .ok()
+                .and_then(|gate| gate.clone())
+                .filter(|gate| gate.request_id == context.request_id)
+            {
+                let _ = gate.started.try_send(());
+                while !gate.release.load(Ordering::Acquire) {
+                    thread::sleep(Duration::from_millis(2));
+                }
+            }
+            let panic_context = context.clone();
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                ApartmentGuard::initialize()
+                    .map_err(|error| {
+                        background_file_operation_error(
+                            "initialize background file operation apartment",
+                            error.to_string(),
+                        )
+                    })
+                    .and_then(|_apartment| {
+                        crate::file_operation::execute(&context, &request, &events)
+                    })
+            }))
+            .map_or_else(
+                |payload| {
+                    let message = panic_payload_message(payload.as_ref());
+                    record_process_error_message(
+                        ErrorSeverity::Critical,
+                        "shell",
+                        "file_operation_worker_panic",
+                        &message,
+                        Some(file!()),
+                    );
+                    OperationTerminal::Failed(background_file_operation_error(
+                        "background file operation panic",
+                        message,
+                    ))
+                },
+                |result| operation_terminal(result, "background_file_operation"),
+            );
+            let _ = completions.send(FileOperationCompletion {
+                context: panic_context,
+                outcome,
+                clipboard_paste,
+            });
+        })
+        .map(|_| ())
+        .map_err(|error| {
+            background_file_operation_error("start background file operation", error.to_string())
+        })
+}
+
+fn finish_background_file_operation(
+    completion: FileOperationCompletion,
+    events: &SyncSender<ExplorerEvent>,
+    runtime: &mut StaRuntime,
+) {
+    if completion.clipboard_paste
+        && let Some(state) = runtime
+            .clipboard
+            .complete_background_paste(completion.context.request_id, &completion.outcome)
+    {
+        let _ = events.try_send(ExplorerEvent::ClipboardChanged { state });
+    }
+    let _ = events.try_send(ExplorerEvent::OperationFinished {
+        context: completion.context,
+        outcome: completion.outcome,
+    });
 }
 
 struct BreadcrumbWorkerGuard;
@@ -1441,9 +1591,9 @@ fn pump_pending_messages() -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        ShellStaError, ShellStaHandle, ShellStaState, StaResourceSnapshot, filesystem_ancestry,
-        send_breadcrumb_broker_failure, shell_ancestry_segments, start_bounded_breadcrumb_job,
-        watchable_directory_path,
+        FILE_OPERATION_TEST_GATE, FileOperationTestGate, ShellStaError, ShellStaHandle,
+        ShellStaState, StaResourceSnapshot, filesystem_ancestry, send_breadcrumb_broker_failure,
+        shell_ancestry_segments, start_bounded_breadcrumb_job, watchable_directory_path,
     };
     use explorer_model::{
         BreadcrumbSegmentId, BreadcrumbTerminal, ClipboardMode, ClipboardState, ConflictDecision,
@@ -1458,7 +1608,11 @@ mod tests {
         mem::size_of_val,
         path::PathBuf,
         process::Command,
-        sync::{Mutex, mpsc},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        },
         thread,
         time::{Duration, Instant},
     };
@@ -2127,6 +2281,120 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
             assert!(Instant::now() < deadline, "E2E navigation timed out");
             thread::sleep(Duration::from_millis(2));
         }
+    }
+
+    #[test]
+    fn background_copy_does_not_block_a_later_navigation() {
+        struct TestGateReset(Arc<AtomicBool>);
+        impl Drop for TestGateReset {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+                if let Ok(mut gate) = FILE_OPERATION_TEST_GATE.lock() {
+                    gate.take();
+                }
+            }
+        }
+
+        let _serial = TEST_LOCK.lock().unwrap();
+        let workers_before = StaResourceSnapshot::capture().active_file_operation_workers;
+        let fixture = OwnedTempFixture::new().expect("background operation fixture");
+        let source = fixture
+            .create_file("copy-source.bin", b"background-copy")
+            .expect("copy source");
+        let destination = fixture.create_dir("destination").expect("destination");
+        let expected = destination.join("copy-source.bin");
+        let operation_context = RequestContext::new(TabId::new(), Generation::new(1));
+        let (started_tx, started_rx) = mpsc::sync_channel(1);
+        let release = Arc::new(AtomicBool::new(false));
+        *FILE_OPERATION_TEST_GATE.lock().unwrap() = Some(FileOperationTestGate {
+            request_id: operation_context.request_id,
+            started: started_tx,
+            release: Arc::clone(&release),
+        });
+        let _gate_reset = TestGateReset(Arc::clone(&release));
+
+        let sta = ShellStaHandle::start().expect("start STA");
+        sta.submit(ExplorerCommand::ExecuteFileOperation {
+            context: operation_context.clone(),
+            request: FileOperationRequest {
+                kind: FileOperationKind::Copy {
+                    items: vec![real_operation_item(&source)],
+                    destination: LocationDescriptor::file_system(&destination),
+                },
+                flags: FileOperationFlags {
+                    conflict: ConflictDecision::Replace,
+                    ..FileOperationFlags::default()
+                },
+            },
+        })
+        .expect("submit background copy");
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("background worker started");
+
+        let navigation_context = RequestContext::new(TabId::new(), Generation::new(1));
+        sta.submit(ExplorerCommand::Navigate {
+            context: navigation_context.clone(),
+            location: LocationDescriptor::file_system(fixture.root()),
+        })
+        .expect("submit navigation while copy is pending");
+        let navigation_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(event) = sta.try_recv_event().expect("navigation event") {
+                match event {
+                    ExplorerEvent::DirectoryFinished { context }
+                        if context.request_id == navigation_context.request_id =>
+                    {
+                        break;
+                    }
+                    ExplorerEvent::OperationFinished { context, .. }
+                        if context.request_id == operation_context.request_id =>
+                    {
+                        panic!("copy completed before the test released its background worker")
+                    }
+                    _ => {}
+                }
+            }
+            assert!(
+                Instant::now() < navigation_deadline,
+                "navigation was blocked behind the background copy"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+
+        release.store(true, Ordering::Release);
+        let operation_deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(ExplorerEvent::OperationFinished { context, outcome }) =
+                sta.try_recv_event().expect("operation event")
+                && context.request_id == operation_context.request_id
+            {
+                assert_eq!(outcome, OperationTerminal::Finished);
+                break;
+            }
+            assert!(
+                Instant::now() < operation_deadline,
+                "background copy did not finish"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(
+            fs::read(expected).expect("copied bytes"),
+            b"background-copy"
+        );
+        let worker_deadline = Instant::now() + Duration::from_secs(2);
+        while StaResourceSnapshot::capture().active_file_operation_workers != workers_before
+            && Instant::now() < worker_deadline
+        {
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(
+            StaResourceSnapshot::capture().active_file_operation_workers,
+            workers_before,
+            "background operation worker leaked"
+        );
+        sta.shutdown_and_join(Duration::from_secs(5))
+            .expect("STA stops");
     }
 
     #[test]

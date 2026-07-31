@@ -4,9 +4,9 @@
     reason = "Shell IDataObject, PIDL, HGLOBAL, and STGMEDIUM ownership require audited FFI"
 )]
 
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
-use explorer_common::{ExplorerError, ExplorerErrorKind};
+use explorer_common::{ExplorerError, ExplorerErrorKind, RequestId};
 use explorer_model::{
     ClipboardMode, ClipboardState, ConflictDecision, FileOperationFlags, FileOperationKind,
     FileOperationRequest, ItemDescriptor, OperationItemResult, OperationTerminal, TransferEffects,
@@ -33,8 +33,19 @@ use windows::Win32::{
 #[cfg(test)]
 pub(crate) static CLIPBOARD_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+struct PendingPaste {
+    data: IDataObject,
+    mode: ClipboardMode,
+    clipboard_sequence: u32,
+}
+
+const fn background_paste_still_owns_clipboard(expected: u32, current: u32) -> bool {
+    expected == current
+}
+
 pub(crate) struct ClipboardRuntime {
     owned: Option<IDataObject>,
+    pending_pastes: HashMap<RequestId, PendingPaste>,
     state: ClipboardState,
     generation: u64,
     sequence: u32,
@@ -46,6 +57,7 @@ impl ClipboardRuntime {
         let sequence = unsafe { GetClipboardSequenceNumber() }.wrapping_sub(1);
         Self {
             owned: None,
+            pending_pastes: HashMap::new(),
             state: ClipboardState::None { generation: 0 },
             generation: 0,
             sequence,
@@ -166,6 +178,47 @@ impl ClipboardRuntime {
         ))
     }
 
+    pub(crate) fn begin_background_paste(
+        &mut self,
+        request_id: RequestId,
+        destination: explorer_model::LocationDescriptor,
+        conflict: ConflictDecision,
+    ) -> Result<FileOperationRequest, ExplorerError> {
+        let (request, data, mode) = self.paste_request(destination, conflict)?;
+        // SAFETY: sequence observation is lock-free and lets completion avoid clearing clipboard
+        // content that the user copied while this background operation was running.
+        let clipboard_sequence = unsafe { GetClipboardSequenceNumber() };
+        self.pending_pastes.insert(
+            request_id,
+            PendingPaste {
+                data,
+                mode,
+                clipboard_sequence,
+            },
+        );
+        Ok(request)
+    }
+
+    pub(crate) fn complete_background_paste(
+        &mut self,
+        request_id: RequestId,
+        outcome: &OperationTerminal,
+    ) -> Option<ClipboardState> {
+        let pending = self.pending_pastes.remove(&request_id)?;
+        // SAFETY: sequence observation does not acquire or retain clipboard storage.
+        let current_sequence = unsafe { GetClipboardSequenceNumber() };
+        if !background_paste_still_owns_clipboard(pending.clipboard_sequence, current_sequence) {
+            let _ = self.poll_change();
+            return Some(self.state());
+        }
+        self.complete_paste(&pending.data, pending.mode, outcome);
+        Some(self.state())
+    }
+
+    pub(crate) fn abandon_background_paste(&mut self, request_id: RequestId) {
+        self.pending_pastes.remove(&request_id);
+    }
+
     pub(crate) fn complete_paste(
         &mut self,
         data: &IDataObject,
@@ -215,6 +268,7 @@ impl ClipboardRuntime {
             }
         }
         self.owned = None;
+        self.pending_pastes.clear();
     }
 }
 
@@ -617,10 +671,17 @@ mod tests {
     use windows::Win32::System::Ole::{OleInitialize, OleUninitialize};
 
     use super::{
-        CLIPBOARD_TEST_LOCK, ClipboardRuntime, clear_clipboard_with_retry,
-        create_shell_data_object, paste_conflict_for_mode, set_clipboard_with_retry,
-        set_drop_effect, validate_inspection_duration,
+        CLIPBOARD_TEST_LOCK, ClipboardRuntime, background_paste_still_owns_clipboard,
+        clear_clipboard_with_retry, create_shell_data_object, paste_conflict_for_mode,
+        set_clipboard_with_retry, set_drop_effect, validate_inspection_duration,
     };
+
+    #[test]
+    fn background_paste_never_overwrites_a_newer_clipboard_sequence() {
+        assert!(background_paste_still_owns_clipboard(42, 42));
+        assert!(!background_paste_still_owns_clipboard(42, 43));
+        assert!(!background_paste_still_owns_clipboard(u32::MAX, 0));
+    }
 
     #[test]
     fn keep_both_is_limited_to_copy_paste() {
