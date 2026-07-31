@@ -3251,7 +3251,7 @@ impl ExplorerRoot {
         if action == ExplorerAction::Paste
             && let Some(command) = self
                 .state
-                .begin_paste_request(explorer_model::ConflictDecision::KeepBoth)
+                .begin_paste_request(explorer_model::ConflictDecision::Prompt)
         {
             self.submit_command(command);
         }
