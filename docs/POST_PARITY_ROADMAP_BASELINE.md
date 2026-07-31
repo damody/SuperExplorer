@@ -8,9 +8,12 @@ Execution state: dirty workspace containing concurrent folder-scoped Lua, drag/d
 ## Host and Environment
 
 - Windows 11 Professional x64, build 26200.
-- Rust stable `1.95.0` / Cargo `1.95.0`, `x86_64-pc-windows-msvc`.
+- Historical execution toolchain: Rust stable `1.95.0` / Cargo `1.95.0`, `x86_64-pc-windows-msvc`; this remains the actual 2026-07-28 baseline environment.
+- Current required repository baseline: Rust `1.97.1` / Cargo `1.97.1`, `x86_64-pc-windows-msvc`, pinned by `rust-toolchain.toml` and the workspace `rust-version`.
 - The current desktop has one active 175% monitor. Formal 100/125/150/200% raster and mixed-DPI evidence remains hardware-qualified rather than simulated.
 - The run used the locked workspace and existing GPUI-CE gitlink.
+
+This documentation-only synchronization did not rerun the historical roadmap commands under Rust 1.97.1. Their recorded outcomes remain evidence for the original Rust/Cargo 1.95.0 execution only.
 
 ## Roadmap Baseline Changes Included in This Run
 

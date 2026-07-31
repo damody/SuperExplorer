@@ -30,10 +30,13 @@
 | App commit/build | release binary；source checkpoint `eaa302320682531034f84373f968921b05faf1e1`（早期 artifacts 依 metadata 記錄其 dirty revision） |
 | Windows edition/build | Windows 11 Professional x64 / 10.0.26200 Build 26200 |
 | Explorer version | `10.0.26100.8875` |
-| Rust/toolchain | `rustc 1.95.0` / `stable-x86_64-pc-windows-msvc` |
+| Rust/toolchain（歷史實測） | `rustc 1.95.0` / `stable-x86_64-pc-windows-msvc`；此值屬 2026-07-26 驗收證據 |
+| 目前要求工具鏈 | repository pin `1.97.1` / `stable-x86_64-pc-windows-msvc`；後續驗收必須使用此版本 |
 | Monitor/DPI | 實際 168 DPI（175%）；100/125/150/200% 未執行 |
 | Theme/high contrast | light/dark app capture；high contrast 未執行 |
 | IME/accessibility tool | 未執行 |
+
+以上歷史案例未因本次文件同步而在 Rust 1.97.1 下重跑；既有結果仍只證明其原始 Rust 1.95.0 執行環境，不能視為 1.97.1 的新驗證證據。
 
 ## 單一案例紀錄模板
 

@@ -38,18 +38,20 @@ OpenSpec change：`build-rust-gpui-windows-explorer`
 
 ## 可重現建置基線
 
-擷取日期：2026-07-26；shell：PowerShell；target：`x86_64-pc-windows-msvc`。
+Rust/Cargo 擷取日期：2026-07-31；shell：PowerShell；target：`x86_64-pc-windows-msvc`。其餘環境欄位沿用 2026-07-26 的實測資料，本次未重新稽核。
 
 | 項目 | 實測值 |
 |---|---|
-| `rustc -Vv` | `rustc 1.95.0 (59807616e 2026-04-14)`；LLVM 22.1.2 |
-| `cargo -V` | `cargo 1.95.0 (f2d3ce0bd 2026-03-21)` |
-| Rust toolchain | `stable-x86_64-pc-windows-msvc` |
+| `rustc -Vv` | `rustc 1.97.1 (8bab26f4f 2026-07-14)`；完整 commit `8bab26f4f68e0e26f0bb7960be334d5b520ea452`；LLVM 22.1.6 |
+| `cargo -V` | `cargo 1.97.1 (c980f4866 2026-06-30)`；完整 commit `c980f4866141969fab6254a680546a277789d6f0` |
+| Rust toolchain | `stable-x86_64-pc-windows-msvc`；repository override/pin `1.97.1` |
 | Windows | Windows 11 Professional x64，Version `10.0.26200`，Build `26200` |
 | Process architecture | `X64` |
 | Visual Studio Build Tools | VS 2022 Build Tools `17.14.32`（installation version `17.14.37301.10`） |
 | 其他可用 MSVC | VS 2026 Community `18.6.3`、VS 2019 Build Tools `16.11.58` |
 | Windows SDK | `10.0.26100.0`（另有 `10.0.19041.0`） |
+
+本次只同步目前 Rust/Cargo 基線，未在 Rust 1.97.1 下重跑前述歷史 parity、roadmap 或實機驗收；舊證據仍以各文件所記錄的原始工具鏈為準。
 
 基線命令：
 
