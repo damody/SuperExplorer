@@ -6,6 +6,11 @@ use std::{
     path::{Path, PathBuf},
 };
 use superexplorer_ui_abi_fingerprint::sha256_hex;
+use toml::Value as TomlValue;
+
+const MAX_PAYLOADS: usize = 128;
+const MAX_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_TOTAL_PAYLOAD_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -131,6 +136,9 @@ struct ExpectedSdk {
     target: String,
     abi_schema: u32,
     ui_abi_fingerprint: String,
+    gpui_repository: String,
+    gpui_revision: String,
+    gpui_packages: BTreeSet<String>,
     gates: BTreeMap<String, Evidence>,
 }
 
@@ -168,6 +176,9 @@ pub fn validate(root: &Path) -> Report {
 }
 
 fn validate_inner(root: &Path) -> Result<Vec<Diagnostic>, String> {
+    if is_link_or_reparse(root)? {
+        return Err("plugin root is a symlink or reparse point".into());
+    }
     let canonical_root = root
         .canonicalize()
         .map_err(|error| format!("plugin root is unavailable: {error}"))?;
@@ -217,8 +228,34 @@ fn expected_sdk() -> Result<ExpectedSdk, String> {
             .and_then(|value| u32::try_from(value).ok())
             .ok_or("sdk-lock ABI schema is missing")?,
         ui_abi_fingerprint: required_string(&fingerprint, "/fingerprint")?,
+        gpui_repository: required_string(&lock, "/gpui/repository")?,
+        gpui_revision: required_string(&lock, "/gpui/revision")?,
+        gpui_packages: protected_gpui_packages(&lock)?,
         gates: gate_map,
     })
+}
+
+fn protected_gpui_packages(lock: &Value) -> Result<BTreeSet<String>, String> {
+    let repository = required_string(lock, "/gpui/repository")?;
+    let packages = lock
+        .pointer("/protected_dependency_graph")
+        .and_then(Value::as_array)
+        .ok_or("sdk-lock protected dependency graph is missing")?;
+    let names = packages
+        .iter()
+        .filter(|package| {
+            package
+                .get("source")
+                .and_then(Value::as_str)
+                .is_some_and(|source| source.contains(&repository))
+        })
+        .filter_map(|package| package.get("name").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+    if names.is_empty() {
+        return Err("sdk-lock has no protected GPUI packages".into());
+    }
+    Ok(names)
 }
 
 fn read_json(path: &Path) -> Result<Value, String> {
