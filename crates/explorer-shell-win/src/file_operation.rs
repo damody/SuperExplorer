@@ -31,12 +31,18 @@ use windows::{
             Ole::{DROPEFFECT, DROPEFFECT_COPY, IDropTarget},
             SystemServices::{MK_CONTROL, MK_LBUTTON},
         },
-        UI::Shell::{
-            Common::ITEMIDLIST, FILEOPERATION_FLAGS, FOF_ALLOWUNDO, FOF_NOCONFIRMATION,
-            FOF_NOCONFIRMMKDIR, FOF_NOERRORUI, FOF_RENAMEONCOLLISION, FOFX_EARLYFAILURE,
-            FOFX_RECYCLEONDELETE, FOFX_SHOWELEVATIONPROMPT, FileOperation, IFileOperation,
-            IFileOperationProgressSink, IFileOperationProgressSink_Impl, IShellItem, IShellLinkW,
-            SHBindToParent, SHGetNewLinkInfoW, ShellLink,
+        UI::{
+            Shell::{
+                Common::ITEMIDLIST, FILEOPERATION_FLAGS, FOF_ALLOWUNDO, FOF_NOCONFIRMATION,
+                FOF_NOCONFIRMMKDIR, FOF_NOERRORUI, FOF_RENAMEONCOLLISION, FOFX_EARLYFAILURE,
+                FOFX_RECYCLEONDELETE, FOFX_SHOWELEVATIONPROMPT, FileOperation, IFileOperation,
+                IFileOperationProgressSink, IFileOperationProgressSink_Impl, IShellItem,
+                IShellLinkW, SHBindToParent, SHGetNewLinkInfoW, ShellLink,
+            },
+            WindowsAndMessaging::{
+                GetForegroundWindow, IDCANCEL, IDNO, IDYES, MB_ICONWARNING, MB_TASKMODAL,
+                MB_YESNOCANCEL, MessageBoxW,
+            },
         },
     },
     core::{BOOL, HRESULT, HSTRING, Interface as _, PCWSTR, Ref, implement},
@@ -54,7 +60,20 @@ pub(crate) fn execute(
     if let FileOperationKind::CreateShortcut { items } = &request.kind {
         return create_shortcuts(context, items, events);
     }
-    let skipped = preflight_conflicts(request)?;
+    if request.flags.conflict == ConflictDecision::Prompt
+        && let Some(folder_name) = folder_merge_conflict_name(request)
+    {
+        match prompt_folder_merge(&folder_name) {
+            FolderMergeDecision::Merge => {}
+            FolderMergeDecision::Skip => {
+                let mut skipped_request = request.clone();
+                skipped_request.flags.conflict = ConflictDecision::Skip;
+                return execute(context, &skipped_request, events);
+            }
+            FolderMergeDecision::Cancel => return Ok(OperationTerminal::Cancelled),
+        }
+    }
+    let skipped = preflight_conflicts(request);
     if skipped.len() == item_count(&request.kind) {
         return Ok(OperationTerminal::Partial {
             outcomes: skipped_outcomes(&request.kind, &skipped),
@@ -69,6 +88,19 @@ pub(crate) fn execute(
     // SAFETY: operation is apartment-local and flags are documented FILEOPERATION_FLAGS.
     unsafe { operation.SetOperationFlags(flags) }
         .map_err(|error| native_error("configure file operation", &error))?;
+    if request.flags.conflict == ConflictDecision::Prompt {
+        // A paste is initiated while the Explorer window is foreground. Giving that HWND to the
+        // Shell keeps its native folder/file conflict chooser modal to the initiating window,
+        // just like File Explorer, without leaking a platform handle into the shared protocol.
+        // SAFETY: GetForegroundWindow returns either a live top-level HWND or NULL; the Shell does
+        // not retain ownership of the HWND beyond this synchronous IFileOperation.
+        let owner = unsafe { GetForegroundWindow() };
+        if !owner.is_invalid() {
+            // SAFETY: operation and owner are used on the owning STA for the synchronous call.
+            unsafe { operation.SetOwnerWindow(owner) }
+                .map_err(|error| native_error("set file operation owner", &error))?;
+        }
+    }
 
     let total_items = item_count(&request.kind);
     let _ = events.try_send(ExplorerEvent::OperationProgress {
@@ -144,6 +176,50 @@ pub(crate) fn execute(
         Ok(OperationTerminal::Finished)
     } else {
         Ok(OperationTerminal::Partial { outcomes })
+    }
+}
+
+fn folder_merge_conflict_name(request: &FileOperationRequest) -> Option<String> {
+    conflict_targets(&request.kind)
+        .into_iter()
+        .find_map(|target| {
+            let target = target?;
+            let source = target.source.as_deref()?;
+            (source.is_dir() && target.destination.is_dir() && !target.is_same_item()).then(|| {
+                source
+                    .file_name()
+                    .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+            })
+        })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FolderMergeDecision {
+    Merge,
+    Skip,
+    Cancel,
+}
+
+fn prompt_folder_merge(folder_name: &str) -> FolderMergeDecision {
+    let title = HSTRING::from("Confirm Folder Replace");
+    let content = HSTRING::from(format!(
+        "The destination already contains a folder named '{folder_name}'.\n\nIf any files have the same names, you will be asked whether to replace them.\n\nDo you still want to merge this folder?"
+    ));
+    // SAFETY: both strings and the foreground owner HWND remain live through this synchronous,
+    // user-initiated message box on the Shell STA.
+    let selected = unsafe {
+        MessageBoxW(
+            Some(GetForegroundWindow()),
+            &content,
+            &title,
+            MB_YESNOCANCEL | MB_ICONWARNING | MB_TASKMODAL,
+        )
+    };
+    match selected {
+        IDYES => FolderMergeDecision::Merge,
+        IDNO => FolderMergeDecision::Skip,
+        IDCANCEL => FolderMergeDecision::Cancel,
+        _ => FolderMergeDecision::Cancel,
     }
 }
 
@@ -263,6 +339,12 @@ fn nul_terminated_path(path: &Path) -> Vec<u16> {
 
 fn operation_flags(request: &FileOperationRequest) -> FILEOPERATION_FLAGS {
     let mut flags = base_operation_flags();
+    if request.flags.conflict == ConflictDecision::Prompt {
+        // These two flags answer file and folder collision questions implicitly. Removing them
+        // lets the Windows Shell show its Explorer-standard folder merge/file replacement
+        // chooser, including Skip, Cancel, and Apply to all, while retaining our error policy.
+        flags &= !(FOF_NOCONFIRMATION | FOF_NOCONFIRMMKDIR | FOF_NOERRORUI | FOFX_EARLYFAILURE);
+    }
     // PermanentDelete is a protocol-level no-recycle boundary. Ignore an accidentally permissive
     // caller flag so malformed or older clients cannot turn Shift+Delete into an undoable delete.
     if request.flags.allow_undo
@@ -847,7 +929,7 @@ fn validate_request(request: &FileOperationRequest) -> Result<(), ExplorerError>
     }
 }
 
-fn preflight_conflicts(request: &FileOperationRequest) -> Result<Vec<usize>, ExplorerError> {
+fn preflight_conflicts(request: &FileOperationRequest) -> Vec<usize> {
     let targets = conflict_targets(&request.kind);
     let conflicts: Vec<usize> = targets
         .iter()
@@ -860,19 +942,9 @@ fn preflight_conflicts(request: &FileOperationRequest) -> Result<Vec<usize>, Exp
         })
         .collect();
     match request.flags.conflict {
-        ConflictDecision::Prompt if !conflicts.is_empty() => Err(ExplorerError::new(
-            ExplorerErrorKind::Conflict,
-            "preflight file operation collision",
-            true,
-            "目的地已有同名項目，請選擇略過、取代或保留兩者。",
-            format!(
-                "{} destination collision(s) require a typed decision",
-                conflicts.len()
-            ),
-        )),
-        ConflictDecision::Skip => Ok(conflicts),
+        ConflictDecision::Skip => conflicts,
         ConflictDecision::Prompt | ConflictDecision::Replace | ConflictDecision::KeepBoth => {
-            Ok(Vec::new())
+            Vec::new()
         }
     }
 }
@@ -1026,15 +1098,16 @@ mod tests {
     use std::{fs::OpenOptions, os::windows::fs::OpenOptionsExt as _, path::Path};
 
     use super::{
-        base_operation_flags, execute, keep_both_copy_names, numbered_copy_name, operation_flags,
-        preflight_conflicts, validate_name, validate_request,
+        base_operation_flags, execute, folder_merge_conflict_name, keep_both_copy_names,
+        numbered_copy_name, operation_flags, preflight_conflicts, validate_name, validate_request,
     };
     use explorer_model::{
         ConflictDecision, FileOperationFlags, FileOperationKind, FileOperationRequest,
         ItemDescriptor, LocationDescriptor, ShellItemId,
     };
     use windows::Win32::UI::Shell::{
-        FOF_ALLOWUNDO, FOF_NOERRORUI, FOFX_RECYCLEONDELETE, FOFX_SHOWELEVATIONPROMPT,
+        FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOCONFIRMMKDIR, FOF_NOERRORUI, FOFX_EARLYFAILURE,
+        FOFX_RECYCLEONDELETE, FOFX_SHOWELEVATIONPROMPT,
     };
 
     #[test]
@@ -1043,6 +1116,55 @@ mod tests {
 
         assert_ne!((flags & FOF_NOERRORUI).0, 0);
         assert_ne!((flags & FOFX_SHOWELEVATIONPROMPT).0, 0);
+    }
+
+    #[test]
+    fn prompt_conflicts_enable_the_native_shell_chooser() {
+        let prompt = FileOperationRequest {
+            kind: FileOperationKind::Copy {
+                items: vec![],
+                destination: LocationDescriptor::file_system(r"C:\fixture"),
+            },
+            flags: FileOperationFlags {
+                conflict: ConflictDecision::Prompt,
+                ..FileOperationFlags::default()
+            },
+        };
+        let mut replace = prompt.clone();
+        replace.flags.conflict = ConflictDecision::Replace;
+
+        assert_eq!((operation_flags(&prompt) & FOF_NOCONFIRMATION).0, 0);
+        assert_eq!((operation_flags(&prompt) & FOF_NOCONFIRMMKDIR).0, 0);
+        assert_eq!((operation_flags(&prompt) & FOF_NOERRORUI).0, 0);
+        assert_eq!((operation_flags(&prompt) & FOFX_EARLYFAILURE).0, 0);
+        assert_ne!((operation_flags(&replace) & FOF_NOCONFIRMATION).0, 0);
+        assert_ne!((operation_flags(&replace) & FOF_NOCONFIRMMKDIR).0, 0);
+        assert_ne!((operation_flags(&replace) & FOF_NOERRORUI).0, 0);
+    }
+
+    #[test]
+    fn same_named_directories_are_classified_for_the_folder_prompt() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let source_parent = fixture.path().join("source");
+        let destination_parent = fixture.path().join("destination");
+        let source = source_parent.join("SameFolder");
+        std::fs::create_dir_all(&source).expect("source folder");
+        std::fs::create_dir_all(destination_parent.join("SameFolder")).expect("destination folder");
+        let request = FileOperationRequest {
+            kind: FileOperationKind::Copy {
+                items: vec![ItemDescriptor {
+                    id: ShellItemId::from_provider_bytes([1]).expect("source id"),
+                    location: LocationDescriptor::file_system(source),
+                }],
+                destination: LocationDescriptor::file_system(destination_parent),
+            },
+            flags: FileOperationFlags::default(),
+        };
+
+        assert_eq!(
+            folder_merge_conflict_name(&request).as_deref(),
+            Some("SameFolder")
+        );
     }
 
     #[test]
@@ -1112,7 +1234,7 @@ mod tests {
     }
 
     #[test]
-    fn collision_preflight_requires_typed_decision_and_skip_is_per_item() {
+    fn collision_preflight_delegates_prompt_to_shell_and_skip_is_per_item() {
         let fixture = tempfile::tempdir().expect("fixture");
         let source = fixture.path().join("source");
         let destination = fixture.path().join("destination");
@@ -1142,24 +1264,13 @@ mod tests {
                 ..FileOperationFlags::default()
             },
         };
-        assert!(preflight_conflicts(&request).is_err());
+        assert!(preflight_conflicts(&request).is_empty());
         request.flags.conflict = ConflictDecision::Skip;
-        assert_eq!(
-            preflight_conflicts(&request).expect("skip decision"),
-            vec![0]
-        );
+        assert_eq!(preflight_conflicts(&request), vec![0]);
         request.flags.conflict = ConflictDecision::Replace;
-        assert!(
-            preflight_conflicts(&request)
-                .expect("replace decision")
-                .is_empty()
-        );
+        assert!(preflight_conflicts(&request).is_empty());
         request.flags.conflict = ConflictDecision::KeepBoth;
-        assert!(
-            preflight_conflicts(&request)
-                .expect("keep-both decision")
-                .is_empty()
-        );
+        assert!(preflight_conflicts(&request).is_empty());
     }
 
     #[test]
@@ -1328,6 +1439,63 @@ mod tests {
         );
         assert!(path.exists());
         drop(handle);
+    }
+
+    #[test]
+    fn same_named_directory_replace_merges_contents_without_losing_destination_only_files() {
+        let _apartment = crate::sta::ApartmentGuard::initialize().expect("STA");
+        let fixture = tempfile::tempdir().expect("fixture");
+        let source_parent = fixture.path().join("source");
+        let destination_parent = fixture.path().join("destination");
+        let source = source_parent.join("SameFolder");
+        let destination = destination_parent.join("SameFolder");
+        std::fs::create_dir_all(&source).expect("source folder");
+        std::fs::create_dir_all(&destination).expect("destination folder");
+        std::fs::write(source.join("source-only.txt"), b"source only").expect("source-only");
+        std::fs::write(source.join("conflict.txt"), b"new bytes").expect("source conflict");
+        std::fs::write(
+            destination.join("destination-only.txt"),
+            b"destination only",
+        )
+        .expect("destination-only");
+        std::fs::write(destination.join("conflict.txt"), b"old bytes")
+            .expect("destination conflict");
+        let request = FileOperationRequest {
+            kind: FileOperationKind::Copy {
+                items: vec![ItemDescriptor {
+                    id: ShellItemId::from_provider_bytes([1]).expect("source id"),
+                    location: LocationDescriptor::file_system(&source),
+                }],
+                destination: LocationDescriptor::file_system(&destination_parent),
+            },
+            flags: FileOperationFlags {
+                conflict: ConflictDecision::Replace,
+                ..FileOperationFlags::default()
+            },
+        };
+        let context = explorer_model::RequestContext::new(
+            explorer_model::TabId::new(),
+            explorer_model::Generation::default(),
+        );
+        let (events, _receiver) = std::sync::mpsc::sync_channel(64);
+
+        assert_eq!(
+            execute(&context, &request, &events).expect("merge same-named directory"),
+            explorer_model::OperationTerminal::Finished
+        );
+        assert_eq!(
+            std::fs::read(destination.join("source-only.txt")).expect("copied source-only"),
+            b"source only"
+        );
+        assert_eq!(
+            std::fs::read(destination.join("destination-only.txt"))
+                .expect("preserved destination-only"),
+            b"destination only"
+        );
+        assert_eq!(
+            std::fs::read(destination.join("conflict.txt")).expect("replaced conflict"),
+            b"new bytes"
+        );
     }
 
     #[test]
