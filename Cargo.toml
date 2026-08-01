@@ -35,8 +35,8 @@ cron = "0.17.0"
 embed-resource = "3.0"
 abi_stable = { version = "=0.11.3", default-features = false }
 gpui = { path = "vendor/gpui-ce/crates/gpui", version = "=0.2.2", default-features = false }
-gpui_elements = { path = "vendor/gpui-ce/crates/gpui_elements", version = "=0.1.0" }
-gpui_windows = { path = "vendor/gpui-ce/crates/gpui_windows", version = "=0.1.0" }
+gpui_elements = { path = "vendor/gpui-ce/crates/gpui_elements", version = "=0.1.0", default-features = false }
+gpui_windows = { path = "vendor/gpui-ce/crates/gpui_windows", version = "=0.1.0", default-features = false }
 raw-window-handle = "0.6"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
