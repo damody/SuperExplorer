@@ -14,11 +14,11 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        mpsc::SyncSender,
     },
     time::{Duration, Instant},
 };
 
+use crate::sta::RequiredTerminalPublisher;
 use explorer_common::{
     ErrorSeverity, ExplorerError, ExplorerErrorKind, panic_payload_message, record_process_error,
     record_process_error_message,
@@ -309,10 +309,10 @@ enum MenuHookAction {
     SuppressAndEndMenu,
 }
 
-pub(crate) fn start_brokered(
+pub(crate) fn start_brokered<P: RequiredTerminalPublisher>(
     context: RequestContext,
     request: ContextMenuRequest,
-    events: SyncSender<ExplorerEvent>,
+    events: P,
 ) {
     let deadline = Duration::from_millis(u64::from(request.deadline_ms.max(1)));
     start_bounded_job(context, deadline, events, move || {
@@ -329,22 +329,19 @@ pub(crate) fn start_brokered(
 /// The Shell STA owns COM/OLE and pumps messages for its full lifetime. Keeping target
 /// resolution and invocation on that apartment prevents a Properties handler from retaining
 /// interfaces that belonged to a disposable per-click thread.
-pub(crate) fn run_host_owned(
+pub(crate) fn run_host_owned<P: RequiredTerminalPublisher>(
     context: &RequestContext,
     request: &ContextMenuRequest,
-    events: &SyncSender<ExplorerEvent>,
+    events: P,
 ) {
     let result = show(request);
-    emit_broker_terminal(&AtomicBool::new(false), context, events, result);
+    emit_broker_terminal(&AtomicBool::new(false), context, &events, result);
 }
 
-fn start_bounded_job<F>(
-    context: RequestContext,
-    deadline: Duration,
-    events: SyncSender<ExplorerEvent>,
-    job: F,
-) where
+fn start_bounded_job<F, P>(context: RequestContext, deadline: Duration, events: P, job: F)
+where
     F: FnOnce() -> Result<ContextMenuOutcome, ExplorerError> + Send + 'static,
+    P: RequiredTerminalPublisher,
 {
     let terminal_sent = Arc::new(AtomicBool::new(false));
     let worker_gate = Arc::clone(&terminal_sent);
@@ -390,10 +387,10 @@ fn start_bounded_job<F>(
     });
 }
 
-fn emit_broker_terminal(
+fn emit_broker_terminal<P: RequiredTerminalPublisher>(
     gate: &AtomicBool,
     context: &RequestContext,
-    events: &SyncSender<ExplorerEvent>,
+    events: &P,
     result: Result<ContextMenuOutcome, ExplorerError>,
 ) {
     if gate
@@ -429,12 +426,7 @@ fn emit_broker_terminal(
         context: context.clone(),
         outcome,
     };
-    if let Err(error) = events.try_send(event) {
-        tracing::warn!(
-            ?error,
-            "context-menu broker terminal channel was unavailable"
-        );
-    }
+    events.publish_terminal(event);
 }
 
 struct OleApartment;

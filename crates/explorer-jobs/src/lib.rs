@@ -20,8 +20,14 @@ use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError};
 use explorer_model::TabId;
 
 mod preview;
+mod qos;
 mod thumbnail;
 pub use preview::{PreviewCoordinator, PreviewCoordinatorAction};
+pub use qos::{
+    DegradationLevel, DegradationPolicyConfig, DegradationTransition, FrameDrain, FrameDrainBudget,
+    FrameDrainLimit, InteractionFirstPolicy, InteractionFirstQos, InteractionFirstQosConfig,
+    PressureSample, QosObservationSnapshot, QosObservations, QosWorkClass,
+};
 pub use thumbnail::{
     CacheInsertOutcome, ThumbnailCacheStats, ThumbnailMemoryCache, ThumbnailScheduleOutcome,
     ThumbnailScheduler, ThumbnailSchedulerStats,
