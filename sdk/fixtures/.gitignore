@@ -1,0 +1,2 @@
+# Fixture build outputs are produced by the contract runner, never bundled.
+target/

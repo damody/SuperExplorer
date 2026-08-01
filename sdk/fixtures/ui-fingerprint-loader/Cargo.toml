@@ -1,0 +1,9 @@
+[package]
+name = "ui-fingerprint-loader-fixture"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+[dependencies]
+superexplorer-ui-abi-fingerprint = { path = "../../tools/ui-abi-fingerprint" }
+[workspace]

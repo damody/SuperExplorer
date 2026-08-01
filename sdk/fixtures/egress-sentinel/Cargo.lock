@@ -1,0 +1,6 @@
+# This file is intentionally minimal: the sentinel has no registry dependencies.
+version = 4
+
+[[package]]
+name = "superexplorer-egress-sentinel"
+version = "0.1.0"

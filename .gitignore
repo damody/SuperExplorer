@@ -5,6 +5,7 @@
 *.log
 *.pdb
 /.cache/
-/.github/workflows/
+/.github/workflows/*
+!/.github/workflows/sdk-offline-windows.yml
 __pycache__/
 *.py[cod]

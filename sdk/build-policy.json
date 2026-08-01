@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "abi_schema_version": 1,
+  "fingerprint_algorithm": "sha256-canonical-json-v1",
+  "profile": {
+    "name": "release",
+    "panic": "unwind",
+    "lto": "thin",
+    "codegen_units": 1
+  },
+  "allocator": {
+    "policy": "rust-default-origin-owned",
+    "cross_boundary_raw_allocations": false
+  },
+  "crt": {
+    "policy": "msvc-dynamic",
+    "crt_static": false
+  },
+  "rustflags": [],
+  "allowed_environment": []
+}

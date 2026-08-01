@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "approval": {
+    "channel": "development",
+    "state": "approved"
+  },
+  "source": {
+    "repository": "https://github.com/damody/gpui-ce-explorer.git",
+    "update_branch": "main",
+    "resolved_ref": "refs/remotes/origin/main",
+    "revision": "8945e2981b9fd00ca887e042d8adb9acc241b168",
+    "tree": "7d4acfda352c13d35a475da381f9b6f9de7a30c2",
+    "parent": "5604b378294e83ceb78ae846af72cfe3a9c330e5",
+    "commit_time": "2026-08-01T08:37:18+08:00",
+    "package": "gpui",
+    "package_version": "0.2.2"
+  },
+  "production": {
+    "default_features": false,
+    "features": []
+  },
+  "release_frozen": false
+}

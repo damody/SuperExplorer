@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["schema_version", "bundle_sha256", "base_vhdx_sha256", "nonce", "network", "egress_attempts"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "bundle_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "base_vhdx_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "nonce": { "type": "string", "minLength": 16 },
+    "network": { "type": "object", "required": ["before_nics", "after_nics", "routes"], "properties": { "before_nics": { "type": "integer", "const": 0 }, "after_nics": { "type": "integer", "const": 0 }, "routes": { "type": "array", "maxItems": 0 } } },
+    "egress_attempts": { "type": "object", "required": ["direct", "child"], "properties": { "direct": { "const": "blocked" }, "child": { "const": "blocked" } } }
+  },
+  "additionalProperties": false
+}
