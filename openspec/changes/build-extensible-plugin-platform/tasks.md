@@ -1,11 +1,11 @@
 ## 1. P0-0 Rust 與 GPUI Snapshot 基線
 
-- [ ] 1.1 將 workspace、host 與 SDK consumer 的 Rust 基線統一為 `1.97.1`／`x86_64-pc-windows-msvc`，提交精確 `rust-toolchain.toml` 並測試 rustc/Cargo commit 驗證
-- [ ] 1.2 將 `abi_stable = 0.11.3` 加入 protected dependency closure，以空 top-level features 建立最小 root-module/layout/panic-boundary fixture
-- [ ] 1.3 將 GPUI source authority 統一為 `https://github.com/damody/gpui-ce-explorer.git`，解析核准 development commit 並讓 host 與 SDK 使用同一 rev
-- [ ] 1.4 實作 `sdk-lock.json`／`bundle-manifest.json` canonical generator，涵蓋 toolchain、GPUI rev/tree、ABI、features、profile、panic、allocator/CRT、rustflags 與檔案 SHA-256
-- [ ] 1.5 建立 SDK canonical `Cargo.lock`、`.cargo/config.toml`、protected dependency graph validator 與 offline `vendor/cargo-sources`
-- [ ] 1.6 實作 UI ABI fingerprint generator／loader comparison，加入每個單因子改變都產生不相容的單元測試
+- [x] 1.1 將 workspace、host 與 SDK consumer 的 Rust 基線統一為 `1.97.1`／`x86_64-pc-windows-msvc`，提交精確 `rust-toolchain.toml` 並測試 rustc/Cargo commit 驗證
+- [x] 1.2 將 `abi_stable = 0.11.3` 加入 protected dependency closure，以空 top-level features 建立最小 root-module/layout/panic-boundary fixture
+- [x] 1.3 將 GPUI source authority 統一為 `https://github.com/damody/gpui-ce-explorer.git`，解析核准 development commit 並讓 host 與 SDK 使用同一 rev
+- [x] 1.4 實作 `sdk-lock.json`／`bundle-manifest.json` canonical generator，涵蓋 toolchain、GPUI rev/tree、ABI、features、profile、panic、allocator/CRT、rustflags 與檔案 SHA-256
+- [x] 1.5 建立 SDK canonical `Cargo.lock`、`.cargo/config.toml`、protected dependency graph validator 與 offline `vendor/cargo-sources`
+- [x] 1.6 實作 UI ABI fingerprint generator／loader comparison，加入每個單因子改變都產生不相容的單元測試
 - [ ] 1.7 建立隔離的 host-fixture 與 plugin-fixture，於空 `CARGO_HOME`、禁止網路下以 `--locked --offline` 分開建置並驗證載入
 - [ ] 1.8 實作 `update-gpui-snapshot.ps1` 與 CI job：解析完整 HEAD、拒絕未核准 non-fast-forward、產生新 bundle ID、失敗回退上一 snapshot
 - [ ] 1.9 實作 Release freeze 流程與 fixture：protected tag metadata、`release_frozen = true`、遠端 main 移動後仍離線重建、換 rev 強制新 RC/bundle ID

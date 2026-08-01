@@ -1,0 +1,13 @@
+name: sdk-offline-windows
+on:
+  workflow_dispatch:
+  push:
+    paths: ['sdk/**', '.github/workflows/sdk-offline-windows.yml']
+jobs:
+  offline:
+    runs-on: [self-hosted, windows, x64, hyperv-offline]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Run runner-owned offline guest gate
+        shell: powershell
+        run: '& C:\ProgramData\SuperExplorerCI\Invoke-OfflineSdkGuest.ps1 -RepositoryRoot "$env:GITHUB_WORKSPACE" -AttestationPath "$env:GITHUB_WORKSPACE\sdk\offline-attestation.json"'
