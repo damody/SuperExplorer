@@ -248,6 +248,10 @@ fn protected_gpui_packages(lock: &Value) -> Result<BTreeSet<String>, String> {
                 .get("source")
                 .and_then(Value::as_str)
                 .is_some_and(|source| source.contains(&repository))
+                || package
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .is_some_and(|path| path.starts_with("vendor/gpui-ce/"))
         })
         .filter_map(|package| package.get("name").and_then(Value::as_str))
         .map(str::to_owned)
@@ -348,6 +352,31 @@ fn validate_manifest(manifest: &Manifest, root: &Path, expected: &ExpectedSdk) -
             "entrypoint path is unsafe",
         ));
     }
+    validate_cargo_project(root, expected, &mut diagnostics);
+
+    if manifest.payloads.len() > MAX_PAYLOADS {
+        diagnostics.push(diagnostic(
+            "SESDK-PAYLOAD-BOUND-001",
+            "payload",
+            "payloads",
+            format!("a plugin may declare at most {MAX_PAYLOADS} payloads"),
+        ));
+    }
+    let total_size = manifest
+        .payloads
+        .iter()
+        .try_fold(0_u64, |total, payload| total.checked_add(payload.size));
+    if total_size.is_none_or(|total| total > MAX_TOTAL_PAYLOAD_BYTES) {
+        diagnostics.push(diagnostic(
+            "SESDK-PAYLOAD-BOUND-002",
+            "payload",
+            "payloads",
+            format!(
+                "declared payload bytes exceed the {} byte package limit",
+                MAX_TOTAL_PAYLOAD_BYTES
+            ),
+        ));
+    }
 
     let mut features = BTreeMap::new();
     for (index, feature) in manifest.features.iter().enumerate() {
@@ -395,6 +424,18 @@ fn validate_manifest(manifest: &Manifest, root: &Path, expected: &ExpectedSdk) -
                 &path,
                 "P0 payload kind is unsupported",
             ));
+        }
+        if payload.size > MAX_PAYLOAD_BYTES {
+            diagnostics.push(diagnostic(
+                "SESDK-PAYLOAD-BOUND-003",
+                "payload",
+                &path,
+                format!(
+                    "a payload may not exceed the {} byte limit",
+                    MAX_PAYLOAD_BYTES
+                ),
+            ));
+            continue;
         }
         validate_payload(root, payload, &path, &mut diagnostics);
     }
@@ -466,6 +507,340 @@ fn validate_manifest(manifest: &Manifest, root: &Path, expected: &ExpectedSdk) -
     diagnostics
 }
 
+fn validate_cargo_project(root: &Path, expected: &ExpectedSdk, diagnostics: &mut Vec<Diagnostic>) {
+    let cargo_toml = root.join("Cargo.toml");
+    let cargo_lock = root.join("Cargo.lock");
+    let manifest = match read_project_toml(root, &cargo_toml) {
+        Ok(value) => value,
+        Err(message) => {
+            diagnostics.push(diagnostic(
+                "SESDK-CARGO-001",
+                "cargo",
+                "Cargo.toml",
+                message,
+            ));
+            return;
+        }
+    };
+    let lock = match read_project_toml(root, &cargo_lock) {
+        Ok(value) => value,
+        Err(message) => {
+            diagnostics.push(diagnostic(
+                "SESDK-CARGO-002",
+                "cargo",
+                "Cargo.lock",
+                message,
+            ));
+            return;
+        }
+    };
+    let packages = lock
+        .get("package")
+        .and_then(TomlValue::as_array)
+        .and_then(|values| {
+            values
+                .iter()
+                .map(TomlValue::as_table)
+                .collect::<Option<Vec<_>>>()
+        });
+    let Some(packages) = packages else {
+        diagnostics.push(diagnostic(
+            "SESDK-CARGO-003",
+            "cargo",
+            "Cargo.lock",
+            "Cargo.lock has no package records",
+        ));
+        return;
+    };
+    let mut dependencies = BTreeMap::new();
+    collect_direct_dependencies(&manifest, "", &mut dependencies);
+    for (location, dependency) in dependencies {
+        validate_direct_dependency(&location, &dependency, &packages, expected, diagnostics);
+    }
+}
+
+fn read_project_toml(root: &Path, path: &Path) -> Result<TomlValue, String> {
+    if !path.starts_with(root) {
+        return Err("project file escapes plugin root".into());
+    }
+    ensure_regular_project_path(root, path)?;
+    let source = fs::read_to_string(path).map_err(|error| {
+        format!(
+            "{} cannot be read: {error}",
+            path.file_name().unwrap().display()
+        )
+    })?;
+    source.parse::<TomlValue>().map_err(|error| {
+        format!(
+            "{} is not valid TOML: {error}",
+            path.file_name().unwrap().display()
+        )
+    })
+}
+
+fn collect_direct_dependencies(
+    value: &TomlValue,
+    prefix: &str,
+    output: &mut BTreeMap<String, DirectDependency>,
+) {
+    let Some(table) = value.as_table() else {
+        return;
+    };
+    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        if let Some(dependencies) = table.get(section).and_then(TomlValue::as_table) {
+            for (alias, specification) in dependencies {
+                let location = format!("{prefix}{section}.{alias}");
+                output.insert(
+                    location.clone(),
+                    DirectDependency::from_toml(alias, specification, location),
+                );
+            }
+        }
+    }
+    if let Some(targets) = table.get("target").and_then(TomlValue::as_table) {
+        for (target, target_value) in targets {
+            collect_direct_dependencies(target_value, &format!("target.{target}."), output);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct DirectDependency {
+    package: String,
+    version: Option<String>,
+    git: Option<String>,
+    rev: Option<String>,
+    path: bool,
+    workspace: bool,
+    malformed: bool,
+}
+
+impl DirectDependency {
+    fn from_toml(alias: &str, value: &TomlValue, _location: String) -> Self {
+        match value {
+            TomlValue::String(version) => Self {
+                package: alias.to_owned(),
+                version: Some(version.to_owned()),
+                git: None,
+                rev: None,
+                path: false,
+                workspace: false,
+                malformed: false,
+            },
+            TomlValue::Table(table) => Self {
+                package: table
+                    .get("package")
+                    .and_then(TomlValue::as_str)
+                    .unwrap_or(alias)
+                    .to_owned(),
+                version: table
+                    .get("version")
+                    .and_then(TomlValue::as_str)
+                    .map(str::to_owned),
+                git: table
+                    .get("git")
+                    .and_then(TomlValue::as_str)
+                    .map(str::to_owned),
+                rev: table
+                    .get("rev")
+                    .and_then(TomlValue::as_str)
+                    .map(str::to_owned),
+                path: table.contains_key("path"),
+                workspace: table
+                    .get("workspace")
+                    .and_then(TomlValue::as_bool)
+                    .unwrap_or(false),
+                malformed: table
+                    .get("package")
+                    .is_some_and(|value| value.as_str().is_none())
+                    || table
+                        .get("git")
+                        .is_some_and(|value| value.as_str().is_none())
+                    || table
+                        .get("rev")
+                        .is_some_and(|value| value.as_str().is_none()),
+            },
+            _ => Self {
+                package: alias.to_owned(),
+                version: None,
+                git: None,
+                rev: None,
+                path: false,
+                workspace: false,
+                malformed: true,
+            },
+        }
+    }
+}
+
+fn validate_direct_dependency(
+    location: &str,
+    dependency: &DirectDependency,
+    packages: &[&toml::map::Map<String, TomlValue>],
+    expected: &ExpectedSdk,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if dependency.malformed {
+        diagnostics.push(diagnostic(
+            "SESDK-CARGO-004",
+            "cargo",
+            location,
+            "dependency declaration has an unsupported type",
+        ));
+        return;
+    }
+    if is_private_workspace_crate(&dependency.package) {
+        diagnostics.push(diagnostic(
+            "SESDK-CARGO-005",
+            "cargo",
+            location,
+            "direct dependency references a SuperExplorer private workspace crate",
+        ));
+    }
+    if dependency.path || dependency.workspace {
+        diagnostics.push(diagnostic(
+            "SESDK-CARGO-006",
+            "cargo",
+            location,
+            "path and workspace dependencies are not reproducible plugin dependencies",
+        ));
+    }
+    if dependency.git.is_some() && !dependency.rev.as_deref().is_some_and(is_full_git_revision) {
+        diagnostics.push(diagnostic(
+            "SESDK-CARGO-007",
+            "cargo",
+            location,
+            "git dependency must declare an exact 40-character revision",
+        ));
+    }
+    if dependency.git.is_none() && dependency.version.as_deref().is_none_or(str::is_empty) {
+        diagnostics.push(diagnostic(
+            "SESDK-CARGO-008",
+            "cargo",
+            location,
+            "registry dependency must declare a version",
+        ));
+    }
+    let matches = packages
+        .iter()
+        .filter(|package| {
+            package.get("name").and_then(TomlValue::as_str) == Some(&dependency.package)
+        })
+        .collect::<Vec<_>>();
+    if matches.is_empty() {
+        diagnostics.push(diagnostic(
+            "SESDK-CARGO-009",
+            "cargo",
+            location,
+            "direct dependency is not resolved in Cargo.lock",
+        ));
+        return;
+    }
+    if matches.iter().all(|package| {
+        package
+            .get("source")
+            .and_then(TomlValue::as_str)
+            .is_none_or(str::is_empty)
+    }) {
+        diagnostics.push(diagnostic(
+            "SESDK-CARGO-010",
+            "cargo",
+            location,
+            "direct dependency has no immutable Cargo.lock source",
+        ));
+    }
+    if let (Some(git), Some(revision)) = (&dependency.git, &dependency.rev) {
+        let expected_prefix = format!("git+{git}");
+        let expected_suffix = format!("#{revision}");
+        if matches.iter().all(|package| {
+            package
+                .get("source")
+                .and_then(TomlValue::as_str)
+                .is_none_or(|source| {
+                    !source.starts_with(&expected_prefix) || !source.ends_with(&expected_suffix)
+                })
+        }) {
+            diagnostics.push(diagnostic(
+                "SESDK-CARGO-011",
+                "cargo",
+                location,
+                "Cargo.lock git source does not resolve the declared immutable revision",
+            ));
+        }
+    }
+    if expected.gpui_packages.contains(&dependency.package) {
+        let source_is_exact = dependency.git.as_deref() == Some(expected.gpui_repository.as_str())
+            && dependency.rev.as_deref() == Some(expected.gpui_revision.as_str());
+        let lock_is_exact = matches.iter().any(|package| {
+            package
+                .get("source")
+                .and_then(TomlValue::as_str)
+                .is_some_and(|source| {
+                    source.starts_with(&format!("git+{}", expected.gpui_repository))
+                        && source.ends_with(&format!("#{}", expected.gpui_revision))
+                })
+        });
+        if !source_is_exact || !lock_is_exact {
+            diagnostics.push(diagnostic(
+                "SESDK-CARGO-012",
+                "compatibility",
+                location,
+                "protected GPUI dependency differs from the approved SDK source revision",
+            ));
+        }
+    }
+}
+
+fn is_private_workspace_crate(name: &str) -> bool {
+    name.starts_with("explorer-") || name.starts_with("superexplorer-")
+}
+
+fn is_full_git_revision(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn ensure_regular_project_path(root: &Path, path: &Path) -> Result<(), String> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| "project file escapes plugin root".to_owned())?;
+    ensure_regular_relative_path(root, relative)
+}
+
+fn ensure_regular_relative_path(root: &Path, relative: &Path) -> Result<(), String> {
+    let mut current = root.to_owned();
+    for component in relative.components() {
+        current.push(component);
+        if is_link_or_reparse(&current)? {
+            return Err(format!(
+                "{} is a symlink or reparse point",
+                current.display()
+            ));
+        }
+    }
+    let metadata = fs::metadata(&current)
+        .map_err(|error| format!("{} is unavailable: {error}", current.display()))?;
+    if !metadata.is_file() {
+        return Err(format!("{} is not a regular file", current.display()));
+    }
+    Ok(())
+}
+
+fn is_link_or_reparse(path: &Path) -> Result<bool, String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("{} metadata cannot be read: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        return Ok(true);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        return Ok(metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0);
+    }
+    #[cfg(not(windows))]
+    Ok(false)
+}
+
 fn validate_payload(root: &Path, payload: &Payload, path: &str, diagnostics: &mut Vec<Diagnostic>) {
     if !lower_hex(&payload.sha256, 64) {
         diagnostics.push(diagnostic(
@@ -477,6 +852,10 @@ fn validate_payload(root: &Path, payload: &Payload, path: &str, diagnostics: &mu
         return;
     }
     let candidate = root.join(PathBuf::from(&payload.path));
+    if let Err(message) = ensure_regular_project_path(root, &candidate) {
+        diagnostics.push(diagnostic("SESDK-PAYLOAD-003", "payload", path, message));
+        return;
+    }
     let Ok(canonical) = candidate.canonicalize() else {
         diagnostics.push(diagnostic(
             "SESDK-PAYLOAD-003",
@@ -492,6 +871,27 @@ fn validate_payload(root: &Path, payload: &Payload, path: &str, diagnostics: &mu
             "payload",
             path,
             "payload resolves outside the plugin root",
+        ));
+        return;
+    }
+    let Ok(metadata) = fs::metadata(&canonical) else {
+        diagnostics.push(diagnostic(
+            "SESDK-PAYLOAD-004",
+            "payload",
+            path,
+            "declared payload metadata cannot be read",
+        ));
+        return;
+    };
+    if metadata.len() > MAX_PAYLOAD_BYTES {
+        diagnostics.push(diagnostic(
+            "SESDK-PAYLOAD-BOUND-004",
+            "payload",
+            path,
+            format!(
+                "payload on disk exceeds the {} byte limit",
+                MAX_PAYLOAD_BYTES
+            ),
         ));
         return;
     }
@@ -640,6 +1040,7 @@ fn safe_relative_path(value: &str) -> bool {
         || value.starts_with('\\')
         || value.contains('\\')
         || value.contains(':')
+        || value.bytes().any(|byte| byte.is_ascii_control())
     {
         return false;
     }

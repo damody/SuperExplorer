@@ -8,7 +8,7 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $support = Join-Path $repo 'sdk\scripts\update-gpui-snapshot-support.psm1'
 Import-Module $support -Force
 $gitCommand = Get-Command git -CommandType Application | Select-Object -First 1
-$gitRoot = Split-Path (Split-Path $gitCommand.Source -Parent) -Parent
+$gitRoot = Split-Path $gitCommand.Source -Parent | Split-Path -Parent
 $gitUnixBin = Join-Path $gitRoot 'usr\bin'
 $savedPath = $env:PATH
 if (Test-Path -LiteralPath $gitUnixBin) { $env:PATH = "$gitUnixBin;$savedPath" }
@@ -70,24 +70,34 @@ try {
     Invoke-Git $work @('push', '-u', 'origin', 'main') | Out-Null
 
     # Clean, tracked, index and untracked state detection are all fail-closed.
-    if ((Git-Text $work @('status', '--porcelain'))) { throw 'clean fixture was not clean' }
+    if (@(Invoke-Git $work @('status', '--porcelain')).Count -ne 0) { throw 'clean fixture was not clean' }
     Set-Content -LiteralPath (Join-Path $work 'tracked.txt') -Value 'working-tree' -NoNewline
-    if ((Git-Text $work @('status', '--porcelain')) -notmatch 'tracked\.txt') { throw 'tracked dirty state was not detected' }
+    $status = (Invoke-Git $work @('status', '--porcelain')) -join "`n"
+    if ($status -notmatch '(?m)^ M tracked\.txt$') { throw 'tracked dirty state was not detected' }
     Invoke-Git $work @('add', 'tracked.txt') | Out-Null
-    if ((Git-Text $work @('status', '--porcelain')) -notmatch 'M  tracked\.txt|tracked\.txt') { throw 'index dirty state was not detected' }
+    $status = (Invoke-Git $work @('status', '--porcelain')) -join "`n"
+    if ($status -notmatch '(?m)^M  tracked\.txt$') { throw 'index dirty state was not detected' }
     Invoke-Git $work @('restore', '--staged', 'tracked.txt') | Out-Null
     Set-Content -LiteralPath (Join-Path $work 'untracked.txt') -Value 'untracked' -NoNewline
-    if ((Git-Text $work @('status', '--porcelain')) -notmatch '\?\? untracked\.txt') { throw 'untracked state was not detected' }
+    $status = (Invoke-Git $work @('status', '--porcelain')) -join "`n"
+    if ($status -notmatch '(?m)^\?\? untracked\.txt$') { throw 'untracked state was not detected' }
     Invoke-Git $work @('restore', 'tracked.txt') | Out-Null
     Remove-Item -LiteralPath (Join-Path $work 'untracked.txt') -Force
 
     # A submodule is clean only when its checked-out worktree is clean too.
-    Invoke-Git $work @('-c', 'protocol.file.allow=always', 'submodule', 'add', $subRemote, 'modules/fixture') | Out-Null
+    # Construct a gitlink directly.  This avoids invoking Git's shell helper on
+    # minimal Windows runners while retaining real submodule status semantics.
+    $subCommit = Git-Text $sub @('rev-parse', 'HEAD')
+    $subPath = Join-Path $work 'modules\fixture'
+    New-Item -ItemType Directory -Path $subPath -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $sub 'sub.txt') -Destination (Join-Path $subPath 'sub.txt')
+    [IO.File]::WriteAllText((Join-Path $subPath '.git'), "gitdir: $($sub -replace '\\', '/')/.git`n")
+    Invoke-Git $work @('update-index', '--add', '--cacheinfo', "160000,$subCommit,modules/fixture") | Out-Null
     Invoke-Git $work @('commit', '-m', 'add submodule') | Out-Null
     Set-Content -LiteralPath (Join-Path $work 'modules\fixture\sub.txt') -Value 'sub-dirty' -NoNewline
     if ((Git-Text $work @('status', '--porcelain')) -notmatch 'modules/fixture') { throw 'dirty submodule state was not detected' }
-    Invoke-Git $work @('restore', '--worktree', '--', 'modules/fixture') | Out-Null
-    if ((Git-Text $work @('status', '--porcelain'))) { throw 'submodule restore did not return to clean state' }
+    Copy-Item -LiteralPath (Join-Path $sub 'sub.txt') -Destination (Join-Path $subPath 'sub.txt') -Force
+    if (@(Invoke-Git $work @('status', '--porcelain')).Count -ne 0) { throw 'submodule restore did not return to clean state' }
 
     # Exact approval: fast-forward permits no approval; divergent updates require every identity field.
     $old = 'a' * 40; $new = 'b' * 40; $tree = 'c' * 40; $digest = 'd' * 64
