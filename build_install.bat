@@ -2,7 +2,7 @@
 setlocal
 chcp 65001 >nul
 
-set "LUA_EXE=D:\test\build\tools\lua\lua.exe"
+set "LUA_EXE=%~dp0build\tools\lua\lua.exe"
 set "BUILD_SCRIPT=%~dp0build\build_install.lua"
 set "BUILD_EXIT_CODE=1"
 set "CHECK_ONLY=0"
