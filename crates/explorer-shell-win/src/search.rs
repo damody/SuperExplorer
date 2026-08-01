@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::sta::RequiredTerminalPublisher;
 use explorer_common::{ExplorerError, ExplorerErrorKind};
 use explorer_model::{
     ExplorerEvent, LocationDescriptor, RequestContext, SearchBackend, SearchInput,
@@ -39,11 +40,12 @@ pub(crate) enum IndexAvailability {
     clippy::too_many_lines,
     reason = "one linear search pipeline keeps source-status and exactly-one terminal ordering auditable"
 )]
-pub(crate) fn execute(
+pub(crate) fn execute_with_terminals<P: RequiredTerminalPublisher>(
     context: &RequestContext,
     location: &LocationDescriptor,
     input: &SearchInput,
     events: &SyncSender<ExplorerEvent>,
+    terminals: &P,
 ) -> Result<(), ExplorerError> {
     let root = location.path().ok_or_else(|| {
         ExplorerError::new(
@@ -83,22 +85,14 @@ pub(crate) fn execute(
                         None,
                     )?;
                     if result_count > 0 {
-                        events
-                            .send(ExplorerEvent::SearchFinished {
-                                context: context.clone(),
-                                outcome: SearchTerminal::Finished,
-                            })
-                            .map_err(|_| {
-                                search_error(
-                                    ExplorerErrorKind::Availability,
-                                    "Search results could not be delivered.",
-                                    "Everything terminal channel closed",
-                                )
-                            })?;
+                        terminals.publish_terminal(ExplorerEvent::SearchFinished {
+                            context: context.clone(),
+                            outcome: SearchTerminal::Finished,
+                        });
                         return Ok(());
                     }
                 }
-                Err(detail) if context.cancellation.is_cancelled() => {
+                Err(_detail) if context.cancellation.is_cancelled() => {
                     publish_status(
                         events,
                         context,
@@ -106,18 +100,10 @@ pub(crate) fn execute(
                         SearchSourcePhase::Cancelled,
                         None,
                     )?;
-                    events
-                        .send(ExplorerEvent::SearchFinished {
-                            context: context.clone(),
-                            outcome: SearchTerminal::Cancelled,
-                        })
-                        .map_err(|_| {
-                            search_error(
-                                ExplorerErrorKind::Availability,
-                                "Search cancellation could not be delivered.",
-                                detail,
-                            )
-                        })?;
+                    terminals.publish_terminal(ExplorerEvent::SearchFinished {
+                        context: context.clone(),
+                        outcome: SearchTerminal::Cancelled,
+                    });
                     return Ok(());
                 }
                 Err(detail) => publish_status(
@@ -244,7 +230,7 @@ pub(crate) fn execute(
             ))
         }
     };
-    events
+    terminals
         .send(ExplorerEvent::SearchFinished {
             context: context.clone(),
             outcome: terminal,

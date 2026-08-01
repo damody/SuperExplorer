@@ -12,11 +12,11 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        mpsc::SyncSender,
     },
     time::{Duration, Instant},
 };
 
+use crate::sta::RequiredTerminalPublisher;
 use explorer_common::{ExplorerError, ExplorerErrorKind, RoadmapLimits};
 use explorer_model::{
     CancellationToken, ExplorerEvent, LockOwner, LockOwnerApplicationType, LockOwnerCloseOutcome,
@@ -58,13 +58,13 @@ impl Drop for LockWorkerGuard {
     }
 }
 
-pub(crate) fn start_discovery(
+pub(crate) fn start_discovery<P: RequiredTerminalPublisher>(
     context: RequestContext,
     request: LockOwnerDiscoveryRequest,
-    events: SyncSender<ExplorerEvent>,
+    events: P,
 ) {
     if !acquire_worker() {
-        let _ = events.try_send(ExplorerEvent::LockOwnersDiscovered {
+        events.publish_terminal(ExplorerEvent::LockOwnersDiscovered {
             context,
             outcome: LockOwnerDiscoveryTerminal::Failed(restart_error(
                 "start lock-owner discovery",
@@ -82,11 +82,11 @@ pub(crate) fn start_discovery(
         .spawn(move || {
             let _guard = LockWorkerGuard;
             let outcome = discover(&request, &cancellation);
-            let _ = events.try_send(ExplorerEvent::LockOwnersDiscovered { context, outcome });
+            events.publish_terminal(ExplorerEvent::LockOwnersDiscovered { context, outcome });
         });
     if result.is_err() {
         ACTIVE_LOCK_WORKERS.fetch_sub(1, Ordering::AcqRel);
-        let _ = failure_events.try_send(ExplorerEvent::LockOwnersDiscovered {
+        failure_events.publish_terminal(ExplorerEvent::LockOwnersDiscovered {
             context: failure_context,
             outcome: LockOwnerDiscoveryTerminal::Failed(restart_error(
                 "start lock-owner discovery",
@@ -97,13 +97,13 @@ pub(crate) fn start_discovery(
     }
 }
 
-pub(crate) fn start_close(
+pub(crate) fn start_close<P: RequiredTerminalPublisher>(
     context: RequestContext,
     request: LockOwnerCloseRequest,
-    events: SyncSender<ExplorerEvent>,
+    events: P,
 ) {
     if !acquire_worker() {
-        let _ = events.try_send(ExplorerEvent::LockOwnersClosed {
+        events.publish_terminal(ExplorerEvent::LockOwnersClosed {
             context,
             outcome: LockOwnerCloseTerminal::Failed(restart_error(
                 "start lock-owner shutdown",
@@ -121,11 +121,11 @@ pub(crate) fn start_close(
         .spawn(move || {
             let _guard = LockWorkerGuard;
             let outcome = close(&request, &cancellation);
-            let _ = events.try_send(ExplorerEvent::LockOwnersClosed { context, outcome });
+            events.publish_terminal(ExplorerEvent::LockOwnersClosed { context, outcome });
         });
     if result.is_err() {
         ACTIVE_LOCK_WORKERS.fetch_sub(1, Ordering::AcqRel);
-        let _ = failure_events.try_send(ExplorerEvent::LockOwnersClosed {
+        failure_events.publish_terminal(ExplorerEvent::LockOwnersClosed {
             context: failure_context,
             outcome: LockOwnerCloseTerminal::Failed(restart_error(
                 "start lock-owner shutdown",

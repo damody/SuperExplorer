@@ -955,6 +955,12 @@ impl AppViewState {
         &self.operation_center
     }
 
+    pub(crate) fn accepts_ancestry_context(&self, context: &RequestContext) -> bool {
+        self.ancestry_requests
+            .get(&context.tab_id)
+            .is_some_and(|active| active.validate_event(context).is_ok())
+    }
+
     pub const fn rename_editor(&self) -> Option<&explorer_model::RenameEditorState> {
         self.rename_editor.as_ref()
     }

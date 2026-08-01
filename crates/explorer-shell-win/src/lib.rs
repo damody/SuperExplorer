@@ -56,7 +56,8 @@ pub use preview::{
 };
 pub use shell_new::{registered_shell_new_items, registered_shell_new_items_in_worker};
 pub use sta::{
-    ShellStaEndpointError, ShellStaError, ShellStaHandle, ShellStaState, StaResourceSnapshot,
+    ShellDomainDiagnostics, ShellStaEndpointError, ShellStaError, ShellStaHandle, ShellStaState,
+    StaResourceSnapshot,
 };
 pub use thumbnail::{clear_thumbnail_disk_cache, load_shell_thumbnail};
 

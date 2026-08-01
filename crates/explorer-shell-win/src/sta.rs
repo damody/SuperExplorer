@@ -1,7 +1,7 @@
 //! Dedicated Windows Shell STA lifecycle and message pump.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     marker::PhantomData,
     rc::Rc,
     sync::{
@@ -41,13 +41,226 @@ const BREADCRUMB_PROVIDER_TIMEOUT: Duration = Duration::from_secs(5);
 // navigation/ancestry work. Keep that burst bounded without starving correlation-critical
 // navigation and breadcrumb commands behind an artificially tiny queue.
 const COMMAND_QUEUE_CAPACITY: usize = 512;
+const FOREGROUND_COMMAND_QUEUE_CAPACITY: usize = 64;
 const EVENT_QUEUE_CAPACITY: usize = 4_096;
+const NAVIGATION_EVENT_QUEUE_CAPACITY: usize = 4_096;
+const SEARCH_EVENT_QUEUE_CAPACITY: usize = 4_096;
+const OPERATION_PROGRESS_QUEUE_CAPACITY: usize = 256;
+const OPERATION_TERMINAL_QUEUE_CAPACITY: usize = 256;
+// A foreground command can leave the control queue before its terminal is consumed. Retaining
+// one terminal per foreground slot keeps terminal delivery bounded without making the STA wait.
+const NAVIGATION_TERMINAL_RETAIN_CAPACITY: usize = FOREGROUND_COMMAND_QUEUE_CAPACITY;
+const OPERATION_TERMINAL_RETAIN_CAPACITY: usize = FOREGROUND_COMMAND_QUEUE_CAPACITY + 4;
+const TYPED_TERMINAL_RETAIN_CAPACITY: usize =
+    COMMAND_QUEUE_CAPACITY + FOREGROUND_COMMAND_QUEUE_CAPACITY;
+const FILE_OPERATION_WORKER_CAPACITY: usize = 4;
+const THUMBNAIL_WORKER_CAPACITY: usize = 2;
+const SEARCH_WORKER_CAPACITY: usize = 8;
+const BREADCRUMB_WORKER_CAPACITY: usize = 4;
 
 static ACTIVE_STA_THREADS: AtomicUsize = AtomicUsize::new(0);
 static ACTIVE_CONTROL_CHANNELS: AtomicUsize = AtomicUsize::new(0);
 static ACTIVE_JOIN_HANDLES: AtomicUsize = AtomicUsize::new(0);
 static ACTIVE_BREADCRUMB_WORKERS: AtomicUsize = AtomicUsize::new(0);
 static ACTIVE_FILE_OPERATION_WORKERS: AtomicUsize = AtomicUsize::new(0);
+static ACTIVE_THUMBNAIL_WORKERS: AtomicUsize = AtomicUsize::new(0);
+static ACTIVE_SEARCH_WORKERS: AtomicUsize = AtomicUsize::new(0);
+static ACTIVE_SEARCH_EXECUTORS: AtomicUsize = AtomicUsize::new(0);
+static SATURATED_FILE_OPERATION_WORKERS: AtomicUsize = AtomicUsize::new(0);
+static SATURATED_THUMBNAIL_WORKERS: AtomicUsize = AtomicUsize::new(0);
+static SATURATED_SEARCH_WORKERS: AtomicUsize = AtomicUsize::new(0);
+static SATURATED_BREADCRUMB_WORKERS: AtomicUsize = AtomicUsize::new(0);
+static STALE_CANCELLED_COMPLETIONS: AtomicUsize = AtomicUsize::new(0);
+
+struct TerminalLaneCounters {
+    current_depth: AtomicUsize,
+    high_water_depth: AtomicUsize,
+    failed_publications: AtomicUsize,
+    retained_publications: AtomicUsize,
+}
+
+impl TerminalLaneCounters {
+    const fn new() -> Self {
+        Self {
+            current_depth: AtomicUsize::new(0),
+            high_water_depth: AtomicUsize::new(0),
+            failed_publications: AtomicUsize::new(0),
+            retained_publications: AtomicUsize::new(0),
+        }
+    }
+
+    fn published(&self) {
+        let depth = self.current_depth.fetch_add(1, Ordering::AcqRel) + 1;
+        let mut high_water = self.high_water_depth.load(Ordering::Acquire);
+        while depth > high_water {
+            match self.high_water_depth.compare_exchange_weak(
+                high_water,
+                depth,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(observed) => high_water = observed,
+            }
+        }
+    }
+
+    fn received(&self) {
+        let _ = self
+            .current_depth
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
+                depth.checked_sub(1)
+            });
+    }
+}
+
+static NAVIGATION_TERMINAL_COUNTERS: TerminalLaneCounters = TerminalLaneCounters::new();
+static OPERATION_TERMINAL_COUNTERS: TerminalLaneCounters = TerminalLaneCounters::new();
+static TYPED_TERMINAL_COUNTERS: TerminalLaneCounters = TerminalLaneCounters::new();
+
+/// A bounded terminal lane that never waits for a UI receiver. A full primary channel retains
+/// the exactly-once terminal in a separately bounded queue sized for all queued foreground work.
+#[derive(Clone)]
+pub(crate) struct ReliableTerminalPublisher {
+    primary: SyncSender<ExplorerEvent>,
+    retained: Arc<Mutex<VecDeque<ExplorerEvent>>>,
+    retained_capacity: usize,
+    counters: &'static TerminalLaneCounters,
+}
+
+struct ReliableTerminalReceiver {
+    primary: Receiver<ExplorerEvent>,
+    retained: Arc<Mutex<VecDeque<ExplorerEvent>>>,
+    counters: &'static TerminalLaneCounters,
+}
+
+impl ReliableTerminalPublisher {
+    fn channel(
+        primary_capacity: usize,
+        retained_capacity: usize,
+        counters: &'static TerminalLaneCounters,
+    ) -> (Self, ReliableTerminalReceiver) {
+        let (primary, receiver) = mpsc::sync_channel(primary_capacity);
+        let retained = Arc::new(Mutex::new(VecDeque::with_capacity(retained_capacity)));
+        (
+            Self {
+                primary,
+                retained: Arc::clone(&retained),
+                retained_capacity,
+                counters,
+            },
+            ReliableTerminalReceiver {
+                primary: receiver,
+                retained,
+                counters,
+            },
+        )
+    }
+
+    fn primary(&self) -> SyncSender<ExplorerEvent> {
+        self.primary.clone()
+    }
+
+    /// Publishes a required terminal without blocking the calling apartment or worker.
+    pub(crate) fn publish(&self, event: ExplorerEvent) {
+        match self.primary.try_send(event) {
+            Ok(()) => self.counters.published(),
+            Err(TrySendError::Full(event)) => {
+                let mut retained = self
+                    .retained
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(request_id) = event.context().map(|context| context.request_id)
+                    && let Some(existing) = retained.iter_mut().find(|existing| {
+                        existing.context().map(|context| context.request_id) == Some(request_id)
+                    })
+                {
+                    // A duplicate terminal for one request is safely superseded; it cannot
+                    // create a second reducer transition and preserves bounded memory.
+                    *existing = event;
+                    return;
+                }
+                if retained.len() < self.retained_capacity {
+                    retained.push_back(event);
+                    self.counters
+                        .retained_publications
+                        .fetch_add(1, Ordering::Relaxed);
+                    self.counters.published();
+                } else {
+                    // Admission is bounded by the associated command capacity, so this branch
+                    // is unreachable for owned requests. Keep the failure observable rather
+                    // than silently discarding a terminal if a future caller violates it.
+                    self.counters
+                        .failed_publications
+                        .fetch_add(1, Ordering::Relaxed);
+                    tracing::error!("required Shell terminal retention capacity was exhausted");
+                }
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                self.counters
+                    .failed_publications
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+pub(crate) trait RequiredTerminalPublisher: Clone + Send + 'static {
+    fn publish_terminal(&self, event: ExplorerEvent);
+
+    fn send(&self, event: ExplorerEvent) -> Result<(), ()> {
+        self.publish_terminal(event);
+        Ok(())
+    }
+}
+
+impl RequiredTerminalPublisher for ReliableTerminalPublisher {
+    fn publish_terminal(&self, event: ExplorerEvent) {
+        self.publish(event);
+    }
+}
+
+impl RequiredTerminalPublisher for SyncSender<ExplorerEvent> {
+    fn publish_terminal(&self, event: ExplorerEvent) {
+        let _ = self.try_send(event);
+    }
+}
+
+impl ReliableTerminalReceiver {
+    fn try_recv(&self) -> Result<ExplorerEvent, TryRecvError> {
+        let mut retained = self
+            .retained
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(event) = retained.pop_front() {
+            self.counters.received();
+            return Ok(event);
+        }
+        drop(retained);
+        match self.primary.try_recv() {
+            Ok(event) => {
+                if event.is_terminal() {
+                    self.counters.received();
+                }
+                Ok(event)
+            }
+            Err(error @ (TryRecvError::Empty | TryRecvError::Disconnected)) => Err(error),
+        }
+    }
+}
+
+fn spawn_sta_thread<F>(job: F) -> Result<JoinHandle<()>, std::io::Error>
+where
+    F: FnOnce() + Send + 'static,
+{
+    #[cfg(test)]
+    if FAIL_NEXT_STA_THREAD_SPAWN.swap(false, Ordering::AcqRel) {
+        return Err(std::io::Error::other("injected Shell STA spawn failure"));
+    }
+    thread::Builder::new()
+        .name("explorer-shell-sta".to_owned())
+        .spawn(job)
+}
 
 #[cfg(test)]
 #[derive(Clone)]
@@ -59,6 +272,31 @@ struct FileOperationTestGate {
 
 #[cfg(test)]
 static FILE_OPERATION_TEST_GATE: Mutex<Option<FileOperationTestGate>> = Mutex::new(None);
+
+#[cfg(test)]
+#[derive(Clone)]
+struct BreadcrumbTestGate {
+    request_id: RequestId,
+    started: SyncSender<()>,
+    release: Arc<AtomicBool>,
+}
+
+#[cfg(test)]
+static BREADCRUMB_TEST_GATE: Mutex<Option<BreadcrumbTestGate>> = Mutex::new(None);
+
+#[cfg(test)]
+#[derive(Clone)]
+struct SearchTestGate {
+    request_id: RequestId,
+    started: SyncSender<()>,
+    release: Arc<AtomicBool>,
+}
+
+#[cfg(test)]
+static SEARCH_TEST_GATE: Mutex<Option<SearchTestGate>> = Mutex::new(None);
+
+#[cfg(test)]
+static FAIL_NEXT_STA_THREAD_SPAWN: AtomicBool = AtomicBool::new(false);
 
 /// Observable lifecycle of the dedicated Shell apartment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -147,6 +385,106 @@ pub struct StaResourceSnapshot {
     pub active_file_operation_workers: usize,
 }
 
+/// Bounded, path-free saturation and completion observations for isolated Shell domains.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ShellDomainDiagnostics {
+    /// Active background file-operation apartments and their fixed capacity.
+    pub active_file_operations: usize,
+    /// Active thumbnail apartments and their fixed capacity.
+    pub active_thumbnails: usize,
+    /// Active search workers and their fixed capacity.
+    pub active_searches: usize,
+    /// Active enrichment-provider workers and their fixed capacity.
+    pub active_breadcrumbs: usize,
+    /// Rejections caused by the file-operation domain being full.
+    pub saturated_file_operations: usize,
+    /// Rejections caused by the thumbnail domain being full.
+    pub saturated_thumbnails: usize,
+    /// Rejections caused by the search domain being full.
+    pub saturated_searches: usize,
+    /// Rejections caused by the enrichment-provider domain being full.
+    pub saturated_breadcrumbs: usize,
+    /// Completed workers whose request was cancelled before delivery.
+    pub stale_cancelled_completions: usize,
+    /// Navigation terminal events currently queued across primary and retained delivery lanes.
+    pub navigation_terminal_current_depth: usize,
+    /// Largest observed navigation terminal lane depth.
+    pub navigation_terminal_high_water_depth: usize,
+    /// Navigation terminal publications that could not reach an owned receiver.
+    pub failed_navigation_terminal_publications: usize,
+    /// Navigation terminals retained after their primary lane was full.
+    pub retained_navigation_terminal_publications: usize,
+    /// File-operation terminal events currently queued across primary and retained delivery lanes.
+    pub operation_terminal_current_depth: usize,
+    /// Largest observed file-operation terminal lane depth.
+    pub operation_terminal_high_water_depth: usize,
+    /// File-operation terminal publications that could not reach an owned receiver.
+    pub failed_operation_terminal_publications: usize,
+    /// File-operation terminals retained after their primary lane was full.
+    pub retained_operation_terminal_publications: usize,
+    /// Typed command-recovery terminals queued across primary and retained delivery lanes.
+    pub typed_terminal_current_depth: usize,
+    /// Largest observed typed command-recovery terminal lane depth.
+    pub typed_terminal_high_water_depth: usize,
+    /// Typed command-recovery terminal publications that could not reach an owned receiver.
+    pub failed_typed_terminal_publications: usize,
+    /// Typed command-recovery terminals retained after their primary lane was full.
+    pub retained_typed_terminal_publications: usize,
+}
+
+impl ShellDomainDiagnostics {
+    /// Captures only bounded counters; it deliberately contains no filesystem identity.
+    pub fn capture() -> Self {
+        Self {
+            active_file_operations: ACTIVE_FILE_OPERATION_WORKERS.load(Ordering::Acquire),
+            active_thumbnails: ACTIVE_THUMBNAIL_WORKERS.load(Ordering::Acquire),
+            active_searches: ACTIVE_SEARCH_WORKERS.load(Ordering::Acquire),
+            active_breadcrumbs: ACTIVE_BREADCRUMB_WORKERS.load(Ordering::Acquire),
+            saturated_file_operations: SATURATED_FILE_OPERATION_WORKERS.load(Ordering::Acquire),
+            saturated_thumbnails: SATURATED_THUMBNAIL_WORKERS.load(Ordering::Acquire),
+            saturated_searches: SATURATED_SEARCH_WORKERS.load(Ordering::Acquire),
+            saturated_breadcrumbs: SATURATED_BREADCRUMB_WORKERS.load(Ordering::Acquire),
+            stale_cancelled_completions: STALE_CANCELLED_COMPLETIONS.load(Ordering::Acquire),
+            navigation_terminal_current_depth: NAVIGATION_TERMINAL_COUNTERS
+                .current_depth
+                .load(Ordering::Acquire),
+            navigation_terminal_high_water_depth: NAVIGATION_TERMINAL_COUNTERS
+                .high_water_depth
+                .load(Ordering::Acquire),
+            failed_navigation_terminal_publications: NAVIGATION_TERMINAL_COUNTERS
+                .failed_publications
+                .load(Ordering::Acquire),
+            retained_navigation_terminal_publications: NAVIGATION_TERMINAL_COUNTERS
+                .retained_publications
+                .load(Ordering::Acquire),
+            operation_terminal_current_depth: OPERATION_TERMINAL_COUNTERS
+                .current_depth
+                .load(Ordering::Acquire),
+            operation_terminal_high_water_depth: OPERATION_TERMINAL_COUNTERS
+                .high_water_depth
+                .load(Ordering::Acquire),
+            failed_operation_terminal_publications: OPERATION_TERMINAL_COUNTERS
+                .failed_publications
+                .load(Ordering::Acquire),
+            retained_operation_terminal_publications: OPERATION_TERMINAL_COUNTERS
+                .retained_publications
+                .load(Ordering::Acquire),
+            typed_terminal_current_depth: TYPED_TERMINAL_COUNTERS
+                .current_depth
+                .load(Ordering::Acquire),
+            typed_terminal_high_water_depth: TYPED_TERMINAL_COUNTERS
+                .high_water_depth
+                .load(Ordering::Acquire),
+            failed_typed_terminal_publications: TYPED_TERMINAL_COUNTERS
+                .failed_publications
+                .load(Ordering::Acquire),
+            retained_typed_terminal_publications: TYPED_TERMINAL_COUNTERS
+                .retained_publications
+                .load(Ordering::Acquire),
+        }
+    }
+}
+
 impl StaResourceSnapshot {
     /// Captures implementation-owned resources without enumerating unrelated process handles.
     pub fn capture() -> Self {
@@ -174,6 +512,25 @@ struct FileOperationCompletion {
     clipboard_paste: bool,
 }
 
+struct SearchJob {
+    context: explorer_model::RequestContext,
+    location: LocationDescriptor,
+    input: explorer_model::SearchInput,
+    worker_guard: IsolatedWorkerGuard,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RequiredTerminalLane {
+    Navigation,
+    Operation,
+    Typed,
+}
+
+struct ActiveRequest {
+    cancellation: CancellationToken,
+    required_terminal_lane: Option<RequiredTerminalLane>,
+}
+
 /// Non-blocking command/event endpoint failures.
 #[derive(Debug, Error)]
 pub enum ShellStaEndpointError {
@@ -190,14 +547,22 @@ pub enum ShellStaEndpointError {
 /// Owner of the dedicated Shell STA thread.
 pub struct ShellStaHandle {
     correlation_id: RequestId,
-    control: SyncSender<ControlMessage>,
+    foreground_control: SyncSender<ControlMessage>,
+    background_control: SyncSender<ControlMessage>,
+    navigation_events: Mutex<ReliableTerminalReceiver>,
+    operation_terminals: Mutex<ReliableTerminalReceiver>,
+    typed_terminals: Mutex<ReliableTerminalReceiver>,
+    operation_progress: Mutex<Receiver<ExplorerEvent>>,
+    search_events: Mutex<Receiver<ExplorerEvent>>,
     events: Mutex<Receiver<ExplorerEvent>>,
-    active_requests: Mutex<HashMap<RequestId, CancellationToken>>,
+    active_requests: Mutex<HashMap<RequestId, ActiveRequest>>,
     done: Mutex<Receiver<()>>,
     join: Mutex<Option<JoinHandle<()>>>,
+    search_done: Mutex<Receiver<()>>,
+    search_join: Mutex<Option<JoinHandle<()>>>,
     state: Arc<AtomicU8>,
     pump_cycles: Arc<AtomicUsize>,
-    shutdown_requested: AtomicBool,
+    shutdown_requested: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for ShellStaHandle {
@@ -234,109 +599,182 @@ impl ShellStaHandle {
         let thread_state = Arc::clone(&state);
         let pump_cycles = Arc::new(AtomicUsize::new(0));
         let thread_pump_cycles = Arc::clone(&pump_cycles);
-        let (control_tx, control_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
+        let (foreground_tx, foreground_rx) = mpsc::sync_channel(FOREGROUND_COMMAND_QUEUE_CAPACITY);
+        let (background_tx, background_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
+        let (navigation_terminals, navigation_event_rx) = ReliableTerminalPublisher::channel(
+            NAVIGATION_EVENT_QUEUE_CAPACITY,
+            NAVIGATION_TERMINAL_RETAIN_CAPACITY,
+            &NAVIGATION_TERMINAL_COUNTERS,
+        );
+        let navigation_event_tx = navigation_terminals.primary();
+        let (search_event_tx, search_event_rx) = mpsc::sync_channel(SEARCH_EVENT_QUEUE_CAPACITY);
+        let (operation_terminals, operation_terminal_rx) = ReliableTerminalPublisher::channel(
+            OPERATION_TERMINAL_QUEUE_CAPACITY,
+            OPERATION_TERMINAL_RETAIN_CAPACITY,
+            &OPERATION_TERMINAL_COUNTERS,
+        );
+        let (typed_terminals, typed_terminal_rx) = ReliableTerminalPublisher::channel(
+            EVENT_QUEUE_CAPACITY,
+            TYPED_TERMINAL_RETAIN_CAPACITY,
+            &TYPED_TERMINAL_COUNTERS,
+        );
+        let (operation_progress_tx, operation_progress_rx) =
+            mpsc::sync_channel(OPERATION_PROGRESS_QUEUE_CAPACITY);
         let (file_operation_tx, file_operation_rx) = mpsc::channel();
+        let (search_tx, search_rx) = mpsc::sync_channel(SEARCH_WORKER_CAPACITY);
+        let (search_done_tx, search_done_rx) = mpsc::sync_channel(1);
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let (done_tx, done_rx) = mpsc::sync_channel(1);
+        let shutdown_requested = Arc::new(AtomicBool::new(false));
+        let thread_shutdown_requested = Arc::clone(&shutdown_requested);
+        let search_shutdown = Arc::clone(&shutdown_requested);
+        let search_events = search_event_tx;
+        let search_terminals = typed_terminals.clone();
+        let search_join = thread::Builder::new()
+            .name("explorer-search-worker".to_owned())
+            .spawn(move || {
+                search_worker_loop(
+                    search_rx,
+                    search_events,
+                    search_terminals,
+                    search_shutdown,
+                    search_done_tx,
+                );
+            })
+            .map_err(ShellStaError::Spawn)?;
+        ACTIVE_JOIN_HANDLES.fetch_add(1, Ordering::AcqRel);
         ACTIVE_CONTROL_CHANNELS.fetch_add(1, Ordering::AcqRel);
 
-        let join = thread::Builder::new()
-            .name("explorer-shell-sta".to_owned())
-            .spawn(move || {
-                ACTIVE_STA_THREADS.fetch_add(1, Ordering::AcqRel);
-                thread_state.store(ShellStaState::Starting as u8, Ordering::Release);
+        let sta_spawn = spawn_sta_thread(move || {
+            ACTIVE_STA_THREADS.fetch_add(1, Ordering::AcqRel);
+            thread_state.store(ShellStaState::Starting as u8, Ordering::Release);
 
-                let startup_result = startup_hook().and_then(|()| ApartmentGuard::initialize());
-                let apartment = match startup_result {
-                    Ok(apartment) => apartment,
-                    Err(error) => {
-                        thread_state.store(ShellStaState::Stopped as u8, Ordering::Release);
-                        let _ = ready_tx.send(Err(error));
-                        ACTIVE_STA_THREADS.fetch_sub(1, Ordering::AcqRel);
-                        ACTIVE_CONTROL_CHANNELS.fetch_sub(1, Ordering::AcqRel);
-                        let _ = done_tx.send(());
-                        return;
-                    }
-                };
-
-                thread_state.store(ShellStaState::Ready as u8, Ordering::Release);
-                if ready_tx.send(Ok(())).is_err() {
-                    drop(apartment);
+            let startup_result = startup_hook().and_then(|()| ApartmentGuard::initialize());
+            let apartment = match startup_result {
+                Ok(apartment) => apartment,
+                Err(error) => {
                     thread_state.store(ShellStaState::Stopped as u8, Ordering::Release);
+                    let _ = ready_tx.send(Err(error));
                     ACTIVE_STA_THREADS.fetch_sub(1, Ordering::AcqRel);
                     ACTIVE_CONTROL_CHANNELS.fetch_sub(1, Ordering::AcqRel);
                     let _ = done_tx.send(());
                     return;
                 }
+            };
 
-                let mut runtime = StaRuntime::default();
-                loop {
-                    while let Ok(completion) = file_operation_rx.try_recv() {
-                        finish_background_file_operation(completion, &event_tx, &mut runtime);
-                    }
-                    match control_rx.recv_timeout(MESSAGE_PUMP_INTERVAL) {
-                        Ok(ControlMessage::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
-                        Ok(ControlMessage::Command { command, queued_at }) => {
-                            let outcome =
-                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    process_command(
-                                        &command,
-                                        queued_at,
-                                        &event_tx,
-                                        &file_operation_tx,
-                                        &mut runtime,
-                                    );
-                                }));
-                            if let Err(payload) = outcome {
-                                let message = panic_payload_message(payload.as_ref());
-                                record_process_error_message(
-                                    ErrorSeverity::Critical,
-                                    "shell",
-                                    "sta_process_command_panic",
-                                    &message,
-                                    Some(file!()),
-                                );
-                                if let Some(context) = command.context() {
-                                    let _ = event_tx.try_send(ExplorerEvent::Failed {
-                                        context: context.clone(),
-                                        error: ExplorerError::new(
-                                            ExplorerErrorKind::Internal,
-                                            "Shell STA command panic",
-                                            true,
-                                            "The operation failed, but Explorer can continue.",
-                                            message,
-                                        ),
-                                    });
-                                }
-                            }
-                            thread_pump_cycles.fetch_add(1, Ordering::Relaxed);
-                            if !pump_pending_messages() {
-                                break;
-                            }
-                        }
-                        Err(RecvTimeoutError::Timeout) => {
-                            thread_pump_cycles.fetch_add(1, Ordering::Relaxed);
-                            if !pump_pending_messages() {
-                                break;
-                            }
-                        }
-                    }
-                    runtime.poll_clipboard(&event_tx);
-                }
-
-                thread_state.store(ShellStaState::Stopping as u8, Ordering::Release);
-                drop(runtime);
+            thread_state.store(ShellStaState::Ready as u8, Ordering::Release);
+            if ready_tx.send(Ok(())).is_err() {
                 drop(apartment);
                 thread_state.store(ShellStaState::Stopped as u8, Ordering::Release);
                 ACTIVE_STA_THREADS.fetch_sub(1, Ordering::AcqRel);
                 ACTIVE_CONTROL_CHANNELS.fetch_sub(1, Ordering::AcqRel);
                 let _ = done_tx.send(());
-            })
-            .map_err(|error| {
+                return;
+            }
+
+            let mut runtime = StaRuntime::new(search_tx);
+            loop {
+                if thread_shutdown_requested.load(Ordering::Acquire) {
+                    break;
+                }
+                while let Ok(completion) = file_operation_rx.try_recv() {
+                    finish_background_file_operation(
+                        completion,
+                        &event_tx,
+                        &operation_terminals,
+                        &mut runtime,
+                    );
+                }
+                let command = match foreground_rx.try_recv() {
+                    Ok(command) => Ok(command),
+                    Err(TryRecvError::Empty) => background_rx.recv_timeout(MESSAGE_PUMP_INTERVAL),
+                    Err(TryRecvError::Disconnected) => Err(RecvTimeoutError::Disconnected),
+                };
+                match command {
+                    Ok(ControlMessage::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
+                    Ok(ControlMessage::Command { command, queued_at }) => {
+                        let outcome =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                process_command(
+                                    &command,
+                                    queued_at,
+                                    if is_foreground_command(&command) {
+                                        &navigation_event_tx
+                                    } else {
+                                        &event_tx
+                                    },
+                                    &navigation_terminals,
+                                    &typed_terminals,
+                                    &file_operation_tx,
+                                    &operation_progress_tx,
+                                    &operation_terminals,
+                                    &mut runtime,
+                                );
+                            }));
+                        if let Err(payload) = outcome {
+                            let message = panic_payload_message(payload.as_ref());
+                            record_process_error_message(
+                                ErrorSeverity::Critical,
+                                "shell",
+                                "sta_process_command_panic",
+                                &message,
+                                Some(file!()),
+                            );
+                            if let Some(context) = command.context() {
+                                let event = command_terminal_failure(
+                                    &command,
+                                    context.clone(),
+                                    ExplorerError::new(
+                                        ExplorerErrorKind::Internal,
+                                        "Shell STA command panic",
+                                        true,
+                                        "The operation failed, but Explorer can continue.",
+                                        message,
+                                    ),
+                                );
+                                publish_command_terminal(
+                                    &command,
+                                    event,
+                                    &navigation_terminals,
+                                    &operation_terminals,
+                                    &typed_terminals,
+                                );
+                            }
+                        }
+                        thread_pump_cycles.fetch_add(1, Ordering::Relaxed);
+                        if !pump_pending_messages() {
+                            break;
+                        }
+                    }
+                    Err(RecvTimeoutError::Timeout) => {
+                        thread_pump_cycles.fetch_add(1, Ordering::Relaxed);
+                        if !pump_pending_messages() {
+                            break;
+                        }
+                    }
+                }
+                runtime.poll_clipboard(&event_tx);
+            }
+
+            thread_state.store(ShellStaState::Stopping as u8, Ordering::Release);
+            drop(runtime);
+            drop(apartment);
+            thread_state.store(ShellStaState::Stopped as u8, Ordering::Release);
+            ACTIVE_STA_THREADS.fetch_sub(1, Ordering::AcqRel);
+            ACTIVE_CONTROL_CHANNELS.fetch_sub(1, Ordering::AcqRel);
+            let _ = done_tx.send(());
+        });
+        let join = match sta_spawn {
+            Ok(join) => join,
+            Err(error) => {
                 ACTIVE_CONTROL_CHANNELS.fetch_sub(1, Ordering::AcqRel);
-                ShellStaError::Spawn(error)
-            })?;
+                shutdown_requested.store(true, Ordering::Release);
+                let _ = search_join.join();
+                ACTIVE_JOIN_HANDLES.fetch_sub(1, Ordering::AcqRel);
+                return Err(ShellStaError::Spawn(error));
+            }
+        };
         ACTIVE_JOIN_HANDLES.fetch_add(1, Ordering::AcqRel);
 
         match ready_rx.recv_timeout(timeout) {
@@ -344,30 +782,47 @@ impl ShellStaHandle {
                 tracing::info!(?correlation_id, "Shell STA is ready");
                 Ok(Self {
                     correlation_id,
-                    control: control_tx,
+                    foreground_control: foreground_tx,
+                    background_control: background_tx,
+                    navigation_events: Mutex::new(navigation_event_rx),
+                    operation_terminals: Mutex::new(operation_terminal_rx),
+                    typed_terminals: Mutex::new(typed_terminal_rx),
+                    operation_progress: Mutex::new(operation_progress_rx),
+                    search_events: Mutex::new(search_event_rx),
                     events: Mutex::new(event_rx),
                     active_requests: Mutex::new(HashMap::new()),
                     done: Mutex::new(done_rx),
                     join: Mutex::new(Some(join)),
+                    search_done: Mutex::new(search_done_rx),
+                    search_join: Mutex::new(Some(search_join)),
                     state,
                     pump_cycles,
-                    shutdown_requested: AtomicBool::new(false),
+                    shutdown_requested,
                 })
             }
             Ok(Err(error)) => {
                 let _ = join.join();
                 ACTIVE_JOIN_HANDLES.fetch_sub(1, Ordering::AcqRel);
+                shutdown_requested.store(true, Ordering::Release);
+                let _ = search_join.join();
+                ACTIVE_JOIN_HANDLES.fetch_sub(1, Ordering::AcqRel);
                 Err(error)
             }
             Err(RecvTimeoutError::Timeout) => {
-                let _ = control_tx.try_send(ControlMessage::Shutdown);
+                shutdown_requested.store(true, Ordering::Release);
+                let _ = foreground_tx.try_send(ControlMessage::Shutdown);
                 tracing::error!(?correlation_id, ?timeout, "Shell STA startup timed out");
                 drop(join);
+                ACTIVE_JOIN_HANDLES.fetch_sub(1, Ordering::AcqRel);
+                let _ = search_join.join();
                 ACTIVE_JOIN_HANDLES.fetch_sub(1, Ordering::AcqRel);
                 Err(ShellStaError::StartupTimeout { timeout })
             }
             Err(RecvTimeoutError::Disconnected) => {
                 let _ = join.join();
+                ACTIVE_JOIN_HANDLES.fetch_sub(1, Ordering::AcqRel);
+                shutdown_requested.store(true, Ordering::Release);
+                let _ = search_join.join();
                 ACTIVE_JOIN_HANDLES.fetch_sub(1, Ordering::AcqRel);
                 Err(ShellStaError::StartupChannelClosed)
             }
@@ -398,24 +853,58 @@ impl ShellStaHandle {
                 .map_err(|_| ShellStaEndpointError::Poisoned)?
                 .get(request_id)
             {
-                token.cancel();
+                token.cancellation.cancel();
             }
         } else if let Some(context) = command.context() {
-            self.active_requests
+            let required_terminal_lane = required_terminal_lane(&command);
+            let mut active_requests = self
+                .active_requests
                 .lock()
-                .map_err(|_| ShellStaEndpointError::Poisoned)?
-                .insert(context.request_id, context.cancellation.clone());
+                .map_err(|_| ShellStaEndpointError::Poisoned)?;
+            if !terminal_submission_capacity_available(&active_requests, required_terminal_lane) {
+                return Err(ShellStaEndpointError::CommandQueueFull);
+            }
+            active_requests.insert(
+                context.request_id,
+                ActiveRequest {
+                    cancellation: context.cancellation.clone(),
+                    required_terminal_lane,
+                },
+            );
         }
-        match self.control.try_send(ControlMessage::Command {
+        let control = if is_foreground_command(&command) {
+            &self.foreground_control
+        } else {
+            &self.background_control
+        };
+        let request_id = command.context().map(|context| context.request_id);
+        match control.try_send(ControlMessage::Command {
             command,
             queued_at: Instant::now(),
         }) {
             Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) => Err(ShellStaEndpointError::CommandQueueFull),
+            Err(TrySendError::Full(_)) => {
+                self.remove_rejected_request(request_id)?;
+                Err(ShellStaEndpointError::CommandQueueFull)
+            }
             Err(TrySendError::Disconnected(_)) => {
+                self.remove_rejected_request(request_id)?;
                 Err(ShellStaEndpointError::CommandEndpointDisconnected)
             }
         }
+    }
+
+    fn remove_rejected_request(
+        &self,
+        request_id: Option<RequestId>,
+    ) -> Result<(), ShellStaEndpointError> {
+        if let Some(request_id) = request_id {
+            self.active_requests
+                .lock()
+                .map_err(|_| ShellStaEndpointError::Poisoned)?
+                .remove(&request_id);
+        }
+        Ok(())
     }
 
     /// Receives one pending owned event without blocking the caller.
@@ -424,26 +913,74 @@ impl ShellStaHandle {
     ///
     /// Returns only synchronization or endpoint disconnect errors; an empty queue is `Ok(None)`.
     pub fn try_recv_event(&self) -> Result<Option<ExplorerEvent>, ShellStaEndpointError> {
-        let event = match self
-            .events
+        let terminal = self
+            .operation_terminals
             .lock()
             .map_err(|_| ShellStaEndpointError::Poisoned)?
-            .try_recv()
-        {
+            .try_recv();
+        let event = match terminal {
             Ok(event) => event,
-            Err(TryRecvError::Empty) => return Ok(None),
             Err(TryRecvError::Disconnected) => {
                 return Err(ShellStaEndpointError::EventEndpointDisconnected);
             }
-        };
-        if event.is_terminal()
-            && let Some(context) = event.context()
-        {
-            self.active_requests
+            Err(TryRecvError::Empty) => match self
+                .navigation_events
                 .lock()
                 .map_err(|_| ShellStaEndpointError::Poisoned)?
-                .remove(&context.request_id);
-        }
+                .try_recv()
+            {
+                Ok(event) => event,
+                Err(TryRecvError::Empty) => match self
+                    .typed_terminals
+                    .lock()
+                    .map_err(|_| ShellStaEndpointError::Poisoned)?
+                    .try_recv()
+                {
+                    Ok(event) => event,
+                    Err(TryRecvError::Empty) => match self
+                        .operation_progress
+                        .lock()
+                        .map_err(|_| ShellStaEndpointError::Poisoned)?
+                        .try_recv()
+                    {
+                        Ok(event) => event,
+                        Err(TryRecvError::Empty) => match self
+                            .search_events
+                            .lock()
+                            .map_err(|_| ShellStaEndpointError::Poisoned)?
+                            .try_recv()
+                        {
+                            Ok(event) => event,
+                            Err(TryRecvError::Empty) => match self
+                                .events
+                                .lock()
+                                .map_err(|_| ShellStaEndpointError::Poisoned)?
+                                .try_recv()
+                            {
+                                Ok(event) => event,
+                                Err(TryRecvError::Empty) => return Ok(None),
+                                Err(TryRecvError::Disconnected) => {
+                                    return Err(ShellStaEndpointError::EventEndpointDisconnected);
+                                }
+                            },
+                            Err(TryRecvError::Disconnected) => {
+                                return Err(ShellStaEndpointError::EventEndpointDisconnected);
+                            }
+                        },
+                        Err(TryRecvError::Disconnected) => {
+                            return Err(ShellStaEndpointError::EventEndpointDisconnected);
+                        }
+                    },
+                    Err(TryRecvError::Disconnected) => {
+                        return Err(ShellStaEndpointError::EventEndpointDisconnected);
+                    }
+                },
+                Err(TryRecvError::Disconnected) => {
+                    return Err(ShellStaEndpointError::EventEndpointDisconnected);
+                }
+            },
+        };
+        remove_completed_request(&self.active_requests, &event)?;
         Ok(Some(event))
     }
 
@@ -453,15 +990,15 @@ impl ShellStaHandle {
             return;
         }
         if let Ok(requests) = self.active_requests.lock() {
-            for token in requests.values() {
-                token.cancel();
+            for request in requests.values() {
+                request.cancellation.cancel();
             }
         }
         if matches!(self.state(), ShellStaState::Ready) {
             self.state
                 .store(ShellStaState::Stopping as u8, Ordering::Release);
         }
-        match self.control.try_send(ControlMessage::Shutdown) {
+        match self.foreground_control.try_send(ControlMessage::Shutdown) {
             Ok(()) | Err(TrySendError::Disconnected(_) | TrySendError::Full(_)) => {}
         }
     }
@@ -477,13 +1014,14 @@ impl ShellStaHandle {
         let done = self.done.lock().map_err(|_| ShellStaError::Poisoned)?;
         let mut join = self.join.lock().map_err(|_| ShellStaError::Poisoned)?;
         let Some(thread) = join.take() else {
-            return Ok(());
+            return self.join_search_worker(timeout);
         };
         match done.recv_timeout(timeout) {
             Ok(()) => {
                 let result = thread.join();
                 ACTIVE_JOIN_HANDLES.fetch_sub(1, Ordering::AcqRel);
-                result.map_err(|_| ShellStaError::ThreadPanicked)
+                result.map_err(|_| ShellStaError::ThreadPanicked)?;
+                self.join_search_worker(timeout)
             }
             Err(RecvTimeoutError::Disconnected) => {
                 let result = thread.join();
@@ -497,25 +1035,136 @@ impl ShellStaHandle {
             }
         }
     }
+
+    fn join_search_worker(&self, timeout: Duration) -> Result<(), ShellStaError> {
+        let done = self
+            .search_done
+            .lock()
+            .map_err(|_| ShellStaError::Poisoned)?;
+        let mut join = self
+            .search_join
+            .lock()
+            .map_err(|_| ShellStaError::Poisoned)?;
+        let Some(thread) = join.take() else {
+            return Ok(());
+        };
+        match done.recv_timeout(timeout) {
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => {
+                let result = thread.join().map_err(|_| ShellStaError::ThreadPanicked);
+                ACTIVE_JOIN_HANDLES.fetch_sub(1, Ordering::AcqRel);
+                result
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                *join = Some(thread);
+                Err(ShellStaError::JoinTimeout { timeout })
+            }
+        }
+    }
+}
+
+fn terminal_submission_capacity_available(
+    active_requests: &HashMap<RequestId, ActiveRequest>,
+    required_terminal_lane: Option<RequiredTerminalLane>,
+) -> bool {
+    // Navigation's primary lane also carries best-effort batches and watcher changes. Stop
+    // admitting a new required-terminal command once the retained bound could be consumed by
+    // already-accepted foreground work; this preserves nonblocking delivery without assuming
+    // that a UI receiver is draining those nonterminal events.
+    let Some(required_terminal_lane) = required_terminal_lane else {
+        return true;
+    };
+    let capacity = match required_terminal_lane {
+        RequiredTerminalLane::Navigation => NAVIGATION_TERMINAL_RETAIN_CAPACITY,
+        RequiredTerminalLane::Operation => OPERATION_TERMINAL_RETAIN_CAPACITY,
+        RequiredTerminalLane::Typed => TYPED_TERMINAL_RETAIN_CAPACITY,
+    };
+    active_requests
+        .values()
+        .filter(|request| request.required_terminal_lane == Some(required_terminal_lane))
+        .count()
+        < capacity
+}
+
+fn required_terminal_lane(command: &ExplorerCommand) -> Option<RequiredTerminalLane> {
+    match command {
+        ExplorerCommand::Navigate { .. }
+        | ExplorerCommand::Refresh { .. }
+        | ExplorerCommand::OpenItem {
+            disposition: OpenDisposition::CurrentTab | OpenDisposition::NewTab,
+            ..
+        } => Some(RequiredTerminalLane::Navigation),
+        ExplorerCommand::ExecuteFileOperation { .. }
+        | ExplorerCommand::DataTransfer { .. }
+        | ExplorerCommand::OpenItem {
+            disposition: OpenDisposition::DefaultApplication,
+            ..
+        } => Some(RequiredTerminalLane::Operation),
+        ExplorerCommand::ShowContextMenu { .. }
+        | ExplorerCommand::ResolveAncestry { .. }
+        | ExplorerCommand::EnumerateChildContainers { .. }
+        | ExplorerCommand::StartSearch { .. }
+        | ExplorerCommand::LoadShellIcon { .. }
+        | ExplorerCommand::LoadThumbnail { .. }
+        | ExplorerCommand::ClearThumbnailCache { .. }
+        | ExplorerCommand::PreviewHost { .. }
+        | ExplorerCommand::DiscoverLockOwners { .. }
+        | ExplorerCommand::CloseLockOwners { .. } => Some(RequiredTerminalLane::Typed),
+        _ => None,
+    }
+}
+
+fn remove_completed_request(
+    active_requests: &Mutex<HashMap<RequestId, ActiveRequest>>,
+    event: &ExplorerEvent,
+) -> Result<(), ShellStaEndpointError> {
+    if event.is_terminal()
+        && let Some(context) = event.context()
+    {
+        active_requests
+            .lock()
+            .map_err(|_| ShellStaEndpointError::Poisoned)?
+            .remove(&context.request_id);
+    }
+    Ok(())
+}
+
+/// Foreground commands retain capacity even when enrichment, thumbnail, and search queues fill.
+fn is_foreground_command(command: &ExplorerCommand) -> bool {
+    matches!(
+        command,
+        ExplorerCommand::Navigate { .. }
+            | ExplorerCommand::Refresh { .. }
+            | ExplorerCommand::Cancel { .. }
+            | ExplorerCommand::ExecuteFileOperation { .. }
+            | ExplorerCommand::DataTransfer { .. }
+            | ExplorerCommand::ShowContextMenu { .. }
+            | ExplorerCommand::StartSearch { .. }
+            | ExplorerCommand::OpenItem {
+                disposition: OpenDisposition::CurrentTab
+                    | OpenDisposition::NewTab
+                    | OpenDisposition::DefaultApplication,
+                ..
+            }
+    )
 }
 
 struct StaRuntime {
     watchers: HashMap<explorer_model::TabId, crate::watcher::WatcherSession>,
     clipboard: crate::clipboard::ClipboardRuntime,
     icon_cache: crate::icon::ShellIconCache,
+    search_jobs: SyncSender<SearchJob>,
 }
 
-impl Default for StaRuntime {
-    fn default() -> Self {
+impl StaRuntime {
+    fn new(search_jobs: SyncSender<SearchJob>) -> Self {
         Self {
             watchers: HashMap::new(),
             clipboard: crate::clipboard::ClipboardRuntime::new(),
             icon_cache: crate::icon::ShellIconCache::default(),
+            search_jobs,
         }
     }
-}
 
-impl StaRuntime {
     fn poll_clipboard(&mut self, events: &SyncSender<ExplorerEvent>) {
         if let Some(state) = self.clipboard.poll_change() {
             let _ = events.try_send(ExplorerEvent::ClipboardChanged { state });
@@ -558,6 +1207,50 @@ impl StaRuntime {
             }
         }
     }
+
+    fn enqueue_search(
+        &self,
+        context: explorer_model::RequestContext,
+        location: LocationDescriptor,
+        input: explorer_model::SearchInput,
+    ) -> Result<(), ExplorerError> {
+        let Some(worker_guard) = reserve_worker(
+            &ACTIVE_SEARCH_WORKERS,
+            SEARCH_WORKER_CAPACITY,
+            &SATURATED_SEARCH_WORKERS,
+        ) else {
+            tracing::warn!(
+                request_id = ?context.request_id,
+                tab_id = ?context.tab_id,
+                generation = context.generation.value(),
+                domain = "search",
+                "isolated worker domain is saturated"
+            );
+            return Err(ExplorerError::new(
+                ExplorerErrorKind::Availability,
+                "start search",
+                true,
+                "Search is temporarily busy. Try again shortly.",
+                "search domain capacity is saturated",
+            ));
+        };
+        self.search_jobs
+            .try_send(SearchJob {
+                context,
+                location,
+                input,
+                worker_guard,
+            })
+            .map_err(|error| {
+                ExplorerError::new(
+                    ExplorerErrorKind::Availability,
+                    "start search",
+                    true,
+                    "Search is temporarily busy. Try again shortly.",
+                    error.to_string(),
+                )
+            })
+    }
 }
 
 fn watchable_directory_path(location: &LocationDescriptor) -> Option<std::path::PathBuf> {
@@ -573,7 +1266,11 @@ fn process_command(
     command: &ExplorerCommand,
     queued_at: Instant,
     events: &SyncSender<ExplorerEvent>,
+    navigation_terminals: &ReliableTerminalPublisher,
+    typed_terminals: &ReliableTerminalPublisher,
     file_operations: &Sender<FileOperationCompletion>,
+    operation_progress: &SyncSender<ExplorerEvent>,
+    operation_terminals: &ReliableTerminalPublisher,
     runtime: &mut StaRuntime,
 ) {
     let Some(context) = command.context().cloned() else {
@@ -589,33 +1286,31 @@ fn process_command(
     let started = Instant::now();
     let result = match &command {
         ExplorerCommand::Navigate { location, .. } | ExplorerCommand::Refresh { location, .. } => {
-            process_navigation(&context, location, events)
+            process_navigation(&context, location, events, navigation_terminals)
         }
         ExplorerCommand::ResolveAncestry { .. }
         | ExplorerCommand::EnumerateChildContainers { .. } => {
-            start_brokered_breadcrumb(command, events);
+            start_brokered_breadcrumb(command, events, typed_terminals.clone());
             Ok(())
         }
         ExplorerCommand::OpenItem {
             item, disposition, ..
         } => match disposition {
             OpenDisposition::CurrentTab | OpenDisposition::NewTab => {
-                process_navigation(&context, &item.location, events)
+                process_navigation(&context, &item.location, events, navigation_terminals)
             }
             OpenDisposition::DefaultApplication => crate::navigation::open_default(&item.location)
-                .and_then(|()| {
-                    events
-                        .try_send(ExplorerEvent::OperationFinished {
-                            context: context.clone(),
-                            outcome: OperationTerminal::Finished,
-                        })
-                        .map_err(|error| event_send_error(&error))
+                .map(|()| {
+                    operation_terminals.publish(ExplorerEvent::OperationFinished {
+                        context: context.clone(),
+                        outcome: OperationTerminal::Finished,
+                    });
                 }),
         },
         ExplorerCommand::ExecuteFileOperation { request, .. } => start_file_operation_worker(
             context.clone(),
             request.clone(),
-            events.clone(),
+            operation_progress.clone(),
             file_operations.clone(),
             false,
         ),
@@ -630,7 +1325,7 @@ fn process_command(
                     start_file_operation_worker(
                         context.clone(),
                         operation,
-                        events.clone(),
+                        operation_progress.clone(),
                         file_operations.clone(),
                         true,
                     )
@@ -655,7 +1350,7 @@ fn process_command(
                 start_file_operation_worker(
                     context.clone(),
                     operation,
-                    events.clone(),
+                    operation_progress.clone(),
                     file_operations.clone(),
                     false,
                 )
@@ -701,12 +1396,11 @@ fn process_command(
                     }
                 };
                 let outcome = operation_terminal(result, "data_transfer");
-                events
-                    .try_send(ExplorerEvent::OperationFinished {
-                        context: context.clone(),
-                        outcome,
-                    })
-                    .map_err(|error| event_send_error(&error))
+                operation_terminals.publish(ExplorerEvent::OperationFinished {
+                    context: context.clone(),
+                    outcome,
+                });
+                Ok(())
             }
         },
         ExplorerCommand::ShowContextMenu { request, .. } => {
@@ -715,12 +1409,12 @@ fn process_command(
                     || verb.eq_ignore_ascii_case("Windows.Share")
                     || verb.eq_ignore_ascii_case("PinToStartScreen")
             }) {
-                crate::context_menu::run_host_owned(&context, request, events);
+                crate::context_menu::run_host_owned(&context, request, typed_terminals.clone());
             } else {
                 crate::context_menu::start_brokered(
                     context.clone(),
                     request.clone(),
-                    events.clone(),
+                    typed_terminals.clone(),
                 );
             }
             Ok(())
@@ -728,7 +1422,7 @@ fn process_command(
         ExplorerCommand::Cancel { .. } => Ok(()),
         ExplorerCommand::StartSearch {
             location, input, ..
-        } => crate::search::execute(&context, location, input, events),
+        } => runtime.enqueue_search(context.clone(), location.clone(), input.clone()),
         ExplorerCommand::LoadShellIcon { key, .. } => {
             let event = if context.cancellation.is_cancelled() {
                 ExplorerEvent::ShellIconFailed {
@@ -759,61 +1453,52 @@ fn process_command(
                     }
                 }
             };
-            events
-                .try_send(event)
-                .map_err(|error| event_send_error(&error))
+            typed_terminals.publish(event);
+            Ok(())
         }
         ExplorerCommand::LoadThumbnail {
             key,
             location,
             cache_only,
             ..
-        } => {
-            let request = explorer_model::ThumbnailRequest::new(
-                context.clone(),
-                key.clone(),
-                explorer_model::ThumbnailPriority::ActiveVisible,
-            );
-            let outcome = crate::thumbnail::load_shell_thumbnail(
-                &request,
-                location,
-                *cache_only,
-                explorer_common::RoadmapLimits::default().thumbnail_memory_bytes,
-            );
-            let _ = request.claim_terminal(&outcome);
-            events
-                .try_send(ExplorerEvent::ThumbnailFinished {
-                    context: context.clone(),
-                    key: key.clone(),
-                    outcome,
-                })
-                .map_err(|error| event_send_error(&error))
-        }
-        ExplorerCommand::ClearThumbnailCache { .. } => events
-            .try_send(ExplorerEvent::ThumbnailCacheCleared {
+        } => start_thumbnail_worker(
+            context.clone(),
+            key.clone(),
+            location.clone(),
+            *cache_only,
+            typed_terminals.clone(),
+        ),
+        ExplorerCommand::ClearThumbnailCache { .. } => {
+            typed_terminals.publish(ExplorerEvent::ThumbnailCacheCleared {
                 context: context.clone(),
                 success: crate::thumbnail::clear_thumbnail_disk_cache(),
-            })
-            .map_err(|error| event_send_error(&error)),
-        ExplorerCommand::PreviewHost { command, .. } => events
-            .try_send(ExplorerEvent::PreviewHostFinished {
+            });
+            Ok(())
+        }
+        ExplorerCommand::PreviewHost { command, .. } => {
+            typed_terminals.publish(ExplorerEvent::PreviewHostFinished {
                 context: context.clone(),
                 outcome: explorer_model::PreviewHostTerminal::Failed {
                     generation: command.generation(),
                     error: explorer_model::PreviewHostError::Unsupported,
                 },
-            })
-            .map_err(|error| event_send_error(&error)),
+            });
+            Ok(())
+        }
         ExplorerCommand::DiscoverLockOwners { request, .. } => {
             crate::restart_manager::start_discovery(
                 context.clone(),
                 request.clone(),
-                events.clone(),
+                typed_terminals.clone(),
             );
             Ok(())
         }
         ExplorerCommand::CloseLockOwners { request, .. } => {
-            crate::restart_manager::start_close(context.clone(), request.clone(), events.clone());
+            crate::restart_manager::start_close(
+                context.clone(),
+                request.clone(),
+                typed_terminals.clone(),
+            );
             Ok(())
         }
     };
@@ -855,10 +1540,14 @@ fn process_command(
             &error,
             Some(file!()),
         );
-        let _ = events.try_send(ExplorerEvent::Failed {
-            context: context.clone(),
-            error,
-        });
+        let event = command_terminal_failure(command, context.clone(), error);
+        publish_command_terminal(
+            command,
+            event,
+            navigation_terminals,
+            operation_terminals,
+            typed_terminals,
+        );
     }
     tracing::debug!(
         request_id = ?context.request_id,
@@ -867,6 +1556,105 @@ fn process_command(
         elapsed_micros = started.elapsed().as_micros(),
         "Shell STA command finished"
     );
+}
+
+/// Preserves the reducer's command-specific terminal contract when dispatch itself fails or
+/// panics. Generic `Failed` is reserved for commands without a typed terminal.
+fn command_terminal_failure(
+    command: &ExplorerCommand,
+    context: explorer_model::RequestContext,
+    error: ExplorerError,
+) -> ExplorerEvent {
+    match command {
+        ExplorerCommand::ExecuteFileOperation { .. }
+        | ExplorerCommand::DataTransfer { .. }
+        | ExplorerCommand::OpenItem {
+            disposition: OpenDisposition::DefaultApplication,
+            ..
+        } => ExplorerEvent::OperationFinished {
+            context,
+            outcome: OperationTerminal::Failed(error),
+        },
+        ExplorerCommand::ShowContextMenu { .. } => ExplorerEvent::ContextMenuFinished {
+            context,
+            outcome: explorer_model::ContextMenuOutcome::Failed { error },
+        },
+        ExplorerCommand::PreviewHost { command, .. } => ExplorerEvent::PreviewHostFinished {
+            context,
+            outcome: explorer_model::PreviewHostTerminal::Failed {
+                generation: command.generation(),
+                error: explorer_model::PreviewHostError::Crash,
+            },
+        },
+        ExplorerCommand::DiscoverLockOwners { .. } => ExplorerEvent::LockOwnersDiscovered {
+            context,
+            outcome: explorer_model::LockOwnerDiscoveryTerminal::Failed(error),
+        },
+        ExplorerCommand::CloseLockOwners { .. } => ExplorerEvent::LockOwnersClosed {
+            context,
+            outcome: explorer_model::LockOwnerCloseTerminal::Failed(error),
+        },
+        ExplorerCommand::StartSearch { .. } => ExplorerEvent::SearchFinished {
+            context,
+            outcome: explorer_model::SearchTerminal::Failed(error),
+        },
+        ExplorerCommand::ResolveAncestry { .. } => ExplorerEvent::AncestryFinished {
+            context,
+            outcome: BreadcrumbTerminal::Failed(error),
+        },
+        ExplorerCommand::EnumerateChildContainers {
+            segment_id,
+            menu_generation,
+            ..
+        } => ExplorerEvent::ChildContainersFinished {
+            context,
+            segment_id: *segment_id,
+            menu_generation: *menu_generation,
+            outcome: BreadcrumbTerminal::Failed(error),
+        },
+        ExplorerCommand::LoadThumbnail { key, .. } => ExplorerEvent::ThumbnailFinished {
+            context,
+            key: key.clone(),
+            outcome: explorer_model::ThumbnailTerminal::Failed(error.to_string()),
+        },
+        ExplorerCommand::LoadShellIcon { key, .. } => ExplorerEvent::ShellIconFailed {
+            context,
+            key: key.clone(),
+            reason: explorer_model::ShellIconFallbackReason::ShellUnavailable,
+        },
+        ExplorerCommand::ClearThumbnailCache { .. } => ExplorerEvent::ThumbnailCacheCleared {
+            context,
+            success: false,
+        },
+        ExplorerCommand::Navigate { .. }
+        | ExplorerCommand::Refresh { .. }
+        | ExplorerCommand::OpenItem { .. }
+        | ExplorerCommand::Cancel { .. } => ExplorerEvent::Failed { context, error },
+    }
+}
+
+fn publish_command_terminal(
+    command: &ExplorerCommand,
+    event: ExplorerEvent,
+    navigation_terminals: &ReliableTerminalPublisher,
+    operation_terminals: &ReliableTerminalPublisher,
+    typed_terminals: &ReliableTerminalPublisher,
+) {
+    match command {
+        ExplorerCommand::Navigate { .. }
+        | ExplorerCommand::Refresh { .. }
+        | ExplorerCommand::OpenItem {
+            disposition: OpenDisposition::CurrentTab | OpenDisposition::NewTab,
+            ..
+        } => navigation_terminals.publish(event),
+        ExplorerCommand::ExecuteFileOperation { .. }
+        | ExplorerCommand::DataTransfer { .. }
+        | ExplorerCommand::OpenItem {
+            disposition: OpenDisposition::DefaultApplication,
+            ..
+        } => operation_terminals.publish(event),
+        _ => typed_terminals.publish(event),
+    }
 }
 
 fn operation_terminal(
@@ -888,11 +1676,34 @@ fn operation_terminal(
     }
 }
 
-struct FileOperationWorkerGuard;
+struct IsolatedWorkerGuard(&'static AtomicUsize);
 
-impl Drop for FileOperationWorkerGuard {
+impl Drop for IsolatedWorkerGuard {
     fn drop(&mut self) {
-        ACTIVE_FILE_OPERATION_WORKERS.fetch_sub(1, Ordering::AcqRel);
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn reserve_worker(
+    active: &'static AtomicUsize,
+    capacity: usize,
+    saturated: &'static AtomicUsize,
+) -> Option<IsolatedWorkerGuard> {
+    let mut observed = active.load(Ordering::Acquire);
+    loop {
+        if observed >= capacity {
+            saturated.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        match active.compare_exchange_weak(
+            observed,
+            observed + 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return Some(IsolatedWorkerGuard(active)),
+            Err(current) => observed = current,
+        }
     }
 }
 
@@ -913,12 +1724,28 @@ fn start_file_operation_worker(
     completions: Sender<FileOperationCompletion>,
     clipboard_paste: bool,
 ) -> Result<(), ExplorerError> {
+    let Some(worker_guard) = reserve_worker(
+        &ACTIVE_FILE_OPERATION_WORKERS,
+        FILE_OPERATION_WORKER_CAPACITY,
+        &SATURATED_FILE_OPERATION_WORKERS,
+    ) else {
+        tracing::warn!(
+            request_id = ?context.request_id,
+            tab_id = ?context.tab_id,
+            generation = context.generation.value(),
+            domain = "file-operation",
+            "isolated worker domain is saturated"
+        );
+        return Err(background_file_operation_error(
+            "start background file operation",
+            "file-operation domain capacity is saturated".to_owned(),
+        ));
+    };
     let worker_name = format!("file-operation-{:?}", context.request_id);
     thread::Builder::new()
         .name(worker_name)
         .spawn(move || {
-            ACTIVE_FILE_OPERATION_WORKERS.fetch_add(1, Ordering::AcqRel);
-            let _worker_guard = FileOperationWorkerGuard;
+            let _worker_guard = worker_guard;
             #[cfg(test)]
             if let Some(gate) = FILE_OPERATION_TEST_GATE
                 .lock()
@@ -976,43 +1803,243 @@ fn start_file_operation_worker(
 fn finish_background_file_operation(
     completion: FileOperationCompletion,
     events: &SyncSender<ExplorerEvent>,
+    terminals: &ReliableTerminalPublisher,
     runtime: &mut StaRuntime,
 ) {
+    if completion.context.cancellation.is_cancelled() {
+        STALE_CANCELLED_COMPLETIONS.fetch_add(1, Ordering::Relaxed);
+        tracing::debug!(
+            request_id = ?completion.context.request_id,
+            tab_id = ?completion.context.tab_id,
+            generation = completion.context.generation.value(),
+            "background file-operation completion was cancelled before delivery"
+        );
+    }
     if completion.clipboard_paste
         && let Some(state) = runtime
             .clipboard
             .complete_background_paste(completion.context.request_id, &completion.outcome)
     {
+        // Clipboard updates are optional progress-like state. The required operation terminal
+        // below remains independently reliable when this best-effort notification is full.
         let _ = events.try_send(ExplorerEvent::ClipboardChanged { state });
     }
-    let _ = events.try_send(ExplorerEvent::OperationFinished {
+    terminals.publish(ExplorerEvent::OperationFinished {
         context: completion.context,
         outcome: completion.outcome,
     });
 }
 
-struct BreadcrumbWorkerGuard;
-
-impl Drop for BreadcrumbWorkerGuard {
-    fn drop(&mut self) {
-        ACTIVE_BREADCRUMB_WORKERS.fetch_sub(1, Ordering::AcqRel);
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the managed worker owns its endpoints and shutdown guard for the full thread lifecycle"
+)]
+fn search_worker_loop(
+    jobs: Receiver<SearchJob>,
+    events: SyncSender<ExplorerEvent>,
+    terminals: ReliableTerminalPublisher,
+    shutdown_requested: Arc<AtomicBool>,
+    done: SyncSender<()>,
+) {
+    ACTIVE_SEARCH_EXECUTORS.fetch_add(1, Ordering::AcqRel);
+    let _executor_guard = IsolatedWorkerGuard(&ACTIVE_SEARCH_EXECUTORS);
+    while !shutdown_requested.load(Ordering::Acquire) {
+        let job = match jobs.recv_timeout(MESSAGE_PUMP_INTERVAL) {
+            Ok(job) => job,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
+        let SearchJob {
+            context,
+            location,
+            input,
+            worker_guard: _worker_guard,
+        } = job;
+        #[cfg(test)]
+        if let Some(gate) = SEARCH_TEST_GATE
+            .lock()
+            .ok()
+            .and_then(|gate| gate.clone())
+            .filter(|gate| gate.request_id == context.request_id)
+        {
+            let _ = gate.started.try_send(());
+            while !gate.release.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(2));
+            }
+        }
+        tracing::debug!(
+            request_id = ?context.request_id,
+            tab_id = ?context.tab_id,
+            generation = context.generation.value(),
+            "isolated search worker started"
+        );
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ApartmentGuard::initialize()
+                .map_err(|error| {
+                    ExplorerError::new(
+                        ExplorerErrorKind::Availability,
+                        "initialize search apartment",
+                        true,
+                        "Search is unavailable.",
+                        error.to_string(),
+                    )
+                })
+                .and_then(|_apartment| {
+                    crate::search::execute_with_terminals(
+                        &context, &location, &input, &events, &terminals,
+                    )
+                })
+        }))
+        .unwrap_or_else(|payload| {
+            let message = panic_payload_message(payload.as_ref());
+            record_process_error_message(
+                ErrorSeverity::Critical,
+                "shell",
+                "search_worker_panic",
+                &message,
+                Some(file!()),
+            );
+            Err(ExplorerError::new(
+                ExplorerErrorKind::Internal,
+                "search worker panic",
+                true,
+                "Search failed, but Explorer can continue.",
+                message,
+            ))
+        });
+        if let Err(error) = result {
+            terminals.publish(ExplorerEvent::SearchFinished {
+                context: context.clone(),
+                outcome: explorer_model::SearchTerminal::Failed(error),
+            });
+        }
+        if context.cancellation.is_cancelled() {
+            STALE_CANCELLED_COMPLETIONS.fetch_add(1, Ordering::Relaxed);
+            tracing::debug!(
+                request_id = ?context.request_id,
+                tab_id = ?context.tab_id,
+                generation = context.generation.value(),
+                "isolated search completion was cancelled before delivery"
+            );
+        }
     }
+    let _ = done.send(());
+}
+
+fn start_thumbnail_worker(
+    context: explorer_model::RequestContext,
+    key: explorer_model::ThumbnailRequestKey,
+    location: LocationDescriptor,
+    cache_only: bool,
+    terminals: ReliableTerminalPublisher,
+) -> Result<(), ExplorerError> {
+    let Some(worker_guard) = reserve_worker(
+        &ACTIVE_THUMBNAIL_WORKERS,
+        THUMBNAIL_WORKER_CAPACITY,
+        &SATURATED_THUMBNAIL_WORKERS,
+    ) else {
+        tracing::warn!(
+            request_id = ?context.request_id,
+            tab_id = ?context.tab_id,
+            generation = context.generation.value(),
+            domain = "thumbnail",
+            "isolated worker domain is saturated"
+        );
+        return Err(ExplorerError::new(
+            ExplorerErrorKind::Availability,
+            "load thumbnail",
+            true,
+            "Thumbnail loading is temporarily busy.",
+            "thumbnail domain capacity is saturated",
+        ));
+    };
+    let worker_name = format!("thumbnail-{:?}", context.request_id);
+    thread::Builder::new()
+        .name(worker_name)
+        .spawn(move || {
+            let _worker_guard = worker_guard;
+            let request = explorer_model::ThumbnailRequest::new(
+                context.clone(),
+                key.clone(),
+                explorer_model::ThumbnailPriority::ActiveVisible,
+            );
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                ApartmentGuard::initialize().map_or_else(
+                    |error| explorer_model::ThumbnailTerminal::Failed(error.to_string()),
+                    |_apartment| {
+                        crate::thumbnail::load_shell_thumbnail(
+                            &request,
+                            &location,
+                            cache_only,
+                            explorer_common::RoadmapLimits::default().thumbnail_memory_bytes,
+                        )
+                    },
+                )
+            }))
+            .unwrap_or_else(|payload| {
+                let message = panic_payload_message(payload.as_ref());
+                record_process_error_message(
+                    ErrorSeverity::Critical,
+                    "shell",
+                    "thumbnail_worker_panic",
+                    &message,
+                    Some(file!()),
+                );
+                explorer_model::ThumbnailTerminal::Failed(message)
+            });
+            let _ = request.claim_terminal(&outcome);
+            if context.cancellation.is_cancelled() {
+                STALE_CANCELLED_COMPLETIONS.fetch_add(1, Ordering::Relaxed);
+                tracing::debug!(
+                    request_id = ?context.request_id,
+                    tab_id = ?context.tab_id,
+                    generation = context.generation.value(),
+                    "isolated thumbnail completion was cancelled before delivery"
+                );
+            }
+            terminals.publish(ExplorerEvent::ThumbnailFinished {
+                context,
+                key,
+                outcome,
+            });
+        })
+        .map(|_| ())
+        .map_err(|error| {
+            ExplorerError::new(
+                ExplorerErrorKind::Availability,
+                "start thumbnail worker",
+                true,
+                "Thumbnail loading could not be started.",
+                error.to_string(),
+            )
+        })
 }
 
 /// Runs extension-controlled Shell namespace work outside the application's long-lived STA.
 /// The coordinator owns the exactly-once terminal gate; a provider that never returns can leave
 /// only its disposable apartment blocked and cannot stall navigation, input, or shutdown.
-fn start_brokered_breadcrumb(command: &ExplorerCommand, events: &SyncSender<ExplorerEvent>) {
+fn start_brokered_breadcrumb(
+    command: &ExplorerCommand,
+    events: &SyncSender<ExplorerEvent>,
+    terminals: ReliableTerminalPublisher,
+) {
     start_bounded_breadcrumb_job(
         command,
         events,
+        terminals.clone(),
         BREADCRUMB_PROVIDER_TIMEOUT,
-        |worker_command, worker_events, worker_gate| match ApartmentGuard::initialize() {
+        move |worker_command, worker_events, worker_gate| match ApartmentGuard::initialize() {
             Ok(_apartment) => match &worker_command {
                 ExplorerCommand::ResolveAncestry {
                     context, location, ..
                 } => {
-                    let _ = process_ancestry(context, location, &worker_events, &worker_gate);
+                    let _ = process_ancestry(
+                        context,
+                        location,
+                        &worker_events,
+                        &terminals,
+                        &worker_gate,
+                    );
                 }
                 ExplorerCommand::EnumerateChildContainers {
                     context,
@@ -1026,6 +2053,7 @@ fn start_brokered_breadcrumb(command: &ExplorerCommand, events: &SyncSender<Expl
                         *segment_id,
                         *menu_generation,
                         &worker_events,
+                        &terminals,
                         &worker_gate,
                     );
                 }
@@ -1034,6 +2062,7 @@ fn start_brokered_breadcrumb(command: &ExplorerCommand, events: &SyncSender<Expl
             Err(error) => send_breadcrumb_broker_failure(
                 &worker_command,
                 &worker_events,
+                &terminals,
                 &worker_gate,
                 format!("isolated provider apartment initialization failed: {error}"),
             ),
@@ -1041,28 +2070,64 @@ fn start_brokered_breadcrumb(command: &ExplorerCommand, events: &SyncSender<Expl
     );
 }
 
-fn start_bounded_breadcrumb_job<F>(
+fn start_bounded_breadcrumb_job<F, P>(
     command: &ExplorerCommand,
     events: &SyncSender<ExplorerEvent>,
+    terminals: P,
     deadline: Duration,
     job: F,
 ) where
     F: FnOnce(ExplorerCommand, SyncSender<ExplorerEvent>, Arc<AtomicBool>) + Send + 'static,
+    P: RequiredTerminalPublisher,
 {
     let Some(context) = command.context().cloned() else {
+        return;
+    };
+    let Some(worker_guard) = reserve_worker(
+        &ACTIVE_BREADCRUMB_WORKERS,
+        BREADCRUMB_WORKER_CAPACITY,
+        &SATURATED_BREADCRUMB_WORKERS,
+    ) else {
+        tracing::warn!(
+            request_id = ?context.request_id,
+            tab_id = ?context.tab_id,
+            generation = context.generation.value(),
+            domain = "breadcrumb-enrichment",
+            "isolated worker domain is saturated"
+        );
+        send_breadcrumb_broker_failure(
+            command,
+            events,
+            &terminals,
+            &AtomicBool::new(false),
+            "enrichment-provider domain capacity is saturated".to_owned(),
+        );
         return;
     };
     let terminal_sent = Arc::new(AtomicBool::new(false));
     let worker_gate = Arc::clone(&terminal_sent);
     let worker_command = command.clone();
     let worker_events = events.clone();
+    let worker_terminals = terminals.clone();
     let (done_tx, done_rx) = mpsc::sync_channel(1);
     let worker_name = format!("breadcrumb-provider-{:?}", context.request_id);
     let worker = thread::Builder::new().name(worker_name).spawn(move || {
-        ACTIVE_BREADCRUMB_WORKERS.fetch_add(1, Ordering::AcqRel);
-        let _worker_guard = BreadcrumbWorkerGuard;
+        let _worker_guard = worker_guard;
+        #[cfg(test)]
+        if let Some(gate) = BREADCRUMB_TEST_GATE
+            .lock()
+            .ok()
+            .and_then(|gate| gate.clone())
+            .filter(|gate| gate.request_id == context.request_id)
+        {
+            let _ = gate.started.try_send(());
+            while !gate.release.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(2));
+            }
+        }
         let panic_command = worker_command.clone();
         let panic_events = worker_events.clone();
+        let panic_terminals = worker_terminals.clone();
         let panic_gate = Arc::clone(&worker_gate);
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             job(worker_command, worker_events, worker_gate);
@@ -1079,6 +2144,7 @@ fn start_bounded_breadcrumb_job<F>(
             send_breadcrumb_broker_failure(
                 &panic_command,
                 &panic_events,
+                &panic_terminals,
                 &panic_gate,
                 format!("isolated provider worker panicked: {message}"),
             );
@@ -1089,6 +2155,7 @@ fn start_bounded_breadcrumb_job<F>(
         send_breadcrumb_broker_failure(
             command,
             events,
+            &terminals,
             &terminal_sent,
             format!("could not start isolated provider worker: {error}"),
         );
@@ -1097,6 +2164,7 @@ fn start_bounded_breadcrumb_job<F>(
 
     let timeout_command = command.clone();
     let timeout_events = events.clone();
+    let timeout_terminals = terminals.clone();
     let timeout_gate = Arc::clone(&terminal_sent);
     if let Err(error) = thread::Builder::new()
         .name("breadcrumb-provider-deadline".to_owned())
@@ -1109,6 +2177,7 @@ fn start_bounded_breadcrumb_job<F>(
                 send_breadcrumb_broker_failure(
                     &timeout_command,
                     &timeout_events,
+                    &timeout_terminals,
                     &timeout_gate,
                     format!(
                         "provider deadline elapsed after {} ms; worker remains isolated",
@@ -1122,15 +2191,17 @@ fn start_bounded_breadcrumb_job<F>(
         send_breadcrumb_broker_failure(
             command,
             events,
+            &terminals,
             &terminal_sent,
             format!("could not start provider deadline coordinator: {error}"),
         );
     }
 }
 
-fn send_breadcrumb_broker_failure(
+fn send_breadcrumb_broker_failure<P: RequiredTerminalPublisher>(
     command: &ExplorerCommand,
     events: &SyncSender<ExplorerEvent>,
+    terminals: &P,
     terminal_sent: &AtomicBool,
     technical_detail: String,
 ) {
@@ -1154,6 +2225,7 @@ fn send_breadcrumb_broker_failure(
                 context,
                 BreadcrumbTerminal::Failed(error),
                 events,
+                terminals,
                 terminal_sent,
             );
         }
@@ -1169,6 +2241,7 @@ fn send_breadcrumb_broker_failure(
                 *menu_generation,
                 BreadcrumbTerminal::Failed(error),
                 events,
+                terminals,
                 terminal_sent,
             );
         }
@@ -1176,10 +2249,11 @@ fn send_breadcrumb_broker_failure(
     }
 }
 
-fn process_ancestry(
+fn process_ancestry<P: RequiredTerminalPublisher>(
     context: &explorer_model::RequestContext,
     location: &LocationDescriptor,
     events: &SyncSender<ExplorerEvent>,
+    terminals: &P,
     terminal_sent: &AtomicBool,
 ) -> Result<(), ExplorerError> {
     if context.cancellation.is_cancelled() {
@@ -1187,6 +2261,7 @@ fn process_ancestry(
             context,
             BreadcrumbTerminal::Cancelled,
             events,
+            terminals,
             terminal_sent,
         );
     }
@@ -1199,6 +2274,7 @@ fn process_ancestry(
                     context,
                     BreadcrumbTerminal::Failed(error),
                     events,
+                    terminals,
                     terminal_sent,
                 );
             }
@@ -1228,7 +2304,13 @@ fn process_ancestry(
             segments: enriched,
         })
         .map_err(|error| event_send_error(&error))?;
-    send_ancestry_terminal(context, BreadcrumbTerminal::Finished, events, terminal_sent)
+    send_ancestry_terminal(
+        context,
+        BreadcrumbTerminal::Finished,
+        events,
+        terminals,
+        terminal_sent,
+    )
 }
 
 fn shell_ancestry_segments(chain: Vec<(LocationDescriptor, String)>) -> Vec<BreadcrumbSegment> {
@@ -1275,10 +2357,11 @@ fn shell_breadcrumb_segment(
     }
 }
 
-fn send_ancestry_terminal(
+fn send_ancestry_terminal<P: RequiredTerminalPublisher>(
     context: &explorer_model::RequestContext,
     outcome: BreadcrumbTerminal,
-    events: &SyncSender<ExplorerEvent>,
+    _events: &SyncSender<ExplorerEvent>,
+    terminals: &P,
     terminal_sent: &AtomicBool,
 ) -> Result<(), ExplorerError> {
     if terminal_sent
@@ -1291,20 +2374,20 @@ fn send_ancestry_terminal(
         );
         return Ok(());
     }
-    events
-        .try_send(ExplorerEvent::AncestryFinished {
-            context: context.clone(),
-            outcome,
-        })
-        .map_err(|error| event_send_error(&error))
+    terminals.publish_terminal(ExplorerEvent::AncestryFinished {
+        context: context.clone(),
+        outcome,
+    });
+    Ok(())
 }
 
-fn process_child_containers(
+fn process_child_containers<P: RequiredTerminalPublisher>(
     context: &explorer_model::RequestContext,
     parent: &LocationDescriptor,
     segment_id: BreadcrumbSegmentId,
     menu_generation: u64,
     events: &SyncSender<ExplorerEvent>,
+    terminals: &P,
     terminal_sent: &AtomicBool,
 ) -> Result<(), ExplorerError> {
     if context.cancellation.is_cancelled() {
@@ -1314,6 +2397,7 @@ fn process_child_containers(
             menu_generation,
             BreadcrumbTerminal::Cancelled,
             events,
+            terminals,
             terminal_sent,
         );
     }
@@ -1338,6 +2422,7 @@ fn process_child_containers(
                     menu_generation,
                     BreadcrumbTerminal::Failed(error),
                     events,
+                    terminals,
                     terminal_sent,
                 );
             }
@@ -1354,16 +2439,18 @@ fn process_child_containers(
             BreadcrumbTerminal::Finished
         },
         events,
+        terminals,
         terminal_sent,
     )
 }
 
-fn send_child_terminal(
+fn send_child_terminal<P: RequiredTerminalPublisher>(
     context: &explorer_model::RequestContext,
     segment_id: BreadcrumbSegmentId,
     menu_generation: u64,
     outcome: BreadcrumbTerminal,
-    events: &SyncSender<ExplorerEvent>,
+    _events: &SyncSender<ExplorerEvent>,
+    terminals: &P,
     terminal_sent: &AtomicBool,
 ) -> Result<(), ExplorerError> {
     if terminal_sent
@@ -1377,14 +2464,13 @@ fn send_child_terminal(
         );
         return Ok(());
     }
-    events
-        .try_send(ExplorerEvent::ChildContainersFinished {
-            context: context.clone(),
-            segment_id,
-            menu_generation,
-            outcome,
-        })
-        .map_err(|error| event_send_error(&error))
+    terminals.publish_terminal(ExplorerEvent::ChildContainersFinished {
+        context: context.clone(),
+        segment_id,
+        menu_generation,
+        outcome,
+    });
+    Ok(())
 }
 
 fn filesystem_ancestry(location: &LocationDescriptor) -> Vec<BreadcrumbSegment> {
@@ -1454,6 +2540,7 @@ fn process_navigation(
     context: &explorer_model::RequestContext,
     location: &LocationDescriptor,
     events: &SyncSender<ExplorerEvent>,
+    terminals: &ReliableTerminalPublisher,
 ) -> Result<(), ExplorerError> {
     if context.cancellation.is_cancelled() {
         return Err(cancelled_error());
@@ -1480,11 +2567,10 @@ fn process_navigation(
     {
         let _ = index.observe_directory(path, &observed_entries);
     }
-    events
-        .try_send(ExplorerEvent::DirectoryFinished {
-            context: context.clone(),
-        })
-        .map_err(|error| event_send_error(&error))
+    terminals.publish(ExplorerEvent::DirectoryFinished {
+        context: context.clone(),
+    });
+    Ok(())
 }
 
 fn event_send_error<T>(error: &TrySendError<T>) -> ExplorerError {
@@ -1591,19 +2677,29 @@ fn pump_pending_messages() -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        FILE_OPERATION_TEST_GATE, FileOperationTestGate, ShellStaError, ShellStaHandle,
-        ShellStaState, StaResourceSnapshot, filesystem_ancestry, send_breadcrumb_broker_failure,
-        shell_ancestry_segments, start_bounded_breadcrumb_job, watchable_directory_path,
+        ActiveRequest, BREADCRUMB_TEST_GATE, BreadcrumbTestGate, FAIL_NEXT_STA_THREAD_SPAWN,
+        FILE_OPERATION_TEST_GATE, FileOperationTestGate, NAVIGATION_TERMINAL_COUNTERS,
+        OPERATION_TERMINAL_COUNTERS, ReliableTerminalPublisher, RequiredTerminalLane,
+        SEARCH_TEST_GATE, SearchTestGate, ShellDomainDiagnostics, ShellStaEndpointError,
+        ShellStaError, ShellStaHandle, ShellStaState, StaResourceSnapshot,
+        TYPED_TERMINAL_RETAIN_CAPACITY, filesystem_ancestry, remove_completed_request,
+        send_breadcrumb_broker_failure, shell_ancestry_segments, start_bounded_breadcrumb_job,
+        watchable_directory_path,
+    };
+    use explorer_common::{
+        ExplorerError as TestExplorerError, ExplorerErrorKind as TestExplorerErrorKind,
     };
     use explorer_model::{
         BreadcrumbSegmentId, BreadcrumbTerminal, ClipboardMode, ClipboardState, ConflictDecision,
         DataTransferRequest, ExplorerCommand, ExplorerEvent, ExplorerService, ExplorerWindowState,
         FileOperationFlags, FileOperationKind, FileOperationRequest, Generation, HistoryEntry,
         ItemDescriptor, JournalPreimage, JournalValidation, LocationDescriptor, OperationJournal,
-        OperationTerminal, RequestContext, ShellItemId, ShellNewItemRecipe, TabId, ViewAnchor,
+        OperationTerminal, PreviewHostCommand, RequestContext, ShellItemId, ShellNewItemRecipe,
+        TabId, ViewAnchor,
     };
     use explorer_test_support::{OwnedTempFixture, validate_breadcrumb_contract};
     use std::{
+        collections::HashMap,
         fs,
         mem::size_of_val,
         path::PathBuf,
@@ -1767,16 +2863,19 @@ mod tests {
             location: LocationDescriptor::ParsingName("shell:fixture-hanging-provider".to_owned()),
         };
         let (events_tx, events_rx) = mpsc::sync_channel(8);
+        let terminal_events = events_tx.clone();
         let started = Instant::now();
         start_bounded_breadcrumb_job(
             &command,
             &events_tx,
+            events_tx.clone(),
             Duration::from_millis(25),
-            |command, events, terminal_gate| {
+            move |command, events, terminal_gate| {
                 thread::sleep(Duration::from_millis(350));
                 send_breadcrumb_broker_failure(
                     &command,
                     &events,
+                    &terminal_events,
                     &terminal_gate,
                     "late fixture provider terminal".to_owned(),
                 );
@@ -2284,7 +3383,7 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
     }
 
     #[test]
-    fn background_copy_does_not_block_a_later_navigation() {
+    fn file_operation_isolation_keeps_navigation_available_before_release() {
         struct TestGateReset(Arc<AtomicBool>);
         impl Drop for TestGateReset {
             fn drop(&mut self) {
@@ -2357,7 +3456,8 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
             }
             assert!(
                 Instant::now() < navigation_deadline,
-                "navigation was blocked behind the background copy"
+                "navigation was blocked behind the background copy; diagnostics={:?}",
+                ShellDomainDiagnostics::capture()
             );
             thread::sleep(Duration::from_millis(2));
         }
@@ -2393,6 +3493,495 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
             workers_before,
             "background operation worker leaked"
         );
+        sta.shutdown_and_join(Duration::from_secs(5))
+            .expect("STA stops");
+    }
+
+    #[test]
+    fn cancelled_file_operation_isolation_records_stale_completion_diagnostics() {
+        struct TestGateReset(Arc<AtomicBool>);
+        impl Drop for TestGateReset {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+                if let Ok(mut gate) = FILE_OPERATION_TEST_GATE.lock() {
+                    gate.take();
+                }
+            }
+        }
+
+        let _serial = TEST_LOCK.lock().unwrap();
+        let before = ShellDomainDiagnostics::capture().stale_cancelled_completions;
+        let fixture = OwnedTempFixture::new().expect("cancelled operation fixture");
+        let source = fixture
+            .create_file("copy-source.bin", b"background-copy")
+            .expect("copy source");
+        let destination = fixture.create_dir("destination").expect("destination");
+        let operation_context = RequestContext::new(TabId::new(), Generation::new(1));
+        let (started_tx, started_rx) = mpsc::sync_channel(1);
+        let release = Arc::new(AtomicBool::new(false));
+        *FILE_OPERATION_TEST_GATE.lock().unwrap() = Some(FileOperationTestGate {
+            request_id: operation_context.request_id,
+            started: started_tx,
+            release: Arc::clone(&release),
+        });
+        let _gate_reset = TestGateReset(Arc::clone(&release));
+
+        let sta = ShellStaHandle::start().expect("start STA");
+        sta.submit(ExplorerCommand::ExecuteFileOperation {
+            context: operation_context.clone(),
+            request: FileOperationRequest {
+                kind: FileOperationKind::Copy {
+                    items: vec![real_operation_item(&source)],
+                    destination: LocationDescriptor::file_system(&destination),
+                },
+                flags: FileOperationFlags::default(),
+            },
+        })
+        .expect("submit background copy");
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("background worker started");
+        sta.submit(ExplorerCommand::Cancel {
+            request_id: operation_context.request_id,
+        })
+        .expect("cancel held operation");
+        assert!(operation_context.cancellation.is_cancelled());
+
+        release.store(true, Ordering::Release);
+        let completion_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(ExplorerEvent::OperationFinished { context, .. }) =
+                sta.try_recv_event().expect("operation completion")
+                && context.request_id == operation_context.request_id
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < completion_deadline,
+                "cancelled operation did not complete; diagnostics={:?}",
+                ShellDomainDiagnostics::capture()
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            ShellDomainDiagnostics::capture().stale_cancelled_completions > before,
+            "cancelled completion was not diagnosed; diagnostics={:?}",
+            ShellDomainDiagnostics::capture()
+        );
+        sta.shutdown_and_join(Duration::from_secs(5))
+            .expect("STA stops");
+    }
+
+    #[test]
+    fn active_search_worker_shutdown_is_bounded_and_releases_its_lifecycle() {
+        struct TestGateReset(Arc<AtomicBool>);
+        impl Drop for TestGateReset {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+                if let Ok(mut gate) = SEARCH_TEST_GATE.lock() {
+                    gate.take();
+                }
+            }
+        }
+
+        let _serial = TEST_LOCK.lock().unwrap();
+        let context = RequestContext::new(TabId::new(), Generation::new(1));
+        let (started_tx, started_rx) = mpsc::sync_channel(1);
+        let release = Arc::new(AtomicBool::new(false));
+        *SEARCH_TEST_GATE.lock().unwrap() = Some(SearchTestGate {
+            request_id: context.request_id,
+            started: started_tx,
+            release: Arc::clone(&release),
+        });
+        let _gate_reset = TestGateReset(Arc::clone(&release));
+        let sta = ShellStaHandle::start().expect("start STA");
+        sta.submit(ExplorerCommand::StartSearch {
+            context: context.clone(),
+            location: LocationDescriptor::file_system(r"C:\definitely-missing-search-fixture"),
+            input: explorer_model::SearchInput::new("held"),
+        })
+        .expect("submit held search");
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("search worker started");
+        sta.shutdown();
+        assert!(context.cancellation.is_cancelled());
+        release.store(true, Ordering::Release);
+        sta.shutdown_and_join(Duration::from_secs(5))
+            .expect("managed search worker stops");
+    }
+
+    #[test]
+    fn rejected_submission_removes_its_active_request_tracking() {
+        let _serial = TEST_LOCK.lock().unwrap();
+        let sta = ShellStaHandle::start().expect("start STA");
+        sta.shutdown_and_join(Duration::from_secs(5))
+            .expect("stop STA");
+        let context = RequestContext::new(TabId::new(), Generation::new(1));
+        assert!(matches!(
+            sta.submit(ExplorerCommand::Navigate {
+                context: context.clone(),
+                location: LocationDescriptor::file_system(r"C:\disconnected-request"),
+            }),
+            Err(ShellStaEndpointError::CommandEndpointDisconnected)
+        ));
+        assert!(
+            !sta.active_requests
+                .lock()
+                .expect("active request map")
+                .contains_key(&context.request_id),
+            "rejected request leaked active tracking"
+        );
+    }
+
+    #[test]
+    fn timed_out_search_join_is_retried_after_the_sta_has_stopped() {
+        struct TestGateReset(Arc<AtomicBool>);
+        impl Drop for TestGateReset {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+                if let Ok(mut gate) = SEARCH_TEST_GATE.lock() {
+                    gate.take();
+                }
+            }
+        }
+
+        let _serial = TEST_LOCK.lock().unwrap();
+        let context = RequestContext::new(TabId::new(), Generation::new(1));
+        let (started_tx, started_rx) = mpsc::sync_channel(1);
+        let release = Arc::new(AtomicBool::new(false));
+        *SEARCH_TEST_GATE.lock().unwrap() = Some(SearchTestGate {
+            request_id: context.request_id,
+            started: started_tx,
+            release: Arc::clone(&release),
+        });
+        let _gate_reset = TestGateReset(Arc::clone(&release));
+        let sta = ShellStaHandle::start().expect("start STA");
+        sta.submit(ExplorerCommand::StartSearch {
+            context,
+            location: LocationDescriptor::file_system(r"C:\held-search-join"),
+            input: explorer_model::SearchInput::new("held"),
+        })
+        .expect("submit held search");
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("search worker started");
+        assert!(matches!(
+            sta.shutdown_and_join(Duration::from_millis(10)),
+            Err(ShellStaError::JoinTimeout { .. })
+        ));
+        release.store(true, Ordering::Release);
+        sta.shutdown_and_join(Duration::from_secs(5))
+            .expect("retry joins the retained search worker");
+    }
+
+    #[test]
+    fn saturated_operation_progress_lane_preserves_operation_and_navigation_terminals() {
+        let operation_context = RequestContext::new(TabId::new(), Generation::new(1));
+        let navigation_context = RequestContext::new(TabId::new(), Generation::new(2));
+        let (terminal_tx, terminal_rx) = mpsc::sync_channel(1);
+        let (navigation_tx, navigation_rx) = mpsc::sync_channel(1);
+        let (progress_tx, progress_rx) = mpsc::sync_channel(1);
+        let (search_tx, search_rx) = mpsc::sync_channel(1);
+        let (enrichment_tx, enrichment_rx) = mpsc::sync_channel(1);
+
+        progress_tx
+            .try_send(ExplorerEvent::OperationProgress {
+                context: operation_context.clone(),
+                progress: explorer_model::OperationProgress {
+                    completed_items: 1,
+                    total_items: 2,
+                    completed_bytes: 1,
+                    total_bytes: Some(2),
+                },
+            })
+            .expect("fill progress lane");
+        assert!(
+            progress_tx
+                .try_send(ExplorerEvent::OperationProgress {
+                    context: operation_context.clone(),
+                    progress: explorer_model::OperationProgress {
+                        completed_items: 2,
+                        total_items: 2,
+                        completed_bytes: 2,
+                        total_bytes: Some(2),
+                    },
+                })
+                .is_err(),
+            "progress lane must saturate independently"
+        );
+        navigation_tx
+            .try_send(ExplorerEvent::DirectoryFinished {
+                context: navigation_context.clone(),
+            })
+            .expect("navigation terminal retains its lane");
+        terminal_tx
+            .try_send(ExplorerEvent::OperationFinished {
+                context: operation_context.clone(),
+                outcome: OperationTerminal::Finished,
+            })
+            .expect("operation terminal retains its lane");
+
+        let receive = || {
+            terminal_rx
+                .try_recv()
+                .or_else(|_| navigation_rx.try_recv())
+                .or_else(|_| progress_rx.try_recv())
+                .or_else(|_| search_rx.try_recv())
+                .or_else(|_| enrichment_rx.try_recv())
+        };
+        assert!(matches!(
+            receive().expect("operation terminal is highest priority"),
+            ExplorerEvent::OperationFinished { context, .. } if context.request_id == operation_context.request_id
+        ));
+        assert!(matches!(
+            receive().expect("navigation terminal remains available"),
+            ExplorerEvent::DirectoryFinished { context } if context.request_id == navigation_context.request_id
+        ));
+        drop(search_tx);
+        drop(enrichment_tx);
+    }
+
+    #[test]
+    fn full_navigation_terminal_lane_eventually_delivers_typed_failure_and_cleans_active_request() {
+        let (publisher, receiver) =
+            ReliableTerminalPublisher::channel(1, 1, &NAVIGATION_TERMINAL_COUNTERS);
+        let filler = RequestContext::new(TabId::new(), Generation::new(1));
+        let context = RequestContext::new(TabId::new(), Generation::new(2));
+        let active_requests = Mutex::new(HashMap::from([(
+            context.request_id,
+            ActiveRequest {
+                cancellation: context.cancellation.clone(),
+                required_terminal_lane: Some(RequiredTerminalLane::Navigation),
+            },
+        )]));
+
+        publisher.publish(ExplorerEvent::DirectoryFinished { context: filler });
+        publisher.publish(ExplorerEvent::Failed {
+            context: context.clone(),
+            error: TestExplorerError::new(
+                TestExplorerErrorKind::Internal,
+                "navigation terminal test",
+                true,
+                "Navigation failed.",
+                "primary navigation lane deliberately full",
+            ),
+        });
+
+        let terminal = receiver
+            .try_recv()
+            .expect("receive retained navigation terminal");
+        assert!(
+            matches!(
+                &terminal,
+                ExplorerEvent::Failed { context: terminal_context, .. }
+                    if terminal_context.request_id == context.request_id
+            ),
+            "retained navigation terminal was not delivered; diagnostics={:?}",
+            ShellDomainDiagnostics::capture()
+        );
+        remove_completed_request(&active_requests, &terminal).expect("clean active navigation");
+        assert!(
+            !active_requests
+                .lock()
+                .expect("active navigation map")
+                .contains_key(&context.request_id),
+            "retained navigation terminal must release active request tracking"
+        );
+        assert!(matches!(
+            receiver
+                .try_recv()
+                .expect("receive filled primary terminal after retained terminal"),
+            ExplorerEvent::DirectoryFinished { .. }
+        ));
+    }
+
+    #[test]
+    fn full_operation_terminal_lane_eventually_delivers_operation_finished_and_cleans_active_request()
+     {
+        let (publisher, receiver) =
+            ReliableTerminalPublisher::channel(1, 1, &OPERATION_TERMINAL_COUNTERS);
+        let filler = RequestContext::new(TabId::new(), Generation::new(1));
+        let context = RequestContext::new(TabId::new(), Generation::new(2));
+        let active_requests = Mutex::new(HashMap::from([(
+            context.request_id,
+            ActiveRequest {
+                cancellation: context.cancellation.clone(),
+                required_terminal_lane: Some(RequiredTerminalLane::Operation),
+            },
+        )]));
+
+        publisher.publish(ExplorerEvent::OperationFinished {
+            context: filler,
+            outcome: OperationTerminal::Finished,
+        });
+        publisher.publish(ExplorerEvent::OperationFinished {
+            context: context.clone(),
+            outcome: OperationTerminal::Failed(TestExplorerError::new(
+                TestExplorerErrorKind::Internal,
+                "operation terminal test",
+                true,
+                "The operation failed.",
+                "primary operation terminal lane deliberately full",
+            )),
+        });
+
+        let terminal = receiver
+            .try_recv()
+            .expect("receive retained operation terminal");
+        assert!(
+            matches!(
+                &terminal,
+                ExplorerEvent::OperationFinished { context: terminal_context, outcome: OperationTerminal::Failed(_) }
+                    if terminal_context.request_id == context.request_id
+            ),
+            "retained operation terminal was not delivered; diagnostics={:?}",
+            ShellDomainDiagnostics::capture()
+        );
+        remove_completed_request(&active_requests, &terminal).expect("clean active operation");
+        assert!(
+            !active_requests
+                .lock()
+                .expect("active operation map")
+                .contains_key(&context.request_id),
+            "retained operation terminal must release active request tracking"
+        );
+        assert!(matches!(
+            receiver
+                .try_recv()
+                .expect("receive filled primary terminal after retained terminal"),
+            ExplorerEvent::OperationFinished { .. }
+        ));
+    }
+
+    #[test]
+    fn real_sta_rejects_typed_terminal_work_before_retained_capacity_can_overflow() {
+        let _serial = TEST_LOCK.lock().expect("lock STA tests");
+        let sta = ShellStaHandle::start().expect("start STA");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let context = RequestContext::new(TabId::new(), Generation::new(1));
+            match sta.submit(ExplorerCommand::PreviewHost {
+                context,
+                command: PreviewHostCommand::Unload {
+                    generation: Generation::new(1),
+                },
+            }) {
+                Ok(()) => {}
+                Err(ShellStaEndpointError::CommandQueueFull) => {
+                    let typed_active = sta
+                        .active_requests
+                        .lock()
+                        .expect("active request map")
+                        .values()
+                        .filter(|request| {
+                            request.required_terminal_lane == Some(RequiredTerminalLane::Typed)
+                        })
+                        .count();
+                    if typed_active == TYPED_TERMINAL_RETAIN_CAPACITY {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("unexpected typed submission error: {error:?}"),
+            }
+            assert!(
+                Instant::now() < deadline,
+                "typed terminal admission did not saturate; diagnostics={:?}",
+                ShellDomainDiagnostics::capture()
+            );
+        }
+        let rejected = RequestContext::new(TabId::new(), Generation::new(2));
+        let started = Instant::now();
+        assert!(matches!(
+            sta.submit(ExplorerCommand::PreviewHost {
+                context: rejected,
+                command: PreviewHostCommand::Unload {
+                    generation: Generation::new(2),
+                },
+            }),
+            Err(ShellStaEndpointError::CommandQueueFull)
+        ));
+        assert!(
+            started.elapsed() < Duration::from_millis(25),
+            "typed terminal overload must reject without waiting"
+        );
+        sta.shutdown_and_join(Duration::from_secs(5))
+            .expect("stop saturated STA");
+    }
+
+    #[test]
+    fn breadcrumb_enrichment_isolation_keeps_navigation_available_before_release() {
+        struct TestGateReset(Arc<AtomicBool>);
+        impl Drop for TestGateReset {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+                if let Ok(mut gate) = BREADCRUMB_TEST_GATE.lock() {
+                    gate.take();
+                }
+            }
+        }
+
+        let _serial = TEST_LOCK.lock().unwrap();
+        let fixture = OwnedTempFixture::new().expect("enrichment fixture");
+        let enrichment_context = RequestContext::new(TabId::new(), Generation::new(1));
+        let (started_tx, started_rx) = mpsc::sync_channel(1);
+        let release = Arc::new(AtomicBool::new(false));
+        *BREADCRUMB_TEST_GATE.lock().unwrap() = Some(BreadcrumbTestGate {
+            request_id: enrichment_context.request_id,
+            started: started_tx,
+            release: Arc::clone(&release),
+        });
+        let _gate_reset = TestGateReset(Arc::clone(&release));
+
+        let sta = ShellStaHandle::start().expect("start STA");
+        sta.submit(ExplorerCommand::ResolveAncestry {
+            context: enrichment_context.clone(),
+            location: LocationDescriptor::file_system(fixture.root()),
+        })
+        .expect("submit stalled enrichment");
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("enrichment worker started");
+
+        let navigation_context = RequestContext::new(TabId::new(), Generation::new(1));
+        sta.submit(ExplorerCommand::Navigate {
+            context: navigation_context.clone(),
+            location: LocationDescriptor::file_system(fixture.root()),
+        })
+        .expect("submit navigation while enrichment is pending");
+        let navigation_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(ExplorerEvent::DirectoryFinished { context }) =
+                sta.try_recv_event().expect("navigation event")
+                && context.request_id == navigation_context.request_id
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < navigation_deadline,
+                "navigation was blocked behind enrichment; diagnostics={:?}",
+                ShellDomainDiagnostics::capture()
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+
+        release.store(true, Ordering::Release);
+        let enrichment_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(ExplorerEvent::AncestryFinished { context, .. }) =
+                sta.try_recv_event().expect("enrichment event")
+                && context.request_id == enrichment_context.request_id
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < enrichment_deadline,
+                "enrichment did not finish after release; diagnostics={:?}",
+                ShellDomainDiagnostics::capture()
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
         sta.shutdown_and_join(Duration::from_secs(5))
             .expect("STA stops");
     }
@@ -2450,7 +4039,7 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
             during.active_control_channels,
             before.active_control_channels + 1
         );
-        assert_eq!(during.active_join_handles, before.active_join_handles + 1);
+        assert_eq!(during.active_join_handles, before.active_join_handles + 2);
 
         sta.shutdown_and_join(Duration::from_secs(2))
             .expect("stop real STA");
@@ -3241,6 +4830,22 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
 
         assert!(matches!(result, Err(ShellStaError::StartupHook { .. })));
         assert_eq!(StaResourceSnapshot::capture(), before);
+    }
+
+    #[test]
+    fn failed_second_sta_spawn_unwinds_the_search_worker_and_accounting() {
+        let _test_guard = TEST_LOCK.lock().expect("lock STA tests");
+        let before = StaResourceSnapshot::capture();
+        FAIL_NEXT_STA_THREAD_SPAWN.store(true, Ordering::Release);
+
+        let result = ShellStaHandle::start();
+
+        assert!(matches!(result, Err(ShellStaError::Spawn(_))));
+        assert_eq!(
+            StaResourceSnapshot::capture(),
+            before,
+            "failed main STA spawn must join the already-created search worker"
+        );
     }
 
     #[test]

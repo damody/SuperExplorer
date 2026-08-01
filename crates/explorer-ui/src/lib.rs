@@ -33,6 +33,7 @@ pub mod navigation_pane;
 pub mod performance;
 mod pointer_capture;
 pub use pointer_capture::{PointerCaptureFactory, PointerCaptureSession};
+pub mod qos;
 pub mod state;
 pub mod theme;
 pub mod typography;
@@ -48,6 +49,17 @@ const SHELL_TEXTURE_CACHE_BYTE_BUDGET: usize = 64 * 1024 * 1024;
 const BASE_ICON_CACHE_CAPACITY: usize = 256;
 const BASE_ICON_CACHE_BYTE_BUDGET: usize = 32 * 1024 * 1024;
 const FILE_VIEWPORT_ICON_REQUEST_CAP: usize = 64;
+const FOREGROUND_SERVICE_EVENT_CAPACITY: usize = 512;
+const ENRICHMENT_SERVICE_EVENT_CAPACITY: usize = 512;
+
+fn is_enrichment_service_event(event: &explorer_model::ExplorerEvent) -> bool {
+    matches!(
+        event,
+        explorer_model::ExplorerEvent::ShellIconLoaded { .. }
+            | explorer_model::ExplorerEvent::ShellIconFailed { .. }
+            | explorer_model::ExplorerEvent::ThumbnailFinished { .. }
+    )
+}
 
 fn file_icon_cache_key(
     entry: &explorer_model::FileEntry,
@@ -155,6 +167,7 @@ fn captured_scrollbar_axis_to_logical(
 
 /// Merges directory safety batches drained for one UI transaction. Provider batch caps remain
 /// cancellation boundaries; the model receives one mutation batch per correlated request/frame.
+#[cfg(test)]
 fn coalesce_directory_events(
     events: Vec<explorer_model::ExplorerEvent>,
 ) -> Vec<explorer_model::ExplorerEvent> {
@@ -605,6 +618,11 @@ pub struct ExplorerRoot {
     state: AppViewState,
     service: Option<Arc<dyn ExplorerService>>,
     folder_scripts: Option<explorer_automation::FolderScriptHandle>,
+    pending_foreground_events: VecDeque<explorer_model::ExplorerEvent>,
+    pending_enrichment_events: VecDeque<explorer_model::ExplorerEvent>,
+    enrichment_retry_needed: bool,
+    service_qos: explorer_jobs::InteractionFirstQos,
+    service_delivery: qos::UiDeliveryCounters,
     navigation_started: HashMap<explorer_model::RequestId, Instant>,
     first_batch_seen: HashSet<explorer_model::RequestId>,
     shell_icons: VisibleItemIconCache,
@@ -618,6 +636,7 @@ pub struct ExplorerRoot {
     negative_icon_order: VecDeque<explorer_model::ShellIconKey>,
     shell_icon_dpi: u16,
     pending_icon_keys: HashSet<explorer_model::ShellIconKey>,
+    pending_icon_contexts: HashMap<explorer_model::ShellIconKey, explorer_model::RequestContext>,
     pending_thumbnail_keys: HashSet<explorer_model::ThumbnailRequestKey>,
     thumbnail_scheduler: explorer_jobs::ThumbnailScheduler,
     thumbnail_memory_cache: explorer_jobs::ThumbnailMemoryCache,
@@ -820,6 +839,7 @@ impl ExplorerRoot {
         self.negative_icon_keys.clear();
         self.negative_icon_order.clear();
         self.pending_icon_keys.clear();
+        self.pending_icon_contexts.clear();
         self.pending_visible_bases.clear();
 
         let thumbnail_consumers = self
@@ -851,6 +871,11 @@ impl ExplorerRoot {
             state: AppViewState::default(),
             service: None,
             folder_scripts: None,
+            pending_foreground_events: VecDeque::new(),
+            pending_enrichment_events: VecDeque::new(),
+            enrichment_retry_needed: false,
+            service_qos: explorer_jobs::InteractionFirstQos::default(),
+            service_delivery: qos::UiDeliveryCounters::default(),
             navigation_started: HashMap::new(),
             first_batch_seen: HashSet::new(),
             shell_icons: VisibleItemIconCache::default(),
@@ -864,6 +889,7 @@ impl ExplorerRoot {
             negative_icon_order: VecDeque::new(),
             shell_icon_dpi: 96,
             pending_icon_keys: HashSet::new(),
+            pending_icon_contexts: HashMap::new(),
             pending_thumbnail_keys: HashSet::new(),
             thumbnail_scheduler: explorer_jobs::ThumbnailScheduler::new(512, 4, 64 * 1024 * 1024),
             thumbnail_memory_cache: explorer_jobs::ThumbnailMemoryCache::new(
@@ -972,6 +998,212 @@ impl ExplorerRoot {
         self.file_performance.snapshot()
     }
 
+    /// Returns aggregate result-delivery diagnostics without exposing request or item identity.
+    pub fn service_qos_snapshot_for_test(&self) -> qos::UiQosSnapshot {
+        qos::UiQosSnapshot {
+            integrated_results: self.service_delivery.integrated_results(),
+            deferred_results: self.service_delivery.deferred_results(),
+            frame_budget_exhaustions: self.service_delivery.frame_budget_exhaustions(),
+            degradation: self.service_qos.degradation_level(),
+            observations: self.service_qos.observation_snapshot(),
+        }
+    }
+
+    fn pending_service_event_count(&self) -> usize {
+        self.pending_foreground_events
+            .len()
+            .saturating_add(self.pending_enrichment_events.len())
+    }
+
+    fn enqueue_service_event(&mut self, event: explorer_model::ExplorerEvent) {
+        if is_enrichment_service_event(&event) {
+            if self.pending_enrichment_events.len() == ENRICHMENT_SERVICE_EVENT_CAPACITY {
+                // Prefer the newest visible enrichment and shed the oldest optional result. The
+                // foreground queue has independent reserved capacity and is never displaced.
+                // Terminal bookkeeping is completed before shedding so scheduler capacity and
+                // retry admission cannot become wedged.
+                if let Some(discarded) = self.pending_enrichment_events.pop_front() {
+                    self.discard_enrichment_event(discarded);
+                }
+                self.service_qos.observations_mut().record_overload();
+            }
+            self.pending_enrichment_events.push_back(event);
+        } else if self.pending_foreground_events.len() < FOREGROUND_SERVICE_EVENT_CAPACITY {
+            self.pending_foreground_events.push_back(event);
+        } else {
+            // The receiver reserves enough foreground space before polling, so this is only a
+            // defensive guard against a future caller bypassing that admission rule.
+            self.service_qos.observations_mut().record_overload();
+            tracing::error!(
+                capacity = FOREGROUND_SERVICE_EVENT_CAPACITY,
+                "foreground service-event admission invariant was exceeded"
+            );
+        }
+    }
+
+    fn discard_enrichment_event(&mut self, event: explorer_model::ExplorerEvent) {
+        self.enrichment_retry_needed = true;
+        match event {
+            explorer_model::ExplorerEvent::ShellIconLoaded { payload, .. } => {
+                self.pending_icon_keys.remove(&payload.key);
+                self.pending_icon_contexts.remove(&payload.key);
+                self.pending_base_icons.remove(&payload.key);
+                self.pending_visible_bases.remove(&payload.key);
+            }
+            explorer_model::ExplorerEvent::ShellIconFailed { key, .. } => {
+                self.pending_icon_keys.remove(&key);
+                self.pending_icon_contexts.remove(&key);
+                self.pending_base_icons.remove(&key);
+                self.pending_visible_bases.remove(&key);
+            }
+            explorer_model::ExplorerEvent::ThumbnailFinished { key, .. } => {
+                self.pending_thumbnail_keys.remove(&key);
+                let _ = self.thumbnail_scheduler.complete(&key);
+                self.thumbnail_requests.remove(&key);
+                self.thumbnail_presentations.remove(&key);
+                if self.preview_thumbnail_key.as_ref() == Some(&key) {
+                    self.preview_thumbnail_key = None;
+                    self.preview_texture = None;
+                    self.preview_thumbnail_failed = true;
+                }
+                self.pump_thumbnail_scheduler();
+            }
+            _ => {
+                debug_assert!(false, "only optional enrichment terminals may be shed");
+            }
+        }
+    }
+
+    fn recover_discarded_enrichment(&mut self) {
+        if self.enrichment_retry_needed && self.visual_refinement_allowed() {
+            self.enrichment_retry_needed = false;
+            self.resume_visual_refinement();
+        }
+    }
+
+    fn pop_next_service_event(&mut self) -> Option<explorer_model::ExplorerEvent> {
+        self.pending_foreground_events
+            .pop_front()
+            .or_else(|| self.pending_enrichment_events.pop_front())
+    }
+
+    fn accepts_presentation_event(&self, event: &explorer_model::ExplorerEvent) -> bool {
+        // File operation progress is deliberately independent from navigation generation: a copy
+        // that outlives navigation must remain visible and cancellable. Clipboard changes are
+        // process-wide. Watcher events are validated here before their cache side effects and are
+        // validated again by the reducer.
+        if matches!(
+            event,
+            explorer_model::ExplorerEvent::ClipboardChanged { .. }
+        ) {
+            return true;
+        }
+        if let explorer_model::ExplorerEvent::DirectoryChanged {
+            tab_id, generation, ..
+        } = event
+        {
+            return self
+                .state
+                .tabs()
+                .tabs()
+                .iter()
+                .any(|tab| tab.id == *tab_id && tab.generation == *generation);
+        }
+        if let explorer_model::ExplorerEvent::OperationProgress { context, .. }
+        | explorer_model::ExplorerEvent::OperationFinished { context, .. } = event
+        {
+            return self
+                .state
+                .operation_center()
+                .get(context.request_id)
+                .is_some_and(|record| !record.phase.is_terminal());
+        }
+        if let explorer_model::ExplorerEvent::AncestryBatch { context, .. }
+        | explorer_model::ExplorerEvent::AncestryFinished { context, .. } = event
+        {
+            return self.state.accepts_ancestry_context(context);
+        }
+        if let explorer_model::ExplorerEvent::ShellIconLoaded { context, payload } = event {
+            return self
+                .pending_icon_contexts
+                .get(&payload.key)
+                .is_some_and(|expected| expected.validate_event(context).is_ok());
+        }
+        if let explorer_model::ExplorerEvent::ShellIconFailed { context, key, .. } = event {
+            return self
+                .pending_icon_contexts
+                .get(key)
+                .is_some_and(|expected| expected.validate_event(context).is_ok());
+        }
+        if let explorer_model::ExplorerEvent::ThumbnailFinished { context, key, .. } = event {
+            return self.pending_thumbnail_keys.contains(key)
+                && self
+                    .thumbnail_requests
+                    .get(key)
+                    .is_some_and(|(expected, _, _)| expected.validate_event(context).is_ok());
+        }
+        let Some(context) = event.context() else {
+            return true;
+        };
+        if context.cancellation.is_cancelled() {
+            return false;
+        }
+        let Some(tab) = self
+            .state
+            .tabs()
+            .tabs()
+            .iter()
+            .find(|tab| tab.id == context.tab_id && tab.generation == context.generation)
+        else {
+            return false;
+        };
+        let active_search = match &tab.search {
+            explorer_model::TabSearchState::Loading { request, .. } => {
+                request.validate_event(context).is_ok()
+            }
+            _ => false,
+        };
+        match event {
+            explorer_model::ExplorerEvent::LocationResolved { .. }
+            | explorer_model::ExplorerEvent::DirectoryBatch { .. }
+            | explorer_model::ExplorerEvent::DirectoryFinished { .. } => {
+                tab.directory.accepts(context).is_ok()
+            }
+            explorer_model::ExplorerEvent::SearchBatch { .. }
+            | explorer_model::ExplorerEvent::SearchStatus { .. }
+            | explorer_model::ExplorerEvent::SearchFinished { .. } => active_search,
+            explorer_model::ExplorerEvent::Failed { .. } => {
+                tab.directory.accepts(context).is_ok() || active_search
+            }
+            _ => true,
+        }
+    }
+
+    fn visual_refinement_allowed(&self) -> bool {
+        self.optional_work_allowed(explorer_jobs::QosWorkClass::VisualRefinement)
+    }
+
+    fn optional_work_allowed(&self, work: explorer_jobs::QosWorkClass) -> bool {
+        !self.service_qos.should_shed(work)
+    }
+
+    /// Recreates only current-generation visual work after pressure recovery. The request
+    /// constructors retain their existing generation checks, so recovery cannot revive work for
+    /// closed tabs or replaced navigation.
+    fn resume_visual_refinement(&mut self) {
+        if !self.visual_refinement_allowed() {
+            return;
+        }
+        let tab = self.state.tabs().active_tab();
+        let context = explorer_model::RequestContext::new(tab.id, tab.generation);
+        let entries = tab
+            .visible_snapshot()
+            .map(|snapshot| snapshot.entries().to_vec())
+            .unwrap_or_default();
+        self.submit_file_icon_loads(&context, &entries);
+        self.submit_navigation_icon_loads();
+    }
+
     #[doc(hidden)]
     pub fn dispatch_action_for_test(
         &mut self,
@@ -1051,6 +1283,11 @@ impl ExplorerRoot {
             ),
             service: Some(service),
             folder_scripts: None,
+            pending_foreground_events: VecDeque::new(),
+            pending_enrichment_events: VecDeque::new(),
+            enrichment_retry_needed: false,
+            service_qos: explorer_jobs::InteractionFirstQos::default(),
+            service_delivery: qos::UiDeliveryCounters::default(),
             navigation_started: HashMap::new(),
             first_batch_seen: HashSet::new(),
             shell_icons: VisibleItemIconCache::default(),
@@ -1064,6 +1301,7 @@ impl ExplorerRoot {
             negative_icon_order: VecDeque::new(),
             shell_icon_dpi: 96,
             pending_icon_keys: HashSet::new(),
+            pending_icon_contexts: HashMap::new(),
             pending_thumbnail_keys: HashSet::new(),
             thumbnail_scheduler: explorer_jobs::ThumbnailScheduler::new(512, 4, 64 * 1024 * 1024),
             thumbnail_memory_cache: explorer_jobs::ThumbnailMemoryCache::new(
@@ -1115,6 +1353,11 @@ impl ExplorerRoot {
             state: AppViewState::with_restored_window_and_drag_threshold(restored, drag_threshold),
             service: Some(service),
             folder_scripts: None,
+            pending_foreground_events: VecDeque::new(),
+            pending_enrichment_events: VecDeque::new(),
+            enrichment_retry_needed: false,
+            service_qos: explorer_jobs::InteractionFirstQos::default(),
+            service_delivery: qos::UiDeliveryCounters::default(),
             navigation_started: HashMap::new(),
             first_batch_seen: HashSet::new(),
             shell_icons: VisibleItemIconCache::default(),
@@ -1128,6 +1371,7 @@ impl ExplorerRoot {
             negative_icon_order: VecDeque::new(),
             shell_icon_dpi: 96,
             pending_icon_keys: HashSet::new(),
+            pending_icon_contexts: HashMap::new(),
             pending_thumbnail_keys: HashSet::new(),
             thumbnail_scheduler: explorer_jobs::ThumbnailScheduler::new(512, 4, 64 * 1024 * 1024),
             thumbnail_memory_cache: explorer_jobs::ThumbnailMemoryCache::new(
@@ -1269,7 +1513,15 @@ impl ExplorerRoot {
                 {
                     break;
                 }
-                if last_folder_script_refresh.elapsed() >= Duration::from_millis(500) {
+                    let maintenance_allowed = match this.update(cx, |this, _| {
+                        this.optional_work_allowed(explorer_jobs::QosWorkClass::Maintenance)
+                    }) {
+                        Ok(allowed) => allowed,
+                        Err(_) => break,
+                    };
+                    if maintenance_allowed
+                        && last_folder_script_refresh.elapsed() >= Duration::from_millis(500)
+                    {
                     if let Some(handle) = &folder_scripts
                         && let Err(error) = handle.refresh_changed()
                     {
@@ -1286,7 +1538,8 @@ impl ExplorerRoot {
                             .history
                             .current()
                             .is_some_and(|entry| entry.location.path().is_none());
-                        if is_non_path
+                        if this.optional_work_allowed(explorer_jobs::QosWorkClass::Maintenance)
+                            && is_non_path
                             && let Some(command) = this.state.begin_refresh_navigation()
                         {
                             tracing::debug!("bounded refresh for namespace without notifications");
@@ -1298,11 +1551,20 @@ impl ExplorerRoot {
                     }
                     last_namespace_refresh = Instant::now();
                 }
-                let mut events = Vec::with_capacity(4);
+                let foreground_room = match this.update(cx, |this, _| {
+                    FOREGROUND_SERVICE_EVENT_CAPACITY
+                        .saturating_sub(this.pending_foreground_events.len())
+                }) {
+                    Ok(room) => room,
+                    Err(_) => break,
+                };
+                let receive_limit = foreground_room
+                    .min(explorer_jobs::FrameDrainBudget::DEFAULT_ITEM_LIMIT);
+                let mut received_events = Vec::with_capacity(receive_limit);
                 let mut disconnected = false;
-                while events.len() < 4 {
+                while received_events.len() < receive_limit {
                     match service.try_recv() {
-                        Ok(Some(event)) => events.push(event),
+                        Ok(Some(event)) => received_events.push(event),
                         Ok(None) => break,
                         Err(error) => {
                             tracing::error!(?error, "Explorer service event endpoint failed");
@@ -1318,12 +1580,30 @@ impl ExplorerRoot {
                         }
                     }
                 }
-                let events = coalesce_directory_events(events);
                 let mut delegated_actions = Vec::new();
-                if !events.is_empty()
-                    && this
-                        .update(cx, |this, cx| {
-                            for event in events {
+                if this
+                    .update(cx, |this, cx| {
+                            for event in received_events {
+                                this.enqueue_service_event(event);
+                            }
+                            let budget = this.service_qos.frame_drain_budget();
+                            let started = Instant::now();
+                            let mut integrated = 0_usize;
+                            while budget.admit_next(integrated, started.elapsed()).is_ok() {
+                                let Some(event) = this.pop_next_service_event() else {
+                                    break;
+                                };
+                                integrated = integrated.saturating_add(1);
+                                if !this.accepts_presentation_event(&event) {
+                                    this.service_qos
+                                        .observations_mut()
+                                        .record_stale_result();
+                                    tracing::debug!(
+                                        context = ?event.context(),
+                                        "rejected superseded service result at presentation boundary"
+                                    );
+                                    continue;
+                                }
                                 let delegated_action = match &event {
                                     explorer_model::ExplorerEvent::ContextMenuFinished {
                                         outcome:
@@ -1402,12 +1682,14 @@ impl ExplorerRoot {
                                 } = &event
                                 {
                                     this.pending_icon_keys.remove(&payload.key);
+                                    this.pending_icon_contexts.remove(&payload.key);
                                 }
                                 if let explorer_model::ExplorerEvent::ShellIconFailed {
                                     key, ..
                                 } = &event
                                 {
                                     this.pending_icon_keys.remove(key);
+                                    this.pending_icon_contexts.remove(key);
                                     if let Some(base_key) = this.pending_base_icons.remove(key) {
                                         this.failed_base_icons.insert(base_key);
                                     }
@@ -1535,6 +1817,11 @@ impl ExplorerRoot {
                                 let refresh_after_action =
                                     this.state.service_event_requires_active_refresh(&event);
                                 let outcome = this.state.apply_service_event(event);
+                                if outcome == explorer_model::WindowEventOutcome::IgnoredStale {
+                                    this.service_qos
+                                        .observations_mut()
+                                        .record_stale_result();
+                                }
                                 if outcome == explorer_model::WindowEventOutcome::Applied
                                     && active_search_scope_changed
                                     && matches!(
@@ -1606,9 +1893,37 @@ impl ExplorerRoot {
                                     this.submit_command(command);
                                 }
                             }
-                            cx.notify();
+                            let deferred = this.pending_service_event_count();
+                            let exhausted = deferred > 0
+                                && budget.admit_next(integrated, started.elapsed()).is_err();
+                            this.service_delivery
+                                .record_drain(integrated, deferred, exhausted);
+                            match this.service_qos.observe_pressure(
+                                explorer_jobs::PressureSample::new(
+                                    deferred,
+                                    budget.item_limit(),
+                                    exhausted,
+                                ),
+                            ) {
+                                explorer_jobs::DegradationTransition::Recovered { from, to } => {
+                                    tracing::debug!(?from, ?to, deferred, "UI result-delivery degradation recovery");
+                                    this.recover_discarded_enrichment();
+                                    if from.sheds(explorer_jobs::QosWorkClass::VisualRefinement)
+                                        && !to.sheds(explorer_jobs::QosWorkClass::VisualRefinement)
+                                    {
+                                        this.resume_visual_refinement();
+                                    }
+                                }
+                                explorer_jobs::DegradationTransition::Degraded { from, to } => {
+                                    tracing::debug!(?from, ?to, deferred, "UI result-delivery degradation transition");
+                                }
+                                explorer_jobs::DegradationTransition::Unchanged(_) => {}
+                            }
+                            if integrated > 0 {
+                                cx.notify();
+                            }
                         })
-                        .is_err()
+                    .is_err()
                 {
                     break;
                 }
@@ -1742,6 +2057,9 @@ impl ExplorerRoot {
     }
 
     fn submit_navigation_icon_loads(&mut self) {
+        if !self.visual_refinement_allowed() {
+            return;
+        }
         let tab = self.state.tabs().active_tab();
         let theme = match self.tokens.theme.mode {
             ThemeMode::Light => explorer_model::ShellIconTheme::Light,
@@ -1749,6 +2067,7 @@ impl ExplorerRoot {
         };
         let tab_id = tab.id;
         let generation = tab.generation;
+        let allow_prefetch = self.optional_work_allowed(explorer_jobs::QosWorkClass::Prefetch);
         let keys = navigation_pane::windows_navigation_items_with_pins(
             self.state.quick_access_navigation_pins(),
         )
@@ -1760,6 +2079,7 @@ impl ExplorerRoot {
                 .tabs()
                 .tabs()
                 .iter()
+                .filter(|candidate| allow_prefetch || candidate.id == tab_id)
                 .filter_map(|tab| tab.history.current().map(|entry| entry.location.clone())),
         )
         .map(|location| navigation_pane::shell_icon_key(&location, theme, self.shell_icon_dpi))
@@ -1777,12 +2097,16 @@ impl ExplorerRoot {
             {
                 continue;
             }
+            let context = explorer_model::RequestContext::new(tab_id, generation);
+            self.pending_icon_contexts
+                .insert(key.clone(), context.clone());
             let submitted = self.submit_command(explorer_model::ExplorerCommand::LoadShellIcon {
-                context: explorer_model::RequestContext::new(tab_id, generation),
+                context,
                 key: key.clone(),
             });
             if !submitted {
                 self.pending_icon_keys.remove(&key);
+                self.pending_icon_contexts.remove(&key);
             }
         }
     }
@@ -1824,6 +2148,8 @@ impl ExplorerRoot {
                 .as_ref()
                 .is_none_or(|item_id| visible_ids.contains(item_id))
         });
+        self.pending_icon_contexts
+            .retain(|key, _| self.pending_icon_keys.contains(key));
         self.pending_visible_bases.retain(|key, _| {
             key.item_id
                 .as_ref()
@@ -1847,6 +2173,9 @@ impl ExplorerRoot {
             self.thumbnail_requests.remove(&key);
             self.pending_thumbnail_keys.remove(&key);
             self.thumbnail_presentations.remove(&key);
+        }
+        if !self.visual_refinement_allowed() {
+            return;
         }
         let mut pending_base_classes = self
             .pending_base_icons
@@ -1885,6 +2214,8 @@ impl ExplorerRoot {
                 context: directory_context.clone(),
                 key: request_key.clone(),
             }) {
+                self.pending_icon_contexts
+                    .insert(request_key.clone(), directory_context.clone());
                 self.pending_base_icons.insert(request_key, base_key);
             }
         }
@@ -1938,15 +2269,19 @@ impl ExplorerRoot {
             {
                 continue;
             }
+            let context = explorer_model::RequestContext::new(
+                directory_context.tab_id,
+                directory_context.generation,
+            );
+            self.pending_icon_contexts
+                .insert(key.clone(), context.clone());
             let submitted = self.submit_command(explorer_model::ExplorerCommand::LoadShellIcon {
-                context: explorer_model::RequestContext::new(
-                    directory_context.tab_id,
-                    directory_context.generation,
-                ),
+                context,
                 key: key.clone(),
             });
             if !submitted {
                 self.pending_icon_keys.remove(&key);
+                self.pending_icon_contexts.remove(&key);
             } else if let Some(base_key) = base_key {
                 self.pending_visible_bases.insert(key, base_key);
             }
@@ -2026,7 +2361,22 @@ impl ExplorerRoot {
         }
     }
 
+    /// Schedules a snapshot-wide refinement pass only while off-screen enrichment remains
+    /// admitted. The visible viewport re-requests its own entries during rendering.
+    fn submit_offscreen_file_icon_loads(
+        &mut self,
+        context: &explorer_model::RequestContext,
+        entries: &[explorer_model::FileEntry],
+    ) {
+        if self.optional_work_allowed(explorer_jobs::QosWorkClass::OffscreenEnrichment) {
+            self.submit_file_icon_loads(context, entries);
+        }
+    }
+
     fn synchronize_preview_thumbnail(&mut self, entry: Option<&explorer_model::FileEntry>) {
+        if !self.visual_refinement_allowed() {
+            return;
+        }
         let tab = self.state.tabs().active_tab();
         let desired = entry
             .filter(|entry| {
@@ -2143,6 +2493,9 @@ impl ExplorerRoot {
     }
 
     fn synchronize_preview_handler(&mut self, entry: Option<&explorer_model::FileEntry>) {
+        if !self.visual_refinement_allowed() {
+            return;
+        }
         let tab = self.state.tabs().active_tab();
         let pane_open = self.state.view_settings().preview_pane;
         let candidate = pane_open
@@ -2195,6 +2548,9 @@ impl ExplorerRoot {
     }
 
     fn poll_preview_handler(&mut self) {
+        if !self.optional_work_allowed(explorer_jobs::QosWorkClass::OptionalAnimation) {
+            return;
+        }
         if self.preview_host_boundary.is_none() {
             return;
         }
@@ -2210,21 +2566,21 @@ impl ExplorerRoot {
         let generation = outcome.generation();
         match outcome {
             explorer_model::PreviewHostTerminal::Ready { .. } => {
-                self.preview_thumbnail_failed = false;
-                let _ = self.preview_coordinator.finish(generation, true, true);
+                if self.preview_coordinator.finish(generation, true, true) {
+                    self.preview_thumbnail_failed = false;
+                }
             }
             explorer_model::PreviewHostTerminal::Unloaded { .. } => {
                 let _ = self.preview_coordinator.unloaded(generation);
             }
             explorer_model::PreviewHostTerminal::Failed { .. } => {
-                self.preview_thumbnail_failed = true;
                 if matches!(
                     self.preview_coordinator.lifecycle(),
                     explorer_model::PreviewLifecycle::Unloading { .. }
                 ) {
                     let _ = self.preview_coordinator.unloaded(generation);
-                } else {
-                    let _ = self.preview_coordinator.finish(generation, false, true);
+                } else if self.preview_coordinator.finish(generation, false, true) {
+                    self.preview_thumbnail_failed = true;
                 }
             }
             explorer_model::PreviewHostTerminal::Updated { .. } => {}
@@ -2325,12 +2681,17 @@ impl ExplorerRoot {
             {
                 continue;
             }
+            let request_context =
+                explorer_model::RequestContext::new(context.tab_id, context.generation);
+            self.pending_icon_contexts
+                .insert(key.clone(), request_context.clone());
             let submitted = self.submit_command(explorer_model::ExplorerCommand::LoadShellIcon {
-                context: explorer_model::RequestContext::new(context.tab_id, context.generation),
+                context: request_context,
                 key: key.clone(),
             });
             if !submitted {
                 self.pending_icon_keys.remove(&key);
+                self.pending_icon_contexts.remove(&key);
             }
         }
     }
@@ -2535,6 +2896,7 @@ impl ExplorerRoot {
     }
 
     fn submit_command(&mut self, command: explorer_model::ExplorerCommand) -> bool {
+        let is_cancellation = matches!(&command, explorer_model::ExplorerCommand::Cancel { .. });
         if let explorer_model::ExplorerCommand::Navigate { context, location }
         | explorer_model::ExplorerCommand::Refresh { context, location } = &command
             && let Some(root) = location.synthetic_root()
@@ -2572,12 +2934,22 @@ impl ExplorerRoot {
         let Some(service) = &self.service else {
             return false;
         };
+        let failed_command = command.clone();
         let context = command.context().cloned();
+        let tracked_operation = context.as_ref().is_some_and(|context| {
+            self.state
+                .operation_center()
+                .get(context.request_id)
+                .is_some()
+        });
         if let Some(context) = &context {
             self.navigation_started
                 .insert(context.request_id, Instant::now());
         }
         if let Err(error) = service.submit(command) {
+            if matches!(error, ExplorerServiceError::Overloaded) {
+                self.service_qos.observations_mut().record_overload();
+            }
             tracing::error!(?context, ?error, "Explorer command submission failed");
             explorer_common::record_process_error_message(
                 explorer_common::ErrorSeverity::Error,
@@ -2586,7 +2958,42 @@ impl ExplorerRoot {
                 &format!("context={context:?}; service endpoint: {error:?}"),
                 Some(file!()),
             );
+            if let Some(context) = &context
+                && let Some(started) = self.navigation_started.remove(&context.request_id)
+            {
+                self.service_qos
+                    .observations_mut()
+                    .record_latency(started.elapsed());
+            }
+            if self.synthesize_special_submission_failure(&failed_command, &error) {
+                return false;
+            }
             if let Some(context) = context {
+                if tracked_operation {
+                    let kind = match error {
+                        ExplorerServiceError::Overloaded | ExplorerServiceError::Disconnected => {
+                            explorer_common::ExplorerErrorKind::Availability
+                        }
+                        ExplorerServiceError::Internal => {
+                            explorer_common::ExplorerErrorKind::Internal
+                        }
+                    };
+                    let _ = self.state.apply_service_event(
+                        explorer_model::ExplorerEvent::OperationFinished {
+                            context,
+                            outcome: explorer_model::OperationTerminal::Failed(
+                                explorer_common::ExplorerError::new(
+                                    kind,
+                                    "submit Explorer command",
+                                    true,
+                                    "The operation could not be queued, but Explorer can continue.",
+                                    format!("service endpoint: {error:?}"),
+                                ),
+                            ),
+                        },
+                    );
+                    return false;
+                }
                 let kind = match error {
                     ExplorerServiceError::Overloaded | ExplorerServiceError::Disconnected => {
                         explorer_common::ExplorerErrorKind::Availability
@@ -2608,7 +3015,81 @@ impl ExplorerRoot {
             }
             return false;
         }
+        if is_cancellation {
+            self.service_qos.observations_mut().record_cancellation();
+        }
         true
+    }
+
+    /// Completes request-specific UI state when the bounded service endpoint rejects admission.
+    /// These paths cannot wait for the Shell worker because no request reached it.
+    fn synthesize_special_submission_failure(
+        &mut self,
+        command: &explorer_model::ExplorerCommand,
+        endpoint_error: &ExplorerServiceError,
+    ) -> bool {
+        let kind = match endpoint_error {
+            ExplorerServiceError::Overloaded | ExplorerServiceError::Disconnected => {
+                explorer_common::ExplorerErrorKind::Availability
+            }
+            ExplorerServiceError::Internal => explorer_common::ExplorerErrorKind::Internal,
+        };
+        let error = || {
+            explorer_common::ExplorerError::new(
+                kind,
+                "submit Explorer command",
+                true,
+                "The request could not be queued, but Explorer can continue.",
+                format!("service endpoint: {endpoint_error:?}"),
+            )
+        };
+        match command {
+            explorer_model::ExplorerCommand::ShowContextMenu { context, .. } => {
+                let _ = self.state.apply_service_event(
+                    explorer_model::ExplorerEvent::ContextMenuFinished {
+                        context: context.clone(),
+                        outcome: explorer_model::ContextMenuOutcome::Failed { error: error() },
+                    },
+                );
+                if let Some(next) = self.state.take_pending_context_menu_command() {
+                    self.submit_command(next);
+                }
+                true
+            }
+            explorer_model::ExplorerCommand::PreviewHost { command, .. } => {
+                let generation = match command {
+                    explorer_model::PreviewHostCommand::Start { bounds, .. }
+                    | explorer_model::PreviewHostCommand::SetBounds(bounds) => bounds.generation,
+                    explorer_model::PreviewHostCommand::SetFocus { generation }
+                    | explorer_model::PreviewHostCommand::Accelerator { generation, .. }
+                    | explorer_model::PreviewHostCommand::Unload { generation } => *generation,
+                };
+                self.apply_preview_host_terminal(&explorer_model::PreviewHostTerminal::Failed {
+                    generation,
+                    error: explorer_model::PreviewHostError::Disconnected,
+                });
+                true
+            }
+            explorer_model::ExplorerCommand::DiscoverLockOwners { context, .. } => {
+                let _ = self.state.apply_service_event(
+                    explorer_model::ExplorerEvent::LockOwnersDiscovered {
+                        context: context.clone(),
+                        outcome: explorer_model::LockOwnerDiscoveryTerminal::Failed(error()),
+                    },
+                );
+                true
+            }
+            explorer_model::ExplorerCommand::CloseLockOwners { context, .. } => {
+                let _ = self.state.apply_service_event(
+                    explorer_model::ExplorerEvent::LockOwnersClosed {
+                        context: context.clone(),
+                        outcome: explorer_model::LockOwnerCloseTerminal::Failed(error()),
+                    },
+                );
+                true
+            }
+            _ => false,
+        }
     }
 
     fn observe_service_event(&mut self, event: &explorer_model::ExplorerEvent) {
@@ -2642,6 +3123,9 @@ impl ExplorerRoot {
         if event.is_terminal() {
             self.first_batch_seen.remove(&context.request_id);
             if let Some(started) = self.navigation_started.remove(&context.request_id) {
+                self.service_qos
+                    .observations_mut()
+                    .record_latency(started.elapsed());
                 tracing::info!(
                     request_id = ?context.request_id,
                     tab_id = ?context.tab_id,
@@ -3236,7 +3720,7 @@ impl ExplorerRoot {
                 .visible_snapshot()
                 .map(|snapshot| snapshot.entries().to_vec())
                 .unwrap_or_default();
-            self.submit_file_icon_loads(&context, &entries);
+            self.submit_offscreen_file_icon_loads(&context, &entries);
         }
         if let ExplorerAction::OpenItem { row_index, new_tab } = action {
             let now = std::time::SystemTime::now()
@@ -4677,10 +5161,10 @@ mod tests {
     };
 
     use super::{
-        BaseIconCache, ExplorerRoot, UiTokens, VisibleItemIconCache, VisualFixtureState,
-        action_for_host_context_command, active_window_title, advance_item_overlay_epoch,
-        captured_scrollbar_axis_to_logical, coalesce_directory_events,
-        file_view_global_command_action, file_view_item_command_action,
+        BaseIconCache, ENRICHMENT_SERVICE_EVENT_CAPACITY, ExplorerRoot, UiTokens,
+        VisibleItemIconCache, VisualFixtureState, action_for_host_context_command,
+        active_window_title, advance_item_overlay_epoch, captured_scrollbar_axis_to_logical,
+        coalesce_directory_events, file_view_global_command_action, file_view_item_command_action,
         file_view_navigation_target, is_passive_pointer_action, physical_client_to_logical,
         prepare_shell_texture_pixels, should_end_address_edit, should_end_inline_rename,
         synchronize_theme, thumbnail_texture, window_title_for_history_entry,
@@ -4733,6 +5217,227 @@ mod tests {
             action_for_host_context_command(Command::Properties),
             ExplorerAction::ShowPropertiesSelected
         );
+    }
+
+    #[test]
+    fn qos_presentation_boundary_accepts_current_generation_and_rejects_superseded_results() {
+        let mut root = ExplorerRoot::new(UiTokens::default());
+        let command = root
+            .state
+            .begin_active_location_load()
+            .expect("directory load context");
+        let current = command.context().expect("directory context").clone();
+        let stale = explorer_model::RequestContext::new(
+            current.tab_id,
+            explorer_model::Generation::new(current.generation.value().saturating_add(1)),
+        );
+        let mut wrong_request = current.clone();
+        wrong_request.request_id = explorer_common::RequestId::new();
+        let current_event = explorer_model::ExplorerEvent::DirectoryFinished {
+            context: current.clone(),
+        };
+        let stale_event = explorer_model::ExplorerEvent::DirectoryFinished { context: stale };
+        let wrong_request_event = explorer_model::ExplorerEvent::DirectoryFinished {
+            context: wrong_request,
+        };
+
+        assert!(root.accepts_presentation_event(&current_event));
+        assert!(!root.accepts_presentation_event(&stale_event));
+        assert!(!root.accepts_presentation_event(&wrong_request_event));
+    }
+
+    #[test]
+    fn qos_presentation_boundary_rejects_unknown_operation_before_global_side_effects() {
+        let mut root = ExplorerRoot::new(UiTokens::default());
+        let tab = root.state().tabs().active_tab();
+        let unknown = explorer_model::RequestContext::new(tab.id, tab.generation);
+        let unknown_terminal = explorer_model::ExplorerEvent::OperationFinished {
+            context: unknown,
+            outcome: explorer_model::OperationTerminal::Finished,
+        };
+        assert!(!root.accepts_presentation_event(&unknown_terminal));
+
+        let command = root
+            .state
+            .begin_file_operation(explorer_model::FileOperationRequest {
+                kind: explorer_model::FileOperationKind::Copy {
+                    items: Vec::new(),
+                    destination: explorer_model::LocationDescriptor::file_system(r"C:\"),
+                },
+                flags: explorer_model::FileOperationFlags::default(),
+            });
+        let context = command.context().expect("operation context").clone();
+        let correlated_terminal = explorer_model::ExplorerEvent::OperationFinished {
+            context,
+            outcome: explorer_model::OperationTerminal::Finished,
+        };
+        assert!(root.accepts_presentation_event(&correlated_terminal));
+    }
+
+    #[test]
+    fn qos_enrichment_backlog_is_bounded_and_never_delays_foreground_delivery() {
+        let mut root = ExplorerRoot::new(UiTokens::default());
+        let tab = root.state().tabs().active_tab();
+        let context = explorer_model::RequestContext::new(tab.id, tab.generation);
+        let key = explorer_model::ShellIconKey {
+            item_id: None,
+            location: explorer_model::LocationDescriptor::file_system(r"C:\"),
+            size_bucket: 16,
+            dpi: 96,
+            theme: explorer_model::ShellIconTheme::Light,
+            association_generation: 0,
+            overlay_generation: 0,
+        };
+        for _ in 0..=ENRICHMENT_SERVICE_EVENT_CAPACITY {
+            root.enqueue_service_event(explorer_model::ExplorerEvent::ShellIconFailed {
+                context: context.clone(),
+                key: key.clone(),
+                reason: explorer_model::ShellIconFallbackReason::ShellUnavailable,
+            });
+        }
+        assert_eq!(
+            root.pending_enrichment_events.len(),
+            ENRICHMENT_SERVICE_EVENT_CAPACITY
+        );
+        assert_eq!(
+            root.service_qos_snapshot_for_test().observations.overloads,
+            1
+        );
+        assert!(root.enrichment_retry_needed);
+        root.recover_discarded_enrichment();
+        assert!(!root.enrichment_retry_needed);
+
+        root.enqueue_service_event(explorer_model::ExplorerEvent::ClipboardChanged {
+            state: explorer_model::ClipboardState::default(),
+        });
+        assert!(matches!(
+            root.pop_next_service_event(),
+            Some(explorer_model::ExplorerEvent::ClipboardChanged { .. })
+        ));
+    }
+
+    #[test]
+    fn qos_same_icon_key_rejects_a_superseded_request_context() {
+        let mut root = ExplorerRoot::new(UiTokens::default());
+        let tab = root.state().tabs().active_tab();
+        let expected = explorer_model::RequestContext::new(tab.id, tab.generation);
+        let superseded = explorer_model::RequestContext::new(tab.id, tab.generation);
+        let key = explorer_model::ShellIconKey {
+            item_id: None,
+            location: explorer_model::LocationDescriptor::file_system(r"C:\"),
+            size_bucket: 16,
+            dpi: 96,
+            theme: explorer_model::ShellIconTheme::Light,
+            association_generation: 0,
+            overlay_generation: 0,
+        };
+        root.pending_icon_keys.insert(key.clone());
+        root.pending_icon_contexts
+            .insert(key.clone(), expected.clone());
+
+        let stale = explorer_model::ExplorerEvent::ShellIconFailed {
+            context: superseded,
+            key: key.clone(),
+            reason: explorer_model::ShellIconFallbackReason::ShellUnavailable,
+        };
+        let current = explorer_model::ExplorerEvent::ShellIconFailed {
+            context: expected,
+            key,
+            reason: explorer_model::ShellIconFallbackReason::ShellUnavailable,
+        };
+        assert!(!root.accepts_presentation_event(&stale));
+        assert!(root.accepts_presentation_event(&current));
+    }
+
+    #[test]
+    fn qos_command_overload_finishes_a_tracked_operation_instead_of_wedging_it() {
+        let mut root = ExplorerRoot {
+            service: Some(Arc::new(OverloadedService)),
+            ..ExplorerRoot::default()
+        };
+        let command = root
+            .state
+            .begin_file_operation(explorer_model::FileOperationRequest {
+                kind: explorer_model::FileOperationKind::Copy {
+                    items: Vec::new(),
+                    destination: explorer_model::LocationDescriptor::file_system(r"C:\"),
+                },
+                flags: explorer_model::FileOperationFlags::default(),
+            });
+        let request_id = command.context().expect("operation context").request_id;
+
+        assert!(!root.submit_command(command));
+        let record = root
+            .state
+            .operation_center()
+            .get(request_id)
+            .expect("tracked operation remains observable");
+        assert_eq!(record.phase, explorer_model::OperationPhase::Failed);
+        assert!(!root.navigation_started.contains_key(&request_id));
+        assert_eq!(
+            root.service_qos_snapshot_for_test().observations.overloads,
+            1
+        );
+    }
+
+    #[test]
+    fn qos_command_overload_completes_context_menu_and_preview_lifecycles() {
+        let mut root = ExplorerRoot {
+            service: Some(Arc::new(OverloadedService)),
+            ..ExplorerRoot::default()
+        };
+        let menu = root
+            .state
+            .begin_context_menu_request(None, 1, 0, 0, true, false)
+            .expect("background context menu request");
+        assert!(root.state.context_menu_pending());
+        assert!(!root.submit_command(menu));
+        assert!(!root.state.context_menu_pending());
+        assert!(root.state.context_menu_error().is_some());
+
+        let selection = explorer_model::PreviewSelection {
+            item_id: explorer_model::ShellItemId::from_provider_bytes([1])
+                .expect("preview identity"),
+            location: explorer_model::LocationDescriptor::file_system(r"C:\preview.txt"),
+            display_name: "preview.txt".to_owned(),
+        };
+        root.preview_coordinator.open().expect("open preview");
+        root.preview_coordinator
+            .select(
+                &explorer_model::PreviewEligibility::SingleEligible(selection.clone()),
+                Duration::ZERO,
+            )
+            .expect("schedule preview");
+        let explorer_jobs::PreviewCoordinatorAction::Start { generation, .. } = root
+            .preview_coordinator
+            .poll(Duration::from_secs(1))
+            .expect("poll preview")
+            .expect("start preview")
+        else {
+            panic!("preview debounce must start the selected generation");
+        };
+        let tab = root.state.tabs().active_tab();
+        let preview = explorer_model::ExplorerCommand::PreviewHost {
+            context: explorer_model::RequestContext::new(tab.id, tab.generation),
+            command: explorer_model::PreviewHostCommand::Start {
+                selection,
+                parent_window: 1,
+                bounds: explorer_model::PreviewHostBounds {
+                    generation,
+                    left_physical: 0,
+                    top_physical: 0,
+                    width_physical: 100,
+                    height_physical: 100,
+                    dpi: 96,
+                },
+            },
+        };
+        assert!(!root.submit_command(preview));
+        assert!(root.preview_thumbnail_failed);
+        assert!(matches!(
+            root.preview_coordinator.lifecycle(),
+            explorer_model::PreviewLifecycle::Failed { generation: current, .. } if *current == generation
+        ));
     }
 
     #[test]
@@ -5281,6 +5986,24 @@ mod tests {
     #[derive(Default)]
     struct RecordingService(Mutex<Vec<explorer_model::ExplorerCommand>>);
 
+    struct OverloadedService;
+
+    impl explorer_model::ExplorerService for OverloadedService {
+        fn submit(
+            &self,
+            _command: explorer_model::ExplorerCommand,
+        ) -> Result<(), explorer_model::ExplorerServiceError> {
+            Err(explorer_model::ExplorerServiceError::Overloaded)
+        }
+
+        fn try_recv(
+            &self,
+        ) -> Result<Option<explorer_model::ExplorerEvent>, explorer_model::ExplorerServiceError>
+        {
+            Ok(None)
+        }
+    }
+
     fn preview_fixture_root() -> (ExplorerRoot, Vec<explorer_model::FileEntry>) {
         let service = Arc::new(RecordingService::default());
         let mut root = ExplorerRoot {
@@ -5434,6 +6157,14 @@ mod tests {
         root.state.clear_selection();
         assert!(root.state.select_row(0));
         root.synchronize_preview_handler(Some(&entries[0]));
+        root.apply_preview_host_terminal(&explorer_model::PreviewHostTerminal::Failed {
+            generation,
+            error: explorer_model::PreviewHostError::Crash,
+        });
+        assert!(
+            !root.preview_thumbnail_failed,
+            "a superseded preview terminal cannot mark the replacement selection failed"
+        );
         assert!(
             service
                 .0

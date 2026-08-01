@@ -34,6 +34,59 @@
       "covers": ["optimize-large-folder-virtualization-shared-icons/*"]
     },
     {
+      "id": "interaction-first-qos-contracts",
+      "description": "Verify bounded interaction-first scheduling, frame draining, stale-result rejection, privacy-safe observations, and overload degradation recovery.",
+      "suites": ["quick", "full"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-jobs", "-p", "explorer-ui", "--locked", "qos", "--", "--nocapture", "--test-threads=1"],
+      "timeout_seconds": 300,
+      "prerequisites": [{"kind": "command", "name": "cargo.exe"}],
+      "covers": [
+        "enforce-interaction-first-qos/interaction-first-qos/foreground-interaction-never-waits-for-background-capacity",
+        "enforce-interaction-first-qos/interaction-first-qos/work-follows-interaction-first-priority",
+        "enforce-interaction-first-qos/interaction-first-qos/ui-result-integration-is-frame-bounded",
+        "enforce-interaction-first-qos/interaction-first-qos/superseded-work-cannot-mutate-current-presentation",
+        "enforce-interaction-first-qos/interaction-first-qos/overload-degrades-optional-work-and-recovers",
+        "enforce-interaction-first-qos/interaction-first-qos/qos-observations-are-bounded-and-privacy-safe"
+      ]
+    },
+    {
+      "id": "interaction-first-qos-contention-matrix",
+      "description": "Drive the public command/event protocol through explicit completion and frame gates, proving rapid replacement, bounded delivery, tab closure, and shutdown terminalization with privacy-safe diagnostics.",
+      "suites": ["quick", "full"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-ui", "--test", "interaction_first_qos_contention", "--locked", "--", "--nocapture", "--test-threads=1"],
+      "timeout_seconds": 300,
+      "prerequisites": [{"kind": "command", "name": "cargo.exe"}],
+      "covers": [
+        "enforce-interaction-first-qos/interaction-first-qos/ui-result-integration-is-frame-bounded",
+        "enforce-interaction-first-qos/interaction-first-qos/superseded-work-cannot-mutate-current-presentation"
+      ]
+    },
+    {
+      "id": "interaction-first-domain-isolation",
+      "description": "Use deterministic start/release gates to prove stalled file-operation and breadcrumb enrichment workers cannot delay navigation.",
+      "suites": ["quick", "full", "interop"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-shell-win", "--lib", "--locked", "isolation", "--", "--nocapture", "--test-threads=1"],
+      "timeout_seconds": 300,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
+      "exclusive_resources": ["ole"],
+      "covers": [
+        "enforce-interaction-first-qos/interaction-first-qos/blocking-domains-have-isolated-capacity"
+      ]
+    },
+    {
+      "id": "interaction-first-worker-lifecycle",
+      "description": "Prove an active isolated search worker has bounded cancellation-aware shutdown and releases retained thread resources.",
+      "suites": ["quick", "full"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-shell-win", "--lib", "--locked", "sta::tests::active_search_worker_shutdown_is_bounded_and_releases_its_lifecycle", "--", "--exact", "--nocapture", "--test-threads=1"],
+      "timeout_seconds": 300,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
+      "exclusive_resources": ["ole"]
+    },
+    {
       "id": "workspace-clippy",
       "description": "以 warnings-as-errors 執行 workspace Clippy。",
       "suites": ["quick"],
