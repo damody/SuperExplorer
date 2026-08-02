@@ -1,9 +1,9 @@
-//! Process-isolated host verifier for an old SDK 1.0 plugin.
+//! Process-isolated pre-callback ABI verifier for an old SDK 1.0 plugin.
 
 use std::{env, path::Path};
 
 use abi_stable::library::RootModule;
-use explorer_extension_api::{AbiErrorCodeV1, ExtensionRootModuleV1_Ref};
+use explorer_extension_api::ExtensionRootModuleV1_Ref;
 use explorer_extension_host::{ExtensionHost, HostRegistrationErrorV1};
 
 fn run(mode: &str, plugin: &Path, marker: &Path) -> Result<(), String> {
@@ -17,36 +17,20 @@ fn run(mode: &str, plugin: &Path, marker: &Path) -> Result<(), String> {
             "old v1 plugin unexpectedly exposes the optional UI fingerprint tail".to_owned(),
         );
     }
-    let mut host = ExtensionHost::new();
-    host.start();
-    let result = host.register_root(root);
-    host.shutdown();
+    // Registrar dispatch is intentionally private to the task 3.5 guarded
+    // executor. This fixture preserves the old-v1 layout and required-root-data
+    // compatibility contract without reopening a public raw-root callback path.
+    let result = ExtensionHost::new().validate_root(root);
     match mode {
-        "compatible" => {
+        "compatible" | "panic" | "raw-panic" => {
             if result.is_err() {
-                return Err(format!("compatible old v1 plugin failed: {result:?}"));
+                return Err(format!("old v1 plugin failed pre-callback validation: {result:?}"));
             }
             if marker.exists() {
-                Ok(())
+                Err("pre-callback ABI validation unexpectedly invoked a registrar".to_owned())
             } else {
-                Err("compatible plugin did not invoke registrar marker".to_owned())
+                Ok(())
             }
-        }
-        "panic" => match result {
-            Err(HostRegistrationErrorV1::Panicked(error))
-                if error.code == AbiErrorCodeV1::CALLBACK_PANICKED && marker.exists() => Ok(()),
-            other => Err(format!("panic was not translated to typed Panicked: {other:?}")),
-        },
-        "raw-panic" => {
-            // The unsafe fixture is expected to abort before control returns from
-            // `register_root`.  Leave an explicit sentinel if it ever does return
-            // so the process runner cannot confuse this clean error path with the
-            // expected abnormal FFI-boundary termination.
-            std::fs::write(marker, b"raw callback returned")
-                .map_err(|error| format!("failed to write raw-return sentinel: {error}"))?;
-            Err(format!(
-                "unsafe raw panic unexpectedly returned from registrar: {result:?}"
-            ))
         }
         "schema-mismatch" | "root-contract-mismatch" | "sdk-major-mismatch" => match result {
             Err(HostRegistrationErrorV1::Incompatible(_)) if !marker.exists() => Ok(()),
