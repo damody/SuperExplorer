@@ -15,7 +15,7 @@ use std::{
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, OnceLock,
+        Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant, SystemTime},
@@ -40,9 +40,10 @@ const MAX_MANIFEST_FILE_BYTES: usize = 256 * 1024;
 const MAX_PACKAGE_DEPTH: usize = 32;
 const MAX_PACKAGE_ENTRY_COUNT: usize = 1024;
 const DEFAULT_VALIDATION_TIMEOUT: Duration = Duration::from_secs(30);
-const MINIMUM_STAGING_AGE: Duration = Duration::from_secs(15 * 60);
+const MINIMUM_STAGING_AGE: Duration = Duration::from_mins(15);
+const MAX_STAGING_ROOT_ENTRY_SCAN: usize = 256;
+const STAGING_SCAVENGE_TIMEOUT: Duration = Duration::from_secs(1);
 static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
-static HARDENED_SEALED_DIRECTORIES: OnceLock<Mutex<BTreeSet<PathBuf>>> = OnceLock::new();
 
 /// Opaque local-developer authorization issued only by a host package source.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -557,7 +558,7 @@ impl fmt::Debug for SealedPackageActivationGuardV1 {
             .debug_struct("SealedPackageActivationGuardV1")
             .field("root", &"<redacted>")
             .field("payload_file_count", &self.payload_files.len())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -665,15 +666,29 @@ fn acquire_directory_leases(
 #[cfg(windows)]
 #[allow(unsafe_code)]
 fn open_directory_lease(path: &Path) -> Result<DirectoryLease, PackageValidationErrorV1> {
+    let handle = open_directory_handle(path)?;
+    if let Err(error) = harden_sealed_directory_namespace(handle, path) {
+        unsafe {
+            let _ = close_handle(handle);
+        }
+        return Err(error);
+    }
+    Ok(DirectoryLease { handle })
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn open_directory_handle(path: &Path) -> Result<isize, PackageValidationErrorV1> {
     use std::{ffi::c_void, iter, os::windows::ffi::OsStrExt as _};
 
     const FILE_LIST_DIRECTORY: u32 = 0x0000_0001;
+    const READ_CONTROL: u32 = 0x0002_0000;
+    const WRITE_DAC: u32 = 0x0004_0000;
     const FILE_SHARE_READ: u32 = 0x0000_0001;
     const OPEN_EXISTING: u32 = 3;
     const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
     const INVALID_HANDLE_VALUE: isize = -1;
-
-    harden_sealed_directory_namespace(path)?;
     let wide_path: Vec<u16> = path
         .as_os_str()
         .encode_wide()
@@ -684,11 +699,11 @@ fn open_directory_lease(path: &Path) -> Result<DirectoryLease, PackageValidation
     let handle = unsafe {
         create_file_w(
             wide_path.as_ptr(),
-            FILE_LIST_DIRECTORY,
+            FILE_LIST_DIRECTORY | READ_CONTROL | WRITE_DAC,
             FILE_SHARE_READ,
             std::ptr::null_mut::<c_void>(),
             OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
             0,
         )
     };
@@ -698,28 +713,81 @@ fn open_directory_lease(path: &Path) -> Result<DirectoryLease, PackageValidation
             source: io::Error::last_os_error(),
         });
     }
-    Ok(DirectoryLease { handle })
+    Ok(handle)
 }
 
 #[cfg(windows)]
 #[allow(unsafe_code)]
-fn harden_sealed_directory_namespace(path: &Path) -> Result<(), PackageValidationErrorV1> {
-    let hardened = HARDENED_SEALED_DIRECTORIES.get_or_init(|| Mutex::new(BTreeSet::new()));
-    let mut hardened = hardened
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if hardened.contains(path) {
-        return Ok(());
+fn directory_handle_identity(
+    handle: isize,
+    path: &Path,
+) -> Result<(u32, u64), PackageValidationErrorV1> {
+    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
+
+    #[repr(C)]
+    struct FileTime {
+        low_date_time: u32,
+        high_date_time: u32,
     }
-    deny_directory_mutation_for_everyone(path)?;
-    hardened.insert(path.to_path_buf());
+    #[repr(C)]
+    struct ByHandleFileInformation {
+        file_attributes: u32,
+        creation_time: FileTime,
+        last_access_time: FileTime,
+        last_write_time: FileTime,
+        volume_serial_number: u32,
+        file_size_high: u32,
+        file_size_low: u32,
+        number_of_links: u32,
+        file_index_high: u32,
+        file_index_low: u32,
+    }
+
+    let mut info = std::mem::MaybeUninit::<ByHandleFileInformation>::uninit();
+    // SAFETY: `info` provides writable storage for the Win32 output structure.
+    if unsafe { get_file_information_by_handle(handle, info.as_mut_ptr().cast()) } == 0 {
+        return Err(PackageValidationErrorV1::Io {
+            path: path.to_path_buf(),
+            source: io::Error::last_os_error(),
+        });
+    }
+    // SAFETY: GetFileInformationByHandle reported success and initialized info.
+    let info = unsafe { info.assume_init() };
+    if info.file_attributes & FILE_ATTRIBUTE_DIRECTORY == 0
+        || info.file_attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
+        return Err(PackageValidationErrorV1::UnsafePackageRoot {
+            path: path.to_path_buf(),
+        });
+    }
+    Ok((
+        info.volume_serial_number,
+        u64::from(info.file_index_high) << 32 | u64::from(info.file_index_low),
+    ))
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn harden_sealed_directory_namespace(
+    handle: isize,
+    path: &Path,
+) -> Result<(), PackageValidationErrorV1> {
+    // Do not cache this by path. A generation directory can be deleted and
+    // recreated at the same spelling after an earlier guard drops; its DACL is
+    // then a new security identity and must be hardened again. Re-applying the
+    // DENY ACE is safe (Windows merges equivalent deny entries) and fail-closed.
+    let _ = directory_handle_identity(handle, path)?;
+    deny_directory_mutation_for_everyone(handle, path)?;
     Ok(())
 }
 
 #[cfg(windows)]
 #[allow(unsafe_code)]
-fn deny_directory_mutation_for_everyone(path: &Path) -> Result<(), PackageValidationErrorV1> {
-    use std::{ffi::c_void, iter, os::windows::ffi::OsStrExt as _};
+fn deny_directory_mutation_for_everyone(
+    handle: isize,
+    path: &Path,
+) -> Result<(), PackageValidationErrorV1> {
+    use std::ffi::c_void;
 
     const SE_FILE_OBJECT: u32 = 1;
     const DACL_SECURITY_INFORMATION: u32 = 0x0000_0004;
@@ -748,43 +816,39 @@ fn deny_directory_mutation_for_everyone(path: &Path) -> Result<(), PackageValida
         trustee: TrusteeW,
     }
 
-    let wide_path: Vec<u16> = path
-        .as_os_str()
-        .encode_wide()
-        .chain(iter::once(0))
-        .collect();
     let mut existing_dacl = std::ptr::null_mut::<c_void>();
     let mut security_descriptor = std::ptr::null_mut::<c_void>();
-    // SAFETY: output pointers are initialized writable storage and `wide_path`
-    // is a NUL-terminated Windows path valid for the duration of this call.
+    // SAFETY: output pointers are initialized writable storage and `handle` is
+    // the exact directory object opened with READ_CONTROL/WRITE_DAC.
     let status = unsafe {
-        get_named_security_info_w(
-            wide_path.as_ptr(),
+        get_security_info(
+            handle,
             SE_FILE_OBJECT,
             DACL_SECURITY_INFORMATION,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut existing_dacl,
+            &raw mut existing_dacl,
             std::ptr::null_mut(),
-            &mut security_descriptor,
+            &raw mut security_descriptor,
         )
     };
     if status != 0 {
         return Err(PackageValidationErrorV1::Io {
             path: path.to_path_buf(),
-            source: io::Error::from_raw_os_error(status as i32),
+            source: io::Error::from_raw_os_error(status.cast_signed()),
         });
     }
 
+    // `SECURITY_MAX_SID_SIZE` is 68 bytes on Windows.
     let mut everyone_sid = [0_u8; 68];
-    let mut sid_size = everyone_sid.len() as u32;
+    let mut sid_size = 68_u32;
     // SAFETY: `everyone_sid` is writable and `sid_size` describes its capacity.
     if unsafe {
         create_well_known_sid(
             WIN_WORLD_SID,
             std::ptr::null_mut(),
             everyone_sid.as_mut_ptr().cast(),
-            &mut sid_size,
+            &raw mut sid_size,
         )
     } == 0
     {
@@ -817,7 +881,7 @@ fn deny_directory_mutation_for_everyone(path: &Path) -> Result<(), PackageValida
             1,
             std::ptr::addr_of_mut!(access).cast(),
             existing_dacl,
-            &mut hardened_dacl,
+            &raw mut hardened_dacl,
         )
     };
     if status != 0 {
@@ -826,15 +890,15 @@ fn deny_directory_mutation_for_everyone(path: &Path) -> Result<(), PackageValida
         }
         return Err(PackageValidationErrorV1::Io {
             path: path.to_path_buf(),
-            source: io::Error::from_raw_os_error(status as i32),
+            source: io::Error::from_raw_os_error(status.cast_signed()),
         });
     }
-    // SAFETY: this applies the newly allocated DACL to the host-owned sealed
-    // directory. It deliberately persists: content-addressed generations are
-    // immutable once activated, including after a guard is dropped.
+    // SAFETY: this applies the newly allocated DACL to the exact directory
+    // handle, not a path that may have been swapped. It deliberately persists:
+    // content-addressed generations are immutable once activated.
     let status = unsafe {
-        set_named_security_info_w(
-            wide_path.as_ptr().cast_mut(),
+        set_security_info(
+            handle,
             SE_FILE_OBJECT,
             DACL_SECURITY_INFORMATION,
             std::ptr::null_mut(),
@@ -850,7 +914,7 @@ fn deny_directory_mutation_for_everyone(path: &Path) -> Result<(), PackageValida
     if status != 0 {
         return Err(PackageValidationErrorV1::Io {
             path: path.to_path_buf(),
-            source: io::Error::from_raw_os_error(status as i32),
+            source: io::Error::from_raw_os_error(status.cast_signed()),
         });
     }
     Ok(())
@@ -874,15 +938,17 @@ unsafe extern "system" {
     fn close_handle(handle: isize) -> i32;
     #[link_name = "LocalFree"]
     fn local_free(memory: *mut std::ffi::c_void) -> isize;
+    #[link_name = "GetFileInformationByHandle"]
+    fn get_file_information_by_handle(handle: isize, info: *mut std::ffi::c_void) -> i32;
 }
 
 #[cfg(windows)]
 #[allow(unsafe_code)]
 #[link(name = "advapi32")]
 unsafe extern "system" {
-    #[link_name = "GetNamedSecurityInfoW"]
-    fn get_named_security_info_w(
-        object_name: *const u16,
+    #[link_name = "GetSecurityInfo"]
+    fn get_security_info(
+        handle: isize,
         object_type: u32,
         security_info: u32,
         owner: *mut *mut std::ffi::c_void,
@@ -898,9 +964,9 @@ unsafe extern "system" {
         old_acl: *mut std::ffi::c_void,
         new_acl: *mut *mut std::ffi::c_void,
     ) -> u32;
-    #[link_name = "SetNamedSecurityInfoW"]
-    fn set_named_security_info_w(
-        object_name: *mut u16,
+    #[link_name = "SetSecurityInfo"]
+    fn set_security_info(
+        handle: isize,
         object_type: u32,
         security_info: u32,
         owner: *mut std::ffi::c_void,
@@ -1352,37 +1418,59 @@ fn verify_safe_root(package_root: &Path) -> Result<PathBuf, PackageValidationErr
 }
 
 fn scavenge_staging_directories(root: &Path) -> Result<(), PackageValidationErrorV1> {
+    let deadline = Instant::now() + STAGING_SCAVENGE_TIMEOUT;
+    scavenge_staging_directories_with_limits(root, MAX_STAGING_ROOT_ENTRY_SCAN, deadline)
+        .map(|_| ())
+}
+
+fn scavenge_staging_directories_with_limits(
+    root: &Path,
+    root_entry_limit: usize,
+    deadline: Instant,
+) -> Result<usize, PackageValidationErrorV1> {
+    let mut inspected = 0_usize;
     for entry in fs::read_dir(root).map_err(|source| PackageValidationErrorV1::Io {
         path: root.to_path_buf(),
         source,
     })? {
-        let entry = entry.map_err(|source| PackageValidationErrorV1::Io {
-            path: root.to_path_buf(),
-            source,
-        })?;
+        if inspected >= root_entry_limit || Instant::now() >= deadline {
+            // Store startup must not become an attacker-controlled unbounded
+            // root enumeration. Skipping excess candidates is safe because
+            // staging trees are never loadable generations.
+            return Ok(inspected);
+        }
+        inspected += 1;
+        let Ok(entry) = entry else {
+            continue;
+        };
         let path = entry.path();
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
         let Some(owner_pid) = staging_owner_pid(name) else {
             continue;
         };
-        let metadata =
-            fs::symlink_metadata(&path).map_err(|source| PackageValidationErrorV1::Io {
-                path: path.clone(),
-                source,
-            })?;
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            // A concurrent validator can finish or remove a staging tree while
+            // startup scans. Staging is never loadable, so skip rather than
+            // bricking the host-owned store on this best-effort cleanup path.
+            continue;
+        };
         if metadata_is_reparse_point(&metadata)
             || !metadata.is_dir()
-            || !staging_tree_is_safe(&path)?
             || !staging_is_old_enough(&metadata)
             || staging_owner_is_active(owner_pid)
         {
             continue;
         }
-        fs::remove_dir_all(&path)
-            .map_err(|source| PackageValidationErrorV1::Io { path, source })?;
+        // Do not traverse an active/fresh candidate. Only a stale, dead-owner
+        // candidate is inspected, and any concurrent I/O change leaves it for
+        // a future bounded scan instead of rejecting store construction.
+        if !matches!(staging_tree_is_safe(&path, deadline), Ok(true)) {
+            continue;
+        }
+        let _ = fs::remove_dir_all(&path);
     }
-    Ok(())
+    Ok(inspected)
 }
 
 fn staging_owner_pid(name: &str) -> Option<u32> {
@@ -1435,9 +1523,10 @@ fn process_is_running(pid: u32) -> bool {
     const WAIT_TIMEOUT: u32 = 258;
     let handle = unsafe { open_process(SYNCHRONIZE, 0, pid) };
     if handle == 0 {
-        // Access denial and transient process-query errors are not evidence
-        // that an owner is dead. Leave its staging tree untouched.
-        return true;
+        // ERROR_INVALID_PARAMETER is Windows' documented result for a PID
+        // that does not identify an existing process. Access denial and every
+        // other query failure remain conservative: do not delete its staging.
+        return io::Error::last_os_error().raw_os_error() != Some(87);
     }
     // SAFETY: `handle` was returned by OpenProcess and is closed exactly once.
     let running = unsafe { wait_for_single_object(handle, 0) == WAIT_TIMEOUT };
@@ -1457,14 +1546,20 @@ unsafe extern "system" {
     fn wait_for_single_object(handle: isize, milliseconds: u32) -> u32;
 }
 
-fn staging_tree_is_safe(root: &Path) -> Result<bool, PackageValidationErrorV1> {
+fn staging_tree_is_safe(root: &Path, deadline: Instant) -> Result<bool, PackageValidationErrorV1> {
     let mut pending = vec![(root.to_path_buf(), 0_usize)];
     let mut entry_count = 0_usize;
     while let Some((directory, depth)) = pending.pop() {
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
         for entry in fs::read_dir(&directory).map_err(|source| PackageValidationErrorV1::Io {
             path: directory.clone(),
             source,
         })? {
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
             entry_count = match entry_count.checked_add(1) {
                 Some(count) if count <= MAX_PACKAGE_ENTRY_COUNT => count,
                 _ => return Ok(false),
@@ -2034,6 +2129,11 @@ mod tests {
         io::Read as _,
         path::PathBuf,
         process::{Command, Stdio},
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        thread,
         time::{Duration, Instant},
     };
 
@@ -2531,6 +2631,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    #[allow(unsafe_code)]
     fn activation_guard_blocks_late_dll_injection_during_a_real_dll_load() {
         let package = TestPackage::new();
         let key_pair = key_pair();
@@ -2567,6 +2668,44 @@ mod tests {
             )
             .is_err(),
             "directory lease must reject DLL injection while activation is live"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn activation_guard_rehardens_a_recreated_generation_before_concurrent_injection() {
+        let package = TestPackage::new();
+        let key_pair = key_pair();
+        signed_data_package(&package, &key_pair, b"payload");
+        let result = validator(&key_pair, &package)
+            .validate(&package.request())
+            .expect("sealed package");
+        let first_guard = result.activation_guard().expect("first activation guard");
+        let generation_root = first_guard.package_root().to_path_buf();
+        let manifest_bytes =
+            fs::read(generation_root.join("manifest.json")).expect("original canonical manifest");
+        let payload_bytes =
+            fs::read(generation_root.join("data/payload.bin")).expect("original sealed payload");
+        drop(first_guard);
+
+        // Recreate the exact same path with matching declared bytes. This
+        // simulates a cache janitor/delete-recreate race after a prior guard.
+        fs::remove_dir_all(&generation_root).expect("remove prior generation");
+        fs::create_dir(&generation_root).expect("recreate generation root");
+        fs::create_dir(generation_root.join("data")).expect("recreate payload directory");
+        fs::write(generation_root.join("manifest.json"), manifest_bytes)
+            .expect("restore canonical manifest");
+        fs::write(generation_root.join("data/payload.bin"), payload_bytes)
+            .expect("restore sealed payload");
+
+        let guard = result
+            .activation_guard()
+            .expect("reharden recreated generation");
+        let injection_path = guard.package_root().join("data/late-injection.dll");
+        let injection = thread::spawn(move || fs::write(injection_path, b"late injection"));
+        assert!(
+            injection.join().expect("injection thread").is_err(),
+            "a recreated same-path generation must receive a fresh namespace hardening"
         );
     }
 
@@ -2635,8 +2774,92 @@ mod tests {
             fs::write(oversized.join(format!("{index}.tmp")), b"x").expect("staging entry");
         }
         assert!(
-            !super::staging_tree_is_safe(&oversized).expect("bounded staging inspection"),
+            !super::staging_tree_is_safe(&oversized, Instant::now() + Duration::from_secs(1))
+                .expect("bounded staging inspection"),
             "scavenging must not traverse or delete an unbounded staging tree"
+        );
+        assert!(
+            !super::staging_tree_is_safe(&oversized, Instant::now())
+                .expect("expired staging inspection"),
+            "staging traversal must stop safely once its deadline elapses"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn store_scavenger_skips_active_mutating_and_oversized_staging_candidates() {
+        let package = TestPackage::new();
+        let active_name = format!(".staging-{}-{}-1", "b".repeat(64), std::process::id());
+        let active_staging = package.sealed_store.join(active_name);
+        fs::create_dir(&active_staging).expect("active staging directory");
+        let writing = Arc::new(AtomicBool::new(true));
+        let writer_flag = Arc::clone(&writing);
+        let writer_path = active_staging.join("writer.tmp");
+        fs::write(&writer_path, b"initial active staging content")
+            .expect("non-empty active staging");
+        let writer = thread::spawn(move || {
+            let mut counter = 0_u64;
+            while writer_flag.load(Ordering::Acquire) {
+                let _ = fs::write(&writer_path, counter.to_le_bytes());
+                counter = counter.wrapping_add(1);
+            }
+        });
+
+        let oversized_name = format!(".staging-{}-0-2", "c".repeat(64));
+        let oversized_staging = package.sealed_store.join(oversized_name);
+        fs::create_dir(&oversized_staging).expect("oversized staging directory");
+        for index in 0..=super::MAX_PACKAGE_ENTRY_COUNT {
+            fs::write(oversized_staging.join(format!("{index}.tmp")), b"x")
+                .expect("oversized staging entry");
+        }
+        mark_staging_directory_old(&oversized_staging);
+
+        let stale_empty_name = format!(".staging-{}-0-3", "d".repeat(64));
+        let stale_empty_staging = package.sealed_store.join(stale_empty_name);
+        fs::create_dir(&stale_empty_staging).expect("stale empty staging directory");
+        mark_staging_directory_old(&stale_empty_staging);
+
+        SealedPackageStoreV1::new(&package.sealed_store)
+            .expect("active or oversized staging must not brick store startup");
+        writing.store(false, Ordering::Release);
+        writer.join().expect("active staging writer");
+        assert!(
+            active_staging.exists(),
+            "active staging must be left untouched"
+        );
+        assert!(
+            oversized_staging.exists(),
+            "oversized stale staging must be skipped after bounded inspection"
+        );
+        assert!(
+            !stale_empty_staging.exists(),
+            "a stale, dead-owner empty staging candidate must be scavenged"
+        );
+    }
+
+    #[test]
+    fn staging_root_scan_respects_candidate_and_time_bounds() {
+        let package = TestPackage::new();
+        for index in 0..4 {
+            fs::create_dir(package.sealed_store.join(format!("candidate-{index}")))
+                .expect("root candidate");
+        }
+        let inspected = super::scavenge_staging_directories_with_limits(
+            &package.sealed_store,
+            2,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .expect("bounded root scan");
+        assert_eq!(inspected, 2, "root scan must stop at its candidate cap");
+        let inspected = super::scavenge_staging_directories_with_limits(
+            &package.sealed_store,
+            4,
+            Instant::now(),
+        )
+        .expect("expired root scan");
+        assert_eq!(
+            inspected, 0,
+            "expired scavenger budget must not inspect entries"
         );
     }
 
@@ -2687,6 +2910,24 @@ mod tests {
             .collect();
         // SAFETY: `wide_path` is NUL-terminated and valid for this FFI call.
         unsafe { load_library_w(wide_path.as_ptr()) }
+    }
+
+    #[cfg(windows)]
+    fn mark_staging_directory_old(path: &std::path::Path) {
+        use std::os::windows::fs::OpenOptionsExt as _;
+
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        let directory = fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+            .expect("open staging directory for timestamp update");
+        let old = std::time::SystemTime::now()
+            .checked_sub(super::MINIMUM_STAGING_AGE + Duration::from_secs(1))
+            .expect("old staging timestamp");
+        directory
+            .set_times(fs::FileTimes::new().set_modified(old))
+            .expect("age staging directory");
     }
 
     #[cfg(windows)]

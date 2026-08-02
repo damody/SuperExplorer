@@ -207,6 +207,11 @@ impl PackageManifestV1 {
     /// signature bytes replaced by an empty string while retaining the Ed25519
     /// key ID, prefixed by a fixed domain separator. It therefore commits to all
     /// package metadata without a self-reference to the signature value itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the manifest is unsigned or canonical JSON
+    /// serialization fails.
     pub fn canonical_ed25519_signing_bytes(&self) -> Result<Vec<u8>, PackageManifestErrorV1> {
         let SignatureV1::Ed25519 { key_id, .. } = &self.signature else {
             return Err(PackageManifestErrorV1::VerifiedSignerIdentityRequiresSignature);
