@@ -51,7 +51,10 @@ local function reject_uncommitted_rust(logs)
     process.run({
         stage = "檢查 Rust 原始碼是否已提交",
         exe = "git.exe",
-        args = { "status", "--porcelain=v1", "--untracked-files=all", "--", "*.rs" },
+        args = {
+            "status", "--porcelain=v1", "--untracked-files=all", "--",
+            "*.rs", ":(exclude)sdk/**",
+        },
         cwd = root,
         log_path = status_log,
     })
