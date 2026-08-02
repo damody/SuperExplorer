@@ -43,8 +43,12 @@ jobs:
           if ($old -notmatch '^[0-9a-f]{40}$') { throw 'approved snapshot revision is not a full commit' }
           $origin = (git -C $gpui remote get-url origin).Trim()
           if ($origin -ne 'https://github.com/damody/gpui-ce-explorer.git') { throw 'unauthorized GPUI origin' }
-          git -C $gpui fetch --no-tags origin main --quiet
+          $shallow = (git -C $gpui rev-parse --is-shallow-repository).Trim()
+          if ($shallow -eq 'true') { git -C $gpui fetch --no-tags --unshallow origin main --quiet }
+          elseif ($shallow -eq 'false') { git -C $gpui fetch --no-tags origin main --quiet }
+          else { throw 'could not determine GPUI repository history depth' }
           if ($LASTEXITCODE -ne 0) { throw 'unable to resolve authorized GPUI main' }
+          if ((git -C $gpui rev-parse --is-shallow-repository).Trim() -ne 'false') { throw 'GPUI repository history is incomplete' }
           $new = (git -C $gpui rev-parse 'origin/main').Trim()
           $tree = (git -C $gpui rev-parse "$new`^{tree}").Trim()
           $parent = (git -C $gpui rev-list -1 "$new^" ).Trim()
@@ -107,11 +111,23 @@ jobs:
           name: gpui-snapshot-resolve-${{ github.run_id }}
           path: ${{ runner.temp }}/superexplorer-gpui-update-resolve
 
+      - name: Require complete GPUI history for candidate transaction
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gpui = Join-Path (Resolve-Path '.').Path 'vendor\gpui-ce'
+          $shallow = (git -C $gpui rev-parse --is-shallow-repository).Trim()
+          if ($shallow -eq 'true') { git -C $gpui fetch --no-tags --unshallow origin main --quiet }
+          elseif ($shallow -eq 'false') { git -C $gpui fetch --no-tags origin main --quiet }
+          else { throw 'could not determine GPUI repository history depth' }
+          if ($LASTEXITCODE -ne 0 -or (git -C $gpui rev-parse --is-shallow-repository).Trim() -ne 'false') { throw 'GPUI repository history is incomplete' }
+
       - name: Verify plan and run approved candidate build
         shell: powershell
         env:
           SUPEREXPLORER_GPUI_UPDATE_RUN_ID: ${{ github.run_id }}
           SUPEREXPLORER_GPUI_UPDATE_REASON: ${{ inputs.reason }}
+          SUPEREXPLORER_GPUI_APPROVAL_HMAC_KEY: ${{ secrets.GPUI_SNAPSHOT_APPROVAL_HMAC_KEY }}
         run: |
           $ErrorActionPreference = 'Stop'
           $repo = (Resolve-Path '.').Path
@@ -158,6 +174,16 @@ jobs:
           (git -C (Join-Path $repo 'vendor\gpui-ce') rev-parse HEAD).Trim() | Set-Content -NoNewline -LiteralPath (Join-Path $candidateDir 'gpui-revision.txt')
           $patchPath = Join-Path $candidateDir 'candidate.patch'
           git -C $repo diff --binary "--output=$patchPath" -- .
+          if ([string]::IsNullOrWhiteSpace([string]$env:SUPEREXPLORER_GPUI_APPROVAL_HMAC_KEY)) { throw 'protected GPUI approval HMAC key is unavailable' }
+          $promotionFiles = @('approval.json','candidate-attestation.json','approved-gpui.json','sdk-lock.json','bundle-manifest.json','ui-abi-fingerprint.json','gpui-revision.txt','candidate.patch')
+          $promotionManifest = [ordered]@{ schema_version = 1; repository_baseline_commit = (git -C $repo rev-parse HEAD).Trim(); files = @($promotionFiles | ForEach-Object { [ordered]@{ name = $_; sha256 = (Get-FileHash -LiteralPath (Join-Path $candidateDir $_) -Algorithm SHA256).Hash.ToLowerInvariant() } }) }
+          $promotionManifestPath = Join-Path $candidateDir 'promotion-manifest.json'
+          [IO.File]::WriteAllText($promotionManifestPath, ($promotionManifest | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+          $promotionPayload = "$($approval.baseline_revision)`n$($approval.new_revision)`n$($approval.new_tree)`n$($approval.candidate_plan_digest)`n$($approval.workflow_run_id)`n$($approval.nonce)`n$($promotionManifest.repository_baseline_commit)`n$((Get-FileHash -LiteralPath $promotionManifestPath -Algorithm SHA256).Hash.ToLowerInvariant())"
+          $hmac = [Security.Cryptography.HMACSHA256]::new([Text.Encoding]::UTF8.GetBytes([string]$env:SUPEREXPLORER_GPUI_APPROVAL_HMAC_KEY))
+          try { $proof = [ordered]@{ schema_version = 1; hmac_sha256 = ([BitConverter]::ToString($hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($promotionPayload)))).Replace('-', '').ToLowerInvariant() } }
+          finally { $hmac.Dispose() }
+          [IO.File]::WriteAllText((Join-Path $candidateDir 'promotion-proof.json'), ($proof | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
           'Candidate outputs only; publication requires a separate protected compare-and-swap promotion.' | Set-Content -LiteralPath (Join-Path $candidateDir 'PROMOTION-REQUIRED.txt')
 
       - name: Upload complete candidate outputs

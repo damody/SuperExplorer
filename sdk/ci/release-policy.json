@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "policy_id": "sdk-release-freeze-v1",
+  "protection": {
+    "provider": "github-environment",
+    "record_sha256_env": "SUPEREXPLORER_RELEASE_PROTECTION_RECORD_SHA256"
+  },
+  "signature": {
+    "signer_env": "SUPEREXPLORER_RELEASE_SIGNER",
+    "gpg_primary_fingerprint_env": "SUPEREXPLORER_RELEASE_GPG_PRIMARY_FINGERPRINT",
+    "gpg_keyring_sha256_env": "SUPEREXPLORER_RELEASE_GPG_KEYRING_SHA256"
+  },
+  "provenance": {
+    "builder_env": "SUPEREXPLORER_RELEASE_BUILDER",
+    "predicate_type_env": "SUPEREXPLORER_RELEASE_PREDICATE_TYPE"
+  }
+}

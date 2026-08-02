@@ -25,6 +25,14 @@ const GENERATED_FILES: [&str; 3] = [
     "sdk/bundle-manifest.json",
     "sdk/ui-abi-fingerprint.json",
 ];
+// Release publication records are written after a bundle has been generated
+// and signed. They describe publication history rather than SDK source.
+const NON_INVENTORY_RELEASE_RECORDS: [&str; 2] = [
+    "sdk/snapshot/release-ledger.json",
+    "sdk/snapshot/release-freeze.json",
+];
+const NON_INVENTORY_RELEASE_EVIDENCE_FILES: [&str; 3] =
+    ["protection.json", "bundle.sig", "provenance.json"];
 type LockPackageKey = (String, String, Option<String>);
 type LockChecksumMap = BTreeMap<LockPackageKey, Option<String>>;
 
@@ -554,7 +562,10 @@ fn collect_directory(
             }
         } else if file_type.is_file() {
             let relative = relative_path(root, &path)?;
-            if !GENERATED_FILES.contains(&relative.as_str()) {
+            if !GENERATED_FILES.contains(&relative.as_str())
+                && !NON_INVENTORY_RELEASE_RECORDS.contains(&relative.as_str())
+                && !non_inventory_release_evidence_file(&relative)
+            {
                 inventory.push(FileHash {
                     sha256: hash_file(&path)?,
                     path: relative,
@@ -578,6 +589,26 @@ fn excluded_build_directory(root: &Path, path: &Path) -> Result<bool, String> {
             | ["sdk", "fixtures" | "tools", _, "target"]
             | ["vendor", "gpui-ce", "target"]
     ))
+}
+
+fn non_inventory_release_evidence_file(relative: &str) -> bool {
+    let components = relative.split('/').collect::<Vec<_>>();
+    matches!(
+        components.as_slice(),
+        ["sdk", "releases", rc_id, evidence]
+            if valid_release_rc_id(rc_id)
+                && NON_INVENTORY_RELEASE_EVIDENCE_FILES.contains(evidence)
+    )
+}
+
+fn valid_release_rc_id(value: &str) -> bool {
+    value
+        .bytes()
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphanumeric())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
 fn file_hash(root: &Path, relative: &str) -> Result<FileHash, String> {
@@ -1051,9 +1082,86 @@ mod tests {
             )
             .unwrap()
         );
+        assert!(non_inventory_release_evidence_file(
+            "sdk/releases/rc-1/protection.json"
+        ));
+        assert!(non_inventory_release_evidence_file(
+            "sdk/releases/rc_1/bundle.sig"
+        ));
+        assert!(!non_inventory_release_evidence_file(
+            "sdk/releases/rc-1/source.rs"
+        ));
+        assert!(!non_inventory_release_evidence_file(
+            "sdk/releases/rc-1/nested/provenance.json"
+        ));
+        assert!(!non_inventory_release_evidence_file(
+            "sdk/releases/../provenance.json"
+        ));
         assert!(is_git_metadata(Path::new("D:/repo/vendor/gpui-ce/.git")));
         assert!(!is_git_metadata(Path::new(
             "D:/repo/vendor/gpui-ce/.gitignore"
         )));
+    }
+
+    #[test]
+    fn release_publication_records_do_not_affect_inventory_but_source_does() {
+        let root = std::env::temp_dir().join(format!(
+            "superexplorer-bundle-generator-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("sdk/snapshot")).unwrap();
+        fs::create_dir_all(root.join("sdk/releases/rc-1")).unwrap();
+        fs::create_dir_all(root.join("sdk/releases/rc-1/nested")).unwrap();
+        fs::create_dir_all(root.join("vendor/gpui-ce")).unwrap();
+        fs::write(root.join("sdk/source.rs"), b"first").unwrap();
+        fs::write(root.join("sdk/snapshot/release-ledger.json"), b"ledger-one").unwrap();
+        fs::write(root.join("sdk/snapshot/release-freeze.json"), b"freeze-one").unwrap();
+        fs::write(root.join("sdk/releases/rc-1/provenance.json"), b"proof-one").unwrap();
+        fs::write(
+            root.join("sdk/releases/rc-1/source.rs"),
+            b"release-source-one",
+        )
+        .unwrap();
+        fs::write(
+            root.join("sdk/releases/rc-1/nested/source.rs"),
+            b"nested-source-one",
+        )
+        .unwrap();
+
+        let before = collect_inventory(&root).unwrap();
+        fs::write(root.join("sdk/snapshot/release-ledger.json"), b"ledger-two").unwrap();
+        fs::write(root.join("sdk/snapshot/release-freeze.json"), b"freeze-two").unwrap();
+        fs::write(root.join("sdk/releases/rc-1/provenance.json"), b"proof-two").unwrap();
+        let after_publication_records = collect_inventory(&root).unwrap();
+        fs::write(
+            root.join("sdk/releases/rc-1/source.rs"),
+            b"release-source-two",
+        )
+        .unwrap();
+        let after_release_source = collect_inventory(&root).unwrap();
+        fs::write(
+            root.join("sdk/releases/rc-1/nested/source.rs"),
+            b"nested-source-two",
+        )
+        .unwrap();
+        let after_nested_release_source = collect_inventory(&root).unwrap();
+        fs::write(root.join("sdk/source.rs"), b"second").unwrap();
+        let after_source = collect_inventory(&root).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(before, after_publication_records);
+        assert_eq!(
+            inventory_hash(&before),
+            inventory_hash(&after_publication_records)
+        );
+        assert_ne!(before, after_release_source);
+        assert_ne!(
+            inventory_hash(&before),
+            inventory_hash(&after_release_source)
+        );
+        assert_ne!(after_release_source, after_nested_release_source);
+        assert_ne!(before, after_source);
+        assert_ne!(inventory_hash(&before), inventory_hash(&after_source));
     }
 }

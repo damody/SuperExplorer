@@ -1273,6 +1273,56 @@
         "complete-shell-context-and-locked-delete-parity/complete-shell-context-menu/native-menu-isolation-and-lifecycle",
         "complete-shell-context-and-locked-delete-parity/locked-delete-recovery/locked-delete-destructive-and-resource-evidence"
       ]
+    },
+    {
+      "id": "plugin-root-unit",
+      "description": "Run the offline P0 plugin tooling unit contract.",
+      "suites": ["full"],
+      "program": "cargo.exe",
+      "arguments": ["test", "--manifest-path", "{workspace_root}\\sdk\\tools\\plugin-tooling\\Cargo.toml", "--locked", "--offline"],
+      "timeout_seconds": 600,
+      "prerequisites": [{"kind": "command", "name": "cargo.exe"}],
+      "covers": ["build-extensible-plugin-platform/rust-plugin-abi-and-ui-toolchain/offline-sdk-bundle-and-protected-dependency-closure"]
+    },
+    {
+      "id": "plugin-load-compatible",
+      "description": "Build and load the ABI host/plugin fixtures from the offline vendor tree.",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\sdk\\tests\\offline-host-plugin-contract.ps1"],
+      "timeout_seconds": 900,
+      "prerequisites": [{"kind": "windows"}],
+      "covers": ["build-extensible-plugin-platform/rust-plugin-abi-and-ui-toolchain/offline-sdk-bundle-and-protected-dependency-closure"]
+    },
+    {
+      "id": "plugin-tooling-wrapper-contract",
+      "description": "Exercise the shipped plugin build/validate/package wrapper contract.",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\sdk\\tests\\plugin-tooling-self-test.ps1"],
+      "timeout_seconds": 1800,
+      "prerequisites": [{"kind": "windows"}],
+      "covers": ["build-extensible-plugin-platform/rust-plugin-abi-and-ui-toolchain/offline-sdk-bundle-and-protected-dependency-closure"]
+    },
+    {
+      "id": "ui-fingerprint-mismatch-rejected",
+      "description": "Verify the UI ABI fingerprint contract rejects a mismatched plugin fingerprint before loading.",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\sdk\\tests\\ui-abi-fingerprint-contract.ps1"],
+      "timeout_seconds": 900,
+      "prerequisites": [{"kind": "windows"}],
+      "covers": ["build-extensible-plugin-platform/rust-plugin-abi-and-ui-toolchain/gpui-ui-fingerprint"]
+    },
+    {
+      "id": "clean-readme-reproduction",
+      "description": "Reproduce the documented P0 validate/build/package commands against the shipped fixture.",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\sdk\\tests\\plugin-tooling-self-test.ps1"],
+      "timeout_seconds": 1800,
+      "prerequisites": [{"kind": "windows"}],
+      "covers": ["build-extensible-plugin-platform/rust-plugin-abi-and-ui-toolchain/offline-sdk-bundle-and-protected-dependency-closure"]
     }
   ]
 }

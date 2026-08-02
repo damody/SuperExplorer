@@ -6,10 +6,10 @@
 - [x] 1.4 實作 `sdk-lock.json`／`bundle-manifest.json` canonical generator，涵蓋 toolchain、GPUI rev/tree、ABI、features、profile、panic、allocator/CRT、rustflags 與檔案 SHA-256
 - [x] 1.5 建立 SDK canonical `Cargo.lock`、`.cargo/config.toml`、protected dependency graph validator 與 offline `vendor/cargo-sources`
 - [x] 1.6 實作 UI ABI fingerprint generator／loader comparison，加入每個單因子改變都產生不相容的單元測試
-- [ ] 1.7 建立隔離的 host-fixture 與 plugin-fixture，於空 `CARGO_HOME`、禁止網路下以 `--locked --offline` 分開建置並驗證載入
-- [ ] 1.8 實作 `update-gpui-snapshot.ps1` 與 CI job：解析完整 HEAD、拒絕未核准 non-fast-forward、產生新 bundle ID、失敗回退上一 snapshot
-- [ ] 1.9 實作 Release freeze 流程與 fixture：protected tag metadata、`release_frozen = true`、遠端 main 移動後仍離線重建、換 rev 強制新 RC/bundle ID
-- [ ] 1.10 建立 `build-plugin.ps1`、`validate-plugin.ps1`、`package-plugin.ps1` 與 P0-0 診斷文件，將 UITEST／CI requirements 映射到 manifest
+- [x] 1.7 建立隔離的 host-fixture 與 plugin-fixture，於空 `CARGO_HOME`、禁止網路下以 `--locked --offline` 分開建置並驗證載入
+- [x] 1.8 實作 `update-gpui-snapshot.ps1` 與 CI job：解析完整 HEAD、拒絕未核准 non-fast-forward、產生新 bundle ID、失敗回退上一 snapshot
+- [x] 1.9 實作 Release freeze 流程與 fixture：protected tag metadata、`release_frozen = true`、遠端 main 移動後仍離線重建、換 rev 強制新 RC/bundle ID
+- [x] 1.10 建立 `build-plugin.ps1`、`validate-plugin.ps1`、`package-plugin.ps1` 與 P0-0 診斷文件，將 UITEST／CI requirements 映射到 manifest
 
 ## 2. Extension API、Host 與套件格式
 

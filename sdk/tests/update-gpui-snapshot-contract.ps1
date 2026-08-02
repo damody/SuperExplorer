@@ -145,7 +145,7 @@ try {
 
 # Keep this contract coupled to the production race guard rather than a test-only imitation.
 $production = Get-Content -LiteralPath (Join-Path $repo 'sdk\scripts\update-gpui-snapshot.ps1') -Raw
-foreach ($required in @('fetch origin main', 'remote main advanced during update', 'Invoke-WithFileTransaction', 'git -C $gpui checkout --detach $oldHead')) {
+foreach ($required in @("'fetch','--no-tags','origin','main'", 'remote main advanced during update', 'Invoke-WithFileTransaction', 'Assert-GpuiRepositoryComplete', 'Restore-GpuiCheckoutState')) {
     if ($production -notlike "*$required*") { throw "production update script lost required guard: $required" }
 }
 

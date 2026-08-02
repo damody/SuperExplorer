@@ -112,7 +112,6 @@ struct ReleaseLedger {
 struct ReleaseLedgerEntry {
     rc_id: String,
     bundle_id: String,
-    release_input_digest: String,
     source: FrozenSource,
 }
 
@@ -221,8 +220,7 @@ pub fn validate(
         if previous.rc_id == metadata.rc_id
             && (previous.source.revision != metadata.source.revision
                 || previous.source.tree != metadata.source.tree
-                || previous.bundle_id != metadata.bundle_id
-                || previous.release_input_digest != metadata.release_input_digest)
+                || previous.bundle_id != metadata.bundle_id)
         {
             return Err("RC ID was already used for a different immutable release input".into());
         }
@@ -239,17 +237,52 @@ pub fn validate(
 /// Returns an error if a referenced file escapes the root, has a different hash,
 /// parses differently, or the tag does not resolve to the frozen commit and tree.
 pub fn validate_at_root(root: &Path, expected_mode: EvidenceMode) -> Result<(), String> {
-    let metadata: Metadata = read_json(root, "sdk/snapshot/release-freeze.json")?;
+    validate_at_paths(
+        root,
+        &root.join("sdk/snapshot/release-freeze.json"),
+        None,
+        None,
+        expected_mode,
+    )
+}
+
+/// Validates staged production metadata before it is published.
+///
+/// `metadata_path` and `ledger_path` may be transaction staging files, while all
+/// referenced SDK artifacts and the GPUI tag remain rooted at `root`. This keeps
+/// the production command fixed to the repository while allowing a release
+/// transaction to prove its final ledger snapshot before either file is visible.
+///
+/// # Errors
+/// Returns a fail-closed diagnostic for a bad staged file, artifact, or tag.
+pub fn validate_at_paths(
+    root: &Path,
+    metadata_path: &Path,
+    ledger_path: Option<&Path>,
+    evidence_directory: Option<&Path>,
+    expected_mode: EvidenceMode,
+) -> Result<(), String> {
+    let metadata: Metadata = read_json_path(metadata_path)?;
     let lock: Value = read_reference(root, &metadata.artifacts.sdk_lock)?;
     let manifest: Value = read_reference(root, &metadata.artifacts.bundle_manifest)?;
     let fingerprint: Value = read_reference(root, &metadata.artifacts.ui_abi_fingerprint)?;
-    let ledger: Value = read_reference(root, &metadata.prior_release_ledger)?;
+    let ledger: Value = match ledger_path {
+        Some(path) => read_reference_path(path, &metadata.prior_release_ledger)?,
+        None => read_reference(root, &metadata.prior_release_ledger)?,
+    };
     for reference in [
         &metadata.protection.record,
         &metadata.signature.artifact,
         &metadata.provenance.artifact,
     ] {
-        read_reference_bytes(root, reference)?;
+        if let Some(directory) = evidence_directory {
+            let file_name = Path::new(&reference.path)
+                .file_name()
+                .ok_or("staged evidence path is invalid")?;
+            read_reference_path::<Value>(&directory.join(file_name), reference)?;
+        } else {
+            read_reference_bytes(root, reference)?;
+        }
     }
     validate(
         &metadata,
@@ -327,10 +360,9 @@ fn check_safe_reference(reference: &ArtifactReference) -> Result<(), String> {
     Ok(())
 }
 
-fn read_json<T: serde::de::DeserializeOwned>(root: &Path, relative: &str) -> Result<T, String> {
-    let path = rooted_path(root, relative)?;
+fn read_json_path<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
     let source =
-        fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+        fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
     serde_json::from_str(&source).map_err(|error| format!("{}: {error}", path.display()))
 }
 
@@ -339,6 +371,21 @@ fn read_reference<T: serde::de::DeserializeOwned>(
     reference: &ArtifactReference,
 ) -> Result<T, String> {
     let bytes = read_reference_bytes(root, reference)?;
+    serde_json::from_slice(&bytes).map_err(|error| format!("{}: {error}", reference.path))
+}
+
+fn read_reference_path<T: serde::de::DeserializeOwned>(
+    path: &Path,
+    reference: &ArtifactReference,
+) -> Result<T, String> {
+    check_safe_reference(reference)?;
+    let bytes = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    if sha256_hex(&bytes) != reference.sha256 {
+        return Err(format!(
+            "referenced artifact hash mismatch: {}",
+            reference.path
+        ));
+    }
     serde_json::from_slice(&bytes).map_err(|error| format!("{}: {error}", reference.path))
 }
 
@@ -560,7 +607,7 @@ mod tests {
     fn prior_ledger_prevents_rc_reuse_after_regeneration() {
         let (metadata, lock, manifest, fingerprint, mut ledger) = fixture();
         ledger["releases"] = serde_json::json!([{
-            "rc_id":"rc-1", "bundle_id":"fresh-bundle", "release_input_digest": HASH,
+            "rc_id":"rc-1", "bundle_id":"fresh-bundle",
             "source":{"revision":"4444444444444444444444444444444444444444","tree":TREE}
         }]);
         assert!(
@@ -573,6 +620,56 @@ mod tests {
                 EvidenceMode::Fixture
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn changed_frozen_source_and_bundle_require_a_new_rc() {
+        let (mut metadata, _lock, _manifest, _fingerprint, mut ledger) = fixture();
+        ledger["releases"] = serde_json::json!([{
+            "rc_id":"rc-1", "bundle_id":"sdk-bundle",
+            "source":{"revision":REV,"tree":TREE}
+        }]);
+        let changed_revision = "4444444444444444444444444444444444444444";
+        let changed_tree = "5555555555555555555555555555555555555555";
+        let lock = lock(changed_revision, changed_tree, "new-bundle");
+        let manifest = serde_json::json!({"bundle_id":"new-bundle"});
+        let fingerprint = serde_json::json!({
+            "bundle_id":"new-bundle",
+            "fingerprint":production_fingerprint_from_lock(&lock).unwrap().fingerprint
+        });
+        metadata.bundle_id = "new-bundle".into();
+        metadata.source = FrozenSource {
+            revision: changed_revision.into(),
+            tree: changed_tree.into(),
+        };
+        metadata.protected_tag.object_revision = changed_revision.into();
+        metadata.protected_tag.tree = changed_tree.into();
+        metadata.release_input_digest = release_input_digest(&metadata).unwrap();
+        assert!(
+            validate(
+                &metadata,
+                &lock,
+                &manifest,
+                &fingerprint,
+                &ledger,
+                EvidenceMode::Fixture
+            )
+            .is_err()
+        );
+
+        metadata.rc_id = "rc-2".into();
+        metadata.release_input_digest = release_input_digest(&metadata).unwrap();
+        assert!(
+            validate(
+                &metadata,
+                &lock,
+                &manifest,
+                &fingerprint,
+                &ledger,
+                EvidenceMode::Fixture
+            )
+            .is_ok()
         );
     }
 }

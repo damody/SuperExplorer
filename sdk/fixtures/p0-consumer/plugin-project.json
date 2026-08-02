@@ -39,12 +39,12 @@
   "verification": {
     "requirements": [
       {
-        "requirement_id": "build-extensible-plugin-platform/rust-plugin-abi-and-ui-toolchain/offline-sdk-bundle",
+        "requirement_id": "build-extensible-plugin-platform/rust-plugin-abi-and-ui-toolchain/offline-sdk-bundle-and-protected-dependency-closure",
         "evidence": {
           "unit": ["plugin-root-unit"],
           "integration": ["plugin-load-compatible"],
-          "uitest": ["plugin-options-visible"],
-          "security": ["fingerprint-mismatch-rejected"],
+          "uitest": ["plugin-tooling-wrapper-contract"],
+          "security": ["ui-fingerprint-mismatch-rejected"],
           "docs": ["clean-readme-reproduction"]
         }
       }
