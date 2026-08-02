@@ -15,6 +15,7 @@
 //! contributions, and lifecycle policy remain later tasks.
 
 mod manifest;
+mod package_source;
 mod package_validation;
 
 pub use manifest::{
@@ -23,6 +24,11 @@ pub use manifest::{
     PackageManifestErrorV1, PackageManifestV1, PayloadKindV1, PayloadV1, PublisherContactKindV1,
     PublisherContactV1, PublisherV1, RustEntrypointV1, SdkCompatibilityV1, SignatureV1,
     SkinEntrypointV1, ToolOutputProtocolV1, VerifiedPublisherIdentityV1,
+};
+pub use package_source::{
+    BuiltInPackageSourceV1, DiscoveredPackageV1, EntitlementDecisionV1, EntitlementErrorV1,
+    EntitlementProviderV1, EntitlementRequestV1, LocalDeveloperPackageSourceV1,
+    PackageSourceErrorV1, PackageSourceKindV1, PackageSourceV1,
 };
 pub use package_validation::{
     PackageValidationBudgetV1, PackageValidationCancellationV1, PackageValidationErrorV1,
