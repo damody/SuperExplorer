@@ -49,6 +49,21 @@ jobs:
       - name: clean-readme-reproduction
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/plugin-tooling-self-test.ps1
+      - name: package-manifest-contract
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/package-manifest-v1-contract.ps1
+      - name: package-validation-contract
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/package-validation-v1-contract.ps1
+      - name: package-source-contract
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/package-resolution-v1-contract.ps1
+      - name: package-resolution-contract
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/package-resolution-v1-contract.ps1
+      - name: package-lifecycle-docs-contract
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/package-lifecycle-docs-contract.ps1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: sdk-offline-attestation

@@ -20,7 +20,7 @@
 - [x] 2.5 實作 package content/path/hash/signature/target 驗證，拒絕絕對路徑、`..`、symlink/junction/reparse-point 逃逸
 - [x] 2.6 實作 built-in 與 local-developer Package Source adapters，以及不連結 Steamworks 的 Package Source／Entitlement Provider 抽象測試
 - [x] 2.7 實作 Package Resolver 的單版本選擇、dependency graph、cycle detection、atomic whole-package rejection 與診斷
-- [ ] 2.8 撰寫 package lifecycle API／manifest schema 雙語文件與範例 manifest，加入 unit/integration/UITEST manifest mapping
+- [x] 2.8 撰寫 package lifecycle API／manifest schema 雙語文件與範例 manifest，加入 unit/integration/UITEST manifest mapping
 
 ## 3. Feature 狀態、Native Loader 與 Safe Mode
 
