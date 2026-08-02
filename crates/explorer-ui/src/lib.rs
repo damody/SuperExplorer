@@ -471,19 +471,14 @@ fn base_icon_request_location(
         explorer_model::BaseIconClass::Extension(extension) => {
             format!(r"C:\__super_explorer_base__.{extension}")
         }
-        explorer_model::BaseIconClass::ExtensionlessFile => {
-            r"C:\__super_explorer_base_file__.".to_owned()
-        }
-        explorer_model::BaseIconClass::Identity(_) => return None,
+        explorer_model::BaseIconClass::ExtensionlessFile
+        | explorer_model::BaseIconClass::Identity(_) => return None,
     };
     Some(explorer_model::LocationDescriptor::file_system(path))
 }
 
 fn uses_shared_base_icon(class: &explorer_model::BaseIconClass) -> bool {
-    matches!(
-        class,
-        explorer_model::BaseIconClass::Folder | explorer_model::BaseIconClass::ExtensionlessFile
-    )
+    matches!(class, explorer_model::BaseIconClass::Folder)
 }
 
 fn advance_item_overlay_epoch(
@@ -5451,6 +5446,13 @@ mod tests {
         assert!(!super::uses_shared_base_icon(
             &explorer_model::BaseIconClass::Extension("jpg".to_owned())
         ));
+        assert!(!super::uses_shared_base_icon(
+            &explorer_model::BaseIconClass::ExtensionlessFile
+        ));
+        assert_eq!(
+            super::base_icon_request_location(&explorer_model::BaseIconClass::ExtensionlessFile),
+            None
+        );
         assert!(super::uses_shared_base_icon(
             &explorer_model::BaseIconClass::Folder
         ));
@@ -6546,6 +6548,43 @@ mod tests {
                     r"C:\fixture\{index}.txt"
                 ))
         }));
+    }
+
+    #[test]
+    fn dotfile_icon_request_uses_the_real_file_instead_of_a_synthetic_extensionless_path() {
+        let service = Arc::new(RecordingService::default());
+        let mut root = ExplorerRoot {
+            service: Some(service.clone()),
+            ..ExplorerRoot::default()
+        };
+        let tab = root.state.tabs().active_tab();
+        let context = explorer_model::RequestContext::new(tab.id, tab.generation);
+        let entry = explorer_model::FileEntry {
+            id: explorer_model::ShellItemId::from_provider_bytes([0x47, 0x49, 0x54])
+                .expect("identity"),
+            location: explorer_model::LocationDescriptor::file_system(r"D:\UE_5.7\.gitignore"),
+            display_name: ".gitignore".to_owned(),
+            is_container: false,
+            metadata: explorer_model::FileEntryMetadata::default(),
+        };
+
+        root.submit_file_icon_loads(&context, std::slice::from_ref(&entry));
+
+        let commands = service.0.lock().unwrap();
+        let icon_keys = commands
+            .iter()
+            .filter_map(|command| match command {
+                explorer_model::ExplorerCommand::LoadShellIcon { key, .. } => Some(key),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(icon_keys.len(), 1);
+        assert_eq!(icon_keys[0].item_id.as_ref(), Some(&entry.id));
+        assert_eq!(icon_keys[0].location, entry.location);
+        assert_ne!(
+            icon_keys[0].location,
+            explorer_model::LocationDescriptor::file_system(r"C:\__super_explorer_base_file__.")
+        );
     }
 
     #[test]
