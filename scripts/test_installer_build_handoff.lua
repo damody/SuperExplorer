@@ -115,6 +115,9 @@ assert_contains(build_script:sub(launch), "cwd = dist", "installer launch")
 for _, forbidden in ipairs({ "Get-ChildItem", "latest installer", "newest installer", "*.exe" }) do
     assert_not_contains(build_script, forbidden, "build_install.lua")
 end
+assert_contains(build_script, '"*.rs", ":(exclude)sdk/**"', "installer Rust cleanliness SDK exclusion")
+assert_contains(build_script, '"status", "--porcelain=v1", "--untracked-files=all"',
+    "installer Rust cleanliness guard")
 assert_contains(batch, '"%LUA_EXE%" "%BUILD_SCRIPT%" %*', "build_install.bat")
 assert_contains(batch, 'exit /b %BUILD_EXIT_CODE%', "build_install.bat")
 assert_contains(batch, "Installer build completed and launched", "build_install.bat")
