@@ -1,0 +1,11 @@
+[package]
+name = "package-manifest-v1-contract"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+
+[dependencies]
+explorer-extension-host = { path = "../../../crates/explorer-extension-host" }
+
+[workspace]

@@ -14,6 +14,22 @@
 //! registrar callback. DLL discovery, root-module loading, manifests, feature
 //! contributions, and lifecycle policy remain later tasks.
 
+mod manifest;
+mod package_validation;
+
+pub use manifest::{
+    BundledToolV1, ContactPurposeV1, LocaleResourceV1, LuaEntrypointV1,
+    PACKAGE_MANIFEST_VERSION_V1, PackageDependencyV1, PackageFeatureV1, PackageIdentityV1,
+    PackageManifestErrorV1, PackageManifestV1, PayloadKindV1, PayloadV1, PublisherContactKindV1,
+    PublisherContactV1, PublisherV1, RustEntrypointV1, SdkCompatibilityV1, SignatureV1,
+    SkinEntrypointV1, ToolOutputProtocolV1, VerifiedPublisherIdentityV1,
+};
+pub use package_validation::{
+    PackageValidationBudgetV1, PackageValidationCancellationV1, PackageValidationErrorV1,
+    PackageValidationRequestV1, PackageValidationResultV1, PackageValidatorV1,
+    TrustedPublisherKeyStoreV1, TrustedPublisherKeyV1,
+};
+
 use explorer_extension_api::{
     ABI_SCHEMA_V1, AbiErrorCodeV1, AbiErrorV1, ExtensionRootModuleV1_Ref, IdNamespaceV1,
     PluginMetadataV1, ROOT_MODULE_CONTRACT_ID_V1, RegistrationOutcomeV1, RegistrationStatusV1,

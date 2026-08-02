@@ -1,0 +1,25 @@
+{
+  "manifest_version": 1,
+  "package": {"id": "example.multi-content", "version": "1.2.3"},
+  "publisher": {"id": "example.publisher", "display_name": "Example Publisher", "contacts": [{"kind": "email", "value": "support@example.invalid", "purposes": ["support"]}]},
+  "sdk": {"bundle_id": "dev.20260802", "target": "x86_64-pc-windows-msvc", "abi_schema": 1, "gpui": true, "ui_abi_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+  "rust": [{"id": "native", "entrypoint": "native/plugin.dll", "root_module": "example.root", "sdk_major": 1}],
+  "lua": [{"id": "automation", "entrypoint": "lua/commands.lua"}],
+  "skins": [{"id": "appearance", "entrypoint": "skin/skin.json"}],
+  "locales": [{"locale": "en-US", "path": "locales/en-US.json", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
+  "tools": [{"id": "tokei", "target": "windows-x64", "path": "tools/windows-x64/tokei/tokei.exe", "version": "12.1.0", "size": 42, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "output_protocol": "json", "source": "https://example.invalid/tokei", "license_paths": ["tools/windows-x64/tokei/LICENSE.txt"]}],
+  "features": [{"id": "analysis", "capabilities": ["filesystem.read", "tools.execute_bundled"], "dependencies": []}],
+  "dependencies": [{"package_id": "example.base", "version_requirement": "^1.0.0", "optional": false}],
+  "payloads": [
+    {"path": "native/plugin.dll", "size": 42, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "kind": "rust_dll"},
+    {"path": "lua/commands.lua", "size": 42, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "kind": "lua_script"},
+    {"path": "skin/skin.json", "size": 42, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "kind": "skin_asset"},
+    {"path": "locales/en-US.json", "size": 42, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "kind": "locale"},
+    {"path": "tools/windows-x64/tokei/tokei.exe", "size": 42, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "kind": "tool"},
+    {"path": "LICENSE.txt", "size": 42, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "kind": "license"},
+    {"path": "NOTICE.txt", "size": 42, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "kind": "notice"},
+    {"path": "data/cache.bin", "size": 42, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "kind": "data"}
+  ],
+  "signature": {"kind": "ed25519", "key_id": "example.signing", "signature": "base64-not-verified-here"},
+  "data_version": 7
+}

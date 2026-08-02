@@ -1,0 +1,1533 @@
+//! Fail-closed package-directory and Ed25519 signature validation.
+//!
+//! Validation is completed before a package can reach a loader or registrar. It
+//! rejects unsafe lexical paths before filesystem access, checks every traversed
+//! component for symlink/reparse-point indirection, hashes bytes from the opened
+//! file handle, and rechecks the final path after hashing. Callers must provide
+//! an immutable, source-owned package root; this double-checking narrows, but no
+//! path-based API can eliminate, a concurrent replacement race by a writer that
+//! controls that root.
+
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs::{self, File, Metadata},
+    io::{self, Read, Write},
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    time::Instant,
+};
+
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use ring::signature::{ED25519, UnparsedPublicKey};
+use sha2::{Digest, Sha256};
+use thiserror::Error;
+
+use crate::{
+    PackageManifestErrorV1, PackageManifestV1, PayloadKindV1, PayloadV1, SignatureV1,
+    VerifiedPublisherIdentityV1,
+};
+
+const ED25519_PUBLIC_KEY_BYTES: usize = 32;
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+const MAX_PAYLOAD_COUNT: usize = 128;
+const MAX_PAYLOAD_FILE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_PAYLOAD_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_MANIFEST_FILE_BYTES: usize = 256 * 1024;
+static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Opaque local-developer authorization issued only by a host package source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalDeveloperAuthorizationV1(());
+
+impl LocalDeveloperAuthorizationV1 {
+    #[allow(dead_code)] // Task 2.6 package sources issue this authorization.
+    pub(crate) const fn issue() -> Self {
+        Self(())
+    }
+}
+
+/// Bounded time and content budget for one validation operation.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PackageValidationBudgetV1 {
+    deadline: Option<Instant>,
+    cancellation: Option<PackageValidationCancellationV1>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct PackageValidationCancellationV1(Arc<AtomicBool>);
+
+impl PartialEq for PackageValidationCancellationV1 {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for PackageValidationCancellationV1 {}
+impl PackageValidationCancellationV1 {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+    fn cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+impl PackageValidationBudgetV1 {
+    #[must_use]
+    pub const fn with_deadline(deadline: Instant) -> Self {
+        Self {
+            deadline: Some(deadline),
+            cancellation: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_cancellation(mut self, token: PackageValidationCancellationV1) -> Self {
+        self.cancellation = Some(token);
+        self
+    }
+
+    fn check(&self) -> Result<(), PackageValidationErrorV1> {
+        if self
+            .cancellation
+            .as_ref()
+            .is_some_and(PackageValidationCancellationV1::cancelled)
+        {
+            Err(PackageValidationErrorV1::Cancelled)
+        } else if self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            Err(PackageValidationErrorV1::DeadlineExceeded)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Inputs supplied by the host package source for one pre-load validation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PackageValidationRequestV1 {
+    source_package_root: PathBuf,
+    sealed_store_root: PathBuf,
+    local_developer_authorization: Option<LocalDeveloperAuthorizationV1>,
+    budget: PackageValidationBudgetV1,
+}
+
+impl PackageValidationRequestV1 {
+    /// Creates a fail-closed request that requires a valid publisher signature.
+    #[must_use]
+    pub fn new(source_package_root: PathBuf, sealed_store_root: PathBuf) -> Self {
+        Self {
+            source_package_root,
+            sealed_store_root,
+            local_developer_authorization: None,
+            budget: PackageValidationBudgetV1::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_budget(mut self, budget: PackageValidationBudgetV1) -> Self {
+        self.budget = budget;
+        self
+    }
+
+    #[must_use]
+    pub fn with_local_developer_authorization(
+        mut self,
+        authorization: LocalDeveloperAuthorizationV1,
+    ) -> Self {
+        self.local_developer_authorization = Some(authorization);
+        self
+    }
+}
+
+/// Immutable host-supplied mapping from a signing key to its publisher identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrustedPublisherKeyV1 {
+    key_id: String,
+    publisher_id: String,
+    ed25519_public_key: [u8; ED25519_PUBLIC_KEY_BYTES],
+}
+
+impl TrustedPublisherKeyV1 {
+    /// Creates one trusted key entry from host configuration, never from a manifest.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for non-normalized identities or a non-Ed25519 key length.
+    pub fn new(
+        key_id: String,
+        publisher_id: String,
+        ed25519_public_key: &[u8],
+    ) -> Result<Self, PackageValidationErrorV1> {
+        if !is_normalized_id(&key_id) {
+            return Err(PackageValidationErrorV1::InvalidTrustedKeyIdentifier { key_id });
+        }
+        if !is_normalized_id(&publisher_id) {
+            return Err(
+                PackageValidationErrorV1::InvalidTrustedPublisherIdentifier { publisher_id },
+            );
+        }
+        let ed25519_public_key: [u8; ED25519_PUBLIC_KEY_BYTES] =
+            ed25519_public_key.try_into().map_err(|_| {
+                PackageValidationErrorV1::InvalidTrustedPublicKeyLength {
+                    actual: ed25519_public_key.len(),
+                }
+            })?;
+        Ok(Self {
+            key_id,
+            publisher_id,
+            ed25519_public_key,
+        })
+    }
+}
+
+/// Immutable host trust store used to verify package signatures.
+#[derive(Clone, Debug, Default)]
+pub struct TrustedPublisherKeyStoreV1 {
+    keys: BTreeMap<String, TrustedPublisherKeyV1>,
+}
+
+impl TrustedPublisherKeyStoreV1 {
+    /// Builds a trust store and rejects duplicate signing key IDs deterministically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when more than one host-supplied entry uses the same key ID.
+    pub fn new(
+        keys: impl IntoIterator<Item = TrustedPublisherKeyV1>,
+    ) -> Result<Self, PackageValidationErrorV1> {
+        let mut store = Self::default();
+        for key in keys {
+            if store.keys.insert(key.key_id.clone(), key.clone()).is_some() {
+                return Err(PackageValidationErrorV1::DuplicateTrustedKeyIdentifier {
+                    key_id: key.key_id,
+                });
+            }
+        }
+        Ok(store)
+    }
+
+    fn resolve(&self, key_id: &str) -> Option<&TrustedPublisherKeyV1> {
+        self.keys.get(key_id)
+    }
+}
+
+/// Pre-load validator using a host-owned immutable trust store.
+#[derive(Clone, Debug)]
+pub struct PackageValidatorV1 {
+    trusted_keys: TrustedPublisherKeyStoreV1,
+}
+
+impl PackageValidatorV1 {
+    /// Creates a validator from the host's trusted publisher-key configuration.
+    #[must_use]
+    pub fn new(trusted_keys: TrustedPublisherKeyStoreV1) -> Self {
+        Self { trusted_keys }
+    }
+
+    /// Validates package content, target, and signature before any callback may run.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed failure for unsafe paths, content disagreement, I/O, target,
+    /// trust-store, or Ed25519 signature verification failures.
+    pub fn validate(
+        &self,
+        request: &PackageValidationRequestV1,
+    ) -> Result<PackageValidationResultV1, PackageValidationErrorV1> {
+        request.budget.check()?;
+        let (manifest, manifest_bytes) = read_manifest_from_source(request)?;
+        if manifest.sdk.target != host_target_v1() {
+            return Err(PackageValidationErrorV1::TargetMismatch {
+                manifest_target: manifest.sdk.target.clone(),
+                expected_target: host_target_v1().to_owned(),
+            });
+        }
+
+        let payloads = validate_payload_inventory(&manifest, &request.budget)?;
+        validate_manifest_references(&manifest, &payloads)?;
+        validate_tool_targets(&manifest)?;
+        verify_payload_files(&request.source_package_root, &payloads, &request.budget)?;
+        verify_no_unlisted_content(&request.source_package_root, &payloads, &request.budget)?;
+
+        let verified_publisher_id = match &manifest.signature {
+            SignatureV1::Unsigned => {
+                if request.local_developer_authorization.is_some() {
+                    None
+                } else {
+                    return Err(PackageValidationErrorV1::SignatureRequired);
+                }
+            }
+            SignatureV1::Ed25519 { key_id, signature } => {
+                let key = self.trusted_keys.resolve(key_id).ok_or_else(|| {
+                    PackageValidationErrorV1::UnknownSigningKey {
+                        key_id: key_id.clone(),
+                    }
+                })?;
+                let signature = STANDARD.decode(signature).map_err(|_| {
+                    PackageValidationErrorV1::InvalidSignatureEncoding {
+                        key_id: key_id.clone(),
+                    }
+                })?;
+                let message = manifest
+                    .canonical_ed25519_signing_bytes()
+                    .map_err(PackageValidationErrorV1::Manifest)?;
+                UnparsedPublicKey::new(&ED25519, key.ed25519_public_key)
+                    .verify(&message, &signature)
+                    .map_err(|_| PackageValidationErrorV1::InvalidSignature {
+                        key_id: key_id.clone(),
+                    })?;
+                let identity = VerifiedPublisherIdentityV1::new(key.publisher_id.clone())
+                    .map_err(PackageValidationErrorV1::Manifest)?;
+                manifest
+                    .validate_verified_signer_publisher_identity(&identity)
+                    .map_err(PackageValidationErrorV1::Manifest)?;
+                Some(key.publisher_id.clone())
+            }
+        };
+
+        let manifest_digest = hex_sha256(&Sha256::digest(&manifest_bytes).into());
+        let sealed_package_root =
+            seal_generation(request, &manifest_bytes, &payloads, &manifest_digest)?;
+        Ok(PackageValidationResultV1 {
+            verified_publisher_id,
+            manifest_digest,
+            data_version: manifest.data_version,
+            sealed_package_root,
+        })
+    }
+}
+
+/// Successful pre-load validation result.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PackageValidationResultV1 {
+    /// Publisher identity established by real Ed25519 verification, if signed.
+    pub verified_publisher_id: Option<String>,
+    /// SHA-256 of the exact validated source `manifest.json` bytes.
+    pub manifest_digest: String,
+    /// Package data generation declared by the sealed manifest.
+    pub data_version: u64,
+    sealed_package_root: PathBuf,
+}
+
+impl PackageValidationResultV1 {
+    /// Returns the host-owned sealed generation. Activation must load only this path.
+    #[must_use]
+    pub fn sealed_package_root(&self) -> &Path {
+        &self.sealed_package_root
+    }
+}
+
+/// Typed package pre-load validation failure.
+#[derive(Debug, Error)]
+pub enum PackageValidationErrorV1 {
+    /// The decoded manifest failed a required invariant while preparing validation.
+    #[error(transparent)]
+    Manifest(#[from] PackageManifestErrorV1),
+    #[error("manifest target {manifest_target:?} does not match host target {expected_target:?}")]
+    TargetMismatch {
+        manifest_target: String,
+        expected_target: String,
+    },
+    #[error(
+        "tool {tool_id:?} target {manifest_target:?} does not match host tool target {expected_target:?}"
+    )]
+    ToolTargetMismatch {
+        tool_id: String,
+        manifest_target: String,
+        expected_target: String,
+    },
+    #[error("manifest declares {actual} payloads, exceeding the {maximum}-payload limit")]
+    PayloadCountExceeded { actual: usize, maximum: usize },
+    #[error("payload {path:?} is {actual} bytes, exceeding the {maximum}-byte per-file limit")]
+    PayloadFileTooLarge {
+        path: String,
+        actual: u64,
+        maximum: u64,
+    },
+    #[error("declared payload total is {actual} bytes, exceeding the {maximum}-byte limit")]
+    PayloadTotalBytesExceeded { actual: u64, maximum: u64 },
+    #[error("package validation deadline elapsed")]
+    DeadlineExceeded,
+    #[error("package validation was cancelled")]
+    Cancelled,
+    #[error("manifest.json is missing, invalid, or exceeds its fixed byte limit")]
+    InvalidManifestFile,
+    #[error("package path at {field} is unsafe: {path:?}")]
+    UnsafePackagePath { field: &'static str, path: String },
+    #[error("duplicate or case-colliding package path: {path:?}")]
+    DuplicateOrCaseCollidingPath { path: String },
+    #[error("manifest reference {path:?} is missing from payload inventory")]
+    MissingPayloadReference { path: String },
+    #[error("manifest reference {path:?} has payload kind {actual:?}, expected {expected:?}")]
+    PayloadKindMismatch {
+        path: String,
+        actual: PayloadKindV1,
+        expected: PayloadKindV1,
+    },
+    #[error("tool {tool_id:?} size does not match its payload declaration")]
+    ToolPayloadSizeMismatch { tool_id: String },
+    #[error("tool {tool_id:?} hash does not match its payload declaration")]
+    ToolPayloadHashMismatch { tool_id: String },
+    #[error("locale {locale:?} hash does not match its payload declaration")]
+    LocalePayloadHashMismatch { locale: String },
+    #[error("package root {path} is not a safe directory")]
+    UnsafePackageRoot { path: PathBuf },
+    #[error("package path {path} includes a symlink, junction, or reparse point")]
+    ReparsePointPath { path: PathBuf },
+    #[error("package path {path} escapes the package root")]
+    PackagePathEscapesRoot { path: PathBuf },
+    #[error("package payload {path} is not a regular file")]
+    NotRegularFile { path: PathBuf },
+    #[error("package contains an undeclared file: {path}")]
+    UnlistedPackageContent { path: PathBuf },
+    #[error("existing sealed package generation does not match the validated generation: {path}")]
+    SealedGenerationMismatch { path: PathBuf },
+    #[error("could not access package path {path}: {source}")]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("payload {path:?} size is {actual}, expected {expected}")]
+    PayloadSizeMismatch {
+        path: String,
+        actual: u64,
+        expected: u64,
+    },
+    #[error("payload {path:?} SHA-256 digest does not match its manifest declaration")]
+    PayloadHashMismatch { path: String },
+    #[error("host trust-store key ID is invalid: {key_id:?}")]
+    InvalidTrustedKeyIdentifier { key_id: String },
+    #[error("host trust-store publisher ID is invalid: {publisher_id:?}")]
+    InvalidTrustedPublisherIdentifier { publisher_id: String },
+    #[error("host trust-store Ed25519 public key is {actual} bytes, expected 32")]
+    InvalidTrustedPublicKeyLength { actual: usize },
+    #[error("host trust store contains duplicate key ID: {key_id:?}")]
+    DuplicateTrustedKeyIdentifier { key_id: String },
+    #[error("package signature is required by this source policy")]
+    SignatureRequired,
+    #[error("package signing key is not trusted: {key_id:?}")]
+    UnknownSigningKey { key_id: String },
+    #[error("package Ed25519 signature is not canonical base64: {key_id:?}")]
+    InvalidSignatureEncoding { key_id: String },
+    #[error("package Ed25519 signature verification failed: {key_id:?}")]
+    InvalidSignature { key_id: String },
+}
+
+fn validate_payload_inventory<'a>(
+    manifest: &'a PackageManifestV1,
+    budget: &PackageValidationBudgetV1,
+) -> Result<BTreeMap<String, (&'a PayloadV1, String)>, PackageValidationErrorV1> {
+    if manifest.payloads.len() > MAX_PAYLOAD_COUNT {
+        return Err(PackageValidationErrorV1::PayloadCountExceeded {
+            actual: manifest.payloads.len(),
+            maximum: MAX_PAYLOAD_COUNT,
+        });
+    }
+    let mut payloads = BTreeMap::new();
+    let mut total_bytes = 0_u64;
+    for payload in &manifest.payloads {
+        budget.check()?;
+        if payload.size > MAX_PAYLOAD_FILE_BYTES {
+            return Err(PackageValidationErrorV1::PayloadFileTooLarge {
+                path: payload.path.clone(),
+                actual: payload.size,
+                maximum: MAX_PAYLOAD_FILE_BYTES,
+            });
+        }
+        total_bytes = total_bytes.checked_add(payload.size).ok_or(
+            PackageValidationErrorV1::PayloadTotalBytesExceeded {
+                actual: u64::MAX,
+                maximum: MAX_PAYLOAD_TOTAL_BYTES,
+            },
+        )?;
+        if total_bytes > MAX_PAYLOAD_TOTAL_BYTES {
+            return Err(PackageValidationErrorV1::PayloadTotalBytesExceeded {
+                actual: total_bytes,
+                maximum: MAX_PAYLOAD_TOTAL_BYTES,
+            });
+        }
+        let normalized = normalize_package_path("payloads[].path", &payload.path)?;
+        let case_folded = normalized.to_ascii_lowercase();
+        if payloads
+            .insert(case_folded, (payload, normalized.clone()))
+            .is_some()
+        {
+            return Err(PackageValidationErrorV1::DuplicateOrCaseCollidingPath {
+                path: normalized,
+            });
+        }
+    }
+    Ok(payloads)
+}
+
+fn validate_tool_targets(manifest: &PackageManifestV1) -> Result<(), PackageValidationErrorV1> {
+    for tool in &manifest.tools {
+        if tool.target != host_tool_target_v1() {
+            return Err(PackageValidationErrorV1::ToolTargetMismatch {
+                tool_id: tool.id.clone(),
+                manifest_target: tool.target.clone(),
+                expected_target: host_tool_target_v1().to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_manifest_references(
+    manifest: &PackageManifestV1,
+    payloads: &BTreeMap<String, (&PayloadV1, String)>,
+) -> Result<(), PackageValidationErrorV1> {
+    for entry in &manifest.rust {
+        require_payload(
+            payloads,
+            "rust[].entrypoint",
+            &entry.entrypoint,
+            PayloadKindV1::RustDll,
+        )?;
+    }
+    for entry in &manifest.lua {
+        require_payload(
+            payloads,
+            "lua[].entrypoint",
+            &entry.entrypoint,
+            PayloadKindV1::LuaScript,
+        )?;
+    }
+    for entry in &manifest.skins {
+        require_payload(
+            payloads,
+            "skins[].entrypoint",
+            &entry.entrypoint,
+            PayloadKindV1::SkinAsset,
+        )?;
+    }
+    for locale in &manifest.locales {
+        let payload = require_payload(
+            payloads,
+            "locales[].path",
+            &locale.path,
+            PayloadKindV1::Locale,
+        )?;
+        if locale.sha256 != payload.sha256 {
+            return Err(PackageValidationErrorV1::LocalePayloadHashMismatch {
+                locale: locale.locale.clone(),
+            });
+        }
+    }
+    for tool in &manifest.tools {
+        let payload = require_payload(payloads, "tools[].path", &tool.path, PayloadKindV1::Tool)?;
+        if tool.size != payload.size {
+            return Err(PackageValidationErrorV1::ToolPayloadSizeMismatch {
+                tool_id: tool.id.clone(),
+            });
+        }
+        if tool.sha256 != payload.sha256 {
+            return Err(PackageValidationErrorV1::ToolPayloadHashMismatch {
+                tool_id: tool.id.clone(),
+            });
+        }
+        for path in &tool.license_paths {
+            require_payload(
+                payloads,
+                "tools[].license_paths",
+                path,
+                PayloadKindV1::License,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn require_payload<'a>(
+    payloads: &'a BTreeMap<String, (&'a PayloadV1, String)>,
+    field: &'static str,
+    path: &str,
+    expected: PayloadKindV1,
+) -> Result<&'a PayloadV1, PackageValidationErrorV1> {
+    let normalized = normalize_package_path(field, path)?;
+    let Some((payload, _)) = payloads.get(&normalized.to_ascii_lowercase()) else {
+        return Err(PackageValidationErrorV1::MissingPayloadReference { path: normalized });
+    };
+    if payload.kind != expected {
+        return Err(PackageValidationErrorV1::PayloadKindMismatch {
+            path: normalized,
+            actual: payload.kind,
+            expected,
+        });
+    }
+    Ok(payload)
+}
+
+fn verify_payload_files(
+    package_root: &Path,
+    payloads: &BTreeMap<String, (&PayloadV1, String)>,
+    budget: &PackageValidationBudgetV1,
+) -> Result<(), PackageValidationErrorV1> {
+    let root = verify_safe_root(package_root)?;
+    for (payload, normalized) in payloads.values() {
+        budget.check()?;
+        let mut file = open_safe_payload_file(&root, normalized)?;
+        let metadata = file
+            .metadata()
+            .map_err(|source| PackageValidationErrorV1::Io {
+                path: root.join(normalized),
+                source,
+            })?;
+        if !metadata.is_file() || metadata_is_reparse_point(&metadata) {
+            return Err(PackageValidationErrorV1::NotRegularFile {
+                path: root.join(normalized),
+            });
+        }
+        if metadata.len() != payload.size {
+            return Err(PackageValidationErrorV1::PayloadSizeMismatch {
+                path: normalized.clone(),
+                actual: metadata.len(),
+                expected: payload.size,
+            });
+        }
+        let digest = sha256_file(&mut file, &root.join(normalized), payload.size, budget)?;
+        if hex_sha256(&digest) != payload.sha256 {
+            return Err(PackageValidationErrorV1::PayloadHashMismatch {
+                path: normalized.clone(),
+            });
+        }
+        // Recheck the complete path after reading to detect a concurrent reparse-point swap.
+        verify_existing_relative_path(&root, normalized, true)?;
+    }
+    Ok(())
+}
+
+fn verify_no_unlisted_content(
+    package_root: &Path,
+    payloads: &BTreeMap<String, (&PayloadV1, String)>,
+    budget: &PackageValidationBudgetV1,
+) -> Result<(), PackageValidationErrorV1> {
+    let root = verify_safe_root(package_root)?;
+    let declared: BTreeSet<_> = payloads.keys().cloned().collect();
+    scan_package_directory(&root, &root, "", &declared, budget)
+}
+
+fn scan_package_directory(
+    root: &Path,
+    directory: &Path,
+    relative_prefix: &str,
+    declared: &BTreeSet<String>,
+    budget: &PackageValidationBudgetV1,
+) -> Result<(), PackageValidationErrorV1> {
+    let entries = fs::read_dir(directory).map_err(|source| PackageValidationErrorV1::Io {
+        path: directory.to_path_buf(),
+        source,
+    })?;
+    for entry in entries {
+        budget.check()?;
+        let entry = entry.map_err(|source| PackageValidationErrorV1::Io {
+            path: directory.to_path_buf(),
+            source,
+        })?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            return Err(PackageValidationErrorV1::UnsafePackagePath {
+                field: "package content",
+                path: entry.path().display().to_string(),
+            });
+        };
+        let relative = if relative_prefix.is_empty() {
+            name.to_owned()
+        } else {
+            format!("{relative_prefix}/{name}")
+        };
+        let metadata =
+            fs::symlink_metadata(entry.path()).map_err(|source| PackageValidationErrorV1::Io {
+                path: entry.path(),
+                source,
+            })?;
+        if metadata_is_reparse_point(&metadata) {
+            return Err(PackageValidationErrorV1::ReparsePointPath { path: entry.path() });
+        }
+        if metadata.is_dir() {
+            scan_package_directory(root, &entry.path(), &relative, declared, budget)?;
+        } else if metadata.is_file() {
+            if relative != "manifest.json" && !declared.contains(&relative.to_ascii_lowercase()) {
+                return Err(PackageValidationErrorV1::UnlistedPackageContent {
+                    path: entry.path(),
+                });
+            }
+        } else {
+            return Err(PackageValidationErrorV1::NotRegularFile { path: entry.path() });
+        }
+    }
+    if !directory.starts_with(root) {
+        return Err(PackageValidationErrorV1::PackagePathEscapesRoot {
+            path: directory.to_path_buf(),
+        });
+    }
+    Ok(())
+}
+
+fn verify_safe_root(package_root: &Path) -> Result<PathBuf, PackageValidationErrorV1> {
+    let metadata =
+        fs::symlink_metadata(package_root).map_err(|source| PackageValidationErrorV1::Io {
+            path: package_root.to_path_buf(),
+            source,
+        })?;
+    if !metadata.is_dir() || metadata_is_reparse_point(&metadata) {
+        return Err(PackageValidationErrorV1::UnsafePackageRoot {
+            path: package_root.to_path_buf(),
+        });
+    }
+    fs::canonicalize(package_root).map_err(|source| PackageValidationErrorV1::Io {
+        path: package_root.to_path_buf(),
+        source,
+    })
+}
+
+fn read_manifest_from_source(
+    request: &PackageValidationRequestV1,
+) -> Result<(PackageManifestV1, Vec<u8>), PackageValidationErrorV1> {
+    let root = verify_safe_root(&request.source_package_root)?;
+    let mut file = open_safe_payload_file(&root, "manifest.json")
+        .map_err(|_| PackageValidationErrorV1::InvalidManifestFile)?;
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        request.budget.check()?;
+        let read = file
+            .read(&mut buffer)
+            .map_err(|_| PackageValidationErrorV1::InvalidManifestFile)?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+        if bytes.len() > MAX_MANIFEST_FILE_BYTES {
+            return Err(PackageValidationErrorV1::InvalidManifestFile);
+        }
+    }
+    request.budget.check()?;
+    let text =
+        std::str::from_utf8(&bytes).map_err(|_| PackageValidationErrorV1::InvalidManifestFile)?;
+    let manifest =
+        PackageManifestV1::parse_json(text).map_err(PackageValidationErrorV1::Manifest)?;
+    Ok((manifest, bytes))
+}
+
+fn seal_generation(
+    request: &PackageValidationRequestV1,
+    manifest_bytes: &[u8],
+    payloads: &BTreeMap<String, (&PayloadV1, String)>,
+    generation_id: &str,
+) -> Result<PathBuf, PackageValidationErrorV1> {
+    fs::create_dir_all(&request.sealed_store_root).map_err(|source| {
+        PackageValidationErrorV1::Io {
+            path: request.sealed_store_root.clone(),
+            source,
+        }
+    })?;
+    let store = verify_safe_root(&request.sealed_store_root)?;
+    let final_path = store.join(generation_id);
+    if final_path.exists() {
+        return verify_existing_sealed_generation(
+            &final_path,
+            manifest_bytes,
+            payloads,
+            &request.budget,
+        );
+    }
+    let staging = create_staging_directory(&store, generation_id)?;
+    let sealing_result = seal_into_staging(request, manifest_bytes, payloads, &staging);
+    match sealing_result {
+        Ok(()) => match fs::rename(&staging, &final_path) {
+            Ok(()) => Ok(final_path),
+            Err(_) if final_path.exists() => {
+                let reuse_result = verify_existing_sealed_generation(
+                    &final_path,
+                    manifest_bytes,
+                    payloads,
+                    &request.budget,
+                );
+                let _ = fs::remove_dir_all(&staging);
+                reuse_result
+            }
+            Err(source) => {
+                let _ = fs::remove_dir_all(&staging);
+                Err(PackageValidationErrorV1::Io {
+                    path: final_path,
+                    source,
+                })
+            }
+        },
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging);
+            Err(error)
+        }
+    }
+}
+
+fn create_staging_directory(
+    store: &Path,
+    generation_id: &str,
+) -> Result<PathBuf, PackageValidationErrorV1> {
+    for _ in 0..32 {
+        let nonce = STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let staging = store.join(format!(
+            ".{generation_id}.staging-{}-{nonce}",
+            std::process::id()
+        ));
+        match fs::create_dir(&staging) {
+            Ok(()) => return Ok(staging),
+            Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(source) => {
+                return Err(PackageValidationErrorV1::Io {
+                    path: staging,
+                    source,
+                });
+            }
+        }
+    }
+    Err(PackageValidationErrorV1::Io {
+        path: store.to_path_buf(),
+        source: io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not allocate a unique sealed-package staging directory",
+        ),
+    })
+}
+
+fn seal_into_staging(
+    request: &PackageValidationRequestV1,
+    manifest_bytes: &[u8],
+    payloads: &BTreeMap<String, (&PayloadV1, String)>,
+    staging: &Path,
+) -> Result<(), PackageValidationErrorV1> {
+    request.budget.check()?;
+    fs::write(staging.join("manifest.json"), manifest_bytes).map_err(|source| {
+        PackageValidationErrorV1::Io {
+            path: staging.join("manifest.json"),
+            source,
+        }
+    })?;
+    let source_root = verify_safe_root(&request.source_package_root)?;
+    for (payload, normalized) in payloads.values() {
+        request.budget.check()?;
+        let destination = staging.join(normalized.replace('/', "\\"));
+        let parent = destination
+            .parent()
+            .ok_or_else(|| PackageValidationErrorV1::Io {
+                path: destination.clone(),
+                source: io::Error::new(io::ErrorKind::InvalidInput, "payload path has no parent"),
+            })?;
+        fs::create_dir_all(parent).map_err(|source| PackageValidationErrorV1::Io {
+            path: destination.clone(),
+            source,
+        })?;
+        let mut input = open_safe_payload_file(&source_root, normalized)?;
+        let mut output =
+            File::create(&destination).map_err(|source| PackageValidationErrorV1::Io {
+                path: destination.clone(),
+                source,
+            })?;
+        let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
+        let mut total = 0_u64;
+        let mut hasher = Sha256::new();
+        loop {
+            request.budget.check()?;
+            let read = input
+                .read(&mut buffer)
+                .map_err(|source| PackageValidationErrorV1::Io {
+                    path: source_root.join(normalized),
+                    source,
+                })?;
+            if read == 0 {
+                break;
+            }
+            total = total.checked_add(read as u64).ok_or(
+                PackageValidationErrorV1::PayloadSizeMismatch {
+                    path: normalized.clone(),
+                    actual: u64::MAX,
+                    expected: payload.size,
+                },
+            )?;
+            if total > payload.size {
+                return Err(PackageValidationErrorV1::PayloadSizeMismatch {
+                    path: normalized.clone(),
+                    actual: total,
+                    expected: payload.size,
+                });
+            }
+            output
+                .write_all(&buffer[..read])
+                .map_err(|source| PackageValidationErrorV1::Io {
+                    path: destination.clone(),
+                    source,
+                })?;
+            hasher.update(&buffer[..read]);
+        }
+        if total != payload.size || hex_sha256(&hasher.finalize().into()) != payload.sha256 {
+            return Err(PackageValidationErrorV1::PayloadHashMismatch {
+                path: normalized.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn verify_existing_sealed_generation(
+    final_path: &Path,
+    expected_manifest_bytes: &[u8],
+    payloads: &BTreeMap<String, (&PayloadV1, String)>,
+    budget: &PackageValidationBudgetV1,
+) -> Result<PathBuf, PackageValidationErrorV1> {
+    let root = verify_safe_root(final_path)?;
+    let mut manifest = open_safe_payload_file(&root, "manifest.json")?;
+    let mut manifest_bytes = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        budget.check()?;
+        let read = manifest
+            .read(&mut buffer)
+            .map_err(|source| PackageValidationErrorV1::Io {
+                path: root.join("manifest.json"),
+                source,
+            })?;
+        if read == 0 {
+            break;
+        }
+        manifest_bytes.extend_from_slice(&buffer[..read]);
+        if manifest_bytes.len() > MAX_MANIFEST_FILE_BYTES {
+            return Err(PackageValidationErrorV1::SealedGenerationMismatch {
+                path: final_path.to_path_buf(),
+            });
+        }
+    }
+    if manifest_bytes != expected_manifest_bytes {
+        return Err(PackageValidationErrorV1::SealedGenerationMismatch {
+            path: final_path.to_path_buf(),
+        });
+    }
+    verify_payload_files(&root, payloads, budget)?;
+    verify_no_unlisted_content(&root, payloads, budget)?;
+    Ok(root)
+}
+
+fn host_target_v1() -> &'static str {
+    "x86_64-pc-windows-msvc"
+}
+fn host_tool_target_v1() -> &'static str {
+    "windows-x64"
+}
+
+fn open_safe_payload_file(root: &Path, normalized: &str) -> Result<File, PackageValidationErrorV1> {
+    let path = verify_existing_relative_path(root, normalized, true)?;
+    let file = File::open(&path).map_err(|source| PackageValidationErrorV1::Io {
+        path: path.clone(),
+        source,
+    })?;
+    let canonical = fs::canonicalize(&path).map_err(|source| PackageValidationErrorV1::Io {
+        path: path.clone(),
+        source,
+    })?;
+    if !canonical.starts_with(root) {
+        return Err(PackageValidationErrorV1::PackagePathEscapesRoot { path: canonical });
+    }
+    Ok(file)
+}
+
+fn verify_existing_relative_path(
+    root: &Path,
+    normalized: &str,
+    expect_file: bool,
+) -> Result<PathBuf, PackageValidationErrorV1> {
+    let mut current = root.to_path_buf();
+    let segments: Vec<_> = normalized.split('/').collect();
+    for (index, segment) in segments.iter().enumerate() {
+        current.push(segment);
+        let metadata =
+            fs::symlink_metadata(&current).map_err(|source| PackageValidationErrorV1::Io {
+                path: current.clone(),
+                source,
+            })?;
+        if metadata_is_reparse_point(&metadata) {
+            return Err(PackageValidationErrorV1::ReparsePointPath {
+                path: current.clone(),
+            });
+        }
+        let final_component = index + 1 == segments.len();
+        if final_component && expect_file && !metadata.is_file() {
+            return Err(PackageValidationErrorV1::NotRegularFile {
+                path: current.clone(),
+            });
+        }
+        if !final_component && !metadata.is_dir() {
+            return Err(PackageValidationErrorV1::NotRegularFile {
+                path: current.clone(),
+            });
+        }
+    }
+    Ok(current)
+}
+
+fn sha256_file(
+    file: &mut File,
+    path: &Path,
+    expected_size: u64,
+    budget: &PackageValidationBudgetV1,
+) -> Result<[u8; 32], PackageValidationErrorV1> {
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
+    let mut total = 0_u64;
+    loop {
+        budget.check()?;
+        let read = file
+            .read(&mut buffer)
+            .map_err(|source| PackageValidationErrorV1::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        if read == 0 {
+            break;
+        }
+        total = total.checked_add(read as u64).ok_or(
+            PackageValidationErrorV1::PayloadSizeMismatch {
+                path: path.display().to_string(),
+                actual: u64::MAX,
+                expected: expected_size,
+            },
+        )?;
+        if total > expected_size {
+            return Err(PackageValidationErrorV1::PayloadSizeMismatch {
+                path: path.display().to_string(),
+                actual: total,
+                expected: expected_size,
+            });
+        }
+        hasher.update(&buffer[..read]);
+    }
+    if total != expected_size {
+        return Err(PackageValidationErrorV1::PayloadSizeMismatch {
+            path: path.display().to_string(),
+            actual: total,
+            expected: expected_size,
+        });
+    }
+    Ok(hasher.finalize().into())
+}
+
+fn normalize_package_path(
+    field: &'static str,
+    path: &str,
+) -> Result<String, PackageValidationErrorV1> {
+    let bytes = path.as_bytes();
+    let unsafe_path = path.is_empty()
+        || !path.is_ascii()
+        || path.starts_with('/')
+        || path.starts_with('\\')
+        || bytes.get(1) == Some(&b':')
+        || path.contains('\\')
+        || path.bytes().any(|byte| byte.is_ascii_control());
+    if unsafe_path {
+        return Err(PackageValidationErrorV1::UnsafePackagePath {
+            field,
+            path: path.to_owned(),
+        });
+    }
+    let parts: Vec<_> = path.split('/').collect();
+    if parts.iter().any(|part| {
+        part.is_empty()
+            || matches!(*part, "." | "..")
+            || part.ends_with(['.', ' '])
+            || part.contains(':')
+    }) {
+        return Err(PackageValidationErrorV1::UnsafePackagePath {
+            field,
+            path: path.to_owned(),
+        });
+    }
+    Ok(parts.join("/"))
+}
+
+fn metadata_is_reparse_point(metadata: &Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = metadata;
+        false
+    }
+}
+
+fn hex_sha256(digest: &[u8; 32]) -> String {
+    let mut text = String::with_capacity(64);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(text, "{byte:02x}");
+    }
+    text
+}
+
+fn is_normalized_id(value: &str) -> bool {
+    (1..=64).contains(&value.len())
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
+        })
+        && value
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        io::Write as _,
+        path::PathBuf,
+        process::{Command, Stdio},
+        time::{Duration, Instant},
+    };
+
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+    use serde_json::{Value, json};
+    use sha2::{Digest, Sha256};
+    use tempfile::TempDir;
+
+    use super::{
+        LocalDeveloperAuthorizationV1, PackageValidationBudgetV1, PackageValidationCancellationV1,
+        PackageValidationErrorV1, PackageValidationRequestV1, PackageValidatorV1,
+        TrustedPublisherKeyStoreV1, TrustedPublisherKeyV1,
+    };
+    use crate::PackageManifestV1;
+
+    struct TestPackage {
+        _temp: TempDir,
+        source: PathBuf,
+        sealed_store: PathBuf,
+    }
+
+    impl TestPackage {
+        fn new() -> Self {
+            let temp = tempfile::tempdir().expect("test package root");
+            let source = temp.path().join("source");
+            let sealed_store = temp.path().join("sealed");
+            fs::create_dir(&source).expect("source root");
+            fs::create_dir(&sealed_store).expect("sealed store");
+            Self {
+                _temp: temp,
+                source,
+                sealed_store,
+            }
+        }
+
+        fn write_file(&self, relative: &str, bytes: &[u8]) {
+            let path = self.source.join(relative);
+            fs::create_dir_all(path.parent().expect("test file parent"))
+                .expect("test file directory");
+            fs::write(path, bytes).expect("test file bytes");
+        }
+
+        fn write_manifest(&self, value: &Value) {
+            fs::write(self.source.join("manifest.json"), value.to_string())
+                .expect("manifest bytes");
+        }
+
+        fn request(&self) -> PackageValidationRequestV1 {
+            PackageValidationRequestV1::new(self.source.clone(), self.sealed_store.clone())
+        }
+    }
+
+    fn sha256(bytes: &[u8]) -> String {
+        let digest: [u8; 32] = Sha256::digest(bytes).into();
+        super::hex_sha256(&digest)
+    }
+
+    fn payload(path: &str, bytes: &[u8], kind: &str) -> Value {
+        json!({ "path": path, "size": bytes.len(), "sha256": sha256(bytes), "kind": kind })
+    }
+
+    fn manifest_value(payloads: impl IntoIterator<Item = Value>) -> Value {
+        let payloads: Vec<_> = payloads.into_iter().collect();
+        json!({
+            "manifest_version": 1,
+            "package": { "id": "example.package", "version": "1.0.0" },
+            "publisher": {
+                "id": "example.publisher",
+                "display_name": "Example Publisher",
+                "contacts": [{ "kind": "email", "value": "support@example.invalid", "purposes": ["support"] }]
+            },
+            "sdk": {
+                "bundle_id": "dev.20260802", "target": "x86_64-pc-windows-msvc",
+                "abi_schema": 1, "gpui": false, "ui_abi_fingerprint": null
+            },
+            "rust": [], "lua": [], "skins": [], "locales": [], "tools": [],
+            "features": [], "dependencies": [], "payloads": payloads,
+            "signature": { "kind": "ed25519", "key_id": "example.signing", "signature": "" },
+            "data_version": 1
+        })
+    }
+
+    fn signed_manifest(mut value: Value, key_pair: &Ed25519KeyPair) -> Value {
+        let manifest =
+            PackageManifestV1::parse_json(&value.to_string()).expect("unsigned manifest shape");
+        let signature = STANDARD.encode(
+            key_pair
+                .sign(
+                    &manifest
+                        .canonical_ed25519_signing_bytes()
+                        .expect("canonical signing bytes"),
+                )
+                .as_ref(),
+        );
+        *value
+            .pointer_mut("/signature/signature")
+            .expect("signature field") = json!(signature);
+        value
+    }
+
+    fn key_pair() -> Ed25519KeyPair {
+        Ed25519KeyPair::from_seed_unchecked(&[7_u8; 32]).expect("fixed test Ed25519 seed")
+    }
+
+    fn validator(key_pair: &Ed25519KeyPair) -> PackageValidatorV1 {
+        let trusted_key = TrustedPublisherKeyV1::new(
+            "example.signing".to_owned(),
+            "example.publisher".to_owned(),
+            key_pair.public_key().as_ref(),
+        )
+        .expect("trusted key");
+        PackageValidatorV1::new(
+            TrustedPublisherKeyStoreV1::new([trusted_key]).expect("trust store"),
+        )
+    }
+
+    fn signed_data_package(
+        package: &TestPackage,
+        key_pair: &Ed25519KeyPair,
+        bytes: &[u8],
+    ) -> Value {
+        package.write_file("data/payload.bin", bytes);
+        let manifest = signed_manifest(
+            manifest_value(vec![payload("data/payload.bin", bytes, "data")]),
+            key_pair,
+        );
+        package.write_manifest(&manifest);
+        manifest
+    }
+
+    #[test]
+    fn validates_source_manifest_with_real_ed25519_and_seals_immutable_generation() {
+        let package = TestPackage::new();
+        let key_pair = key_pair();
+        let manifest = signed_data_package(&package, &key_pair, b"verified payload");
+
+        let first = validator(&key_pair)
+            .validate(&package.request())
+            .expect("validated package");
+        let second = validator(&key_pair)
+            .validate(&package.request())
+            .expect("safe sealed reuse");
+        assert_eq!(first, second);
+        assert_eq!(
+            first.verified_publisher_id.as_deref(),
+            Some("example.publisher")
+        );
+        assert_eq!(
+            fs::read(first.sealed_package_root().join("manifest.json")).expect("sealed manifest"),
+            manifest.to_string().as_bytes()
+        );
+
+        package.write_file("data/payload.bin", b"source changed after sealing");
+        assert_eq!(
+            fs::read(first.sealed_package_root().join("data/payload.bin")).expect("sealed payload"),
+            b"verified payload"
+        );
+        assert!(matches!(
+            validator(&key_pair).validate(&package.request()),
+            Err(PackageValidationErrorV1::PayloadSizeMismatch { .. }
+                | PackageValidationErrorV1::PayloadHashMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_absent_or_differently_bound_source_manifest_and_signature_tampering() {
+        let absent = TestPackage::new();
+        assert!(matches!(
+            validator(&key_pair()).validate(&absent.request()),
+            Err(PackageValidationErrorV1::InvalidManifestFile)
+        ));
+
+        let package = TestPackage::new();
+        let key_pair = key_pair();
+        let mut manifest = signed_data_package(&package, &key_pair, b"payload");
+        *manifest.pointer_mut("/data_version").expect("data version") = json!(2);
+        package.write_manifest(&manifest);
+        assert!(matches!(
+            validator(&key_pair).validate(&package.request()),
+            Err(PackageValidationErrorV1::InvalidSignature { .. })
+        ));
+    }
+
+    #[test]
+    fn unsigned_packages_require_opaque_local_developer_provenance() {
+        let package = TestPackage::new();
+        package.write_file("data/payload.bin", b"unsigned payload");
+        let mut manifest = manifest_value(vec![payload(
+            "data/payload.bin",
+            b"unsigned payload",
+            "data",
+        )]);
+        *manifest.pointer_mut("/signature").expect("signature") = json!({ "kind": "unsigned" });
+        package.write_manifest(&manifest);
+
+        let validator = PackageValidatorV1::new(TrustedPublisherKeyStoreV1::default());
+        assert!(matches!(
+            validator.validate(&package.request()),
+            Err(PackageValidationErrorV1::SignatureRequired)
+        ));
+        let request = package
+            .request()
+            .with_local_developer_authorization(LocalDeveloperAuthorizationV1::issue());
+        assert_eq!(
+            validator
+                .validate(&request)
+                .expect("host-authorized local package")
+                .verified_publisher_id,
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_target_and_tool_target_mismatches() {
+        let package = TestPackage::new();
+        let key_pair = key_pair();
+        let mut target = signed_data_package(&package, &key_pair, b"payload");
+        *target.pointer_mut("/sdk/target").expect("sdk target") = json!("aarch64-pc-windows-msvc");
+        package.write_manifest(&signed_manifest(target, &key_pair));
+        assert!(matches!(
+            validator(&key_pair).validate(&package.request()),
+            Err(PackageValidationErrorV1::TargetMismatch { .. })
+        ));
+
+        let tool_package = TestPackage::new();
+        let tool_bytes = b"tool";
+        tool_package.write_file("tools/windows-x64/example/tool.exe", tool_bytes);
+        let mut tool = manifest_value(vec![payload(
+            "tools/windows-x64/example/tool.exe",
+            tool_bytes,
+            "tool",
+        )]);
+        *tool.pointer_mut("/tools").expect("tools") = json!([{
+            "id": "example", "target": "linux-x64", "path": "tools/windows-x64/example/tool.exe",
+            "version": "1.0.0", "size": tool_bytes.len(), "sha256": sha256(tool_bytes),
+            "output_protocol": "json", "source": "https://example.invalid/tool", "license_paths": []
+        }]);
+        tool_package.write_manifest(&signed_manifest(tool, &key_pair));
+        assert!(matches!(
+            validator(&key_pair).validate(&tool_package.request()),
+            Err(PackageValidationErrorV1::ToolTargetMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn enforces_payload_count_per_file_and_total_bounds() {
+        let package = TestPackage::new();
+        let key_pair = key_pair();
+        let many: Vec<Value> = (0..129)
+            .map(|index| payload(&format!("data/{index}.bin"), b"x", "data"))
+            .collect();
+        package.write_manifest(&manifest_value(many));
+        assert!(matches!(
+            validator(&key_pair).validate(&package.request()),
+            Err(PackageValidationErrorV1::Manifest(
+                crate::PackageManifestErrorV1::CollectionTooLong {
+                    field: "payloads",
+                    ..
+                }
+            ))
+        ));
+
+        let large = TestPackage::new();
+        let mut too_large = payload("data/large.bin", b"x", "data");
+        *too_large.pointer_mut("/size").expect("size") = json!(super::MAX_PAYLOAD_FILE_BYTES + 1);
+        large.write_manifest(&signed_manifest(manifest_value(vec![too_large]), &key_pair));
+        assert!(matches!(
+            validator(&key_pair).validate(&large.request()),
+            Err(PackageValidationErrorV1::PayloadFileTooLarge { .. })
+        ));
+
+        let total = TestPackage::new();
+        let total_payloads: Vec<Value> = (0..5)
+            .map(|index| {
+                let mut item = payload(&format!("data/total-{index}.bin"), b"x", "data");
+                *item.pointer_mut("/size").expect("payload size") =
+                    json!(super::MAX_PAYLOAD_FILE_BYTES);
+                item
+            })
+            .collect();
+        total.write_manifest(&signed_manifest(manifest_value(total_payloads), &key_pair));
+        assert!(matches!(
+            validator(&key_pair).validate(&total.request()),
+            Err(PackageValidationErrorV1::PayloadTotalBytesExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_unsafe_case_colliding_reparse_and_unlisted_content() {
+        let key_pair = key_pair();
+        for path in [
+            "/absolute.bin",
+            "C:/drive.bin",
+            "../escape.bin",
+            "data/../escape.bin",
+            "data\\separator.bin",
+        ] {
+            let package = TestPackage::new();
+            package.write_manifest(&signed_manifest(
+                manifest_value(vec![payload(path, b"x", "data")]),
+                &key_pair,
+            ));
+            assert!(matches!(
+                validator(&key_pair).validate(&package.request()),
+                Err(PackageValidationErrorV1::UnsafePackagePath { .. })
+            ));
+        }
+
+        let collision = TestPackage::new();
+        collision.write_manifest(&signed_manifest(
+            manifest_value(vec![
+                payload("Data/Payload.bin", b"x", "data"),
+                payload("data/payload.BIN", b"x", "data"),
+            ]),
+            &key_pair,
+        ));
+        assert!(matches!(
+            validator(&key_pair).validate(&collision.request()),
+            Err(PackageValidationErrorV1::DuplicateOrCaseCollidingPath { .. })
+        ));
+
+        let unlisted = TestPackage::new();
+        signed_data_package(&unlisted, &key_pair, b"payload");
+        unlisted.write_file("unlisted.txt", b"not declared");
+        assert!(matches!(
+            validator(&key_pair).validate(&unlisted.request()),
+            Err(PackageValidationErrorV1::UnlistedPackageContent { .. })
+        ));
+
+        let reparse = TestPackage::new();
+        let outside = reparse.source.parent().expect("test root").join("outside");
+        fs::create_dir(&outside).expect("outside directory");
+        fs::write(outside.join("payload.bin"), b"payload").expect("outside payload");
+        let reparse_directory = reparse.source.join("data");
+        let junction_status = Command::new("cmd")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&reparse_directory)
+            .arg(&outside)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("create test junction");
+        assert!(junction_status.success(), "test junction must be created");
+        reparse.write_manifest(&signed_manifest(
+            manifest_value(vec![payload("data/payload.bin", b"payload", "data")]),
+            &key_pair,
+        ));
+        assert!(matches!(
+            validator(&key_pair).validate(&reparse.request()),
+            Err(PackageValidationErrorV1::ReparsePointPath { .. })
+        ));
+    }
+
+    #[test]
+    fn cancellation_and_deadline_are_checked_during_traversal_hashing_and_sealing() {
+        let package = TestPackage::new();
+        let key_pair = key_pair();
+        let manifest = signed_data_package(&package, &key_pair, b"payload");
+        let parsed = PackageManifestV1::parse_json(&manifest.to_string()).expect("manifest");
+        let cancellation = PackageValidationCancellationV1::new();
+        cancellation.cancel();
+        let cancelled = PackageValidationBudgetV1::default().with_cancellation(cancellation);
+        let declared = std::collections::BTreeSet::from(["data/payload.bin".to_owned()]);
+        assert!(matches!(
+            super::scan_package_directory(
+                &package.source,
+                &package.source,
+                "",
+                &declared,
+                &cancelled
+            ),
+            Err(PackageValidationErrorV1::Cancelled)
+        ));
+
+        let mut file =
+            fs::File::open(package.source.join("data/payload.bin")).expect("payload file");
+        assert!(matches!(
+            super::sha256_file(
+                &mut file,
+                &package.source.join("data/payload.bin"),
+                7,
+                &cancelled
+            ),
+            Err(PackageValidationErrorV1::Cancelled)
+        ));
+        let active = PackageValidationBudgetV1::default();
+        let payloads = super::validate_payload_inventory(&parsed, &active).expect("inventory");
+        let staging = package.sealed_store.join("cancelled-staging");
+        fs::create_dir(&staging).expect("staging directory");
+        assert!(matches!(
+            super::seal_into_staging(
+                &package.request().with_budget(cancelled.clone()),
+                manifest.to_string().as_bytes(),
+                &payloads,
+                &staging,
+            ),
+            Err(PackageValidationErrorV1::Cancelled)
+        ));
+
+        let expired = PackageValidationBudgetV1::with_deadline(
+            Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .expect("past deadline"),
+        );
+        assert!(matches!(
+            validator(&key_pair).validate(&package.request().with_budget(expired)),
+            Err(PackageValidationErrorV1::DeadlineExceeded)
+        ));
+    }
+
+    #[test]
+    fn existing_sealed_generation_is_verified_before_reuse() {
+        let package = TestPackage::new();
+        let key_pair = key_pair();
+        signed_data_package(&package, &key_pair, b"payload");
+        let result = validator(&key_pair)
+            .validate(&package.request())
+            .expect("sealed package");
+        let mut sealed_payload = fs::OpenOptions::new()
+            .write(true)
+            .open(result.sealed_package_root().join("data/payload.bin"))
+            .expect("sealed payload");
+        sealed_payload
+            .write_all(b"altered")
+            .expect("alter sealed payload");
+        assert!(matches!(
+            validator(&key_pair).validate(&package.request()),
+            Err(PackageValidationErrorV1::PayloadSizeMismatch { .. }
+                | PackageValidationErrorV1::PayloadHashMismatch { .. })
+        ));
+    }
+}

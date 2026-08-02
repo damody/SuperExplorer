@@ -32,11 +32,22 @@ fn run(mode: &str, plugin: &Path, marker: &Path) -> Result<(), String> {
                 if error.code == AbiErrorCodeV1::CALLBACK_PANICKED && marker.exists() => Ok(()),
             other => Err(format!("panic was not translated to typed Panicked: {other:?}")),
         },
+        "raw-panic" => {
+            // The unsafe fixture is expected to abort before control returns from
+            // `register_root`.  Leave an explicit sentinel if it ever does return
+            // so the process runner cannot confuse this clean error path with the
+            // expected abnormal FFI-boundary termination.
+            std::fs::write(marker, b"raw callback returned")
+                .map_err(|error| format!("failed to write raw-return sentinel: {error}"))?;
+            Err(format!(
+                "unsafe raw panic unexpectedly returned from registrar: {result:?}"
+            ))
+        }
         "schema-mismatch" | "root-contract-mismatch" | "sdk-major-mismatch" => match result {
             Err(HostRegistrationErrorV1::Incompatible(_)) if !marker.exists() => Ok(()),
             other => Err(format!("{mode} did not reject before callback: {other:?}")),
         },
-        _ => Err("mode must be compatible, schema-mismatch, root-contract-mismatch, sdk-major-mismatch, or panic".to_owned()),
+        _ => Err("mode must be compatible, schema-mismatch, root-contract-mismatch, sdk-major-mismatch, panic, or raw-panic".to_owned()),
     }
 }
 

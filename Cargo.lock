@@ -1382,8 +1382,15 @@ name = "explorer-extension-host"
 version = "0.1.0"
 dependencies = [
  "abi_stable",
+ "base64",
  "explorer-extension-api",
  "explorer-extension-ui-api",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
