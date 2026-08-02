@@ -1,0 +1,19 @@
+[package]
+name = "explorer-extension-host"
+version = "0.1.0"
+description = "Process-resident host seam for SuperExplorer extension packages."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+explorer-extension-api = { path = "../explorer-extension-api" }
+explorer-extension-ui-api = { path = "../explorer-extension-ui-api" }
+
+[dev-dependencies]
+abi_stable.workspace = true
+
+[lints]
+workspace = true

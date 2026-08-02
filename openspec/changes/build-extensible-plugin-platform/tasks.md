@@ -13,7 +13,7 @@
 
 ## 2. Extension API、Host 與套件格式
 
-- [ ] 2.1 新增 `explorer-extension-api`、`explorer-extension-ui-api`、`explorer-extension-host` crates 與 composition-root wiring，建立私有 crate dependency 禁止規則
+- [x] 2.1 新增 `explorer-extension-api`、`explorer-extension-ui-api`、`explorer-extension-host` crates 與 composition-root wiring，建立私有 crate dependency 禁止規則
 - [ ] 2.2 定義 FFI-safe stable IDs、typed errors/outcomes、root module 與 prefix registrar，加入 SDK 1.x optional-tail/non-exhaustive 相容 fixture
 - [ ] 2.3 實作版本化 `.sepack`／`PackageManifestV1` parser，涵蓋 Rust/Lua/Skin/locale/tools/features/capabilities/dependencies/hash/signature/data-version
 - [ ] 2.4 實作 publisher/contact schema validation，涵蓋 email、網站、論壇、GitHub Issues、Discord、QQ、support/security purpose 與簽署 publisher mismatch

@@ -1293,6 +1293,7 @@ dependencies = [
  "explorer-automation-win",
  "explorer-common",
  "explorer-extension-broker",
+ "explorer-extension-host",
  "explorer-jobs",
  "explorer-model",
  "explorer-search",
@@ -1354,6 +1355,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "explorer-extension-api"
+version = "1.1.0"
+dependencies = [
+ "abi_stable",
+]
+
+[[package]]
 name = "explorer-extension-broker"
 version = "0.1.0"
 dependencies = [
@@ -1370,12 +1378,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "explorer-extension-host"
+version = "0.1.0"
+dependencies = [
+ "abi_stable",
+ "explorer-extension-api",
+ "explorer-extension-ui-api",
+]
+
+[[package]]
 name = "explorer-extension-protocol"
 version = "0.1.0"
 dependencies = [
  "abi_stable",
  "explorer-common",
  "thiserror 2.0.19",
+]
+
+[[package]]
+name = "explorer-extension-ui-api"
+version = "0.1.0"
+dependencies = [
+ "explorer-extension-api",
 ]
 
 [[package]]
