@@ -1,8 +1,10 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use explorer_extension_host::{
-    PackageValidationBudgetV1, PackageValidationCancellationV1, PackageValidationRequestV1,
-    PackageValidatorV1, SealedPackageStoreV1, TrustedPublisherKeyStoreV1, TrustedPublisherKeyV1,
+    PackageManifestV1, PackageValidationBudgetV1, PackageValidationCancellationV1,
+    PackageValidationRequestV1, PackageValidatorV1, SealedPackageStoreV1,
+    TrustedPublisherKeyStoreV1, TrustedPublisherKeyV1,
 };
+use ring::signature::Ed25519KeyPair;
 use serde_json::Value;
 use std::{
     env, fs,
@@ -56,6 +58,7 @@ fn main() {
     ] {
         let mut v = unsigned.clone();
         v["payloads"][0]["path"] = Value::String(path.into());
+        let v = sign(v);
         expect(&validator, &source, &v, expected, name);
     }
     let mut collision = unsigned.clone();
@@ -63,22 +66,25 @@ fn main() {
     collision["payloads"].as_array_mut().unwrap().push(p);
     expect(&validator, &source, &collision, "duplicate", "collision");
     fs::remove_file(source.join("data/payload.bin")).expect("remove");
+    let signed_unsigned = sign(unsigned.clone());
     expect(
         &validator,
         &source,
-        &unsigned,
+        &signed_unsigned,
         "could not access package path",
         "missing",
     );
     fs::write(source.join("data/payload.bin"), b"tampered bytes").expect("tamper");
-    expect(&validator, &source, &unsigned, "size is", "size");
+    expect(&validator, &source, &signed_unsigned, "size is", "size");
     fs::write(source.join("data/payload.bin"), b"verified payload").expect("restore");
     let mut hash = unsigned.clone();
     hash["payloads"][0]["sha256"] =
         Value::String("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into());
+    let hash = sign(hash);
     expect(&validator, &source, &hash, "SHA-256 digest", "hash");
     let mut target = unsigned.clone();
     target["sdk"]["target"] = Value::String("aarch64-pc-windows-msvc".into());
+    let target = sign(target);
     expect(
         &validator,
         &source,
@@ -151,6 +157,29 @@ fn main() {
 fn write_manifest(root: &PathBuf, value: &Value) {
     fs::write(root.join("manifest.json"), value.to_string()).expect("manifest write");
 }
+
+fn sign(mut value: Value) -> Value {
+    value["signature"] = serde_json::json!({
+        "kind": "ed25519",
+        "key_id": "example.signing",
+        "signature": ""
+    });
+    let manifest = PackageManifestV1::parse_json(&value.to_string()).expect("signable manifest");
+    let key_pair =
+        Ed25519KeyPair::from_seed_unchecked(&[7_u8; 32]).expect("fixed fixture signing seed");
+    let signature = STANDARD.encode(
+        key_pair
+            .sign(
+                &manifest
+                    .canonical_ed25519_signing_bytes()
+                    .expect("canonical signing bytes"),
+            )
+            .as_ref(),
+    );
+    value["signature"]["signature"] = Value::String(signature);
+    value
+}
+
 fn expect(v: &PackageValidatorV1, source: &PathBuf, value: &Value, text: &str, name: &str) {
     write_manifest(source, value);
     let error = v

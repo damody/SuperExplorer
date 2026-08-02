@@ -266,6 +266,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "explorer-extension-host",
+ "ring",
  "serde_json 1.0.151",
 ]
 
