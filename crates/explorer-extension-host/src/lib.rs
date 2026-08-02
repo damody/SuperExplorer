@@ -21,7 +21,11 @@ mod package_source;
 mod package_validation;
 
 pub use feature_state::{
-    DesiredStateV1, EffectiveFeatureResolverV1, EffectiveFeatureStateV1, FeatureStateStoreV1,
+    DesiredStateV1, EffectiveFeatureReasonV1, EffectiveFeatureResolverErrorV1,
+    EffectiveFeatureResolverV1, EffectiveFeatureStateV1, EffectiveFeatureV1,
+    FEATURE_STATE_STORE_SCHEMA_VERSION_V1, FeatureCompatibilityFactV1, FeatureCompatibilityIssueV1,
+    FeatureDiagnosticFactV1, FeatureKeyV1, FeatureResolutionFactV1, FeatureRuntimeFactV1,
+    FeatureStateStoreErrorV1, FeatureStateStoreV1,
 };
 pub use manifest::{
     BundledToolV1, ContactPurposeV1, LocaleResourceV1, LuaEntrypointV1,
