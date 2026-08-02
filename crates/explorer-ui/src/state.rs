@@ -2647,8 +2647,19 @@ impl AppViewState {
         }
         if let ExplorerEvent::ContextMenuFinished { context, outcome } = &event {
             if self.pending_context_menu.as_ref() != Some(context) {
+                tracing::debug!(
+                    request_id = ?context.request_id,
+                    pending_request_id = ?self.pending_context_menu.as_ref().map(|pending| pending.request_id),
+                    "ignored stale context-menu terminal"
+                );
                 return WindowEventOutcome::IgnoredStale;
             }
+            tracing::debug!(
+                request_id = ?context.request_id,
+                outcome = ?outcome,
+                replacement_queued = self.queued_context_menu.is_some(),
+                "applying context-menu terminal"
+            );
             self.pending_context_menu = None;
             self.context_menu_error = match outcome {
                 explorer_model::ContextMenuOutcome::Failed { error } => Some(error.clone()),
@@ -2660,6 +2671,10 @@ impl AppViewState {
                 && self.tabs.active_tab().id == queued_context.tab_id
                 && self.tabs.active_tab().generation == queued_context.generation
             {
+                tracing::debug!(
+                    request_id = ?queued_context.request_id,
+                    "promoting queued context-menu replacement"
+                );
                 self.pending_context_menu = Some(queued_context.clone());
                 self.pending_context_menu_command = Some(ExplorerCommand::ShowContextMenu {
                     context: queued_context,
@@ -3290,6 +3305,26 @@ impl AppViewState {
         if let Some(pending) = self.pending_context_menu.as_ref() {
             let request_id = pending.request_id;
             pending.cancellation.cancel();
+            if !keyboard_invoked {
+                tracing::debug!(
+                    pending_request_id = ?request_id,
+                    replacement_request_id = ?context.request_id,
+                    x,
+                    y,
+                    "superseding completed native popup with mouse replacement"
+                );
+                self.queued_context_menu = None;
+                self.pending_context_menu_command = None;
+                self.pending_context_menu = Some(context.clone());
+                return Some(ExplorerCommand::ShowContextMenu { context, request });
+            }
+            tracing::debug!(
+                pending_request_id = ?request_id,
+                replacement_request_id = ?context.request_id,
+                x,
+                y,
+                "queued latest context-menu replacement and cancelled active request"
+            );
             self.queued_context_menu = Some((context, request));
             return Some(ExplorerCommand::Cancel { request_id });
         }
@@ -5422,7 +5457,7 @@ mod tests {
         assert!(state.context_menu_pending());
         let first_request_id = context.request_id;
         let cancel = state
-            .begin_context_menu_request(None, 42, 300, 400, false, true)
+            .begin_context_menu_request(None, 42, 300, 400, true, true)
             .expect("second right-click cancels the visible popup");
         assert!(context.cancellation.is_cancelled());
         assert!(matches!(
@@ -5455,6 +5490,76 @@ mod tests {
             explorer_model::ContextMenuInvocationProfile::ExplorerExtended
         );
         assert!(state.take_pending_context_menu_command().is_none());
+    }
+
+    #[test]
+    fn rapid_context_menu_replacement_keeps_latest_target_and_ignores_stale_terminals() {
+        let mut state = state_with_rows();
+        let first = state
+            .begin_context_menu_request(None, 42, 100, 200, false, false)
+            .expect("first context menu");
+        let explorer_model::ExplorerCommand::ShowContextMenu {
+            context: first_context,
+            ..
+        } = first
+        else {
+            panic!("expected context-menu command");
+        };
+
+        let second = state
+            .begin_context_menu_request(None, 42, 300, 400, false, false)
+            .expect("first mouse replacement");
+        assert!(matches!(
+            second,
+            explorer_model::ExplorerCommand::ShowContextMenu { ref request, .. }
+                if request.point == explorer_model::MenuPoint { x: 300, y: 400 }
+        ));
+        let latest = state
+            .begin_context_menu_request(None, 42, 500, 600, false, true)
+            .expect("latest mouse replacement");
+        let explorer_model::ExplorerCommand::ShowContextMenu {
+            context: latest_context,
+            request: latest_request,
+        } = latest
+        else {
+            panic!("expected immediate mouse replacement command");
+        };
+        assert_eq!(
+            latest_request.point,
+            explorer_model::MenuPoint { x: 500, y: 600 }
+        );
+
+        let stale_context = explorer_model::RequestContext::new(
+            state.tabs().active_tab().id,
+            state.tabs().active_tab().generation,
+        );
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::ContextMenuFinished {
+                context: stale_context,
+                outcome: explorer_model::ContextMenuOutcome::Cancelled,
+            }),
+            explorer_model::WindowEventOutcome::IgnoredStale
+        );
+        assert!(state.take_pending_context_menu_command().is_none());
+
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::ContextMenuFinished {
+                context: first_context.clone(),
+                outcome: explorer_model::ContextMenuOutcome::Cancelled,
+            }),
+            explorer_model::WindowEventOutcome::IgnoredStale
+        );
+        assert!(state.context_menu_pending());
+        assert!(state.take_pending_context_menu_command().is_none());
+
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::ContextMenuFinished {
+                context: latest_context,
+                outcome: explorer_model::ContextMenuOutcome::Cancelled,
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert!(!state.context_menu_pending());
     }
 
     #[test]

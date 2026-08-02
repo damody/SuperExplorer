@@ -17,6 +17,7 @@ namespace RustExplorerUitest {
     public static class ReplacementMenuNative {
         [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
         [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll", SetLastError = true)] public static extern IntPtr SendMessageTimeout(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam, uint flags, uint timeout, out IntPtr result);
         [DllImport("user32.dll")] public static extern int GetMenuItemCount(IntPtr menu);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetMenuString(IntPtr menu, uint item, StringBuilder text, int count, uint flags);
         [DllImport("user32.dll")] public static extern bool GetMenuItemRect(IntPtr hwnd, IntPtr menu, uint item, out RECT rect);
@@ -126,8 +127,10 @@ function Wait-Replacement([Windows.Automation.AutomationElement]$Element, $Origi
         $popups = @(Get-NativePopupMenus)
         if ($selected -and $popups.Count -eq 1) {
             $session = Get-PopupSession $popups[0]
-            if ($session.Menu -ne [IntPtr]::Zero -and
-                ($session.Hwnd -ne $OriginalSession.Hwnd -or $session.Menu -ne $OriginalSession.Menu -or $session.ProcessId -ne $OriginalSession.ProcessId)) {
+            # HWND and HMENU values may be reused immediately after the old popup is destroyed.
+            # Exact target is proved below by physically invoking Copy and checking the clipboard,
+            # so handle inequality is diagnostic rather than a pass/fail oracle.
+            if ($session.Menu -ne [IntPtr]::Zero) {
                 return $session
             }
         }
@@ -159,6 +162,28 @@ function Wait-NoPopup([string]$Description, [int]$TimeoutSeconds = 5) {
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
     throw "native popup remained visible: $Description"
+}
+
+function Assert-ExplorerResponsive([int]$Cycle) {
+    if ($context.Process.HasExited) {
+        throw "cycle $Cycle application exited during context-menu replacement"
+    }
+    $result = [IntPtr]::Zero
+    $started = [Diagnostics.Stopwatch]::StartNew()
+    $sent = [RustExplorerUitest.ReplacementMenuNative]::SendMessageTimeout(
+        $context.Hwnd,
+        0,
+        [IntPtr]::Zero,
+        [IntPtr]::Zero,
+        0x0002,
+        1000,
+        [ref]$result
+    )
+    $started.Stop()
+    if ($sent -eq [IntPtr]::Zero) {
+        throw "cycle $Cycle SuperExplorer window stopped responding during second right-click"
+    }
+    return [int]$started.ElapsedMilliseconds
 }
 
 function Invoke-PopupCopy($Session) {
@@ -220,6 +245,7 @@ try {
     $baselineHandles = $context.Process.HandleCount
     $baselineThreads = $context.Process.Threads.Count
     $sessions = [Collections.Generic.List[object]]::new()
+    $responsivenessMilliseconds = [Collections.Generic.List[int]]::new()
 
     for ($cycle = 1; $cycle -le 10; $cycle++) {
         $source = if (($cycle % 2) -eq 1) { $alpha } else { $beta }
@@ -233,6 +259,7 @@ try {
         # The popup may cover the name cells below it. Explorer can retarget only a secondary
         # click that lands on a visible part of the other row, so use the unobscured right edge.
         Invoke-RightClick -Element $target -FromRightEdge
+        $responsivenessMilliseconds.Add((Assert-ExplorerResponsive -Cycle $cycle))
         $replacement = Wait-Replacement -Element $target -OriginalSession $original
         $sessions.Add([pscustomobject]@{
             cycle = $cycle
@@ -244,6 +271,7 @@ try {
             replacement_hwnd = $replacement.Hwnd.ToInt64()
             replacement_menu = $replacement.Menu.ToInt64()
             replacement_pid = $replacement.ProcessId
+            native_identity_changed = ($replacement.Hwnd -ne $original.Hwnd -or $replacement.Menu -ne $original.Menu -or $replacement.ProcessId -ne $original.ProcessId)
         })
 
         if ($cycle -eq 1) {
@@ -346,13 +374,16 @@ try {
         replacement_cycles = 10
         exact_clipboard_target_each_cycle = $true
         process_tree_bound_popups = $true
-        popup_session_identity_changed = $true
+        popup_session_identity_changed_each_cycle = (@($sessions | Where-Object { -not $_.native_identity_changed }).Count -eq 0)
+        replacement_session_result_verified = $true
         background_dismissal_preserved = $true
         multi_selection_preserved = $true
         popup_input_not_replayed = $true
         outside_left_dismissal = $true
         one_broker = $true
         resources_bounded = $true
+        responsive_each_cycle = $true
+        maximum_responsiveness_probe_ms = ($responsivenessMilliseconds | Measure-Object -Maximum).Maximum
         escape_closed = $true
     } | ConvertTo-Json | Set-Content -Encoding utf8 -LiteralPath (Join-Path $output 'report.json')
 } finally {

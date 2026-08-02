@@ -176,10 +176,13 @@
       "description": "驗證背景、單選、多選、逾時、取消與原生資源釋放。",
       "suites": ["full", "interop"],
       "program": "cargo.exe",
-      "arguments": ["test", "-p", "explorer-shell-win", "context_menu", "--", "--nocapture"],
+      "arguments": ["test", "-p", "explorer-shell-win", "-p", "explorer-ui", "--lib", "--locked", "context_menu", "--", "--nocapture", "--test-threads=1"],
       "timeout_seconds": 300,
       "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
-      "exclusive_resources": ["ole"]
+      "exclusive_resources": ["ole"],
+      "covers": [
+        "fix-context-menu-reright-click-freeze/context-menu-replacement-liveness/replacement-request-ordering-is-deterministic"
+      ]
     },
     {
       "id": "accessibility-headful",
@@ -1186,7 +1189,9 @@
         "fix-native-context-menu-replacement/native-context-menu-replacement/open-native-popup-is-replaced-by-a-second-genuine-right-click",
         "fix-native-context-menu-replacement/native-context-menu-replacement/replacement-input-has-a-clean-bounded-lifecycle",
         "fix-native-context-menu-replacement/native-context-menu-replacement/replacement-preserves-exact-explorer-selection-semantics",
-        "fix-native-context-menu-replacement/native-context-menu-replacement/replacement-remains-isolated-and-resource-bounded"
+        "fix-native-context-menu-replacement/native-context-menu-replacement/replacement-remains-isolated-and-resource-bounded",
+        "fix-context-menu-reright-click-freeze/context-menu-replacement-liveness/second-right-click-replacement-is-non-blocking",
+        "fix-context-menu-reright-click-freeze/context-menu-replacement-liveness/replacement-preserves-native-menu-behavior-and-resource-bounds"
       ],
       "required_artifacts": ["report.json", "popup-sessions.json", "context-menu-replacement.png"]
     },

@@ -55,16 +55,17 @@ use windows::{
             },
             WindowsAndMessaging::{
                 CREATESTRUCTW, CallNextHookEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-                DestroyMenu, DestroyWindow, EVENT_OBJECT_SHOW, EndMenu, EnumWindows, GA_ROOT,
-                GWLP_USERDATA, GetAncestor, GetClassNameW, GetCursorPos, GetMenuItemCount,
-                GetMenuItemID, GetMenuStringW, GetSubMenu, GetWindowLongPtrW, GetWindowRect,
+                DestroyMenu, DestroyWindow, EVENT_OBJECT_SHOW, EnumWindows, GA_ROOT, GWLP_USERDATA,
+                GetAncestor, GetClassNameW, GetCursorPos, GetMenuItemCount, GetMenuItemID,
+                GetMenuStringW, GetSubMenu, GetWindowLongPtrW, GetWindowRect,
                 GetWindowThreadProcessId, HHOOK, HMENU, IsWindow, IsWindowVisible, MF_BYPOSITION,
-                OBJID_WINDOW, RegisterClassW, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOSIZE,
-                SWP_NOZORDER, SetCursorPos, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
-                SetWindowsHookExW, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, TPM_TOPALIGN,
-                TrackPopupMenuEx, UnhookWindowsHookEx, WH_MOUSE_LL, WINDOW_EX_STYLE,
-                WINEVENT_INCONTEXT, WM_DRAWITEM, WM_INITMENUPOPUP, WM_MEASUREITEM, WM_MENUCHAR,
-                WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WNDCLASSW, WS_POPUP, WindowFromPoint,
+                OBJID_WINDOW, PostMessageW, RegisterClassW, SW_SHOWNORMAL, SWP_NOACTIVATE,
+                SWP_NOSIZE, SWP_NOZORDER, SetCursorPos, SetForegroundWindow, SetWindowLongPtrW,
+                SetWindowPos, SetWindowsHookExW, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+                TPM_TOPALIGN, TrackPopupMenuEx, UnhookWindowsHookEx, WH_MOUSE_LL, WINDOW_EX_STYLE,
+                WINEVENT_INCONTEXT, WM_CANCELMODE, WM_DRAWITEM, WM_INITMENUPOPUP, WM_MEASUREITEM,
+                WM_MENUCHAR, WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WNDCLASSW, WS_POPUP,
+                WindowFromPoint,
             },
         },
     },
@@ -95,6 +96,7 @@ static FORWARDED_MENU_MESSAGES: AtomicUsize = AtomicUsize::new(0);
 thread_local! {
     static MENU_RIGHT_CLICK: Cell<MenuRightClickCapture> = const { Cell::new(MenuRightClickCapture::EMPTY) };
     static MENU_REPLAY_OWNER: Cell<Option<HWND>> = const { Cell::new(None) };
+    static MENU_POPUP_OWNER: Cell<Option<HWND>> = const { Cell::new(None) };
 }
 static PROPERTIES_PLACEMENT: Mutex<Option<PropertiesPlacementState>> = Mutex::new(None);
 
@@ -254,12 +256,14 @@ fn monitor_work_area(owner: Option<HWND>, point: POINT) -> Option<(RECT, RECT)> 
 struct MenuRightClickCapture {
     pressed: Option<ScreenPoint>,
     completed: Option<ScreenPoint>,
+    cancel_requested: bool,
 }
 
 impl MenuRightClickCapture {
     const EMPTY: Self = Self {
         pressed: None,
         completed: None,
+        cancel_requested: false,
     };
 
     fn observe(
@@ -275,20 +279,32 @@ impl MenuRightClickCapture {
         match message {
             WM_RBUTTONDOWN if belongs_to_owner => {
                 self.pressed = Some(point);
-                self.completed = None;
+                if !self.cancel_requested {
+                    self.completed = None;
+                }
                 MenuHookAction::Suppress
             }
             WM_RBUTTONDOWN => {
-                *self = Self::EMPTY;
+                self.pressed = None;
+                if !self.cancel_requested {
+                    self.completed = None;
+                }
                 MenuHookAction::Pass
             }
             WM_RBUTTONUP if self.pressed.is_some() && belongs_to_owner => {
                 self.pressed = None;
                 self.completed = Some(point);
-                MenuHookAction::SuppressAndEndMenu
+                if self.cancel_requested {
+                    MenuHookAction::Suppress
+                } else {
+                    self.cancel_requested = true;
+                    MenuHookAction::SuppressAndPostCancel
+                }
             }
             WM_RBUTTONUP if self.pressed.take().is_some() => {
-                self.completed = None;
+                if !self.cancel_requested {
+                    self.completed = None;
+                }
                 MenuHookAction::Suppress
             }
             _ => MenuHookAction::Pass,
@@ -296,8 +312,8 @@ impl MenuRightClickCapture {
     }
 
     fn take_completed(&mut self) -> Option<ScreenPoint> {
-        let completed = self.completed.take();
-        self.pressed = None;
+        let completed = self.completed;
+        *self = Self::EMPTY;
         completed
     }
 }
@@ -306,7 +322,7 @@ impl MenuRightClickCapture {
 enum MenuHookAction {
     Pass,
     Suppress,
-    SuppressAndEndMenu,
+    SuppressAndPostCancel,
 }
 
 pub(crate) fn start_brokered<P: RequiredTerminalPublisher>(
@@ -315,12 +331,14 @@ pub(crate) fn start_brokered<P: RequiredTerminalPublisher>(
     events: P,
 ) {
     let deadline = Duration::from_millis(u64::from(request.deadline_ms.max(1)));
-    start_bounded_job(context, deadline, events, move || {
+    start_bounded_job_with_replay(context, deadline, events, move || {
         // SAFETY: the broker worker owns one apartment for its entire native menu session.
         unsafe { OleInitialize(None) }
             .map_err(|error| native_menu_error("initialize context menu broker", &error))?;
         let _apartment = OleApartment;
-        show(&request)
+        let mut replay = None;
+        let result = show_with_deferred_replay(&request, Some(&mut replay));
+        Ok((result?, replay))
     });
 }
 
@@ -338,9 +356,39 @@ pub(crate) fn run_host_owned<P: RequiredTerminalPublisher>(
     emit_broker_terminal(&AtomicBool::new(false), context, &events, result);
 }
 
+#[cfg(test)]
 fn start_bounded_job<F, P>(context: RequestContext, deadline: Duration, events: P, job: F)
 where
     F: FnOnce() -> Result<ContextMenuOutcome, ExplorerError> + Send + 'static,
+    P: RequiredTerminalPublisher,
+{
+    start_bounded_job_inner(context, deadline, events, move || (job(), None));
+}
+
+fn start_bounded_job_with_replay<F, P>(
+    context: RequestContext,
+    deadline: Duration,
+    events: P,
+    job: F,
+) where
+    F: FnOnce() -> Result<(ContextMenuOutcome, Option<DeferredMenuReplay>), ExplorerError>
+        + Send
+        + 'static,
+    P: RequiredTerminalPublisher,
+{
+    start_bounded_job_inner(context, deadline, events, move || match job() {
+        Ok((outcome, replay)) => (Ok(outcome), replay),
+        Err(error) => (Err(error), None),
+    });
+}
+
+fn start_bounded_job_inner<F, P>(context: RequestContext, deadline: Duration, events: P, job: F)
+where
+    F: FnOnce() -> (
+            Result<ContextMenuOutcome, ExplorerError>,
+            Option<DeferredMenuReplay>,
+        ) + Send
+        + 'static,
     P: RequiredTerminalPublisher,
 {
     let terminal_sent = Arc::new(AtomicBool::new(false));
@@ -348,8 +396,8 @@ where
     let worker_context = context.clone();
     let worker_events = events.clone();
     std::thread::spawn(move || {
-        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)) {
-            Ok(result) => result,
+        let (result, replay) = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)) {
+            Ok(completion) => completion,
             Err(payload) => {
                 let message = panic_payload_message(payload.as_ref());
                 record_process_error_message(
@@ -359,16 +407,23 @@ where
                     &message,
                     Some(file!()),
                 );
-                Err(ExplorerError::new(
-                    ExplorerErrorKind::Extension,
-                    "context menu handler panic",
-                    true,
-                    "The context menu failed, but Explorer can continue.",
-                    message,
-                ))
+                (
+                    Err(ExplorerError::new(
+                        ExplorerErrorKind::Extension,
+                        "context menu handler panic",
+                        true,
+                        "The context menu failed, but Explorer can continue.",
+                        message,
+                    )),
+                    None,
+                )
             }
         };
-        emit_broker_terminal(&worker_gate, &worker_context, &worker_events, result);
+        if emit_broker_terminal(&worker_gate, &worker_context, &worker_events, result)
+            && let Some(replay) = replay
+        {
+            replay.schedule();
+        }
     });
     std::thread::spawn(move || {
         std::thread::sleep(deadline);
@@ -392,7 +447,7 @@ fn emit_broker_terminal<P: RequiredTerminalPublisher>(
     context: &RequestContext,
     events: &P,
     result: Result<ContextMenuOutcome, ExplorerError>,
-) {
+) -> bool {
     if gate
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
@@ -403,7 +458,7 @@ fn emit_broker_terminal<P: RequiredTerminalPublisher>(
             generation = context.generation.value(),
             "ignored late context-menu broker terminal"
         );
-        return;
+        return false;
     }
     let outcome = match result {
         Ok(outcome) => outcome,
@@ -427,6 +482,34 @@ fn emit_broker_terminal<P: RequiredTerminalPublisher>(
         outcome,
     };
     events.publish_terminal(event);
+    true
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DeferredMenuReplay {
+    app_owner: usize,
+    point: ScreenPoint,
+}
+
+impl DeferredMenuReplay {
+    fn new(app_owner: HWND, point: POINT) -> Self {
+        Self {
+            app_owner: app_owner.0 as usize,
+            point: ScreenPoint::from(point),
+        }
+    }
+
+    fn schedule(self) {
+        let app_owner = HWND(self.app_owner as *mut c_void);
+        let point = POINT::from(self.point);
+        if !schedule_right_click_replay(app_owner, point) {
+            tracing::warn!(
+                x = point.x,
+                y = point.y,
+                "native context-menu replacement replay was rejected"
+            );
+        }
+    }
 }
 
 struct OleApartment;
@@ -463,6 +546,13 @@ impl ContextMenuResourceSnapshot {
 }
 
 pub(crate) fn show(request: &ContextMenuRequest) -> Result<ContextMenuOutcome, ExplorerError> {
+    show_with_deferred_replay(request, None)
+}
+
+fn show_with_deferred_replay(
+    request: &ContextMenuRequest,
+    mut deferred_replay: Option<&mut Option<DeferredMenuReplay>>,
+) -> Result<ContextMenuOutcome, ExplorerError> {
     let started = Instant::now();
     // Capture immediately, before Shell extensions are queried, so a slow handler cannot move
     // the menu away from the point where the secondary button was released.
@@ -532,7 +622,7 @@ pub(crate) fn show(request: &ContextMenuRequest) -> Result<ContextMenuOutcome, E
     // SAFETY: HMENU and HWND remain valid; null TPMPARAMS selects default exclusion behavior.
     // Mouse events can arrive in GPUI logical/client coordinates. Querying the cursor here avoids
     // applying a window origin or DPI scale twice and matches Explorer's TrackPopupMenu contract.
-    let replay_hook = MenuRightClickReplayHook::install(app_owner);
+    let replay_hook = MenuRightClickReplayHook::install(app_owner, owner.hwnd());
     let selected = unsafe {
         TrackPopupMenuEx(
             popup.get(),
@@ -553,13 +643,13 @@ pub(crate) fn show(request: &ContextMenuRequest) -> Result<ContextMenuOutcome, E
         drop(popup);
         if let Some(app_owner) = app_owner
             && let Some(point) = replay_point
-            && !schedule_right_click_replay(app_owner, point)
         {
-            tracing::warn!(
-                x = point.x,
-                y = point.y,
-                "native context-menu replacement replay was rejected"
-            );
+            let replay = DeferredMenuReplay::new(app_owner, point);
+            if let Some(deferred) = deferred_replay.as_mut() {
+                **deferred = Some(replay);
+            } else {
+                replay.schedule();
+            }
         }
         let _ = state.transition(ContextMenuSessionState::Cancelled);
         let _ = state.release();
@@ -771,9 +861,10 @@ fn host_command_from_verb(verb: &str) -> Option<ContextMenuHostCommand> {
 struct MenuRightClickReplayHook(HHOOK);
 
 impl MenuRightClickReplayHook {
-    fn install(app_owner: Option<HWND>) -> Option<Self> {
+    fn install(app_owner: Option<HWND>, popup_owner: HWND) -> Option<Self> {
         MENU_RIGHT_CLICK.with(|capture| capture.set(MenuRightClickCapture::EMPTY));
         MENU_REPLAY_OWNER.with(|owner| owner.set(app_owner));
+        MENU_POPUP_OWNER.with(|owner| owner.set(Some(popup_owner)));
         // SAFETY: the callback uses the system ABI and has static lifetime. The hook is scoped to
         // the native menu loop and always removed before this function returns.
         unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(menu_mouse_hook), None, 0) }
@@ -801,6 +892,7 @@ impl Drop for MenuRightClickReplayHook {
         ACTIVE_MENU_HOOKS.fetch_sub(1, Ordering::AcqRel);
         MENU_RIGHT_CLICK.with(|capture| capture.set(MenuRightClickCapture::EMPTY));
         MENU_REPLAY_OWNER.with(|owner| owner.set(None));
+        MENU_POPUP_OWNER.with(|owner| owner.set(None));
     }
 }
 
@@ -832,10 +924,14 @@ unsafe extern "system" fn menu_mouse_hook(code: i32, wparam: WPARAM, lparam: LPA
         match action {
             MenuHookAction::Pass => {}
             MenuHookAction::Suppress => return LRESULT(1),
-            MenuHookAction::SuppressAndEndMenu => {
-                // The complete physical gesture is now owned by the replacement path. End the
-                // old modal loop only after button-up and suppress both original halves.
-                let _ = unsafe { EndMenu() };
+            MenuHookAction::SuppressAndPostCancel => {
+                // Never tear down TrackPopupMenuEx synchronously from a low-level input callback.
+                // Posting WM_CANCELMODE lets the popup owner's modal loop cancel itself without
+                // re-entering the hook. The captured gesture is replayed only after teardown.
+                if let Some(owner) = MENU_POPUP_OWNER.with(Cell::get) {
+                    let _ =
+                        unsafe { PostMessageW(Some(owner), WM_CANCELMODE, WPARAM(0), LPARAM(0)) };
+                }
                 return LRESULT(1);
             }
         }
@@ -2114,7 +2210,7 @@ mod tests {
         );
         assert_eq!(
             capture.observe(WM_RBUTTONUP, up, true, false),
-            MenuHookAction::SuppressAndEndMenu
+            MenuHookAction::SuppressAndPostCancel
         );
         assert_eq!(capture.take_completed(), Some(up));
         assert_eq!(capture, MenuRightClickCapture::EMPTY);
@@ -2123,6 +2219,35 @@ mod tests {
             capture.observe(WM_RBUTTONDOWN, down, true, true),
             MenuHookAction::Pass
         );
+        assert_eq!(capture, MenuRightClickCapture::EMPTY);
+    }
+
+    #[test]
+    fn replacement_capture_posts_cancel_once_and_keeps_latest_complete_point() {
+        let first_down = ScreenPoint { x: 40, y: 60 };
+        let first_up = ScreenPoint { x: 42, y: 62 };
+        let latest_down = ScreenPoint { x: 140, y: 160 };
+        let latest_up = ScreenPoint { x: 142, y: 162 };
+        let mut capture = MenuRightClickCapture::EMPTY;
+
+        assert_eq!(
+            capture.observe(WM_RBUTTONDOWN, first_down, true, false),
+            MenuHookAction::Suppress
+        );
+        assert_eq!(
+            capture.observe(WM_RBUTTONUP, first_up, true, false),
+            MenuHookAction::SuppressAndPostCancel
+        );
+        assert_eq!(
+            capture.observe(WM_RBUTTONDOWN, latest_down, true, false),
+            MenuHookAction::Suppress
+        );
+        assert_eq!(
+            capture.observe(WM_RBUTTONUP, latest_up, true, false),
+            MenuHookAction::Suppress,
+            "the popup owner receives only one asynchronous cancellation request"
+        );
+        assert_eq!(capture.take_completed(), Some(latest_up));
         assert_eq!(capture, MenuRightClickCapture::EMPTY);
     }
 
