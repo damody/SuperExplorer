@@ -33,6 +33,10 @@ const NON_INVENTORY_RELEASE_RECORDS: [&str; 2] = [
 ];
 const NON_INVENTORY_RELEASE_EVIDENCE_FILES: [&str; 3] =
     ["protection.json", "bundle.sig", "provenance.json"];
+const PUBLIC_SDK_CRATE_ROOTS: [&str; 2] = [
+    "crates/explorer-extension-api",
+    "crates/explorer-extension-ui-api",
+];
 type LockPackageKey = (String, String, Option<String>);
 type LockChecksumMap = BTreeMap<LockPackageKey, Option<String>>;
 
@@ -209,11 +213,7 @@ fn generate(root: &Path) -> Result<(SdkLock, BundleManifest), String> {
         &command_output("rustc", &["-Vv"], root)?,
         &command_output("cargo", &["-Vv"], root)?,
     )?;
-    let sdk_public_source_hashes = inventory
-        .iter()
-        .filter(|entry| entry.path.starts_with("sdk/src/"))
-        .cloned()
-        .collect::<Vec<_>>();
+    let sdk_public_source_hashes = public_sdk_source_hashes(&inventory);
     let bundle_identity = serde_json::json!({
         "inventory_root_sha256": inventory_root_sha256,
         "toolchain": toolchain,
@@ -252,6 +252,14 @@ fn generate(root: &Path) -> Result<(SdkLock, BundleManifest), String> {
         generated_artifacts: Vec::new(),
     };
     Ok((lock, manifest))
+}
+
+fn public_sdk_source_hashes(inventory: &[FileHash]) -> Vec<FileHash> {
+    inventory
+        .iter()
+        .filter(|entry| is_public_sdk_source_path(&entry.path))
+        .cloned()
+        .collect()
 }
 
 fn read_gpui(root: &Path, snapshot: Value, snapshot_hash: String) -> Result<GpuiSource, String> {
@@ -527,6 +535,9 @@ fn collect_inventory(root: &Path) -> Result<Vec<FileHash>, String> {
     for relative_root in ["sdk", "vendor/gpui-ce"] {
         collect_directory(root, &root.join(relative_root), &mut inventory)?;
     }
+    for relative_root in PUBLIC_SDK_CRATE_ROOTS {
+        collect_public_sdk_crate(root, relative_root, &mut inventory)?;
+    }
     inventory.sort_by(|left, right| left.path.cmp(&right.path));
     if inventory
         .windows(2)
@@ -535,6 +546,49 @@ fn collect_inventory(root: &Path) -> Result<Vec<FileHash>, String> {
         return Err("inventory contains duplicate paths".to_owned());
     }
     Ok(inventory)
+}
+
+fn collect_public_sdk_crate(
+    root: &Path,
+    relative_root: &str,
+    inventory: &mut Vec<FileHash>,
+) -> Result<(), String> {
+    let crate_root = root.join(relative_root);
+    let cargo_toml = crate_root.join("Cargo.toml");
+    if !cargo_toml.is_file() {
+        return Err(format!(
+            "public SDK crate has no Cargo.toml: {}",
+            cargo_toml.display()
+        ));
+    }
+    inventory.push(FileHash {
+        sha256: hash_file(&cargo_toml)?,
+        path: relative_path(root, &cargo_toml)?,
+    });
+    let build_script = crate_root.join("build.rs");
+    if build_script.is_file() {
+        inventory.push(FileHash {
+            sha256: hash_file(&build_script)?,
+            path: relative_path(root, &build_script)?,
+        });
+    }
+    let source = crate_root.join("src");
+    if !source.is_dir() {
+        return Err(format!(
+            "public SDK crate has no src directory: {}",
+            source.display()
+        ));
+    }
+    collect_directory(root, &source, inventory)
+}
+
+fn is_public_sdk_source_path(path: &str) -> bool {
+    path.starts_with("sdk/src/")
+        || PUBLIC_SDK_CRATE_ROOTS.iter().any(|crate_root| {
+            path == format!("{crate_root}/Cargo.toml")
+                || path == format!("{crate_root}/build.rs")
+                || path.starts_with(&format!("{crate_root}/src/"))
+        })
 }
 
 fn collect_directory(
@@ -1114,6 +1168,19 @@ mod tests {
         fs::create_dir_all(root.join("sdk/releases/rc-1")).unwrap();
         fs::create_dir_all(root.join("sdk/releases/rc-1/nested")).unwrap();
         fs::create_dir_all(root.join("vendor/gpui-ce")).unwrap();
+        for crate_root in [
+            "crates/explorer-extension-api/src",
+            "crates/explorer-extension-ui-api/src",
+        ] {
+            fs::create_dir_all(root.join(crate_root)).unwrap();
+            let package_root = root.join(crate_root).parent().unwrap().to_path_buf();
+            fs::write(
+                package_root.join("Cargo.toml"),
+                b"[package]\nname = \"fixture\"\n",
+            )
+            .unwrap();
+            fs::write(package_root.join("src/lib.rs"), b"pub fn fixture() {}\n").unwrap();
+        }
         fs::write(root.join("sdk/source.rs"), b"first").unwrap();
         fs::write(root.join("sdk/snapshot/release-ledger.json"), b"ledger-one").unwrap();
         fs::write(root.join("sdk/snapshot/release-freeze.json"), b"freeze-one").unwrap();
@@ -1163,5 +1230,74 @@ mod tests {
         assert_ne!(after_release_source, after_nested_release_source);
         assert_ne!(before, after_source);
         assert_ne!(inventory_hash(&before), inventory_hash(&after_source));
+    }
+
+    #[test]
+    fn public_extension_api_sources_affect_bundle_identity_but_host_sources_do_not() {
+        let root = std::env::temp_dir().join(format!(
+            "superexplorer-bundle-public-api-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("sdk/src")).unwrap();
+        fs::create_dir_all(root.join("vendor/gpui-ce")).unwrap();
+        for crate_root in [
+            "crates/explorer-extension-api",
+            "crates/explorer-extension-ui-api",
+        ] {
+            fs::create_dir_all(root.join(crate_root).join("src")).unwrap();
+            fs::write(
+                root.join(crate_root).join("Cargo.toml"),
+                b"[package]\nname = \"fixture\"\n",
+            )
+            .unwrap();
+            fs::write(
+                root.join(crate_root).join("src/lib.rs"),
+                b"pub fn public() {}\n",
+            )
+            .unwrap();
+        }
+        let host = root.join("crates/explorer-extension-host/src");
+        fs::create_dir_all(&host).unwrap();
+        fs::write(host.join("lib.rs"), b"pub fn host() {}\n").unwrap();
+
+        let before = collect_inventory(&root).unwrap();
+        let before_public = public_sdk_source_hashes(&before);
+        let before_identity = serde_json::json!({
+            "inventory_root_sha256": inventory_hash(&before),
+            "sdk_public_source_hashes": before_public,
+        });
+        fs::write(
+            root.join("crates/explorer-extension-api/src/lib.rs"),
+            b"pub fn changed_public_api() {}\n",
+        )
+        .unwrap();
+        let after_public_change = collect_inventory(&root).unwrap();
+        let after_public_hashes = public_sdk_source_hashes(&after_public_change);
+        let after_public_identity = serde_json::json!({
+            "inventory_root_sha256": inventory_hash(&after_public_change),
+            "sdk_public_source_hashes": after_public_hashes,
+        });
+        assert_ne!(
+            before_public,
+            public_sdk_source_hashes(&after_public_change)
+        );
+        assert_ne!(
+            inventory_hash(&before),
+            inventory_hash(&after_public_change)
+        );
+        assert_ne!(
+            bundle_id_from_identity(&before_identity).unwrap(),
+            bundle_id_from_identity(&after_public_identity).unwrap()
+        );
+
+        fs::write(host.join("lib.rs"), b"pub fn changed_host() {}\n").unwrap();
+        let after_host_change = collect_inventory(&root).unwrap();
+        assert_eq!(after_public_change, after_host_change);
+        assert_eq!(
+            public_sdk_source_hashes(&after_public_change),
+            public_sdk_source_hashes(&after_host_change)
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 }

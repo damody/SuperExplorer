@@ -2135,6 +2135,13 @@ fn metadata_is_reparse_point(metadata: &Metadata) -> bool {
     }
 }
 
+pub(crate) fn sealed_manifest_canonical_digest(
+    manifest: &PackageManifestV1,
+) -> Result<String, PackageManifestErrorV1> {
+    let canonical = manifest.canonical_serialized_bytes()?;
+    Ok(hex_sha256(&Sha256::digest(canonical).into()))
+}
+
 fn hex_sha256(digest: &[u8; 32]) -> String {
     let mut text = String::with_capacity(64);
     for byte in digest {

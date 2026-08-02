@@ -35,8 +35,10 @@
 //! ordinary Rust trait object, or a `std` collection. Cross-DLL owned values use
 //! `abi_stable` types such as [`abi_stable::std_types::RResult`].
 //!
-//! Version 1.x is append-only. New root or registrar functions may be appended
-//! after the `last_prefix_field`; hosts must treat those tail accessors as optional.
+//! Version 1.x freezes the root-module fields because `abi_stable 0.11.3` root
+//! reflection rejects a newer root with additional fields when loading an older
+//! DLL. Evolution therefore appends function or data fields only to the registrar
+//! after its `last_prefix_field`; hosts must treat those tail accessors as optional.
 //! Existing fields and the meanings of their numeric IDs never change during 1.x.
 //! New error/outcome codes are represented by transparent numeric newtypes so an
 //! older host can preserve and report an unknown value without guessing its meaning.
@@ -44,8 +46,11 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use abi_stable::{
-    StableAbi, library::RootModule, package_version_strings, sabi_types::VersionStrings,
-    std_types::RResult,
+    StableAbi,
+    library::RootModule,
+    package_version_strings,
+    sabi_types::VersionStrings,
+    std_types::{ROption, RResult},
 };
 
 /// The `SE` namespace revision one (`0x5345` is ASCII `SE`).
@@ -183,6 +188,49 @@ impl AbiSchemaIdV1 {
     #[must_use]
     pub const fn is_valid(self) -> bool {
         self.authority() != 0 && self.revision() != 0
+    }
+}
+
+/// A SHA-256 UI ABI fingerprint reported by a GPUI-capable extension DLL.
+///
+/// The host binds these fixed-width bytes to both the sealed manifest and its
+/// approved SDK artifact before a plugin callback may run.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, StableAbi)]
+pub struct UiAbiFingerprintV1([u8; 32]);
+
+impl UiAbiFingerprintV1 {
+    /// Creates a fingerprint from fixed-width SHA-256 bytes.
+    #[must_use]
+    pub const fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Returns the fixed-width SHA-256 bytes.
+    #[must_use]
+    pub const fn bytes(self) -> [u8; 32] {
+        self.0
+    }
+
+    /// Parses exactly 64 lowercase hexadecimal SHA-256 characters.
+    #[must_use]
+    pub fn from_lower_hex(value: &str) -> Option<Self> {
+        if value.len() != 64 {
+            return None;
+        }
+        let mut bytes = [0_u8; 32];
+        for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+            bytes[index] = hex_nibble(pair[0])? << 4 | hex_nibble(pair[1])?;
+        }
+        Some(Self(bytes))
+    }
+}
+
+const fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
     }
 }
 
@@ -397,9 +445,11 @@ pub fn translate_registrar_panic(
 
 /// The prefix-type registrar for the v1 root module.
 ///
-/// During SDK 1.x, new functions are appended after `register` and are accessed
-/// by hosts as `Option<extern "C" fn(...) -> ...>`. Existing plugins omit
-/// those fields safely; they must never be re-ordered or given new meanings.
+/// During SDK 1.x, new fields are appended after `register`. Optional function
+/// fields are accessed by hosts as `Option<extern "C" fn(...) -> ...>` and
+/// optional data fields through their corresponding optional accessors. Existing
+/// plugins omit those fields safely; they must never be re-ordered or given new
+/// meanings.
 #[repr(C)]
 #[derive(StableAbi)]
 #[sabi(kind(Prefix(prefix_ref = ExtensionRegistrarV1_Ref)))]
@@ -417,6 +467,12 @@ pub struct ExtensionRegistrarV1 {
     /// incompatibility.
     #[sabi(missing_field(option))]
     pub describe_contract: extern "C" fn() -> StableIdV1,
+    /// Optional binary UI ABI fingerprint for a GPUI-capable extension DLL.
+    ///
+    /// This second append-only tail remains absent on old data-only SDK 1.x
+    /// registrars. The host reads it as data before invoking [`Self::register`].
+    #[sabi(missing_field(option))]
+    pub ui_abi_fingerprint_sha256: ROption<UiAbiFingerprintV1>,
 }
 
 /// The single `abi_stable` root module exported by a Rust extension DLL.
@@ -513,6 +569,32 @@ mod tests {
     }
 
     #[test]
+    fn ui_abi_fingerprint_requires_canonical_lower_hex_sha256() {
+        let canonical = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            UiAbiFingerprintV1::from_lower_hex(canonical),
+            Some(UiAbiFingerprintV1::new([
+                0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+                0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
+                0x89, 0xab, 0xcd, 0xef,
+            ]))
+        );
+        assert_eq!(
+            UiAbiFingerprintV1::from_lower_hex(&canonical.to_ascii_uppercase()),
+            None
+        );
+        assert_eq!(UiAbiFingerprintV1::from_lower_hex(&canonical[..63]), None);
+        assert_eq!(
+            UiAbiFingerprintV1::from_lower_hex(&format!("{canonical}0")),
+            None
+        );
+        assert_eq!(
+            UiAbiFingerprintV1::from_lower_hex(&format!("g{}", &canonical[1..])),
+            None
+        );
+    }
+
+    #[test]
     fn root_contract_and_request_are_v1_values() {
         let request = registrar_request_v1();
 
@@ -528,7 +610,7 @@ mod tests {
             <ExtensionRootModuleV1_Ref as RootModule>::VERSION_STRINGS
                 .version
                 .as_str(),
-            "1.1.0"
+            "1.2.0"
         );
     }
 
@@ -549,6 +631,7 @@ mod tests {
         let registrar = ExtensionRegistrarV1 {
             register: RegistrarCallbackV1::new::<Accepts>(),
             describe_contract,
+            ui_abi_fingerprint_sha256: ROption::RNone,
         }
         .leak_into_prefix();
         let root = ExtensionRootModuleV1 {
@@ -567,6 +650,10 @@ mod tests {
         assert_eq!(root.abi_schema(), ABI_SCHEMA_V1);
         assert_eq!(root.root_contract_id(), ROOT_MODULE_CONTRACT_ID_V1);
         assert_eq!(root.sdk_major(), SDK_MAJOR_VERSION_V1);
+        assert_eq!(
+            root.registrar().ui_abi_fingerprint_sha256(),
+            Some(ROption::RNone)
+        );
         assert_eq!(
             root.registrar().describe_contract().map(|query| query()),
             Some(ROOT_MODULE_CONTRACT_ID_V1)

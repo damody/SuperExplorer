@@ -12,6 +12,11 @@ fn run(mode: &str, plugin: &Path, marker: &Path) -> Result<(), String> {
     if root.registrar().describe_contract().is_some() {
         return Err("old v1 plugin unexpectedly exposes the optional registrar tail".to_owned());
     }
+    if root.registrar().ui_abi_fingerprint_sha256().is_some() {
+        return Err(
+            "old v1 plugin unexpectedly exposes the optional UI fingerprint tail".to_owned(),
+        );
+    }
     let mut host = ExtensionHost::new();
     host.start();
     let result = host.register_root(root);

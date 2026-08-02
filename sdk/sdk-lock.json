@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "bundle_id": "sdk-6dbd4586190484c12f48bfa6",
-  "inventory_root_sha256": "31a07415df5fd2798806d1363e3a5fb4453d036cf6ffeaa4b89b4f89a0fbac29",
+  "bundle_id": "sdk-085e22dbd70a5dbf8a005565",
+  "inventory_root_sha256": "e5fadcaeeead6cdf4751bbb6ada721476f6362233c3055667659ea6daff91d35",
   "toolchain": {
     "rustc_release": "1.97.1",
     "rustc_commit_hash": "8bab26f4f68e0e26f0bb7960be334d5b520ea452",
@@ -14830,11 +14830,43 @@
   },
   "sdk_public_source_hashes": [
     {
+      "path": "crates/explorer-extension-api/Cargo.toml",
+      "sha256": "59a9f345473c75e138ca618b43664fc2997a3cf4008a341cdd21370801fd0db8"
+    },
+    {
+      "path": "crates/explorer-extension-api/src/lib.rs",
+      "sha256": "327f5bb447618061cdf46d0606f626f6951fe4f9c3f87cc4cdddf7ce60e07bdf"
+    },
+    {
+      "path": "crates/explorer-extension-ui-api/Cargo.toml",
+      "sha256": "633eaea152ccf4252828780594b2b9acd0b3a55dd560f24cc910a7ca56b2c37e"
+    },
+    {
+      "path": "crates/explorer-extension-ui-api/src/lib.rs",
+      "sha256": "c199ac26a829316881ab36b0bb0e4f7131444c62c84afe8a3344bc647bf61687"
+    },
+    {
       "path": "sdk/src/lib.rs",
       "sha256": "512ead01858ac2a7761926716303a931e33c2d4472cb0b1ffd01c4ff2b3acf10"
     }
   ],
   "inventory": [
+    {
+      "path": "crates/explorer-extension-api/Cargo.toml",
+      "sha256": "59a9f345473c75e138ca618b43664fc2997a3cf4008a341cdd21370801fd0db8"
+    },
+    {
+      "path": "crates/explorer-extension-api/src/lib.rs",
+      "sha256": "327f5bb447618061cdf46d0606f626f6951fe4f9c3f87cc4cdddf7ce60e07bdf"
+    },
+    {
+      "path": "crates/explorer-extension-ui-api/Cargo.toml",
+      "sha256": "633eaea152ccf4252828780594b2b9acd0b3a55dd560f24cc910a7ca56b2c37e"
+    },
+    {
+      "path": "crates/explorer-extension-ui-api/src/lib.rs",
+      "sha256": "c199ac26a829316881ab36b0bb0e4f7131444c62c84afe8a3344bc647bf61687"
+    },
     {
       "path": "sdk/.cargo/config.toml",
       "sha256": "83e98f33a1c53511f601466ad8aaeff897e672506b79bd2523f110ce604ccec3"
@@ -14949,7 +14981,7 @@
     },
     {
       "path": "sdk/fixtures/extension-api-contract/current-host/Cargo.lock",
-      "sha256": "e9d18a29a94e1ca4aadb207ae6f0d9d22e60a2ccae72cc2ed2296a918d72fa2d"
+      "sha256": "06ae2cc1d8ea7ad0ad3024038c741b14e6ca999be13f893152ab6352972f6b16"
     },
     {
       "path": "sdk/fixtures/extension-api-contract/current-host/Cargo.toml",
@@ -14957,7 +14989,7 @@
     },
     {
       "path": "sdk/fixtures/extension-api-contract/current-host/src/main.rs",
-      "sha256": "e0ebcf86496050ec2cf70d8b168bb9e0b82254c1cdbbea88079447d57d43e6f1"
+      "sha256": "e4f7b7f084a12008033880e94039284e3ed6964afa9b2dd694894a7640c78cf6"
     },
     {
       "path": "sdk/fixtures/extension-api-contract/old-v1-api/Cargo.toml",
@@ -14980,6 +15012,42 @@
       "sha256": "14f600bc64f2898cab7fa9d73499ee5a761402902b59a45bea9198f05a5a5edf"
     },
     {
+      "path": "sdk/fixtures/extension-dll-loader-contract/Cargo.lock",
+      "sha256": "700c504b3a4ec23a03089d5bb85a7e044e6a4c796615e772be9ba0d923f98cc5"
+    },
+    {
+      "path": "sdk/fixtures/extension-dll-loader-contract/Cargo.toml",
+      "sha256": "b5c59df712902b85a0114b481dab54f43a7fa81abfbe7fcce5b61df86188ac4b"
+    },
+    {
+      "path": "sdk/fixtures/extension-dll-loader-contract/old-runner/Cargo.toml",
+      "sha256": "8dcea635d481d61dfdfe530e65ec36d62f3ffe0ee2e159cc84e2ecfd0e3d7356"
+    },
+    {
+      "path": "sdk/fixtures/extension-dll-loader-contract/old-runner/src/main.rs",
+      "sha256": "521ed228ffdd188b0dcf98cdd943566ba9a6b232fd28a30e999468a15be7090b"
+    },
+    {
+      "path": "sdk/fixtures/extension-dll-loader-contract/plugin/Cargo.toml",
+      "sha256": "428379159dc40228f9fe6787ca54a5c4e7cf278646dde100420a0e2bada10a0e"
+    },
+    {
+      "path": "sdk/fixtures/extension-dll-loader-contract/plugin/build.rs",
+      "sha256": "9cb0208df9d9ca68fc61d85c05550793f8f44bb49926622b840b2745fa143fec"
+    },
+    {
+      "path": "sdk/fixtures/extension-dll-loader-contract/plugin/src/lib.rs",
+      "sha256": "fce599e2dfab777abf1039a709ed5e913c1a98b6f005499f5d769eab7255aad0"
+    },
+    {
+      "path": "sdk/fixtures/extension-dll-loader-contract/runner/Cargo.toml",
+      "sha256": "5c229e046d070ca008f31027fa4e65ddd66a13a893241c03d16fe5977e0fb5b1"
+    },
+    {
+      "path": "sdk/fixtures/extension-dll-loader-contract/runner/src/main.rs",
+      "sha256": "9ff9e435b97d8d79fb8f71974a1ea871367a815b340c69fcc7055bb538b9e97f"
+    },
+    {
       "path": "sdk/fixtures/p0-consumer/Cargo.lock",
       "sha256": "c05ece636684ecc574c7db78afbaa93d502bf09e2e330f5b4aac12d7d2337123"
     },
@@ -14993,11 +15061,11 @@
     },
     {
       "path": "sdk/fixtures/p0-consumer/src/lib.rs",
-      "sha256": "2919e0fdf9908295a1d6106d4117facf40aa1e1540d03d4d0c77fbc59943f60c"
+      "sha256": "8defccfc72dee6a7ab08dc0cb393f1beff1dba2d06b88070d75b4af66e5386d0"
     },
     {
       "path": "sdk/fixtures/package-manifest-v1/Cargo.lock",
-      "sha256": "d61c091518c763634d31038dec1176953a564a96950ab5c80014cab59c319211"
+      "sha256": "cd224353f5e853d931ea825d7511700cb611949e9a97b97541be2b93b24739cc"
     },
     {
       "path": "sdk/fixtures/package-manifest-v1/Cargo.toml",
@@ -15129,7 +15197,7 @@
     },
     {
       "path": "sdk/fixtures/package-resolution-v1/Cargo.lock",
-      "sha256": "15cc160fd3604f459384bb9677e92212dae329594f1fd8f2b6a4dea2a5c5a345"
+      "sha256": "3a048a31716ad338f0452b6ede64fc36ba48a06b0f542f47d19b7521dadf4bce"
     },
     {
       "path": "sdk/fixtures/package-resolution-v1/Cargo.toml",
@@ -15149,7 +15217,7 @@
     },
     {
       "path": "sdk/fixtures/package-validation-v1/Cargo.lock",
-      "sha256": "e94c74d83427a47ae00cb32fc11210ab1919081344f9fd88a6b311a9bce0cb11"
+      "sha256": "80ebc5fbdca2b71791717ce3c47075a09b91503cb1028e920751ebb17d66d722"
     },
     {
       "path": "sdk/fixtures/package-validation-v1/Cargo.toml",
@@ -15268,6 +15336,10 @@
       "sha256": "3b3110f15f9c082e292b448b1681380d6e01db9b4772cf9841f7749f959add02"
     },
     {
+      "path": "sdk/tests/extension-dll-loader-contract.ps1",
+      "sha256": "2eed4c149bdbf97fae3c10e5e349743924c5111a60fa887b4f72acb06872de47"
+    },
+    {
       "path": "sdk/tests/gpui-baseline-contract.ps1",
       "sha256": "65a4fc43e6c5be9843d28042d071bb0236589d2ee0e2c20f16cd43321c913528"
     },
@@ -15309,7 +15381,7 @@
     },
     {
       "path": "sdk/tests/package-resolution-v1-contract.ps1",
-      "sha256": "068c2a3c4c879fe630a307307f1114509682fde3bb908c1b5ae049c09ea98d95"
+      "sha256": "7d3bcfe09d3531b74ab7f5c20957b43eac866b0d726d740890e87016dfd8cde6"
     },
     {
       "path": "sdk/tests/package-validation-v1-contract.ps1",
@@ -15385,7 +15457,7 @@
     },
     {
       "path": "sdk/tools/bundle-generator/src/lib.rs",
-      "sha256": "8a3e384290f0e86c29d7b64b7631d50962bce6560b5889c4785ef4abf6d43012"
+      "sha256": "5f1786d8687bcef2ca537fd6cee65ac5335b1a4b9d54fb41a045d3de1c7cc8d3"
     },
     {
       "path": "sdk/tools/bundle-generator/src/main.rs",

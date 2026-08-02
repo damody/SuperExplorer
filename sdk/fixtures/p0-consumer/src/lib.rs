@@ -34,7 +34,7 @@ pub const ABI_SCHEMA_VERSION: u32 = 1;
 /// A snapshot-bound immutable compatibility value, copied from the canonical
 /// SDK artifact when this template was produced.
 pub const UI_ABI_FINGERPRINT: &str =
-    "70d8dba91b206e49420ddc99ddcdf476f01f084971be23a373589744a636b7c4";
+    "92a05fdb333b30307a6ee3ec0da73f6fa2a44f92c6ac7735d24d662fcc089f59";
 
 const MARKER_ENVIRONMENT_VARIABLE: &str = "P0_CONSUMER_REGISTRAR_MARKER";
 

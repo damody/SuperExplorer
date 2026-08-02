@@ -2,10 +2,9 @@
 
 use std::collections::BTreeSet;
 
-use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::ResolvedPackageV1;
+use crate::{ResolvedPackageV1, package_validation::sealed_manifest_canonical_digest};
 
 pub const MAX_CONTRIBUTIONS_PER_BATCH_V1: usize = 1_024;
 pub const MAX_CAPABILITIES_PER_CONTRIBUTION_V1: usize = 64;
@@ -235,21 +234,8 @@ pub enum ContributionGateErrorV1 {
 fn sealed_manifest_digest(
     resolved: &ResolvedPackageV1<'_>,
 ) -> Result<String, ContributionGateErrorV1> {
-    let bytes = resolved
-        .manifest()
-        .canonical_serialized_bytes()
-        .map_err(|_| ContributionGateErrorV1::SealedManifestDigestUnavailable)?;
-    Ok(hex_digest(&Sha256::digest(bytes)))
-}
-
-fn hex_digest(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(char::from(HEX[usize::from(*byte >> 4)]));
-        output.push(char::from(HEX[usize::from(*byte & 0x0f)]));
-    }
-    output
+    sealed_manifest_canonical_digest(resolved.manifest())
+        .map_err(|_| ContributionGateErrorV1::SealedManifestDigestUnavailable)
 }
 
 fn preflight_batch(
