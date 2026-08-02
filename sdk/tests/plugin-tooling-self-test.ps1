@@ -74,11 +74,25 @@ try {
     & (Join-Path $scripts 'build-plugin.ps1') -PluginRoot $temp | Out-Null
     $buildReport = Join-Path $temp ("target\superexplorer\$($lock.bundle_id)\reports\build.json")
     if (-not (Test-Path -LiteralPath $buildReport)) { throw 'build report was not retained' }
+    $dist = Join-Path $temp 'dist'
+    $oldInjectedFailure = $env:SUPEREXPLORER_PACKAGE_TEST_FAIL_AFTER_SIDECAR
+    try {
+        $env:SUPEREXPLORER_PACKAGE_TEST_FAIL_AFTER_SIDECAR = '1'
+        Assert-Fails { & (Join-Path $scripts 'package-plugin.ps1') -PluginRoot $temp } 'injected sidecar publication failure'
+    } finally {
+        if ($null -eq $oldInjectedFailure) { Remove-Item Env:SUPEREXPLORER_PACKAGE_TEST_FAIL_AFTER_SIDECAR -ErrorAction SilentlyContinue } else { $env:SUPEREXPLORER_PACKAGE_TEST_FAIL_AFTER_SIDECAR = $oldInjectedFailure }
+    }
+    if ((Test-Path -LiteralPath $dist) -and @(Get-ChildItem -LiteralPath $dist -Force).Count -ne 0) {
+        throw 'injected publication failure left a partial package output'
+    }
     $package = & (Join-Path $scripts 'package-plugin.ps1') -PluginRoot $temp
     $firstPackageHash = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash
     $secondPackage = & (Join-Path $scripts 'package-plugin.ps1') -PluginRoot $temp
     if ($package -ne $secondPackage -or $firstPackageHash -ne (Get-FileHash -LiteralPath $secondPackage -Algorithm SHA256).Hash) {
         throw 'repeated packaging was not byte-identical'
+    }
+    foreach ($sidecar in @("$package.sha256", ($package -replace '\.sepack$', '.package-report.json'))) {
+        if (-not (Test-Path -LiteralPath $sidecar)) { throw "complete package publication omitted sidecar: $sidecar" }
     }
     [IO.File]::AppendAllText((Join-Path $temp "target\superexplorer\$($lock.bundle_id)\build\plugin.dll"), 'tamper')
     Assert-Fails { & (Join-Path $scripts 'package-plugin.ps1') -PluginRoot $temp } 'changed DLL after build'

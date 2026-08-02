@@ -34,6 +34,13 @@ A materialized consumer project can be validated, built, and packaged only from
 the SDK contract and offline vendor tree. The checked-in P0 fixture is a
 placeholder template exercised by `sdk/tests/plugin-tooling-self-test.ps1`.
 
+The automated `clean-readme-reproduction` gate runs this exact documented
+reproduction command against a fresh materialized fixture:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/plugin-tooling-self-test.ps1
+```
+
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File sdk/scripts/validate-plugin.ps1 -PluginRoot C:\path\to\plugin
 powershell -NoProfile -ExecutionPolicy Bypass -File sdk/scripts/build-plugin.ps1 -PluginRoot C:\path\to\plugin
@@ -46,6 +53,12 @@ artifact provenance, and the immutable prior-release ledger. The canonical
 `sdk/snapshot/release-freeze.json` must not be created from fixture evidence.
 Use `sdk/scripts/freeze-release.ps1` only in that protected release context;
 local coverage belongs in `sdk/tests/release-freeze-contract.ps1`.
+The versioned [release policy](ci/release-policy.json) fixes the provider and
+policy ID; signer name, primary fingerprint, keyring hash, protection-record
+hash, builder, and predicate are injected only by the `sdk-release-freeze`
+protected environment in `.github/workflows/freeze-gpui-release.yml`. The
+freeze script compares every caller value and evidence hash against those
+protected values before verifying the annotated tag and detached bundle.
 
 ## Extension API ABI contract
 

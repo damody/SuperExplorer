@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://superexplorer.invalid/schemas/release-ledger.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "releases"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "releases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rc_id", "bundle_id", "source"],
+        "properties": {
+          "rc_id": { "type": "string", "minLength": 1 },
+          "bundle_id": { "type": "string", "minLength": 1 },
+          "source": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["revision", "tree"],
+            "properties": {
+              "revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+              "tree": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

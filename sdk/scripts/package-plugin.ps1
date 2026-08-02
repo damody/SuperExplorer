@@ -31,11 +31,15 @@ $baseName = "$($manifest.package.id)-$($manifest.package.version)-$($manifest.sd
 $finalPackage = Join-Path $dist "$baseName.sepack"
 $finalHash = "$finalPackage.sha256"
 $finalReport = Join-Path $dist "$baseName.package-report.json"
-$stage = Join-Path $dist ('.stage-' + [guid]::NewGuid().ToString('N') + '.sepack')
+$stageRoot = Join-Path $dist ('.stage-' + [guid]::NewGuid().ToString('N'))
+$stage = Join-Path $stageRoot "$baseName.sepack"
+$stageHash = Join-Path $stageRoot "$baseName.sepack.sha256"
+$stageReport = Join-Path $stageRoot "$baseName.package-report.json"
 $entries = [ordered]@{ 'manifest/plugin-project.json' = $manifestPath; 'plugin/plugin.dll' = $dllPath }
 foreach ($payload in $manifest.payloads) { $entries["payload/$($payload.path)"] = Join-Path $root ([string]$payload.path) }
 $orderedNames = @($entries.Keys | Sort-Object -CaseSensitive)
 try {
+    New-Item -ItemType Directory -Path $stageRoot -ErrorAction Stop | Out-Null
     $stream = [IO.File]::Open($stage, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
     try {
         $archive = [IO.Compression.ZipArchive]::new($stream, [IO.Compression.ZipArchiveMode]::Create, $true, [Text.Encoding]::UTF8)
@@ -74,22 +78,45 @@ try {
     } finally { $readStream.Dispose() }
 
     $packageHash = (Get-FileHash -LiteralPath $stage -Algorithm SHA256).Hash.ToLowerInvariant()
-    if (Test-Path -LiteralPath $finalPackage) {
-        $existingHash = (Get-FileHash -LiteralPath $finalPackage -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($existingHash -ne $packageHash) { throw 'a different package already exists; refusing to overwrite it' }
-        Remove-Item -LiteralPath $stage -Force
-    } else {
-        Move-Item -LiteralPath $stage -Destination $finalPackage
-    }
-    [IO.File]::WriteAllText($finalHash, "$packageHash  $baseName.sepack`n", [Text.UTF8Encoding]::new($false))
     $report = [ordered]@{
         schema_version = 1; package_id = [string]$manifest.package.id; version = [string]$manifest.package.version
         bundle_id = [string]$manifest.sdk.bundle_id; package = "$baseName.sepack"; sha256 = $packageHash
         entries = @($orderedNames | ForEach-Object { [ordered]@{ path = $_; size = (Get-Item -LiteralPath $entries[$_]).Length; sha256 = (Get-FileHash -LiteralPath $entries[$_] -Algorithm SHA256).Hash.ToLowerInvariant() } })
     }
-    $reportJson = $report | ConvertTo-Json -Depth 8
-    [IO.File]::WriteAllText($finalReport, "$reportJson`n", [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($stageHash, "$packageHash  $baseName.sepack`n", [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($stageReport, (($report | ConvertTo-Json -Depth 8) + "`n"), [Text.UTF8Encoding]::new($false))
+    $finalPaths = @($finalPackage, $finalHash, $finalReport)
+    $existing = @($finalPaths | Where-Object { Test-Path -LiteralPath $_ })
+    if ($existing.Count -ne 0 -and $existing.Count -ne $finalPaths.Count) {
+        throw 'an incomplete package publication already exists; refusing to repair or overwrite it'
+    }
+    if ($existing.Count -eq $finalPaths.Count) {
+        $existingHash = (Get-FileHash -LiteralPath $finalPackage -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($existingHash -ne $packageHash) { throw 'a different package already exists; refusing to overwrite it' }
+        foreach ($pair in @(@($finalHash, $stageHash), @($finalReport, $stageReport))) {
+            if ((Get-FileHash -LiteralPath $pair[0] -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $pair[1] -Algorithm SHA256).Hash) {
+                throw 'published package sidecar differs from the staged immutable publication'
+            }
+        }
+    } else {
+        $published = @()
+        try {
+            # The package is the final complete-publication marker; roll back sidecars on failure.
+            Move-Item -LiteralPath $stageHash -Destination $finalHash -ErrorAction Stop
+            $published += $finalHash
+            if ($env:SUPEREXPLORER_PACKAGE_TEST_FAIL_AFTER_SIDECAR -eq '1') { throw 'injected package publication failure' }
+            Move-Item -LiteralPath $stageReport -Destination $finalReport -ErrorAction Stop
+            $published += $finalReport
+            Move-Item -LiteralPath $stage -Destination $finalPackage -ErrorAction Stop
+            $published += $finalPackage
+        } catch {
+            foreach ($path in $published) {
+                if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+            }
+            throw
+        }
+    }
     Write-Output $finalPackage
 } finally {
-    if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Force }
+    if (Test-Path -LiteralPath $stageRoot) { Remove-Item -LiteralPath $stageRoot -Recurse -Force }
 }
