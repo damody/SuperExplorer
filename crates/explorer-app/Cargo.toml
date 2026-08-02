@@ -16,6 +16,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 explorer-common = { path = "../explorer-common" }
 explorer-extension-broker = { path = "../explorer-extension-broker" }
+explorer-extension-host = { path = "../explorer-extension-host" }
 explorer-automation = { path = "../explorer-automation" }
 explorer-automation-win = { path = "../explorer-automation-win" }
 explorer-jobs = { path = "../explorer-jobs" }

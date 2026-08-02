@@ -2,6 +2,7 @@
 #define APP_VERSION_TEXT "0.1.0\0"
 
 1 ICON "assets/super-explorer.ico"
+1 24 "app.manifest"
 
 1 VERSIONINFO
 FILEVERSION APP_VERSION
