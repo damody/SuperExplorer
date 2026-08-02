@@ -211,6 +211,9 @@ pub struct ExtensionRootModuleV1 {
     pub sdk_major: u16,
     pub reserved: u16,
     pub metadata: PluginMetadataV1,
+    // The v1 root freezes this field as the abi_stable PrefixRef representation.
+    // Recursive registrar evolution is checked by the prefix metadata itself.
+    #[sabi(unsafe_sabi_opaque_field)]
     #[sabi(last_prefix_field)]
     pub registrar: ExtensionRegistrarV1_Ref,
 }

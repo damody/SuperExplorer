@@ -63,3 +63,22 @@ Run the isolated, offline contract driver from the repository root:
 ```powershell
 powershell -NoProfile -File sdk/tests/extension-api-abi-contract.ps1
 ```
+
+The versioned `.sepack` manifest parser has deterministic multi-content,
+canonical publisher/contact, payload-kind, GPUI fingerprint, and negative
+fixtures. Verified publisher identity is intentionally opaque; end-to-end signer
+identity coverage begins with the cryptographic verifier in task 2.5.
+Validate it in an empty Cargo home with no network:
+
+```powershell
+powershell -NoProfile -File sdk/tests/package-manifest-v1-contract.ps1
+```
+
+Package content, target, path-containment, hash/size, and trust-store validation
+fixtures run in an isolated offline Cargo home:
+
+```powershell
+powershell -NoProfile -File sdk/tests/package-validation-v1-contract.ps1
+```
+The fixture verifies fail-closed unsigned rejection; local-developer authorization
+is intentionally host-source-issued and is covered by host integration tests.

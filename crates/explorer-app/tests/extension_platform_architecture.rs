@@ -29,8 +29,15 @@ fn public_extension_crates_have_one_way_dependencies_and_a_host_composition_root
         "explorer-extension-host",
         &[
             "abi_stable",
+            "base64",
             "explorer-extension-api",
             "explorer-extension-ui-api",
+            "ring",
+            "serde",
+            "serde_json",
+            "sha2",
+            "tempfile",
+            "thiserror",
         ],
     );
     assert!(

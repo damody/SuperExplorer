@@ -439,8 +439,27 @@ pub struct ExtensionRootModuleV1 {
     pub reserved: u16,
     /// Required data-only plugin identity metadata.
     pub metadata: PluginMetadataV1,
-    /// Required prefix registrar. SDK 1.x only appends optional root fields after
-    /// this field; it never changes the preceding layout or semantics.
+    /// Required prefix registrar.
+    ///
+    /// # Frozen v1 opaque-field invariant
+    ///
+    /// This field is deliberately opaque to the root-module layout checker so a
+    /// newer root can load a v1 registrar whose optional prefix tail is shorter.
+    /// This is **not** a cast: its in-memory value remains
+    /// [`ExtensionRegistrarV1_Ref`], whose prefix metadata controls whether
+    /// [`ExtensionRegistrarV1_Ref::describe_contract`] is accessible. In return,
+    /// every SDK 1.x producer and host must preserve the exact representation and
+    /// semantics of the required registrar prefix: the `PrefixRef` representation,
+    /// the [`RegistrarCallbackV1`] representation and calling convention, and the
+    /// callback's typed panic translation. Only optional fields may be appended
+    /// after [`ExtensionRegistrarV1::register`]; they must be read through their
+    /// generated optional accessors. Changing any required-prefix invariant is an
+    /// ABI-major change, not a compatible 1.x update.
+    ///
+    /// `unsafe_sabi_opaque_field` suppresses `abi_stable`'s recursive structural
+    /// comparison for this one field. The frozen invariant above is therefore part
+    /// of this public ABI's safety contract.
+    #[sabi(unsafe_sabi_opaque_field)]
     #[sabi(last_prefix_field)]
     pub registrar: ExtensionRegistrarV1_Ref,
 }
