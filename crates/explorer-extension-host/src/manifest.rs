@@ -177,7 +177,7 @@ impl PackageManifestV1 {
     /// This method performs neither signature verification nor a comparison with
     /// [`SignatureV1::Ed25519`] `key_id`; key IDs and publisher IDs are separate
     /// identities. [`VerifiedPublisherIdentityV1`] can only be constructed inside
-    /// this crate, by the future signature-verification stage.
+    /// this crate, by the package signature verifier.
     ///
     /// # Errors
     ///
@@ -223,6 +223,14 @@ impl PackageManifestV1 {
         let mut message = b"SuperExplorer.sepack.manifest.v1\0".to_vec();
         message.extend_from_slice(&canonical_json);
         Ok(message)
+    }
+
+    /// Serializes the complete validated V1 manifest in its canonical struct order.
+    ///
+    /// Unlike the Ed25519 signing message, this includes the actual signature and
+    /// is suitable as the content-addressed sealed-generation identity.
+    pub(crate) fn canonical_serialized_bytes(&self) -> Result<Vec<u8>, PackageManifestErrorV1> {
+        serde_json::to_vec(self).map_err(PackageManifestErrorV1::SignaturePayloadSerialization)
     }
 
     fn validate_structure(&self) -> Result<(), PackageManifestErrorV1> {
