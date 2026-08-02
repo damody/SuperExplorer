@@ -106,7 +106,7 @@ try {
     Assert-Throws { Assert-GpuiUpdateApproval $null $old $new $tree $digest $run $nonce $false $now } 'divergent update without approval'
     $approval = [pscustomobject]@{
         schema_version = 1; baseline_revision = $old; old_revision = $old; new_revision = $new
-        new_tree = $tree; candidate_tree_digest = $digest; workflow_run_id = $run; nonce = $nonce
+        new_tree = $tree; candidate_plan_digest = $digest; workflow_run_id = $run; nonce = $nonce
         reason = 'contract'; approver = 'contract'; issued_utc = $now.AddMinutes(-1).ToString('o')
         expires_utc = $now.AddHours(1).ToString('o')
     }

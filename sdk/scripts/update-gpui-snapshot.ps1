@@ -16,7 +16,7 @@ try {
  $approval=$null;if($env:SUPEREXPLORER_GPUI_UPDATE_APPROVAL){$approval=$env:SUPEREXPLORER_GPUI_UPDATE_APPROVAL|ConvertFrom-Json};Assert-GpuiUpdateApproval $approval $old $new $tree $digest $runId $nonce $ff ([DateTime]::UtcNow)|Out-Null
  if($new -eq $old){throw 'candidate revision must change bundle ID'}
  $approvalFields=if($null -eq $approval){$null}else{$approval}
- $meta=[pscustomobject]@{schema_version=1;source=[pscustomobject]@{repository=$origin;update_branch='main';resolved_ref='refs/remotes/origin/main';revision=$new;tree=$tree;parent=$parent;commit_time=$time;package='gpui';package_version='0.2.2'};approval=$approvalFields;candidate_tree_digest=$digest;workflow_run_id=$runId;nonce=$nonce;production=[pscustomobject]@{default_features=$false;features=@()};release_frozen=$false}
+ $meta=[pscustomobject]@{schema_version=1;source=[pscustomobject]@{repository=$origin;update_branch='main';resolved_ref='refs/remotes/origin/main';revision=$new;tree=$tree;parent=$parent;commit_time=$time;package='gpui';package_version='0.2.2'};approval=$approvalFields;candidate_plan_digest=$digest;workflow_run_id=$runId;nonce=$nonce;production=[pscustomobject]@{default_features=$false;features=@()};release_frozen=$false}
  $json=$meta|ConvertTo-Json -Depth 8;$runTemp=if($env:RUNNER_TEMP){$env:RUNNER_TEMP}else{[IO.Path]::GetTempPath()};$runDir=Join-Path $runTemp 'superexplorer-gpui-update';New-Item -ItemType Directory -Force -Path $runDir|Out-Null;$candidate=Join-Path $runDir 'candidate-attestation.json'
  $paths=@($snap,$candidate,(Join-Path $repo 'sdk\sdk-lock.json'),(Join-Path $repo 'sdk\bundle-manifest.json'),(Join-Path $repo 'sdk\ui-abi-fingerprint.json'))
  Invoke-WithFileTransaction $paths {

@@ -10,28 +10,21 @@
     "bundle_id": "@SDK_BUNDLE_ID@",
     "target": "x86_64-pc-windows-msvc",
     "abi_schema": @ABI_SCHEMA@,
-    "gpui": true,
-    "ui_abi_fingerprint": "@UI_ABI_FINGERPRINT@"
+    "gpui": false,
+    "ui_abi_fingerprint": null
   },
   "rust": {
     "crate_name": "p0-consumer",
     "entrypoint": "plugin.dll",
     "root_module": "plugin_root"
   },
-  "features": [{ "id": "main", "capabilities": ["abi", "ui.render"] }],
+  "features": [{ "id": "main", "capabilities": ["abi"] }],
   "contributions": [
     {
       "id": "abi-root",
       "feature_id": "main",
       "kind": "abi-root",
       "capabilities": ["abi"],
-      "payload": "src/lib.rs"
-    },
-    {
-      "id": "gpui-view",
-      "feature_id": "main",
-      "kind": "gpui",
-      "capabilities": ["ui.render"],
       "payload": "src/lib.rs"
     }
   ],

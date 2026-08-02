@@ -8,8 +8,12 @@ $oldNonce=$env:SUPEREXPLORER_SENTINEL_NONCE; $oldMarker=$env:SUPEREXPLORER_SENTI
 Push-Location $sdkRoot
 try {
     $env:SUPEREXPLORER_SENTINEL_NONCE = $nonce; $env:SUPEREXPLORER_SENTINEL_MARKER = $marker
+    $savedErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     & cargo build --manifest-path fixtures\egress-sentinel\Cargo.toml --locked --offline 2>&1 | Out-Host
-    if ($LASTEXITCODE) { throw "sentinel build failed with exit code $LASTEXITCODE" }
+    $cargoExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $savedErrorActionPreference
+    if ($cargoExitCode) { throw "sentinel build failed with exit code $cargoExitCode" }
     if (-not (Test-Path -LiteralPath $marker)) { throw 'sentinel marker missing.' }; $att=Get-Content $marker -Raw|ConvertFrom-Json
     if ($att.nonce -ne $nonce -or $att.direct -ne 'blocked' -or $att.child -ne 'blocked' -or -not $att.pid -or -not $att.unix_timestamp) { throw 'sentinel marker fields invalid.' }
     Write-Output 'network isolation sentinel passed'
