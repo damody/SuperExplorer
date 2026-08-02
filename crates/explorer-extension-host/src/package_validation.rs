@@ -324,16 +324,18 @@ impl PackageValidatorV1 {
             &generation_id,
         )?;
         request.budget.check()?;
+        let sealed_generation = SealedPackageGenerationV1::new(
+            self.sealed_store.clone(),
+            sealed_package_root,
+            canonical_manifest_bytes,
+            &payloads,
+        );
         Ok(PackageValidationResultV1 {
             verified_publisher_id,
             manifest_digest: hex_sha256(&Sha256::digest(&manifest_bytes).into()),
             data_version: manifest.data_version,
-            sealed_generation: SealedPackageGenerationV1::new(
-                self.sealed_store.clone(),
-                sealed_package_root,
-                canonical_manifest_bytes,
-                &payloads,
-            ),
+            manifest,
+            sealed_generation,
         })
     }
 
@@ -390,6 +392,9 @@ pub struct PackageValidationResultV1 {
     pub manifest_digest: String,
     /// Package data generation declared by the sealed manifest.
     pub data_version: u64,
+    /// Manifest accepted with the sealed generation.  It remains crate-private
+    /// so only host stages receiving this validation result can resolve it.
+    manifest: PackageManifestV1,
     sealed_generation: SealedPackageGenerationV1,
 }
 
@@ -400,12 +405,19 @@ impl fmt::Debug for PackageValidationResultV1 {
             .field("verified_publisher_id", &self.verified_publisher_id)
             .field("manifest_digest", &self.manifest_digest)
             .field("data_version", &self.data_version)
+            .field("manifest", &"<sealed>")
             .field("sealed_generation", &"<redacted>")
             .finish()
     }
 }
 
 impl PackageValidationResultV1 {
+    /// Returns the manifest bound to this sealed validation result.
+    #[must_use]
+    pub(crate) const fn manifest(&self) -> &PackageManifestV1 {
+        &self.manifest
+    }
+
     /// Opens an immutable activation guard after revalidating the sealed generation.
     ///
     /// # Errors
@@ -428,6 +440,27 @@ impl PackageValidationResultV1 {
         budget: &PackageValidationBudgetV1,
     ) -> Result<SealedPackageActivationGuardV1, PackageValidationErrorV1> {
         self.sealed_generation.open_guard(budget)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_resolver_test(manifest: PackageManifestV1) -> Self {
+        let canonical_manifest_bytes = manifest
+            .canonical_serialized_bytes()
+            .expect("test manifest serializes");
+        Self {
+            verified_publisher_id: None,
+            manifest_digest: String::new(),
+            data_version: manifest.data_version,
+            manifest,
+            sealed_generation: SealedPackageGenerationV1 {
+                store: SealedPackageStoreV1 {
+                    root: Arc::new(PathBuf::new()),
+                },
+                root: PathBuf::new(),
+                canonical_manifest_bytes: Arc::new(canonical_manifest_bytes),
+                payloads: Arc::new(Vec::new()),
+            },
+        }
     }
 }
 
