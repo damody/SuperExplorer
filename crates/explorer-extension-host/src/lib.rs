@@ -27,7 +27,8 @@ pub use manifest::{
 pub use package_validation::{
     PackageValidationBudgetV1, PackageValidationCancellationV1, PackageValidationErrorV1,
     PackageValidationRequestV1, PackageValidationResultV1, PackageValidatorV1,
-    TrustedPublisherKeyStoreV1, TrustedPublisherKeyV1,
+    SealedPackageActivationGuardV1, SealedPackageStoreV1, TrustedPublisherKeyStoreV1,
+    TrustedPublisherKeyV1,
 };
 
 use explorer_extension_api::{
