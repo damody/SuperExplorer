@@ -20,6 +20,9 @@ try {
     foreach ($crate in @('explorer-extension-api', 'explorer-extension-ui-api', 'explorer-extension-host')) {
         Copy-Item -LiteralPath (Join-Path $repo "crates\\$crate") -Destination (Join-Path $crateRoot $crate) -Recurse
     }
+    $workspaceSdk = Join-Path $workspace 'sdk'
+    New-Item -ItemType Directory -Path $workspaceSdk -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $sdkRoot 'ui-abi-fingerprint.json') -Destination (Join-Path $workspaceSdk 'ui-abi-fingerprint.json')
     [IO.File]::WriteAllText((Join-Path $cargoHome 'config.toml'), "[build]`ntarget = 'x86_64-pc-windows-msvc'`n`n[net]`noffline = true`n`n[source.crates-io]`nreplace-with = 'cargo-sources'`n`n[source.cargo-sources]`ndirectory = '$vendor'`n", [Text.UTF8Encoding]::new($false))
     $env:CARGO_HOME = $cargoHome; $env:CARGO_TARGET_DIR = $target
     & cargo.exe test --manifest-path (Join-Path $workspace 'Cargo.toml') -p explorer-extension-host --locked --offline --test package_lifecycle -- --nocapture --test-threads=1

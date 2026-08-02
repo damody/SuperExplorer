@@ -15,6 +15,7 @@
 //! contributions, and lifecycle policy remain later tasks.
 
 mod contribution_gate;
+mod dll_loader;
 mod feature_state;
 mod manifest;
 mod package_resolver;
@@ -25,6 +26,9 @@ pub use contribution_gate::{
     ContributionGateErrorV1, ContributionGateV1, ContributionKindV1, ContributionRegistrationV1,
     MAX_CAPABILITIES_PER_CONTRIBUTION_V1, MAX_CONTRIBUTIONS_PER_BATCH_V1,
     ValidatedContributionSetV1,
+};
+pub use dll_loader::{
+    ExtensionDllLoadErrorV1, ExtensionDllLoaderV1, LoadedExtensionRootV1, LoadedPackageRootsV1,
 };
 pub use feature_state::{
     DesiredStateV1, EffectiveFeatureReasonV1, EffectiveFeatureResolverErrorV1,
@@ -287,6 +291,7 @@ mod tests {
         let registrar = ExtensionRegistrarV1 {
             register: RegistrarCallbackV1::new::<T>(),
             describe_contract,
+            ui_abi_fingerprint_sha256: abi_stable::std_types::ROption::RNone,
         }
         .leak_into_prefix();
         ExtensionRootModuleV1 {

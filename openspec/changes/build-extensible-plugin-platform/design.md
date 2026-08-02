@@ -44,7 +44,7 @@ Manifest 的每個 contribution 必須對應穩定 `feature_id`，並宣告實�
 
 ### 3. Rust 只有一種 DLL 模型，但使用兩層相容契約
 
-每個 DLL 匯出單一 `abi_stable` prefix root module；registrar 尾端只增加 optional function。FFI-safe metadata、typed value、provider 與 host service 使用固定寬度 primitive 和 `abi_stable` collection/result。
+每個 DLL 匯出單一 `abi_stable` prefix root module。`abi_stable 0.11.3` 會拒絕新版 root 載入欄位較少的舊 DLL，因此 SDK 1.x 凍結 root 本體，只在 registrar 尾端增加 optional function 或固定寬度 data field，並一律透過 optional accessor 讀取。FFI-safe metadata、typed value、provider 與 host service 使用固定寬度 primitive 和 `abi_stable` collection/result。
 
 GPUI 型別不宣稱具有 stable Rust ABI。只要 DLL 註冊任何 GPUI contribution，整個 DLL 必須與 host 的 UI fingerprint 完全一致；只註冊 stable data interface 的 DLL 才使用 SDK 同一大版本與 layout compatibility。
 

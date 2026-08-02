@@ -1,0 +1,10 @@
+[package]
+name = "extension-dll-loader-contract-old-runner"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+abi_stable.workspace = true
+explorer-extension-api = { path = "../../../old-v1-api" }
