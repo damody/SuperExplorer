@@ -40,7 +40,8 @@ pub use domain::{
 };
 pub use drag_drop::{
     AutoScrollDirection, DragButton, DragEffect, DragModifiers, DragSession, DragSessionState,
-    DropTargetKind, DropTargetSnapshot, negotiate_effect,
+    DropTargetKind, DropTargetSnapshot, default_filesystem_drop_effect,
+    filesystem_drop_destination_is_valid, negotiate_effect, negotiate_filesystem_drop_effect,
 };
 pub use explorer_common::RequestId;
 pub use lock_recovery::{

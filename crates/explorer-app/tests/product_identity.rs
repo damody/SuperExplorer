@@ -37,6 +37,17 @@ fn windows_resource_embeds_the_superexplorer_icon() {
 }
 
 #[test]
+fn debug_and_release_resources_embed_the_common_controls_v6_manifest() {
+    let resource = include_str!("../app.rc");
+    let manifest = include_str!("../app.manifest");
+    let build_script = include_str!("../build.rs");
+    assert!(resource.contains("1 24 \"app.manifest\""));
+    assert!(manifest.contains("Microsoft.Windows.Common-Controls"));
+    assert!(manifest.contains("version=\"6.0.0.0\""));
+    assert!(build_script.contains("cargo:rerun-if-changed=app.manifest"));
+}
+
+#[test]
 fn cargo_exposes_the_renamed_binary_to_integration_tests() {
     let binary = Path::new(env!("CARGO_BIN_EXE_SuperExplorer"));
     assert_eq!(

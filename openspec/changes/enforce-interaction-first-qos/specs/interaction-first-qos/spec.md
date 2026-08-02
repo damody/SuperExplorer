@@ -21,6 +21,10 @@ The system SHALL bound asynchronous result integration by both an item limit and
 - **WHEN** more results arrive than can be integrated within one frame budget
 - **THEN** the UI integrates only the bounded batch and remains available to input before continuing the remainder
 
+#### Scenario: A request publishes batches before its terminal
+- **WHEN** breadcrumb, search, or directory batches are queued before the same request's terminal
+- **THEN** every earlier batch is delivered before the terminal while unrelated lower-priority work may remain deferred
+
 ### Requirement: Superseded work cannot mutate current presentation
 The system SHALL correlate asynchronous results with their tab, request, and navigation generation and MUST reject results whose owner is closed, cancelled, or superseded.
 

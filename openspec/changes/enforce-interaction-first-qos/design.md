@@ -37,6 +37,12 @@ Every queued result is associated with its owning tab/request/navigation generat
 
 The UI drains result queues until either a configured item limit or the 16 ms frame-integration budget is reached. Remaining results stay queued for a later frame. This targets 60 FPS and is preferred over draining on every notification, which can turn a background completion burst into a UI stall.
 
+### Ordered request streams and visible visual work
+
+Reliable terminal delivery MUST NOT reorder a request's terminal ahead of its already-published batches. Breadcrumb child enumeration and search therefore retain FIFO ordering within their domain while still reserving bounded terminal capacity. A terminal may overtake unrelated lower-priority work, but never an earlier batch owned by the same request.
+
+Icons and thumbnails for the realized viewport are current-directory presentation work, not optional off-screen refinement. They remain admitted during degradation and retry after transient overload. Only work for unrealized/off-screen entries may be shed. This matches Windows Explorer: pressure may delay detail, but visible rows and expanded navigation nodes converge without requiring another navigation.
+
 ### Observable degradation state
 
 Queue saturation and repeated frame-budget exhaustion advance a deterministic degradation state. Recovery uses lower thresholds than entry so behavior does not oscillate. Degradation first removes maintenance, prefetch, and off-screen enrichment; direct interaction and navigation are never shed.
@@ -53,6 +59,7 @@ Counters include latency distributions, current/high-water queue depth, overload
 
 - [Central policy adds coordination complexity] → Keep the policy deterministic, side-effect free where possible, and cover every transition with unit tests.
 - [Strict shedding can delay thumbnails or background tabs] → Preserve visible placeholders and automatically recover when pressure falls.
+- [Reliable terminal priority can overtake its request batches] → Keep batch and terminal events in one ordered domain lane and test batch-before-terminal explicitly.
 - [Wall-clock integration tests can be flaky] → Use explicit worker start/release gates and measure foreground independence rather than storage speed.
 - [A third-party in-process provider can remain permanently hung] → Bound its concurrency now and retain an executor interface that can move behind process isolation later.
 - [Incremental migration leaves temporary mixed scheduling] → Route one domain at a time and keep existing behavior as the fallback until its tests pass.

@@ -1,7 +1,7 @@
 param(
     [ValidateSet('debug', 'release')]
     [string]$Profile = 'debug',
-    [ValidateSet('both','app-to-explorer','explorer-to-app')]
+    [ValidateSet('both','app-to-explorer','explorer-to-app','app-internal')]
     [string]$Direction = 'both',
     [ValidateSet('all','move','copy','cancel')]
     [string]$ExplorerScenario = 'all',
@@ -312,13 +312,22 @@ $appSource = Join-Path $fixture 'app-source'
 $explorerTarget = Join-Path $fixture 'explorer-target'
 $explorerSource = Join-Path $fixture 'explorer-source'
 $appTarget = Join-Path $fixture 'app-target'
-foreach ($directory in @($appSource,$explorerTarget,$explorerSource,$appTarget)) { New-Item -ItemType Directory -Force -Path $directory | Out-Null }
+$appInternal = Join-Path $fixture 'app-internal'
+$appInternalTarget = Join-Path $appInternal 'destination'
+foreach ($directory in @($appSource,$explorerTarget,$explorerSource,$appTarget,$appInternal,$appInternalTarget)) { New-Item -ItemType Directory -Force -Path $directory | Out-Null }
 $files = [ordered]@{
     app_copy='app-left-copy.txt'; app_move='app-left-move.txt'; app_cancel='app-left-none.txt'; app_right='app-right-none.txt'
     explorer_copy='explorer-left-copy.txt'; explorer_move='explorer-left-move.txt'; explorer_cancel='explorer-left-none.txt'; explorer_right='explorer-right-none.txt'
 }
 foreach ($name in @($files.app_copy,$files.app_move,$files.app_cancel,$files.app_right)) { Set-Content -Encoding utf8 -LiteralPath (Join-Path $appSource $name) -Value $name }
 foreach ($name in @($files.explorer_copy,$files.explorer_move,$files.explorer_cancel,$files.explorer_right)) { Set-Content -Encoding utf8 -LiteralPath (Join-Path $explorerSource $name) -Value $name }
+$internalFiles = [ordered]@{
+    default_move='internal-default-move.txt'
+    shift_move='internal-shift-move.txt'
+    ctrl_copy='internal-ctrl-copy.txt'
+    cancel='internal-cancel.txt'
+}
+foreach ($name in $internalFiles.Values) { Set-Content -Encoding utf8 -LiteralPath (Join-Path $appInternal $name) -Value $name }
 
 $startInfo = [Diagnostics.ProcessStartInfo]::new((Join-Path $targetRoot "$Profile\SuperExplorer.exe"))
 $startInfo.WorkingDirectory = $workspaceRoot; $startInfo.UseShellExecute = $false
@@ -327,7 +336,7 @@ $startInfo.WorkingDirectory = $workspaceRoot; $startInfo.UseShellExecute = $fals
 $startInfo.RedirectStandardOutput = $false; $startInfo.RedirectStandardError = $false
 $startInfo.Environment['EXPLORER_LOG_DIR'] = $OutputDirectory
 $startInfo.Environment['LOCALAPPDATA'] = (Join-Path $OutputDirectory 'localappdata-source')
-$startInfo.Environment['EXPLORER_INITIAL_PATH'] = $appSource
+$startInfo.Environment['EXPLORER_INITIAL_PATH'] = if ($Direction -eq 'app-internal') { $appInternal } else { $appSource }
 $app = [Diagnostics.Process]::Start($startInfo)
 $script:wakeResults = @()
 $script:dragIndex = 0
@@ -350,6 +359,42 @@ try {
     $rightX = $workArea.Right - $paneWidth
     $appWidth = $rightX - $leftX
     [void][ExplorerDragInterop.Native]::SetWindowPos($appHwnd,[IntPtr](-1),$leftX,$workArea.Top,$appWidth,$paneHeight,0x0040)
+
+    if ($Direction -eq 'app-internal') {
+        $script:overlayHwnd = $appHwnd
+        $script:sourceHwnd = $appHwnd
+        $script:wakeProcessId = $app.Id
+        Focus-Window $appHwnd
+        # The destination folder is the first Details row because Explorer-style sorting keeps
+        # containers before files. Use the production row geometry instead of an exact UIA name;
+        # AccessKit can expose a localized "destination Folder" label for container rows.
+        $destinationBounds = Get-AppFileBounds $appHwnd 0
+        $destinationX = [int][Math]::Round($destinationBounds.Left + [Math]::Min($destinationBounds.Width * 0.35, 80))
+        $destinationY = [int][Math]::Round($destinationBounds.Top + $destinationBounds.Height / 2)
+        foreach ($scenario in @(
+            @{ name='app-internal-default-move'; file=$internalFiles.default_move; copy=$false; move=$false; cancel=$false; target=$true; source=$false },
+            @{ name='app-internal-shift-move'; file=$internalFiles.shift_move; copy=$false; move=$true; cancel=$false; target=$true; source=$false },
+            @{ name='app-internal-ctrl-copy'; file=$internalFiles.ctrl_copy; copy=$true; move=$false; cancel=$false; target=$true; source=$true },
+            @{ name='app-internal-cancel'; file=$internalFiles.cancel; copy=$false; move=$false; cancel=$true; target=$false; source=$true }
+        )) {
+            $currentOrder = @(Get-ChildItem -LiteralPath $appInternal | Sort-Object @{ Expression = { -not $_.PSIsContainer } }, Name | ForEach-Object Name)
+            $rowIndex = [Array]::IndexOf($currentOrder, $scenario.file)
+            if ($rowIndex -lt 0) { throw "internal app drag source row not found: $($scenario.file)" }
+            $sourceBounds = Get-AppFileBounds $appHwnd $rowIndex
+            Drag-Bounds $sourceBounds $destinationX $destinationY 'left' -Copy:$scenario.copy -Move:$scenario.move -Cancel:$scenario.cancel
+            Wait-Path (Join-Path $appInternalTarget $scenario.file) $scenario.target
+            Wait-Path (Join-Path $appInternal $scenario.file) $scenario.source
+            Start-Sleep -Milliseconds 1000
+            $matrixPassed.Add($scenario.name)
+        }
+        [ordered]@{
+            schema_version=1; captured_utc=[DateTime]::UtcNow.ToString('o'); fixture=$fixture
+            driver='real foreground left mouse through production OLE source and same-window GPUI OLE folder target'
+            matrix=$matrixPassed.ToArray(); passed=$matrixPassed.Count; disk_oracle='source/target existence asserted after every internal drag'
+        } | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 (Join-Path $OutputDirectory 'report.json')
+        Write-Output "Internal app drag passed: $OutputDirectory"
+        return
+    }
 
     foreach ($path in @($explorerTarget)) {
         # Shell.Application.Explore silently ignores valid paths containing a `.` segment, such

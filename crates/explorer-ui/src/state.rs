@@ -3639,6 +3639,12 @@ impl AppViewState {
         if paths.is_empty() {
             return;
         }
+        let Some(destination_path) = destination.path() else {
+            return;
+        };
+        if !explorer_model::filesystem_drop_destination_is_valid(&paths, destination_path, effect) {
+            return;
+        }
         if right_button {
             self.pending_right_drop = Some(PendingRightDrop {
                 paths,
@@ -5030,7 +5036,37 @@ mod tests {
     }
 
     #[test]
-    fn external_drop_routes_background_and_folder_to_typed_copy_request() {
+    fn shift_extended_selection_still_starts_one_left_drag_for_the_full_selection() {
+        let mut state = state_with_rows();
+        assert!(state.select_row(0));
+        assert!(state.select_row_range(1, false));
+        assert_eq!(state.tabs().active_tab().selection.len(), 2);
+        assert!(state.begin_drag_candidate(10.0, 10.0, explorer_model::DragButton::Left));
+        assert!(state.update_drag_pointer(14.0, 10.0));
+        let command = state
+            .take_pending_drag_command()
+            .expect("Shift-extended selection remains draggable");
+        let explorer_model::ExplorerCommand::DataTransfer {
+            request:
+                explorer_model::DataTransferRequest::BeginDrag {
+                    items,
+                    allowed_effects,
+                    button,
+                },
+            ..
+        } = command
+        else {
+            panic!("threshold crossing must queue one native drag");
+        };
+        assert_eq!(items.len(), 2);
+        assert!(allowed_effects.copy);
+        assert!(allowed_effects.move_item);
+        assert_eq!(button, explorer_model::DragButton::Left);
+        assert!(state.take_pending_drag_command().is_none());
+    }
+
+    #[test]
+    fn left_drag_external_drop_routes_background_and_folder_to_typed_request() {
         let mut state = state_with_rows();
         state.queue_external_drop(
             vec![r"C:\outside\one.txt".into()],
@@ -5052,6 +5088,66 @@ mod tests {
                 },
                 ..
             } if destination == explorer_model::LocationDescriptor::file_system(r"C:\fixture\folder")
+        ));
+
+        state.queue_external_drop(
+            vec![r"C:\outside\two.txt".into()],
+            None,
+            explorer_model::DragEffect::Move,
+            false,
+            explorer_model::TransferEffects::MOVE,
+        );
+        assert!(matches!(
+            state.take_pending_drag_command(),
+            Some(explorer_model::ExplorerCommand::DataTransfer {
+                request: explorer_model::DataTransferRequest::DropExternal {
+                    destination,
+                    effect: explorer_model::DragEffect::Move,
+                    conflict: explorer_model::ConflictDecision::Prompt,
+                    ..
+                },
+                ..
+            }) if destination == explorer_model::LocationDescriptor::file_system(r"C:\fixture")
+        ));
+    }
+
+    #[test]
+    fn left_drag_external_drop_rejects_self_descendant_and_same_parent_move_targets() {
+        let mut state = state_with_rows();
+        state.queue_external_drop(
+            vec![r"C:\fixture\folder".into()],
+            Some(0),
+            explorer_model::DragEffect::Move,
+            false,
+            explorer_model::TransferEffects::MOVE,
+        );
+        assert!(state.take_pending_drag_command().is_none());
+
+        state.queue_external_drop(
+            vec![r"C:\fixture\file.txt".into()],
+            None,
+            explorer_model::DragEffect::Move,
+            false,
+            explorer_model::TransferEffects::MOVE,
+        );
+        assert!(state.take_pending_drag_command().is_none());
+
+        state.queue_external_drop(
+            vec![r"C:\fixture\file.txt".into()],
+            None,
+            explorer_model::DragEffect::Copy,
+            false,
+            explorer_model::TransferEffects::COPY,
+        );
+        assert!(matches!(
+            state.take_pending_drag_command(),
+            Some(explorer_model::ExplorerCommand::DataTransfer {
+                request: explorer_model::DataTransferRequest::DropExternal {
+                    effect: explorer_model::DragEffect::Copy,
+                    ..
+                },
+                ..
+            })
         ));
     }
 

@@ -27,3 +27,10 @@
 - [ ] 5.1 Add UTIT coverage for copy during navigation, full queues, rapid navigation replacement, competing search/enrichment work, tab closure, and shutdown with active work.
 - [x] 5.2 Ensure contention tests use explicit start/release synchronization and emit QoS diagnostics on failure.
 - [x] 5.3 Run formatting, targeted crate tests, UTIT, and the application build; document environment-only failures separately from regressions.
+
+## 6. Visible enrichment regression repair
+
+- [x] 6.1 Add regression tests for visible icon/thumbnail admission during degradation and batch-before-terminal navigation-child delivery.
+- [x] 6.2 Preserve per-request FIFO for breadcrumb/search batches and their reliable terminals.
+- [x] 6.3 Keep realized viewport icon/thumbnail work admitted and retry transient overload without reviving stale generations.
+- [x] 6.4 Run targeted UI/Shell tests, formatting, OpenSpec validation, and the application build.

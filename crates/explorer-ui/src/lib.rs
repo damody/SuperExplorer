@@ -52,6 +52,24 @@ const FILE_VIEWPORT_ICON_REQUEST_CAP: usize = 64;
 const FOREGROUND_SERVICE_EVENT_CAPACITY: usize = 512;
 const ENRICHMENT_SERVICE_EVENT_CAPACITY: usize = 512;
 
+fn prelayout_icon_range(item_count: usize, layout_ready: bool) -> Option<std::ops::Range<usize>> {
+    (!layout_ready).then_some(0..item_count.min(FILE_VIEWPORT_ICON_REQUEST_CAP))
+}
+
+fn prime_top_icon_range(
+    item_count: usize,
+    scroll_offset: f32,
+    range: std::ops::Range<usize>,
+) -> std::ops::Range<usize> {
+    if scroll_offset <= f32::EPSILON {
+        0..range
+            .end
+            .max(item_count.min(FILE_VIEWPORT_ICON_REQUEST_CAP))
+    } else {
+        range
+    }
+}
+
 fn is_enrichment_service_event(event: &explorer_model::ExplorerEvent) -> bool {
     matches!(
         event,
@@ -459,6 +477,13 @@ fn base_icon_request_location(
         explorer_model::BaseIconClass::Identity(_) => return None,
     };
     Some(explorer_model::LocationDescriptor::file_system(path))
+}
+
+fn uses_shared_base_icon(class: &explorer_model::BaseIconClass) -> bool {
+    matches!(
+        class,
+        explorer_model::BaseIconClass::Folder | explorer_model::BaseIconClass::ExtensionlessFile
+    )
 }
 
 fn advance_item_overlay_epoch(
@@ -1075,9 +1100,15 @@ impl ExplorerRoot {
     }
 
     fn recover_discarded_enrichment(&mut self) {
-        if self.enrichment_retry_needed && self.visual_refinement_allowed() {
+        if self.enrichment_retry_needed {
             self.enrichment_retry_needed = false;
             self.resume_visual_refinement();
+        }
+    }
+
+    fn request_enrichment_retry(&mut self) {
+        if self.service.is_some() {
+            self.enrichment_retry_needed = true;
         }
     }
 
@@ -1191,9 +1222,6 @@ impl ExplorerRoot {
     /// constructors retain their existing generation checks, so recovery cannot revive work for
     /// closed tabs or replaced navigation.
     fn resume_visual_refinement(&mut self) {
-        if !self.visual_refinement_allowed() {
-            return;
-        }
         let tab = self.state.tabs().active_tab();
         let context = explorer_model::RequestContext::new(tab.id, tab.generation);
         let entries = tab
@@ -1618,6 +1646,11 @@ impl ExplorerRoot {
                                 };
                                 let context = event.context().cloned();
                                 let terminal = event.is_terminal();
+                                let directory_enrichment_terminal = matches!(
+                                    &event,
+                                    explorer_model::ExplorerEvent::DirectoryFinished { .. }
+                                        | explorer_model::ExplorerEvent::SearchFinished { .. }
+                                );
                                 let navigation_children = matches!(
                                     &event,
                                     explorer_model::ExplorerEvent::ChildContainersBatch { .. }
@@ -1836,6 +1869,17 @@ impl ExplorerRoot {
                                     this.reset_search_input(String::new(), cx);
                                 }
                                 if outcome == explorer_model::WindowEventOutcome::Applied
+                                    && directory_enrichment_terminal
+                                {
+                                    // The directory reducer now owns the complete sorted snapshot.
+                                    // Seed its visible icon/thumbnail pipeline immediately instead
+                                    // of waiting for a later ScrollHandle layout callback to cause
+                                    // another render. This is especially important when the first
+                                    // rows are folders and lower visible file rows need extension
+                                    // icons or thumbnails.
+                                    this.resume_visual_refinement();
+                                }
+                                if outcome == explorer_model::WindowEventOutcome::Applied
                                     && let Some(action) = delegated_action
                                 {
                                     delegated_actions.push(action);
@@ -1918,6 +1962,9 @@ impl ExplorerRoot {
                                     tracing::debug!(?from, ?to, deferred, "UI result-delivery degradation transition");
                                 }
                                 explorer_jobs::DegradationTransition::Unchanged(_) => {}
+                            }
+                            if deferred == 0 && this.enrichment_retry_needed {
+                                this.recover_discarded_enrichment();
                             }
                             if integrated > 0 {
                                 cx.notify();
@@ -2057,9 +2104,6 @@ impl ExplorerRoot {
     }
 
     fn submit_navigation_icon_loads(&mut self) {
-        if !self.visual_refinement_allowed() {
-            return;
-        }
         let tab = self.state.tabs().active_tab();
         let theme = match self.tokens.theme.mode {
             ThemeMode::Light => explorer_model::ShellIconTheme::Light,
@@ -2107,6 +2151,7 @@ impl ExplorerRoot {
             if !submitted {
                 self.pending_icon_keys.remove(&key);
                 self.pending_icon_contexts.remove(&key);
+                self.request_enrichment_retry();
             }
         }
     }
@@ -2155,7 +2200,19 @@ impl ExplorerRoot {
                 .as_ref()
                 .is_some_and(|item_id| visible_ids.contains(item_id))
         });
-        let remaining = FILE_VIEWPORT_ICON_REQUEST_CAP.saturating_sub(self.pending_icon_keys.len());
+        // Navigation/breadcrumb icons share the cache but not the visible file viewport budget.
+        // Counting their item-less keys here can permanently starve the first on-screen file
+        // icons after an expanded drive submits a large child tree.
+        let pending_visible_files = self
+            .pending_icon_keys
+            .iter()
+            .filter(|key| {
+                key.item_id
+                    .as_ref()
+                    .is_some_and(|item_id| visible_ids.contains(item_id))
+            })
+            .count();
+        let remaining = FILE_VIEWPORT_ICON_REQUEST_CAP.saturating_sub(pending_visible_files);
         let stale = self
             .thumbnail_requests
             .iter()
@@ -2173,9 +2230,6 @@ impl ExplorerRoot {
             self.thumbnail_requests.remove(&key);
             self.pending_thumbnail_keys.remove(&key);
             self.thumbnail_presentations.remove(&key);
-        }
-        if !self.visual_refinement_allowed() {
-            return;
         }
         let mut pending_base_classes = self
             .pending_base_icons
@@ -2196,6 +2250,9 @@ impl ExplorerRoot {
                 theme,
                 association_epoch,
             );
+            if !uses_shared_base_icon(&base_key.class) {
+                continue;
+            }
             if self.base_icons.entries.contains_key(&base_key)
                 || self.failed_base_icons.contains(&base_key)
                 || !pending_base_classes.insert(base_key.clone())
@@ -2217,6 +2274,8 @@ impl ExplorerRoot {
                 self.pending_icon_contexts
                     .insert(request_key.clone(), directory_context.clone());
                 self.pending_base_icons.insert(request_key, base_key);
+            } else {
+                self.request_enrichment_retry();
             }
         }
         let mut keys = Vec::with_capacity(remaining);
@@ -2234,7 +2293,7 @@ impl ExplorerRoot {
                 theme,
                 association_epoch,
             );
-            let shared_base = !matches!(base_key.class, explorer_model::BaseIconClass::Identity(_));
+            let shared_base = uses_shared_base_icon(&base_key.class);
             if shared_base
                 && !self.base_icons.entries.contains_key(&base_key)
                 && !self.failed_base_icons.contains(&base_key)
@@ -2282,6 +2341,7 @@ impl ExplorerRoot {
             if !submitted {
                 self.pending_icon_keys.remove(&key);
                 self.pending_icon_contexts.remove(&key);
+                self.request_enrichment_retry();
             } else if let Some(base_key) = base_key {
                 self.pending_visible_bases.insert(key, base_key);
             }
@@ -2344,6 +2404,7 @@ impl ExplorerRoot {
                 if outcome == explorer_jobs::ThumbnailScheduleOutcome::Overloaded {
                     self.pending_thumbnail_keys.remove(&key);
                     self.thumbnail_presentations.remove(&key);
+                    self.request_enrichment_retry();
                     continue;
                 }
                 self.thumbnail_requests.entry(key).or_insert_with(|| {
@@ -2374,9 +2435,6 @@ impl ExplorerRoot {
     }
 
     fn synchronize_preview_thumbnail(&mut self, entry: Option<&explorer_model::FileEntry>) {
-        if !self.visual_refinement_allowed() {
-            return;
-        }
         let tab = self.state.tabs().active_tab();
         let desired = entry
             .filter(|entry| {
@@ -2442,6 +2500,7 @@ impl ExplorerRoot {
         ) == explorer_jobs::ThumbnailScheduleOutcome::Overloaded
         {
             self.preview_thumbnail_failed = true;
+            self.request_enrichment_retry();
             return;
         }
         self.pending_thumbnail_keys.insert(key.clone());
@@ -2658,6 +2717,7 @@ impl ExplorerRoot {
                 self.thumbnail_presentations.remove(&key);
                 self.thumbnail_requests.remove(&key);
                 let _ = self.thumbnail_scheduler.complete(&key);
+                self.request_enrichment_retry();
             }
         }
     }
@@ -2692,6 +2752,7 @@ impl ExplorerRoot {
             if !submitted {
                 self.pending_icon_keys.remove(&key);
                 self.pending_icon_contexts.remove(&key);
+                self.request_enrichment_retry();
             }
         }
     }
@@ -4659,9 +4720,22 @@ impl Render for ExplorerRoot {
                 )
                 .metrics;
                 let scroll_offset = (-f32::from(self.file_scroll.offset().y)).max(0.0);
-                let viewport_height =
-                    f32::from(self.file_scroll.bounds().size.height).max(metrics.cell_height);
-                let range = if metrics.wrapped {
+                let measured_viewport_height = f32::from(self.file_scroll.bounds().size.height);
+                let fallback_viewport_height =
+                    chrome::explorer_file_viewport_height(window, self.tokens);
+                let layout_ready = measured_viewport_height > metrics.cell_height
+                    || fallback_viewport_height > metrics.cell_height;
+                let viewport_height = if measured_viewport_height > 0.0 {
+                    measured_viewport_height
+                } else {
+                    fallback_viewport_height
+                }
+                .max(metrics.cell_height);
+                let range = if let Some(range) =
+                    prelayout_icon_range(presentation.len(), layout_ready)
+                {
+                    range
+                } else if metrics.wrapped {
                     file_view::fixed_grid_virtual_range(
                         presentation.len(),
                         metrics.cell_width,
@@ -4673,16 +4747,21 @@ impl Render for ExplorerRoot {
                     )
                     .items
                 } else {
+                    let header_height = if view_settings.mode == explorer_model::ViewMode::Details {
+                        self.tokens.layout.details_header_height.value()
+                    } else {
+                        0.0
+                    };
                     file_view::fixed_virtual_range(
                         presentation.len(),
                         metrics.cell_height,
-                        viewport_height,
-                        scroll_offset,
+                        (viewport_height - header_height).max(metrics.cell_height),
+                        (scroll_offset - header_height).max(0.0),
                         2,
                     )
                     .items
                 };
-                range
+                prime_top_icon_range(presentation.len(), scroll_offset, range)
                     .filter_map(|ordinal| {
                         presentation.entry(ordinal).map(|(_, entry)| entry.clone())
                     })
@@ -5347,6 +5426,134 @@ mod tests {
         };
         assert!(!root.accepts_presentation_event(&stale));
         assert!(root.accepts_presentation_event(&current));
+    }
+
+    #[test]
+    fn prelayout_icon_range_primes_one_bounded_first_viewport() {
+        assert_eq!(
+            super::prelayout_icon_range(100_000, false),
+            Some(0..super::FILE_VIEWPORT_ICON_REQUEST_CAP)
+        );
+        assert_eq!(super::prelayout_icon_range(32, false), Some(0..32));
+        assert_eq!(super::prelayout_icon_range(100_000, true), None);
+        assert_eq!(
+            super::prime_top_icon_range(100_000, 0.0, 0..5),
+            0..super::FILE_VIEWPORT_ICON_REQUEST_CAP
+        );
+        assert_eq!(super::prime_top_icon_range(100_000, 400.0, 8..24), 8..24);
+    }
+
+    #[test]
+    fn file_extensions_use_real_visible_items_instead_of_blocking_fake_base_paths() {
+        assert!(!super::uses_shared_base_icon(
+            &explorer_model::BaseIconClass::Extension("mp4".to_owned())
+        ));
+        assert!(!super::uses_shared_base_icon(
+            &explorer_model::BaseIconClass::Extension("jpg".to_owned())
+        ));
+        assert!(super::uses_shared_base_icon(
+            &explorer_model::BaseIconClass::Folder
+        ));
+    }
+
+    #[test]
+    fn qos_visible_icons_and_thumbnails_remain_admitted_when_visual_refinement_is_shed() {
+        let entry = explorer_model::FileEntry {
+            id: explorer_model::ShellItemId::from_provider_bytes([91]).expect("identity"),
+            location: explorer_model::LocationDescriptor::file_system(
+                r"E:\av_out\visible-preview.jpg",
+            ),
+            display_name: "visible-preview.jpg".to_owned(),
+            is_container: false,
+            metadata: explorer_model::FileEntryMetadata {
+                namespace_capabilities: explorer_model::NamespaceCapabilities::from_public_bits(
+                    explorer_model::NamespaceCapabilities::THUMBNAIL,
+                ),
+                ..explorer_model::FileEntryMetadata::default()
+            },
+        };
+        let mut root = ExplorerRoot::for_directory_fixture(
+            UiTokens::default(),
+            vec![entry.clone()],
+            explorer_model::ViewMode::LargeIcons,
+        );
+        let service = Arc::new(RecordingService::default());
+        root.service = Some(service.clone());
+        for _ in 0..8 {
+            let _ = root
+                .service_qos
+                .observe_pressure(explorer_jobs::PressureSample::new(1, 1, true));
+        }
+        assert!(
+            root.service_qos
+                .should_shed(explorer_jobs::QosWorkClass::VisualRefinement)
+        );
+        let tab = root.state.tabs().active_tab();
+        let context = explorer_model::RequestContext::new(tab.id, tab.generation);
+
+        root.submit_offscreen_file_icon_loads(&context, std::slice::from_ref(&entry));
+        assert!(service.0.lock().unwrap().is_empty());
+
+        // An expanded navigation tree may already own the global item-less icon keys. Those
+        // requests must not consume the visible file viewport's independent capacity.
+        for index in 0..super::FILE_VIEWPORT_ICON_REQUEST_CAP {
+            root.pending_icon_keys.insert(explorer_model::ShellIconKey {
+                item_id: None,
+                location: explorer_model::LocationDescriptor::file_system(format!(
+                    r"E:\navigation-child-{index}"
+                )),
+                size_bucket: 16,
+                dpi: 96,
+                theme: explorer_model::ShellIconTheme::Light,
+                association_generation: 0,
+                overlay_generation: 0,
+            });
+        }
+
+        root.submit_file_icon_loads(&context, std::slice::from_ref(&entry));
+        let commands = service.0.lock().unwrap();
+        assert!(commands.iter().any(|command| matches!(
+            command,
+            explorer_model::ExplorerCommand::LoadShellIcon { key, .. }
+                if key.item_id.as_ref() == Some(&entry.id)
+        )));
+        assert!(commands.iter().any(|command| matches!(
+            command,
+            explorer_model::ExplorerCommand::LoadThumbnail { .. }
+        )));
+    }
+
+    #[test]
+    fn qos_visible_icon_overload_retries_without_another_navigation() {
+        let entry = explorer_model::FileEntry {
+            id: explorer_model::ShellItemId::from_provider_bytes([92]).expect("identity"),
+            location: explorer_model::LocationDescriptor::file_system(
+                r"E:\av_out\retry-visible.exe",
+            ),
+            display_name: "retry-visible.exe".to_owned(),
+            is_container: false,
+            metadata: explorer_model::FileEntryMetadata::default(),
+        };
+        let mut root = ExplorerRoot::for_directory_fixture(
+            UiTokens::default(),
+            vec![entry.clone()],
+            explorer_model::ViewMode::Details,
+        );
+        root.service = Some(Arc::new(OverloadedService));
+        let tab = root.state.tabs().active_tab();
+        let context = explorer_model::RequestContext::new(tab.id, tab.generation);
+
+        root.submit_file_icon_loads(&context, std::slice::from_ref(&entry));
+        assert!(root.enrichment_retry_needed);
+
+        let recovered = Arc::new(RecordingService::default());
+        root.service = Some(recovered.clone());
+        root.recover_discarded_enrichment();
+        assert!(!root.enrichment_retry_needed);
+        assert!(recovered.0.lock().unwrap().iter().any(|command| matches!(
+            command,
+            explorer_model::ExplorerCommand::LoadShellIcon { .. }
+        )));
     }
 
     #[test]
@@ -6302,7 +6509,7 @@ mod tests {
     }
 
     #[test]
-    fn one_hundred_thousand_same_extension_rows_request_one_shared_base_first() {
+    fn one_hundred_thousand_same_extension_rows_request_one_bounded_real_viewport() {
         let service = Arc::new(RecordingService::default());
         let mut root = ExplorerRoot {
             service: Some(service.clone()),
@@ -6331,8 +6538,14 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(icon_commands.len(), 1);
-        assert!(icon_commands[0].item_id.is_none());
+        assert_eq!(icon_commands.len(), 64);
+        assert!(icon_commands.iter().all(|key| key.item_id.is_some()));
+        assert!(icon_commands.iter().enumerate().all(|(index, key)| {
+            key.location
+                == explorer_model::LocationDescriptor::file_system(format!(
+                    r"C:\fixture\{index}.txt"
+                ))
+        }));
     }
 
     #[test]
