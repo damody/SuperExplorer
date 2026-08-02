@@ -8,4 +8,5 @@ publish = false
 explorer-extension-host = { path = "../../../crates/explorer-extension-host" }
 serde_json = { path = "../../vendor/cargo-sources/serde_json" }
 base64 = { path = "../../vendor/cargo-sources/base64" }
+ring = "=0.17.14"
 [workspace]
