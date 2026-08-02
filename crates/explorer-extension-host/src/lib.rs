@@ -18,6 +18,7 @@ mod contribution_gate;
 mod dll_loader;
 mod feature_state;
 mod manifest;
+mod native_lifecycle;
 mod package_resolver;
 mod package_source;
 mod package_validation;
@@ -26,9 +27,6 @@ pub use contribution_gate::{
     ContributionGateErrorV1, ContributionGateV1, ContributionKindV1, ContributionRegistrationV1,
     MAX_CAPABILITIES_PER_CONTRIBUTION_V1, MAX_CONTRIBUTIONS_PER_BATCH_V1,
     ValidatedContributionSetV1,
-};
-pub use dll_loader::{
-    ExtensionDllLoadErrorV1, ExtensionDllLoaderV1, LoadedExtensionRootV1, LoadedPackageRootsV1,
 };
 pub use feature_state::{
     DesiredStateV1, EffectiveFeatureReasonV1, EffectiveFeatureResolverErrorV1,
@@ -43,6 +41,12 @@ pub use manifest::{
     PackageManifestErrorV1, PackageManifestV1, PayloadKindV1, PayloadV1, PublisherContactKindV1,
     PublisherContactV1, PublisherV1, RustEntrypointV1, SdkCompatibilityV1, SignatureV1,
     SkinEntrypointV1, ToolOutputProtocolV1, VerifiedPublisherIdentityV1,
+};
+pub use native_lifecycle::{
+    MAX_NATIVE_FEATURE_GATES_V1, MAX_NATIVE_LEDGER_ENTRIES_V1,
+    MAX_NATIVE_RESTART_REASONS_PER_FEATURE_V1, NativeDispatchLeaseV1, NativeExtensionLifecycleV1,
+    NativeFeatureIdentityV1, NativeFeatureStateV1, NativeLifecycleErrorV1,
+    NativeLoaderDiagnosticCodeV1, NativeRestartReasonV1, NativeStartupAdmissionV1, StartupSession,
 };
 pub use package_resolver::{
     BlockedPackageV1, PackageResolutionDiagnosticCodeV1, PackageResolutionDiagnosticV1,
@@ -164,7 +168,11 @@ impl ExtensionHost {
     ///
     /// Returns validation failures before invoking the registrar, and translates a
     /// plugin's typed error or translated panic terminal after invocation.
-    pub fn register_root(
+    #[allow(
+        dead_code,
+        reason = "task 3.5 installs the sole guarded registrar path"
+    )]
+    pub(crate) fn register_root(
         &self,
         root: ExtensionRootModuleV1_Ref,
     ) -> Result<RegistrationOutcomeV1, HostRegistrationErrorV1> {
@@ -237,6 +245,7 @@ fn validate_id_in_extension_namespace(id: StableIdV1) -> Result<(), HostRegistra
     )))
 }
 
+#[allow(dead_code, reason = "used only by the task 3.5 guarded registrar path")]
 fn validate_registration_outcome(
     outcome: RegistrationOutcomeV1,
 ) -> Result<RegistrationOutcomeV1, HostRegistrationErrorV1> {

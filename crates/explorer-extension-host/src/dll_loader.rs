@@ -37,10 +37,10 @@ static RESIDENT_LOAD_STATE: OnceLock<Mutex<ResidentLoadStateV1>> = OnceLock::new
 /// plugin registrar.
 ///
 /// The host UI fingerprint is build-time authority from the approved SDK
-/// artifact, never caller-supplied package data. A future lifecycle owner may
-/// pass the returned roots to [`ExtensionHost::register_root`].
+/// artifact, never caller-supplied package data. Only the private native
+/// lifecycle consumes the returned roots; no raw registrar bypass is exposed.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct ExtensionDllLoaderV1;
+pub(crate) struct ExtensionDllLoaderV1;
 
 impl ExtensionDllLoaderV1 {
     /// Validates and maps all Rust roots declared by `resolved` atomically from
@@ -59,7 +59,7 @@ impl ExtensionDllLoaderV1 {
         clippy::unused_self,
         reason = "keeps the public loader surface ready for future host-owned configuration"
     )]
-    pub fn load_package(
+    pub(crate) fn load_package(
         &self,
         resolved: &ResolvedPackageV1<'_>,
     ) -> Result<LoadedPackageRootsV1, ExtensionDllLoadErrorV1> {
@@ -384,7 +384,7 @@ fn resident_load_state()
 
 /// One ABI- and manifest-validated root. It exposes no registrar dispatch.
 #[derive(Clone)]
-pub struct LoadedExtensionRootV1 {
+pub(crate) struct LoadedExtensionRootV1 {
     entrypoint_id: String,
     root_module: String,
     entrypoint_path: String,
@@ -408,28 +408,32 @@ impl fmt::Debug for LoadedExtensionRootV1 {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "task 3.5 consumes the remaining validated root metadata"
+)]
 impl LoadedExtensionRootV1 {
     /// Returns the manifest Rust entrypoint identifier bound to this root.
     #[must_use]
-    pub fn entrypoint_id(&self) -> &str {
+    pub(crate) fn entrypoint_id(&self) -> &str {
         &self.entrypoint_id
     }
 
     /// Returns the manifest root-module identifier bound to this DLL.
     #[must_use]
-    pub fn root_module(&self) -> &str {
+    pub(crate) fn root_module(&self) -> &str {
         &self.root_module
     }
 
     /// Returns the sealed manifest path bound to this DLL.
     #[must_use]
-    pub fn entrypoint_path(&self) -> &str {
+    pub(crate) fn entrypoint_path(&self) -> &str {
         &self.entrypoint_path
     }
 
     /// Returns the validated plugin and primary-interface identities.
     #[must_use]
-    pub const fn metadata(&self) -> PluginMetadataV1 {
+    pub(crate) const fn metadata(&self) -> PluginMetadataV1 {
         self.metadata
     }
 
@@ -443,13 +447,21 @@ impl LoadedExtensionRootV1 {
 
 /// All validated Rust roots for one package.
 #[derive(Clone, Debug)]
-pub struct LoadedPackageRootsV1 {
+pub(crate) struct LoadedPackageRootsV1 {
     package_id: String,
+    #[allow(
+        dead_code,
+        reason = "lifecycle diagnostics retain the selected package version"
+    )]
     package_version: String,
     sealed_manifest_digest: String,
     roots: Vec<LoadedExtensionRootV1>,
 }
 
+#[allow(
+    dead_code,
+    reason = "task 3.5 consumes remaining package-root metadata"
+)]
 impl LoadedPackageRootsV1 {
     fn bound_to(
         resolved: &ResolvedPackageV1<'_>,
@@ -466,31 +478,35 @@ impl LoadedPackageRootsV1 {
 
     /// Returns the resolved package identifier bound to this set.
     #[must_use]
-    pub fn package_id(&self) -> &str {
+    pub(crate) fn package_id(&self) -> &str {
         &self.package_id
     }
 
     /// Returns the resolved package version bound to this set.
     #[must_use]
-    pub fn package_version(&self) -> &str {
+    pub(crate) fn package_version(&self) -> &str {
         &self.package_version
     }
 
     /// Returns the sealed source-manifest digest bound to this set.
     #[must_use]
-    pub fn sealed_manifest_digest(&self) -> &str {
+    pub(crate) fn sealed_manifest_digest(&self) -> &str {
         &self.sealed_manifest_digest
     }
     /// Returns roots in canonical Rust entrypoint-ID order.
     #[must_use]
-    pub fn roots(&self) -> &[LoadedExtensionRootV1] {
+    pub(crate) fn roots(&self) -> &[LoadedExtensionRootV1] {
         &self.roots
     }
 }
 
 /// Typed pre-callback DLL loading failure.
 #[derive(Debug, Error)]
-pub enum ExtensionDllLoadErrorV1 {
+#[allow(
+    dead_code,
+    reason = "platform-specific loader errors remain part of the private loader"
+)]
+pub(crate) enum ExtensionDllLoadErrorV1 {
     /// The process-global resident-load state was poisoned by a prior panic.
     #[error("resident extension DLL load state is poisoned")]
     ResidentStatePoisoned,

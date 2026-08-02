@@ -39,12 +39,12 @@ try {
     [IO.File]::WriteAllText((Join-Path $cargoHome 'config.toml'), $cargoConfig, [Text.UTF8Encoding]::new($false))
     Invoke-CargoBuild $oldPluginRoot $pluginTarget; Invoke-CargoBuild $hostRoot $hostTarget
     $pluginDll = Find-Artifact $pluginTarget 'extension_api_contract_old_v1_plugin.dll'; $hostExe = Find-Artifact $hostTarget 'extension-api-contract-host.exe'
-    Invoke-Host 'compatible' $pluginDll $true $true
+    Invoke-Host 'compatible' $pluginDll $true $false
     Invoke-Host 'schema-mismatch' $pluginDll $true $false
     Invoke-Host 'root-contract-mismatch' $pluginDll $true $false
     Invoke-Host 'sdk-major-mismatch' $pluginDll $true $false
-    Invoke-Host 'panic' $pluginDll $true $true
-    Invoke-Host 'raw-panic' $pluginDll $false $false
+    Invoke-Host 'panic' $pluginDll $true $false
+    Invoke-Host 'raw-panic' $pluginDll $true $false
     Write-Output 'extension API ABI contract: PASS'
 } finally {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue

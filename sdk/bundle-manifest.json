@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "bundle_id": "sdk-085e22dbd70a5dbf8a005565",
-  "inventory_root_sha256": "e5fadcaeeead6cdf4751bbb6ada721476f6362233c3055667659ea6daff91d35",
-  "sdk_lock_sha256": "8fc3a082f882cec036e920a4b6b273c1fa91fc10f7e129943aac5480787b6e2d",
+  "bundle_id": "sdk-b541e414c143dc539bc3a296",
+  "inventory_root_sha256": "5166af7bdee9dcc45350494f20055d17bef48aa8e8f1e347f33a5109036e3619",
+  "sdk_lock_sha256": "b65fa8123e1a2537ed4434efbc1f13d99197bb781283e3bb0013cc7ceb0aa68b",
   "files": [
     {
       "path": "crates/explorer-extension-api/Cargo.toml",
@@ -142,7 +142,7 @@
     },
     {
       "path": "sdk/fixtures/extension-api-contract/current-host/src/main.rs",
-      "sha256": "e4f7b7f084a12008033880e94039284e3ed6964afa9b2dd694894a7640c78cf6"
+      "sha256": "b32db55701218f9680cab91b2766f103d5fd951fa144829f15c1fd86e747cb8f"
     },
     {
       "path": "sdk/fixtures/extension-api-contract/old-v1-api/Cargo.toml",
@@ -198,7 +198,7 @@
     },
     {
       "path": "sdk/fixtures/extension-dll-loader-contract/runner/src/main.rs",
-      "sha256": "9ff9e435b97d8d79fb8f71974a1ea871367a815b340c69fcc7055bb538b9e97f"
+      "sha256": "f7f3ee2262dc182863176f40892abf36ac292f77592c3ef6bae386c70a2e9d78"
     },
     {
       "path": "sdk/fixtures/p0-consumer/Cargo.lock",
@@ -486,7 +486,7 @@
     },
     {
       "path": "sdk/tests/extension-api-abi-contract.ps1",
-      "sha256": "3b3110f15f9c082e292b448b1681380d6e01db9b4772cf9841f7749f959add02"
+      "sha256": "cf65cff30e13713f5f71be701110e42cf62cf47918f08db2bbfa1d2c19bed743"
     },
     {
       "path": "sdk/tests/extension-dll-loader-contract.ps1",
@@ -86908,7 +86908,7 @@
   "generated_artifacts": [
     {
       "path": "sdk/ui-abi-fingerprint.json",
-      "sha256": "f8de66c905691b0216586751da811cef5ac79e078aa32cce0bc9635dc84954f7"
+      "sha256": "4a17929c14712c2f5aac16dea5bcc8bb292ef8303b21496f9b22924de4a19f34"
     }
   ]
 }
