@@ -15,6 +15,7 @@
 //! contributions, and lifecycle policy remain later tasks.
 
 mod manifest;
+mod package_resolver;
 mod package_source;
 mod package_validation;
 
@@ -24,6 +25,10 @@ pub use manifest::{
     PackageManifestErrorV1, PackageManifestV1, PayloadKindV1, PayloadV1, PublisherContactKindV1,
     PublisherContactV1, PublisherV1, RustEntrypointV1, SdkCompatibilityV1, SignatureV1,
     SkinEntrypointV1, ToolOutputProtocolV1, VerifiedPublisherIdentityV1,
+};
+pub use package_resolver::{
+    BlockedPackageV1, PackageResolutionDiagnosticCodeV1, PackageResolutionDiagnosticV1,
+    PackageResolutionV1, PackageResolverV1, ResolvedPackageDependencyV1, ResolvedPackageV1,
 };
 pub use package_source::{
     BuiltInPackageSourceV1, DiscoveredPackageV1, EntitlementDecisionV1, EntitlementErrorV1,
