@@ -17,7 +17,8 @@ use abi_stable::{
     std_types::ROption,
 };
 use explorer_extension_api::{
-    ExtensionRootModuleV1_Ref, PluginMetadataV1, SDK_MAJOR_VERSION_V1, UiAbiFingerprintV1,
+    AbiErrorCodeV1, AbiErrorV1, ExtensionRootModuleV1_Ref, PluginMetadataV1, RegistrationOutcomeV1,
+    RegistrationStatusV1, SDK_MAJOR_VERSION_V1, UiAbiFingerprintV1, registrar_request_v1,
 };
 use serde::Deserialize;
 use thiserror::Error;
@@ -25,7 +26,7 @@ use thiserror::Error;
 use crate::{
     ExtensionHost, HostRegistrationErrorV1, PackageManifestErrorV1, PackageManifestV1,
     PackageValidationErrorV1, ResolvedPackageV1, SealedPackageActivationGuardV1,
-    package_validation::sealed_manifest_canonical_digest,
+    package_validation::sealed_manifest_canonical_digest, plugin_call_guard::PluginCallGuardV1,
 };
 
 const MANIFEST_ABI_SCHEMA_V1: u32 = 1;
@@ -436,13 +437,48 @@ impl LoadedExtensionRootV1 {
     pub(crate) const fn metadata(&self) -> PluginMetadataV1 {
         self.metadata
     }
+}
 
-    /// Returns the validated root for a later lifecycle-owned registrar stage.
-    #[must_use]
-    #[allow(dead_code, reason = "task 3.4 owns registrar dispatch")]
-    pub(crate) const fn root(&self) -> ExtensionRootModuleV1_Ref {
-        self.root
-    }
+/// Invokes a root registrar only while the caller holds a live durable marker.
+///
+/// This is the sole non-test raw ABI dispatch seam. The raw root reference is
+/// never exposed outside this module.
+pub(crate) fn invoke_guarded_registrar(
+    root: &LoadedExtensionRootV1,
+    _guard: &PluginCallGuardV1,
+) -> Result<RegistrationOutcomeV1, HostRegistrationErrorV1> {
+    let registrar = root.root.registrar();
+    let _optional_contract_query = registrar.describe_contract();
+    registrar
+        .register()
+        .invoke(registrar_request_v1())
+        .into_result()
+        .map_err(|error| {
+            if error.code == AbiErrorCodeV1::CALLBACK_PANICKED {
+                HostRegistrationErrorV1::Panicked(error)
+            } else {
+                HostRegistrationErrorV1::Plugin(error)
+            }
+        })
+        .and_then(|outcome| {
+            let raw_status = outcome.status.into_raw();
+            if raw_status == RegistrationStatusV1::ACCEPTED.into_raw() {
+                Ok(outcome)
+            } else {
+                let code = if raw_status == RegistrationStatusV1::REJECTED.into_raw() {
+                    AbiErrorCodeV1::REGISTRATION_OUTCOME_REJECTED
+                } else if raw_status == 0 {
+                    AbiErrorCodeV1::MALFORMED_REGISTRATION_OUTCOME
+                } else {
+                    AbiErrorCodeV1::UNKNOWN_REGISTRATION_OUTCOME
+                };
+                Err(HostRegistrationErrorV1::Plugin(AbiErrorV1::new(
+                    code,
+                    explorer_extension_api::ROOT_MODULE_CONTRACT_ID_V1,
+                    raw_status,
+                )))
+            }
+        })
 }
 
 /// All validated Rust roots for one package.

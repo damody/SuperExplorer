@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "bundle_id": "sdk-b541e414c143dc539bc3a296",
-  "inventory_root_sha256": "5166af7bdee9dcc45350494f20055d17bef48aa8e8f1e347f33a5109036e3619",
+  "bundle_id": "sdk-e229f243358b34f03dedf6cf",
+  "inventory_root_sha256": "5c31606210401aad632ce4ed6cea9ec2468e1c7c7d57157f686a8fad9c63f728",
   "toolchain": {
     "rustc_release": "1.97.1",
     "rustc_commit_hash": "8bab26f4f68e0e26f0bb7960be334d5b520ea452",
@@ -15037,7 +15037,7 @@
     },
     {
       "path": "sdk/fixtures/extension-dll-loader-contract/plugin/src/lib.rs",
-      "sha256": "fce599e2dfab777abf1039a709ed5e913c1a98b6f005499f5d769eab7255aad0"
+      "sha256": "6d0f5eb493729f3571dceaafa58306a7640cebc9785c18ab6c86c0bbd69dfe45"
     },
     {
       "path": "sdk/fixtures/extension-dll-loader-contract/runner/Cargo.toml",
@@ -15045,7 +15045,7 @@
     },
     {
       "path": "sdk/fixtures/extension-dll-loader-contract/runner/src/main.rs",
-      "sha256": "f7f3ee2262dc182863176f40892abf36ac292f77592c3ef6bae386c70a2e9d78"
+      "sha256": "b5d13feeac2a5a9ec48a2e107202d6e7765421b275625cd3d0f3ac25ff097cba"
     },
     {
       "path": "sdk/fixtures/p0-consumer/Cargo.lock",
@@ -15337,7 +15337,7 @@
     },
     {
       "path": "sdk/tests/extension-dll-loader-contract.ps1",
-      "sha256": "2eed4c149bdbf97fae3c10e5e349743924c5111a60fa887b4f72acb06872de47"
+      "sha256": "1151194ff460e0122036dd6a52f8c90293f565f7864a14238418e40a8fd1aae9"
     },
     {
       "path": "sdk/tests/gpui-baseline-contract.ps1",

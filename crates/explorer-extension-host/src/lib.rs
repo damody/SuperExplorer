@@ -22,6 +22,7 @@ mod native_lifecycle;
 mod package_resolver;
 mod package_source;
 mod package_validation;
+mod plugin_call_guard;
 
 pub use contribution_gate::{
     ContributionGateErrorV1, ContributionGateV1, ContributionKindV1, ContributionRegistrationV1,
@@ -45,7 +46,7 @@ pub use manifest::{
 pub use native_lifecycle::{
     MAX_NATIVE_FEATURE_GATES_V1, MAX_NATIVE_LEDGER_ENTRIES_V1,
     MAX_NATIVE_RESTART_REASONS_PER_FEATURE_V1, NativeDispatchLeaseV1, NativeExtensionLifecycleV1,
-    NativeFeatureIdentityV1, NativeFeatureStateV1, NativeLifecycleErrorV1,
+    NativeFeatureIdentityV1, NativeFeatureStateV1, NativeLifecycleConfigV1, NativeLifecycleErrorV1,
     NativeLoaderDiagnosticCodeV1, NativeRestartReasonV1, NativeStartupAdmissionV1, StartupSession,
 };
 pub use package_resolver::{
@@ -63,11 +64,15 @@ pub use package_validation::{
     SealedPackageActivationGuardV1, SealedPackageStoreV1, TrustedPublisherKeyStoreV1,
     TrustedPublisherKeyV1,
 };
+pub use plugin_call_guard::{
+    NativeCallOperationV1, NativeCallTerminalV1, NativeCallTimingV1, NativeSafeModeIncidentIdV1,
+    NativeSafeModeIncidentKindV1, NativeSafeModeIncidentV1,
+};
 
 use explorer_extension_api::{
     ABI_SCHEMA_V1, AbiErrorCodeV1, AbiErrorV1, ExtensionRootModuleV1_Ref, IdNamespaceV1,
     PluginMetadataV1, ROOT_MODULE_CONTRACT_ID_V1, RegistrationOutcomeV1, RegistrationStatusV1,
-    SDK_MAJOR_VERSION_V1, StableIdV1, registrar_request_v1,
+    SDK_MAJOR_VERSION_V1, StableIdV1,
 };
 
 /// Inert process-lifetime owner installed by the application composition root.
@@ -157,7 +162,7 @@ impl ExtensionHost {
         Ok(metadata)
     }
 
-    /// Validates the root and invokes its registrar once.
+    /// Test-only raw registrar dispatch for ABI boundary coverage.
     ///
     /// A plugin callback returns typed ABI errors. `abi_stable` only supports the
     /// non-unwinding C function ABI here, so plugin callbacks must catch their own
@@ -168,11 +173,8 @@ impl ExtensionHost {
     ///
     /// Returns validation failures before invoking the registrar, and translates a
     /// plugin's typed error or translated panic terminal after invocation.
-    #[allow(
-        dead_code,
-        reason = "task 3.5 installs the sole guarded registrar path"
-    )]
-    pub(crate) fn register_root(
+    #[cfg(test)]
+    fn register_root_for_test(
         &self,
         root: ExtensionRootModuleV1_Ref,
     ) -> Result<RegistrationOutcomeV1, HostRegistrationErrorV1> {
@@ -185,7 +187,7 @@ impl ExtensionHost {
 
         registrar
             .register()
-            .invoke(registrar_request_v1())
+            .invoke(explorer_extension_api::registrar_request_v1())
             .into_result()
             .map_err(|error| {
                 if error.code == AbiErrorCodeV1::CALLBACK_PANICKED {
@@ -428,7 +430,7 @@ mod tests {
         SCHEMA_CALLBACK_CALLED.store(false, Ordering::SeqCst);
         let host = ExtensionHost::new();
         let invalid_schema = explorer_extension_api::AbiSchemaIdV1::new(0x5345, 2);
-        let result = host.register_root(root::<MarksSchemaCallback>(
+        let result = host.register_root_for_test(root::<MarksSchemaCallback>(
             invalid_schema,
             ROOT_MODULE_CONTRACT_ID_V1,
             SDK_MAJOR_VERSION_V1,
@@ -448,7 +450,7 @@ mod tests {
     #[test]
     fn incompatible_semantic_id_is_rejected_before_registrar_callback() {
         let host = ExtensionHost::new();
-        let result = host.register_root(root::<Succeeds>(
+        let result = host.register_root_for_test(root::<Succeeds>(
             ABI_SCHEMA_V1,
             StableIdV1::new(super::extension_id_namespace_v1(), 99),
             SDK_MAJOR_VERSION_V1,
@@ -468,7 +470,7 @@ mod tests {
     fn incompatible_sdk_major_is_rejected_before_registrar_callback() {
         SDK_CALLBACK_CALLED.store(false, Ordering::SeqCst);
         let host = ExtensionHost::new();
-        let result = host.register_root(root::<MarksSdkCallback>(
+        let result = host.register_root_for_test(root::<MarksSdkCallback>(
             ABI_SCHEMA_V1,
             ROOT_MODULE_CONTRACT_ID_V1,
             SDK_MAJOR_VERSION_V1 + 1,
@@ -488,13 +490,13 @@ mod tests {
     #[test]
     fn registrar_typed_error_and_panic_are_translated_at_boundary() {
         let host = ExtensionHost::new();
-        let typed_error = host.register_root(root::<ReturnsError>(
+        let typed_error = host.register_root_for_test(root::<ReturnsError>(
             ABI_SCHEMA_V1,
             ROOT_MODULE_CONTRACT_ID_V1,
             SDK_MAJOR_VERSION_V1,
             valid_metadata(),
         ));
-        let panic_error = host.register_root(root::<Panics>(
+        let panic_error = host.register_root_for_test(root::<Panics>(
             ABI_SCHEMA_V1,
             ROOT_MODULE_CONTRACT_ID_V1,
             SDK_MAJOR_VERSION_V1,
@@ -520,19 +522,19 @@ mod tests {
     #[test]
     fn rejected_malformed_and_unknown_outcomes_are_not_successes() {
         let host = ExtensionHost::new();
-        let rejected = host.register_root(root::<RejectedOutcome>(
+        let rejected = host.register_root_for_test(root::<RejectedOutcome>(
             ABI_SCHEMA_V1,
             ROOT_MODULE_CONTRACT_ID_V1,
             SDK_MAJOR_VERSION_V1,
             valid_metadata(),
         ));
-        let malformed = host.register_root(root::<MalformedOutcome>(
+        let malformed = host.register_root_for_test(root::<MalformedOutcome>(
             ABI_SCHEMA_V1,
             ROOT_MODULE_CONTRACT_ID_V1,
             SDK_MAJOR_VERSION_V1,
             valid_metadata(),
         ));
-        let unknown = host.register_root(root::<UnknownOutcome>(
+        let unknown = host.register_root_for_test(root::<UnknownOutcome>(
             ABI_SCHEMA_V1,
             ROOT_MODULE_CONTRACT_ID_V1,
             SDK_MAJOR_VERSION_V1,
@@ -568,7 +570,7 @@ mod tests {
     #[test]
     fn valid_root_dispatches_only_after_all_data_validation_passes() {
         let host = ExtensionHost::new();
-        let outcome = host.register_root(root::<Succeeds>(
+        let outcome = host.register_root_for_test(root::<Succeeds>(
             ABI_SCHEMA_V1,
             ROOT_MODULE_CONTRACT_ID_V1,
             SDK_MAJOR_VERSION_V1,
