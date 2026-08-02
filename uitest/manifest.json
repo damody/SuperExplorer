@@ -64,6 +64,26 @@
       ]
     },
     {
+      "id": "interaction-first-request-stream-order",
+      "description": "Verify a reliable retained terminal cannot overtake earlier breadcrumb or search batches from the same request.",
+      "suites": ["quick", "full"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-shell-win", "--lib", "--locked", "sta::tests::ordered_request_lane_delivers_batches_before_a_retained_terminal", "--", "--exact", "--nocapture", "--test-threads=1"],
+      "timeout_seconds": 300,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
+      "exclusive_resources": ["ole"]
+    },
+    {
+      "id": "visible-shell-file-icon-regression",
+      "description": "Verify visible extension-backed files use their real filesystem paths for Shell icons instead of blocking on synthetic extension base paths.",
+      "suites": ["quick", "full", "visual"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-ui", "--lib", "--locked", "tests::one_hundred_thousand_same_extension_rows_request_one_bounded_real_viewport", "--", "--exact", "--nocapture", "--test-threads=1"],
+      "timeout_seconds": 300,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
+      "covers": ["enforce-interaction-first-qos/interaction-first-qos/overload-degrades-optional-work-and-recovers"]
+    },
+    {
       "id": "interaction-first-domain-isolation",
       "description": "Use deterministic start/release gates to prove stalled file-operation and breadcrumb enrichment workers cannot delay navigation.",
       "suites": ["quick", "full", "interop"],
@@ -545,6 +565,33 @@
       "exclusive_resources": [],
       "covers": ["match-explorer-visual-address-parity/explorer-visual-parity/*"],
       "required_artifacts": ["report.json", "cargo-test.log", "registry-audit\\report.json"]
+    },
+    {
+      "id": "explorer-left-drag-transfer-contracts",
+      "description": "Verify left-button threshold initiation, Shift/Ctrl precedence, same/cross-volume defaults, typed folder/background routing, invalid targets, and cleanup.",
+      "suites": ["quick", "full", "interop"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-model", "-p", "explorer-shell-win", "-p", "explorer-ui", "--lib", "--locked", "left_drag", "--", "--nocapture", "--test-threads=1"],
+      "timeout_seconds": 300,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
+      "exclusive_resources": ["ole"],
+      "covers": ["fix-explorer-left-drag-transfer/explorer-left-drag-transfer/*"]
+    },
+    {
+      "id": "explorer-left-drag-transfer-headful",
+      "description": "Use genuine left-button input in one SuperExplorer window and prove default Move, Shift Move, Ctrl Copy, and Cancel against real disk state.",
+      "suites": ["full", "interop", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_explorer_drag_interop.ps1", "-SkipBuild", "-Direction", "app-internal", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 240,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "clipboard", "ole", "explorer"],
+      "covers": ["fix-explorer-left-drag-transfer/explorer-left-drag-transfer/*"],
+      "required_artifacts": ["report.json", "input-state.log", "desktop-before-first-drop.png"]
     },
     {
       "id": "explorer-ole-drag-interop-app-to-explorer",

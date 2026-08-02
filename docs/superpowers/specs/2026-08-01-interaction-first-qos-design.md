@@ -10,6 +10,8 @@ The guarantee is scoped to work controlled by SuperExplorer. Faulting storage, e
 
 - UI callbacks have a 4 ms p95 budget.
 - UI result integration consumes no more than 16 ms per frame to target 60 FPS.
+- Reliable terminals never overtake earlier batches from the same request.
+- Icons and thumbnails for realized rows remain current-directory work during degradation; only off-screen refinement may be shed.
 - A navigation action displays its new location or a loading state within 50 ms.
 - UI dispatch never waits for worker capacity, Shell calls, storage, networking, or result delivery.
 - Every asynchronous result carries tab, request, and navigation-generation identity; stale results are rejected.

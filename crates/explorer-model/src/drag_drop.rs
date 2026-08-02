@@ -1,5 +1,7 @@
 //! Apartment-neutral OLE drag-and-drop session and effect negotiation domain.
 
+use std::path::{Path, Prefix};
+
 use crate::{LocationDescriptor, RequestContext, TransferEffects};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -226,6 +228,120 @@ pub const fn negotiate_effect(
     }
 }
 
+/// Resolves Explorer's unmodified filesystem drag default from real source and destination
+/// volumes, while preserving the effects actually advertised by the OLE source.
+pub fn default_filesystem_drop_effect(
+    sources: &[std::path::PathBuf],
+    destination: &Path,
+    allowed: TransferEffects,
+) -> DragEffect {
+    let destination_volume = windows_volume_prefix(destination);
+    let same_volume = destination_volume
+        .as_ref()
+        .is_some_and(|destination_volume| {
+            !sources.is_empty()
+                && sources.iter().all(|source| {
+                    windows_volume_prefix(source).as_ref() == Some(destination_volume)
+                })
+        });
+    if same_volume && allowed.move_item {
+        DragEffect::Move
+    } else if allowed.copy {
+        DragEffect::Copy
+    } else if allowed.move_item {
+        DragEffect::Move
+    } else if allowed.link {
+        DragEffect::Link
+    } else {
+        DragEffect::None
+    }
+}
+
+/// Negotiates one filesystem drop using live modifiers, source preference, and Explorer's
+/// same-volume/cross-volume default when the source intentionally supplies no preference.
+pub fn negotiate_filesystem_drop_effect(
+    allowed: TransferEffects,
+    preferred: DragEffect,
+    modifiers: DragModifiers,
+    target_can_write: bool,
+    sources: &[std::path::PathBuf],
+    destination: &Path,
+) -> DragEffect {
+    if !target_can_write || modifiers.alt || modifiers.control || modifiers.shift {
+        return negotiate_effect(allowed, preferred, modifiers, target_can_write);
+    }
+    let preferred = if preferred == DragEffect::None {
+        default_filesystem_drop_effect(sources, destination, allowed)
+    } else {
+        preferred
+    };
+    negotiate_effect(allowed, preferred, modifiers, target_can_write)
+}
+
+/// Rejects targets that Explorer cannot safely use for a filesystem drop.
+pub fn filesystem_drop_destination_is_valid(
+    sources: &[std::path::PathBuf],
+    destination: &Path,
+    effect: DragEffect,
+) -> bool {
+    if sources.is_empty() || effect == DragEffect::None || !destination.is_absolute() {
+        return false;
+    }
+    let destination = normalized_windows_path(destination);
+    sources.iter().all(|source| {
+        if !source.is_absolute() {
+            return false;
+        }
+        let normalized_source = normalized_windows_path(source);
+        if destination == normalized_source
+            || destination
+                .strip_prefix(&normalized_source)
+                .is_some_and(|suffix| suffix.starts_with('\\'))
+        {
+            return false;
+        }
+        effect != DragEffect::Move
+            || source
+                .parent()
+                .is_none_or(|parent| normalized_windows_path(parent) != destination)
+    })
+}
+
+fn normalized_windows_path(path: &Path) -> String {
+    let normalized = path
+        .as_os_str()
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase();
+    normalized
+        .strip_suffix('\\')
+        .unwrap_or(&normalized)
+        .to_owned()
+}
+
+fn windows_volume_prefix(path: &Path) -> Option<String> {
+    let std::path::Component::Prefix(prefix) = path.components().next()? else {
+        return None;
+    };
+    let identity = match prefix.kind() {
+        Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
+            format!("disk:{}", char::from(letter).to_ascii_lowercase())
+        }
+        Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => format!(
+            "unc:{}\\{}",
+            server.to_string_lossy().to_ascii_lowercase(),
+            share.to_string_lossy().to_ascii_lowercase()
+        ),
+        Prefix::DeviceNS(device) => {
+            format!("device:{}", device.to_string_lossy().to_ascii_lowercase())
+        }
+        Prefix::Verbatim(value) => {
+            format!("verbatim:{}", value.to_string_lossy().to_ascii_lowercase())
+        }
+    };
+    Some(identity)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,5 +402,108 @@ mod tests {
             negotiate_effect(all, DragEffect::Move, DragModifiers::default(), false),
             DragEffect::None
         );
+    }
+
+    #[test]
+    fn left_drag_filesystem_default_matches_explorer_same_and_cross_volume_semantics() {
+        let allowed = TransferEffects {
+            copy: true,
+            move_item: true,
+            link: false,
+        };
+        assert_eq!(
+            default_filesystem_drop_effect(
+                &[std::path::PathBuf::from(r"C:\source\one.txt")],
+                Path::new(r"C:\destination"),
+                allowed,
+            ),
+            DragEffect::Move
+        );
+        assert_eq!(
+            default_filesystem_drop_effect(
+                &[std::path::PathBuf::from(r"C:\source\one.txt")],
+                Path::new(r"D:\destination"),
+                allowed,
+            ),
+            DragEffect::Copy
+        );
+        assert_eq!(
+            default_filesystem_drop_effect(
+                &[std::path::PathBuf::from(r"\\server\share\source\one.txt")],
+                Path::new(r"\\SERVER\SHARE\destination"),
+                allowed,
+            ),
+            DragEffect::Move
+        );
+    }
+
+    #[test]
+    fn left_drag_live_ctrl_and_shift_override_filesystem_default_and_source_preference() {
+        let allowed = TransferEffects {
+            copy: true,
+            move_item: true,
+            link: false,
+        };
+        let sources = [std::path::PathBuf::from(r"C:\source\one.txt")];
+        let destination = Path::new(r"D:\destination");
+        assert_eq!(
+            negotiate_filesystem_drop_effect(
+                allowed,
+                DragEffect::Move,
+                DragModifiers {
+                    control: true,
+                    ..DragModifiers::default()
+                },
+                true,
+                &sources,
+                destination,
+            ),
+            DragEffect::Copy
+        );
+        assert_eq!(
+            negotiate_filesystem_drop_effect(
+                allowed,
+                DragEffect::Copy,
+                DragModifiers {
+                    shift: true,
+                    ..DragModifiers::default()
+                },
+                true,
+                &sources,
+                destination,
+            ),
+            DragEffect::Move
+        );
+    }
+
+    #[test]
+    fn left_drag_rejects_self_descendant_and_same_parent_move_but_allows_copy() {
+        let folder = std::path::PathBuf::from(r"C:\source\folder");
+        assert!(!filesystem_drop_destination_is_valid(
+            std::slice::from_ref(&folder),
+            Path::new(r"C:\source\folder"),
+            DragEffect::Move,
+        ));
+        assert!(!filesystem_drop_destination_is_valid(
+            std::slice::from_ref(&folder),
+            Path::new(r"C:\source\folder\child"),
+            DragEffect::Copy,
+        ));
+        let file = std::path::PathBuf::from(r"C:\source\one.txt");
+        assert!(!filesystem_drop_destination_is_valid(
+            std::slice::from_ref(&file),
+            Path::new(r"C:\source"),
+            DragEffect::Move,
+        ));
+        assert!(filesystem_drop_destination_is_valid(
+            std::slice::from_ref(&file),
+            Path::new(r"C:\source"),
+            DragEffect::Copy,
+        ));
+        assert!(filesystem_drop_destination_is_valid(
+            &[file],
+            Path::new(r"C:\destination"),
+            DragEffect::Move,
+        ));
     }
 }

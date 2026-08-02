@@ -126,12 +126,14 @@ pub(crate) struct ReliableTerminalPublisher {
     retained: Arc<Mutex<VecDeque<ExplorerEvent>>>,
     retained_capacity: usize,
     counters: &'static TerminalLaneCounters,
+    ordered: bool,
 }
 
 struct ReliableTerminalReceiver {
     primary: Receiver<ExplorerEvent>,
     retained: Arc<Mutex<VecDeque<ExplorerEvent>>>,
     counters: &'static TerminalLaneCounters,
+    retained_first: bool,
 }
 
 impl ReliableTerminalPublisher {
@@ -139,6 +141,27 @@ impl ReliableTerminalPublisher {
         primary_capacity: usize,
         retained_capacity: usize,
         counters: &'static TerminalLaneCounters,
+    ) -> (Self, ReliableTerminalReceiver) {
+        Self::channel_with_order(primary_capacity, retained_capacity, counters, true)
+    }
+
+    /// Creates a lane whose primary FIFO is drained before retained terminals. This is used for
+    /// request streams such as breadcrumb/search where batches published before a terminal must
+    /// be observed first. The retained queue still guarantees a bounded terminal when the primary
+    /// FIFO is full.
+    fn ordered_channel(
+        primary_capacity: usize,
+        retained_capacity: usize,
+        counters: &'static TerminalLaneCounters,
+    ) -> (Self, ReliableTerminalReceiver) {
+        Self::channel_with_order(primary_capacity, retained_capacity, counters, false)
+    }
+
+    fn channel_with_order(
+        primary_capacity: usize,
+        retained_capacity: usize,
+        counters: &'static TerminalLaneCounters,
+        retained_first: bool,
     ) -> (Self, ReliableTerminalReceiver) {
         let (primary, receiver) = mpsc::sync_channel(primary_capacity);
         let retained = Arc::new(Mutex::new(VecDeque::with_capacity(retained_capacity)));
@@ -148,11 +171,13 @@ impl ReliableTerminalPublisher {
                 retained: Arc::clone(&retained),
                 retained_capacity,
                 counters,
+                ordered: !retained_first,
             },
             ReliableTerminalReceiver {
                 primary: receiver,
                 retained,
                 counters,
+                retained_first,
             },
         )
     }
@@ -163,6 +188,16 @@ impl ReliableTerminalPublisher {
 
     /// Publishes a required terminal without blocking the calling apartment or worker.
     pub(crate) fn publish(&self, event: ExplorerEvent) {
+        if self.ordered {
+            let mut retained = self
+                .retained
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !retained.is_empty() {
+                self.retain_terminal(&mut retained, event);
+                return;
+            }
+        }
         match self.primary.try_send(event) {
             Ok(()) => self.counters.published(),
             Err(TrySendError::Full(event)) => {
@@ -170,31 +205,7 @@ impl ReliableTerminalPublisher {
                     .retained
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(request_id) = event.context().map(|context| context.request_id)
-                    && let Some(existing) = retained.iter_mut().find(|existing| {
-                        existing.context().map(|context| context.request_id) == Some(request_id)
-                    })
-                {
-                    // A duplicate terminal for one request is safely superseded; it cannot
-                    // create a second reducer transition and preserves bounded memory.
-                    *existing = event;
-                    return;
-                }
-                if retained.len() < self.retained_capacity {
-                    retained.push_back(event);
-                    self.counters
-                        .retained_publications
-                        .fetch_add(1, Ordering::Relaxed);
-                    self.counters.published();
-                } else {
-                    // Admission is bounded by the associated command capacity, so this branch
-                    // is unreachable for owned requests. Keep the failure observable rather
-                    // than silently discarding a terminal if a future caller violates it.
-                    self.counters
-                        .failed_publications
-                        .fetch_add(1, Ordering::Relaxed);
-                    tracing::error!("required Shell terminal retention capacity was exhausted");
-                }
+                self.retain_terminal(&mut retained, event);
             }
             Err(TrySendError::Disconnected(_)) => {
                 self.counters
@@ -203,10 +214,74 @@ impl ReliableTerminalPublisher {
             }
         }
     }
+
+    fn retain_terminal(&self, retained: &mut VecDeque<ExplorerEvent>, event: ExplorerEvent) {
+        if let Some(request_id) = event.context().map(|context| context.request_id)
+            && let Some(existing) = retained.iter_mut().find(|existing| {
+                existing.is_terminal()
+                    && existing.context().map(|context| context.request_id) == Some(request_id)
+            })
+        {
+            // A duplicate terminal for one request is safely superseded; it cannot create a
+            // second reducer transition and preserves bounded memory.
+            *existing = event;
+            return;
+        }
+        if retained.len() < self.retained_capacity {
+            retained.push_back(event);
+            self.counters
+                .retained_publications
+                .fetch_add(1, Ordering::Relaxed);
+            self.counters.published();
+        } else {
+            self.counters
+                .failed_publications
+                .fetch_add(1, Ordering::Relaxed);
+            tracing::error!("required Shell terminal retention capacity was exhausted");
+        }
+    }
+
+    /// Publishes an earlier batch into the same ordered request stream as its terminal. Once the
+    /// primary lane spills, later events remain in the retained FIFO so the terminal cannot pass
+    /// the batch that made the visible navigation tree.
+    fn try_publish_batch(&self, event: ExplorerEvent) -> Result<(), ()> {
+        debug_assert!(!event.is_terminal());
+        if self.ordered {
+            let mut retained = self
+                .retained
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !retained.is_empty() {
+                if retained.len() < self.retained_capacity {
+                    retained.push_back(event);
+                    return Ok(());
+                }
+                return Err(());
+            }
+        }
+        match self.primary.try_send(event) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(event)) if self.ordered => {
+                let mut retained = self
+                    .retained
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if retained.len() < self.retained_capacity {
+                    retained.push_back(event);
+                    Ok(())
+                } else {
+                    Err(())
+                }
+            }
+            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => Err(()),
+        }
+    }
 }
 
 pub(crate) trait RequiredTerminalPublisher: Clone + Send + 'static {
     fn publish_terminal(&self, event: ExplorerEvent);
+
+    fn publish_batch(&self, event: ExplorerEvent) -> Result<(), ()>;
 
     fn send(&self, event: ExplorerEvent) -> Result<(), ()> {
         self.publish_terminal(event);
@@ -218,25 +293,34 @@ impl RequiredTerminalPublisher for ReliableTerminalPublisher {
     fn publish_terminal(&self, event: ExplorerEvent) {
         self.publish(event);
     }
+
+    fn publish_batch(&self, event: ExplorerEvent) -> Result<(), ()> {
+        self.try_publish_batch(event)
+    }
 }
 
 impl RequiredTerminalPublisher for SyncSender<ExplorerEvent> {
     fn publish_terminal(&self, event: ExplorerEvent) {
         let _ = self.try_send(event);
     }
+
+    fn publish_batch(&self, event: ExplorerEvent) -> Result<(), ()> {
+        self.try_send(event).map_err(|_| ())
+    }
 }
 
 impl ReliableTerminalReceiver {
     fn try_recv(&self) -> Result<ExplorerEvent, TryRecvError> {
-        let mut retained = self
-            .retained
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(event) = retained.pop_front() {
-            self.counters.received();
-            return Ok(event);
+        if self.retained_first {
+            let mut retained = self
+                .retained
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(event) = retained.pop_front() {
+                self.counters.received();
+                return Ok(event);
+            }
         }
-        drop(retained);
         match self.primary.try_recv() {
             Ok(event) => {
                 if event.is_terminal() {
@@ -244,7 +328,18 @@ impl ReliableTerminalReceiver {
                 }
                 Ok(event)
             }
-            Err(error @ (TryRecvError::Empty | TryRecvError::Disconnected)) => Err(error),
+            Err(error @ (TryRecvError::Empty | TryRecvError::Disconnected)) => {
+                let mut retained = self
+                    .retained
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(event) = retained.pop_front() {
+                    self.counters.received();
+                    Ok(event)
+                } else {
+                    Err(error)
+                }
+            }
         }
     }
 }
@@ -553,8 +648,8 @@ pub struct ShellStaHandle {
     operation_terminals: Mutex<ReliableTerminalReceiver>,
     typed_terminals: Mutex<ReliableTerminalReceiver>,
     operation_progress: Mutex<Receiver<ExplorerEvent>>,
-    search_events: Mutex<Receiver<ExplorerEvent>>,
-    events: Mutex<Receiver<ExplorerEvent>>,
+    search_events: Mutex<ReliableTerminalReceiver>,
+    events: Mutex<ReliableTerminalReceiver>,
     active_requests: Mutex<HashMap<RequestId, ActiveRequest>>,
     done: Mutex<Receiver<()>>,
     join: Mutex<Option<JoinHandle<()>>>,
@@ -601,14 +696,24 @@ impl ShellStaHandle {
         let thread_pump_cycles = Arc::clone(&pump_cycles);
         let (foreground_tx, foreground_rx) = mpsc::sync_channel(FOREGROUND_COMMAND_QUEUE_CAPACITY);
         let (background_tx, background_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
-        let (event_tx, event_rx) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
+        let (background_terminals, event_rx) = ReliableTerminalPublisher::ordered_channel(
+            EVENT_QUEUE_CAPACITY,
+            TYPED_TERMINAL_RETAIN_CAPACITY,
+            &TYPED_TERMINAL_COUNTERS,
+        );
+        let event_tx = background_terminals.primary();
         let (navigation_terminals, navigation_event_rx) = ReliableTerminalPublisher::channel(
             NAVIGATION_EVENT_QUEUE_CAPACITY,
             NAVIGATION_TERMINAL_RETAIN_CAPACITY,
             &NAVIGATION_TERMINAL_COUNTERS,
         );
         let navigation_event_tx = navigation_terminals.primary();
-        let (search_event_tx, search_event_rx) = mpsc::sync_channel(SEARCH_EVENT_QUEUE_CAPACITY);
+        let (search_terminals, search_event_rx) = ReliableTerminalPublisher::ordered_channel(
+            SEARCH_EVENT_QUEUE_CAPACITY,
+            TYPED_TERMINAL_RETAIN_CAPACITY,
+            &TYPED_TERMINAL_COUNTERS,
+        );
+        let search_event_tx = search_terminals.primary();
         let (operation_terminals, operation_terminal_rx) = ReliableTerminalPublisher::channel(
             OPERATION_TERMINAL_QUEUE_CAPACITY,
             OPERATION_TERMINAL_RETAIN_CAPACITY,
@@ -630,7 +735,7 @@ impl ShellStaHandle {
         let thread_shutdown_requested = Arc::clone(&shutdown_requested);
         let search_shutdown = Arc::clone(&shutdown_requested);
         let search_events = search_event_tx;
-        let search_terminals = typed_terminals.clone();
+        let search_terminals = search_terminals.clone();
         let search_join = thread::Builder::new()
             .name("explorer-search-worker".to_owned())
             .spawn(move || {
@@ -705,6 +810,7 @@ impl ShellStaHandle {
                                         &event_tx
                                     },
                                     &navigation_terminals,
+                                    &background_terminals,
                                     &typed_terminals,
                                     &file_operation_tx,
                                     &operation_progress_tx,
@@ -1267,6 +1373,7 @@ fn process_command(
     queued_at: Instant,
     events: &SyncSender<ExplorerEvent>,
     navigation_terminals: &ReliableTerminalPublisher,
+    background_terminals: &ReliableTerminalPublisher,
     typed_terminals: &ReliableTerminalPublisher,
     file_operations: &Sender<FileOperationCompletion>,
     operation_progress: &SyncSender<ExplorerEvent>,
@@ -1290,7 +1397,7 @@ fn process_command(
         }
         ExplorerCommand::ResolveAncestry { .. }
         | ExplorerCommand::EnumerateChildContainers { .. } => {
-            start_brokered_breadcrumb(command, events, typed_terminals.clone());
+            start_brokered_breadcrumb(command, events, background_terminals.clone());
             Ok(())
         }
         ExplorerCommand::OpenItem {
@@ -2281,12 +2388,20 @@ fn process_ancestry<P: RequiredTerminalPublisher>(
         };
         segments = shell_ancestry_segments(chain);
     }
-    events
-        .try_send(ExplorerEvent::AncestryBatch {
+    terminals
+        .publish_batch(ExplorerEvent::AncestryBatch {
             context: context.clone(),
             segments: segments.clone(),
         })
-        .map_err(|error| event_send_error(&error))?;
+        .map_err(|()| {
+            ExplorerError::new(
+                ExplorerErrorKind::Availability,
+                "publish breadcrumb ancestry batch",
+                true,
+                "Folder navigation details are temporarily busy.",
+                "ordered breadcrumb event lane is full",
+            )
+        })?;
 
     // Publish Shell display metadata as an identity-preserving update batch.
     let mut enriched = segments;
@@ -2298,12 +2413,20 @@ fn process_ancestry<P: RequiredTerminalPublisher>(
             segment.display_name = resolved.metadata().display_title;
         }
     }
-    events
-        .try_send(ExplorerEvent::AncestryBatch {
+    terminals
+        .publish_batch(ExplorerEvent::AncestryBatch {
             context: context.clone(),
             segments: enriched,
         })
-        .map_err(|error| event_send_error(&error))?;
+        .map_err(|()| {
+            ExplorerError::new(
+                ExplorerErrorKind::Availability,
+                "publish breadcrumb ancestry batch",
+                true,
+                "Folder navigation details are temporarily busy.",
+                "ordered breadcrumb event lane is full",
+            )
+        })?;
     send_ancestry_terminal(
         context,
         BreadcrumbTerminal::Finished,
@@ -2405,14 +2528,22 @@ fn process_child_containers<P: RequiredTerminalPublisher>(
     let completed =
         match crate::navigation::enumerate_child_containers(context, parent, |children| {
             child_count = child_count.saturating_add(children.len());
-            events
-                .try_send(ExplorerEvent::ChildContainersBatch {
+            terminals
+                .publish_batch(ExplorerEvent::ChildContainersBatch {
                     context: context.clone(),
                     segment_id,
                     menu_generation,
                     children,
                 })
-                .map_err(|error| event_send_error(&error))
+                .map_err(|()| {
+                    ExplorerError::new(
+                        ExplorerErrorKind::Availability,
+                        "publish navigation child batch",
+                        true,
+                        "Folder children are temporarily busy.",
+                        "ordered breadcrumb event lane is full",
+                    )
+                })
         }) {
             Ok(completed) => completed,
             Err(error) => {
@@ -2681,7 +2812,7 @@ mod tests {
         FILE_OPERATION_TEST_GATE, FileOperationTestGate, NAVIGATION_TERMINAL_COUNTERS,
         OPERATION_TERMINAL_COUNTERS, ReliableTerminalPublisher, RequiredTerminalLane,
         SEARCH_TEST_GATE, SearchTestGate, ShellDomainDiagnostics, ShellStaEndpointError,
-        ShellStaError, ShellStaHandle, ShellStaState, StaResourceSnapshot,
+        ShellStaError, ShellStaHandle, ShellStaState, StaResourceSnapshot, TYPED_TERMINAL_COUNTERS,
         TYPED_TERMINAL_RETAIN_CAPACITY, filesystem_ancestry, remove_completed_request,
         send_breadcrumb_broker_failure, shell_ancestry_segments, start_bounded_breadcrumb_job,
         watchable_directory_path,
@@ -3851,6 +3982,49 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
                 .try_recv()
                 .expect("receive filled primary terminal after retained terminal"),
             ExplorerEvent::OperationFinished { .. }
+        ));
+    }
+
+    #[test]
+    fn ordered_request_lane_delivers_batches_before_a_retained_terminal() {
+        let (publisher, receiver) =
+            ReliableTerminalPublisher::ordered_channel(1, 2, &TYPED_TERMINAL_COUNTERS);
+        let events = publisher.primary();
+        let context = RequestContext::new(TabId::new(), Generation::new(1));
+        events
+            .try_send(ExplorerEvent::DirectoryBatch {
+                context: RequestContext::new(TabId::new(), Generation::new(1)),
+                entries: Vec::new(),
+            })
+            .expect("fill ordered primary lane");
+        publisher
+            .try_publish_batch(ExplorerEvent::ChildContainersBatch {
+                context: context.clone(),
+                segment_id: BreadcrumbSegmentId(42),
+                menu_generation: 7,
+                children: Vec::new(),
+            })
+            .expect("retain visible child batch");
+        publisher.publish(ExplorerEvent::ChildContainersFinished {
+            context: context.clone(),
+            segment_id: BreadcrumbSegmentId(42),
+            menu_generation: 7,
+            outcome: BreadcrumbTerminal::Finished,
+        });
+
+        assert!(matches!(
+            receiver.try_recv().expect("primary filler"),
+            ExplorerEvent::DirectoryBatch { .. }
+        ));
+        assert!(matches!(
+            receiver.try_recv().expect("retained child batch"),
+            ExplorerEvent::ChildContainersBatch { context: batch, .. }
+                if batch.request_id == context.request_id
+        ));
+        assert!(matches!(
+            receiver.try_recv().expect("terminal after batches"),
+            ExplorerEvent::ChildContainersFinished { context: terminal, .. }
+                if terminal.request_id == context.request_id
         ));
     }
 

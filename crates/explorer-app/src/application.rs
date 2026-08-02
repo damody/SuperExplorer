@@ -84,6 +84,7 @@ pub struct ApplicationLifecycle {
 struct ShutdownResources {
     diagnostics: DiagnosticsSession,
     automation: Option<AutomationComposition>,
+    extension_host: Option<explorer_extension_host::ExtensionHost>,
     broker_warmup: Option<std::thread::JoinHandle<()>>,
     broker: Option<explorer_extension_broker::BrokerClient>,
     shell_sta: Option<Arc<ShellStaHandle>>,
@@ -105,6 +106,9 @@ impl ApplicationLifecycle {
         let automation = AutomationComposition::start()?;
         let script_count = automation.snapshots()?.len().to_string();
         diagnostics.record_event("automation_ready", &[("scripts", &script_count)])?;
+        let mut extension_host = explorer_extension_host::ExtensionHost::new();
+        extension_host.start();
+        diagnostics.record_event("extension_host_ready", &[])?;
         let broker = std::env::current_exe().ok().map(|application| {
             explorer_extension_broker::BrokerClient::adjacent_to(
                 &application,
@@ -163,6 +167,7 @@ impl ApplicationLifecycle {
             resources: Arc::new(Mutex::new(ShutdownResources {
                 diagnostics,
                 automation: Some(automation),
+                extension_host: Some(extension_host),
                 broker_warmup,
                 broker,
                 shell_sta: Some(shell_sta),
@@ -773,6 +778,15 @@ impl ShutdownResources {
         let _ = self
             .diagnostics
             .record_event("shutdown_stage_finished", &[("stage", "automation")]);
+        let _ = self
+            .diagnostics
+            .record_event("shutdown_stage_started", &[("stage", "extension_host")]);
+        if let Some(mut extension_host) = self.extension_host.take() {
+            extension_host.shutdown();
+        }
+        let _ = self
+            .diagnostics
+            .record_event("shutdown_stage_finished", &[("stage", "extension_host")]);
         let _ = self
             .diagnostics
             .record_event("shutdown_stage_started", &[("stage", "broker_warmup")]);

@@ -122,6 +122,23 @@ pub(crate) fn explorer_file_viewport_width(
     .max(0.0)
 }
 
+pub(crate) fn explorer_file_origin_y(tokens: UiTokens) -> f32 {
+    tokens.layout.title_tab_height.value()
+        + tokens.layout.address_bar_height.value()
+        + tokens.layout.command_bar_height.value()
+}
+
+pub(crate) fn explorer_file_viewport_height(window: &Window, tokens: UiTokens) -> f32 {
+    explorer_file_viewport_height_for_window(f32::from(window.viewport_size().height), tokens)
+}
+
+pub(crate) fn explorer_file_viewport_height_for_window(
+    window_height: f32,
+    tokens: UiTokens,
+) -> f32 {
+    (window_height - explorer_file_origin_y(tokens)).max(0.0)
+}
+
 /// Top-level presentation component. It receives copied view state and tokens
 /// and deliberately has no access to Shell or filesystem services.
 #[derive(IntoElement)]
@@ -276,9 +293,7 @@ impl RenderOnce for ExplorerWindow {
         let file_viewport_width = explorer_file_viewport_width(window, &self.state, self.tokens);
         let file_origin_x =
             self.state.navigation_pane_width().value() + self.tokens.layout.divider_width.value();
-        let file_origin_y = self.tokens.layout.title_tab_height.value()
-            + self.tokens.layout.address_bar_height.value()
-            + self.tokens.layout.command_bar_height.value();
+        let file_origin_y = explorer_file_origin_y(self.tokens);
         let scrollbar_capture_action = self.on_action.clone();
         div()
             .id(EXPLORER_WINDOW_ID)
@@ -368,6 +383,12 @@ impl RenderOnce for ExplorerWindow {
                                 self.state.drag_session().state().clone(),
                                 self.state.drop_target_row(),
                                 self.state.active_presentation().can_write,
+                                self.state
+                                    .tabs()
+                                    .active_tab()
+                                    .history
+                                    .current()
+                                    .map(|entry| entry.location.clone()),
                                 self.state.context_menu_pending(),
                                 marquee,
                                 file_origin_x,
@@ -4082,7 +4103,7 @@ impl RenderOnce for NavigationPane {
             .active_tab()
             .history
             .current()
-            .map(|entry| &entry.location);
+            .map(|entry| entry.location.clone());
         let can_write = self.state.active_presentation().can_write;
         let navigation_drop_cue = matches!(
             self.state.drag_session().state(),
@@ -4141,15 +4162,24 @@ impl RenderOnce for NavigationPane {
             ))
             .when_some(on_action.clone(), |element, callback| {
                 let move_callback = callback.clone();
+                let can_drop_destination = current_location.clone();
+                let drop_destination = current_location.clone();
+                let move_destination = current_location.clone();
                 element
                     .can_drop(move |value, _, _| {
-                        can_write
-                            && value
-                                .downcast_ref::<gpui::ExternalPaths>()
-                                .is_some_and(|paths| !paths.paths().is_empty())
+                        value
+                            .downcast_ref::<gpui::ExternalPaths>()
+                            .is_some_and(|paths| {
+                                negotiate_external_paths(
+                                    paths,
+                                    can_write,
+                                    can_drop_destination.as_ref(),
+                                ) != explorer_model::DragEffect::None
+                            })
                     })
                     .on_drop(move |paths: &gpui::ExternalPaths, window, cx| {
-                        let effect = negotiate_external_paths(paths, can_write);
+                        let effect =
+                            negotiate_external_paths(paths, can_write, drop_destination.as_ref());
                         callback(
                             &ExplorerAction::DropExternal {
                                 paths: paths.paths().to_vec(),
@@ -4163,7 +4193,11 @@ impl RenderOnce for NavigationPane {
                         );
                     })
                     .on_drag_move::<gpui::ExternalPaths>(move |event, window, cx| {
-                        let effect = negotiate_external_paths(event.drag(cx), can_write);
+                        let effect = negotiate_external_paths(
+                            event.drag(cx),
+                            can_write,
+                            move_destination.as_ref(),
+                        );
                         move_callback(
                             &ExplorerAction::UpdateExternalDrag {
                                 destination_row: None,
@@ -4220,7 +4254,7 @@ impl RenderOnce for NavigationPane {
                     );
                     navigation_item_row(
                         item.clone(),
-                        is_selected(&item, current_location),
+                        is_selected(&item, current_location.as_ref()),
                         self.tokens,
                         texture,
                         on_action.clone(),
@@ -4606,6 +4640,7 @@ pub struct FileViewHost {
     drag_state: explorer_model::DragSessionState,
     drop_target_row: Option<usize>,
     target_can_write: bool,
+    drop_destination: Option<explorer_model::LocationDescriptor>,
     context_menu_pending: bool,
     marquee: Option<crate::state::MarqueeSelectionSession>,
     file_origin_x: f32,
@@ -4640,6 +4675,7 @@ impl FileViewHost {
         drag_state: explorer_model::DragSessionState,
         drop_target_row: Option<usize>,
         target_can_write: bool,
+        drop_destination: Option<explorer_model::LocationDescriptor>,
         context_menu_pending: bool,
         marquee: Option<crate::state::MarqueeSelectionSession>,
         file_origin_x: f32,
@@ -4672,6 +4708,7 @@ impl FileViewHost {
             drag_state,
             drop_target_row,
             target_can_write,
+            drop_destination,
             context_menu_pending,
             marquee,
             file_origin_x,
@@ -4722,6 +4759,7 @@ impl RenderOnce for FileViewHost {
         let drag_state = self.drag_state;
         let drop_target_row = self.drop_target_row;
         let target_can_write = self.target_can_write;
+        let drop_destination = self.drop_destination;
         let viewport_width = self.viewport_width;
         let marquee = self.marquee;
         let file_origin_x = self.file_origin_x;
@@ -4776,8 +4814,7 @@ impl RenderOnce for FileViewHost {
             .map(|handle| f32::from(handle.bounds().size.height))
             .filter(|height| *height > 0.0)
             .unwrap_or_else(|| {
-                (f32::from(window.viewport_size().height) - file_origin_y)
-                    .max(spatial_metrics.cell_height)
+                explorer_file_viewport_height(window, self.tokens).max(spatial_metrics.cell_height)
             });
         let (realized_range, leading_space, trailing_space) =
             presentation.as_ref().map_or((0..0, 0, 0), |presentation| {
@@ -4932,15 +4969,27 @@ impl RenderOnce for FileViewHost {
                 let marquee_begin = callback.clone();
                 let marquee_move = callback.clone();
                 let marquee_end = callback.clone();
+                let can_drop_destination = drop_destination.clone();
+                let background_destination = drop_destination.clone();
+                let move_destination = drop_destination.clone();
                 element
                     .can_drop(move |value, _, _| {
-                        target_can_write
-                            && value
-                                .downcast_ref::<gpui::ExternalPaths>()
-                                .is_some_and(|paths| !paths.paths().is_empty())
+                        value
+                            .downcast_ref::<gpui::ExternalPaths>()
+                            .is_some_and(|paths| {
+                                negotiate_external_paths(
+                                    paths,
+                                    target_can_write,
+                                    can_drop_destination.as_ref(),
+                                ) != explorer_model::DragEffect::None
+                            })
                     })
                     .on_drop(move |paths: &gpui::ExternalPaths, window, cx| {
-                        let effect = negotiate_external_paths(paths, target_can_write);
+                        let effect = negotiate_external_paths(
+                            paths,
+                            target_can_write,
+                            background_destination.as_ref(),
+                        );
                         callback(
                             &ExplorerAction::DropExternal {
                                 paths: paths.paths().to_vec(),
@@ -4954,7 +5003,11 @@ impl RenderOnce for FileViewHost {
                         );
                     })
                     .on_drag_move::<gpui::ExternalPaths>(move |event, window, cx| {
-                        let effect = negotiate_external_paths(event.drag(cx), target_can_write);
+                        let effect = negotiate_external_paths(
+                            event.drag(cx),
+                            target_can_write,
+                            move_destination.as_ref(),
+                        );
                         move_callback(
                             &ExplorerAction::UpdateExternalDrag {
                                 destination_row: None,
@@ -5147,6 +5200,7 @@ impl RenderOnce for FileViewHost {
                 let item_height = spatial_metrics.cell_height;
                 let icon_size = spatial_metrics.icon_size;
                 let can_accept_drop = entry.is_container;
+                let row_drop_destination = entry.location.clone();
                 let row_drop_cue = drop_target_row == Some(visible_index);
                 let activate = on_action.clone();
                 let accessibility_activate = on_action.clone();
@@ -5226,15 +5280,31 @@ impl RenderOnce for FileViewHost {
                         let right_out_item_id = context_item_id.clone();
                         let drop_callback = callback.clone();
                         let drag_move_callback = callback.clone();
+                        let can_drop_destination = row_drop_destination.clone();
+                        let drop_destination = row_drop_destination.clone();
+                        let move_destination = row_drop_destination.clone();
                         element
                             .can_drop(move |value, _, _| {
-                                can_accept_drop
-                                    && value
-                                        .downcast_ref::<gpui::ExternalPaths>()
-                                        .is_some_and(|paths| !paths.paths().is_empty())
+                                value
+                                    .downcast_ref::<gpui::ExternalPaths>()
+                                    .is_some_and(|paths| {
+                                        negotiate_external_paths(
+                                            paths,
+                                            can_accept_drop,
+                                            Some(&can_drop_destination),
+                                        ) != explorer_model::DragEffect::None
+                                    })
                             })
                             .on_drop(move |paths: &gpui::ExternalPaths, window, cx| {
-                                let effect = negotiate_external_paths(paths, can_accept_drop);
+                                // A folder row owns the drop. Letting this bubble to the file-view
+                                // background renegotiates against the current folder and can turn a
+                                // valid child-folder Move into a same-parent no-op.
+                                cx.stop_propagation();
+                                let effect = negotiate_external_paths(
+                                    paths,
+                                    can_accept_drop,
+                                    Some(&drop_destination),
+                                );
                                 drop_callback(
                                     &ExplorerAction::DropExternal {
                                         paths: paths.paths().to_vec(),
@@ -5248,8 +5318,14 @@ impl RenderOnce for FileViewHost {
                                 );
                             })
                             .on_drag_move::<gpui::ExternalPaths>(move |event, window, cx| {
-                                let effect =
-                                    negotiate_external_paths(event.drag(cx), can_accept_drop);
+                                // Keep the native cursor effect aligned with the folder-row target;
+                                // parent surfaces must not overwrite the negotiated OLE effect.
+                                cx.stop_propagation();
+                                let effect = negotiate_external_paths(
+                                    event.drag(cx),
+                                    can_accept_drop,
+                                    Some(&move_destination),
+                                );
                                 drag_move_callback(
                                     &ExplorerAction::UpdateExternalDrag {
                                         destination_row: Some(visible_index),
@@ -5293,17 +5369,15 @@ impl RenderOnce for FileViewHost {
                                         window,
                                         cx,
                                     );
-                                    if !event.modifiers.shift {
-                                        callback(
-                                            &ExplorerAction::BeginFileDrag {
-                                                x: f32::from(event.position.x),
-                                                y: f32::from(event.position.y),
-                                                button: explorer_model::DragButton::Left,
-                                            },
-                                            window,
-                                            cx,
-                                        );
-                                    }
+                                    callback(
+                                        &ExplorerAction::BeginFileDrag {
+                                            x: f32::from(event.position.x),
+                                            y: f32::from(event.position.y),
+                                            button: explorer_model::DragButton::Left,
+                                        },
+                                        window,
+                                        cx,
+                                    );
                                 }
                             })
                             .on_mouse_down(MouseButton::Right, move |event, window, cx| {
@@ -7911,6 +7985,7 @@ fn right_drag_terminal_menu(
 fn negotiate_external_paths(
     paths: &gpui::ExternalPaths,
     target_can_write: bool,
+    destination: Option<&explorer_model::LocationDescriptor>,
 ) -> explorer_model::DragEffect {
     let metadata = paths.drop_metadata();
     let allowed = external_transfer_effects(paths);
@@ -7920,16 +7995,35 @@ fn negotiate_external_paths(
         gpui::ExternalDropEffect::Move => explorer_model::DragEffect::Move,
         gpui::ExternalDropEffect::Link => explorer_model::DragEffect::Link,
     };
-    let effect = explorer_model::negotiate_effect(
-        allowed,
-        preferred,
-        explorer_model::DragModifiers {
-            control: metadata.modifiers.control,
-            shift: metadata.modifiers.shift,
-            alt: metadata.modifiers.alt,
-        },
-        target_can_write,
-    );
+    let modifiers = explorer_model::DragModifiers {
+        control: metadata.modifiers.control,
+        shift: metadata.modifiers.shift,
+        alt: metadata.modifiers.alt,
+    };
+    let effect = destination
+        .and_then(explorer_model::LocationDescriptor::path)
+        .map_or_else(
+            || explorer_model::negotiate_effect(allowed, preferred, modifiers, target_can_write),
+            |destination| {
+                let effect = explorer_model::negotiate_filesystem_drop_effect(
+                    allowed,
+                    preferred,
+                    modifiers,
+                    target_can_write,
+                    paths.paths(),
+                    destination,
+                );
+                if explorer_model::filesystem_drop_destination_is_valid(
+                    paths.paths(),
+                    destination,
+                    effect,
+                ) {
+                    effect
+                } else {
+                    explorer_model::DragEffect::None
+                }
+            },
+        );
     paths.set_negotiated_effect(match effect {
         explorer_model::DragEffect::None => gpui::ExternalDropEffect::None,
         explorer_model::DragEffect::Copy => gpui::ExternalDropEffect::Copy,
@@ -8662,6 +8756,65 @@ mod tests {
         std::sync::Arc::new(gpui::RenderImage::new(smallvec::SmallVec::<
             [image::Frame; 1],
         >::new()))
+    }
+
+    fn external_paths_with_modifiers(
+        source: &str,
+        control: bool,
+        shift: bool,
+    ) -> gpui::ExternalPaths {
+        gpui::ExternalPaths::with_metadata(
+            [std::path::PathBuf::from(source)].into_iter().collect(),
+            gpui::ExternalDropMetadata {
+                allowed: gpui::ExternalDropEffects {
+                    copy: true,
+                    move_item: true,
+                    link: false,
+                },
+                modifiers: gpui::Modifiers {
+                    control,
+                    shift,
+                    ..gpui::Modifiers::default()
+                },
+                ..gpui::ExternalDropMetadata::default()
+            },
+        )
+    }
+
+    #[test]
+    fn left_drag_effect_uses_live_modifiers_and_real_destination_volume() {
+        let same_volume = explorer_model::LocationDescriptor::file_system(r"C:\destination");
+        let cross_volume = explorer_model::LocationDescriptor::file_system(r"D:\destination");
+        let plain = external_paths_with_modifiers(r"C:\source\one.txt", false, false);
+        assert_eq!(
+            super::negotiate_external_paths(&plain, true, Some(&same_volume)),
+            explorer_model::DragEffect::Move
+        );
+        assert_eq!(
+            super::negotiate_external_paths(&plain, true, Some(&cross_volume)),
+            explorer_model::DragEffect::Copy
+        );
+        let control = external_paths_with_modifiers(r"C:\source\one.txt", true, false);
+        assert_eq!(
+            super::negotiate_external_paths(&control, true, Some(&same_volume)),
+            explorer_model::DragEffect::Copy
+        );
+        let shift = external_paths_with_modifiers(r"C:\source\one.txt", false, true);
+        assert_eq!(
+            super::negotiate_external_paths(&shift, true, Some(&cross_volume)),
+            explorer_model::DragEffect::Move
+        );
+    }
+
+    #[test]
+    fn shift_row_selection_does_not_suppress_left_drag_candidate() {
+        let source = include_str!("chrome.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source precedes tests");
+        assert!(!production.contains("if !event.modifiers.shift"));
+        assert!(production.contains("ExplorerAction::BeginFileDrag"));
     }
 
     #[test]
@@ -9448,6 +9601,21 @@ mod tests {
                 < f32::EPSILON
         );
         assert_eq!(super::spatial_grid_columns(compact, 480.0, 20), 2);
+    }
+
+    #[test]
+    fn pre_layout_icon_viewport_uses_the_same_chrome_height_as_file_rows() {
+        let tokens = UiTokens::default();
+        let window_height = 811.0;
+        let expected = window_height
+            - tokens.layout.title_tab_height.value()
+            - tokens.layout.address_bar_height.value()
+            - tokens.layout.command_bar_height.value();
+        assert_eq!(
+            super::explorer_file_viewport_height_for_window(window_height, tokens),
+            expected
+        );
+        assert!(expected > tokens.layout.file_row_height.value() * 8.0);
     }
 
     #[test]

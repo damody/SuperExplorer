@@ -309,12 +309,13 @@ pub fn begin_native_drag(
     // not inherit the unmodified same-volume default.
     let control = unsafe { GetKeyState(VK_CONTROL.0 as i32) } < 0;
     let shift = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
-    let preferred = preferred_effect_for_drag(allowed, control, shift);
-    crate::clipboard::set_drop_effect(
-        &data,
-        windows::Win32::UI::Shell::CFSTR_PREFERREDDROPEFFECT,
-        preferred,
-    )?;
+    if let Some(preferred) = preferred_effect_for_drag(allowed, control, shift) {
+        crate::clipboard::set_drop_effect(
+            &data,
+            windows::Win32::UI::Shell::CFSTR_PREFERREDDROPEFFECT,
+            preferred,
+        )?;
+    }
     let source: IDropSource = NativeDropSource {
         button,
         cancellation,
@@ -353,17 +354,17 @@ pub fn begin_native_drag(
     }
 }
 
-const fn preferred_effect_for_drag(allowed: TransferEffects, control: bool, shift: bool) -> u32 {
+const fn preferred_effect_for_drag(
+    allowed: TransferEffects,
+    control: bool,
+    shift: bool,
+) -> Option<u32> {
     if control && allowed.copy {
-        DROPEFFECT_COPY.0
+        Some(DROPEFFECT_COPY.0)
     } else if shift && allowed.move_item {
-        DROPEFFECT_MOVE.0
-    } else if allowed.move_item {
-        DROPEFFECT_MOVE.0
-    } else if allowed.copy {
-        DROPEFFECT_COPY.0
+        Some(DROPEFFECT_MOVE.0)
     } else {
-        DROPEFFECT_LINK.0
+        None
     }
 }
 
@@ -432,27 +433,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn preferred_effect_tracks_explorer_ctrl_shift_drag_semantics() {
+    fn left_drag_preferred_effect_tracks_explorer_ctrl_shift_semantics() {
         let all = TransferEffects {
             copy: true,
             move_item: true,
             link: true,
         };
-        assert_eq!(
-            preferred_effect_for_drag(all, false, false),
-            DROPEFFECT_MOVE.0
-        );
+        assert_eq!(preferred_effect_for_drag(all, false, false), None);
         assert_eq!(
             preferred_effect_for_drag(all, true, false),
-            DROPEFFECT_COPY.0
+            Some(DROPEFFECT_COPY.0)
         );
         assert_eq!(
             preferred_effect_for_drag(all, false, true),
-            DROPEFFECT_MOVE.0
+            Some(DROPEFFECT_MOVE.0)
         );
         assert_eq!(
             preferred_effect_for_drag(TransferEffects::COPY, false, true),
-            DROPEFFECT_COPY.0
+            None
         );
     }
 
