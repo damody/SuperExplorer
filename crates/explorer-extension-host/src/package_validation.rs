@@ -10,14 +10,15 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fmt,
     fs::{self, File, Metadata, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -39,7 +40,9 @@ const MAX_MANIFEST_FILE_BYTES: usize = 256 * 1024;
 const MAX_PACKAGE_DEPTH: usize = 32;
 const MAX_PACKAGE_ENTRY_COUNT: usize = 1024;
 const DEFAULT_VALIDATION_TIMEOUT: Duration = Duration::from_secs(30);
+const MINIMUM_STAGING_AGE: Duration = Duration::from_secs(15 * 60);
 static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
+static HARDENED_SEALED_DIRECTORIES: OnceLock<Mutex<BTreeSet<PathBuf>>> = OnceLock::new();
 
 /// Opaque local-developer authorization issued only by a host package source.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -160,9 +163,15 @@ impl PackageValidationRequestV1 {
 }
 
 /// Opaque host-owned content-addressed store for validated package generations.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct SealedPackageStoreV1 {
     root: Arc<PathBuf>,
+}
+
+impl fmt::Debug for SealedPackageStoreV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SealedPackageStoreV1 { root: <redacted> }")
+    }
 }
 
 impl SealedPackageStoreV1 {
@@ -372,7 +381,7 @@ impl PackageValidatorV1 {
 }
 
 /// Successful pre-load validation result.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PackageValidationResultV1 {
     /// Publisher identity established by real Ed25519 verification, if signed.
     pub verified_publisher_id: Option<String>,
@@ -381,6 +390,18 @@ pub struct PackageValidationResultV1 {
     /// Package data generation declared by the sealed manifest.
     pub data_version: u64,
     sealed_generation: SealedPackageGenerationV1,
+}
+
+impl fmt::Debug for PackageValidationResultV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PackageValidationResultV1")
+            .field("verified_publisher_id", &self.verified_publisher_id)
+            .field("manifest_digest", &self.manifest_digest)
+            .field("data_version", &self.data_version)
+            .field("sealed_generation", &"<redacted>")
+            .finish()
+    }
 }
 
 impl PackageValidationResultV1 {
@@ -409,12 +430,18 @@ impl PackageValidationResultV1 {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct SealedPackageGenerationV1 {
     store: SealedPackageStoreV1,
     root: PathBuf,
     canonical_manifest_bytes: Arc<Vec<u8>>,
     payloads: Arc<Vec<SealedPayloadV1>>,
+}
+
+impl fmt::Debug for SealedPackageGenerationV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SealedPackageGenerationV1 { root: <redacted> }")
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -464,6 +491,11 @@ impl SealedPackageGenerationV1 {
             .iter()
             .map(|payload| payload.normalized.to_ascii_lowercase())
             .collect();
+        let directory_leases = acquire_directory_leases(&root, budget)?;
+        // A directory can be populated after its first inventory scan but before
+        // activation. Holding a read-only lease for every existing directory and
+        // then scanning closes that window: subsequent late injection, rename,
+        // or deletion is rejected by Windows sharing semantics until guard drop.
         scan_package_directory(&root, &declared, budget)?;
         let manifest = open_exclusive_safe_file(&root, "manifest.json")?;
         let manifest_bytes = read_limited_file(
@@ -503,6 +535,7 @@ impl SealedPackageGenerationV1 {
         budget.check()?;
         Ok(SealedPackageActivationGuardV1 {
             root,
+            _directory_leases: directory_leases,
             _manifest: manifest,
             payload_files,
         })
@@ -510,12 +543,22 @@ impl SealedPackageGenerationV1 {
 }
 
 /// Opaque immutable lease that a future host loader consumes for activation.
-#[derive(Debug)]
 pub struct SealedPackageActivationGuardV1 {
     #[allow(dead_code)] // Consumed by the host's future DLL loader.
     root: PathBuf,
+    _directory_leases: Vec<DirectoryLease>,
     _manifest: File,
     payload_files: BTreeMap<String, File>,
+}
+
+impl fmt::Debug for SealedPackageActivationGuardV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SealedPackageActivationGuardV1")
+            .field("root", &"<redacted>")
+            .field("payload_file_count", &self.payload_files.len())
+            .finish()
+    }
 }
 
 impl SealedPackageActivationGuardV1 {
@@ -532,8 +575,361 @@ impl SealedPackageActivationGuardV1 {
     }
 }
 
+/// A Windows namespace lease for an existing sealed-generation directory.
+///
+/// The handle intentionally permits other readers while withholding write and
+/// delete sharing. A loader can therefore read the declared files, but another
+/// process cannot inject an extra DLL/file or replace a directory entry while
+/// the activation guard is alive.
+struct DirectoryLease {
+    #[cfg(windows)]
+    handle: isize,
+}
+
+impl fmt::Debug for DirectoryLease {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DirectoryLease(<redacted>)")
+    }
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+impl Drop for DirectoryLease {
+    fn drop(&mut self) {
+        // SAFETY: `handle` originates from a successful CreateFileW call and
+        // is owned exclusively by this lease.
+        unsafe {
+            let _ = close_handle(self.handle);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+impl Drop for DirectoryLease {
+    fn drop(&mut self) {}
+}
+
+fn acquire_directory_leases(
+    root: &Path,
+    budget: &PackageValidationBudgetV1,
+) -> Result<Vec<DirectoryLease>, PackageValidationErrorV1> {
+    let mut pending = vec![(root.to_path_buf(), 0_usize)];
+    let mut leases = Vec::new();
+    let mut entry_count = 0_usize;
+    while let Some((directory, depth)) = pending.pop() {
+        budget.check()?;
+        leases.push(open_directory_lease(&directory)?);
+        for entry in fs::read_dir(&directory).map_err(|source| PackageValidationErrorV1::Io {
+            path: directory.clone(),
+            source,
+        })? {
+            budget.check()?;
+            entry_count = entry_count.checked_add(1).ok_or(
+                PackageValidationErrorV1::PackageEntryCountExceeded {
+                    maximum: MAX_PACKAGE_ENTRY_COUNT,
+                },
+            )?;
+            if entry_count > MAX_PACKAGE_ENTRY_COUNT {
+                return Err(PackageValidationErrorV1::PackageEntryCountExceeded {
+                    maximum: MAX_PACKAGE_ENTRY_COUNT,
+                });
+            }
+            let entry = entry.map_err(|source| PackageValidationErrorV1::Io {
+                path: directory.clone(),
+                source,
+            })?;
+            let path = entry.path();
+            let metadata =
+                fs::symlink_metadata(&path).map_err(|source| PackageValidationErrorV1::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+            if metadata_is_reparse_point(&metadata) {
+                return Err(PackageValidationErrorV1::ReparsePointPath { path });
+            }
+            if metadata.is_dir() {
+                let child_depth = depth + 1;
+                if child_depth > MAX_PACKAGE_DEPTH {
+                    return Err(PackageValidationErrorV1::PackageDepthExceeded {
+                        path,
+                        maximum: MAX_PACKAGE_DEPTH,
+                    });
+                }
+                pending.push((path, child_depth));
+            }
+        }
+    }
+    Ok(leases)
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn open_directory_lease(path: &Path) -> Result<DirectoryLease, PackageValidationErrorV1> {
+    use std::{ffi::c_void, iter, os::windows::ffi::OsStrExt as _};
+
+    const FILE_LIST_DIRECTORY: u32 = 0x0000_0001;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const OPEN_EXISTING: u32 = 3;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const INVALID_HANDLE_VALUE: isize = -1;
+
+    harden_sealed_directory_namespace(path)?;
+    let wide_path: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect();
+    // SAFETY: the NUL-terminated path points to valid memory for this call; no
+    // security attributes, template handle, or overlapped I/O is supplied.
+    let handle = unsafe {
+        create_file_w(
+            wide_path.as_ptr(),
+            FILE_LIST_DIRECTORY,
+            FILE_SHARE_READ,
+            std::ptr::null_mut::<c_void>(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            0,
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(PackageValidationErrorV1::Io {
+            path: path.to_path_buf(),
+            source: io::Error::last_os_error(),
+        });
+    }
+    Ok(DirectoryLease { handle })
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn harden_sealed_directory_namespace(path: &Path) -> Result<(), PackageValidationErrorV1> {
+    let hardened = HARDENED_SEALED_DIRECTORIES.get_or_init(|| Mutex::new(BTreeSet::new()));
+    let mut hardened = hardened
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if hardened.contains(path) {
+        return Ok(());
+    }
+    deny_directory_mutation_for_everyone(path)?;
+    hardened.insert(path.to_path_buf());
+    Ok(())
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn deny_directory_mutation_for_everyone(path: &Path) -> Result<(), PackageValidationErrorV1> {
+    use std::{ffi::c_void, iter, os::windows::ffi::OsStrExt as _};
+
+    const SE_FILE_OBJECT: u32 = 1;
+    const DACL_SECURITY_INFORMATION: u32 = 0x0000_0004;
+    const DENY_ACCESS: u32 = 3;
+    const NO_INHERITANCE: u32 = 0;
+    const TRUSTEE_IS_SID: u32 = 0;
+    const TRUSTEE_IS_WELL_KNOWN_GROUP: u32 = 5;
+    const WIN_WORLD_SID: u32 = 1;
+    const FILE_ADD_FILE: u32 = 0x0000_0002;
+    const FILE_ADD_SUBDIRECTORY: u32 = 0x0000_0004;
+
+    #[repr(C)]
+    struct TrusteeW {
+        multiple_trustee: *mut c_void,
+        multiple_trustee_operation: u32,
+        trustee_form: u32,
+        trustee_type: u32,
+        name: *mut u16,
+    }
+
+    #[repr(C)]
+    struct ExplicitAccessW {
+        access_permissions: u32,
+        access_mode: u32,
+        inheritance: u32,
+        trustee: TrusteeW,
+    }
+
+    let wide_path: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect();
+    let mut existing_dacl = std::ptr::null_mut::<c_void>();
+    let mut security_descriptor = std::ptr::null_mut::<c_void>();
+    // SAFETY: output pointers are initialized writable storage and `wide_path`
+    // is a NUL-terminated Windows path valid for the duration of this call.
+    let status = unsafe {
+        get_named_security_info_w(
+            wide_path.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut existing_dacl,
+            std::ptr::null_mut(),
+            &mut security_descriptor,
+        )
+    };
+    if status != 0 {
+        return Err(PackageValidationErrorV1::Io {
+            path: path.to_path_buf(),
+            source: io::Error::from_raw_os_error(status as i32),
+        });
+    }
+
+    let mut everyone_sid = [0_u8; 68];
+    let mut sid_size = everyone_sid.len() as u32;
+    // SAFETY: `everyone_sid` is writable and `sid_size` describes its capacity.
+    if unsafe {
+        create_well_known_sid(
+            WIN_WORLD_SID,
+            std::ptr::null_mut(),
+            everyone_sid.as_mut_ptr().cast(),
+            &mut sid_size,
+        )
+    } == 0
+    {
+        unsafe {
+            let _ = local_free(security_descriptor);
+        }
+        return Err(PackageValidationErrorV1::Io {
+            path: path.to_path_buf(),
+            source: io::Error::last_os_error(),
+        });
+    }
+
+    let mut access = ExplicitAccessW {
+        access_permissions: FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY,
+        access_mode: DENY_ACCESS,
+        inheritance: NO_INHERITANCE,
+        trustee: TrusteeW {
+            multiple_trustee: std::ptr::null_mut(),
+            multiple_trustee_operation: 0,
+            trustee_form: TRUSTEE_IS_SID,
+            trustee_type: TRUSTEE_IS_WELL_KNOWN_GROUP,
+            name: everyone_sid.as_mut_ptr().cast(),
+        },
+    };
+    let mut hardened_dacl = std::ptr::null_mut::<c_void>();
+    // SAFETY: `access` and the old DACL are valid for this call; Windows
+    // allocates `hardened_dacl`, which is released below with LocalFree.
+    let status = unsafe {
+        set_entries_in_acl_w(
+            1,
+            std::ptr::addr_of_mut!(access).cast(),
+            existing_dacl,
+            &mut hardened_dacl,
+        )
+    };
+    if status != 0 {
+        unsafe {
+            let _ = local_free(security_descriptor);
+        }
+        return Err(PackageValidationErrorV1::Io {
+            path: path.to_path_buf(),
+            source: io::Error::from_raw_os_error(status as i32),
+        });
+    }
+    // SAFETY: this applies the newly allocated DACL to the host-owned sealed
+    // directory. It deliberately persists: content-addressed generations are
+    // immutable once activated, including after a guard is dropped.
+    let status = unsafe {
+        set_named_security_info_w(
+            wide_path.as_ptr().cast_mut(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            hardened_dacl,
+            std::ptr::null_mut(),
+        )
+    };
+    unsafe {
+        let _ = local_free(hardened_dacl);
+        let _ = local_free(security_descriptor);
+    }
+    if status != 0 {
+        return Err(PackageValidationErrorV1::Io {
+            path: path.to_path_buf(),
+            source: io::Error::from_raw_os_error(status as i32),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    #[link_name = "CreateFileW"]
+    fn create_file_w(
+        file_name: *const u16,
+        desired_access: u32,
+        share_mode: u32,
+        security_attributes: *mut std::ffi::c_void,
+        creation_disposition: u32,
+        flags_and_attributes: u32,
+        template_file: isize,
+    ) -> isize;
+    #[link_name = "CloseHandle"]
+    fn close_handle(handle: isize) -> i32;
+    #[link_name = "LocalFree"]
+    fn local_free(memory: *mut std::ffi::c_void) -> isize;
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+#[link(name = "advapi32")]
+unsafe extern "system" {
+    #[link_name = "GetNamedSecurityInfoW"]
+    fn get_named_security_info_w(
+        object_name: *const u16,
+        object_type: u32,
+        security_info: u32,
+        owner: *mut *mut std::ffi::c_void,
+        group: *mut *mut std::ffi::c_void,
+        dacl: *mut *mut std::ffi::c_void,
+        sacl: *mut *mut std::ffi::c_void,
+        security_descriptor: *mut *mut std::ffi::c_void,
+    ) -> u32;
+    #[link_name = "SetEntriesInAclW"]
+    fn set_entries_in_acl_w(
+        count: u32,
+        entries: *mut std::ffi::c_void,
+        old_acl: *mut std::ffi::c_void,
+        new_acl: *mut *mut std::ffi::c_void,
+    ) -> u32;
+    #[link_name = "SetNamedSecurityInfoW"]
+    fn set_named_security_info_w(
+        object_name: *mut u16,
+        object_type: u32,
+        security_info: u32,
+        owner: *mut std::ffi::c_void,
+        group: *mut std::ffi::c_void,
+        dacl: *mut std::ffi::c_void,
+        sacl: *mut std::ffi::c_void,
+    ) -> u32;
+    #[link_name = "CreateWellKnownSid"]
+    fn create_well_known_sid(
+        well_known_sid_type: u32,
+        domain_sid: *mut std::ffi::c_void,
+        sid: *mut std::ffi::c_void,
+        sid_size: *mut u32,
+    ) -> i32;
+}
+
+#[cfg(not(windows))]
+fn open_directory_lease(path: &Path) -> Result<DirectoryLease, PackageValidationErrorV1> {
+    Err(PackageValidationErrorV1::Io {
+        path: path.to_path_buf(),
+        source: io::Error::new(
+            io::ErrorKind::Unsupported,
+            "sealed activation requires Windows directory leases",
+        ),
+    })
+}
+
 /// Typed package pre-load validation failure.
-#[derive(Debug, Error)]
+#[derive(Error)]
 pub enum PackageValidationErrorV1 {
     /// The decoded manifest failed a required invariant while preparing validation.
     #[error(transparent)]
@@ -645,6 +1041,15 @@ pub enum PackageValidationErrorV1 {
     InvalidSignatureEncoding { key_id: String },
     #[error("package Ed25519 signature verification failed: {key_id:?}")]
     InvalidSignature { key_id: String },
+}
+
+impl fmt::Debug for PackageValidationErrorV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Validation failures can retain source or sealed-store paths. Keep the
+        // debug surface safe for telemetry and logs; callers that need a typed
+        // diagnostic can still match the public enum variants.
+        formatter.write_str("PackageValidationErrorV1(<redacted>)")
+    }
 }
 
 fn validate_payload_inventory<'a>(
@@ -958,9 +1363,9 @@ fn scavenge_staging_directories(root: &Path) -> Result<(), PackageValidationErro
         let path = entry.path();
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if !name.starts_with(".staging-") {
+        let Some(owner_pid) = staging_owner_pid(name) else {
             continue;
-        }
+        };
         let metadata =
             fs::symlink_metadata(&path).map_err(|source| PackageValidationErrorV1::Io {
                 path: path.clone(),
@@ -969,6 +1374,8 @@ fn scavenge_staging_directories(root: &Path) -> Result<(), PackageValidationErro
         if metadata_is_reparse_point(&metadata)
             || !metadata.is_dir()
             || !staging_tree_is_safe(&path)?
+            || !staging_is_old_enough(&metadata)
+            || staging_owner_is_active(owner_pid)
         {
             continue;
         }
@@ -978,13 +1385,90 @@ fn scavenge_staging_directories(root: &Path) -> Result<(), PackageValidationErro
     Ok(())
 }
 
+fn staging_owner_pid(name: &str) -> Option<u32> {
+    let suffix = name.strip_prefix(".staging-")?;
+    let (generation_and_pid, nonce) = suffix.rsplit_once('-')?;
+    if nonce.is_empty() || !nonce.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let (generation_id, pid) = generation_and_pid.rsplit_once('-')?;
+    if generation_id.len() != 64
+        || !generation_id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    {
+        return None;
+    }
+    pid.parse().ok()
+}
+
+fn staging_is_old_enough(metadata: &Metadata) -> bool {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+        .is_some_and(|age| age >= MINIMUM_STAGING_AGE)
+}
+
+fn staging_owner_is_active(pid: u32) -> bool {
+    if pid == std::process::id() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        process_is_running(pid)
+    }
+    #[cfg(not(windows))]
+    {
+        // On a non-Windows build this validator cannot create the namespace
+        // leases required for activation, so conservative age protection is
+        // the only applicable scavenger policy.
+        let _ = pid;
+        false
+    }
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn process_is_running(pid: u32) -> bool {
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const WAIT_TIMEOUT: u32 = 258;
+    let handle = unsafe { open_process(SYNCHRONIZE, 0, pid) };
+    if handle == 0 {
+        // Access denial and transient process-query errors are not evidence
+        // that an owner is dead. Leave its staging tree untouched.
+        return true;
+    }
+    // SAFETY: `handle` was returned by OpenProcess and is closed exactly once.
+    let running = unsafe { wait_for_single_object(handle, 0) == WAIT_TIMEOUT };
+    unsafe {
+        let _ = close_handle(handle);
+    }
+    running
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    #[link_name = "OpenProcess"]
+    fn open_process(desired_access: u32, inherit_handle: i32, process_id: u32) -> isize;
+    #[link_name = "WaitForSingleObject"]
+    fn wait_for_single_object(handle: isize, milliseconds: u32) -> u32;
+}
+
 fn staging_tree_is_safe(root: &Path) -> Result<bool, PackageValidationErrorV1> {
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(directory) = pending.pop() {
+    let mut pending = vec![(root.to_path_buf(), 0_usize)];
+    let mut entry_count = 0_usize;
+    while let Some((directory, depth)) = pending.pop() {
         for entry in fs::read_dir(&directory).map_err(|source| PackageValidationErrorV1::Io {
             path: directory.clone(),
             source,
         })? {
+            entry_count = match entry_count.checked_add(1) {
+                Some(count) if count <= MAX_PACKAGE_ENTRY_COUNT => count,
+                _ => return Ok(false),
+            };
             let entry = entry.map_err(|source| PackageValidationErrorV1::Io {
                 path: directory.clone(),
                 source,
@@ -999,7 +1483,13 @@ fn staging_tree_is_safe(root: &Path) -> Result<bool, PackageValidationErrorV1> {
                 return Ok(false);
             }
             if metadata.is_dir() {
-                pending.push(path);
+                let Some(child_depth) = depth.checked_add(1) else {
+                    return Ok(false);
+                };
+                if child_depth > MAX_PACKAGE_DEPTH {
+                    return Ok(false);
+                }
+                pending.push((path, child_depth));
             } else if !metadata.is_file() {
                 return Ok(false);
             }
@@ -1044,6 +1534,24 @@ fn seal_generation(
     payloads: &BTreeMap<String, (&PayloadV1, String)>,
     generation_id: &str,
 ) -> Result<PathBuf, PackageValidationErrorV1> {
+    seal_generation_after_sealing(
+        sealed_store,
+        request,
+        manifest_bytes,
+        payloads,
+        generation_id,
+        || {},
+    )
+}
+
+fn seal_generation_after_sealing(
+    sealed_store: &SealedPackageStoreV1,
+    request: &PackageValidationRequestV1,
+    manifest_bytes: &[u8],
+    payloads: &BTreeMap<String, (&PayloadV1, String)>,
+    generation_id: &str,
+    after_sealing: impl FnOnce(),
+) -> Result<PathBuf, PackageValidationErrorV1> {
     request.budget.check()?;
     let store = verify_safe_root(sealed_store.root.as_path())?;
     let final_path = store.join(generation_id);
@@ -1058,30 +1566,40 @@ fn seal_generation(
     let mut staging = StagingDirectoryGuard::new(create_staging_directory(&store, generation_id)?);
     let sealing_result = seal_into_staging(request, manifest_bytes, payloads, staging.path());
     match sealing_result {
-        Ok(()) => match fs::rename(staging.path(), &final_path) {
-            Ok(()) => {
-                staging.disarm();
-                request.budget.check()?;
-                Ok(final_path)
-            }
-            Err(_) if final_path.exists() => {
-                let reuse_result = verify_existing_sealed_generation(
-                    &final_path,
-                    manifest_bytes,
-                    payloads,
-                    &request.budget,
-                );
+        Ok(()) => {
+            after_sealing();
+            // The budget must be checked at the commit boundary. A cancelled
+            // validator may leave staging for a later safe scavenger, but it
+            // must never publish a generation after cancellation/deadline.
+            if let Err(error) = request.budget.check() {
                 staging.cleanup()?;
-                reuse_result
+                return Err(error);
             }
-            Err(source) => {
-                staging.cleanup()?;
-                Err(PackageValidationErrorV1::Io {
-                    path: final_path,
-                    source,
-                })
+            match fs::rename(staging.path(), &final_path) {
+                Ok(()) => {
+                    staging.disarm();
+                    request.budget.check()?;
+                    Ok(final_path)
+                }
+                Err(_) if final_path.exists() => {
+                    let reuse_result = verify_existing_sealed_generation(
+                        &final_path,
+                        manifest_bytes,
+                        payloads,
+                        &request.budget,
+                    );
+                    staging.cleanup()?;
+                    reuse_result
+                }
+                Err(source) => {
+                    staging.cleanup()?;
+                    Err(PackageValidationErrorV1::Io {
+                        path: final_path,
+                        source,
+                    })
+                }
             }
-        },
+        }
         Err(error) => {
             staging.cleanup()?;
             Err(error)
@@ -2009,5 +2527,175 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn activation_guard_blocks_late_dll_injection_during_a_real_dll_load() {
+        let package = TestPackage::new();
+        let key_pair = key_pair();
+        let system_dll = PathBuf::from(
+            std::env::var_os("SystemRoot").expect("Windows SystemRoot is available for DLL test"),
+        )
+        .join("System32")
+        .join("version.dll");
+        let dll_bytes = fs::read(&system_dll).expect("read known Windows DLL");
+        package.write_file("plugins/validated.dll", &dll_bytes);
+        package.write_manifest(&signed_manifest(
+            manifest_value(vec![payload("plugins/validated.dll", &dll_bytes, "data")]),
+            &key_pair,
+        ));
+
+        let result = validator(&key_pair, &package)
+            .validate(&package.request())
+            .expect("seal known DLL");
+        let guard = result.activation_guard().expect("guard known DLL");
+        let loaded_dll = guard.package_root().join("plugins/validated.dll");
+        // SAFETY: this test loads a known Windows system DLL copied byte-for-byte
+        // into the sealed generation and immediately releases the module handle.
+        let module = unsafe { load_library_wide(&loaded_dll) };
+        assert_ne!(module, 0, "a guarded loader read must remain possible");
+        // SAFETY: `module` is non-null and was returned by LoadLibraryW above.
+        unsafe {
+            assert_ne!(free_library(module), 0, "release test DLL module");
+        }
+
+        assert!(
+            fs::write(
+                guard.package_root().join("plugins/late-injection.dll"),
+                b"must not be introduced after validation",
+            )
+            .is_err(),
+            "directory lease must reject DLL injection while activation is live"
+        );
+    }
+
+    #[test]
+    fn sealing_checks_the_budget_immediately_before_rename_commit() {
+        let package = TestPackage::new();
+        let key_pair = key_pair();
+        let manifest_value = signed_data_package(&package, &key_pair, b"payload");
+        let manifest =
+            PackageManifestV1::parse_json(&manifest_value.to_string()).expect("parse manifest");
+        let payloads =
+            super::validate_payload_inventory(&manifest, &PackageValidationBudgetV1::default())
+                .expect("payload inventory");
+        let canonical_manifest_bytes = manifest
+            .canonical_serialized_bytes()
+            .expect("canonical manifest bytes");
+        let generation_id = super::hex_sha256(&Sha256::digest(&canonical_manifest_bytes).into());
+        let cancellation = PackageValidationCancellationV1::new();
+        let request = package.request().with_budget(
+            PackageValidationBudgetV1::default().with_cancellation(cancellation.clone()),
+        );
+        let sealed_store = SealedPackageStoreV1::new(&package.sealed_store).expect("sealed store");
+
+        assert!(matches!(
+            super::seal_generation_after_sealing(
+                &sealed_store,
+                &request,
+                &canonical_manifest_bytes,
+                &payloads,
+                &generation_id,
+                || cancellation.cancel(),
+            ),
+            Err(PackageValidationErrorV1::Cancelled)
+        ));
+        assert!(
+            !package.sealed_store.join(&generation_id).exists(),
+            "a cancellation at the commit boundary must not publish a generation"
+        );
+        assert!(
+            fs::read_dir(&package.sealed_store)
+                .expect("sealed store entries")
+                .all(|entry| !entry
+                    .expect("store entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".staging-")),
+            "a cancelled commit must clean its staging directory"
+        );
+    }
+
+    #[test]
+    fn staging_scavenger_preserves_active_owner_and_bounds_unsafe_walks() {
+        let package = TestPackage::new();
+        let active_name = format!(".staging-{}-{}-0", "a".repeat(64), std::process::id());
+        let active_staging = package.sealed_store.join(active_name);
+        fs::create_dir(&active_staging).expect("active staging directory");
+        super::scavenge_staging_directories(&package.sealed_store).expect("safe scavenging");
+        assert!(
+            active_staging.exists(),
+            "a sibling validator's current-process staging tree must not be removed"
+        );
+
+        let oversized = package.sealed_store.join("oversized-staging-tree");
+        fs::create_dir(&oversized).expect("oversized staging directory");
+        for index in 0..=super::MAX_PACKAGE_ENTRY_COUNT {
+            fs::write(oversized.join(format!("{index}.tmp")), b"x").expect("staging entry");
+        }
+        assert!(
+            !super::staging_tree_is_safe(&oversized).expect("bounded staging inspection"),
+            "scavenging must not traverse or delete an unbounded staging tree"
+        );
+    }
+
+    #[test]
+    fn debug_output_redacts_sealed_store_and_generation_paths() {
+        let package = TestPackage::new();
+        let key_pair = key_pair();
+        signed_data_package(&package, &key_pair, b"payload");
+        let sealed_store = SealedPackageStoreV1::new(&package.sealed_store).expect("sealed store");
+        let trusted_key = TrustedPublisherKeyV1::new(
+            "example.signing".to_owned(),
+            "example.publisher".to_owned(),
+            key_pair.public_key().as_ref(),
+        )
+        .expect("trusted key");
+        let result = PackageValidatorV1::new(
+            TrustedPublisherKeyStoreV1::new([trusted_key]).expect("trust store"),
+            sealed_store.clone(),
+        )
+        .validate(&package.request())
+        .expect("validated package");
+        let guard = result.activation_guard().expect("activation guard");
+        for diagnostic in [
+            format!("{sealed_store:?}"),
+            format!("{result:?}"),
+            format!("{guard:?}"),
+            format!(
+                "{:?}",
+                PackageValidationErrorV1::Io {
+                    path: package.sealed_store.clone(),
+                    source: std::io::Error::other("test diagnostic"),
+                }
+            ),
+        ] {
+            assert!(!diagnostic.contains(&package.sealed_store.display().to_string()));
+        }
+    }
+
+    #[cfg(windows)]
+    #[allow(unsafe_code)]
+    unsafe fn load_library_wide(path: &std::path::Path) -> isize {
+        use std::{iter, os::windows::ffi::OsStrExt as _};
+
+        let wide_path: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(iter::once(0))
+            .collect();
+        // SAFETY: `wide_path` is NUL-terminated and valid for this FFI call.
+        unsafe { load_library_w(wide_path.as_ptr()) }
+    }
+
+    #[cfg(windows)]
+    #[allow(unsafe_code)]
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        #[link_name = "LoadLibraryW"]
+        fn load_library_w(file_name: *const u16) -> isize;
+        #[link_name = "FreeLibrary"]
+        fn free_library(module: isize) -> i32;
     }
 }
