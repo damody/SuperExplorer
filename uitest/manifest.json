@@ -84,14 +84,31 @@
       "covers": ["enforce-interaction-first-qos/interaction-first-qos/overload-degrades-optional-work-and-recovers"]
     },
     {
-      "id": "scrolled-viewport-shell-icon-regression",
-      "description": "Verify icon enrichment retries follow the newly realized scrolled viewport instead of repeatedly scheduling the directory snapshot prefix.",
+      "id": "dotfile-shell-icon-regression",
+      "description": "Verify extensionless dotfiles use their real filesystem path for Shell icon lookup instead of the invalid synthetic path ending in a dot.",
       "suites": ["quick", "full", "visual"],
       "program": "cargo.exe",
-      "arguments": ["test", "-p", "explorer-ui", "--lib", "--locked", "tests::visual_refinement_retry_targets_the_scrolled_viewport_instead_of_the_snapshot_prefix", "--", "--exact", "--nocapture", "--test-threads=1"],
+      "arguments": ["test", "-p", "explorer-ui", "--lib", "--locked", "tests::dotfile_icon_request_uses_the_real_file_instead_of_a_synthetic_extensionless_path", "--", "--exact", "--nocapture", "--test-threads=1"],
       "timeout_seconds": 300,
       "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
       "covers": ["enforce-interaction-first-qos/interaction-first-qos/overload-degrades-optional-work-and-recovers"]
+    },
+    {
+      "id": "dotfile-shell-icons-headful",
+      "description": "Open D:\\UE_5.7 in an isolated rebuilt app and require .gitignore and .editorconfig to replace the blue fallback with real Shell icons.",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_dotfile_shell_icons.ps1", "-InitialPath", "D:\\UE_5.7", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
+      "timeout_seconds": 120,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "D:\\UE_5.7"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "explorer"],
+      "covers": ["enforce-interaction-first-qos/interaction-first-qos/overload-degrades-optional-work-and-recovers"],
+      "required_artifacts": ["report.json", "dotfile-shell-icons.png"]
     },
     {
       "id": "interaction-first-domain-isolation",
