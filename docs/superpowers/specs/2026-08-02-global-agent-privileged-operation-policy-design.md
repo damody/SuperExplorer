@@ -49,10 +49,13 @@ changing security settings, and using credentials.
 ### Primary-agent decision flow
 
 The primary agent independently validates the request and prefers a
-non-destructive or reversible alternative. If the operation is safe and within
-existing authorization, the primary agent executes it directly. If additional
-user authority or a material user decision is genuinely required, only the
-primary agent asks the user.
+non-destructive or reversible alternative. Direct execution by the primary
+agent is the default whenever the targets are verified, the operation is within
+the user's requested scope, and the current runtime authorization is sufficient.
+The primary agent must not ask for redundant confirmation merely because an
+operation is permission-sensitive or high-risk. If additional user authority,
+an unresolved target choice, or a material user decision is genuinely required,
+only the primary agent asks the user.
 
 While an operation is awaiting a decision, the primary agent continues all
 unrelated work that is not blocked. It must not delegate the privileged action
@@ -76,9 +79,13 @@ After updating the global guidance:
 3. In a harmless test prompt, ask a subagent to propose a simulated privileged
    operation and confirm that the primary agent receives the structured request
    and owns the decision.
+4. Confirm that the primary agent directly executes an in-scope simulated action
+   when its targets and current authorization are already clear, without asking
+   for redundant user confirmation.
 
 ## Expected Result
 
 Across all projects, subagents escalate privileged operations to the primary
-agent, and the primary agent keeps coordinating until the task is verified or a
-genuine user decision is required.
+agent. The primary agent executes authorized in-scope operations directly by
+default and keeps coordinating until the task is verified or a genuine user
+decision is required.
