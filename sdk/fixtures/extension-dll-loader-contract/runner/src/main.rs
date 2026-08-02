@@ -1,10 +1,16 @@
-use std::{env, fmt, fs, path::Path, process::ExitCode};
+use std::{
+    env, fmt, fs,
+    path::{Path, PathBuf},
+    process::ExitCode,
+    time::Duration,
+};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use explorer_extension_host::{
-    NativeExtensionLifecycleV1, NativeLifecycleErrorV1, NativeLoaderDiagnosticCodeV1,
-    NativeStartupAdmissionV1, PackageResolverV1, PackageValidationRequestV1, PackageValidatorV1,
-    SealedPackageStoreV1, TrustedPublisherKeyStoreV1, TrustedPublisherKeyV1,
+    NativeExtensionLifecycleV1, NativeLifecycleConfigV1, NativeLifecycleErrorV1,
+    NativeLoaderDiagnosticCodeV1, NativeStartupAdmissionV1, PackageResolverV1,
+    PackageValidationRequestV1, PackageValidatorV1, SealedPackageStoreV1,
+    TrustedPublisherKeyStoreV1, TrustedPublisherKeyV1,
 };
 use ring::{
     rand::SystemRandom,
@@ -12,6 +18,9 @@ use ring::{
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+
+const CALLBACK_MARKER_ENV: &str = "EXTENSION_DLL_LOADER_CONTRACT_MARKER";
+const STATE_DIR_ENV: &str = "EXTENSION_DLL_LOADER_CONTRACT_STATE_DIR";
 
 fn main() -> ExitCode {
     match run() {
@@ -27,12 +36,29 @@ fn run() -> Result<(), String> {
     let arguments = env::args_os().skip(1).collect::<Vec<_>>();
     let fingerprint = env::var("SUPEREXPLORER_UI_ABI_FINGERPRINT")
         .map_err(|_| "canonical fingerprint environment missing")?;
+    let state_dir = env::var_os(STATE_DIR_ENV)
+        .map(PathBuf::from)
+        .ok_or("dedicated lifecycle state directory environment missing")?;
     match arguments.as_slice() {
         [scenario, first] if scenario == "data" => {
-            expect_load(&fingerprint, false, None, &[("data", Path::new(first))])
+            expect_load(
+                &fingerprint,
+                false,
+                None,
+                &[("data", Path::new(first))],
+                &state_dir,
+                &["register:primary"],
+            )
         }
         [scenario, first] if scenario == "gpui-exact" => {
-            expect_load(&fingerprint, true, Some(&fingerprint), &[("gpui", Path::new(first))])
+            expect_load(
+                &fingerprint,
+                true,
+                Some(&fingerprint),
+                &[("gpui", Path::new(first))],
+                &state_dir,
+                &["register:primary"],
+            )
         }
         [scenario, first] if scenario == "gpui-missing-binary" => expect_reject(
             &fingerprint,
@@ -40,6 +66,7 @@ fn run() -> Result<(), String> {
             Some(&fingerprint),
             &[("missing", Path::new(first))],
             NativeLoaderDiagnosticCodeV1::MissingBinaryUiFingerprint,
+            &state_dir,
         ),
         [scenario, first] if scenario == "gpui-wrong-binary" => expect_reject(
             &fingerprint,
@@ -47,6 +74,7 @@ fn run() -> Result<(), String> {
             Some(&fingerprint),
             &[("wrong", Path::new(first))],
             NativeLoaderDiagnosticCodeV1::BinaryUiFingerprintMismatch,
+            &state_dir,
         ),
         [scenario, first] if scenario == "gpui-wrong-manifest" => {
             let wrong_fingerprint = "0".repeat(64);
@@ -56,6 +84,35 @@ fn run() -> Result<(), String> {
                 Some(&wrong_fingerprint),
                 &[("gpui", Path::new(first))],
                 NativeLoaderDiagnosticCodeV1::GpuiFingerprintMismatch,
+                &state_dir,
+            )
+        }
+        [scenario, first] if scenario == "old-data" => expect_load(
+            &fingerprint,
+            false,
+            None,
+            &[("old", Path::new(first))],
+            &state_dir,
+            &["old-v1 registrar invoked"],
+        ),
+        [scenario, first] if scenario == "old-panic" => expect_activation_fault(
+            &fingerprint,
+            &[("old", Path::new(first))],
+            &state_dir,
+            "old-v1 registrar entered before translated panic",
+        ),
+        [scenario, first] if matches!(
+            scenario.to_str(),
+            Some("old-schema-mismatch" | "old-root-contract-mismatch" | "old-sdk-major-mismatch")
+        ) =>
+        {
+            expect_reject(
+                &fingerprint,
+                false,
+                None,
+                &[("old", Path::new(first))],
+                NativeLoaderDiagnosticCodeV1::RootContract,
+                &state_dir,
             )
         }
         [scenario, first, second] if scenario == "two-roots" => {
@@ -64,10 +121,14 @@ fn run() -> Result<(), String> {
                 false,
                 None,
                 &[("first", Path::new(first)), ("second", Path::new(second))],
+                &state_dir,
             )
             .map_err(|error| error.to_string())?;
-            if admission.root_count != 2 { return Err("startup admission did not retain both distinct DLL roots".to_owned()); }
-            assert_marker_absent()
+            if admission.root_count != 2 {
+                return Err("startup admission did not retain both distinct DLL roots".to_owned());
+            }
+            assert_callback_marker(&["register:primary", "register:alternate"])?;
+            assert_call_markers_empty(&state_dir)
         }
         [scenario, first, second] if scenario == "batch-invalid" => expect_reject(
             &fingerprint,
@@ -75,8 +136,9 @@ fn run() -> Result<(), String> {
             None,
             &[("first", Path::new(first)), ("invalid", Path::new(second))],
             NativeLoaderDiagnosticCodeV1::InvalidAbiRoot,
+            &state_dir,
         ),
-        _ => Err("usage: runner <data|gpui-exact|gpui-missing-binary|gpui-wrong-binary|gpui-wrong-manifest> <dll> | <two-roots|batch-invalid> <dll> <dll>".to_owned()),
+        _ => Err("usage: runner <data|gpui-exact|gpui-missing-binary|gpui-wrong-binary|gpui-wrong-manifest|old-data|old-panic|old-schema-mismatch|old-root-contract-mismatch|old-sdk-major-mismatch> <dll> | <two-roots|batch-invalid> <dll> <dll>".to_owned()),
     }
 }
 
@@ -85,13 +147,16 @@ fn expect_load(
     gpui: bool,
     manifest_fingerprint: Option<&str>,
     dlls: &[(&str, &Path)],
+    state_dir: &Path,
+    expected_callbacks: &[&str],
 ) -> Result<(), String> {
-    let admission =
-        load(fingerprint, gpui, manifest_fingerprint, dlls).map_err(|error| error.to_string())?;
+    let admission = load(fingerprint, gpui, manifest_fingerprint, dlls, state_dir)
+        .map_err(|error| error.to_string())?;
     if admission.root_count != dlls.len() {
         return Err("startup admission returned a partial root set".to_owned());
     }
-    assert_marker_absent()
+    assert_callback_marker(expected_callbacks)?;
+    assert_call_markers_empty(state_dir)
 }
 
 fn expect_reject(
@@ -100,8 +165,9 @@ fn expect_reject(
     manifest_fingerprint: Option<&str>,
     dlls: &[(&str, &Path)],
     expected_diagnostic: NativeLoaderDiagnosticCodeV1,
+    state_dir: &Path,
 ) -> Result<(), String> {
-    match load(fingerprint, gpui, manifest_fingerprint, dlls) {
+    match load(fingerprint, gpui, manifest_fingerprint, dlls, state_dir) {
         Ok(_) => return Err("invalid package unexpectedly loaded".to_owned()),
         Err(LoadFailure::Lifecycle(NativeLifecycleErrorV1::LoaderRejected { diagnostic }))
             if diagnostic == expected_diagnostic => {}
@@ -121,11 +187,55 @@ fn expect_reject(
             ));
         }
     }
-    assert_marker_absent()
+    assert_callback_marker_absent()?;
+    assert_call_markers_empty(state_dir)
 }
 
-fn assert_marker_absent() -> Result<(), String> {
-    match env::var_os("EXTENSION_DLL_LOADER_CONTRACT_MARKER") {
+fn expect_activation_fault(
+    fingerprint: &str,
+    dlls: &[(&str, &Path)],
+    state_dir: &Path,
+    expected_callback: &str,
+) -> Result<(), String> {
+    match load(fingerprint, false, None, dlls, state_dir) {
+        Err(LoadFailure::Lifecycle(NativeLifecycleErrorV1::ActivationFaulted)) => {}
+        Err(LoadFailure::Lifecycle(error)) => {
+            return Err(format!(
+                "expected translated panic activation fault, got lifecycle error: {error}"
+            ));
+        }
+        Err(LoadFailure::Setup(error)) => {
+            return Err(format!(
+                "fixture setup failed before translated panic admission: {error}"
+            ));
+        }
+        Ok(_) => return Err("translated panic unexpectedly admitted the package".to_owned()),
+    }
+    assert_callback_marker(&[expected_callback])?;
+    assert_call_markers_empty(state_dir)
+}
+
+fn callback_marker_path() -> Result<PathBuf, String> {
+    env::var_os(CALLBACK_MARKER_ENV)
+        .map(PathBuf::from)
+        .ok_or_else(|| "callback marker environment missing".to_owned())
+}
+
+fn assert_callback_marker(expected: &[&str]) -> Result<(), String> {
+    let marker = callback_marker_path()?;
+    let contents = fs::read_to_string(&marker)
+        .map_err(|error| format!("required registrar callback marker missing: {error}"))?;
+    let actual = contents.lines().collect::<Vec<_>>();
+    if actual != expected {
+        return Err(format!(
+            "unexpected registrar callback marker sequence: expected {expected:?}, got {actual:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn assert_callback_marker_absent() -> Result<(), String> {
+    match env::var_os(CALLBACK_MARKER_ENV) {
         Some(marker) if Path::new(&marker).exists() => Err(
             "registrar callback marker exists although loader must not dispatch callbacks"
                 .to_owned(),
@@ -134,11 +244,45 @@ fn assert_marker_absent() -> Result<(), String> {
     }
 }
 
+fn assert_call_markers_empty(state_dir: &Path) -> Result<(), String> {
+    let marker_dir = state_dir.join("native-call-markers-v1");
+    let entries = fs::read_dir(&marker_dir)
+        .map_err(|error| format!("host call-marker directory was not readable: {error}"))?;
+    let launches = entries
+        .map(|entry| entry.map_err(|error| error.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    if launches.is_empty() {
+        return Ok(());
+    }
+    let [launch] = launches.as_slice() else {
+        return Err(
+            "host call-marker directory did not contain exactly one active namespace".to_owned(),
+        );
+    };
+    if !launch
+        .file_type()
+        .map_err(|error| error.to_string())?
+        .is_dir()
+        || !launch.file_name().to_string_lossy().starts_with("launch-")
+    {
+        return Err("host call-marker directory retained an unexpected namespace entry".to_owned());
+    }
+    let entries = fs::read_dir(launch.path())
+        .map_err(|error| format!("host active marker namespace was not readable: {error}"))?
+        .map(|entry| entry.map_err(|error| error.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    if entries.len() != 1 || entries[0].file_name() != "owner.lease" {
+        return Err("host active marker namespace retained callback residue".to_owned());
+    }
+    Ok(())
+}
+
 fn load(
     _fingerprint: &str,
     gpui: bool,
     manifest_fingerprint: Option<&str>,
     dlls: &[(&str, &Path)],
+    state_dir: &Path,
 ) -> Result<NativeStartupAdmissionV1, LoadFailure> {
     let temp = tempfile::tempdir().map_err(|error| LoadFailure::Setup(error.to_string()))?;
     let package = temp.path().join("package");
@@ -199,7 +343,10 @@ fn load(
         .resolved_packages()
         .first()
         .ok_or_else(|| LoadFailure::Setup("validated package was blocked".to_owned()))?;
-    let mut lifecycle = NativeExtensionLifecycleV1::acquire().map_err(LoadFailure::Lifecycle)?;
+    let lifecycle_config = NativeLifecycleConfigV1::new(state_dir.to_path_buf())
+        .with_slow_callback_threshold(Duration::from_secs(1));
+    let mut lifecycle =
+        NativeExtensionLifecycleV1::acquire(lifecycle_config).map_err(LoadFailure::Lifecycle)?;
     let mut startup = lifecycle.begin_startup().map_err(LoadFailure::Lifecycle)?;
     let admission = startup
         .admit_resolved_package(resolved)

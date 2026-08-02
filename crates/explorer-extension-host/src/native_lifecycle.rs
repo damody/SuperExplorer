@@ -1,13 +1,13 @@
 //! Startup-only ownership, runtime gates, and bounded draining for native DLLs.
 //!
-//! This module deliberately does not invoke the Rust ABI registrar. Task 3.5
-//! supplies the marker-guarded executor; this task only owns the lifetime and
-//! dispatch rules around roots already validated by task 3.3.
+//! The private guarded executor invokes the Rust ABI registrar only after
+//! lifecycle admission and durable Safe Mode marker creation.
 #![allow(clippy::missing_errors_doc)]
 
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
+    path::PathBuf,
     sync::{Arc, Condvar, Mutex, OnceLock},
     time::{Duration, Instant},
 };
@@ -15,8 +15,14 @@ use std::{
 use thiserror::Error;
 
 use crate::{
-    FeatureKeyV1, FeatureRuntimeFactV1, ResolvedPackageV1,
-    dll_loader::{ExtensionDllLoaderV1, LoadedExtensionRootV1, LoadedPackageRootsV1},
+    FeatureKeyV1, FeatureRuntimeFactV1, HostRegistrationErrorV1, ResolvedPackageV1,
+    dll_loader::{
+        ExtensionDllLoaderV1, LoadedExtensionRootV1, LoadedPackageRootsV1, invoke_guarded_registrar,
+    },
+    plugin_call_guard::{
+        self, GuardErrorV1, NativeCallTerminalV1, NativeCallTimingV1, NativeSafeModeIncidentV1,
+        PluginCallGuardStoreV1,
+    },
 };
 
 /// Resolver candidates (128) times Rust entrypoints per manifest (128).
@@ -25,6 +31,41 @@ pub const MAX_NATIVE_LEDGER_ENTRIES_V1: usize = 128 * 128;
 pub const MAX_NATIVE_FEATURE_GATES_V1: usize = MAX_NATIVE_LEDGER_ENTRIES_V1;
 pub const MAX_NATIVE_RESTART_REASONS_PER_FEATURE_V1: usize = 8;
 const DEFAULT_NATIVE_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Explicit application-owned state required for production native activation.
+#[derive(Clone)]
+pub struct NativeLifecycleConfigV1 {
+    application_state_dir: PathBuf,
+    slow_callback_threshold: Duration,
+}
+
+impl NativeLifecycleConfigV1 {
+    /// Uses a dedicated marker directory below the application-owned state root.
+    #[must_use]
+    pub fn new(application_state_dir: PathBuf) -> Self {
+        Self {
+            application_state_dir,
+            slow_callback_threshold: Duration::from_millis(250),
+        }
+    }
+
+    /// Sets the path-free callback timing slow threshold.
+    #[must_use]
+    pub const fn with_slow_callback_threshold(mut self, threshold: Duration) -> Self {
+        self.slow_callback_threshold = threshold;
+        self
+    }
+}
+
+impl fmt::Debug for NativeLifecycleConfigV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeLifecycleConfigV1")
+            .field("application_state_dir", &"<redacted>")
+            .field("slow_callback_threshold", &self.slow_callback_threshold)
+            .finish()
+    }
+}
 
 /// Feature-scoped runtime authority across all roots in one sealed generation.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -249,16 +290,79 @@ trait NativeDrainPortV1: Send + Sync {
     fn restore(&self, _: &NativeRootIdentityV1) {}
 }
 
-struct DeferredExecutorV1;
+struct GuardedNativeActivationExecutorV1 {
+    markers: Arc<PluginCallGuardStoreV1>,
+}
 
-impl NativeActivationExecutor for DeferredExecutorV1 {
+impl GuardedNativeActivationExecutorV1 {
+    fn new(markers: Arc<PluginCallGuardStoreV1>) -> Self {
+        Self { markers }
+    }
+}
+
+impl NativeActivationExecutor for GuardedNativeActivationExecutorV1 {
     fn claim(
         &self,
-        _: NativeActivationContextV1<'_>,
+        context: NativeActivationContextV1<'_>,
     ) -> Result<NativeActivationClaimV1, NativeActivationFailureV1> {
-        // Registration is intentionally deferred until task 3.5 installs its
-        // guarded ABI executor. An empty blueprint is safe and has no dispatch.
-        Ok(NativeActivationClaimV1::Deferred)
+        let Some(root) = context.root else {
+            return Err(NativeActivationFailureV1::Faulted);
+        };
+        let metadata = root.metadata();
+        let marker = plugin_call_guard::marker(
+            context.package_id,
+            context.sealed_manifest_digest,
+            context.entrypoint_id,
+            root.root_module(),
+            metadata.primary_interface_id.namespace.into_raw(),
+            metadata.primary_interface_id.value,
+        );
+        let permit = match self.markers.begin(&marker) {
+            Ok(permit) => permit,
+            Err(GuardErrorV1::Denied) => {
+                self.markers.record_timing(
+                    &marker,
+                    Duration::ZERO,
+                    NativeCallTerminalV1::SafeModeDenied,
+                );
+                return Err(NativeActivationFailureV1::Rejected);
+            }
+            Err(GuardErrorV1::Fault) => {
+                self.markers.record_timing(
+                    &marker,
+                    Duration::ZERO,
+                    NativeCallTerminalV1::MarkerFailure,
+                );
+                return Err(NativeActivationFailureV1::Faulted);
+            }
+        };
+        let started = Instant::now();
+        let result = invoke_guarded_registrar(root, &permit);
+        let elapsed = started.elapsed();
+        let terminal = match &result {
+            Ok(_) => NativeCallTerminalV1::Accepted,
+            Err(HostRegistrationErrorV1::Incompatible(_)) => NativeCallTerminalV1::Incompatible,
+            Err(HostRegistrationErrorV1::Plugin(_)) => NativeCallTerminalV1::PluginError,
+            Err(HostRegistrationErrorV1::Panicked(_)) => NativeCallTerminalV1::Panicked,
+        };
+        if permit.clear().is_err() {
+            self.markers
+                .record_timing(&marker, elapsed, NativeCallTerminalV1::MarkerFailure);
+            return Err(NativeActivationFailureV1::Faulted);
+        }
+        self.markers.record_timing(&marker, elapsed, terminal);
+        match result {
+            Ok(_) => Ok(NativeActivationClaimV1::Activated(
+                NativeActivationBlueprintV1 {
+                    package_id: context.package_id.to_owned(),
+                    package_version: context.package_version.to_owned(),
+                    sealed_manifest_digest: context.sealed_manifest_digest.to_owned(),
+                    features: Vec::new(),
+                },
+            )),
+            Err(HostRegistrationErrorV1::Panicked(_)) => Err(NativeActivationFailureV1::Faulted),
+            Err(_) => Err(NativeActivationFailureV1::Rejected),
+        }
     }
 }
 
@@ -274,6 +378,7 @@ pub struct NativeExtensionLifecycleV1 {
     executor: Arc<dyn NativeActivationExecutor>,
     drain_port: Arc<dyn NativeDrainPortV1>,
     drain_timeout: Duration,
+    markers: Option<Arc<PluginCallGuardStoreV1>>,
 }
 
 impl fmt::Debug for NativeExtensionLifecycleV1 {
@@ -284,7 +389,12 @@ impl fmt::Debug for NativeExtensionLifecycleV1 {
 
 impl NativeExtensionLifecycleV1 {
     /// Acquires the one nonrenewable native lifecycle authority for this process.
-    pub fn acquire() -> Result<Self, NativeLifecycleErrorV1> {
+    pub fn acquire(config: NativeLifecycleConfigV1) -> Result<Self, NativeLifecycleErrorV1> {
+        let NativeLifecycleConfigV1 {
+            application_state_dir,
+            slow_callback_threshold,
+        } = config;
+        plugin_call_guard::validate_application_state_dir(&application_state_dir)?;
         let mut acquired = PROCESS_NATIVE_LIFECYCLE_ACQUIRED
             .get_or_init(|| Mutex::new(false))
             .lock()
@@ -292,18 +402,33 @@ impl NativeExtensionLifecycleV1 {
         if *acquired {
             return Err(NativeLifecycleErrorV1::AlreadyAcquired);
         }
+        let markers = PluginCallGuardStoreV1::open(
+            application_state_dir.join("native-call-markers-v1"),
+            slow_callback_threshold,
+        )?;
         *acquired = true;
-        Ok(Self::with_ports(
-            Arc::new(DeferredExecutorV1),
+        Ok(Self::with_ports_and_markers(
+            Arc::new(GuardedNativeActivationExecutorV1::new(Arc::clone(&markers))),
             Arc::new(NoopDrainPortV1),
             DEFAULT_NATIVE_DRAIN_TIMEOUT,
+            Some(markers),
         ))
     }
 
+    #[cfg(test)]
     fn with_ports(
         executor: Arc<dyn NativeActivationExecutor>,
         drain_port: Arc<dyn NativeDrainPortV1>,
         drain_timeout: Duration,
+    ) -> Self {
+        Self::with_ports_and_markers(executor, drain_port, drain_timeout, None)
+    }
+
+    fn with_ports_and_markers(
+        executor: Arc<dyn NativeActivationExecutor>,
+        drain_port: Arc<dyn NativeDrainPortV1>,
+        drain_timeout: Duration,
+        markers: Option<Arc<PluginCallGuardStoreV1>>,
     ) -> Self {
         Self {
             shared: Arc::new(SharedRuntimeV1 {
@@ -316,7 +441,43 @@ impl NativeExtensionLifecycleV1 {
             executor,
             drain_port,
             drain_timeout,
+            markers,
         }
+    }
+
+    /// Returns recovered path-free Safe Mode incidents.
+    #[must_use]
+    pub fn safe_mode_incidents(&self) -> Vec<NativeSafeModeIncidentV1> {
+        self.markers
+            .as_ref()
+            .map_or_else(Vec::new, |markers| markers.incidents())
+    }
+
+    /// Whether malformed or overflowed marker residue has globally denied native calls.
+    #[must_use]
+    pub fn safe_mode_denies_all(&self) -> bool {
+        self.markers
+            .as_ref()
+            .is_some_and(|markers| markers.is_global())
+    }
+
+    /// Confirms exactly one recovered incident and removes its denial residue.
+    pub fn confirm_safe_mode_incident(
+        &self,
+        incident_id: crate::NativeSafeModeIncidentIdV1,
+    ) -> Result<(), NativeLifecycleErrorV1> {
+        self.markers
+            .as_ref()
+            .ok_or(NativeLifecycleErrorV1::SafeModeIncidentUnknown)?
+            .confirm(incident_id)
+    }
+
+    /// Returns bounded path-free native registrar timing diagnostics.
+    #[must_use]
+    pub fn native_call_timings(&self) -> Vec<NativeCallTimingV1> {
+        self.markers
+            .as_ref()
+            .map_or_else(Vec::new, |markers| markers.timings())
     }
 
     /// Opens the one linear startup admission session.
@@ -1078,6 +1239,10 @@ impl Drop for NativeDispatchLeaseV1 {
 pub enum NativeLifecycleErrorV1 {
     #[error("the process native lifecycle authority is already acquired")]
     AlreadyAcquired,
+    #[error("native marker state is unavailable or unsafe")]
+    MarkerStateUnavailable,
+    #[error("the requested Safe Mode incident is not active")]
+    SafeModeIncidentUnknown,
     #[error("native startup admission is permanently closed")]
     StartupClosed,
     #[error("native root ledger exceeds its manifest-derived bound")]
@@ -1375,30 +1540,38 @@ mod tests {
     }
 
     #[test]
-    fn process_owner_is_nonrenewable_and_default_activation_is_deferred() {
-        let mut lifecycle = NativeExtensionLifecycleV1::acquire().expect("first owner");
+    fn process_owner_is_nonrenewable() {
+        let state = tempfile::tempdir().expect("state");
+        let config = NativeLifecycleConfigV1::new(state.path().to_path_buf())
+            .with_slow_callback_threshold(Duration::ZERO);
+        let lifecycle = NativeExtensionLifecycleV1::acquire(config.clone()).expect("first owner");
         assert!(matches!(
-            NativeExtensionLifecycleV1::acquire(),
+            NativeExtensionLifecycleV1::acquire(config),
             Err(NativeLifecycleErrorV1::AlreadyAcquired)
         ));
+        assert!(lifecycle.safe_mode_incidents().is_empty());
+    }
 
-        let mut session = lifecycle.begin_startup().expect("session");
-        assert!(
-            session
-                .admit_synthetic("pkg", "digest", &["native"], &["feature"])
-                .expect("deferred admission")
-                .is_empty()
-        );
-        let key = EntryKeyV1 {
-            package_id: "pkg".into(),
-            sealed_manifest_digest: "digest".into(),
-            entrypoint_id: "native".into(),
-        };
-        session.seal().expect("seal");
-        assert_eq!(
-            lifecycle.lock().expect("state").entries.get(&key),
-            Some(&EntryStateV1::Deferred)
-        );
+    #[cfg(windows)]
+    #[test]
+    fn acquire_rejects_a_reparse_application_state_directory_before_ownership() {
+        let state = tempfile::tempdir().expect("state");
+        let target = tempfile::tempdir().expect("target");
+        let reparse_state = state.path().join("reparse-state");
+        let output = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(&reparse_state)
+            .arg(target.path())
+            .output()
+            .expect("junction command");
+        assert!(output.status.success(), "junction creation failed");
+
+        assert!(matches!(
+            NativeExtensionLifecycleV1::acquire(NativeLifecycleConfigV1::new(reparse_state)),
+            Err(NativeLifecycleErrorV1::MarkerStateUnavailable)
+        ));
     }
 
     #[test]

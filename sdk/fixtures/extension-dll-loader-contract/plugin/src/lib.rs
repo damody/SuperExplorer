@@ -2,17 +2,17 @@
 
 #[cfg(not(feature = "foreign-root"))]
 use abi_stable::std_types::{ROption, RResult};
-#[cfg(feature = "foreign-root")]
-use abi_stable::{StableAbi, library::RootModule, sabi_types::VersionStrings};
 use abi_stable::{export_root_module, prefix_type::PrefixTypeTrait};
+#[cfg(feature = "foreign-root")]
+use abi_stable::{library::RootModule, sabi_types::VersionStrings, StableAbi};
 #[cfg(feature = "foreign-root")]
 use explorer_extension_api::ExtensionRootModuleV1_Ref;
 #[cfg(not(feature = "foreign-root"))]
 use explorer_extension_api::{
-    ABI_SCHEMA_V1, ExtensionRegistrarV1, ExtensionRootModuleV1, ExtensionRootModuleV1_Ref,
-    PluginMetadataV1, ROOT_MODULE_CONTRACT_ID_V1, RegistrarCallbackV1, RegistrarImplementationV1,
-    RegistrarRequestV1, RegistrarResultV1, RegistrationOutcomeV1, SDK_MAJOR_VERSION_V1, StableIdV1,
-    UiAbiFingerprintV1,
+    ExtensionRegistrarV1, ExtensionRootModuleV1, ExtensionRootModuleV1_Ref, PluginMetadataV1,
+    RegistrarCallbackV1, RegistrarImplementationV1, RegistrarRequestV1, RegistrarResultV1,
+    RegistrationOutcomeV1, StableIdV1, UiAbiFingerprintV1, ABI_SCHEMA_V1,
+    ROOT_MODULE_CONTRACT_ID_V1, SDK_MAJOR_VERSION_V1,
 };
 
 include!(concat!(env!("OUT_DIR"), "/fingerprint.rs"));
@@ -35,7 +35,17 @@ extern "C" fn describe_contract() -> StableIdV1 {
 #[cfg(not(feature = "foreign-root"))]
 fn mark_callback(callback: &str) {
     if let Some(marker) = std::env::var_os("EXTENSION_DLL_LOADER_CONTRACT_MARKER") {
-        let _ = std::fs::write(marker, callback);
+        let entrypoint = if cfg!(feature = "alternate") {
+            "alternate"
+        } else {
+            "primary"
+        };
+        let line = format!("{callback}:{entrypoint}\n");
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(marker)
+            .and_then(|mut file| std::io::Write::write_all(&mut file, line.as_bytes()));
     }
 }
 
