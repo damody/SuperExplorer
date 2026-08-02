@@ -16,6 +16,7 @@ Assert-Fails { & (Join-Path $scripts 'build-plugin.ps1') -PluginRoot (Join-Path 
 
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('superexplorer-p0-consumer-' + [guid]::NewGuid().ToString('N'))
 Copy-Item -LiteralPath $fixture -Destination $temp -Recurse
+if (Test-Path -LiteralPath (Join-Path $temp 'target')) { Remove-Item -LiteralPath (Join-Path $temp 'target') -Recurse -Force }
 try {
     $lock = Get-Content (Join-Path $sdk 'sdk-lock.json') -Raw | ConvertFrom-Json
     $fingerprint = Get-Content (Join-Path $sdk 'ui-abi-fingerprint.json') -Raw | ConvertFrom-Json
@@ -56,6 +57,19 @@ try {
     [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
     Assert-Fails { & (Join-Path $scripts 'validate-plugin.ps1') -PluginRoot $temp } 'unknown trusted gate mapping'
 
+    $originalSource = Get-Content -LiteralPath $source -Raw
+    $missingRootSource = $originalSource.Replace('#[export_root_module]', '')
+    if ($missingRootSource -eq $originalSource) { throw 'P0 fixture no longer contains the expected root export attribute' }
+    [IO.File]::WriteAllText($source, $missingRootSource, [Text.UTF8Encoding]::new($false))
+    $missingRootManifest = $positive | ConvertFrom-Json
+    $missingRootManifest.payloads[0].size = (Get-Item -LiteralPath $source).Length
+    $missingRootManifest.payloads[0].sha256 = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+    [IO.File]::WriteAllText($manifestPath, ($missingRootManifest | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
+    Assert-Fails { & (Join-Path $scripts 'build-plugin.ps1') -PluginRoot $temp } 'cdylib without abi_stable loader export'
+    $unexpectedBuild = Join-Path $temp ("target\superexplorer\$($lock.bundle_id)\reports\build.json")
+    if (Test-Path -LiteralPath $unexpectedBuild) { throw 'failed ABI inspection published a build report' }
+
+    [IO.File]::WriteAllText($source, $originalSource, [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText($manifestPath, $positive, [Text.UTF8Encoding]::new($false))
     & (Join-Path $scripts 'build-plugin.ps1') -PluginRoot $temp | Out-Null
     $buildReport = Join-Path $temp ("target\superexplorer\$($lock.bundle_id)\reports\build.json")

@@ -1,1 +1,71 @@
-{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"required":["schema_version","baseline_revision","old_revision","new_revision","new_tree","candidate_tree_digest","workflow_run_id","nonce","reason","approver","issued_utc","expires_utc"],"properties":{"schema_version":{"const":1},"baseline_revision":{"type":"string","pattern":"^[0-9a-f]{40}$"},"old_revision":{"type":"string","pattern":"^[0-9a-f]{40}$"},"new_revision":{"type":"string","pattern":"^[0-9a-f]{40}$"},"new_tree":{"type":"string","pattern":"^[0-9a-f]{40}$"},"candidate_tree_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"workflow_run_id":{"type":"string","minLength":1},"nonce":{"type":"string","minLength":1},"reason":{"type":"string","minLength":1},"approver":{"type":"string","minLength":1},"issued_utc":{"type":"string","format":"date-time"},"expires_utc":{"type":"string","format":"date-time"}}}
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://superexplorer.invalid/schemas/gpui-update-approval.schema.json",
+  "title": "SuperExplorer GPUI snapshot update approval",
+  "description": "The exact approval object consumed by update-gpui-snapshot.ps1. The protected gate derives every identity field from its immutable resolve artifact.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "baseline_revision",
+    "old_revision",
+    "new_revision",
+    "new_tree",
+    "candidate_plan_digest",
+    "workflow_run_id",
+    "nonce",
+    "reason",
+    "approver",
+    "issued_utc",
+    "expires_utc"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "baseline_revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "description": "Approved snapshot commit at resolve time."
+    },
+    "old_revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "new_revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "new_tree": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "candidate_plan_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 candidate plan digest (old, new, tree, run, nonce)."
+    },
+    "workflow_run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nonce": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "approver": {
+      "type": "string",
+      "minLength": 1
+    },
+    "issued_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_utc": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

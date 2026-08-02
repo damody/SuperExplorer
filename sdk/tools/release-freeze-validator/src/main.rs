@@ -1,34 +1,42 @@
-use std::{env, fs, path::Path};
+use std::{env, fs, path::PathBuf};
 
-use release_freeze_validator::{Metadata, validate};
+use release_freeze_validator::{EvidenceMode, Metadata, release_input_digest, validate_at_root};
 use serde_json::Value;
+use superexplorer_ui_abi_fingerprint::production_fingerprint_from_lock;
 
 fn main() {
-    let mut arguments = std::env::args().skip(1);
-    if arguments.next().as_deref() != Some("verify") || arguments.next().is_some() {
-        eprintln!("usage: release-freeze-validator verify");
-        std::process::exit(2);
-    }
-    if let Err(error) = verify() {
+    if let Err(error) = run(env::args().skip(1).collect()) {
         eprintln!("release freeze validation failed: {error}");
         std::process::exit(1);
     }
 }
 
-fn verify() -> Result<(), String> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(3)
-        .ok_or("repository root unavailable")?;
-    let metadata: Metadata = read(root, "sdk/snapshot/release-freeze.json")?;
-    let lock: Value = read(root, "sdk/sdk-lock.json")?;
-    let manifest: Value = read(root, "sdk/bundle-manifest.json")?;
-    let fingerprint: Value = read(root, "sdk/ui-abi-fingerprint.json")?;
-    validate(&metadata, &lock, &manifest, &fingerprint)
+fn run(arguments: Vec<String>) -> Result<(), String> {
+    match arguments.as_slice() {
+        [command] if command == "verify" => validate_at_root(&repository_root()?, EvidenceMode::Production),
+        [command, flag, root] if command == "verify-fixture" && flag == "--root" => {
+            validate_at_root(&PathBuf::from(root), EvidenceMode::Fixture)
+        }
+        [command, flag, path] if command == "digest" && flag == "--metadata" => {
+            let source = fs::read_to_string(path).map_err(|error| format!("{path}: {error}"))?;
+            let metadata: Metadata = serde_json::from_str(&source).map_err(|error| error.to_string())?;
+            println!("{}", release_input_digest(&metadata)?);
+            Ok(())
+        }
+        [command, flag, path] if command == "ui-fingerprint" && flag == "--lock" => {
+            let source = fs::read_to_string(path).map_err(|error| format!("{path}: {error}"))?;
+            let lock: Value = serde_json::from_str(&source).map_err(|error| error.to_string())?;
+            println!("{}", production_fingerprint_from_lock(&lock)?.fingerprint);
+            Ok(())
+        }
+        _ => Err("usage: release-freeze-validator verify | verify-fixture --root <root> | digest --metadata <path> | ui-fingerprint --lock <path>".into()),
+    }
 }
 
-fn read<T: serde::de::DeserializeOwned>(root: &Path, relative: &str) -> Result<T, String> {
-    let source =
-        fs::read_to_string(root.join(relative)).map_err(|error| format!("{relative}: {error}"))?;
-    serde_json::from_str(&source).map_err(|error| format!("{relative}: {error}"))
+fn repository_root() -> Result<PathBuf, String> {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(3)
+        .map(PathBuf::from)
+        .ok_or_else(|| "repository root unavailable".into())
 }

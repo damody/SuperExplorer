@@ -3,146 +3,167 @@ Set-StrictMode -Version Latest
 
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $tool = Join-Path $repo 'sdk\tools\release-freeze-validator'
-$paths = @{
-    Metadata = Join-Path $repo 'sdk\snapshot\release-freeze.json'
-    Lock = Join-Path $repo 'sdk\sdk-lock.json'
-    Manifest = Join-Path $repo 'sdk\bundle-manifest.json'
-    Fingerprint = Join-Path $repo 'sdk\ui-abi-fingerprint.json'
-}
-$backup = @{}
-foreach ($entry in $paths.GetEnumerator()) {
-    $backup[$entry.Key] = if (Test-Path -LiteralPath $entry.Value) {
-        [IO.File]::ReadAllBytes($entry.Value)
-    } else {
-        $null
-    }
+$canonicalFreeze = Join-Path $repo 'sdk\snapshot\release-freeze.json'
+if (Test-Path -LiteralPath $canonicalFreeze) {
+    throw 'The development checkout must not contain a canonical release-freeze record.'
 }
 
 function Write-Json([string]$Path, $Value) {
-    $json = $Value | ConvertTo-Json -Depth 100
-    [IO.File]::WriteAllText($Path, "$json`n", [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($Path, (($Value | ConvertTo-Json -Depth 30) + "`n"), [Text.UTF8Encoding]::new($false))
 }
-
-function Restore-CanonicalFiles {
-    foreach ($entry in $paths.GetEnumerator()) {
-        $bytes = $backup[$entry.Key]
-        if ($null -eq $bytes) {
-            if (Test-Path -LiteralPath $entry.Value) {
-                Remove-Item -LiteralPath $entry.Value -Force
-            }
-        } else {
-            [IO.File]::WriteAllBytes($entry.Value, $bytes)
-        }
-    }
+function Read-Json([string]$Path) { return Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json }
+function Get-Sha256([string]$Path) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+function Get-Relative([string]$Root, [string]$Path) {
+    $full = [IO.Path]::GetFullPath($Path)
+    $prefix = [IO.Path]::GetFullPath($Root).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+    if (-not $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw "Not contained in fixture root: $Path" }
+    return $full.Substring($prefix.Length).Replace('\', '/')
 }
-
-function Invoke-Validator([bool]$ShouldPass, [string]$Case) {
+function Artifact([string]$Root, [string]$Path) {
+    return [ordered]@{ path = (Get-Relative $Root $Path); sha256 = (Get-Sha256 $Path) }
+}
+function Invoke-Tool([string[]]$Arguments, [bool]$ShouldPass, [string]$Case) {
     Push-Location $tool
     try {
-        $savedErrorAction = $ErrorActionPreference
+        $saved = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
-        & cargo.exe run --release --locked --offline -- verify 2>&1 | Out-Null
+        $output = (& cargo.exe run --release --locked --offline -- @Arguments 2>$null | Out-String).Trim()
         $exitCode = $LASTEXITCODE
-        $ErrorActionPreference = $savedErrorAction
-    } finally {
-        $ErrorActionPreference = 'Stop'
-        Pop-Location
-    }
-    if ($ShouldPass -and $exitCode -ne 0) { throw "$Case unexpectedly failed" }
+        $ErrorActionPreference = $saved
+    } finally { Pop-Location }
+    if ($ShouldPass -and $exitCode -ne 0) { throw "$Case unexpectedly failed: $output" }
     if (-not $ShouldPass -and $exitCode -eq 0) { throw "$Case unexpectedly passed" }
+    return $output
+}
+function Set-InputDigest([string]$MetadataPath) {
+    $output = Invoke-Tool @('digest', '--metadata', $MetadataPath) $true 'digest calculation'
+    $digest = ($output -split "`r?`n" | Where-Object { $_ -match '^[0-9a-f]{64}$' } | Select-Object -Last 1)
+    if ($null -eq $digest) { throw "Release digest command did not emit a SHA-256: $output" }
+    $metadata = Read-Json $MetadataPath
+    $metadata.release_input_digest = $digest
+    Write-Json $MetadataPath $metadata
+}
+function Invoke-FixtureValidator([string]$Fixture, [bool]$ShouldPass, [string]$Case) {
+    Invoke-Tool @('verify-fixture', '--root', $Fixture) $ShouldPass $Case | Out-Null
 }
 
-function Reset-PositiveFixture {
-    Restore-CanonicalFiles
-    $lock = Get-Content -LiteralPath $paths.Lock -Raw | ConvertFrom-Json
-    $fingerprint = Get-Content -LiteralPath $paths.Fingerprint -Raw | ConvertFrom-Json
-    $metadata = [ordered]@{
-        schema_version = 1
-        release_frozen = $true
-        protected_tag = [ordered]@{
-            name = 'gpui-sdk-v0.1.0-rc.1'
-            object_revision = $lock.gpui.revision
-            tree = $lock.gpui.tree
-            protection_record = 'fixture://protected-tag-policy/1'
-        }
-        source = [ordered]@{ revision = $lock.gpui.revision; tree = $lock.gpui.tree }
-        rc_id = '0.1.0-rc.1'
-        bundle_id = $lock.bundle_id
-        release_input_fingerprint = $fingerprint.fingerprint
-        signature_reference = 'fixture://signature/1'
-        provenance_reference = 'fixture://provenance/1'
-    }
-    Write-Json $paths.Metadata $metadata
-}
-
+$fixture = Join-Path ([IO.Path]::GetTempPath()) ("superexplorer-release-freeze-contract-" + [Guid]::NewGuid().ToString('N'))
 try {
-    Reset-PositiveFixture
-    Invoke-Validator $true 'frozen release'
-
-    Push-Location $tool
-    try {
-        $savedErrorAction = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
-        & cargo.exe run --release --locked --offline -- verify unexpected-argument 2>&1 | Out-Null
-        $extraArgumentExit = $LASTEXITCODE
-        $ErrorActionPreference = $savedErrorAction
-    } finally {
-        $ErrorActionPreference = 'Stop'
-        Pop-Location
+    New-Item -ItemType Directory -Path $fixture -Force | Out-Null
+    foreach ($relative in @('sdk', 'sdk\snapshot', 'evidence')) {
+        New-Item -ItemType Directory -Path (Join-Path $fixture $relative) -Force | Out-Null
     }
-    if ($extraArgumentExit -eq 0) { throw 'release validator accepted an unexpected argument' }
+    & git -C $fixture init --quiet
+    & git -C $fixture config user.email 'fixture@example.invalid'
+    & git -C $fixture config user.name 'Release Fixture'
+    [IO.File]::WriteAllText((Join-Path $fixture 'tracked.txt'), "fixture`n", [Text.UTF8Encoding]::new($false))
+    & git -C $fixture add tracked.txt
+    & git -C $fixture commit --quiet -m fixture
+    $revision = (& git -C $fixture rev-parse HEAD).Trim()
+    $tree = (& git -C $fixture show -s --format=%T HEAD).Trim()
+    & git -C $fixture tag -a gpui-sdk-v0.1.0-rc.1 -m fixture-tag
+    $tagObject = (& git -C $fixture rev-parse refs/tags/gpui-sdk-v0.1.0-rc.1).Trim()
 
-    $metadata = Get-Content $paths.Metadata -Raw | ConvertFrom-Json
-    $metadata.protected_tag = $null
-    Write-Json $paths.Metadata $metadata
-    Invoke-Validator $false 'missing protected tag'
-
-    Reset-PositiveFixture
-    $metadata = Get-Content $paths.Metadata -Raw | ConvertFrom-Json
-    $metadata.release_frozen = $false
-    Write-Json $paths.Metadata $metadata
-    Invoke-Validator $false 'unfrozen release'
-
-    Reset-PositiveFixture
-    $metadata = Get-Content $paths.Metadata -Raw | ConvertFrom-Json
-    $metadata.protected_tag.tree = '3' * 40
-    Write-Json $paths.Metadata $metadata
-    Invoke-Validator $false 'tag/source mismatch'
-
-    foreach ($artifact in @('Lock', 'Manifest', 'Fingerprint')) {
-        Reset-PositiveFixture
-        $value = Get-Content $paths[$artifact] -Raw | ConvertFrom-Json
-        $value.bundle_id = 'drifted-bundle'
-        Write-Json $paths[$artifact] $value
-        Invoke-Validator $false "$artifact bundle drift"
+    $lockPath = Join-Path $fixture 'sdk\sdk-lock.json'
+    $manifestPath = Join-Path $fixture 'sdk\bundle-manifest.json'
+    $fingerprintPath = Join-Path $fixture 'sdk\ui-abi-fingerprint.json'
+    $ledgerPath = Join-Path $fixture 'sdk\snapshot\release-ledger.json'
+    $protectionPath = Join-Path $fixture 'evidence\protection.json'
+    $signaturePath = Join-Path $fixture 'evidence\signature.json'
+    $provenancePath = Join-Path $fixture 'evidence\provenance.json'
+    $metadataPath = Join-Path $fixture 'sdk\snapshot\release-freeze.json'
+    $lock = [ordered]@{
+        bundle_id = 'fixture-bundle'
+        toolchain = [ordered]@{ rustc_release = '1.97.1'; rustc_commit_hash = 'a'; cargo_release = '1.97.1'; cargo_commit_hash = 'b'; target = 'x86_64-pc-windows-msvc' }
+        gpui = [ordered]@{ revision = $revision; tree = $tree; approved_snapshot = [ordered]@{ production = [ordered]@{ features = @() } } }
+        protected_dependency_graph = @()
+        protected_dependency_contract = [ordered]@{ schema_version = 2; edge_digest = 'x' }
+        sdk_public_source_hashes = @()
+        release_profiles = [ordered]@{}
+        build_policy = [ordered]@{ profile = [ordered]@{ panic = 'unwind'; lto = 'thin'; codegen_units = 1 }; allocator = [ordered]@{}; crt = [ordered]@{}; rustflags = @(); abi_schema_version = 1 }
     }
+    Write-Json $lockPath $lock
+    $fingerprintOutput = Invoke-Tool @('ui-fingerprint', '--lock', $lockPath) $true 'offline UI ABI fingerprint'
+    $fingerprint = ($fingerprintOutput -split "`r?`n" | Where-Object { $_ -match '^[0-9a-f]{64}$' } | Select-Object -Last 1)
+    if ($null -eq $fingerprint) { throw 'UI ABI fingerprint command did not return a SHA-256.' }
+    Write-Json $manifestPath ([ordered]@{ bundle_id = 'fixture-bundle'; files = @() })
+    Write-Json $fingerprintPath ([ordered]@{ bundle_id = 'fixture-bundle'; fingerprint = $fingerprint })
+    Write-Json $ledgerPath ([ordered]@{ schema_version = 1; releases = @() })
+    Write-Json $protectionPath ([ordered]@{ policy = 'fixture-protected-tag' })
+    Write-Json $signaturePath ([ordered]@{ fixture_unsigned = $true })
+    Write-Json $provenancePath ([ordered]@{ builder = 'fixture' })
+    $metadata = [ordered]@{
+        schema_version = 2
+        release_frozen = $true
+        evidence_mode = 'fixture'
+        protected_tag = [ordered]@{ name = 'gpui-sdk-v0.1.0-rc.1'; tag_object = $tagObject; object_revision = $revision; tree = $tree }
+        source = [ordered]@{ revision = $revision; tree = $tree }
+        rc_id = '0.1.0-rc.1'
+        bundle_id = 'fixture-bundle'
+        release_input_digest = ('0' * 64)
+        artifacts = [ordered]@{ sdk_lock = (Artifact $fixture $lockPath); bundle_manifest = (Artifact $fixture $manifestPath); ui_abi_fingerprint = (Artifact $fixture $fingerprintPath) }
+        protection = [ordered]@{ provider = 'fixture'; policy_id = 'fixture-policy'; record = (Artifact $fixture $protectionPath) }
+        signature = [ordered]@{ verification = 'fixture_unsigned'; signer = 'fixture'; artifact = (Artifact $fixture $signaturePath) }
+        provenance = [ordered]@{ builder = 'fixture'; predicate_type = 'fixture'; artifact = (Artifact $fixture $provenancePath) }
+        prior_release_ledger = (Artifact $fixture $ledgerPath)
+    }
+    Write-Json $metadataPath $metadata
+    Set-InputDigest $metadataPath
+    $metadataBackup = [IO.File]::ReadAllBytes($metadataPath)
+    $ledgerBackup = [IO.File]::ReadAllBytes($ledgerPath)
+    $protectionBackup = [IO.File]::ReadAllBytes($protectionPath)
 
-    Reset-PositiveFixture
-    $metadata = Get-Content $paths.Metadata -Raw | ConvertFrom-Json
-    $lock = Get-Content $paths.Lock -Raw | ConvertFrom-Json
-    $metadata.protected_tag.object_revision = '4' * 40
-    $metadata.source.revision = '4' * 40
-    $lock.gpui.revision = '4' * 40
-    Write-Json $paths.Metadata $metadata
-    Write-Json $paths.Lock $lock
-    Invoke-Validator $false 'revision change without a new fingerprint and bundle'
+    Invoke-FixtureValidator $fixture $true 'valid annotated fixture release'
+    Invoke-Tool @('verify', '--root', $fixture) $false 'production CLI must not accept a fixture root'
 
-    Reset-PositiveFixture
-    $metadata = Get-Content $paths.Metadata -Raw | ConvertFrom-Json
-    $metadata | Add-Member -NotePropertyName remote_main -NotePropertyValue ('5' * 40)
-    Write-Json $paths.Metadata $metadata
-    Invoke-Validator $true 'remote main movement'
+    $metadata = Read-Json $metadataPath
+    $metadata.signature.verification = 'detached_gpg'
+    Write-Json $metadataPath $metadata
+    Set-InputDigest $metadataPath
+    Invoke-FixtureValidator $fixture $false 'fixture mode cannot claim production signature evidence'
+    [IO.File]::WriteAllBytes($metadataPath, $metadataBackup)
+
+    $metadata = Read-Json $metadataPath
+    $metadata | Add-Member -NotePropertyName untrusted -NotePropertyValue $true
+    Write-Json $metadataPath $metadata
+    Invoke-Tool @('digest', '--metadata', $metadataPath) $false 'unknown metadata property'
+    [IO.File]::WriteAllBytes($metadataPath, $metadataBackup)
+
+    $metadata = Read-Json $metadataPath
+    $metadata.protected_tag.tag_object = ('0' * 40)
+    Write-Json $metadataPath $metadata
+    Set-InputDigest $metadataPath
+    Invoke-FixtureValidator $fixture $false 'annotated tag object mismatch'
+    [IO.File]::WriteAllBytes($metadataPath, $metadataBackup)
+
+    [IO.File]::WriteAllText($protectionPath, '{"policy":"tampered"}' + "`n", [Text.UTF8Encoding]::new($false))
+    Invoke-FixtureValidator $fixture $false 'referenced evidence hash mismatch'
+    [IO.File]::WriteAllBytes($protectionPath, $protectionBackup)
+
+    $ledger = Read-Json $ledgerPath
+    $ledger.releases = @([ordered]@{
+        rc_id = '0.1.0-rc.1'; bundle_id = 'regenerated-bundle'; release_input_digest = ('a' * 64)
+        source = [ordered]@{ revision = ('4' * 40); tree = $tree }
+    })
+    Write-Json $ledgerPath $ledger
+    $metadata = Read-Json $metadataPath
+    $metadata.prior_release_ledger.sha256 = Get-Sha256 $ledgerPath
+    Write-Json $metadataPath $metadata
+    Set-InputDigest $metadataPath
+    Invoke-FixtureValidator $fixture $false 'immutable ledger rejects RC reuse after regenerated inputs'
+    [IO.File]::WriteAllBytes($metadataPath, $metadataBackup)
+    [IO.File]::WriteAllBytes($ledgerPath, $ledgerBackup)
+
+    $freezeScript = Join-Path $repo 'sdk\scripts\freeze-release.ps1'
+    $saved = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $freezeScript -ReleaseTag 'gpui-sdk-v0.1.0-rc.1' -RcId '0.1.0-rc.1' -ProtectionProvider fixture -ProtectionPolicyId fixture -ProtectionRecord $protectionPath -DetachedSignature $signaturePath -Signer fixture -GpgKeyring $signaturePath -Provenance $provenancePath -Builder fixture -PredicateType fixture 2>$null
+    $freezeExit = $LASTEXITCODE
+    $ErrorActionPreference = $saved
+    if ($freezeExit -eq 0) { throw 'production freeze script accepted unsigned fixture evidence' }
+    if (Test-Path -LiteralPath $canonicalFreeze) { throw 'failed production freeze attempt created a canonical record' }
 } finally {
-    Restore-CanonicalFiles
-}
-
-foreach ($entry in $paths.GetEnumerator()) {
-    $expected = $backup[$entry.Key]
-    if ($null -eq $expected) {
-        if (Test-Path -LiteralPath $entry.Value) { throw "$($entry.Key) was not removed during rollback" }
-    } elseif ([Convert]::ToBase64String($expected) -ne [Convert]::ToBase64String([IO.File]::ReadAllBytes($entry.Value))) {
-        throw "$($entry.Key) was not restored byte-identically"
-    }
+    if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force }
 }
 
 Write-Output 'release freeze contract passed'

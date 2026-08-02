@@ -6,7 +6,12 @@ rust-version = "1.97.1"
 
 [lib]
 path = "src/lib.rs"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# This is deliberately the public, pinned SDK dependency.  The consumer must
+# not reach into a SuperExplorer workspace crate before Task 2 publishes one.
+abi_stable = { version = "=0.11.3", default-features = false }
 
 [profile.release]
 panic = "unwind"

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "bundle_id": "sdk-2e5c1631f877dd40cef07e71",
-  "inventory_root_sha256": "f1bc73a9799bfc5981615e2040ec3bdd90c6a85f0f40a07fcb4109bda511a1bb",
+  "bundle_id": "sdk-f8fa18899add9e8b35e833fe",
+  "inventory_root_sha256": "780a31591b50d38d2cd1d2a5e23f96c69699f661f1ba13e2b8d48428a6c759f0",
   "toolchain": {
     "rustc_release": "1.97.1",
     "rustc_commit_hash": "8bab26f4f68e0e26f0bb7960be334d5b520ea452",
@@ -12,7 +12,7 @@
   "manifests": [
     {
       "path": "Cargo.toml",
-      "sha256": "51f852593888b788e04ecab5c3e6bcb250881aec724eb80853a789a299e1574a"
+      "sha256": "fa612a108d58eefe5e3c0158f99d509bf2f0bbf4076e403853d3746db8c9f5f6"
     },
     {
       "path": "rust-toolchain.toml",
@@ -14865,7 +14865,7 @@
     },
     {
       "path": "sdk/README.md",
-      "sha256": "a8ff09319f12887ec7a747c0adc06e4516ecd69632942b97e348f4b032eec867"
+      "sha256": "682f7b4241ee4c12074ba0f12641e3a3d9610c06abd46164233b991b3ffe5c61"
     },
     {
       "path": "sdk/build-policy.json",
@@ -14941,19 +14941,19 @@
     },
     {
       "path": "sdk/fixtures/p0-consumer/Cargo.lock",
-      "sha256": "a101a10009c54f390b08cd1e203d4691795a1377f7c2cd1d858cfbbf467b98b6"
+      "sha256": "c05ece636684ecc574c7db78afbaa93d502bf09e2e330f5b4aac12d7d2337123"
     },
     {
       "path": "sdk/fixtures/p0-consumer/Cargo.toml",
-      "sha256": "6b73d47cf2e3d6fd128abf1b30557d25f153c701eacd8178b096bf657e6b942b"
+      "sha256": "fe3eab69cbd1b55126ac6ac4397d1f743c48b52f4e10baeb19c5a563b3e2c300"
     },
     {
       "path": "sdk/fixtures/p0-consumer/plugin-project.json",
-      "sha256": "6ba262567e6ba3b612087c7c36fc2add1821a7fff11b47da6b405bf04185a26d"
+      "sha256": "14cd2dfc4e4e158cd208cfa56a1abe67d11e88f72486dac134592e74cb8e13ac"
     },
     {
       "path": "sdk/fixtures/p0-consumer/src/lib.rs",
-      "sha256": "db9fbe3567090f8070ebf4371eddb24f7eeaaa6b6ffe2f3e40fd6244d8d20e34"
+      "sha256": "2919e0fdf9908295a1d6106d4117facf40aa1e1540d03d4d0c77fbc59943f60c"
     },
     {
       "path": "sdk/fixtures/ui-fingerprint-loader/.cargo/config.toml",
@@ -14977,7 +14977,7 @@
     },
     {
       "path": "sdk/schemas/gpui-update-approval.schema.json",
-      "sha256": "1c56e7ccf5f4263a46ec3899175961d53c7bf3931b1fd5dde96d0a480d030790"
+      "sha256": "bf9ac1e51c5cdbeb914c5e674e5fce3cfa641bb18f6433821e57390022611dde"
     },
     {
       "path": "sdk/schemas/offline-build-attestation.schema.json",
@@ -14992,8 +14992,16 @@
       "sha256": "e70acdf3f81fb62ee0be9353f65cd3a84e8d9b1f06c01f72484276d8eeff229f"
     },
     {
+      "path": "sdk/schemas/release-freeze.schema.json",
+      "sha256": "ef10b0be21c0891e1bd828fdd262ee3723b175030b7b2500f5faf2fc6657c4c3"
+    },
+    {
       "path": "sdk/scripts/build-plugin.ps1",
-      "sha256": "2fd0b8cd508bba142b7b0618f56f8ab86156869d77c489e8bae918767fe73c6b"
+      "sha256": "a25e73351e687211d482e4e65e7f4f0a1445e5a4d6063d30f8bf71646b66fa02"
+    },
+    {
+      "path": "sdk/scripts/freeze-release.ps1",
+      "sha256": "ba022786ef2a576e61cb895ac395c67d46b1ae18175dcde3a220b60d97216c70"
     },
     {
       "path": "sdk/scripts/package-plugin.ps1",
@@ -15001,15 +15009,15 @@
     },
     {
       "path": "sdk/scripts/update-gpui-snapshot-support.psm1",
-      "sha256": "1fdccc444535806c510e25115e4f331ca571f196ca6f5348ca8db4db80ae7a7b"
+      "sha256": "0d51e9c0e6b9c7c338d5b93f4e4a1f77dda795ba8e1e03966618f62c2a62320d"
     },
     {
       "path": "sdk/scripts/update-gpui-snapshot.ps1",
-      "sha256": "5e18e1504cf9416cf8ed4675cf3e17fe1e0e6d262c128ef80c6d5c2d6ca4da97"
+      "sha256": "950fd6ef5eb1cafd9808acd81badc575ae5c05c79b317e3e30847a9314ad8ea9"
     },
     {
       "path": "sdk/scripts/validate-plugin.ps1",
-      "sha256": "2429906a59bef81323ae7f2e9bf834842f8cc14a62072d852b58c5f112c79dd2"
+      "sha256": "fa2734e0c0466259d9a74befd0d73aa855325fb4b2f76c814efec9fe895ceb2b"
     },
     {
       "path": "sdk/snapshot/approved-gpui.json",
@@ -15049,15 +15057,19 @@
     },
     {
       "path": "sdk/tests/network-isolation-sentinel.ps1",
-      "sha256": "e8661a5f5be3ff07522c4cc950bb5fbe927de243a1616bc6e31e3ee317696387"
+      "sha256": "62a8d798bc1b4711d9f70dedbb6683ca5a7f759ec1a0f7600c5eb6884449b91f"
     },
     {
       "path": "sdk/tests/offline-host-plugin-contract.ps1",
       "sha256": "72c228f86d8bff7a47de38f48f223105bd7f7b5ab9a9b606f54762b6808f7c9a"
     },
     {
+      "path": "sdk/tests/p0-consumer-abi-contract.ps1",
+      "sha256": "ac3a600007f6af0b20b8c9592666c3e06cece27e54077a395d39630cb7c95a2e"
+    },
+    {
       "path": "sdk/tests/plugin-tooling-self-test.ps1",
-      "sha256": "3c9b933188919a7447b52fe20b83657fb83c14b90ef0e7a295673cc4d8cf807d"
+      "sha256": "0a5f933a5ac87a7427839075f91e7802eb36a88f003f309fac77499108c2b003"
     },
     {
       "path": "sdk/tests/protected-dependency-contract-self-test.ps1",
@@ -15073,7 +15085,7 @@
     },
     {
       "path": "sdk/tests/release-freeze-contract.ps1",
-      "sha256": "b2b80644d5f6a5ac574f69323c589546dfd4db32ba8ec89007e6b97b6547627a"
+      "sha256": "95ea95a9dfd9123b150f72160f4207faba84c0375bd0286e80565fcd9b5f89db"
     },
     {
       "path": "sdk/tests/temp-allocation-cleanup-self-test.ps1",
@@ -15092,8 +15104,12 @@
       "sha256": "d44863196b62da6f20e5ec62c0108b2814a83c093e6c266c9ec01d4408f1596a"
     },
     {
+      "path": "sdk/tests/update-gpui-snapshot-contract.ps1",
+      "sha256": "b74f61482fe08041f1815c9d23a1f8b1601d06780b25ff817921c7bd58f7b13b"
+    },
+    {
       "path": "sdk/tests/update-gpui-snapshot-self-test.ps1",
-      "sha256": "5e42465a63c9656c5878243df7bdaad09773b64db7788d62ee2339351655cb03"
+      "sha256": "cd9562b07c89e99ba4ffe32d907794957dd2f503b3056923af1c1e69916c3209"
     },
     {
       "path": "sdk/tests/update-gpui-snapshot-support.psm1",
@@ -15125,19 +15141,19 @@
     },
     {
       "path": "sdk/tools/plugin-tooling/Cargo.lock",
-      "sha256": "b66de4792eff457d5a87419b3fadbe585deb9e769e23bc8d2cdad762512c851f"
+      "sha256": "19b1ff6cef01a4a97fb068d1a63b73095c820e16fbacce7b4417bbd041b9c80e"
     },
     {
       "path": "sdk/tools/plugin-tooling/Cargo.toml",
-      "sha256": "5198ec5dede29270119b7397b785f8bcedfb53f585d3220d89faf8f76744d9ae"
+      "sha256": "9a80bdcfe9ac8c209c1722822d7e50dbbf96ab6af6883cd3fd0ab5afc971ffb9"
     },
     {
       "path": "sdk/tools/plugin-tooling/src/lib.rs",
-      "sha256": "f8bb4b119692565031ff7b9a7cb8a8941b312ee571e5ff9072e85aa7f89a2a33"
+      "sha256": "08f10f74ca0edd150f7c086438c20029e02be914a2d20b884f9a225fe3b9060b"
     },
     {
       "path": "sdk/tools/plugin-tooling/src/main.rs",
-      "sha256": "64ff69afd05b0e833373329d3e9ae2461d67ebd47343926ce15ce277f16961fc"
+      "sha256": "f50288e17cef56f642fd5e30236b328a8032425a1b0752dd69845d32778899ad"
     },
     {
       "path": "sdk/tools/release-freeze-validator/.cargo/config.toml",
@@ -15153,11 +15169,11 @@
     },
     {
       "path": "sdk/tools/release-freeze-validator/src/lib.rs",
-      "sha256": "c3c5b9e92a97fe2944a48477ad8901c8a22f8304ca9b5fc1004bbd611f4b1e29"
+      "sha256": "dd1b44f44f5333d81dada5ac5f0dd46003ec32a364c7ddb953227d2ac3ee8cbc"
     },
     {
       "path": "sdk/tools/release-freeze-validator/src/main.rs",
-      "sha256": "ef0134802272c187bef222b4530be9ce0f509577d37468aa9923fa0e25ee9bb2"
+      "sha256": "21302d8cd398b38f45dea72b31ac5011b96884a6ff187c70f5873c2517961eac"
     },
     {
       "path": "sdk/tools/ui-abi-fingerprint/.cargo/config.toml",
