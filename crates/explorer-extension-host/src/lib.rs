@@ -14,12 +14,18 @@
 //! registrar callback. DLL discovery, root-module loading, manifests, feature
 //! contributions, and lifecycle policy remain later tasks.
 
+mod contribution_gate;
 mod feature_state;
 mod manifest;
 mod package_resolver;
 mod package_source;
 mod package_validation;
 
+pub use contribution_gate::{
+    ContributionGateErrorV1, ContributionGateV1, ContributionKindV1, ContributionRegistrationV1,
+    MAX_CAPABILITIES_PER_CONTRIBUTION_V1, MAX_CONTRIBUTIONS_PER_BATCH_V1,
+    ValidatedContributionSetV1,
+};
 pub use feature_state::{
     DesiredStateV1, EffectiveFeatureReasonV1, EffectiveFeatureResolverErrorV1,
     EffectiveFeatureResolverV1, EffectiveFeatureStateV1, EffectiveFeatureV1,
