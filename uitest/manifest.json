@@ -1411,6 +1411,19 @@
       "timeout_seconds": 900,
       "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
       "covers": ["build-extensible-plugin-platform/extension-package-and-feature-lifecycle/atomic-package-resolution"]
+    },
+    {
+      "id": "native-call-guard-safe-mode-contract",
+      "description": "Verify guarded native callback cleanup, synthetic abandoned-marker recovery and confirmation, bounded slow-call diagnostics, and drain-timeout restart behavior.",
+      "suites": ["full", "interop"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\sdk\\tests\\native-call-guard-contract.ps1"],
+      "timeout_seconds": 900,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
+      "covers": [
+        "build-extensible-plugin-platform/extension-package-and-feature-lifecycle/contribution-call-guard-and-safe-mode",
+        "build-extensible-plugin-platform/extension-package-and-feature-lifecycle/native-plugin-load-lifecycle"
+      ]
     }
   ]
 }

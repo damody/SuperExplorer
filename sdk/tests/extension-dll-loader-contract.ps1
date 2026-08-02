@@ -7,12 +7,12 @@ $temp = Join-Path ([IO.Path]::GetTempPath()) ('superexplorer-dll-loader-' + [Gui
 $savedHome = $env:CARGO_HOME; $savedTarget = $env:CARGO_TARGET_DIR
 function Assert-EmptyCallMarkerDirectory([string] $StateDirectory) {
     $markerDirectory = Join-Path $StateDirectory 'native-call-markers-v1'
-    if (-not (Test-Path -LiteralPath $markerDirectory -PathType Container)) { throw "missing host call-marker directory: $markerDirectory" }
+    if (-not (Test-Path -LiteralPath $markerDirectory -PathType Container)) { throw 'missing host call-marker directory' }
     $launches = @(Get-ChildItem -LiteralPath $markerDirectory -Force)
     if ($launches.Count -eq 0) { return }
-    if ($launches.Count -ne 1 -or -not $launches[0].PSIsContainer -or -not $launches[0].Name.StartsWith('launch-')) { throw "unexpected host call-marker namespace: $markerDirectory" }
+    if ($launches.Count -ne 1 -or -not $launches[0].PSIsContainer -or -not $launches[0].Name.StartsWith('launch-')) { throw 'unexpected host call-marker namespace' }
     $launchContents = @(Get-ChildItem -LiteralPath $launches[0].FullName -Force)
-    if ($launchContents.Count -ne 1 -or $launchContents[0].Name -ne 'owner.lease') { throw "host call-marker residue remains: $($launches[0].FullName)" }
+    if ($launchContents.Count -ne 1 -or $launchContents[0].Name -ne 'owner.lease') { throw 'host call-marker residue remains' }
 }
 try {
     $workspace = Join-Path $temp 'workspace'; $cargoHome = Join-Path $temp 'cargo-home'; $target = Join-Path $temp 'target'; $runtime = Join-Path $temp 'runtime'
@@ -78,6 +78,37 @@ try {
     Invoke-RunnerScenario 'old-schema-mismatch' @('old-schema-mismatch',(Join-Path $runtime 'old-data.dll')) 'schema-mismatch'
     Invoke-RunnerScenario 'old-root-contract-mismatch' @('old-root-contract-mismatch',(Join-Path $runtime 'old-data.dll')) 'root-contract-mismatch'
     Invoke-RunnerScenario 'old-sdk-major-mismatch' @('old-sdk-major-mismatch',(Join-Path $runtime 'old-data.dll')) 'sdk-major-mismatch'
+    $rawAbortCallback = Join-Path $runtime 'raw-abort.callback'
+    $rawAbortState = Join-Path $runtime 'raw-abort.state'
+    Remove-Item -LiteralPath $rawAbortCallback, $rawAbortState -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Path $rawAbortState -Force | Out-Null
+    $env:EXTENSION_DLL_LOADER_CONTRACT_MARKER = $rawAbortCallback
+    $env:EXTENSION_DLL_LOADER_CONTRACT_STATE_DIR = $rawAbortState
+    $env:EXTENSION_DLL_LOADER_CONTRACT_RAW_ABORT = '1'
+    & $runner 'raw-abort' (Join-Path $runtime 'data.dll')
+    if ($LASTEXITCODE -eq 0) { throw 'raw-abort fixture unexpectedly returned successfully' }
+    Remove-Item Env:EXTENSION_DLL_LOADER_CONTRACT_RAW_ABORT -ErrorAction SilentlyContinue
+    if (-not (Test-Path -LiteralPath $rawAbortCallback -PathType Leaf)) { throw 'raw-abort fixture did not enter the registrar callback' }
+    Remove-Item -LiteralPath $rawAbortCallback -Force
+    & $runner 'safe-mode-blocked' (Join-Path $runtime 'data.dll')
+    if ($LASTEXITCODE -ne 0) { throw 'raw-abort residue was not denied by the next helper process' }
+    if (Test-Path -LiteralPath $rawAbortCallback -PathType Leaf) { throw 'Safe Mode dispatched the blocked callback' }
+    & $runner 'safe-mode-confirm' (Join-Path $runtime 'data.dll')
+    if ($LASTEXITCODE -ne 0) { throw 'scoped Safe Mode confirmation did not re-enable the callback' }
+    Assert-EmptyCallMarkerDirectory $rawAbortState
+
+    $slowCallback = Join-Path $runtime 'slow.callback'
+    $slowState = Join-Path $runtime 'slow.state'
+    Remove-Item -LiteralPath $slowCallback, $slowState -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Path $slowState -Force | Out-Null
+    $env:EXTENSION_DLL_LOADER_CONTRACT_MARKER = $slowCallback
+    $env:EXTENSION_DLL_LOADER_CONTRACT_STATE_DIR = $slowState
+    $env:EXTENSION_DLL_LOADER_CONTRACT_SLOW_MS = '75'
+    & $runner 'slow' (Join-Path $runtime 'data.dll')
+    if ($LASTEXITCODE -ne 0) { throw 'slow callback timing contract failed' }
+    Remove-Item Env:EXTENSION_DLL_LOADER_CONTRACT_SLOW_MS -ErrorAction SilentlyContinue
+    Assert-EmptyCallMarkerDirectory $slowState
+    Invoke-RunnerScenario 'drain-timeout' @('drain-timeout',(Join-Path $runtime 'data.dll'))
     foreach ($oldPlugin in @('data.dll', 'gpui.dll')) {
         $oldMarker = Join-Path $runtime ("old-host-" + $oldPlugin + '.marker')
         Remove-Item -LiteralPath $oldMarker -Force -ErrorAction SilentlyContinue
@@ -87,6 +118,8 @@ try {
     }
     Write-Output 'extension DLL loader contract: PASS'
 } finally {
+    Remove-Item Env:EXTENSION_DLL_LOADER_CONTRACT_RAW_ABORT -ErrorAction SilentlyContinue
+    Remove-Item Env:EXTENSION_DLL_LOADER_CONTRACT_SLOW_MS -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force }
     if ($null -eq $savedHome) { Remove-Item Env:CARGO_HOME -ErrorAction SilentlyContinue } else { $env:CARGO_HOME = $savedHome }
     if ($null -eq $savedTarget) { Remove-Item Env:CARGO_TARGET_DIR -ErrorAction SilentlyContinue } else { $env:CARGO_TARGET_DIR = $savedTarget }
