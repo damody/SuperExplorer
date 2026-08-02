@@ -25,7 +25,7 @@
 ## 3. Feature 狀態、Native Loader 與 Safe Mode
 
 - [x] 3.1 實作 global/package/feature `FeatureStateStore` 與 `EffectiveFeatureResolver`，涵蓋 enabled/disabled/disabling/pending-restart/blocked/faulted
-- [ ] 3.2 實作 contribution-to-feature/capability 驗證與 `ContributionGate`，讓未宣告、重複或越權 registration 拒絕整包
+- [x] 3.2 實作 contribution-to-feature/capability 驗證與 `ContributionGate`，讓未宣告、重複或越權 registration 拒絕整包
 - [ ] 3.3 實作 `abi_stable` DLL loader，在任何 callback 前完成 root layout、SDK major 與 GPUI fingerprint 驗證
 - [ ] 3.4 實作 startup-only DLL load、resident-until-exit、runtime feature gate、bounded drain 與未載入/更新 DLL 的 restart semantics
 - [ ] 3.5 實作 `PluginCallGuard`、panic translation、timing、native call marker 與下次啟動 Safe Mode
