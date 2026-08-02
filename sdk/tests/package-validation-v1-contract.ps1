@@ -4,13 +4,14 @@ $sdkRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $fixtureRoot = Join-Path $sdkRoot 'fixtures\package-validation-v1'
 $vendor = Join-Path $sdkRoot 'vendor\cargo-sources'
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('superexplorer-validation-v1-' + [Guid]::NewGuid().ToString('N'))
-$cargoHome = Join-Path $tempRoot 'cargo-home'; $targetDir = Join-Path $tempRoot 'target'
+$cargoHome = Join-Path $tempRoot 'cargo-home'; $targetDir = Join-Path $tempRoot 'target'; $runtimeRoot = Join-Path $tempRoot 'runtime'
 $savedCargoHome = $env:CARGO_HOME; $savedTarget = $env:CARGO_TARGET_DIR
 try {
-    New-Item -ItemType Directory -Path $cargoHome, $targetDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $cargoHome, $targetDir, $runtimeRoot -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $fixtureRoot 'manifests') -Destination $runtimeRoot -Recurse -Force
     $config = @('[source.crates-io]','replace-with = "cargo-sources"','[source.cargo-sources]',('directory = "' + ($vendor -replace '\\','/') + '"')) -join [Environment]::NewLine
     [IO.File]::WriteAllText((Join-Path $cargoHome 'config.toml'), $config, [Text.UTF8Encoding]::new($false))
-    $env:CARGO_HOME = $cargoHome; $env:CARGO_TARGET_DIR = $targetDir; $env:PACKAGE_VALIDATION_FIXTURE_ROOT = $fixtureRoot
+    $env:CARGO_HOME = $cargoHome; $env:CARGO_TARGET_DIR = $targetDir; $env:PACKAGE_VALIDATION_FIXTURE_ROOT = $runtimeRoot
     Push-Location $fixtureRoot
     try { & cargo build --locked --offline --target x86_64-pc-windows-msvc; if ($LASTEXITCODE -ne 0) { throw "cargo build failed (exit $LASTEXITCODE)" } } finally { Pop-Location }
     $exe = Join-Path $targetDir 'x86_64-pc-windows-msvc\debug\package-validation-v1-contract.exe'
