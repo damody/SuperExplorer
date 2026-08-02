@@ -8,6 +8,10 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+# Narrow, non-default seams used only by the isolated DLL contract runner.
+integration-test-support = []
+
 [dependencies]
 abi_stable.workspace = true
 base64 = "=0.22.1"

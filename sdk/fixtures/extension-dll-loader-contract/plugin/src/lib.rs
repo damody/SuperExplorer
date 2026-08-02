@@ -23,6 +23,17 @@ struct Registrar;
 impl RegistrarImplementationV1 for Registrar {
     fn register(_: RegistrarRequestV1) -> RegistrarResultV1 {
         mark_callback("register");
+        if std::env::var_os("EXTENSION_DLL_LOADER_CONTRACT_RAW_ABORT").is_some() {
+            // Fixture-only raw termination: this intentionally bypasses the
+            // guarded return path so the next helper process must recover the
+            // durable native-call marker.
+            std::process::abort();
+        }
+        if let Some(delay) = std::env::var_os("EXTENSION_DLL_LOADER_CONTRACT_SLOW_MS")
+            .and_then(|value| value.to_string_lossy().parse::<u64>().ok())
+        {
+            std::thread::sleep(std::time::Duration::from_millis(delay));
+        }
         RResult::ROk(RegistrationOutcomeV1::accepted(0))
     }
 }

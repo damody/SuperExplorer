@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "bundle_id": "sdk-e229f243358b34f03dedf6cf",
-  "inventory_root_sha256": "5c31606210401aad632ce4ed6cea9ec2468e1c7c7d57157f686a8fad9c63f728",
+  "bundle_id": "sdk-732816c9b3166adc8645638f",
+  "inventory_root_sha256": "0f41c2eb69348da88709d95233153db17594864bb9e44dc52905d75d21ec5561",
   "toolchain": {
     "rustc_release": "1.97.1",
     "rustc_commit_hash": "8bab26f4f68e0e26f0bb7960be334d5b520ea452",
@@ -15037,15 +15037,15 @@
     },
     {
       "path": "sdk/fixtures/extension-dll-loader-contract/plugin/src/lib.rs",
-      "sha256": "6d0f5eb493729f3571dceaafa58306a7640cebc9785c18ab6c86c0bbd69dfe45"
+      "sha256": "b0297a1032513277f326e5bc87a5018de2b5df38fe3854a2e753053cbe595eae"
     },
     {
       "path": "sdk/fixtures/extension-dll-loader-contract/runner/Cargo.toml",
-      "sha256": "5c229e046d070ca008f31027fa4e65ddd66a13a893241c03d16fe5977e0fb5b1"
+      "sha256": "b5a8b02b7d8f2f15aa68320982398107681226c7015836247bec79b2e93c67b3"
     },
     {
       "path": "sdk/fixtures/extension-dll-loader-contract/runner/src/main.rs",
-      "sha256": "b5d13feeac2a5a9ec48a2e107202d6e7765421b275625cd3d0f3ac25ff097cba"
+      "sha256": "4fc09c0290cdb04b42c3c174e83f36b915b84d60d9a074ec72b5c59179c8b24d"
     },
     {
       "path": "sdk/fixtures/p0-consumer/Cargo.lock",
@@ -15337,7 +15337,7 @@
     },
     {
       "path": "sdk/tests/extension-dll-loader-contract.ps1",
-      "sha256": "1151194ff460e0122036dd6a52f8c90293f565f7864a14238418e40a8fd1aae9"
+      "sha256": "d9b23992a54aa382d6e4baf3107d50b28efe0b65531668999b78a1da6920cb94"
     },
     {
       "path": "sdk/tests/gpui-baseline-contract.ps1",
@@ -15350,6 +15350,10 @@
     {
       "path": "sdk/tests/gpui-contract-test-support.psm1",
       "sha256": "6eceb6eb61c6c4c2642ca4299a660370b35733b42b05f1284e2af9e1335c2532"
+    },
+    {
+      "path": "sdk/tests/native-call-guard-contract.ps1",
+      "sha256": "f0e3b4a8db0444a3395e4259d8fc4c96343a8571d96800b443289965905eac1b"
     },
     {
       "path": "sdk/tests/network-isolation-sentinel.ps1",

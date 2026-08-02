@@ -37,6 +37,8 @@ const DEFAULT_NATIVE_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 pub struct NativeLifecycleConfigV1 {
     application_state_dir: PathBuf,
     slow_callback_threshold: Duration,
+    #[cfg(feature = "integration-test-support")]
+    integration_test_drain_timeout: Option<Duration>,
 }
 
 impl NativeLifecycleConfigV1 {
@@ -46,6 +48,8 @@ impl NativeLifecycleConfigV1 {
         Self {
             application_state_dir,
             slow_callback_threshold: Duration::from_millis(250),
+            #[cfg(feature = "integration-test-support")]
+            integration_test_drain_timeout: None,
         }
     }
 
@@ -55,15 +59,29 @@ impl NativeLifecycleConfigV1 {
         self.slow_callback_threshold = threshold;
         self
     }
+
+    /// Sets a bounded drain timeout for the isolated native lifecycle contract runner.
+    #[cfg(feature = "integration-test-support")]
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn with_integration_test_drain_timeout(mut self, timeout: Duration) -> Self {
+        self.integration_test_drain_timeout = Some(timeout);
+        self
+    }
 }
 
 impl fmt::Debug for NativeLifecycleConfigV1 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("NativeLifecycleConfigV1")
+        let mut debug = formatter.debug_struct("NativeLifecycleConfigV1");
+        debug
             .field("application_state_dir", &"<redacted>")
-            .field("slow_callback_threshold", &self.slow_callback_threshold)
-            .finish()
+            .field("slow_callback_threshold", &self.slow_callback_threshold);
+        #[cfg(feature = "integration-test-support")]
+        debug.field(
+            "integration_test_drain_timeout",
+            &self.integration_test_drain_timeout,
+        );
+        debug.finish()
     }
 }
 
@@ -393,6 +411,8 @@ impl NativeExtensionLifecycleV1 {
         let NativeLifecycleConfigV1 {
             application_state_dir,
             slow_callback_threshold,
+            #[cfg(feature = "integration-test-support")]
+            integration_test_drain_timeout,
         } = config;
         plugin_call_guard::validate_application_state_dir(&application_state_dir)?;
         let mut acquired = PROCESS_NATIVE_LIFECYCLE_ACQUIRED
@@ -410,7 +430,16 @@ impl NativeExtensionLifecycleV1 {
         Ok(Self::with_ports_and_markers(
             Arc::new(GuardedNativeActivationExecutorV1::new(Arc::clone(&markers))),
             Arc::new(NoopDrainPortV1),
-            DEFAULT_NATIVE_DRAIN_TIMEOUT,
+            {
+                #[cfg(feature = "integration-test-support")]
+                {
+                    integration_test_drain_timeout.unwrap_or(DEFAULT_NATIVE_DRAIN_TIMEOUT)
+                }
+                #[cfg(not(feature = "integration-test-support"))]
+                {
+                    DEFAULT_NATIVE_DRAIN_TIMEOUT
+                }
+            },
             Some(markers),
         ))
     }
@@ -750,6 +779,73 @@ impl NativeExtensionLifecycleV1 {
             .get(identity)
             .map(|reasons| reasons.iter().copied().collect())
             .unwrap_or_default())
+    }
+
+    /// Installs one synthetic dispatch gate over a real, sealed, activated DLL root.
+    ///
+    /// This is deliberately feature-gated so production code cannot create an
+    /// authority that was not declared by the sealed package manifest.
+    #[cfg(feature = "integration-test-support")]
+    #[doc(hidden)]
+    pub fn install_integration_test_dispatch_gate(
+        &self,
+        admission: &NativeStartupAdmissionV1,
+    ) -> Result<NativeFeatureIdentityV1, NativeLifecycleErrorV1> {
+        let feature = FeatureKeyV1::new(admission.package_id.clone(), "integration-test-dispatch")
+            .map_err(|_| NativeLifecycleErrorV1::InvalidFeatureAuthority)?;
+        let identity = NativeFeatureIdentityV1 {
+            package_id: admission.package_id.clone(),
+            sealed_manifest_digest: admission.sealed_manifest_digest.clone(),
+            feature,
+        };
+        let mut state = self.lock()?;
+        ensure_running(&state)?;
+        if state.gates.contains_key(&identity) {
+            return Ok(identity);
+        }
+        if state.gates.len() >= MAX_NATIVE_FEATURE_GATES_V1 {
+            return Err(NativeLifecycleErrorV1::FeatureGateLimitExceeded);
+        }
+        let Some(member) = state.entries.iter().find_map(|(entry, entry_state)| {
+            (entry.package_id == admission.package_id
+                && entry.sealed_manifest_digest == admission.sealed_manifest_digest
+                && *entry_state == EntryStateV1::Activated
+                && state.validated_roots.contains_key(entry))
+            .then(|| entry.clone())
+        }) else {
+            return Err(NativeLifecycleErrorV1::InvalidFeatureAuthority);
+        };
+        state.gates.insert(
+            identity.clone(),
+            FeatureGateV1 {
+                state: NativeFeatureStateV1::Enabled { epoch: 1 },
+                accepting: true,
+                in_flight: 0,
+                epoch: 1,
+                operation: GateOperationV1::Idle,
+                members: BTreeSet::from([member]),
+            },
+        );
+        Ok(identity)
+    }
+
+    /// Whether the feature-gated integration dispatch authority still retains
+    /// an activated, validated DLL root in this process.
+    #[cfg(feature = "integration-test-support")]
+    #[doc(hidden)]
+    pub fn integration_test_has_resident_validated_root(
+        &self,
+        identity: &NativeFeatureIdentityV1,
+    ) -> Result<bool, NativeLifecycleErrorV1> {
+        let state = self.lock()?;
+        let gate = state
+            .gates
+            .get(identity)
+            .ok_or_else(|| NativeLifecycleErrorV1::UnknownRoot(identity.clone()))?;
+        Ok(gate.members.iter().any(|member| {
+            state.entries.get(member) == Some(&EntryStateV1::Activated)
+                && state.validated_roots.contains_key(member)
+        }))
     }
 
     /// Closes every gate, invokes bounded cancellation/drain, and never unloads.
