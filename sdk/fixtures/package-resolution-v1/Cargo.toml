@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/explorer-extension-api",
+    "crates/explorer-extension-ui-api",
+    "crates/explorer-extension-host",
+    "validator",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.97.1"
+license = "LicenseRef-SuperExplorer-Proprietary"
+repository = "https://github.com/damody/file_explorer"
+publish = false
+
+[workspace.dependencies]
+abi_stable = { version = "=0.11.3", default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tempfile = "3.20"
+thiserror = "2.0"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"

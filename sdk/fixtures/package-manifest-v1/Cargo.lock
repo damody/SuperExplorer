@@ -171,6 +171,7 @@ dependencies = [
  "explorer-extension-api",
  "explorer-extension-ui-api",
  "ring",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

@@ -10,6 +10,46 @@
         "security": ["ui-fingerprint-mismatch-rejected"],
         "docs": ["clean-readme-reproduction"]
       }
+    },
+    {
+      "requirement_id": "build-extensible-plugin-platform/extension-package-and-feature-lifecycle/unified-package-manifest",
+      "evidence": {
+        "unit": ["package-manifest-contract"],
+        "integration": ["package-validation-contract"],
+        "uitest": ["package-manifest-contract"],
+        "security": ["package-validation-contract"],
+        "docs": ["package-lifecycle-docs-contract"]
+      }
+    },
+    {
+      "requirement_id": "build-extensible-plugin-platform/extension-package-and-feature-lifecycle/structured-publisher-contacts",
+      "evidence": {
+        "unit": ["package-manifest-contract"],
+        "integration": ["package-validation-contract"],
+        "uitest": ["package-manifest-contract"],
+        "security": ["package-validation-contract"],
+        "docs": ["package-lifecycle-docs-contract"]
+      }
+    },
+    {
+      "requirement_id": "build-extensible-plugin-platform/extension-package-and-feature-lifecycle/atomic-package-resolution",
+      "evidence": {
+        "unit": ["package-resolution-contract"],
+        "integration": ["package-resolution-contract"],
+        "uitest": ["package-resolution-contract"],
+        "security": ["package-resolution-contract"],
+        "docs": ["package-lifecycle-docs-contract"]
+      }
+    },
+    {
+      "requirement_id": "build-extensible-plugin-platform/extension-package-and-feature-lifecycle/package-source-abstraction",
+      "evidence": {
+        "unit": ["package-source-contract"],
+        "integration": ["package-source-contract"],
+        "uitest": ["package-source-contract"],
+        "security": ["package-source-contract"],
+        "docs": ["package-lifecycle-docs-contract"]
+      }
     }
   ]
 }

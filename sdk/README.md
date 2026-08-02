@@ -95,3 +95,14 @@ powershell -NoProfile -File sdk/tests/package-validation-v1-contract.ps1
 ```
 The fixture verifies fail-closed unsigned rejection; local-developer authorization
 is intentionally host-source-issued and is covered by host integration tests.
+
+## Package lifecycle
+
+The versioned `.sepack` manifest, validation-to-resolution trust chain,
+dependency semantics, bounds, and lifecycle scope are documented in
+[PACKAGE_LIFECYCLE.md](PACKAGE_LIFECYCLE.md) (English and 繁體中文). Run its
+offline resolver contract with:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/package-resolution-v1-contract.ps1
+```

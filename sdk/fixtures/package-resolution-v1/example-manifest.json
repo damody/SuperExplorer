@@ -1,0 +1,13 @@
+{
+  "manifest_version": 1,
+  "package": { "id": "example.resolution-consumer", "version": "1.2.0" },
+  "publisher": { "id": "example.publisher", "display_name": "Example Publisher", "contacts": [{ "kind": "email", "value": "support@example.invalid", "purposes": ["support"] }] },
+  "sdk": { "bundle_id": "dev.20260802", "target": "x86_64-pc-windows-msvc", "abi_schema": 1, "gpui": false, "ui_abi_fingerprint": null },
+  "rust": [], "lua": [], "skins": [], "locales": [], "tools": [], "features": [], "payloads": [],
+  "dependencies": [
+    { "package_id": "example.base", "version_requirement": "^1.0.0", "optional": false },
+    { "package_id": "example.optional-tools", "version_requirement": "^2.0.0", "optional": true }
+  ],
+  "signature": { "kind": "unsigned" },
+  "data_version": 1
+}

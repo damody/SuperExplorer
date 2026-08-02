@@ -1,0 +1,12 @@
+[package]
+name = "package-manifest-example-validator"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+explorer-extension-host = { path = "../crates/explorer-extension-host" }
+
+[lints]
+workspace = true

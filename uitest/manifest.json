@@ -84,6 +84,16 @@
       "covers": ["enforce-interaction-first-qos/interaction-first-qos/overload-degrades-optional-work-and-recovers"]
     },
     {
+      "id": "scrolled-viewport-shell-icon-regression",
+      "description": "Verify icon enrichment retries follow the newly realized scrolled viewport instead of repeatedly scheduling the directory snapshot prefix.",
+      "suites": ["quick", "full", "visual"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-ui", "--lib", "--locked", "tests::visual_refinement_retry_targets_the_scrolled_viewport_instead_of_the_snapshot_prefix", "--", "--exact", "--nocapture", "--test-threads=1"],
+      "timeout_seconds": 300,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
+      "covers": ["enforce-interaction-first-qos/interaction-first-qos/overload-degrades-optional-work-and-recovers"]
+    },
+    {
       "id": "interaction-first-domain-isolation",
       "description": "Use deterministic start/release gates to prove stalled file-operation and breadcrumb enrichment workers cannot delay navigation.",
       "suites": ["quick", "full", "interop"],
@@ -1323,6 +1333,67 @@
       "timeout_seconds": 1800,
       "prerequisites": [{"kind": "windows"}],
       "covers": ["build-extensible-plugin-platform/rust-plugin-abi-and-ui-toolchain/offline-sdk-bundle-and-protected-dependency-closure"]
+    },
+    {
+      "id": "package-manifest-contract",
+      "description": "Run the isolated offline v1 package manifest and publisher-contact contract.",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\sdk\\tests\\package-manifest-v1-contract.ps1"],
+      "timeout_seconds": 900,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
+      "covers": [
+        "build-extensible-plugin-platform/extension-package-and-feature-lifecycle/unified-package-manifest",
+        "build-extensible-plugin-platform/extension-package-and-feature-lifecycle/structured-publisher-contacts"
+      ]
+    },
+    {
+      "id": "package-source-contract",
+      "description": "Run deterministic package-source discovery, provenance, reparse, and bounded-scan contracts.",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\sdk\\tests\\package-resolution-v1-contract.ps1"],
+      "timeout_seconds": 900,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
+      "covers": ["build-extensible-plugin-platform/extension-package-and-feature-lifecycle/package-source-abstraction"]
+    },
+    {
+      "id": "package-validation-contract",
+      "description": "Validate strict v1 manifest, contact, signature, and payload rejection paths through the shipped offline contract.",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\sdk\\tests\\package-validation-v1-contract.ps1"],
+      "timeout_seconds": 900,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
+      "covers": [
+        "build-extensible-plugin-platform/extension-package-and-feature-lifecycle/unified-package-manifest",
+        "build-extensible-plugin-platform/extension-package-and-feature-lifecycle/structured-publisher-contacts"
+      ]
+    },
+    {
+      "id": "package-lifecycle-docs-contract",
+      "description": "Verify the bilingual lifecycle schema reference and illustrative resolution manifest remain internally consistent.",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\sdk\\tests\\package-lifecycle-docs-contract.ps1"],
+      "timeout_seconds": 120,
+      "prerequisites": [{"kind": "windows"}],
+      "covers": [
+        "build-extensible-plugin-platform/extension-package-and-feature-lifecycle/unified-package-manifest",
+        "build-extensible-plugin-platform/extension-package-and-feature-lifecycle/structured-publisher-contacts",
+        "build-extensible-plugin-platform/extension-package-and-feature-lifecycle/atomic-package-resolution",
+        "build-extensible-plugin-platform/extension-package-and-feature-lifecycle/package-source-abstraction"
+      ]
+    },
+    {
+      "id": "package-resolution-contract",
+      "description": "Run the sealed package resolver integration contract with its isolated offline Cargo home.",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\sdk\\tests\\package-resolution-v1-contract.ps1"],
+      "timeout_seconds": 900,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
+      "covers": ["build-extensible-plugin-platform/extension-package-and-feature-lifecycle/atomic-package-resolution"]
     }
   ]
 }

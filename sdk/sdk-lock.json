@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "bundle_id": "sdk-920ceccb1877fa457f5671b6",
-  "inventory_root_sha256": "e967d80a0b473ee8022d02f4c6a6aef919a3bb242b884184d901a995390833f7",
+  "bundle_id": "sdk-6dbd4586190484c12f48bfa6",
+  "inventory_root_sha256": "31a07415df5fd2798806d1363e3a5fb4453d036cf6ffeaa4b89b4f89a0fbac29",
   "toolchain": {
     "rustc_release": "1.97.1",
     "rustc_commit_hash": "8bab26f4f68e0e26f0bb7960be334d5b520ea452",
@@ -14856,6 +14856,10 @@
       "sha256": "8dafd53d8219871c89c55d92b24b1e112d78baa10e476390c7882b65b51b3898"
     },
     {
+      "path": "sdk/PACKAGE_LIFECYCLE.md",
+      "sha256": "6e8126206c877578025f7bdf653eb18c17b29d25c97866438758bdbaacc04de8"
+    },
+    {
       "path": "sdk/PLUGIN_DIAGNOSTICS.md",
       "sha256": "c86123043110398fe81d818edd53dbeb4c1deb03d9c94a9c7a7bb724be5fda11"
     },
@@ -14865,7 +14869,7 @@
     },
     {
       "path": "sdk/README.md",
-      "sha256": "e580fd7439bf6563b8338dbaebb854bd8bbd54c39694a42d18c83115d8349c1d"
+      "sha256": "4913bc4690db8f3c7e15475817a653158a2d843b09936692709644d114e0c1cb"
     },
     {
       "path": "sdk/build-policy.json",
@@ -14877,7 +14881,7 @@
     },
     {
       "path": "sdk/ci/plugin-gates.json",
-      "sha256": "82d6a56d84a5c91fe31f8bf67c9d02c6bd981690b049152b0c96ea990df1a70a"
+      "sha256": "fe2e9824ceadd821e34becc4854ea6049cd25a7c54c361c4f8eca618d8a1d879"
     },
     {
       "path": "sdk/ci/release-policy.json",
@@ -14985,7 +14989,7 @@
     },
     {
       "path": "sdk/fixtures/p0-consumer/plugin-project.json",
-      "sha256": "25ee3879b19ed3d01f38a797aba4619493aceda0b6be138b7e383627e5e751ca"
+      "sha256": "1c858cdac41fd19ab2222962334bdf4b1ef475e460e0331ab1d9cfcba7194ded"
     },
     {
       "path": "sdk/fixtures/p0-consumer/src/lib.rs",
@@ -14993,7 +14997,7 @@
     },
     {
       "path": "sdk/fixtures/package-manifest-v1/Cargo.lock",
-      "sha256": "82f1f14970064c44ec9fd2d0c304ed1fdd62f789ddfd0224f579f161312dd141"
+      "sha256": "d61c091518c763634d31038dec1176953a564a96950ab5c80014cab59c319211"
     },
     {
       "path": "sdk/fixtures/package-manifest-v1/Cargo.toml",
@@ -15124,8 +15128,28 @@
       "sha256": "65888dff6fd3b16edcfb459769c37b5a005749f7dbdba2c07c7c475925ef8eda"
     },
     {
+      "path": "sdk/fixtures/package-resolution-v1/Cargo.lock",
+      "sha256": "15cc160fd3604f459384bb9677e92212dae329594f1fd8f2b6a4dea2a5c5a345"
+    },
+    {
+      "path": "sdk/fixtures/package-resolution-v1/Cargo.toml",
+      "sha256": "f67c6d79331deb3adcd67f99cef076bc837aad743f2f9ddfc4092b3e3ebc6675"
+    },
+    {
+      "path": "sdk/fixtures/package-resolution-v1/example-manifest.json",
+      "sha256": "f781165476aaf463504466534390a3c058c2b20e0718f612f0dae5dce6385c83"
+    },
+    {
+      "path": "sdk/fixtures/package-resolution-v1/validator/Cargo.toml",
+      "sha256": "cfd30c097d15edaf5d0150f82062700d67bb6c0cd10562c3e427c22cdba1d501"
+    },
+    {
+      "path": "sdk/fixtures/package-resolution-v1/validator/src/main.rs",
+      "sha256": "f688957fb795eb8de44698d102a0bf4f9b849bb0546d152b40afb5c7d0a9f0b6"
+    },
+    {
       "path": "sdk/fixtures/package-validation-v1/Cargo.lock",
-      "sha256": "5b26226be655b2ac1f1ce8b2149da03dfc22f2bf028c4078c4b1e8a8d80f0d5b"
+      "sha256": "e94c74d83427a47ae00cb32fc11210ab1919081344f9fd88a6b311a9bce0cb11"
     },
     {
       "path": "sdk/fixtures/package-validation-v1/Cargo.toml",
@@ -15276,8 +15300,16 @@
       "sha256": "ac3a600007f6af0b20b8c9592666c3e06cece27e54077a395d39630cb7c95a2e"
     },
     {
+      "path": "sdk/tests/package-lifecycle-docs-contract.ps1",
+      "sha256": "75de18328c8e45d969f39a7612dc756aff69ce6265b05e60e2aa04a26fecdfa5"
+    },
+    {
       "path": "sdk/tests/package-manifest-v1-contract.ps1",
       "sha256": "46cf0c0f530ff5e50a921837d8c065070f65ec59855db3880cd95fa18d2f4bb8"
+    },
+    {
+      "path": "sdk/tests/package-resolution-v1-contract.ps1",
+      "sha256": "068c2a3c4c879fe630a307307f1114509682fde3bb908c1b5ae049c09ea98d95"
     },
     {
       "path": "sdk/tests/package-validation-v1-contract.ps1",
