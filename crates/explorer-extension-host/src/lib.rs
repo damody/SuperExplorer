@@ -14,11 +14,15 @@
 //! registrar callback. DLL discovery, root-module loading, manifests, feature
 //! contributions, and lifecycle policy remain later tasks.
 
+mod feature_state;
 mod manifest;
 mod package_resolver;
 mod package_source;
 mod package_validation;
 
+pub use feature_state::{
+    DesiredStateV1, EffectiveFeatureResolverV1, EffectiveFeatureStateV1, FeatureStateStoreV1,
+};
 pub use manifest::{
     BundledToolV1, ContactPurposeV1, LocaleResourceV1, LuaEntrypointV1,
     PACKAGE_MANIFEST_VERSION_V1, PackageDependencyV1, PackageFeatureV1, PackageIdentityV1,
