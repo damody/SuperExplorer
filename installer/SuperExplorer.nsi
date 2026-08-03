@@ -17,6 +17,9 @@
 !ifndef WORKER_EXE
     !error "WORKER_EXE must be provided by build_install.lua"
 !endif
+!ifndef PLUGIN_DLL
+    !error "PLUGIN_DLL must be provided by build_install.lua"
+!endif
 
 !define PRODUCT_NAME "SuperExplorer"
 !define PRODUCT_PUBLISHER "Damody"
@@ -44,6 +47,7 @@ VIAddVersionKey /LANG=1033 "ProductVersion" "${APP_VERSION}"
 !define MUI_ABORTWARNING
 !define MUI_FINISHPAGE_RUN "$INSTDIR\SuperExplorer.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "執行 SuperExplorer"
+!define MUI_FINISHPAGE_RUN_PARAMETERS "--plugin-dll $\"$INSTDIR\plugins\p0_consumer.dll$\""
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
@@ -65,11 +69,16 @@ Section "SuperExplorer" SEC_MAIN
     File "${APP_EXE}"
     File /oname=explorer-extension-broker.exe "${BROKER_EXE}"
     File /oname=explorer-extension-worker.exe "${WORKER_EXE}"
+
+    SetOutPath "$INSTDIR\plugins"
+    File /oname=p0_consumer.dll "${PLUGIN_DLL}"
+
+    SetOutPath "$INSTDIR"
     WriteUninstaller "$INSTDIR\Uninstall.exe"
 
     CreateDirectory "$SMPROGRAMS\${PRODUCT_NAME}"
-    CreateShortcut "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk" "$INSTDIR\SuperExplorer.exe"
-    CreateShortcut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\SuperExplorer.exe"
+    CreateShortcut "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk" "$INSTDIR\SuperExplorer.exe" "--plugin-dll $\"$INSTDIR\plugins\p0_consumer.dll$\""
+    CreateShortcut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\SuperExplorer.exe" "--plugin-dll $\"$INSTDIR\plugins\p0_consumer.dll$\""
 
     WriteRegStr HKCU "${PRODUCT_REG_KEY}" "InstallDir" "$INSTDIR"
     WriteRegStr HKCU "${PRODUCT_UNINSTALL_KEY}" "DisplayName" "${PRODUCT_NAME}"
@@ -93,6 +102,8 @@ Section "Uninstall"
     Delete "$INSTDIR\SuperExplorer.exe"
     Delete "$INSTDIR\explorer-extension-broker.exe"
     Delete "$INSTDIR\explorer-extension-worker.exe"
+    Delete "$INSTDIR\plugins\p0_consumer.dll"
+    RMDir "$INSTDIR\plugins"
     Delete "$INSTDIR\Uninstall.exe"
     RMDir "$INSTDIR"
 
