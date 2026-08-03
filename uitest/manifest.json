@@ -1571,6 +1571,48 @@
       "timeout_seconds": 300,
       "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
       "covers": ["build-extensible-plugin-platform/extension-jobs-values-and-dynamic-columns/dynamic-column-registry"]
+    },
+    {
+      "id": "size-map-plugin-headful",
+      "description": "Load the independent public-SDK Size Map plugin, select its production View entry, render percentage rectangles over a real folder, and recover after F5.",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": [
+        "-Sta",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "{workspace_root}\\scripts\\smoke_size_map_plugin.ps1",
+        "-Executable",
+        "{workspace_root}\\target\\debug\\SuperExplorer.exe",
+        "-PluginDll",
+        "{workspace_root}\\sdk\\fixtures\\rust-folder-size-map-view\\target\\x86_64-pc-windows-msvc\\debug\\rust_folder_size_map_view.dll",
+        "-InitialPath",
+        "{workspace_root}\\crates",
+        "-OutputDirectory",
+        "{evidence_dir}"
+      ],
+      "timeout_seconds": 180,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"},
+        {"kind": "path", "path": "{workspace_root}\\sdk\\fixtures\\rust-folder-size-map-view\\target\\x86_64-pc-windows-msvc\\debug\\rust_folder_size_map_view.dll"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "explorer"],
+      "covers": [
+        "build-extensible-plugin-platform/source-example-plugin-suite/folder-size-map-view-example",
+        "build-extensible-plugin-platform/extension-view-modes-and-directory-tree-scan/size-map-semantics-and-accessibility"
+      ],
+      "required_artifacts": [
+        "report.json",
+        "details-before.png",
+        "view-menu.png",
+        "size-map.png",
+        "size-map-selected.png",
+        "size-map-after-f5.png"
+      ]
     }
   ]
 }

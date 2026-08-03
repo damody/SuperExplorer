@@ -39,6 +39,8 @@ SuperExplorer 是 Windows x64 MSVC 的 Rust／GPUI 檔案總管。目前詳細�
 
 `build_install.bat` 的同一條 release 流程必須使用 fixture manifest 以 `--release --target x86_64-pc-windows-msvc --offline` 建置唯一的 `p0_consumer.dll`，驗證明確產物後交給 NSIS。NSIS 固定安裝為 `$INSTDIR\plugins\p0_consumer.dll`，並讓桌面捷徑、開始選單捷徑及完成頁傳入 `--plugin-dll "$INSTDIR\plugins\p0_consumer.dll"`。不採用 app 目錄掃描或額外 launcher；uninstaller 只刪除該已知 DLL 與空目錄，不遞迴刪除未知檔案。
 
+folder-size slice 完成後，下一個 active consumer 是獨立 `rust-folder-size-map-view`。它仍單獨透過 `--plugin-dll` 載入，不改變 installer 的唯一 bundled Plugin。SDK-owned `abi_stable` view renderer 只接收 owned node snapshot、viewport/theme/settings並回傳data-only treemap rectangles；實際 GPUI element、正式 selection/navigation/F5 action與worker lifecycle由host擁有。P0先呈現目前位置第一層節點，使用有界且generation-aware的背景計量逐步補值；通用100,000-node scan framework保留在deferred roadmap，不阻擋這個產品驗證slice。
+
 ### 1. Extension Host 是唯一擴充入口
 
 新增 `explorer-extension-api`、`explorer-extension-ui-api` 與 `explorer-extension-host`。Host 擁有 package discovery、manifest validation、resolver、registries、feature gates、DLL loader、Lua adapter、job dispatch、cache、diagnostics 與 Safe Mode；既有 model/UI 只透過 adapter 接收公開 owned snapshot。

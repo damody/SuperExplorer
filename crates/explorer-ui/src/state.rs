@@ -1518,11 +1518,11 @@ impl AppViewState {
     }
 
     pub(crate) fn move_view_menu_focus(&mut self, direction: i8) {
-        self.view_menu_index = move_bounded_menu_index(self.view_menu_index, direction, 10);
+        self.view_menu_index = move_bounded_menu_index(self.view_menu_index, direction, 11);
     }
 
     pub(crate) fn set_view_menu_focus(&mut self, index: usize) -> bool {
-        if !self.view_menu_open || index > 10 || self.view_menu_index == index {
+        if !self.view_menu_open || index > 11 || self.view_menu_index == index {
             return false;
         }
         self.view_menu_index = index;
@@ -1539,7 +1539,26 @@ impl AppViewState {
         self.end_details_column_resize();
         let settings = &mut self.tabs.active_tab_mut().view.settings;
         settings.mode = mode;
+        settings.extension_view_id = None;
         settings.icon_size = explorer_model::default_icon_size_for_mode(mode);
+        self.close_view_menu();
+    }
+
+    /// Stores the extension view identity while retaining the last built-in
+    /// mode as its immediate fallback. The UI resolves availability at render
+    /// time, so an absent or faulted runtime never becomes a blank surface.
+    pub(crate) fn set_extension_view(&mut self, view_id: String) {
+        if view_id.trim().is_empty() {
+            return;
+        }
+        let _ = self.end_scrollbar_drag(ScrollbarTerminal::ViewSwitch);
+        self.end_marquee();
+        self.end_details_column_resize();
+        let settings = &mut self.tabs.active_tab_mut().view.settings;
+        // Details is the stable built-in fallback whenever this extension is
+        // missing or faults during rendering.
+        settings.mode = explorer_model::ViewMode::Details;
+        settings.extension_view_id = Some(view_id);
         self.close_view_menu();
     }
 

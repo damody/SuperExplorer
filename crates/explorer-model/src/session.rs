@@ -177,6 +177,10 @@ impl Default for PersistedColumnWidths {
 #[serde(deny_unknown_fields)]
 pub struct PersistedViewSettings {
     pub mode: PersistedViewMode,
+    /// Unknown extension IDs are intentionally retained. The UI resolves
+    /// them against its current runtime and falls back to the built-in mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extension_view_id: Option<String>,
     pub details_pane: bool,
     pub preview_pane: bool,
     pub item_check_boxes: bool,
@@ -202,6 +206,7 @@ impl Default for PersistedViewSettings {
     fn default() -> Self {
         Self {
             mode: PersistedViewMode::Details,
+            extension_view_id: None,
             details_pane: false,
             preview_pane: false,
             item_check_boxes: false,
@@ -693,6 +698,7 @@ impl PersistedViewSettings {
     pub fn to_runtime(&self) -> ViewSettings {
         ViewSettings {
             mode: self.mode.into(),
+            extension_view_id: self.extension_view_id.clone(),
             icon_size: crate::default_icon_size_for_mode(self.mode.into()),
             details_pane: self.details_pane,
             preview_pane: self.preview_pane,
@@ -854,6 +860,7 @@ impl From<ViewSettings> for PersistedViewSettings {
     fn from(settings: ViewSettings) -> Self {
         Self {
             mode: settings.mode.into(),
+            extension_view_id: settings.extension_view_id,
             details_pane: settings.details_pane,
             preview_pane: settings.preview_pane,
             item_check_boxes: settings.item_check_boxes,

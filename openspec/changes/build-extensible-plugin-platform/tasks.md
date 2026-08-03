@@ -53,6 +53,15 @@
 - [x] 8.5 以最小 Cargo check/unit 與真實視窗 smoke 驗證：一般資料夾與 icon 正常載入、資料夾大小逐步出現、比例條可見、設定生效、排序使用 exact bytes；不執行 CI 或 UITEST。
 - [x] 8.6 更新 bundled Plugin 與安裝腳本輸入，重建並驗證 `dist\\SuperExplorer-Setup-1.2026.8.4-x64.exe` 包含完成的 example。
 
+## 9. Visible Size Map GPUI example
+
+- [x] 9.1 建立獨立 `rust-folder-size-map-view` consumer，透過公開 ordinary Rust trait 與 SDK-owned `abi_stable` adapter 註冊單一 view renderer；不引用 private host/UI crates。
+- [x] 9.2 定義最小 public data-only view context/plan：owned node ID/name/type/exact bytes/status、viewport/theme/settings與treemap rectangle；Plugin callback不接收路徑、GPUI entity或native handle。
+- [x] 9.3 讓單Plugin loader/application runtime保留Size Map renderer，重用有界且generation-aware的背景資料夾計量；partial/error不得冒充exact bytes，舊位置/F5結果不得覆寫目前畫面。
+- [x] 9.4 在production View menu加入只有載入該Plugin才出現的 `Size Map`，以host-owned GPUI elements畫rectangles、label/bytes/percentage/status，並接回正式selection、double-click folder navigation與F5。
+- [x] 9.5 完成missing/faulted/no-plugin fallback至Details、獨立README與最小build/package路徑；不修改目前installer的唯一bundled folder-size Plugin。
+- [x] 9.6 在9.1–9.5全部完成後執行Cargo最小unit/smoke、真實視窗demo與既有本機UITEST runner單一Size Map case；驗證icon/一般資料夾行為不回歸，且永遠不跑CI。
+
 # Deferred roadmap（不屬於目前 apply scope）
 
 以下內容保留為產品可行後的候選 roadmap。所有 `[deferred]` 都不是目前 task、completion gate 或子代理工作來源；除非使用者明確重新啟用，禁止實作、補測試或建立 framework。

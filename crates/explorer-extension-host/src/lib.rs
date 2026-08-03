@@ -31,8 +31,8 @@ mod sepack_import;
 mod ui_invalidation_batcher;
 
 pub use dll_loader::{
-    SinglePluginVisualColumnRuntimeV1, SinglePluginVisualMeasureRuntimeV1,
-    SinglePluginVisualRenderRuntimeV1,
+    SinglePluginSizeMapViewRuntimeV1, SinglePluginVisualColumnRuntimeV1,
+    SinglePluginVisualMeasureRuntimeV1, SinglePluginVisualRenderRuntimeV1,
 };
 
 pub use contribution_gate::{
@@ -170,6 +170,13 @@ pub enum SinglePluginVisualColumnCallErrorV1 {
     UnknownMeasureContribution(String),
     #[error("no retained visual renderer contribution named {0:?}")]
     UnknownRenderContribution(String),
+}
+
+/// A requested direct Size Map view contribution is unavailable.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+pub enum SinglePluginSizeMapViewCallErrorV1 {
+    #[error("no retained Size Map view contribution named {0:?}")]
+    UnknownViewContribution(String),
 }
 
 use explorer_extension_api::{
@@ -671,9 +678,9 @@ impl ExtensionHost {
     /// Loads one explicit development DLL and retains its visual-column objects
     /// in separate single-owner measure and render runtimes.
     ///
-    /// Use [`SinglePluginVisualColumnRuntimeV1::into_parts`] to move its `Send`,
-    /// non-`Clone`, non-`Sync` measure and render owners to the background
-    /// worker and GPUI thread respectively.
+    /// Use [`SinglePluginVisualColumnRuntimeV1::into_parts_with_size_map`] to
+    /// move its `Send`, non-`Clone`, non-`Sync` measure, cell-render, and
+    /// optional Size Map render owners to their background/GPUI threads.
     pub fn load_single_plugin_visual_column_runtime(
         path: &Path,
     ) -> Result<SinglePluginVisualColumnRuntimeV1, SinglePluginLoadErrorV1> {

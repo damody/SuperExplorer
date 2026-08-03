@@ -21,6 +21,7 @@ pub mod diagnostics;
 pub mod file_view;
 mod fluent_assets;
 pub mod folder_size_column;
+pub mod size_map_view;
 pub use fluent_assets::ExplorerAssets;
 mod formatting;
 pub use formatting::format_file_size;
@@ -713,6 +714,14 @@ pub struct ExplorerRoot {
         explorer_model::ShellItemId,
     )>,
     folder_size_display_override: Option<folder_size_column::FolderSizeDisplayMode>,
+    size_map_runtime: Option<size_map_view::SizeMapRuntimeHandleV1>,
+    size_map_visuals: Option<size_map_view::SizeMapVisualsV1>,
+    size_map_visual_context: Option<explorer_model::RequestContext>,
+    size_map_requested: HashSet<(
+        explorer_model::TabId,
+        explorer_model::Generation,
+        explorer_model::ShellItemId,
+    )>,
 }
 
 /// Receives owned durable model snapshots after accepted reducer transitions.
@@ -767,6 +776,7 @@ fn is_durable_action(action: &ExplorerAction) -> bool {
             | ExplorerAction::NextTab
             | ExplorerAction::PreviousTab
             | ExplorerAction::SetViewMode(_)
+            | ExplorerAction::SetExtensionView { .. }
             | ExplorerAction::ZoomView { .. }
             | ExplorerAction::SetColumnId(_)
             | ExplorerAction::SetSortDirection(_)
@@ -990,6 +1000,10 @@ impl ExplorerRoot {
             folder_size_visuals: None,
             folder_size_requested: HashSet::new(),
             folder_size_display_override: None,
+            size_map_runtime: None,
+            size_map_visuals: None,
+            size_map_visual_context: None,
+            size_map_requested: HashSet::new(),
         }
     }
 
@@ -1026,6 +1040,147 @@ impl ExplorerRoot {
             values: HashMap::new(),
         });
         self.folder_size_requested.clear();
+    }
+
+    /// Connects the application-owned Size Map adapter. A malformed or
+    /// unsupported configuration remains dormant and the built-in Details
+    /// fallback continues to render.
+    pub fn attach_size_map_runtime(&mut self, runtime: size_map_view::SizeMapRuntimeHandleV1) {
+        let config = runtime.config();
+        if !size_map_view::is_supported_size_map_config(&config) {
+            tracing::warn!("rejected unsupported Size Map runtime configuration");
+            return;
+        }
+        self.size_map_runtime = Some(runtime);
+        self.size_map_visuals = Some(size_map_view::SizeMapVisualsV1::default());
+        self.size_map_visual_context = None;
+        self.size_map_requested.clear();
+    }
+
+    fn size_map_is_active(&self) -> bool {
+        let Some(runtime) = self.size_map_runtime.as_ref() else {
+            return false;
+        };
+        let config = runtime.config();
+        size_map_view::is_supported_size_map_config(&config)
+            && self
+                .state
+                .view_settings()
+                .effective_extension_view_id(|id| id == config.view_id)
+                .is_some()
+    }
+
+    fn submit_size_map_requests(&mut self) {
+        if !self.size_map_is_active() {
+            return;
+        }
+        let Some(runtime) = self.size_map_runtime.clone() else {
+            return;
+        };
+        let (tab_id, generation, entries) = {
+            let tab = self.state.tabs().active_tab();
+            let Some(snapshot) = tab.visible_snapshot() else {
+                return;
+            };
+            (tab.id, tab.generation, snapshot.entries().to_vec())
+        };
+        let context_is_current = self
+            .size_map_visual_context
+            .as_ref()
+            .is_some_and(|context| context.tab_id == tab_id && context.generation == generation);
+        if !context_is_current {
+            self.size_map_visuals
+                .get_or_insert_with(Default::default)
+                .values
+                .clear();
+            self.size_map_visual_context =
+                Some(explorer_model::RequestContext::new(tab_id, generation));
+        }
+        let context = self
+            .size_map_visual_context
+            .clone()
+            .expect("Size Map context was initialized above");
+        let requests = entries
+            .iter()
+            .filter(|entry| entry.is_container)
+            .filter_map(|entry| match &entry.location {
+                explorer_model::LocationDescriptor::FileSystem(path)
+                    if self
+                        .size_map_requested
+                        .insert((tab_id, generation, entry.id.clone())) =>
+                {
+                    Some(size_map_view::SizeMapMeasureRequestV1 {
+                        context: context.clone(),
+                        item_id: entry.id.clone(),
+                        path: path.clone(),
+                    })
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if !requests.is_empty() {
+            runtime.submit_measure_requests(requests);
+        }
+    }
+
+    fn pump_size_map_runtime(&mut self) -> bool {
+        let Some(runtime) = self.size_map_runtime.as_ref() else {
+            return false;
+        };
+        if !size_map_view::is_supported_size_map_config(&runtime.config()) {
+            return false;
+        }
+        let active_tab = self.state.tabs().active_tab();
+        let context_is_current = self
+            .size_map_visual_context
+            .as_ref()
+            .is_some_and(|context| {
+                context.tab_id == active_tab.id && context.generation == active_tab.generation
+            });
+        let context = if context_is_current {
+            self.size_map_visual_context
+                .clone()
+                .expect("current Size Map context exists")
+        } else {
+            explorer_model::RequestContext::new(active_tab.id, active_tab.generation)
+        };
+        let visible_ids = active_tab
+            .visible_snapshot()
+            .map(|snapshot| {
+                snapshot
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.id.clone())
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        let visuals = self.size_map_visuals.get_or_insert_with(Default::default);
+        let stale_context = !context_is_current;
+        if stale_context {
+            visuals.values.clear();
+            self.size_map_visual_context = Some(context.clone());
+        }
+        let previous_count = visuals.values.len();
+        visuals.values.retain(|id, _| visible_ids.contains(id));
+        let mut changed = stale_context || visuals.values.len() != previous_count;
+        for result in runtime
+            .drain_measure_results()
+            .into_iter()
+            .filter(|result| {
+                result.context.tab_id == context.tab_id
+                    && result.context.generation == context.generation
+            })
+        {
+            let value = size_map_view::SizeMapMeasuredValueV1 {
+                exact_bytes: result.exact_bytes,
+                partial: result.partial,
+                error: result.error,
+            };
+            if visuals.values.insert(result.item_id, value.clone()) != Some(value) {
+                changed = true;
+            }
+        }
+        changed
     }
 
     fn submit_folder_size_requests(&mut self) {
@@ -1581,6 +1736,10 @@ impl ExplorerRoot {
             folder_size_visuals: None,
             folder_size_requested: HashSet::new(),
             folder_size_display_override: None,
+            size_map_runtime: None,
+            size_map_visuals: None,
+            size_map_visual_context: None,
+            size_map_requested: HashSet::new(),
         };
         root.submit_active_location_load();
         root.submit_navigation_icon_loads();
@@ -1659,6 +1818,10 @@ impl ExplorerRoot {
             folder_size_visuals: None,
             folder_size_requested: HashSet::new(),
             folder_size_display_override: None,
+            size_map_runtime: None,
+            size_map_visuals: None,
+            size_map_visual_context: None,
+            size_map_requested: HashSet::new(),
         };
         root.submit_active_location_load();
         root.submit_navigation_icon_loads();
@@ -1799,9 +1962,14 @@ impl ExplorerRoot {
                     .await;
                 if this
                     .update(cx, |this, cx| {
-                        if extension_ui_pump_due(this.extension_ui_pump.as_mut(), Instant::now())
-                            || this.pump_visual_column_runtime()
-                        {
+                        // Each pump owns side effects. Evaluate all of them;
+                        // boolean short-circuiting can otherwise starve later
+                        // extension views whenever an earlier pump is busy.
+                        let extension_changed =
+                            extension_ui_pump_due(this.extension_ui_pump.as_mut(), Instant::now());
+                        let visual_column_changed = this.pump_visual_column_runtime();
+                        let size_map_changed = this.pump_size_map_runtime();
+                        if extension_changed || visual_column_changed || size_map_changed {
                             cx.notify();
                         }
                     })
@@ -4071,7 +4239,9 @@ impl ExplorerRoot {
         }
         if matches!(
             &action,
-            ExplorerAction::SetViewMode(_) | ExplorerAction::ZoomView { .. }
+            ExplorerAction::SetViewMode(_)
+                | ExplorerAction::SetExtensionView { .. }
+                | ExplorerAction::ZoomView { .. }
         ) {
             let tab = self.state.tabs().active_tab();
             let context = explorer_model::RequestContext::new(tab.id, tab.generation);
@@ -4521,6 +4691,17 @@ impl ExplorerRoot {
                 7 => ExplorerAction::SetViewMode(explorer_model::ViewMode::Content),
                 8 => ExplorerAction::ToggleDetailsPane,
                 9 => ExplorerAction::TogglePreviewPane,
+                10 => ExplorerAction::ToggleViewShowSubmenu,
+                11 => self
+                    .size_map_runtime
+                    .as_ref()
+                    .map(|runtime| runtime.config())
+                    .filter(size_map_view::is_supported_size_map_config)
+                    .map_or(ExplorerAction::ToggleViewShowSubmenu, |config| {
+                        ExplorerAction::SetExtensionView {
+                            view_id: config.view_id,
+                        }
+                    }),
                 _ => ExplorerAction::ToggleViewShowSubmenu,
             }),
             _ => None,
@@ -5087,6 +5268,14 @@ impl Render for ExplorerRoot {
         self.synchronize_preview_thumbnail(preview_entry.as_ref());
         self.synchronize_preview_handler(preview_entry.as_ref());
         self.submit_folder_size_requests();
+        self.submit_size_map_requests();
+        let size_map_context = {
+            let tab = self.state.tabs().active_tab();
+            self.size_map_visual_context
+                .as_ref()
+                .filter(|context| context.tab_id == tab.id && context.generation == tab.generation)
+                .cloned()
+        };
         let shell_icons = self.navigation_icon_snapshot(&realized_entries);
         let safe_mode_offer = self.safe_mode_offers.first().cloned();
         let safe_mode_error = self.safe_mode_confirmation_error.clone();
@@ -5106,6 +5295,14 @@ impl Render for ExplorerRoot {
             .with_preview_thumbnail(self.preview_texture.clone(), self.preview_thumbnail_failed)
             .with_folder_size_visuals(self.folder_size_visuals.clone())
             .with_visual_column_runtime(self.visual_column_runtime.clone())
+            .with_size_map(
+                self.size_map_is_active(),
+                size_map_context
+                    .as_ref()
+                    .and_then(|_| self.size_map_visuals.clone()),
+                self.size_map_runtime.clone(),
+                size_map_context,
+            )
             .on_action(std::rc::Rc::new(cx.listener(
                 |this, action: &ExplorerAction, window, cx| {
                     this.handle_action(action.clone(), ActionSource::Mouse, window, cx);

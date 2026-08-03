@@ -1,6 +1,11 @@
 //! Stateless Explorer chrome components for the M1 visual checkpoint.
 
-use std::{collections::HashMap, rc::Rc, sync::Arc, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    rc::Rc,
+    sync::Arc,
+    time::Instant,
+};
 
 use abi_stable::std_types::{ROption, RString};
 use explorer_model::{DirectoryState, TabId, TabSearchState};
@@ -183,6 +188,10 @@ pub struct ExplorerWindow {
     preview_thumbnail_failed: bool,
     folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
     visual_column_runtime: Option<crate::folder_size_column::VisualColumnRuntimeHandleV1>,
+    size_map_active: bool,
+    size_map_visuals: Option<crate::size_map_view::SizeMapVisualsV1>,
+    size_map_runtime: Option<crate::size_map_view::SizeMapRuntimeHandleV1>,
+    size_map_context: Option<explorer_model::RequestContext>,
 }
 
 impl ExplorerWindow {
@@ -206,6 +215,10 @@ impl ExplorerWindow {
             preview_thumbnail_failed: false,
             folder_size_visuals: None,
             visual_column_runtime: None,
+            size_map_active: false,
+            size_map_visuals: None,
+            size_map_runtime: None,
+            size_map_context: None,
         }
     }
 
@@ -309,6 +322,21 @@ impl ExplorerWindow {
         self.visual_column_runtime = runtime;
         self
     }
+
+    #[must_use]
+    pub fn with_size_map(
+        mut self,
+        active: bool,
+        visuals: Option<crate::size_map_view::SizeMapVisualsV1>,
+        runtime: Option<crate::size_map_view::SizeMapRuntimeHandleV1>,
+        context: Option<explorer_model::RequestContext>,
+    ) -> Self {
+        self.size_map_active = active;
+        self.size_map_visuals = visuals;
+        self.size_map_runtime = runtime;
+        self.size_map_context = context;
+        self
+    }
 }
 
 impl RenderOnce for ExplorerWindow {
@@ -318,6 +346,11 @@ impl RenderOnce for ExplorerWindow {
         let navigation_icons = self.shell_icons.clone();
         let tab_icons = self.shell_icons.clone();
         let view_settings = self.state.view_settings();
+        let size_map_menu_view = self
+            .size_map_runtime
+            .as_ref()
+            .map(|runtime| runtime.config())
+            .filter(crate::size_map_view::is_supported_size_map_config);
         let show_side_pane = f32::from(window.bounds().size.width)
             >= self.tokens.layout.compact_window_width.value()
             && (view_settings.details_pane || view_settings.preview_pane);
@@ -373,7 +406,8 @@ impl RenderOnce for ExplorerWindow {
             ))
             .child(
                 CommandBar::new(self.tokens, self.state.clone(), self.on_action.clone())
-                    .with_menu_focus(self.command_menu_focus),
+                    .with_menu_focus(self.command_menu_focus)
+                    .with_extension_view(size_map_menu_view),
             )
             .child(
                 div()
@@ -453,6 +487,10 @@ impl RenderOnce for ExplorerWindow {
                                     .collect(),
                                 self.folder_size_visuals,
                                 self.visual_column_runtime,
+                                self.size_map_active,
+                                self.size_map_visuals,
+                                self.size_map_runtime,
+                                self.size_map_context,
                                 self.on_action.clone(),
                             ))
                             .when_some(self.file_scroll.clone(), |element, handle| {
@@ -1747,6 +1785,7 @@ pub struct CommandBar {
     state: CommandBarViewModel,
     on_action: Option<ActionCallback>,
     menu_focus: Option<gpui::FocusHandle>,
+    extension_view: Option<crate::size_map_view::SizeMapViewConfigV1>,
 }
 
 impl CommandBar {
@@ -1760,12 +1799,22 @@ impl CommandBar {
             state,
             on_action,
             menu_focus: None,
+            extension_view: None,
         }
     }
 
     #[must_use]
     pub fn with_menu_focus(mut self, handle: Option<gpui::FocusHandle>) -> Self {
         self.menu_focus = handle;
+        self
+    }
+
+    #[must_use]
+    pub fn with_extension_view(
+        mut self,
+        view: Option<crate::size_map_view::SizeMapViewConfigV1>,
+    ) -> Self {
+        self.extension_view = view;
         self
     }
 }
@@ -1796,6 +1845,7 @@ impl RenderOnce for CommandBar {
         let extensions_open = self.state.extensions_menu_open();
         let tortoise_git_available = self.state.tortoise_git_available();
         let loaded_extension_summary = self.state.loaded_extension_summary().map(str::to_owned);
+        let extension_view = self.extension_view;
         div()
             .id(COMMAND_BAR_ID)
             .debug_selector(|| COMMAND_BAR_ID.to_owned())
@@ -1941,6 +1991,7 @@ impl RenderOnce for CommandBar {
                         self.tokens,
                         self.state.view_settings(),
                         self.state.view_show_submenu_open(),
+                        extension_view,
                         view_index,
                         self.on_action.clone(),
                     )
@@ -2540,6 +2591,7 @@ fn view_menu(
     tokens: UiTokens,
     settings: explorer_model::ViewSettings,
     show_submenu: bool,
+    extension_view: Option<crate::size_map_view::SizeMapViewConfigV1>,
     focused_index: usize,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
@@ -2623,6 +2675,27 @@ fn view_menu(
             tokens,
             on_action.clone(),
         ))
+        .when_some(extension_view, |element, extension| {
+            let checked = settings
+                .extension_view_id
+                .as_deref()
+                .is_some_and(|id| id == extension.view_id);
+            element
+                .child(view_menu_separator(tokens))
+                .child(view_menu_item(
+                    "view-extension-size-map".to_owned(),
+                    "Size Map",
+                    checked,
+                    false,
+                    focused_index == 11,
+                    Some(ExplorerAction::SetViewMenuFocus { index: 11 }),
+                    ExplorerAction::SetExtensionView {
+                        view_id: extension.view_id,
+                    },
+                    tokens,
+                    on_action.clone(),
+                ))
+        })
         .when(show_submenu, |element| {
             element.child(view_show_submenu(tokens, &settings, on_action))
         });
@@ -2634,6 +2707,9 @@ fn view_menu(
             .right_0()
             .flex()
             .justify_center()
+            // Deferred paint must also own hit testing; otherwise the menu is
+            // visible above the file view while clicks reach rows underneath.
+            .occlude()
             .child(menu),
     )
     .with_priority(90)
@@ -2727,12 +2803,24 @@ fn view_menu_item(
     on_action: Option<ActionCallback>,
 ) -> gpui::AnyElement {
     let colors = tokens.theme.colors;
+    // AccessKit's Windows provider currently exposes no InvokePattern for a
+    // custom MenuItem. The extension entry is an actionable button inside the
+    // menu so keyboard, UIA and pointer activation all reach the same callback.
+    let is_extension_item = id == "view-extension-size-map";
+    let accessible_role = if is_extension_item {
+        Role::Button
+    } else {
+        Role::MenuItem
+    };
     div()
         .id(id.clone())
         .debug_selector(move || id.clone())
-        .role(Role::MenuItem)
+        .role(accessible_role)
         .aria_label(label)
         .aria_selected(focused)
+        .when(is_extension_item, |element| {
+            element.focusable().tab_stop(true)
+        })
         .h(px(tokens.layout.menu_row_height.value()))
         .flex()
         .items_center()
@@ -4734,6 +4822,10 @@ pub struct FileViewHost {
         HashMap<explorer_model::ColumnId, Vec<crate::file_view::DetailsFilterOption>>,
     folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
     visual_column_runtime: Option<crate::folder_size_column::VisualColumnRuntimeHandleV1>,
+    size_map_active: bool,
+    size_map_visuals: Option<crate::size_map_view::SizeMapVisualsV1>,
+    size_map_runtime: Option<crate::size_map_view::SizeMapRuntimeHandleV1>,
+    size_map_context: Option<explorer_model::RequestContext>,
     on_action: Option<ActionCallback>,
 }
 
@@ -4773,6 +4865,10 @@ impl FileViewHost {
         >,
         folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
         visual_column_runtime: Option<crate::folder_size_column::VisualColumnRuntimeHandleV1>,
+        size_map_active: bool,
+        size_map_visuals: Option<crate::size_map_view::SizeMapVisualsV1>,
+        size_map_runtime: Option<crate::size_map_view::SizeMapRuntimeHandleV1>,
+        size_map_context: Option<explorer_model::RequestContext>,
         on_action: Option<ActionCallback>,
     ) -> Self {
         Self {
@@ -4805,6 +4901,10 @@ impl FileViewHost {
             details_filter_options,
             folder_size_visuals,
             visual_column_runtime,
+            size_map_active,
+            size_map_visuals,
+            size_map_runtime,
+            size_map_context,
             on_action,
         }
     }
@@ -4853,6 +4953,102 @@ fn marquee_content_rect(
     }
 }
 
+fn size_map_surface(
+    tokens: UiTokens,
+    plan: crate::size_map_view::SizeMapRenderPlanV1,
+    indexes: HashMap<explorer_model::ShellItemId, usize>,
+    selected: HashSet<explorer_model::ShellItemId>,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let colors = tokens.theme.colors;
+    let layout = tokens.layout;
+    let status = plan.status.clone();
+    div()
+        .id("size-map-view")
+        .debug_selector(|| "size-map-view".to_owned())
+        .role(Role::TabPanel)
+        .absolute()
+        .inset_0()
+        .overflow_hidden()
+        .bg(colors.surface.to_gpui())
+        .child(div().absolute().inset_0().child(region_probe(
+            "size-map-view",
+            Some(FILE_VIEW_HOST_ID),
+            "normal",
+        )))
+        .children(plan.rectangles.into_iter().filter_map(move |rectangle| {
+            let row_index = indexes.get(&rectangle.item_id).copied()?;
+            let callback = on_action.clone()?;
+            let select_callback = callback.clone();
+            let open_callback = callback.clone();
+            let item_id = rectangle.item_id.clone();
+            let is_selected = selected.contains(&item_id);
+            let label = rectangle.label.clone();
+            let detail = rectangle.detail.clone();
+            let status = rectangle.status.clone();
+            Some(
+                div()
+                    .id(format!("size-map-node-{:02x?}", item_id.provider_bytes()))
+                    .role(Role::Button)
+                    .absolute()
+                    .left(px(rectangle.x.max(0.0)))
+                    .top(px(rectangle.y.max(0.0)))
+                    .w(px(rectangle.width.max(1.0)))
+                    .h(px(rectangle.height.max(1.0)))
+                    .overflow_hidden()
+                    .p(px(layout.content_spacing.value() / 2.0))
+                    .border(px(if is_selected { 3.0 } else { 1.0 }))
+                    .border_color(if is_selected {
+                        colors.selected_active.to_gpui()
+                    } else {
+                        colors.divider.to_gpui()
+                    })
+                    .bg(rectangle.color.to_gpui())
+                    .text_color(colors.text_primary.to_gpui())
+                    .aria_label(format!("{label}: {detail}. {status}"))
+                    .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                        cx.stop_propagation();
+                        if event.click_count == 2 {
+                            open_callback(
+                                &ExplorerAction::OpenItem {
+                                    row_index,
+                                    new_tab: event.modifiers.control,
+                                },
+                                window,
+                                cx,
+                            );
+                        } else {
+                            select_callback(&ExplorerAction::SelectItem { row_index }, window, cx);
+                        }
+                    })
+                    .on_a11y_action(AccessibleAction::Click, move |_, window, cx| {
+                        callback(&ExplorerAction::SelectItem { row_index }, window, cx);
+                    })
+                    .child(div().whitespace_nowrap().text_ellipsis().child(label))
+                    .child(
+                        div()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_color(colors.text_secondary.to_gpui())
+                            .child(detail),
+                    ),
+            )
+        }))
+        .when_some(status, |element, status| {
+            element.child(
+                div()
+                    .absolute()
+                    .left(px(layout.content_spacing.value()))
+                    .bottom(px(layout.content_spacing.value()))
+                    .rounded(px(layout.corner_radius.value()))
+                    .bg(colors.menu_fill.to_gpui())
+                    .px(px(layout.content_spacing.value()))
+                    .py(px(layout.content_spacing.value() / 2.0))
+                    .child(status),
+            )
+        })
+}
+
 impl RenderOnce for FileViewHost {
     #[allow(
         clippy::too_many_lines,
@@ -4874,6 +5070,10 @@ impl RenderOnce for FileViewHost {
         let details_filter_options = self.details_filter_options;
         let folder_size_visuals = self.folder_size_visuals;
         let visual_column_runtime = self.visual_column_runtime;
+        let size_map_active = self.size_map_active;
+        let size_map_visuals = self.size_map_visuals;
+        let size_map_runtime = self.size_map_runtime;
+        let size_map_context = self.size_map_context;
         let row_folder_size_visuals = folder_size_visuals.clone();
         let row_visual_column_runtime = visual_column_runtime.clone();
         let background_drop = on_action.clone();
@@ -4953,6 +5153,55 @@ impl RenderOnce for FileViewHost {
             .unwrap_or_else(|| {
                 explorer_file_viewport_height(window, self.tokens).max(spatial_metrics.cell_height)
             });
+        let size_map_plan = if size_map_active {
+            match (
+                size_map_runtime.as_ref(),
+                size_map_visuals.as_ref(),
+                size_map_context.as_ref(),
+            ) {
+                (Some(runtime), Some(visuals), Some(context)) => {
+                    let nodes = presentation.as_ref().map_or_else(Vec::new, |presentation| {
+                        (0..presentation.len())
+                            .filter_map(|index| {
+                                presentation
+                                    .entry(index)
+                                    .map(|(_, entry)| visuals.node_for(entry))
+                            })
+                            .collect()
+                    });
+                    let indexes = presentation
+                        .as_ref()
+                        .map_or_else(HashMap::new, |presentation| {
+                            (0..presentation.len())
+                                .filter_map(|index| {
+                                    presentation
+                                        .entry(index)
+                                        .map(|(_, entry)| (entry.id.clone(), index))
+                                })
+                                .collect()
+                        });
+                    let context = crate::size_map_view::SizeMapRenderContextV1 {
+                        request_context: context.clone(),
+                        nodes,
+                        selected: selection.iter().cloned().collect(),
+                        viewport_width_milli: (viewport_width.max(0.0) * 1_000.0) as u32,
+                        viewport_height_milli: (viewport_height.max(0.0) * 1_000.0) as u32,
+                        dark_theme: matches!(self.tokens.theme.mode, crate::theme::ThemeMode::Dark),
+                    };
+                    let plan = runtime.render_size_map(context);
+                    plan.available.then(|| {
+                        (
+                            plan,
+                            indexes,
+                            selection.iter().cloned().collect::<HashSet<_>>(),
+                        )
+                    })
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
         let (realized_range, leading_space, trailing_space) =
             presentation.as_ref().map_or((0..0, 0, 0), |presentation| {
                 if wrapped_view {
@@ -5041,6 +5290,7 @@ impl RenderOnce for FileViewHost {
         );
         let scroll_performance = performance.clone();
         let row_settings = Arc::new(view_settings.clone());
+        let size_map_action = on_action.clone();
         let scroll_content = div()
             .id(FILE_VIEW_HOST_ID)
             .debug_selector(|| FILE_VIEW_HOST_ID.to_owned())
@@ -6367,6 +6617,15 @@ impl RenderOnce for FileViewHost {
             .flex_col()
             .overflow_hidden()
             .child(scroll_content)
+            .when_some(size_map_plan, |element, (plan, indexes, selected)| {
+                element.child(size_map_surface(
+                    self.tokens,
+                    plan,
+                    indexes,
+                    selected,
+                    size_map_action.clone(),
+                ))
+            })
             .when(
                 view_settings.mode == explorer_model::ViewMode::Details,
                 |element| {

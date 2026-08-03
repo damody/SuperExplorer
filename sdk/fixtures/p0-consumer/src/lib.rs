@@ -256,6 +256,7 @@ impl ExtensionRegistrarImplementationV1 for P0ConsumerRegistrar {
                     visual_column: ROption::RSome(VisualColumnObjectV1::new(
                         FolderSizeMeasureColumn,
                     )),
+                    size_map_view: ROption::RNone,
                 },
                 RegisteredContributionV1 {
                     feature_id: RString::from("main"),
@@ -268,6 +269,7 @@ impl ExtensionRegistrarImplementationV1 for P0ConsumerRegistrar {
                     renderer_contribution_id: ROption::RNone,
                     provider: ROption::RNone,
                     visual_column: ROption::RSome(VisualColumnObjectV1::new(FolderSizeRenderer)),
+                    size_map_view: ROption::RNone,
                 },
             ]),
         })

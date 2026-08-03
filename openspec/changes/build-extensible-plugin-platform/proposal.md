@@ -12,6 +12,12 @@ SuperExplorer 目前缺少第三方作者可穩定建置、載入及整合的擴
 - 只使用最小 unit、smoke 與人工 demo。Tasks 1–5 零 UITEST；第一個 example 完整可見後，只有需要自動化重跑時才使用既有 UITEST runner 的單一 smoke case。
 - 下列完整平台能力仍是產品驗證成功後的 roadmap，不是目前 completion gate，也不得阻擋第一條 vertical slice。
 
+### Next active example milestone
+
+- folder-size column 完成後，下一個 apply scope 是獨立 `rust-folder-size-map-view` consumer；同一時間仍只載入一個明確指定的 Plugin DLL。
+- 先以公開 data-only view render context/plan、host-owned GPUI treemap 與有界背景計量完成可見 Size Map，只加入這個 example 所需的 view menu、fallback、selection、double-click navigation 與 F5 generation 行為。
+- 不先建立多 Plugin catalog、evidence、snapshot 或 CI framework；example 的 production wiring、README 與本機 package 都完成後，才使用既有 UITEST runner 執行單一 final-example case。
+
 - 建立統一 `.sepack` 套件、manifest、作者聯絡資料、capability 權限、套件解析、feature desired/effective state、runtime gate、診斷及 Safe Mode。
 - 建立 Rust Plugin SDK：以單一 `abi_stable` root module 註冊多個功能，並為直接使用 GPUI 的 UI 外掛提供精確 toolchain／dependency fingerprint。
 - **PRE-RELEASE ABI RESET**：在第一個公開 V1 前淘汰 experimental handwritten-callback/custom-root layout，以 Rust-first traits、SDK-owned `abi_stable` factory/panic trampoline 建立首次發布 baseline；本 change 完成後不得再次重定義 V1 required layout 或 numeric semantics。
