@@ -4,8 +4,9 @@ use std::{
     path::PathBuf,
     rc::Rc,
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicU64, Ordering},
+        mpsc,
     },
     time::{Duration, Instant},
 };
@@ -27,6 +28,9 @@ use crate::{
 };
 
 const SHELL_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+const FOLDER_SIZE_CONTRIBUTION_ID_V1: &str = "folder-size";
+const FOLDER_SIZE_RENDERER_CONTRIBUTION_ID_V1: &str = "folder-size-renderer";
 
 /// App-owned boundary for projecting runtime-ready extension batches into the
 /// current list model. The application, rather than the host transport, owns
@@ -122,6 +126,177 @@ impl explorer_ui::ExtensionUiPumpPortV1 for ApplicationExtensionUiPumpV1 {
         let _ = self.pump.poll_applied(1_024);
         let _ = self.pump.next_deadline();
         matches!(self.pump.drain_due(now), Ok(Some(_)))
+    }
+}
+
+/// One-process bridge for the single P0 folder-size example. The measure
+/// object lives exclusively on its worker thread; the renderer is serialized
+/// on the GPUI caller thread through this narrow host-owned mutex.
+struct ApplicationVisualColumnRuntimeV1 {
+    pending: Arc<(Mutex<PendingFolderSizeWorkV1>, Condvar)>,
+    request_epoch: Arc<AtomicU64>,
+    results: Mutex<mpsc::Receiver<explorer_ui::folder_size_column::FolderSizeResultV1>>,
+    renderer: Mutex<explorer_extension_host::SinglePluginVisualRenderRuntimeV1>,
+}
+
+#[derive(Default)]
+struct PendingFolderSizeWorkV1 {
+    requests: Option<Vec<explorer_ui::folder_size_column::FolderSizeRequestV1>>,
+    stopped: bool,
+}
+
+impl ApplicationVisualColumnRuntimeV1 {
+    fn start(
+        mut measure: explorer_extension_host::SinglePluginVisualMeasureRuntimeV1,
+        renderer: explorer_extension_host::SinglePluginVisualRenderRuntimeV1,
+    ) -> Result<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1, Error> {
+        let pending = Arc::new((
+            Mutex::new(PendingFolderSizeWorkV1::default()),
+            Condvar::new(),
+        ));
+        let worker_pending = pending.clone();
+        let request_epoch = Arc::new(AtomicU64::new(0));
+        let worker_epoch = request_epoch.clone();
+        let (result_tx, result_rx) =
+            mpsc::sync_channel::<explorer_ui::folder_size_column::FolderSizeResultV1>(1_024);
+        std::thread::Builder::new()
+            .name("p0-folder-size".to_owned())
+            .spawn(move || {
+                loop {
+                    let requests = {
+                        let (lock, ready) = &*worker_pending;
+                        let mut state = lock
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        while state.requests.is_none() && !state.stopped {
+                            state = ready
+                                .wait(state)
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        }
+                        if state.stopped {
+                            return;
+                        }
+                        state.requests.take().unwrap_or_default()
+                    };
+                    let batch_epoch = worker_epoch.load(Ordering::Acquire);
+                    let batch_started = Instant::now();
+                    for request in requests {
+                        if worker_epoch.load(Ordering::Acquire) != batch_epoch {
+                            break;
+                        }
+                        let Some(remaining) = Duration::from_secs(2)
+                            .checked_sub(batch_started.elapsed())
+                        else {
+                            break;
+                        };
+                        let measured = measure.measure_folder_size(
+                            FOLDER_SIZE_CONTRIBUTION_ID_V1,
+                            explorer_extension_ui_api::FolderSizeMeasureRequestV1 {
+                                filesystem_path: request.path.to_string_lossy().into_owned().into(),
+                                max_entries: 100_000,
+                                max_depth: 128,
+                                deadline_millis: u32::try_from(remaining.as_millis())
+                                    .unwrap_or(u32::MAX)
+                                    .max(1),
+                            },
+                        );
+                        if worker_epoch.load(Ordering::Acquire) != batch_epoch {
+                            break;
+                        }
+                        let (exact_bytes, partial, error) = match measured {
+                            Ok(result) => (
+                                (!result.partial).then_some(result.exact_bytes),
+                                result.partial,
+                                result.error.into_option().map(String::from),
+                            ),
+                            Err(error) => (None, true, Some(error.to_string())),
+                        };
+                        if result_tx
+                            .try_send(explorer_ui::folder_size_column::FolderSizeResultV1 {
+                                context: request.context,
+                                item_id: request.item_id,
+                                exact_bytes,
+                                partial,
+                                error,
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }
+            })
+            .context("failed to start P0 folder-size worker")?;
+        Ok(Arc::new(Self {
+            pending,
+            request_epoch,
+            results: Mutex::new(result_rx),
+            renderer: Mutex::new(renderer),
+        }))
+    }
+}
+
+impl explorer_ui::folder_size_column::VisualColumnRuntimePortV1
+    for ApplicationVisualColumnRuntimeV1
+{
+    fn config(&self) -> explorer_ui::folder_size_column::VisualColumnConfigV1 {
+        explorer_ui::folder_size_column::VisualColumnConfigV1::default()
+    }
+
+    fn submit_folder_size_requests(
+        &self,
+        requests: Vec<explorer_ui::folder_size_column::FolderSizeRequestV1>,
+    ) {
+        self.request_epoch.fetch_add(1, Ordering::AcqRel);
+        let (lock, ready) = &*self.pending;
+        let mut state = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.requests = Some(requests);
+        ready.notify_one();
+    }
+
+    fn drain_folder_size_results(
+        &self,
+    ) -> Vec<explorer_ui::folder_size_column::FolderSizeResultV1> {
+        let Ok(results) = self.results.lock() else {
+            return Vec::new();
+        };
+        results.try_iter().collect()
+    }
+
+    fn render_cell(
+        &self,
+        context: explorer_extension_ui_api::CellRenderContextV1,
+    ) -> explorer_extension_ui_api::CellRenderPlanV1 {
+        let fallback_theme = context.theme;
+        self.renderer
+            .lock()
+            .ok()
+            .and_then(|mut renderer| {
+                renderer
+                    .render(FOLDER_SIZE_RENDERER_CONTRIBUTION_ID_V1, context)
+                    .ok()
+            })
+            .unwrap_or_else(|| {
+                explorer_extension_ui_api::CellRenderPlanV1::text_only(
+                    "Folder size unavailable",
+                    fallback_theme.muted_foreground,
+                )
+            })
+    }
+}
+
+impl Drop for ApplicationVisualColumnRuntimeV1 {
+    fn drop(&mut self) {
+        self.request_epoch.fetch_add(1, Ordering::AcqRel);
+        let (lock, ready) = &*self.pending;
+        let mut state = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.stopped = true;
+        state.requests = None;
+        ready.notify_one();
     }
 }
 
@@ -411,6 +586,7 @@ struct ShutdownResources {
     automation: Option<AutomationComposition>,
     extension_host: Option<explorer_extension_host::ExtensionHost>,
     loaded_extension_summary: Option<String>,
+    visual_column_runtime: Option<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1>,
     extension_job_ui_inbox: Option<explorer_extension_host::ExtensionJobUiInboxV1>,
     extension_job_ui_ingress: Option<explorer_extension_host::ExtensionJobUiIngressV1>,
     safe_mode_incident_offers: Vec<SafeModeIncidentOffer>,
@@ -461,12 +637,26 @@ impl ApplicationLifecycle {
         let mut extension_host =
             explorer_extension_host::ExtensionHost::with_config(extension_config);
         extension_host.start()?;
-        let loaded_extension_summary = plugin_dll
-            .map(|path| {
-                explorer_extension_host::ExtensionHost::load_single_plugin_dll(path)
-                    .map(|summary| format_single_plugin_summary(path, summary))
-            })
-            .transpose()?;
+        let (loaded_extension_summary, visual_column_runtime) = if let Some(path) = plugin_dll {
+            let loaded =
+                explorer_extension_host::ExtensionHost::load_single_plugin_visual_column_runtime(
+                    path,
+                )?;
+            let (summary, measure, renderer) = loaded.into_parts();
+            let supports_folder_size = summary.contributions().iter().any(|contribution| {
+                contribution.contribution_id() == FOLDER_SIZE_CONTRIBUTION_ID_V1
+            }) && summary.contributions().iter().any(|contribution| {
+                contribution.contribution_id() == FOLDER_SIZE_RENDERER_CONTRIBUTION_ID_V1
+            });
+            let runtime = if supports_folder_size {
+                Some(ApplicationVisualColumnRuntimeV1::start(measure, renderer)?)
+            } else {
+                None
+            };
+            (Some(format_single_plugin_summary(path, &summary)), runtime)
+        } else {
+            (None, None)
+        };
         if let Some(summary) = loaded_extension_summary.as_deref() {
             diagnostics.record_event("development_plugin_loaded", &[("summary", summary)])?;
         }
@@ -554,6 +744,7 @@ impl ApplicationLifecycle {
                 automation: Some(automation),
                 extension_host: Some(extension_host),
                 loaded_extension_summary,
+                visual_column_runtime,
                 extension_job_ui_inbox,
                 extension_job_ui_ingress,
                 safe_mode_incident_offers,
@@ -615,6 +806,7 @@ impl ApplicationLifecycle {
         let folder_scripts = self.automation_handle()?;
         let safe_mode_offers = self.safe_mode_ui_offers()?;
         let loaded_extension_summary = self.loaded_extension_summary()?;
+        let visual_column_runtime = self.visual_column_runtime()?;
         let safe_mode_resources = Arc::clone(&self.resources);
         let safe_mode_confirm: explorer_ui::SafeModeConfirmObserverV1 = Arc::new(move |token| {
             ApplicationLifecycle::confirm_safe_mode_incident_for_presentation_token(
@@ -700,6 +892,7 @@ impl ApplicationLifecycle {
                 let restore_preference_for_window = restore_preference;
                 let quick_access_for_window = quick_access.clone();
                 let loaded_extension_summary_for_window = loaded_extension_summary.clone();
+                let visual_column_runtime_for_window = visual_column_runtime.clone();
                 let fixture_diagnostics = diagnostics.clone();
                 let tokens = fixture_tokens(fixture_for_window.as_ref());
                 let main_window = match cx.open_window(window_options, move |window, cx| {
@@ -735,6 +928,7 @@ impl ApplicationLifecycle {
                             safe_mode_offers,
                             safe_mode_confirm,
                             loaded_extension_summary_for_window,
+                            visual_column_runtime_for_window,
                             extension_ui_pump.map(|pump| {
                                 Box::new(pump) as Box<dyn explorer_ui::ExtensionUiPumpPortV1>
                             }),
@@ -924,6 +1118,15 @@ impl ApplicationLifecycle {
             .map_err(|_| anyhow::anyhow!("application lifecycle mutex was poisoned"))
     }
 
+    fn visual_column_runtime(
+        &self,
+    ) -> Result<Option<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1>, Error> {
+        self.resources
+            .lock()
+            .map(|resources| resources.visual_column_runtime.clone())
+            .map_err(|_| anyhow::anyhow!("application lifecycle mutex was poisoned"))
+    }
+
     fn shell_service(&self) -> Result<Arc<ShellStaHandle>, Error> {
         self.resources
             .lock()
@@ -971,6 +1174,7 @@ fn create_explorer_root(
     broker_health: explorer_ui::state::BrokerUiHealth,
     broker_retry: explorer_ui::BrokerRetryObserver,
     folder_scripts: explorer_automation::FolderScriptHandle,
+    visual_column_runtime: Option<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1>,
     extension_ui_pump: Option<Box<dyn explorer_ui::ExtensionUiPumpPortV1>>,
     window: &gpui::Window,
     cx: &mut gpui::Context<ExplorerRoot>,
@@ -993,6 +1197,9 @@ fn create_explorer_root(
     root.configure_restore_previous_session(restore_preference);
     root.configure_quick_access(quick_access);
     root.configure_broker_health(broker_health, broker_retry);
+    if let Some(runtime) = visual_column_runtime {
+        root.attach_visual_column_runtime(runtime);
+    }
     if let Some(observer) = durable_observer {
         root.attach_durable_state_observer(observer, window, cx);
     }
@@ -1027,6 +1234,7 @@ fn create_focused_explorer_root(
     safe_mode_offers: Vec<explorer_ui::SafeModeOfferV1>,
     safe_mode_confirm: explorer_ui::SafeModeConfirmObserverV1,
     loaded_extension_summary: Option<String>,
+    visual_column_runtime: Option<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1>,
     extension_ui_pump: Option<Box<dyn explorer_ui::ExtensionUiPumpPortV1>>,
     window: &mut gpui::Window,
     cx: &mut gpui::Context<ExplorerRoot>,
@@ -1047,6 +1255,7 @@ fn create_focused_explorer_root(
         broker_health,
         broker_retry,
         folder_scripts,
+        visual_column_runtime,
         extension_ui_pump,
         window,
         cx,
@@ -1066,7 +1275,7 @@ fn create_focused_explorer_root(
 
 fn format_single_plugin_summary(
     path: &std::path::Path,
-    summary: explorer_extension_host::SinglePluginLoadSummaryV1,
+    summary: &explorer_extension_host::SinglePluginLoadSummaryV1,
 ) -> String {
     let plugin_id = summary.plugin_id();
     let plugin_name = path

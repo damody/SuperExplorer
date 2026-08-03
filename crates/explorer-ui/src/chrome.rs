@@ -2,6 +2,7 @@
 
 use std::{collections::HashMap, rc::Rc, sync::Arc, time::Instant};
 
+use abi_stable::std_types::{ROption, RString};
 use explorer_model::{DirectoryState, TabId, TabSearchState};
 use gpui::{
     AccessibleAction, Anchor, AnchoredPositionMode, App, DispatchPhase, Focusable, IntoElement,
@@ -37,6 +38,27 @@ fn typography_diagnostic(tokens: UiTokens, style: TypographyStyle) -> Typography
         weight: style.weight,
         line_height: style.line_height.value(),
         baseline: style.baseline.value(),
+    }
+}
+
+fn visual_column_color(color: crate::theme::Rgba8) -> explorer_extension_ui_api::CellColorV1 {
+    explorer_extension_ui_api::CellColorV1 {
+        red: color.red,
+        green: color.green,
+        blue: color.blue,
+        alpha: color.alpha,
+    }
+}
+
+fn shared_visual_column_theme(
+    colors: crate::theme::SemanticColors,
+) -> explorer_extension_ui_api::CellThemeV1 {
+    explorer_extension_ui_api::CellThemeV1 {
+        foreground: visual_column_color(colors.text_primary),
+        muted_foreground: visual_column_color(colors.text_secondary),
+        background: visual_column_color(colors.surface),
+        selection_background: visual_column_color(colors.selected_active),
+        accent: visual_column_color(colors.accent),
     }
 }
 
@@ -159,6 +181,8 @@ pub struct ExplorerWindow {
     file_performance: Option<Arc<crate::performance::FileViewPerformanceCounters>>,
     preview_texture: Option<Arc<RenderImage>>,
     preview_thumbnail_failed: bool,
+    folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
+    visual_column_runtime: Option<crate::folder_size_column::VisualColumnRuntimeHandleV1>,
 }
 
 impl ExplorerWindow {
@@ -180,6 +204,8 @@ impl ExplorerWindow {
             file_performance: None,
             preview_texture: None,
             preview_thumbnail_failed: false,
+            folder_size_visuals: None,
+            visual_column_runtime: None,
         }
     }
 
@@ -263,6 +289,24 @@ impl ExplorerWindow {
     ) -> Self {
         self.preview_texture = texture;
         self.preview_thumbnail_failed = failed;
+        self
+    }
+
+    #[must_use]
+    pub fn with_folder_size_visuals(
+        mut self,
+        visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
+    ) -> Self {
+        self.folder_size_visuals = visuals;
+        self
+    }
+
+    #[must_use]
+    pub fn with_visual_column_runtime(
+        mut self,
+        runtime: Option<crate::folder_size_column::VisualColumnRuntimeHandleV1>,
+    ) -> Self {
+        self.visual_column_runtime = runtime;
         self
     }
 }
@@ -407,6 +451,8 @@ impl RenderOnce for ExplorerWindow {
                                         (column.clone(), self.state.details_filter_options(column))
                                     })
                                     .collect(),
+                                self.folder_size_visuals,
+                                self.visual_column_runtime,
                                 self.on_action.clone(),
                             ))
                             .when_some(self.file_scroll.clone(), |element, handle| {
@@ -4686,6 +4732,8 @@ pub struct FileViewHost {
     details_filters: crate::file_view::DetailsFilters,
     details_filter_options:
         HashMap<explorer_model::ColumnId, Vec<crate::file_view::DetailsFilterOption>>,
+    folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
+    visual_column_runtime: Option<crate::folder_size_column::VisualColumnRuntimeHandleV1>,
     on_action: Option<ActionCallback>,
 }
 
@@ -4723,6 +4771,8 @@ impl FileViewHost {
             explorer_model::ColumnId,
             Vec<crate::file_view::DetailsFilterOption>,
         >,
+        folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
+        visual_column_runtime: Option<crate::folder_size_column::VisualColumnRuntimeHandleV1>,
         on_action: Option<ActionCallback>,
     ) -> Self {
         Self {
@@ -4753,6 +4803,8 @@ impl FileViewHost {
             details_filter_menu,
             details_filters,
             details_filter_options,
+            folder_size_visuals,
+            visual_column_runtime,
             on_action,
         }
     }
@@ -4820,6 +4872,10 @@ impl RenderOnce for FileViewHost {
         let details_filter_menu = self.details_filter_menu;
         let details_filters = self.details_filters;
         let details_filter_options = self.details_filter_options;
+        let folder_size_visuals = self.folder_size_visuals;
+        let visual_column_runtime = self.visual_column_runtime;
+        let row_folder_size_visuals = folder_size_visuals.clone();
+        let row_visual_column_runtime = visual_column_runtime.clone();
         let background_drop = on_action.clone();
         let zoom_action = on_action.clone();
         let rename_editor = self.rename_editor;
@@ -4973,6 +5029,7 @@ impl RenderOnce for FileViewHost {
             crate::theme::ThemeMode::Light => explorer_model::ShellIconTheme::Light,
             crate::theme::ThemeMode::Dark => explorer_model::ShellIconTheme::Dark,
         };
+        let visual_column_theme = shared_visual_column_theme(colors);
         let (rename_text, rename_selection, rename_selection_text, rename_caret) =
             editable_input_colors(self.tokens);
         let background_cue = matches!(
@@ -5244,6 +5301,8 @@ impl RenderOnce for FileViewHost {
             .children(entries.into_iter().map(move |item| {
                 let view_settings = Arc::clone(&row_settings);
                 let (visible_index, _snapshot_index, entry) = item;
+                let folder_size_visuals = row_folder_size_visuals.clone();
+                let visual_column_runtime = row_visual_column_runtime.clone();
                 let editor = rename_editor
                     .as_ref()
                     .filter(|editor| editor.item.id == entry.id)
@@ -6072,6 +6131,128 @@ impl RenderOnce for FileViewHost {
                                         )
                                     },
                                 )
+                                .when_some(
+                                    folder_size_visuals.zip(visual_column_runtime),
+                                    |element, (visuals, runtime)| {
+                                    let descriptor = &visuals.config.descriptor;
+                                    let exact_bytes = visuals.value_for(&entry.id);
+                                    let measurement_error = visuals.error_for(&entry.id);
+                                    let maximum = visuals.maximum_value();
+                                    let plan = runtime.render_cell(
+                                        crate::folder_size_column::CellRenderContextV1 {
+                                            value: ROption::RNone,
+                                            exact_bytes: exact_bytes
+                                                .map_or(ROption::RNone, ROption::RSome),
+                                            aggregate: ROption::RSome(
+                                                explorer_extension_ui_api::CellAggregateV1 {
+                                                    largest_sibling_value: ROption::RNone,
+                                                    largest_sibling_bytes: (maximum > 0)
+                                                        .then_some(maximum)
+                                                        .map_or(ROption::RNone, ROption::RSome),
+                                                },
+                                            ),
+                                            loading: entry.is_container
+                                                && exact_bytes.is_none()
+                                                && measurement_error.is_none(),
+                                            error: measurement_error
+                                                .map(|error| ROption::RSome(error.into()))
+                                                .unwrap_or(ROption::RNone),
+                                            selected,
+                                            // GPUI owns hover application for the row. The V1
+                                            // context reserves this public field without coupling
+                                            // the runtime to a widget handle.
+                                            hovered: false,
+                                            dpi_milli: u32::from(shell_icon_dpi)
+                                                .saturating_mul(1_000)
+                                                / 96,
+                                            theme: visual_column_theme,
+                                            settings: RString::from(
+                                                match visuals.config.folder_size_display {
+                                                    crate::folder_size_column::FolderSizeDisplayMode::BarAndText => "bar-and-text",
+                                                    crate::folder_size_column::FolderSizeDisplayMode::TextOnly => "text-only",
+                                                },
+                                            ),
+                                        },
+                                    );
+                                    element.when(
+                                        view_settings.details_column_visible(&descriptor.id),
+                                        |element| {
+                                            let width = f32::from(
+                                                view_settings.details_column_width(&descriptor.id),
+                                            );
+                                            element.child(
+                                                div()
+                                                    .id(format!(
+                                                        "folder-size-column-{visible_index}"
+                                                    ))
+                                                    .role(Role::Status)
+                                                    .aria_label(format!(
+                                                        "{}: {}",
+                                                        descriptor.display_name, plan.label
+                                                    ))
+                                                    .w(px(width))
+                                                    .flex_none()
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_end()
+                                                    .gap(px(layout.content_spacing.value() / 2.0))
+                                                    .px(px(layout.content_spacing.value() / 2.0))
+                                                    .when(
+                                                        plan.proportional_bar_millionths > 0,
+                                                        |cell| {
+                                                            let fill_color = crate::theme::Rgba8 {
+                                                                red: plan.bar_color.red,
+                                                                green: plan.bar_color.green,
+                                                                blue: plan.bar_color.blue,
+                                                                alpha: plan.bar_color.alpha,
+                                                            };
+                                                            cell.child(
+                                                                div()
+                                                                    .id(format!(
+                                                                        "folder-size-bar-track-{visible_index}"
+                                                                    ))
+                                                                    .w(px((width * 0.42).max(16.0)))
+                                                                    .h(px(4.0))
+                                                                    .rounded(px(2.0))
+                                                                    .bg(colors.control_fill.to_gpui())
+                                                                    .child(
+                                                                        div()
+                                                                            .h_full()
+                                                                            .w(px(
+                                                                                (width * 0.42
+                                                                                    * plan.proportional_bar_millionths
+                                                                                        as f32
+                                                                                    / 1_000_000.0)
+                                                                                    .max(1.0),
+                                                                            ))
+                                                                            .rounded(px(2.0))
+                                                                            .bg(fill_color.to_gpui()),
+                                                                    ),
+                                                            )
+                                                        },
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .min_w_0()
+                                                            .overflow_hidden()
+                                                            .whitespace_nowrap()
+                                                            .text_ellipsis()
+                                                            .text_color(
+                                                                crate::theme::Rgba8 {
+                                                                    red: plan.text_color.red,
+                                                                    green: plan.text_color.green,
+                                                                    blue: plan.text_color.blue,
+                                                                    alpha: plan.text_color.alpha,
+                                                                }
+                                                                .to_gpui(),
+                                                            )
+                                                            .child(plan.label.to_string()),
+                                                    ),
+                                            )
+                                        },
+                                    )
+                                },
+                                )
                         },
                     )
                     .when(
@@ -6208,6 +6389,7 @@ impl RenderOnce for FileViewHost {
                                 details_filter_menu.clone(),
                                 &details_filters,
                                 &details_filter_options,
+                                folder_size_visuals.clone(),
                                 header_action,
                             )),
                     )
@@ -6258,6 +6440,7 @@ impl RenderOnce for FileViewHost {
                     self.tokens,
                     target,
                     view_settings,
+                    folder_size_visuals,
                     column_menu_action,
                 ))
         });
@@ -6817,6 +7000,7 @@ fn details_header(
     filter_menu: Option<explorer_model::ColumnId>,
     filters: &crate::file_view::DetailsFilters,
     filter_options: &HashMap<explorer_model::ColumnId, Vec<crate::file_view::DetailsFilterOption>>,
+    folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
     on_action: Option<ActionCallback>,
 ) -> gpui::AnyElement {
     if this_pc {
@@ -6894,8 +7078,8 @@ fn details_header(
             .filter(|(_, _, column)| settings.details_column_visible(column))
             .map(|(id, label, column)| {
                 details_header_column(
-                    id,
-                    label,
+                    id.to_owned(),
+                    label.to_owned(),
                     column.clone(),
                     settings.clone(),
                     filter_menu.clone(),
@@ -6906,6 +7090,22 @@ fn details_header(
                 )
             }),
         )
+        .when_some(folder_size_visuals, |element, visuals| {
+            let descriptor = &visuals.config.descriptor;
+            element.when(settings.details_column_visible(&descriptor.id), |element| {
+                element.child(details_header_column(
+                    "details-column-folder-size".to_owned(),
+                    descriptor.display_name.clone(),
+                    descriptor.id.clone(),
+                    settings.clone(),
+                    filter_menu.clone(),
+                    filters,
+                    Vec::new(),
+                    on_action.clone(),
+                    tokens,
+                ))
+            })
+        })
         .into_any_element()
 }
 
@@ -6971,11 +7171,13 @@ fn details_column_menu(
     tokens: UiTokens,
     target: explorer_model::ColumnId,
     settings: explorer_model::ViewSettings,
+    folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     let colors = tokens.theme.colors;
     let current = on_action.clone();
     let all = on_action.clone();
+    let target_for_auto_size = target.clone();
     div()
         .id("details-column-menu")
         .role(Role::Menu)
@@ -6998,17 +7200,19 @@ fn details_column_menu(
         .when_some(current, move |element, callback| {
             element.child(column_menu_row(
                 tokens,
-                "Auto size this column",
+                "Auto size this column".to_owned(),
                 false,
                 true,
-                ExplorerAction::AutoSizeDetailsColumn { column: target },
+                ExplorerAction::AutoSizeDetailsColumn {
+                    column: target_for_auto_size,
+                },
                 callback,
             ))
         })
         .when_some(all, move |element, callback| {
             element.child(column_menu_row(
                 tokens,
-                "Auto size all columns",
+                "Auto size all columns".to_owned(),
                 false,
                 true,
                 ExplorerAction::AutoSizeAllDetailsColumns,
@@ -7032,7 +7236,7 @@ fn details_column_menu(
                     on_action.clone().map(|callback| {
                         column_menu_row(
                             tokens,
-                            column_label(column.clone()),
+                            column_label(column.clone()).to_owned(),
                             settings.details_column_visible(&column),
                             column != explorer_model::ColumnId::Name,
                             ExplorerAction::ToggleDetailsColumn(column.clone()),
@@ -7041,11 +7245,36 @@ fn details_column_menu(
                     })
                 }),
         )
+        .when_some(folder_size_visuals, |element, visuals| {
+            let descriptor = &visuals.config.descriptor;
+            let element = element.when_some(on_action.clone(), |element, callback| {
+                element.child(column_menu_row(
+                    tokens,
+                    descriptor.display_name.clone(),
+                    settings.details_column_visible(&descriptor.id),
+                    true,
+                    ExplorerAction::ToggleDetailsColumn(descriptor.id.clone()),
+                    callback,
+                ))
+            });
+            element.when(target == descriptor.id, |element| {
+                element.when_some(on_action.clone(), |element, callback| {
+                    element.child(column_menu_row(
+                        tokens,
+                        "Show proportional bar".to_owned(),
+                        visuals.config.folder_size_display.shows_bar(),
+                        true,
+                        ExplorerAction::ToggleFolderSizeProportionalBar,
+                        callback,
+                    ))
+                })
+            })
+        })
 }
 
 fn column_menu_row(
     tokens: UiTokens,
-    label: &'static str,
+    label: String,
     checked: bool,
     enabled: bool,
     action: ExplorerAction,
@@ -7205,8 +7434,8 @@ fn details_filter_menu(
     reason = "the header builder clones command-boundary values into independent resize and menu handlers"
 )]
 fn details_header_column(
-    id: &'static str,
-    label: &'static str,
+    id: String,
+    label: String,
     column: explorer_model::ColumnId,
     settings: explorer_model::ViewSettings,
     filter_menu: Option<explorer_model::ColumnId>,
@@ -7255,8 +7484,11 @@ fn details_header_column(
     let decrement_settings = settings.clone();
     let increment_settings = settings.clone();
     div()
-        .id(id)
-        .debug_selector(move || id.to_owned())
+        .id(id.clone())
+        .debug_selector({
+            let debug_id = id.clone();
+            move || debug_id.clone()
+        })
         .role(Role::Group)
         .aria_label(if active {
             format!("{label}, sorted {indicator}")

@@ -139,6 +139,7 @@ impl ExtensionRegistrarImplementationV1 for FixtureRegistrar {
                 opaque_contract: ROption::RNone,
                 renderer_contribution_id: ROption::RNone,
                 provider: ROption::RSome(JobProviderObjectV1::new(TransportProvider)),
+                visual_column: ROption::RNone,
             }]),
         })
     }

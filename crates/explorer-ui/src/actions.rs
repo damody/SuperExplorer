@@ -383,6 +383,7 @@ pub enum ExplorerAction {
         column: explorer_model::ColumnId,
     },
     ToggleDetailsColumn(explorer_model::ColumnId),
+    ToggleFolderSizeProportionalBar,
     AutoSizeAllDetailsColumns,
     BeginDetailsColumnResize {
         column: explorer_model::ColumnId,
@@ -592,6 +593,7 @@ impl ExplorerAction {
             Self::ToggleDetailsFilter { .. } => "ToggleDetailsFilter",
             Self::ClearDetailsFilter { .. } => "ClearDetailsFilter",
             Self::ToggleDetailsColumn(_) => "ToggleDetailsColumn",
+            Self::ToggleFolderSizeProportionalBar => "ToggleFolderSizeProportionalBar",
             Self::AutoSizeAllDetailsColumns => "AutoSizeAllDetailsColumns",
             Self::BeginDetailsColumnResize { .. } => "BeginDetailsColumnResize",
             Self::UpdateDetailsColumnResize { .. } => "UpdateDetailsColumnResize",
@@ -1201,6 +1203,7 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::ToggleDetailsFilter { .. }
         | ExplorerAction::ClearDetailsFilter { .. }
         | ExplorerAction::ToggleDetailsColumn(_)
+        | ExplorerAction::ToggleFolderSizeProportionalBar
         | ExplorerAction::AutoSizeAllDetailsColumns
         | ExplorerAction::BeginDetailsColumnResize { .. }
         | ExplorerAction::UpdateDetailsColumnResize { .. }
@@ -1851,6 +1854,7 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             state.toggle_details_column(column);
             FocusSurface::CommandBar
         }
+        ExplorerAction::ToggleFolderSizeProportionalBar => FocusSurface::CommandBar,
         ExplorerAction::AutoSizeAllDetailsColumns => {
             state.auto_size_all_details_columns();
             FocusSurface::CommandBar

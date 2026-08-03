@@ -108,6 +108,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "explorer-extension-ui-api"
+version = "0.1.0"
+dependencies = [
+ "explorer-extension-api",
+]
+
+[[package]]
 name = "generational-arena"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -148,6 +155,7 @@ dependencies = [
  "abi_stable",
  "exif-lite",
  "explorer-extension-api",
+ "explorer-extension-ui-api",
 ]
 
 [[package]]

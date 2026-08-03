@@ -230,6 +230,37 @@ impl DirectoryPresentation {
             .map(|entry| (snapshot_index, entry))
     }
 
+    /// Reorders an already-filtered presentation using copied exact-byte
+    /// values supplied by a runtime Details column. Missing values stay last
+    /// in either direction, matching the built-in size-column contract.
+    pub fn sorted_by_extension_bytes(
+        &self,
+        values: &HashMap<explorer_model::ShellItemId, Option<u64>>,
+        direction: SortDirection,
+    ) -> Self {
+        let mut ordered_indices = (*self.ordered_indices).clone();
+        ordered_indices.sort_by(|left_index, right_index| {
+            let left = &self.entries[*left_index];
+            let right = &self.entries[*right_index];
+            match (left.is_container, right.is_container) {
+                (true, false) => return Ordering::Less,
+                (false, true) => return Ordering::Greater,
+                _ => {}
+            }
+            compare_optional(
+                values.get(&left.id).copied().flatten(),
+                values.get(&right.id).copied().flatten(),
+                direction,
+            )
+            .then_with(|| left.display_name.cmp(&right.display_name))
+            .then_with(|| left.id.provider_bytes().cmp(right.id.provider_bytes()))
+        });
+        Self {
+            ordered_indices: Arc::new(ordered_indices),
+            ..self.clone()
+        }
+    }
+
     fn matches(
         &self,
         snapshot: &DirectorySnapshot,
@@ -253,6 +284,10 @@ pub struct DirectoryPresentationCache {
 }
 
 impl DirectoryPresentationCache {
+    pub fn clear(&mut self) {
+        self.current = None;
+    }
+
     pub fn resolve(
         &mut self,
         snapshot: &DirectorySnapshot,

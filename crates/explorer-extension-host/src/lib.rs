@@ -30,6 +30,11 @@ mod plugin_call_guard;
 mod sepack_import;
 mod ui_invalidation_batcher;
 
+pub use dll_loader::{
+    SinglePluginVisualColumnRuntimeV1, SinglePluginVisualMeasureRuntimeV1,
+    SinglePluginVisualRenderRuntimeV1,
+};
+
 pub use contribution_gate::{
     ContributionGateErrorV1, ContributionGateV1, ContributionJobContractV1, ContributionKindV1,
     ContributionRegistrationV1, MAX_CAPABILITIES_PER_CONTRIBUTION_V1,
@@ -155,6 +160,16 @@ pub enum SinglePluginLoadErrorV1 {
     PathMustBeDll,
     #[error("could not load plugin DLL: {0}")]
     LoadFailed(String),
+}
+
+/// A requested direct visual-column contribution is unavailable or has the
+/// wrong contribution kind for the selected single-owner runtime.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+pub enum SinglePluginVisualColumnCallErrorV1 {
+    #[error("no retained folder-size column contribution named {0:?}")]
+    UnknownMeasureContribution(String),
+    #[error("no retained visual renderer contribution named {0:?}")]
+    UnknownRenderContribution(String),
 }
 
 use explorer_extension_api::{
@@ -651,6 +666,18 @@ impl ExtensionHost {
         path: &Path,
     ) -> Result<SinglePluginLoadSummaryV1, SinglePluginLoadErrorV1> {
         dll_loader::load_single_plugin_dll(path)
+    }
+
+    /// Loads one explicit development DLL and retains its visual-column objects
+    /// in separate single-owner measure and render runtimes.
+    ///
+    /// Use [`SinglePluginVisualColumnRuntimeV1::into_parts`] to move its `Send`,
+    /// non-`Clone`, non-`Sync` measure and render owners to the background
+    /// worker and GPUI thread respectively.
+    pub fn load_single_plugin_visual_column_runtime(
+        path: &Path,
+    ) -> Result<SinglePluginVisualColumnRuntimeV1, SinglePluginLoadErrorV1> {
+        dll_loader::load_single_plugin_visual_column_runtime(path)
     }
 
     /// Creates the inert host seam in its unstarted state.

@@ -347,6 +347,9 @@ pub struct AppViewState {
     side_pane_resize: Option<SidePaneResizeSession>,
     scrollbar_drag: Option<ScrollbarDragSession>,
     marquee: Option<MarqueeSelectionSession>,
+    /// Exact values for the one P0 runtime column. Keeping these in view state
+    /// makes its sorted presentation authoritative for every row action.
+    folder_size_sort_values: HashMap<ShellItemId, Option<u64>>,
     presentation_cache: Arc<Mutex<crate::file_view::DirectoryPresentationCache>>,
 }
 
@@ -497,6 +500,7 @@ impl AppViewState {
             side_pane_resize: None,
             scrollbar_drag: None,
             marquee: None,
+            folder_size_sort_values: HashMap::new(),
             presentation_cache: Arc::new(Mutex::new(
                 crate::file_view::DirectoryPresentationCache::default(),
             )),
@@ -509,6 +513,49 @@ impl AppViewState {
 
     pub fn column_registry(&self) -> &explorer_model::ColumnRegistry {
         &self.column_registry
+    }
+
+    /// Installs the one UI-owned runtime column without giving the UI a
+    /// general extension-host dependency. The current tab receives an entry
+    /// once; subsequent runtime refreshes preserve its width and visibility.
+    pub(crate) fn install_visual_column_descriptor(
+        &mut self,
+        descriptor: explorer_model::ColumnDescriptor,
+    ) -> bool {
+        if !crate::folder_size_column::is_supported_folder_size_descriptor(&descriptor) {
+            return false;
+        }
+        if self
+            .column_registry
+            .replace_package(
+                crate::folder_size_column::FOLDER_SIZE_COLUMN_PACKAGE_ID,
+                [descriptor.clone()],
+            )
+            .is_err()
+        {
+            return false;
+        }
+        self.tabs
+            .active_tab_mut()
+            .view
+            .settings
+            .details_layout
+            .ensure_descriptor(&descriptor, true)
+    }
+
+    pub(crate) fn set_folder_size_sort_values(
+        &mut self,
+        values: HashMap<ShellItemId, Option<u64>>,
+    ) -> bool {
+        if self.folder_size_sort_values == values {
+            return false;
+        }
+        self.folder_size_sort_values = values;
+        self.presentation_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        true
     }
 
     pub fn set_broker_health(&mut self, health: BrokerUiHealth) {
@@ -3178,20 +3225,29 @@ impl AppViewState {
     pub(crate) fn directory_presentation(&self) -> Option<crate::file_view::DirectoryPresentation> {
         let tab = self.tabs.active_tab();
         let snapshot = tab.visible_snapshot()?;
-        Some(
-            self.presentation_cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .resolve_filtered(
-                    snapshot,
-                    tab.view.settings.hidden_items,
-                    &tab.view.settings.sort,
-                    self.details_filters
-                        .get(&self.tabs.active_tab_id())
-                        .cloned()
-                        .unwrap_or_default(),
-                ),
-        )
+        let presentation = self
+            .presentation_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .resolve_filtered(
+                snapshot,
+                tab.view.settings.hidden_items,
+                &tab.view.settings.sort,
+                self.details_filters
+                    .get(&self.tabs.active_tab_id())
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+        if tab.view.settings.sort.column
+            == crate::folder_size_column::folder_size_column_descriptor().id
+        {
+            Some(presentation.sorted_by_extension_bytes(
+                &self.folder_size_sort_values,
+                tab.view.settings.sort.direction,
+            ))
+        } else {
+            Some(presentation)
+        }
     }
 
     pub(crate) fn presentation_rebuilds(&self) -> u64 {

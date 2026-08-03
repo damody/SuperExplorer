@@ -10,6 +10,12 @@
 )]
 //! Public GPUI-facing extension API boundary.
 //!
-//! This crate depends on [`explorer_extension_api`] and will receive the public UI
-//! contribution contracts in later tasks. It must not depend on the private
-//! `explorer-ui` implementation or on the extension host.
+//! This crate re-exports the public, data-only visual-column author contract.
+//! It must not depend on the private `explorer-ui` implementation or on the
+//! extension host.
+
+pub use explorer_extension_api::{
+    CellAggregateV1, CellColorV1, CellRenderContextV1, CellRenderPlanV1, CellThemeV1,
+    FolderSizeMeasureRequestV1, FolderSizeMeasureResultV1, VisualColumnImplementationV1,
+    VisualColumnObjectV1,
+};

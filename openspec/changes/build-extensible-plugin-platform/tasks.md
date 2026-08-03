@@ -42,7 +42,16 @@
 - [x] 7.1 更新 `build/build_install.lua`：一般模式以 fixture manifest、release、固定 MSVC target 與 offline 建置 `p0_consumer.dll`；`--skip-build` 只重用明確 release 產物，`--check` 不要求既有 binary。
 - [x] 7.2 驗證明確的 release Plugin DLL 是有效 Windows PE，並以 `PLUGIN_DLL` define 傳給 NSIS；缺失或失敗時不得 fallback 到舊、debug 或其它 Plugin。
 - [x] 7.3 更新 NSIS：安裝 `plugins\p0_consumer.dll`，讓兩個捷徑與完成頁傳入已安裝絕對路徑，並在解除安裝時只刪除已知 DLL及空目錄。
-- [ ] 7.4 執行最小 build/package smoke，產生並驗證 `dist\SuperExplorer-Setup-1.2026.8.4-x64.exe`；不執行 CI、UITEST 或建立新測試 framework。
+- [x] 7.4 執行最小 build/package smoke，產生並驗證 `dist\SuperExplorer-Setup-1.2026.8.4-x64.exe`；不執行 CI、UITEST 或建立新測試 framework。
+
+## 8. Visible folder-size GPUI example
+
+- [x] 8.1 將尚未發布的 V1 擴充為 `abi_stable` Visual Column object；Plugin 作者只實作普通 Rust trait，取得公開 cell render context 並回傳 data-only proportional-bar render plan，不跨 DLL 傳遞 GPUI/private host types。
+- [x] 8.2 將 `p0-consumer` 改為單一完整 folder-size example：背景遞迴計算資料夾 bytes、提供 exact byte sort value、以目前目錄最大 sibling bytes 計算比例，並支援一個最小顯示設定。
+- [x] 8.3 讓 development DLL loader 保留單一 Plugin 的 Visual Column object，並由 application composition 傳入 `ExplorerRoot`；未載入 Plugin 時維持原本檔案總管行為。
+- [x] 8.4 將 `p0-consumer:folder-size` 註冊到 production `ColumnRegistry` / Details layout，顯示動態 header、cell、column chooser，並以 host-owned GPUI element 畫出 Plugin render plan。
+- [x] 8.5 以最小 Cargo check/unit 與真實視窗 smoke 驗證：一般資料夾與 icon 正常載入、資料夾大小逐步出現、比例條可見、設定生效、排序使用 exact bytes；不執行 CI 或 UITEST。
+- [ ] 8.6 更新 bundled Plugin 與安裝腳本輸入，重建並驗證 `dist\\SuperExplorer-Setup-1.2026.8.4-x64.exe` 包含完成的 example。
 
 # Deferred roadmap（不屬於目前 apply scope）
 

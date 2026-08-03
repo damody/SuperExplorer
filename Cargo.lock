@@ -1296,6 +1296,7 @@ dependencies = [
  "explorer-extension-api",
  "explorer-extension-broker",
  "explorer-extension-host",
+ "explorer-extension-ui-api",
  "explorer-jobs",
  "explorer-model",
  "explorer-search",
@@ -1478,8 +1479,10 @@ dependencies = [
 name = "explorer-ui"
 version = "0.1.0"
 dependencies = [
+ "abi_stable",
  "explorer-automation",
  "explorer-common",
+ "explorer-extension-ui-api",
  "explorer-jobs",
  "explorer-model",
  "explorer-search",

@@ -62,6 +62,7 @@ impl ExtensionRegistrarImplementationV1 for Registrar {
                 opaque_contract: ROption::RNone,
                 renderer_contribution_id: ROption::RNone,
                 provider: ROption::RNone,
+                visual_column: ROption::RNone,
             }]),
         })
     }

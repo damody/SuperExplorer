@@ -6,8 +6,10 @@
 //! root reference can escape this module.
 
 use std::{
+    cell::Cell,
     collections::{BTreeMap, BTreeSet},
     fmt,
+    marker::PhantomData,
     path::Path,
     sync::{Mutex, OnceLock},
 };
@@ -17,9 +19,11 @@ use abi_stable::{
     std_types::ROption,
 };
 use explorer_extension_api::{
-    AbiErrorCodeV1, AbiErrorV1, ExtensionRootModuleV1_Ref, PluginMetadataV1,
-    ROOT_MODULE_CONTRACT_ID_V1, RegistrarOutputV1, RegistrationStatusV1, SDK_MAJOR_VERSION_V1,
-    UiAbiFingerprintV1, registrar_request_v1,
+    AbiErrorCodeV1, AbiErrorV1, CellRenderContextV1, CellRenderPlanV1, ExtensionRootModuleV1_Ref,
+    FolderSizeMeasureRequestV1, FolderSizeMeasureResultV1, PluginMetadataV1,
+    ROOT_MODULE_CONTRACT_ID_V1, RegisteredContributionKindV1, RegistrarOutputV1,
+    RegistrationStatusV1, SDK_MAJOR_VERSION_V1, UiAbiFingerprintV1, VisualColumnObjectV1,
+    registrar_request_v1,
 };
 use serde::Deserialize;
 use thiserror::Error;
@@ -28,7 +32,8 @@ use crate::{
     ExtensionHost, HostRegistrationErrorV1, PackageManifestErrorV1, PackageManifestV1,
     PackageValidationErrorV1, ResolvedPackageV1, SealedPackageActivationGuardV1,
     SinglePluginContributionSummaryV1, SinglePluginLoadErrorV1, SinglePluginLoadSummaryV1,
-    package_validation::sealed_manifest_canonical_digest, plugin_call_guard::PluginCallGuardV1,
+    SinglePluginVisualColumnCallErrorV1, package_validation::sealed_manifest_canonical_digest,
+    plugin_call_guard::PluginCallGuardV1,
 };
 
 const MANIFEST_ABI_SCHEMA_V1: u32 = 1;
@@ -376,6 +381,114 @@ impl ExtensionDllLoaderV1 {
 pub(crate) fn load_single_plugin_dll(
     path: &Path,
 ) -> Result<SinglePluginLoadSummaryV1, SinglePluginLoadErrorV1> {
+    load_single_plugin_visual_column_runtime(path).map(|runtime| runtime.into_summary())
+}
+
+/// Direct-loader runtime retaining the ABI-safe objects registered by one DLL.
+///
+/// This is intentionally a single-owner object.  It is `Send` so the measure
+/// instance can be moved into a background worker; callers load a distinct
+/// runtime for the GPUI-thread renderer rather than sharing or concurrently
+/// re-entering one object.
+pub struct SinglePluginVisualColumnRuntimeV1 {
+    summary: SinglePluginLoadSummaryV1,
+    measure_columns: BTreeMap<String, VisualColumnObjectV1>,
+    render_columns: BTreeMap<String, VisualColumnObjectV1>,
+}
+
+/// Background-worker owner for retained folder-size measure objects.
+pub struct SinglePluginVisualMeasureRuntimeV1 {
+    columns: BTreeMap<String, VisualColumnObjectV1>,
+    // Retained ABI objects are intentionally single-worker owned even though
+    // their generated trait vtables are Send + Sync.
+    _single_owner: PhantomData<Cell<()>>,
+}
+
+/// GPUI-thread owner for retained visual renderer objects.
+pub struct SinglePluginVisualRenderRuntimeV1 {
+    columns: BTreeMap<String, VisualColumnObjectV1>,
+    _single_owner: PhantomData<Cell<()>>,
+}
+
+impl SinglePluginVisualColumnRuntimeV1 {
+    #[must_use]
+    pub fn summary(&self) -> &SinglePluginLoadSummaryV1 {
+        &self.summary
+    }
+
+    #[must_use]
+    pub fn into_summary(self) -> SinglePluginLoadSummaryV1 {
+        self.summary
+    }
+
+    /// Separates the single direct loader result into independently movable,
+    /// single-owner background measure and GPUI-thread render runtimes.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        SinglePluginLoadSummaryV1,
+        SinglePluginVisualMeasureRuntimeV1,
+        SinglePluginVisualRenderRuntimeV1,
+    ) {
+        (
+            self.summary,
+            SinglePluginVisualMeasureRuntimeV1 {
+                columns: self.measure_columns,
+                _single_owner: PhantomData,
+            },
+            SinglePluginVisualRenderRuntimeV1 {
+                columns: self.render_columns,
+                _single_owner: PhantomData,
+            },
+        )
+    }
+}
+
+impl SinglePluginVisualMeasureRuntimeV1 {
+    /// Calls a retained folder-size contribution from its background-worker
+    /// owner. This is the only direct visual call that receives a filesystem
+    /// path in the P0 slice.
+    pub fn measure_folder_size(
+        &mut self,
+        contribution_id: &str,
+        request: FolderSizeMeasureRequestV1,
+    ) -> Result<FolderSizeMeasureResultV1, SinglePluginVisualColumnCallErrorV1> {
+        self.columns
+            .get(contribution_id)
+            .map(|column| column.measure_folder_size(request))
+            .ok_or_else(|| {
+                SinglePluginVisualColumnCallErrorV1::UnknownMeasureContribution(
+                    contribution_id.to_owned(),
+                )
+            })
+    }
+}
+
+impl SinglePluginVisualRenderRuntimeV1 {
+    /// Calls the retained renderer from the GPUI thread with its current public
+    /// value, aggregate, interaction, DPI, theme, and settings snapshot.
+    pub fn render(
+        &mut self,
+        contribution_id: &str,
+        context: CellRenderContextV1,
+    ) -> Result<CellRenderPlanV1, SinglePluginVisualColumnCallErrorV1> {
+        self.columns
+            .get(contribution_id)
+            .map(|column| column.render(context))
+            .ok_or_else(|| {
+                SinglePluginVisualColumnCallErrorV1::UnknownRenderContribution(
+                    contribution_id.to_owned(),
+                )
+            })
+    }
+}
+
+/// Loads the direct development DLL and moves each registered visual object
+/// into its contribution-kind-specific single-owner runtime map.
+pub(crate) fn load_single_plugin_visual_column_runtime(
+    path: &Path,
+) -> Result<SinglePluginVisualColumnRuntimeV1, SinglePluginLoadErrorV1> {
     if !path.is_absolute() {
         return Err(SinglePluginLoadErrorV1::PathMustBeAbsolute);
     }
@@ -404,16 +517,40 @@ pub(crate) fn load_single_plugin_dll(
         ));
     }
 
-    Ok(SinglePluginLoadSummaryV1 {
+    let summary = SinglePluginLoadSummaryV1 {
         plugin_id: metadata.plugin_id,
         contributions: output
             .contributions
-            .into_iter()
+            .iter()
             .map(|contribution| SinglePluginContributionSummaryV1 {
-                contribution_id: contribution.contribution_id.into_string(),
+                contribution_id: contribution.contribution_id.clone().into_string(),
                 kind: contribution.kind,
             })
             .collect(),
+    };
+    let mut measure_columns = BTreeMap::new();
+    let mut render_columns = BTreeMap::new();
+    for contribution in output.contributions.into_iter() {
+        let contribution_id = contribution.contribution_id.into_string();
+        let Some(object) = contribution.visual_column.into_option() else {
+            continue;
+        };
+        let target = match contribution.kind {
+            kind if kind == RegisteredContributionKindV1::COLUMN => &mut measure_columns,
+            kind if kind == RegisteredContributionKindV1::GPUI_RENDERER => &mut render_columns,
+            _ => continue,
+        };
+        if target.insert(contribution_id.clone(), object).is_some() {
+            return Err(SinglePluginLoadErrorV1::LoadFailed(format!(
+                "registrar returned duplicate visual contribution {contribution_id:?}"
+            )));
+        }
+    }
+
+    Ok(SinglePluginVisualColumnRuntimeV1 {
+        summary,
+        measure_columns,
+        render_columns,
     })
 }
 
@@ -870,6 +1007,14 @@ mod tests {
             .expect("build-time artifact is valid")
             .fingerprint
             .as_str()
+    }
+
+    #[test]
+    fn direct_visual_worker_owners_are_send() {
+        fn assert_send<T: Send>() {}
+
+        assert_send::<SinglePluginVisualMeasureRuntimeV1>();
+        assert_send::<SinglePluginVisualRenderRuntimeV1>();
     }
 
     fn manifest(gpui: bool, fingerprint: Option<&str>, entry_sdk_major: u16) -> PackageManifestV1 {

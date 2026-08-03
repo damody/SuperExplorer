@@ -131,6 +131,7 @@ impl ExtensionRegistrarImplementationV1 for AuthorRegistrar {
                 opaque_contract: ROption::RNone,
                 renderer_contribution_id: ROption::RNone,
                 provider: ROption::RSome(JobProviderObjectV1::new(AuthorProvider)),
+                visual_column: ROption::RNone,
             }]),
         })
     }
