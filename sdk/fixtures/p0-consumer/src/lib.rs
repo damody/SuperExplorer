@@ -114,7 +114,10 @@ fn measure_path_bytes(request: &FolderSizeMeasureRequestV1) -> (u64, Option<RStr
     let mut visited = 0_u32;
     let mut total = 0_u64;
     let mut partial_error = None;
-    let mut pending = vec![(Path::new(request.filesystem_path.as_str()).to_path_buf(), 0_u16)];
+    let mut pending = vec![(
+        Path::new(request.filesystem_path.as_str()).to_path_buf(),
+        0_u16,
+    )];
 
     while let Some((path, depth)) = pending.pop() {
         if visited >= max_entries {
@@ -144,12 +147,24 @@ fn measure_path_bytes(request: &FolderSizeMeasureRequestV1) -> (u64, Option<RStr
             continue;
         }
         if depth >= request.max_depth {
-            partial_error.get_or_insert_with(|| RString::from("folder measurement depth limit reached"));
+            partial_error
+                .get_or_insert_with(|| RString::from("folder measurement depth limit reached"));
             continue;
         }
         match fs::read_dir(&path) {
             Ok(entries) => {
                 for entry in entries {
+                    let queued = u32::try_from(pending.len()).unwrap_or(u32::MAX);
+                    if visited.saturating_add(queued) >= max_entries {
+                        partial_error =
+                            Some(RString::from("folder measurement entry limit reached"));
+                        break;
+                    }
+                    if started.elapsed() >= deadline {
+                        partial_error =
+                            Some(RString::from("folder measurement time limit reached"));
+                        break;
+                    }
                     match entry {
                         Ok(entry) => pending.push((entry.path(), depth.saturating_add(1))),
                         Err(error) => {
