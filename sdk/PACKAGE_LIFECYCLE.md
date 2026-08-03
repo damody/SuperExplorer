@@ -10,8 +10,9 @@ must be explicit. Unknown fields and non-normalized IDs are rejected.
 
 The trust chain is `source.discover` → `DiscoveredPackageV1::validate`
 (`PackageValidatorV1`) → sealed `PackageValidationResultV1` →
-`PackageResolverV1` → `resolved_packages` → `activation_guard` → a future
-loader → host `validate_root`/`register_root`. The resolver accepts only sealed
+`PackageResolverV1` → `resolved_packages` → `activation_guard` →
+`NativeExtensionLifecycleV1` startup admission → loader
+`validate_root`/`register_root`. The resolver accepts only sealed
 validation results. `parse_json` is deliberately not a proof of payload hash,
 signature, reparse-point, target, or dependency resolution. Unsigned packages
 are accepted only through opaque local-developer provenance; ordinary callers
@@ -25,8 +26,11 @@ no UI contribution surface is available in this API yet.
 Missing/incompatible optional dependencies do not block their owner; an
 optional edge that would create a cycle is omitted and diagnosed.
 
-No resolver output executes a DLL, Lua script, tool, or renderer. Loading,
-feature state, runtime draining, and Safe Mode are separate later host stages.
+No resolver output executes a DLL, Lua script, tool, or renderer. The implemented
+native lifecycle performs startup-only loading, feature gating, bounded draining,
+and Safe Mode after resolution; see
+[NATIVE_PLUGIN_OPERATIONS.md](NATIVE_PLUGIN_OPERATIONS.md) for its operational
+semantics and risk model.
 
 ## 繁體中文
 
@@ -49,8 +53,9 @@ edge（包含 optional edge）、65,536 search states。`activation_guard` 不�
 contribution surface。遺失或不相容的 optional dependency 不會阻擋 owner；若 optional
 edge 會形成 cycle，會略過該 edge 並記錄診斷。
 
-resolver 的輸出不會執行 DLL、Lua、tool 或 renderer。載入、feature 狀態、runtime
-drain 與 Safe Mode 是後續 host 階段。
+resolver 的輸出不會執行 DLL、Lua、tool 或 renderer。解析完成後由已實作的 native
+lifecycle 負責僅啟動期載入、feature gate、有界 drain 與 Safe Mode；風險與營運語意請見
+[NATIVE_PLUGIN_OPERATIONS.md](NATIVE_PLUGIN_OPERATIONS.md)。
 
 ## Source, validation, and activation APIs / 來源、驗證與啟用 API
 

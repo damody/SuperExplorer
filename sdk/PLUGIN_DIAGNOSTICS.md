@@ -20,3 +20,12 @@ reproduction command is:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/plugin-tooling-self-test.ps1
 ```
+
+## Native runtime diagnostics
+
+Native Rust callback incidents and timing records are deliberately separate from
+package-validator JSON. They use path-free identities and bounded terminal
+classes so a support report does not disclose local paths, marker contents, or
+secrets. See [NATIVE_PLUGIN_OPERATIONS.md](NATIVE_PLUGIN_OPERATIONS.md) for the
+in-process threat model, Safe Mode confirmation limits, redaction allow/deny
+rules, restart semantics, and the operator runbook.

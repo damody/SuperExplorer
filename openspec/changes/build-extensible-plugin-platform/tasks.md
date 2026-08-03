@@ -30,7 +30,7 @@
 - [x] 3.4 實作 startup-only DLL load、resident-until-exit、runtime feature gate、bounded drain 與未載入/更新 DLL 的 restart semantics
 - [x] 3.5 實作 `PluginCallGuard`、panic translation、timing、native call marker 與下次啟動 Safe Mode
 - [x] 3.6 新增 synthetic panic/uncleared marker/slow callback/drain timeout integration tests 與 Safe Mode UITEST mapping
-- [ ] 3.7 撰寫原生外掛風險、無 sandbox、無熱卸載與診斷操作文件
+- [x] 3.7 撰寫原生外掛風險、無 sandbox、無熱卸載與診斷操作文件
 
 ## 4. Extension Jobs、Values、Streams 與 Cache
 

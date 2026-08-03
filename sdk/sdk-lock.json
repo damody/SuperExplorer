@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "bundle_id": "sdk-732816c9b3166adc8645638f",
-  "inventory_root_sha256": "0f41c2eb69348da88709d95233153db17594864bb9e44dc52905d75d21ec5561",
+  "bundle_id": "sdk-b7058b8c5a9bfea98edcd0ad",
+  "inventory_root_sha256": "3538cd421a5925368621113e78a14fe0f11197d9de9d7b2d4a6da1986957606f",
   "toolchain": {
     "rustc_release": "1.97.1",
     "rustc_commit_hash": "8bab26f4f68e0e26f0bb7960be334d5b520ea452",
@@ -14884,16 +14884,20 @@
       "sha256": "f4c3d7e185decbd03b6d0277ea05441c028b109c90eb0bc7207dce3e56217221"
     },
     {
+      "path": "sdk/NATIVE_PLUGIN_OPERATIONS.md",
+      "sha256": "4b6fef506b3326b3ab7d68f2852982c3ce9e735b502ee8d25b178b652d51aa0c"
+    },
+    {
       "path": "sdk/OFFLINE_CI.md",
       "sha256": "8dafd53d8219871c89c55d92b24b1e112d78baa10e476390c7882b65b51b3898"
     },
     {
       "path": "sdk/PACKAGE_LIFECYCLE.md",
-      "sha256": "6e8126206c877578025f7bdf653eb18c17b29d25c97866438758bdbaacc04de8"
+      "sha256": "7ca545290a4d6481f7c008962318109276b14abf6d792334ff4db7802dcf678f"
     },
     {
       "path": "sdk/PLUGIN_DIAGNOSTICS.md",
-      "sha256": "c86123043110398fe81d818edd53dbeb4c1deb03d9c94a9c7a7bb724be5fda11"
+      "sha256": "8f1ff22eb5fcbee0268d0bcf16d0beb31d598b71f2e1d69bffc5f8d3f0fb8850"
     },
     {
       "path": "sdk/PLUGIN_TOOLING.md",
@@ -14901,7 +14905,7 @@
     },
     {
       "path": "sdk/README.md",
-      "sha256": "4913bc4690db8f3c7e15475817a653158a2d843b09936692709644d114e0c1cb"
+      "sha256": "0cf84f41d04536cac566ca630c97057f14d711d2e0a191d0dacb7fa61c89e2cf"
     },
     {
       "path": "sdk/build-policy.json",
@@ -15353,7 +15357,11 @@
     },
     {
       "path": "sdk/tests/native-call-guard-contract.ps1",
-      "sha256": "f0e3b4a8db0444a3395e4259d8fc4c96343a8571d96800b443289965905eac1b"
+      "sha256": "3b4906a1f929538d166e1a2a5baa4ca71f442f30e97ee83d1e3d07b5bae68bf8"
+    },
+    {
+      "path": "sdk/tests/native-plugin-security-docs-contract.ps1",
+      "sha256": "f44a1423d2d08a362c3cdefdc8faf53d360389be4867f7aecc658da45326b0d3"
     },
     {
       "path": "sdk/tests/network-isolation-sentinel.ps1",
