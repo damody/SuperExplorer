@@ -515,8 +515,11 @@ impl NativeExtensionLifecycleV1 {
         if state.phase != Some(LifecyclePhaseV1::New) {
             return Err(NativeLifecycleErrorV1::StartupClosed);
         }
+        state.startup_generation = state
+            .startup_generation
+            .checked_add(1)
+            .ok_or(NativeLifecycleErrorV1::GenerationOverflow)?;
         state.phase = Some(LifecyclePhaseV1::Admitting);
-        state.startup_generation = state.startup_generation.saturating_add(1);
         drop(state);
         Ok(StartupSession {
             lifecycle: self,
@@ -562,7 +565,7 @@ impl NativeExtensionLifecycleV1 {
         let token = {
             let mut state = self.lock()?;
             ensure_running(&state)?;
-            let token = next_operation_token(&mut state);
+            let token = next_operation_token(&mut state)?;
             let gate = state
                 .gates
                 .get_mut(identity)
@@ -617,7 +620,7 @@ impl NativeExtensionLifecycleV1 {
         let token = {
             let mut state = self.lock()?;
             ensure_running(&state)?;
-            let token = next_operation_token(&mut state);
+            let token = next_operation_token(&mut state)?;
             let Some(gate) = state.gates.get_mut(identity) else {
                 insert_restart_reason(&mut state, identity, NativeRestartReasonV1::UnloadedEnable);
                 return Err(NativeLifecycleErrorV1::RestartRequired {
@@ -659,7 +662,18 @@ impl NativeExtensionLifecycleV1 {
             self.drain_port.cancel(identity);
             return Err(NativeLifecycleErrorV1::OperationSuperseded);
         }
-        let epoch = gate.epoch.saturating_add(1);
+        let Some(epoch) = gate.epoch.checked_add(1) else {
+            gate.accepting = false;
+            gate.operation = GateOperationV1::Idle;
+            gate.state = NativeFeatureStateV1::DisabledResident;
+            let _ = gate;
+            drop(state);
+            // `restore` already ran before the checked epoch transition. Undo
+            // that revival before returning an overflow terminal.
+            self.drain_port.detach(identity);
+            self.drain_port.cancel(identity);
+            return Err(NativeLifecycleErrorV1::GenerationOverflow);
+        };
         gate.epoch = epoch;
         gate.state = NativeFeatureStateV1::Enabled { epoch };
         gate.operation = GateOperationV1::Idle;
@@ -693,7 +707,7 @@ impl NativeExtensionLifecycleV1 {
             // Remove is an orthogonal persisted fact even when a prior drain,
             // fault, or concurrent terminal state makes no new transition safe.
             insert_restart_reason(&mut state, identity, NativeRestartReasonV1::Remove);
-            let token = next_operation_token(&mut state);
+            let token = next_operation_token(&mut state)?;
             let Some(gate) = state.gates.get_mut(identity) else {
                 return Ok(());
             };
@@ -857,7 +871,11 @@ impl NativeExtensionLifecycleV1 {
                     return;
                 }
                 state.phase = Some(LifecyclePhaseV1::Stopped);
-                state.shutdown_generation = state.shutdown_generation.saturating_add(1);
+                // Shutdown is one-way: an exhausted diagnostic generation never
+                // reopens admission or reuses a token, so leave it unchanged.
+                if let Some(next) = state.shutdown_generation.checked_add(1) {
+                    state.shutdown_generation = next;
+                }
                 state
                     .gates
                     .iter_mut()
@@ -964,7 +982,12 @@ impl NativeExtensionLifecycleV1 {
         {
             let mut state = self.lock()?;
             ensure_admission_active(&state, permit)?;
-            if state.entries.len().saturating_add(entry_keys.len()) > MAX_NATIVE_LEDGER_ENTRIES_V1 {
+            if state
+                .entries
+                .len()
+                .checked_add(entry_keys.len())
+                .is_none_or(|count| count > MAX_NATIVE_LEDGER_ENTRIES_V1)
+            {
                 return Err(NativeLifecycleErrorV1::LedgerLimitExceeded);
             }
             if entry_keys.iter().any(|key| state.entries.contains_key(key)) {
@@ -1079,7 +1102,12 @@ impl NativeExtensionLifecycleV1 {
             .into_iter()
             .filter(|identity| !state.gates.contains_key(identity))
             .count();
-        if state.gates.len().saturating_add(new_gate_count) > MAX_NATIVE_FEATURE_GATES_V1 {
+        if state
+            .gates
+            .len()
+            .checked_add(new_gate_count)
+            .is_none_or(|count| count > MAX_NATIVE_FEATURE_GATES_V1)
+        {
             state
                 .rejected_generations
                 .insert((package_id.to_owned(), digest.to_owned()));
@@ -1325,7 +1353,15 @@ impl Drop for NativeDispatchLeaseV1 {
         if let Ok(mut state) = self.shared.state.lock()
             && let Some(gate) = state.gates.get_mut(&self.identity)
         {
-            gate.in_flight = gate.in_flight.saturating_sub(1);
+            let Some(next) = gate.in_flight.checked_sub(1) else {
+                gate.accepting = false;
+                gate.state = NativeFeatureStateV1::PendingRestart {
+                    primary_reason: NativeRestartReasonV1::DrainTimedOut,
+                };
+                self.shared.drained.notify_all();
+                return;
+            };
+            gate.in_flight = next;
             self.shared.drained.notify_all();
         }
     }
@@ -1365,6 +1401,8 @@ pub enum NativeLifecycleErrorV1 {
     UnknownRoot(NativeRootIdentityV1),
     #[error("native dispatch count overflowed")]
     InFlightOverflow,
+    #[error("native lifecycle generation or operation token overflowed")]
+    GenerationOverflow,
     #[error("native lifecycle state is poisoned")]
     StatePoisoned,
     #[error("native lifecycle is not running and rejects runtime mutation")]
@@ -1446,9 +1484,13 @@ fn ensure_admission_active(
     }
 }
 
-fn next_operation_token(state: &mut RuntimeStateV1) -> u64 {
-    state.next_operation_token = state.next_operation_token.saturating_add(1);
-    state.next_operation_token
+fn next_operation_token(state: &mut RuntimeStateV1) -> Result<u64, NativeLifecycleErrorV1> {
+    let token = state
+        .next_operation_token
+        .checked_add(1)
+        .ok_or(NativeLifecycleErrorV1::GenerationOverflow)?;
+    state.next_operation_token = token;
+    Ok(token)
 }
 
 fn restart_pending_for_slot(state: &RuntimeStateV1, identity: &NativeRootIdentityV1) -> bool {
@@ -1633,6 +1675,126 @@ mod tests {
             .expect("admit");
         session.seal().expect("seal");
         identities.into_iter().next().expect("identity")
+    }
+
+    fn test_lifecycle() -> NativeExtensionLifecycleV1 {
+        lifecycle(
+            Arc::new(FakeExecutor {
+                calls: AtomicUsize::new(0),
+                features: vec![feature()],
+                failure: None,
+            }),
+            Arc::new(FakeDrain {
+                allow: true,
+                ..FakeDrain::default()
+            }),
+        )
+    }
+
+    #[test]
+    fn counters_fail_closed_at_u64_max_without_reusing_values() {
+        let mut startup = test_lifecycle();
+        {
+            let mut state = startup.shared.state.lock().expect("state");
+            state.startup_generation = u64::MAX;
+        }
+        assert!(matches!(
+            startup.begin_startup(),
+            Err(NativeLifecycleErrorV1::GenerationOverflow)
+        ));
+        let state = startup.shared.state.lock().expect("state");
+        assert_eq!(state.startup_generation, u64::MAX);
+        assert_eq!(state.phase, Some(LifecyclePhaseV1::New));
+        drop(state);
+
+        let mut token = test_lifecycle();
+        let identity = admit(&mut token);
+        token
+            .shared
+            .state
+            .lock()
+            .expect("state")
+            .next_operation_token = u64::MAX;
+        assert!(matches!(
+            token.disable(&identity),
+            Err(NativeLifecycleErrorV1::GenerationOverflow)
+        ));
+        let state = token.shared.state.lock().expect("state");
+        assert_eq!(state.next_operation_token, u64::MAX);
+        assert!(matches!(
+            state.gates[&identity].state,
+            NativeFeatureStateV1::Enabled { .. }
+        ));
+        drop(state);
+
+        let drain = Arc::new(FakeDrain {
+            allow: true,
+            ..FakeDrain::default()
+        });
+        let mut epoch = lifecycle(
+            Arc::new(FakeExecutor {
+                calls: AtomicUsize::new(0),
+                features: vec![feature()],
+                failure: None,
+            }),
+            Arc::clone(&drain),
+        );
+        let identity = admit(&mut epoch);
+        assert!(matches!(
+            epoch.disable(&identity),
+            Ok(NativeFeatureStateV1::DisabledResident)
+        ));
+        drain.events.lock().expect("events").clear();
+        epoch
+            .shared
+            .state
+            .lock()
+            .expect("state")
+            .gates
+            .get_mut(&identity)
+            .expect("gate")
+            .epoch = u64::MAX;
+        assert!(matches!(
+            epoch.enable(&identity),
+            Err(NativeLifecycleErrorV1::GenerationOverflow)
+        ));
+        let state = epoch.shared.state.lock().expect("state");
+        let gate = &state.gates[&identity];
+        assert_eq!(gate.epoch, u64::MAX);
+        assert!(!gate.accepting);
+        assert_eq!(gate.state, NativeFeatureStateV1::DisabledResident);
+        drop(state);
+        assert_eq!(
+            *drain.events.lock().expect("events"),
+            vec!["restore", "detach", "cancel"]
+        );
+    }
+
+    #[test]
+    fn shutdown_generation_exhaustion_is_one_way_and_stays_closed() {
+        let mut lifecycle = test_lifecycle();
+        let _ = admit(&mut lifecycle);
+        lifecycle
+            .shared
+            .state
+            .lock()
+            .expect("state")
+            .shutdown_generation = u64::MAX;
+        lifecycle.shutdown();
+        let state = lifecycle.shared.state.lock().expect("state");
+        assert_eq!(state.shutdown_generation, u64::MAX);
+        assert_eq!(state.phase, Some(LifecyclePhaseV1::Stopped));
+        drop(state);
+        lifecycle.shutdown();
+        assert_eq!(
+            lifecycle
+                .shared
+                .state
+                .lock()
+                .expect("state")
+                .shutdown_generation,
+            u64::MAX
+        );
     }
 
     #[test]
