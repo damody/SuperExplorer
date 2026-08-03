@@ -173,7 +173,10 @@ jobs:
           foreach ($file in @('sdk\snapshot\approved-gpui.json','sdk\sdk-lock.json','sdk\bundle-manifest.json','sdk\ui-abi-fingerprint.json')) { Copy-Item -LiteralPath (Join-Path $repo $file) -Destination $candidateDir -Force }
           (git -C (Join-Path $repo 'vendor\gpui-ce') rev-parse HEAD).Trim() | Set-Content -NoNewline -LiteralPath (Join-Path $candidateDir 'gpui-revision.txt')
           $patchPath = Join-Path $candidateDir 'candidate.patch'
-          git -C $repo diff --binary "--output=$patchPath" -- .
+          # The candidate transaction stages the gitlink and every refreshed
+          # output (including vendor additions/removals). Bind the exact index,
+          # not only unstaged worktree differences, into the immutable patch.
+          git -C $repo diff --cached --binary "--output=$patchPath" HEAD -- .
           if ([string]::IsNullOrWhiteSpace([string]$env:SUPEREXPLORER_GPUI_APPROVAL_HMAC_KEY)) { throw 'protected GPUI approval HMAC key is unavailable' }
           $promotionFiles = @('approval.json','candidate-attestation.json','approved-gpui.json','sdk-lock.json','bundle-manifest.json','ui-abi-fingerprint.json','gpui-revision.txt','candidate.patch')
           $promotionManifest = [ordered]@{ schema_version = 1; repository_baseline_commit = (git -C $repo rev-parse HEAD).Trim(); files = @($promotionFiles | ForEach-Object { [ordered]@{ name = $_; sha256 = (Get-FileHash -LiteralPath (Join-Path $candidateDir $_) -Algorithm SHA256).Hash.ToLowerInvariant() } }) }

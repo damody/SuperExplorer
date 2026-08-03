@@ -1,0 +1,1130 @@
+﻿{
+    "format":  "legacy-lineage-map-v1",
+    "change":  "build-extensible-plugin-platform",
+    "source_tasks":  {
+                         "path":  "openspec/changes/build-extensible-plugin-platform/tasks.md",
+                         "historical_commit":  "65d780e767ac56a4a7fcf3e2e70eddc9f3b198e2",
+                         "historical_scope":  "old task IDs 1.1 through 4.2 were checked by this history; 4.3 through 4.8 were not checked",
+                         "verification":  "git show 65d780e:openspec/changes/build-extensible-plugin-platform/tasks.md"
+                     },
+    "evidence_policy":  "A mapping is a traceability candidate, not proof that a gate passed. A commit is listed only when its subject/path diff was observed in repository history; no test result, artifact hash, or release approval is inferred.",
+    "entry_contract":  {
+                           "required_fields":  [
+                                                   "legacy_id",
+                                                   "legacy_task_text",
+                                                   "historical_checked",
+                                                   "first_completion_commit",
+                                                   "original_test_provenance",
+                                                   "new_l3_ids"
+                                               ],
+                           "legacy_task_text_source":  "git show 65d780e767ac56a4a7fcf3e2e70eddc9f3b198e2:openspec/changes/build-extensible-plugin-platform/tasks.md",
+                           "missing_test_provenance":  "The historical task file contains no test names or commands; entries therefore require explicit re-execution rather than inferred pass status."
+                       },
+    "entries":  [
+                    {
+                        "legacy_id":  "1.1",
+                        "new_l3_ids":  [
+                                           "2.1.1",
+                                           "2.1.4"
+                                       ],
+                        "commits":  [
+                                        "ee262775c833d338b1fc41342984ffebbe824caa"
+                                    ],
+                        "confidence":  "high",
+                        "legacy_task_text":  "將 workspace、host 與 SDK consumer 的 Rust 基線統一為 `1.97.1`／`x86_64-pc-windows-msvc`，提交精確 `rust-toolchain.toml` 並測試 rustc/Cargo commit 驗證",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "ee262775c833d338b1fc41342984ffebbe824caa",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "toolchain-contract.ps1",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/toolchain-contract.ps1",
+                                                             "reason":  "Identifiable test file from completion diff; exact historical pass output is not retained.",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified"
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "1.2",
+                        "new_l3_ids":  [
+                                           "2.1.2",
+                                           "2.1.5",
+                                           "2.3.2",
+                                           "2.3.6",
+                                           "3.1.9"
+                                       ],
+                        "commits":  [
+                                        "ee262775c833d338b1fc41342984ffebbe824caa"
+                                    ],
+                        "confidence":  "medium",
+                        "legacy_task_text":  "將 `abi_stable = 0.11.3` 加入 protected dependency closure，以空 top-level features 建立最小 root-module/layout/panic-boundary fixture",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "ee262775c833d338b1fc41342984ffebbe824caa",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "toolchain-contract.ps1",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/toolchain-contract.ps1",
+                                                             "reason":  "Identifiable test file from completion diff; exact historical pass output is not retained.",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified"
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "1.3",
+                        "new_l3_ids":  [
+                                           "2.2.1",
+                                           "2.2.6"
+                                       ],
+                        "commits":  [
+                                        "ee262775c833d338b1fc41342984ffebbe824caa",
+                                        "4cb49045f09097f77678aa46314be64d8482e449"
+                                    ],
+                        "confidence":  "medium",
+                        "legacy_task_text":  "將 GPUI source authority 統一為 `https://github.com/damody/gpui-ce-explorer.git`，解析核准 development commit 並讓 host 與 SDK 使用同一 rev",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "ee262775c833d338b1fc41342984ffebbe824caa",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "bundle-generator-contract.ps1",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/bundle-generator-contract.ps1",
+                                                             "reason":  "Identifiable test file from completion diff; exact historical pass output is not retained.",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified"
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "1.4",
+                        "new_l3_ids":  [
+                                           "2.2.2",
+                                           "2.2.3"
+                                       ],
+                        "commits":  [
+                                        "ee262775c833d338b1fc41342984ffebbe824caa"
+                                    ],
+                        "confidence":  "medium",
+                        "legacy_task_text":  "實作 `sdk-lock.json`／`bundle-manifest.json` canonical generator，涵蓋 toolchain、GPUI rev/tree、ABI、features、profile、panic、allocator/CRT、rustflags 與檔案 SHA-256",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "ee262775c833d338b1fc41342984ffebbe824caa",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "bundle-generator-contract.ps1",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/bundle-generator-contract.ps1",
+                                                             "reason":  "Identifiable test file from completion diff; exact historical pass output is not retained.",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified"
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "1.5",
+                        "new_l3_ids":  [
+                                           "2.1.3",
+                                           "2.1.5",
+                                           "2.1.6",
+                                           "2.1.7"
+                                       ],
+                        "commits":  [
+                                        "ee262775c833d338b1fc41342984ffebbe824caa",
+                                        "4cb49045f09097f77678aa46314be64d8482e449"
+                                    ],
+                        "confidence":  "medium",
+                        "legacy_task_text":  "建立 SDK canonical `Cargo.lock`、`.cargo/config.toml`、protected dependency graph validator 與 offline `vendor/cargo-sources`",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "ee262775c833d338b1fc41342984ffebbe824caa",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "toolchain-contract.ps1",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/toolchain-contract.ps1",
+                                                             "reason":  "Identifiable test file from completion diff; exact historical pass output is not retained.",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified"
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "1.6",
+                        "new_l3_ids":  [
+                                           "2.2.4",
+                                           "2.2.5",
+                                           "2.2.6",
+                                           "2.2.7",
+                                           "2.2.8",
+                                           "2.2.9",
+                                           "2.2.10",
+                                           "2.2.11",
+                                           "2.2.12",
+                                           "2.2.13",
+                                           "2.2.14",
+                                           "2.2.15",
+                                           "2.2.16",
+                                           "2.3.10"
+                                       ],
+                        "commits":  [
+                                        "ee262775c833d338b1fc41342984ffebbe824caa"
+                                    ],
+                        "confidence":  "medium",
+                        "legacy_task_text":  "實作 UI ABI fingerprint generator／loader comparison，加入每個單因子改變都產生不相容的單元測試",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "ee262775c833d338b1fc41342984ffebbe824caa",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "ui-abi-fingerprint-contract.ps1",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/ui-abi-fingerprint-contract.ps1",
+                                                             "reason":  "Identifiable test file from completion diff; exact historical pass output is not retained.",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified"
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "1.7",
+                        "new_l3_ids":  [
+                                           "2.3.1",
+                                           "2.3.2",
+                                           "2.3.7"
+                                       ],
+                        "commits":  [
+                                        "4cb49045f09097f77678aa46314be64d8482e449"
+                                    ],
+                        "confidence":  "medium",
+                        "legacy_task_text":  "建立隔離的 host-fixture 與 plugin-fixture，於空 `CARGO_HOME`、禁止網路下以 `--locked --offline` 分開建置並驗證載入",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "4cb49045f09097f77678aa46314be64d8482e449",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "offline-host-plugin-contract.ps1",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified-existing",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/offline-host-plugin-contract.ps1",
+                                                             "reason":  "Introduced by 4cb4904."
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "1.8",
+                        "new_l3_ids":  [
+                                           "2.4.1",
+                                           "2.4.2",
+                                           "2.4.3",
+                                           "2.4.4"
+                                       ],
+                        "commits":  [
+                                        "4cb49045f09097f77678aa46314be64d8482e449"
+                                    ],
+                        "confidence":  "high",
+                        "legacy_task_text":  "實作 `update-gpui-snapshot.ps1` 與 CI job：解析完整 HEAD、拒絕未核准 non-fast-forward、產生新 bundle ID、失敗回退上一 snapshot",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "4cb49045f09097f77678aa46314be64d8482e449",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "update-gpui-snapshot-contract.ps1",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/update-gpui-snapshot-contract.ps1",
+                                                             "reason":  "Identifiable test file from completion diff; exact historical pass output is not retained.",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified"
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "1.9",
+                        "new_l3_ids":  [
+                                           "2.4.5",
+                                           "2.4.6"
+                                       ],
+                        "commits":  [
+                                        "4cb49045f09097f77678aa46314be64d8482e449"
+                                    ],
+                        "confidence":  "high",
+                        "legacy_task_text":  "實作 Release freeze 流程與 fixture：protected tag metadata、`release_frozen = true`、遠端 main 移動後仍離線重建、換 rev 強制新 RC/bundle ID",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "4cb49045f09097f77678aa46314be64d8482e449",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "release-freeze-contract.ps1",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/release-freeze-contract.ps1",
+                                                             "reason":  "Identifiable test file from completion diff; exact historical pass output is not retained.",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified"
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "1.10",
+                        "new_l3_ids":  [
+                                           "2.5.1",
+                                           "2.5.2",
+                                           "2.5.3",
+                                           "2.5.4",
+                                           "2.5.5",
+                                           "2.5.6",
+                                           "2.5.7",
+                                           "2.5.8",
+                                           "2.5.9",
+                                           "2.5.10",
+                                           "2.5.11",
+                                           "2.5.12",
+                                           "2.5.13"
+                                       ],
+                        "commits":  [
+                                        "4cb49045f09097f77678aa46314be64d8482e449"
+                                    ],
+                        "confidence":  "medium",
+                        "legacy_task_text":  "建立 `build-plugin.ps1`、`validate-plugin.ps1`、`package-plugin.ps1` 與 P0-0 診斷文件，將 UITEST／CI requirements 映射到 manifest",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "4cb49045f09097f77678aa46314be64d8482e449",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "plugin-tooling-self-test.ps1",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/plugin-tooling-self-test.ps1",
+                                                             "reason":  "Identifiable test file from completion diff; exact historical pass output is not retained.",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified"
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "2.1",
+                        "new_l3_ids":  [
+                                           "2.5.10",
+                                           "3.1.3",
+                                           "6.1.4"
+                                       ],
+                        "commits":  [
+                                        "93df1d1194427e572cfeabd339a2f900066184ed"
+                                    ],
+                        "confidence":  "medium",
+                        "legacy_task_text":  "新增 `explorer-extension-api`、`explorer-extension-ui-api`、`explorer-extension-host` crates 與 composition-root wiring，建立私有 crate dependency 禁止規則",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "93df1d1194427e572cfeabd339a2f900066184ed",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "extension-api-abi-contract.ps1",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/extension-api-abi-contract.ps1",
+                                                             "reason":  "Identifiable test file from completion diff; exact historical pass output is not retained.",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified"
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "2.2",
+                        "new_l3_ids":  [
+                                           "3.1.1",
+                                           "3.1.2",
+                                           "3.1.3",
+                                           "3.1.4",
+                                           "3.1.5",
+                                           "3.1.6"
+                                       ],
+                        "commits":  [
+                                        "32a69736d77f7edf4648afb4312103627092a46d"
+                                    ],
+                        "confidence":  "medium",
+                        "legacy_task_text":  "定義 FFI-safe stable IDs、typed errors/outcomes、root module 與 prefix registrar，加入 SDK 1.x optional-tail/non-exhaustive 相容 fixture",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "32a69736d77f7edf4648afb4312103627092a46d",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "extension-api-abi-contract.ps1",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/extension-api-abi-contract.ps1",
+                                                             "reason":  "Identifiable test file from completion diff; exact historical pass output is not retained.",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified"
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "2.3",
+                        "new_l3_ids":  [
+                                           "3.2.1",
+                                           "3.2.6",
+                                           "3.2.15",
+                                           "3.2.16"
+                                       ],
+                        "commits":  [
+                                        "32a69736d77f7edf4648afb4312103627092a46d"
+                                    ],
+                        "confidence":  "medium",
+                        "legacy_task_text":  "實作版本化 `.sepack`／`PackageManifestV1` parser，涵蓋 Rust/Lua/Skin/locale/tools/features/capabilities/dependencies/hash/signature/data-version",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "32a69736d77f7edf4648afb4312103627092a46d",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "package-manifest-v1-contract.ps1",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified-existing",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/package-manifest-v1-contract.ps1",
+                                                             "reason":  "Introduced by 32a6973."
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "2.4",
+                        "new_l3_ids":  [
+                                           "3.2.2",
+                                           "3.2.3"
+                                       ],
+                        "commits":  [
+                                        "32a69736d77f7edf4648afb4312103627092a46d"
+                                    ],
+                        "confidence":  "medium",
+                        "legacy_task_text":  "實作 publisher/contact schema validation，涵蓋 email、網站、論壇、GitHub Issues、Discord、QQ、support/security purpose 與簽署 publisher mismatch",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "32a69736d77f7edf4648afb4312103627092a46d",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "package-validation-v1-contract.ps1",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified-existing",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/package-validation-v1-contract.ps1",
+                                                             "reason":  "Introduced by 32a6973."
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "2.5",
+                        "new_l3_ids":  [
+                                           "3.2.4",
+                                           "3.2.5",
+                                           "3.2.7",
+                                           "3.2.8",
+                                           "3.2.9",
+                                           "3.2.10",
+                                           "3.2.11",
+                                           "3.2.12",
+                                           "3.2.13",
+                                           "3.2.14",
+                                           "3.2.15",
+                                           "3.2.16"
+                                       ],
+                        "commits":  [
+                                        "b6a9b12b3eb41731a540adb6aa0069aa8eacb5d7"
+                                    ],
+                        "confidence":  "medium",
+                        "legacy_task_text":  "實作 package content/path/hash/signature/target 驗證，拒絕絕對路徑、`..`、symlink/junction/reparse-point 逃逸",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "b6a9b12b3eb41731a540adb6aa0069aa8eacb5d7",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "package-validation-v1-contract.ps1",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified-existing",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/package-validation-v1-contract.ps1",
+                                                             "reason":  "Package validation/resolver contract source."
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "2.6",
+                        "new_l3_ids":  [
+                                           "3.3.1",
+                                           "3.3.2"
+                                       ],
+                        "commits":  [
+                                        "463c20c7066bbe76a475ea5013504d0874f7950d"
+                                    ],
+                        "confidence":  "high",
+                        "legacy_task_text":  "實作 built-in 與 local-developer Package Source adapters，以及不連結 Steamworks 的 Package Source／Entitlement Provider 抽象測試",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "463c20c7066bbe76a475ea5013504d0874f7950d",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "package-validation-v1-contract.ps1",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified-existing",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/package-validation-v1-contract.ps1",
+                                                             "reason":  "Package validation/resolver contract source."
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "2.7",
+                        "new_l3_ids":  [
+                                           "3.3.3",
+                                           "3.3.4",
+                                           "3.3.5",
+                                           "3.3.6",
+                                           "3.3.7",
+                                           "3.3.8",
+                                           "3.3.9"
+                                       ],
+                        "commits":  [
+                                        "442b9e5921c3688286bcf7ac004351a90d7d76c2"
+                                    ],
+                        "confidence":  "high",
+                        "legacy_task_text":  "實作 Package Resolver 的單版本選擇、dependency graph、cycle detection、atomic whole-package rejection 與診斷",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "442b9e5921c3688286bcf7ac004351a90d7d76c2",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "package-validation-v1-contract.ps1",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified-existing",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/package-validation-v1-contract.ps1",
+                                                             "reason":  "Package validation/resolver contract source."
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "2.8",
+                        "new_l3_ids":  [
+                                           "14.3.1",
+                                           "15.4.1"
+                                       ],
+                        "commits":  [
+                                        "7147c50e775dca8cf22cf8ed5884611b326e2808",
+                                        "e0f257926f8295cb850776443ae93877135a2de3"
+                                    ],
+                        "confidence":  "medium",
+                        "legacy_task_text":  "撰寫 package lifecycle API／manifest schema 雙語文件與範例 manifest，加入 unit/integration/UITEST manifest mapping",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "7147c50e775dca8cf22cf8ed5884611b326e2808",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "package-lifecycle-docs-contract.ps1",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/package-lifecycle-docs-contract.ps1",
+                                                             "reason":  "Identified in 7147c50."
+                                                         },
+                                                         {
+                                                             "name":  "package-resolution-v1-contract.ps1",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/package-resolution-v1-contract.ps1",
+                                                             "reason":  "Identified in 7147c50."
+                                                         },
+                                                         {
+                                                             "name":  "uitest/manifest.json",
+                                                             "kind":  "manifest",
+                                                             "status":  "identified",
+                                                             "command":  null,
+                                                             "reason":  "UITEST manifest mapping changed in completion commit."
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "3.1",
+                        "new_l3_ids":  [
+                                           "3.4.1",
+                                           "3.4.2"
+                                       ],
+                        "commits":  [
+                                        "f017060251d4389c70c73136a2ca088e4d2ddb67"
+                                    ],
+                        "confidence":  "medium",
+                        "legacy_task_text":  "實作 global/package/feature `FeatureStateStore` 與 `EffectiveFeatureResolver`，涵蓋 enabled/disabled/disabling/pending-restart/blocked/faulted",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "f017060251d4389c70c73136a2ca088e4d2ddb67",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "extension_platform_architecture.rs",
+                                                             "kind":  "rust-test",
+                                                             "status":  "identified-existing",
+                                                             "command":  "cargo test -p explorer-app --test extension_platform_architecture --locked --offline",
+                                                             "reason":  "Architecture test target."
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "3.2",
+                        "new_l3_ids":  [
+                                           "3.4.3",
+                                           "3.4.4",
+                                           "3.4.6",
+                                           "3.4.7",
+                                           "3.4.8"
+                                       ],
+                        "commits":  [
+                                        "6120ec942235dea15b38b0daa6d773fe4b163d11"
+                                    ],
+                        "confidence":  "medium",
+                        "legacy_task_text":  "實作 contribution-to-feature/capability 驗證與 `ContributionGate`，讓未宣告、重複或越權 registration 拒絕整包",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "6120ec942235dea15b38b0daa6d773fe4b163d11",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "extension_platform_architecture.rs",
+                                                             "kind":  "rust-test",
+                                                             "status":  "identified-existing",
+                                                             "command":  "cargo test -p explorer-app --test extension_platform_architecture --locked --offline",
+                                                             "reason":  "Architecture test target."
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "3.3",
+                        "new_l3_ids":  [
+                                           "2.3.4",
+                                           "2.3.5",
+                                           "2.3.8",
+                                           "2.3.10",
+                                           "3.5.1"
+                                       ],
+                        "commits":  [
+                                        "07212706bb471e7876ce66bae0cbaf3169b59a69"
+                                    ],
+                        "confidence":  "medium",
+                        "legacy_task_text":  "實作 `abi_stable` DLL loader，在任何 callback 前完成 root layout、SDK major 與 GPUI fingerprint 驗證",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "07212706bb471e7876ce66bae0cbaf3169b59a69",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "extension-dll-loader-contract.ps1",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/extension-dll-loader-contract.ps1",
+                                                             "reason":  "Identifiable test file from completion diff; exact historical pass output is not retained.",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified"
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "3.4",
+                        "new_l3_ids":  [
+                                           "3.5.2",
+                                           "3.5.3",
+                                           "3.5.4",
+                                           "3.5.5",
+                                           "3.5.6",
+                                           "3.8.1",
+                                           "3.8.4",
+                                           "3.8.5"
+                                       ],
+                        "commits":  [
+                                        "5eef88ce879dcdd3a142411f9bcd9243b9e83be5"
+                                    ],
+                        "confidence":  "medium",
+                        "legacy_task_text":  "實作 startup-only DLL load、resident-until-exit、runtime feature gate、bounded drain 與未載入/更新 DLL 的 restart semantics",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "5eef88ce879dcdd3a142411f9bcd9243b9e83be5",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "extension-dll-loader-contract.ps1",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/extension-dll-loader-contract.ps1",
+                                                             "reason":  "Identifiable test file from completion diff; exact historical pass output is not retained.",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified"
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "3.5",
+                        "new_l3_ids":  [
+                                           "3.6.1",
+                                           "3.6.2",
+                                           "3.6.3",
+                                           "3.6.5"
+                                       ],
+                        "commits":  [
+                                        "da397af3de4add1194fa58a7926d9333e84352f0"
+                                    ],
+                        "confidence":  "high",
+                        "legacy_task_text":  "實作 `PluginCallGuard`、panic translation、timing、native call marker 與下次啟動 Safe Mode",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "da397af3de4add1194fa58a7926d9333e84352f0",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "extension-dll-loader-contract.ps1",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified-existing",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/extension-dll-loader-contract.ps1",
+                                                             "reason":  "Introduced by da397af."
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "3.6",
+                        "new_l3_ids":  [
+                                           "3.5.5",
+                                           "3.6.2",
+                                           "3.6.3",
+                                           "3.6.5",
+                                           "15.4.16"
+                                       ],
+                        "commits":  [
+                                        "ea8df4e4916778287af6468ca0906e0d4c8e6fbf"
+                                    ],
+                        "confidence":  "high",
+                        "legacy_task_text":  "新增 synthetic panic/uncleared marker/slow callback/drain timeout integration tests 與 Safe Mode UITEST mapping",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "ea8df4e4916778287af6468ca0906e0d4c8e6fbf",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "extension-dll-loader-contract.ps1",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/extension-dll-loader-contract.ps1",
+                                                             "reason":  "Identified in ea8df4e."
+                                                         },
+                                                         {
+                                                             "name":  "native-call-guard-contract.ps1",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/native-call-guard-contract.ps1",
+                                                             "reason":  "Identified in ea8df4e."
+                                                         },
+                                                         {
+                                                             "name":  "uitest/manifest.json",
+                                                             "kind":  "manifest",
+                                                             "status":  "identified",
+                                                             "command":  null,
+                                                             "reason":  "UITEST manifest mapping changed in completion commit."
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "3.7",
+                        "new_l3_ids":  [
+                                           "3.6.6",
+                                           "14.3.2"
+                                       ],
+                        "commits":  [
+                                        "e0f257926f8295cb850776443ae93877135a2de3"
+                                    ],
+                        "confidence":  "medium",
+                        "legacy_task_text":  "撰寫原生外掛風險、無 sandbox、無熱卸載與診斷操作文件",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "e0f257926f8295cb850776443ae93877135a2de3",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "native-plugin-security-docs-contract.ps1",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/native-plugin-security-docs-contract.ps1",
+                                                             "reason":  "Identifiable test file from completion diff; exact historical pass output is not retained.",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified"
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "4.1",
+                        "new_l3_ids":  [
+                                           "4.1.1",
+                                           "4.1.2",
+                                           "4.1.3",
+                                           "4.1.4",
+                                           "4.1.5",
+                                           "4.1.6",
+                                           "4.1.7",
+                                           "4.1.8"
+                                       ],
+                        "commits":  [
+                                        "0086d292168cbd29a07d197e3ae87c90dc117fca"
+                                    ],
+                        "confidence":  "high",
+                        "legacy_task_text":  "在 `explorer-jobs` 實作 extension CPU/I/O queues、global/per-package limits、visible-row priority、deadline 與 cancellation",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "0086d292168cbd29a07d197e3ae87c90dc117fca",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "extension_scheduler_contract.rs",
+                                                             "kind":  "rust-test",
+                                                             "status":  "identified",
+                                                             "command":  "cargo test -p explorer-jobs --test extension_scheduler_contract --locked --offline",
+                                                             "reason":  "Test target identified in completion commit."
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "4.2",
+                        "new_l3_ids":  [
+                                           "4.2.1",
+                                           "4.2.2"
+                                       ],
+                        "commits":  [
+                                        "65d780e767ac56a4a7fcf3e2e70eddc9f3b198e2"
+                                    ],
+                        "confidence":  "high",
+                        "legacy_task_text":  "實作 `JobContextV1`、generation-safe handles、`IncrementalResultSinkV1`、backpressure 與 typed terminal states",
+                        "historical_checked":  true,
+                        "first_completion_commit":  "65d780e767ac56a4a7fcf3e2e70eddc9f3b198e2",
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "job-context-v1-abi-contract.ps1",
+                                                             "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/job-context-v1-abi-contract.ps1",
+                                                             "reason":  "Identifiable test file from completion diff; exact historical pass output is not retained.",
+                                                             "kind":  "powershell-test",
+                                                             "status":  "identified"
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "4.3",
+                        "new_l3_ids":  [
+                                           "4.2.3",
+                                           "4.2.4",
+                                           "4.2.5",
+                                           "4.2.6"
+                                       ],
+                        "commits":  [
+
+                                    ],
+                        "confidence":  "unverified",
+                        "legacy_task_text":  "實作 `PluginValueV1`、`StableSortValueV1`、opaque payload routing 與 unsupported/unavailable/cancelled/error sorting policies",
+                        "historical_checked":  false,
+                        "first_completion_commit":  null,
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "none",
+                                                             "kind":  "historical",
+                                                             "status":  "missing",
+                                                             "command":  null,
+                                                             "reason":  "Task remained unchecked; no completion diff exists."
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "4.4",
+                        "new_l3_ids":  [
+                                           "4.3.1",
+                                           "4.3.2",
+                                           "4.4.3",
+                                           "4.4.4"
+                                       ],
+                        "commits":  [
+
+                                    ],
+                        "confidence":  "unverified",
+                        "legacy_task_text":  "實作 `UiInvalidationBatcher` 的 16–50 ms 合併與 extension timing/slow-callback diagnostics",
+                        "historical_checked":  false,
+                        "first_completion_commit":  null,
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "none",
+                                                             "kind":  "historical",
+                                                             "status":  "missing",
+                                                             "command":  null,
+                                                             "reason":  "Task remained unchecked; no completion diff exists."
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "4.5",
+                        "new_l3_ids":  [
+                                           "4.3.3",
+                                           "4.3.4",
+                                           "4.3.7",
+                                           "4.3.8",
+                                           "4.3.9",
+                                           "4.3.10",
+                                           "4.3.11"
+                                       ],
+                        "commits":  [
+
+                                    ],
+                        "confidence":  "unverified",
+                        "legacy_task_text":  "實作 generation-aware result cache、watcher/TTL/manual/data-version invalidation 與 stale result rejection",
+                        "historical_checked":  false,
+                        "first_completion_commit":  null,
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "none",
+                                                             "kind":  "historical",
+                                                             "status":  "missing",
+                                                             "command":  null,
+                                                             "reason":  "Task remained unchecked; no completion diff exists."
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "4.6",
+                        "new_l3_ids":  [
+                                           "4.3.5",
+                                           "4.3.6"
+                                       ],
+                        "commits":  [
+
+                                    ],
+                        "confidence":  "unverified",
+                        "legacy_task_text":  "實作 capability-authorized `InputStreamV1` 的 bounded read/seek/length/deadline/cancel/source-generation",
+                        "historical_checked":  false,
+                        "first_completion_commit":  null,
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "none",
+                                                             "kind":  "historical",
+                                                             "status":  "missing",
+                                                             "command":  null,
+                                                             "reason":  "Task remained unchecked; no completion diff exists."
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "4.7",
+                        "new_l3_ids":  [
+                                           "4.4.1",
+                                           "4.4.2",
+                                           "4.4.3",
+                                           "4.4.4",
+                                           "4.4.5"
+                                       ],
+                        "commits":  [
+
+                                    ],
+                        "confidence":  "unverified",
+                        "legacy_task_text":  "以 1,000-item fixture 驗證基本列表先顯示、可見列優先、取消延遲與非 1,000 次同步 redraw，加入 UITEST mapping",
+                        "historical_checked":  false,
+                        "first_completion_commit":  null,
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "none",
+                                                             "kind":  "historical",
+                                                             "status":  "missing",
+                                                             "command":  null,
+                                                             "reason":  "Task remained unchecked; no completion diff exists."
+                                                         }
+                                                     ]
+                    },
+                    {
+                        "legacy_id":  "4.8",
+                        "new_l3_ids":  [
+                                           "4.4.6",
+                                           "14.3.1"
+                                       ],
+                        "commits":  [
+
+                                    ],
+                        "confidence":  "unverified",
+                        "legacy_task_text":  "撰寫 jobs/value/stream/cache 公開 API 與效能診斷文件",
+                        "historical_checked":  false,
+                        "first_completion_commit":  null,
+                        "original_test_provenance":  [
+                                                         {
+                                                             "name":  "none",
+                                                             "kind":  "historical",
+                                                             "status":  "missing",
+                                                             "command":  null,
+                                                             "reason":  "Task remained unchecked; no completion diff exists."
+                                                         }
+                                                     ]
+                    }
+                ],
+    "gaps":  [
+                 "The historical checkbox is not a test log and does not prove each mapped L3 leaf passed.",
+                 "No immutable artifact locator, SHA-256 evidence record, reviewer sign-off, or FINAL GO decision was found for legacy 5.1.",
+                 "Several old tasks span multiple new leaves; mappings marked medium require leaf-level re-execution before release promotion."
+             ],
+    "expected_semantic_mappings":  {
+                                       "1.1":  [
+                                                   "2.1.1",
+                                                   "2.1.4"
+                                               ],
+                                       "1.2":  [
+                                                   "2.1.2",
+                                                   "2.1.5",
+                                                   "2.3.2",
+                                                   "2.3.6",
+                                                   "3.1.9"
+                                               ],
+                                       "1.3":  [
+                                                   "2.2.1",
+                                                   "2.2.6"
+                                               ],
+                                       "1.4":  [
+                                                   "2.2.2",
+                                                   "2.2.3"
+                                               ],
+                                       "1.5":  [
+                                                   "2.1.3",
+                                                   "2.1.5",
+                                                   "2.1.6",
+                                                   "2.1.7"
+                                               ],
+                                       "1.6":  [
+                                                   "2.2.4",
+                                                   "2.2.5",
+                                                   "2.2.6",
+                                                   "2.2.7",
+                                                   "2.2.8",
+                                                   "2.2.9",
+                                                   "2.2.10",
+                                                   "2.2.11",
+                                                   "2.2.12",
+                                                   "2.2.13",
+                                                   "2.2.14",
+                                                   "2.2.15",
+                                                   "2.2.16",
+                                                   "2.3.10"
+                                               ],
+                                       "1.7":  [
+                                                   "2.3.1",
+                                                   "2.3.2",
+                                                   "2.3.7"
+                                               ],
+                                       "1.8":  [
+                                                   "2.4.1",
+                                                   "2.4.2",
+                                                   "2.4.3",
+                                                   "2.4.4"
+                                               ],
+                                       "1.9":  [
+                                                   "2.4.5",
+                                                   "2.4.6"
+                                               ],
+                                       "1.10":  [
+                                                    "2.5.1",
+                                                    "2.5.2",
+                                                    "2.5.3",
+                                                    "2.5.4",
+                                                    "2.5.5",
+                                                    "2.5.6",
+                                                    "2.5.7",
+                                                    "2.5.8",
+                                                    "2.5.9",
+                                                    "2.5.10",
+                                                    "2.5.11",
+                                                    "2.5.12",
+                                                    "2.5.13"
+                                                ],
+                                       "2.1":  [
+                                                   "2.5.10",
+                                                   "3.1.3",
+                                                   "6.1.4"
+                                               ],
+                                       "2.2":  [
+                                                   "3.1.1",
+                                                   "3.1.2",
+                                                   "3.1.3",
+                                                   "3.1.4",
+                                                   "3.1.5",
+                                                   "3.1.6"
+                                               ],
+                                       "2.3":  [
+                                                   "3.2.1",
+                                                   "3.2.6",
+                                                   "3.2.15",
+                                                   "3.2.16"
+                                               ],
+                                       "2.4":  [
+                                                   "3.2.2",
+                                                   "3.2.3"
+                                               ],
+                                       "2.5":  [
+                                                   "3.2.4",
+                                                   "3.2.5",
+                                                   "3.2.7",
+                                                   "3.2.8",
+                                                   "3.2.9",
+                                                   "3.2.10",
+                                                   "3.2.11",
+                                                   "3.2.12",
+                                                   "3.2.13",
+                                                   "3.2.14",
+                                                   "3.2.15",
+                                                   "3.2.16"
+                                               ],
+                                       "2.6":  [
+                                                   "3.3.1",
+                                                   "3.3.2"
+                                               ],
+                                       "2.7":  [
+                                                   "3.3.3",
+                                                   "3.3.4",
+                                                   "3.3.5",
+                                                   "3.3.6",
+                                                   "3.3.7",
+                                                   "3.3.8",
+                                                   "3.3.9"
+                                               ],
+                                       "2.8":  [
+                                                   "14.3.1",
+                                                   "15.4.1"
+                                               ],
+                                       "3.1":  [
+                                                   "3.4.1",
+                                                   "3.4.2"
+                                               ],
+                                       "3.2":  [
+                                                   "3.4.3",
+                                                   "3.4.4",
+                                                   "3.4.6",
+                                                   "3.4.7",
+                                                   "3.4.8"
+                                               ],
+                                       "3.3":  [
+                                                   "2.3.4",
+                                                   "2.3.5",
+                                                   "2.3.8",
+                                                   "2.3.10",
+                                                   "3.5.1"
+                                               ],
+                                       "3.4":  [
+                                                   "3.5.2",
+                                                   "3.5.3",
+                                                   "3.5.4",
+                                                   "3.5.5",
+                                                   "3.5.6",
+                                                   "3.8.1",
+                                                   "3.8.4",
+                                                   "3.8.5"
+                                               ],
+                                       "3.5":  [
+                                                   "3.6.1",
+                                                   "3.6.2",
+                                                   "3.6.3",
+                                                   "3.6.5"
+                                               ],
+                                       "3.6":  [
+                                                   "3.5.5",
+                                                   "3.6.2",
+                                                   "3.6.3",
+                                                   "3.6.5",
+                                                   "15.4.16"
+                                               ],
+                                       "3.7":  [
+                                                   "3.6.6",
+                                                   "14.3.2"
+                                               ],
+                                       "4.1":  [
+                                                   "4.1.1",
+                                                   "4.1.2",
+                                                   "4.1.3",
+                                                   "4.1.4",
+                                                   "4.1.5",
+                                                   "4.1.6",
+                                                   "4.1.7",
+                                                   "4.1.8"
+                                               ],
+                                       "4.2":  [
+                                                   "4.2.1",
+                                                   "4.2.2"
+                                               ],
+                                       "4.3":  [
+                                                   "4.2.3",
+                                                   "4.2.4",
+                                                   "4.2.5",
+                                                   "4.2.6"
+                                               ],
+                                       "4.4":  [
+                                                   "4.3.1",
+                                                   "4.3.2",
+                                                   "4.4.3",
+                                                   "4.4.4"
+                                               ],
+                                       "4.5":  [
+                                                   "4.3.3",
+                                                   "4.3.4",
+                                                   "4.3.7",
+                                                   "4.3.8",
+                                                   "4.3.9",
+                                                   "4.3.10",
+                                                   "4.3.11"
+                                               ],
+                                       "4.6":  [
+                                                   "4.3.5",
+                                                   "4.3.6"
+                                               ],
+                                       "4.7":  [
+                                                   "4.4.1",
+                                                   "4.4.2",
+                                                   "4.4.3",
+                                                   "4.4.4",
+                                                   "4.4.5"
+                                               ],
+                                       "4.8":  [
+                                                   "4.4.6",
+                                                   "14.3.1"
+                                               ]
+                                   }
+}

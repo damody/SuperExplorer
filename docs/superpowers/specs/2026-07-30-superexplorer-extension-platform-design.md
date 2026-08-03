@@ -306,7 +306,7 @@ feature_id
 
 ### 7.1 一個 Root Module，多個選擇性介面
 
-每個 Rust DLL 只匯出一個 `abi_stable` root module。Root module 提供 metadata、相容資訊與註冊入口。啟動時，宿主將 `PluginRegistrar` 傳給外掛；外掛可依需求註冊任意數量的介面。
+每個 Rust DLL 只匯出一個 `abi_stable` root module。Root module 提供 metadata、相容資訊與 checked registrar factory。外掛作者實作普通 Rust `ExtensionRegistrarImplementationV1` trait，由 SDK-owned `RegistrarFactoryV1` 轉成 `#[sabi_trait]` object並處理 panic translation；作者不手寫 `extern "C"` callback、ABI layout或 trampoline。啟動時 host 由 factory 建立 stateful registrar object並取得 descriptor batch，外掛可註冊多個介面。
 
 可註冊的第一版介面包括：
 
@@ -330,7 +330,7 @@ Rust 在 manifest 中只有一種內容類型，例如 `kind: "rust"`。是否�
 
 ### 7.2 Plugin Registrar 演進
 
-`PluginRegistrar` 使用 `abi_stable` prefix type。SDK 1.x 若要新增介面，只能在尾端加入新的 optional function。外掛必須先檢查宿主是否提供該註冊函式，再決定是否註冊。
+本 change 在第一個公開 V1 前淘汰未發布的 handwritten raw-callback/custom-root experimental layout；該 layout 只保留為 pre-callback rejection fixture，不構成 SDK 1.x。首次發布 baseline 固定完整 `ExtensionRootModuleV1` field order/meaning、root fingerprint、直接位於 checked root prefix 的 required SDK-owned factory及 stateful registrar output。由於 `abi_stable 0.11.3` 不支援 newer host 以較長 layout 載入 shorter older plugin，發布後 SDK 1.x 不追加 root/trait layout；演進使用既有 descriptor/capability data與 non-exhaustive values，結構變更升 major。
 
 宿主不得推測未知 capability 的意思。遇到未知、已移除或宣告與實際註冊不一致的能力時，必須回傳明確錯誤並拒絕整個 DLL。
 
@@ -364,9 +364,11 @@ Rust 在 manifest 中只有一種內容類型，例如 `kind: "rust"`。是否�
 
 ### 8.3 SDK 1.x 相容規則
 
+下列規則從上述 Rust-first V1 首次公開發布 baseline 起生效；發布前由本 change 明確取代的 raw-callback layout 不享有 1.x 相容承諾。
+
 同一大版本內允許：
 
-- 在 prefix type 尾端增加 optional 欄位。
+- 不在已發布 V1 root／trait prefix 追加欄位；使用既有 descriptor/capability data 或升 major。
 - 增加新的 optional capability。
 - 在 non-exhaustive enum 增加 variant。
 - 加入不改變既有語意的新錯誤資訊。
@@ -1328,7 +1330,7 @@ Steam 實作開始前，必須建立另一份經核准的規格，涵蓋：
 - Release freeze 測試在 `release_frozen = true` 後移動遠端 `main`，確認 release rebuild 仍只使用凍結 commit；更換 commit 必須產生新 RC／bundle ID 並重跑完整 gate。
 - 測試 manifest schema、hash、相依關係、版本選擇與循環相依。
 - 驗證 publisher ID、至少一筆聯絡方式、`support`／`security` 用途、各類型格式、URL scheme、欄位長度，以及簽章發行者與 manifest 發行者是否一致。
-- 保存以舊版 SDK 1.x 編譯的非 GPUI fixture DLL，驗證相容載入。
+- 保存以獨立 Rust-first SDK V1 baseline 編譯的非 GPUI fixture DLL，驗證固定 root layout 相容載入；另保存未發布 legacy raw-root fixture，驗證在 callback 前拒絕。
 - 驗證相同 fingerprint 的 GPUI 外掛可以載入。
 - 分別改變 toolchain、target、GPUI、features、panic strategy、SDK 或 profile，確認載入器在 callback 前拒絕。
 - 驗證宣告能力與實際註冊不一致時拒絕整個套件。

@@ -31,6 +31,19 @@ its working directory and environment, expected exit status, and required
 artifacts. Unit, contract, and UITEST gates remain distinct and cannot stand in
 for one another.
 
+## UITEST timing and eligibility
+
+Phases 1–5 run only local Rust unit/integration/ABI checks, PowerShell contract
+checks, schema checks, and architecture checks; they run zero UITEST cases.
+Task 6 also runs zero UITEST cases until every other Task 6 leaf is complete.
+The Task 6 final gate is the first UITEST gate, and it may run only when the
+framework, consumer contract, implementation, production wiring, public SDK,
+fixtures, documentation, package, and inventory/composition work are complete.
+Thereafter, an example may run its UITEST only
+after those same complete-vertical-slice prerequisites are satisfied for that
+example. UITEST cannot replace any earlier local check and cannot validate an
+incomplete, mock, trait-only, or source-shape-only example.
+
 ## Evidence flow
 
 Raw logs, reports, screenshots, and machine-readable UITEST results are written
@@ -64,7 +77,10 @@ GPUI snapshot discovery may read the configured upstream only during an
 explicit primary-agent update operation. Candidate generation, host/plugin
 builds, fixtures, tests, promotion, rollback, release freeze, and evidence
 verification are local operations. A candidate is promoted only after every
-required local unit, contract, and UITEST gate succeeds.
+required local gate that is eligible at its phase succeeds; UITEST remains
+ineligible until all of Phase 6 is complete, with its final example as the
+first UITEST gate, and never replaces unit, contract, ABI, schema, or
+architecture checks.
 
 Release freeze binds the protected source revision, dependency locks, vendor
 tree, SDK bundle ID, UI ABI fingerprint, local gate results, and signed evidence
