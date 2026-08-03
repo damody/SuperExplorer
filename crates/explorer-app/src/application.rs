@@ -402,7 +402,6 @@ fn schedule_visual_diagnostics(
 }
 
 /// Owns all process-wide resources around the blocking GPUI event loop.
-#[derive(Clone)]
 pub struct ApplicationLifecycle {
     resources: Arc<Mutex<ShutdownResources>>,
 }
@@ -616,16 +615,18 @@ impl ApplicationLifecycle {
         let folder_scripts = self.automation_handle()?;
         let safe_mode_offers = self.safe_mode_ui_offers()?;
         let loaded_extension_summary = self.loaded_extension_summary()?;
-        let safe_mode_lifecycle = self.clone();
+        let safe_mode_resources = Arc::clone(&self.resources);
         let safe_mode_confirm: explorer_ui::SafeModeConfirmObserverV1 = Arc::new(move |token| {
-            safe_mode_lifecycle
-                .confirm_safe_mode_incident_for_presentation_token(token)
-                .map_err(|error| error.to_string())
-                .and_then(|confirmed| {
-                    confirmed
-                        .then_some(())
-                        .ok_or_else(|| "Safe Mode offer is no longer active".to_owned())
-                })
+            ApplicationLifecycle::confirm_safe_mode_incident_for_presentation_token(
+                &safe_mode_resources,
+                token,
+            )
+            .map_err(|error| error.to_string())
+            .and_then(|confirmed| {
+                confirmed
+                    .then_some(())
+                    .ok_or_else(|| "Safe Mode offer is no longer active".to_owned())
+            })
         });
         let auto_close = std::env::var("EXPLORER_AUTO_CLOSE_MS")
             .ok()
@@ -859,9 +860,11 @@ impl ApplicationLifecycle {
         Ok(confirmed)
     }
 
-    fn confirm_safe_mode_incident_for_presentation_token(&self, token: u64) -> Result<bool, Error> {
-        let mut resources = self
-            .resources
+    fn confirm_safe_mode_incident_for_presentation_token(
+        shared: &Arc<Mutex<ShutdownResources>>,
+        token: u64,
+    ) -> Result<bool, Error> {
+        let mut resources = shared
             .lock()
             .map_err(|_| anyhow::anyhow!("application lifecycle mutex was poisoned"))?;
         let mut offers = std::mem::take(&mut resources.safe_mode_incident_offers);

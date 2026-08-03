@@ -33,9 +33,16 @@
 
 - [x] 6.1 建置或選定與目前程式碼相容的 `p0_consumer.dll`。
 - [x] 6.2 以 `cargo run -p explorer-app -- --plugin-dll <absolute-dll>` 啟動真實 App。
-- [ ] 6.3 人工 smoke：Extensions menu 顯示正確 plugin/contribution/kind，且 app 可繼續一般操作。
-- [ ] 6.4 不帶參數重啟，確認 loaded entry 不存在；記錄 product validation GO／NO-GO 與下一個最小功能決策。
-- [ ] 6.5 僅在 1.1–6.4 全部完成後，如需自動化重跑才新增／執行一個既有 UITEST runner 的 smoke case；人工 demo 已足夠時保持 deferred。
+- [x] 6.3 人工 smoke：帶 `p0-consumer` 的真實 App 顯示正確 plugin/contribution/kind，資料夾內容與 Shell icon 正常載入，且 app 可繼續一般操作。
+- [x] 6.4 不帶參數重啟，確認沒有 Plugin registration、資料夾與 icon 仍正常；product validation 決策為 GO，下一個最小功能是讓單一 Plugin 提供一個真實可見欄位值。
+- [x] 6.5 人工 demo 已足以驗證本 slice，明確決定不新增、不執行 UITEST smoke case。
+
+## 7. Installer 內附單一 Plugin
+
+- [x] 7.1 更新 `build/build_install.lua`：一般模式以 fixture manifest、release、固定 MSVC target 與 offline 建置 `p0_consumer.dll`；`--skip-build` 只重用明確 release 產物，`--check` 不要求既有 binary。
+- [x] 7.2 驗證明確的 release Plugin DLL 是有效 Windows PE，並以 `PLUGIN_DLL` define 傳給 NSIS；缺失或失敗時不得 fallback 到舊、debug 或其它 Plugin。
+- [x] 7.3 更新 NSIS：安裝 `plugins\p0_consumer.dll`，讓兩個捷徑與完成頁傳入已安裝絕對路徑，並在解除安裝時只刪除已知 DLL及空目錄。
+- [ ] 7.4 執行最小 build/package smoke，產生並驗證 `dist\SuperExplorer-Setup-1.2026.8.4-x64.exe`；不執行 CI、UITEST 或建立新測試 framework。
 
 # Deferred roadmap（不屬於目前 apply scope）
 

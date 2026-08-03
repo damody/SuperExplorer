@@ -145,9 +145,18 @@ local function main()
         path(root, "installer", "SuperExplorer.nsi"),
         "NSIS 腳本"
     )
+    local plugin_manifest = require_file(
+        path(root, "sdk", "fixtures", "p0-consumer", "Cargo.toml"),
+        "p0-consumer manifest"
+    )
     local release_executable = path(root, "target", "release", "SuperExplorer.exe")
     local broker_executable = path(root, "target", "release", "explorer-extension-broker.exe")
     local worker_executable = path(root, "target", "release", "explorer-extension-worker.exe")
+    local plugin_dll = path(
+        root,
+        "sdk", "fixtures", "p0-consumer", "target",
+        "x86_64-pc-windows-msvc", "release", "p0_consumer.dll"
+    )
     local dist = path(root, "dist")
     local output = path(dist, "SuperExplorer-Setup-" .. version .. "-x64.exe")
 
@@ -173,11 +182,25 @@ local function main()
             cwd = root,
             log_path = path(logs, "installer-release.log"),
         })
+        process.run({
+            stage = "建置內附 p0-consumer Plugin",
+            exe = "cargo.exe",
+            args = {
+                "build",
+                "--manifest-path", plugin_manifest,
+                "--release",
+                "--target", "x86_64-pc-windows-msvc",
+                "--offline",
+            },
+            cwd = root,
+            log_path = path(logs, "installer-plugin-release.log"),
+        })
     end
 
     local application_size = validate_executable(release_executable, "發行版執行檔")
     validate_executable(broker_executable, "extension broker")
     validate_executable(worker_executable, "extension worker")
+    local plugin_size = validate_executable(plugin_dll, "p0-consumer Plugin DLL")
     os.remove(output)
     process.run({
         stage = "編譯 NSIS 安裝程式",
@@ -188,6 +211,7 @@ local function main()
             "/DAPP_EXE=" .. release_executable,
             "/DBROKER_EXE=" .. broker_executable,
             "/DWORKER_EXE=" .. worker_executable,
+            "/DPLUGIN_DLL=" .. plugin_dll,
             "/DOUTPUT_FILE=" .. output,
             nsis_script,
         },
@@ -203,6 +227,7 @@ local function main()
     })
 
     print(string.format("[完成] 應用程式：%s（%d 位元組）", release_executable, application_size))
+    print(string.format("[完成] 內附 Plugin：%s（%d 位元組）", plugin_dll, plugin_size))
     print(string.format("[完成] 安裝程式：%s（%d 位元組）", output, installer_size))
     print("[完成] 已啟動本次建置的 SuperExplorer 安裝程式")
     return 0

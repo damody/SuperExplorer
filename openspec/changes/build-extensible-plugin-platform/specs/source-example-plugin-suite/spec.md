@@ -15,6 +15,25 @@ Before general platform implementation, the active milestone SHALL support exact
 - **WHEN** the plugin is visible in the real app and the app remains usable
 - **THEN** an artificial contract, integration, evidence, snapshot, mock or fake framework is not required to declare product-validation GO; a manual demo or minimal smoke is sufficient
 
+### Requirement: Installer bundles the single validation plugin
+The `build_install.bat` release path SHALL build and validate the single `p0-consumer` release DLL offline and SHALL package it as `$INSTDIR\plugins\p0_consumer.dll`. Installer-created shortcuts and the finish-page launch SHALL pass that absolute installed path through the existing `--plugin-dll` argument. Direct execution without that argument SHALL continue to load no unsigned local plugin.
+
+#### Scenario: Installer build includes the plugin
+- **WHEN** the application, broker, worker and `p0-consumer` release builds succeed
+- **THEN** NSIS receives the exact validated DLL path and the generated installer contains `plugins\p0_consumer.dll`
+
+#### Scenario: Installed shortcut launches the plugin
+- **WHEN** the user launches SuperExplorer from an installer-created shortcut or the finish page
+- **THEN** the process receives `--plugin-dll` with `$INSTDIR\plugins\p0_consumer.dll` and loads the bundled plugin through the existing explicit loader
+
+#### Scenario: Plugin build or validation fails
+- **WHEN** the fixture build fails or its expected release DLL is missing or invalid
+- **THEN** installer creation stops without selecting an older, debug or alternate plugin binary
+
+#### Scenario: Bundled plugin is uninstalled
+- **WHEN** the user runs the uninstaller
+- **THEN** it deletes the known `p0_consumer.dll` and removes the plugin directory only when empty, without recursively deleting unknown files
+
 ### Requirement: Complete independent example projects
 The SDK SHALL ship eight installable `.sepack` example projects in an independent consumer workspace. Each SHALL include complete source, manifest, zh-TW/en README, locales, license/NOTICE/provenance, fixtures, unit/integration tests, screenshots and package command, and SHALL explain how an author can modify it.
 

@@ -8,6 +8,7 @@ SuperExplorer 目前缺少第三方作者可穩定建置、載入及整合的擴
 
 - 目前 apply scope 只完成一個可見 vertical slice：`p0-consumer` 真實 Rust DLL 經 `abi_stable` 載入與 registration 後，在 SuperExplorer 現有 Extensions menu 顯示 loaded plugin/contribution summary。
 - 只支援這一個由 `--plugin-dll <absolute-path>` 明確指定的開發 Plugin；沒有參數時不載入 unsigned local DLL，不先建立多 Plugin、package source、dynamic-column provider、scheduler、evidence、snapshot 或 release framework。
+- `build_install.bat` 同步建置並封裝這個唯一的 `p0-consumer`，安裝到 `plugins\p0_consumer.dll`；安裝器建立的捷徑與完成頁以既有 `--plugin-dll` 參數明確載入它，直接執行主程式仍維持無參數不載入。
 - 只使用最小 unit、smoke 與人工 demo。Tasks 1–5 零 UITEST；第一個 example 完整可見後，只有需要自動化重跑時才使用既有 UITEST runner 的單一 smoke case。
 - 下列完整平台能力仍是產品驗證成功後的 roadmap，不是目前 completion gate，也不得阻擋第一條 vertical slice。
 
