@@ -831,8 +831,14 @@ impl ViewMode {
     ];
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum SortColumn {
+/// Stable identity of a Details column.
+///
+/// Built-ins intentionally retain their short variants while extension IDs carry an explicit
+/// publisher/package namespace.  The latter is validated at registration time rather than being
+/// assigned an ordinal: an ordinal would recreate the fixed bitmask problem and make persisted
+/// layouts depend on plugin load order.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ColumnId {
     Name,
     DateModified,
     Type,
@@ -841,10 +847,14 @@ pub enum SortColumn {
     Authors,
     Tags,
     Title,
+    Extension {
+        package_id: String,
+        column_id: String,
+    },
 }
 
-impl SortColumn {
-    pub const ALL: [Self; 8] = [
+impl ColumnId {
+    pub const BUILT_INS: [Self; 8] = [
         Self::Name,
         Self::DateModified,
         Self::Type,
@@ -854,10 +864,195 @@ impl SortColumn {
         Self::Tags,
         Self::Title,
     ];
-    pub const fn bit(self) -> u16 {
-        1 << self as u16
+
+    pub const ALL: [Self; 8] = Self::BUILT_INS;
+
+    /// Constructs a plugin-owned ID in the durable `package_id:column_id` namespace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either namespace component violates the stable ID grammar.
+    pub fn extension(package_id: &str, column_id: &str) -> Result<Self, ColumnIdError> {
+        validate_extension_owner(package_id)?;
+        validate_column_id_component(column_id, "column")?;
+        let stable_id = format!("{package_id}:{column_id}");
+        if stable_id.len() > Self::MAX_STABLE_ID_BYTES {
+            return Err(ColumnIdError::TooLong {
+                length: stable_id.len(),
+                maximum: Self::MAX_STABLE_ID_BYTES,
+            });
+        }
+        let _ = stable_id;
+        Ok(Self::Extension {
+            package_id: package_id.to_owned(),
+            column_id: column_id.to_owned(),
+        })
+    }
+
+    /// Returns the one canonical durable representation. Never persist `Debug` or a Rust enum
+    /// discriminant: those are implementation details and cannot name extension columns.
+    pub fn stable_id(&self) -> String {
+        match self {
+            Self::Name => "builtin:name".to_owned(),
+            Self::DateModified => "builtin:date_modified".to_owned(),
+            Self::Type => "builtin:type".to_owned(),
+            Self::Size => "builtin:size".to_owned(),
+            Self::DateCreated => "builtin:date_created".to_owned(),
+            Self::Authors => "builtin:authors".to_owned(),
+            Self::Tags => "builtin:tags".to_owned(),
+            Self::Title => "builtin:title".to_owned(),
+            Self::Extension {
+                package_id,
+                column_id,
+            } => format!("{package_id}:{column_id}"),
+        }
+    }
+
+    /// Reconstructs a built-in or extension ID from its durable stable representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the durable representation is not a known built-in or a valid
+    /// extension namespace.
+    pub fn parse(stable_id: impl Into<String>) -> Result<Self, ColumnIdError> {
+        let stable_id = stable_id.into();
+        match stable_id.as_str() {
+            "builtin:name" => return Ok(Self::Name),
+            "builtin:date_modified" => return Ok(Self::DateModified),
+            "builtin:type" => return Ok(Self::Type),
+            "builtin:size" => return Ok(Self::Size),
+            "builtin:date_created" => return Ok(Self::DateCreated),
+            "builtin:authors" => return Ok(Self::Authors),
+            "builtin:tags" => return Ok(Self::Tags),
+            "builtin:title" => return Ok(Self::Title),
+            _ => {}
+        }
+        let Some((package_id, column_id)) = stable_id.split_once(':') else {
+            return Err(ColumnIdError::MissingNamespace);
+        };
+        if package_id == "builtin" {
+            return Err(ColumnIdError::ReservedNamespace);
+        }
+        if column_id.contains(':') {
+            return Err(ColumnIdError::InvalidCharacter(':'));
+        }
+        let expected = Self::extension(package_id, column_id)?;
+        if expected.stable_id() != stable_id {
+            return Err(ColumnIdError::InvalidCharacter(':'));
+        }
+        Ok(expected)
+    }
+
+    pub const MAX_COMPONENT_BYTES: usize = 64;
+    pub const MAX_STABLE_ID_BYTES: usize = Self::MAX_COMPONENT_BYTES * 2 + 1;
+
+    pub const fn is_builtin(&self) -> bool {
+        !matches!(self, Self::Extension { .. })
+    }
+
+    /// Revalidates an ID at every host boundary. The enum is public to keep built-ins ergonomic,
+    /// therefore registry code must not assume an `Extension` value was made by `extension()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an extension namespace component violates the stable ID grammar.
+    pub fn validate(&self) -> Result<(), ColumnIdError> {
+        match self {
+            Self::Extension {
+                package_id,
+                column_id,
+            } => {
+                let parsed = Self::extension(package_id, column_id)?;
+                if &parsed == self {
+                    Ok(())
+                } else {
+                    Err(ColumnIdError::InvalidCharacter(':'))
+                }
+            }
+            _ => Ok(()),
+        }
+    }
+
+    pub fn extension_parts(&self) -> Option<(&str, &str)> {
+        match self {
+            Self::Extension {
+                package_id,
+                column_id,
+            } => Some((package_id, column_id)),
+            _ => None,
+        }
     }
 }
+
+fn validate_column_id_component(value: &str, component: &'static str) -> Result<(), ColumnIdError> {
+    if value.is_empty() {
+        return Err(ColumnIdError::EmptyComponent(component));
+    }
+    if value.len() > ColumnId::MAX_COMPONENT_BYTES {
+        return Err(ColumnIdError::TooLong {
+            length: value.len(),
+            maximum: ColumnId::MAX_COMPONENT_BYTES,
+        });
+    }
+    let Some(first) = value.chars().next() else {
+        return Err(ColumnIdError::EmptyComponent(component));
+    };
+    if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
+        return Err(ColumnIdError::InvalidFirstCharacter(first));
+    }
+    if let Some(character) = value.chars().skip(1).find(|character| {
+        !character.is_ascii_lowercase()
+            && !character.is_ascii_digit()
+            && !matches!(character, '.' | '_' | '-')
+    }) {
+        return Err(ColumnIdError::InvalidCharacter(character));
+    }
+    Ok(())
+}
+
+fn validate_extension_owner(package_id: &str) -> Result<(), ColumnIdError> {
+    validate_column_id_component(package_id, "package")?;
+    if package_id == "builtin" {
+        return Err(ColumnIdError::ReservedNamespace);
+    }
+    Ok(())
+}
+
+/// A rejected plugin-provided stable column ID.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ColumnIdError {
+    EmptyComponent(&'static str),
+    MissingNamespace,
+    ReservedNamespace,
+    InvalidFirstCharacter(char),
+    InvalidCharacter(char),
+    TooLong { length: usize, maximum: usize },
+}
+
+impl std::fmt::Display for ColumnIdError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyComponent(component) => write!(formatter, "{component} component is empty"),
+            Self::MissingNamespace => {
+                write!(formatter, "extension column ID is missing ':' namespace")
+            }
+            Self::ReservedNamespace => {
+                write!(formatter, "'builtin' is a reserved column namespace")
+            }
+            Self::InvalidFirstCharacter(character) => {
+                write!(formatter, "invalid first column ID character {character:?}")
+            }
+            Self::InvalidCharacter(character) => {
+                write!(formatter, "invalid column ID character {character:?}")
+            }
+            Self::TooLong { length, maximum } => {
+                write!(formatter, "column ID length {length} exceeds {maximum}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ColumnIdError {}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SortDirection {
@@ -865,81 +1060,584 @@ pub enum SortDirection {
     Descending,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SortDescriptor {
-    pub column: SortColumn,
+    pub column: ColumnId,
     pub direction: SortDirection,
 }
 
 impl Default for SortDescriptor {
     fn default() -> Self {
         Self {
-            column: SortColumn::Name,
+            column: ColumnId::Name,
             direction: SortDirection::Ascending,
         }
     }
 }
 
+/// How a column's value is produced and consumed by the host.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DetailsColumnWidths {
-    pub name: u16,
-    pub date_modified: u16,
-    pub item_type: u16,
-    pub size: u16,
-    pub date_created: u16,
-    pub authors: u16,
-    pub tags: u16,
-    pub title: u16,
+pub enum ColumnValueType {
+    Text,
+    LocalizedText,
+    Integer,
+    Float,
+    Bytes,
+    Time,
+    Duration,
+    Boolean,
+    Structured,
+    Opaque,
 }
 
-impl DetailsColumnWidths {
-    pub const MINIMUM: u16 = 48;
-    pub const MAXIMUM: u16 = 1_200;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ColumnAlignment {
+    Start,
+    Center,
+    End,
+}
 
-    pub const fn width(self, column: SortColumn) -> u16 {
-        match column {
-            SortColumn::Name => self.name,
-            SortColumn::DateModified => self.date_modified,
-            SortColumn::Type => self.item_type,
-            SortColumn::Size => self.size,
-            SortColumn::DateCreated => self.date_created,
-            SortColumn::Authors => self.authors,
-            SortColumn::Tags => self.tags,
-            SortColumn::Title => self.title,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ColumnApplicability {
+    AllEntries,
+    Files,
+    Containers,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ColumnSortSemantics {
+    /// A host-comparable UTF-8 stable sort key.
+    Text,
+    /// A host-comparable signed or unsigned integer stable sort key.
+    Integer,
+    /// A host-comparable finite floating-point stable sort key.
+    Float,
+    /// A host-comparable byte-sequence stable sort key.
+    Bytes,
+    /// A host-comparable Unix-nanoseconds stable sort key.
+    Time,
+    /// A host-comparable duration-nanoseconds stable sort key.
+    Duration,
+    /// A host-comparable Boolean stable sort key.
+    Boolean,
+    /// Rejected for V1 descriptors: plugins cannot supply comparator callbacks. A future semantic
+    /// must name a host-comparable, copied stable-key domain before it can be registered.
+    ProviderDefined,
+    /// This column has no sort affordance and therefore requires no stable sort key.
+    Unsupported,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ColumnCost {
+    Immediate,
+    BackgroundSingle,
+    BackgroundBatch,
+    BackgroundAggregate,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ColumnDescriptor {
+    pub id: ColumnId,
+    pub display_name: String,
+    pub value_type: ColumnValueType,
+    pub default_width: u16,
+    pub minimum_width: u16,
+    pub maximum_width: u16,
+    pub alignment: ColumnAlignment,
+    pub applicability: ColumnApplicability,
+    pub sort_semantics: ColumnSortSemantics,
+    pub cost: ColumnCost,
+}
+
+impl ColumnDescriptor {
+    /// Validates the descriptor shape and its value/sort compatibility.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the ID, display name, width range, or sort semantics are invalid.
+    pub fn validate(&self) -> Result<(), ColumnRegistryError> {
+        self.id
+            .validate()
+            .map_err(ColumnRegistryError::InvalidExtensionId)?;
+        if self.display_name.trim().is_empty() {
+            return Err(ColumnRegistryError::EmptyDisplayName);
+        }
+        if self.display_name.len() > 256 || self.display_name.chars().any(char::is_control) {
+            return Err(ColumnRegistryError::InvalidDisplayName);
+        }
+        if self.minimum_width == 0
+            || self.minimum_width < OrderedColumnLayout::MINIMUM_WIDTH
+            || self.minimum_width > self.default_width
+            || self.default_width > self.maximum_width
+            || self.maximum_width > OrderedColumnLayout::MAXIMUM_WIDTH
+        {
+            return Err(ColumnRegistryError::InvalidWidthRange {
+                minimum: self.minimum_width,
+                default: self.default_width,
+                maximum: self.maximum_width,
+            });
+        }
+        // Display values and sort keys deliberately use separate contracts. For example, a
+        // localized "900 MB" value carries a `Bytes` stable sort key so the host compares its
+        // owned exact byte count without reparsing text or invoking plugin code. Every accepted
+        // semantic below maps to one `StableSortValueV1` host-comparable domain; it does not
+        // authorize a provider callback comparator.
+        if matches!(self.sort_semantics, ColumnSortSemantics::ProviderDefined) {
+            return Err(ColumnRegistryError::IncompatibleSortSemantics);
+        }
+        Ok(())
+    }
+}
+
+/// Registered descriptors keyed by their stable identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ColumnRegistry {
+    generation: u64,
+    descriptors: std::collections::BTreeMap<ColumnId, ColumnDescriptor>,
+}
+
+impl ColumnRegistry {
+    /// Monotonic lifecycle generation. Consumers can discard a descriptor projection built
+    /// before a package replacement or removal.
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub fn built_ins() -> Self {
+        let descriptors = builtin_column_descriptors()
+            .into_iter()
+            .map(|descriptor| (descriptor.id.clone(), descriptor))
+            .collect();
+        Self {
+            generation: 1,
+            descriptors,
         }
     }
 
-    pub fn set(&mut self, column: SortColumn, width: u16) {
-        let width = width.clamp(Self::MINIMUM, Self::MAXIMUM);
-        match column {
-            SortColumn::Name => self.name = width,
-            SortColumn::DateModified => self.date_modified = width,
-            SortColumn::Type => self.item_type = width,
-            SortColumn::Size => self.size = width,
-            SortColumn::DateCreated => self.date_created = width,
-            SortColumn::Authors => self.authors = width,
-            SortColumn::Tags => self.tags = width,
-            SortColumn::Title => self.title = width,
+    /// Adds a host-owned built-in descriptor after validating its reserved identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the ID is not built-in, is invalid, or is already registered.
+    pub fn register_builtin(
+        &mut self,
+        descriptor: ColumnDescriptor,
+    ) -> Result<(), ColumnRegistryError> {
+        if !descriptor.id.is_builtin() {
+            return Err(ColumnRegistryError::BuiltinMustUseBuiltinId);
+        }
+        self.register(descriptor)
+    }
+
+    pub fn get(&self, id: &ColumnId) -> Option<&ColumnDescriptor> {
+        self.descriptors.get(id)
+    }
+
+    pub fn contains(&self, id: &ColumnId) -> bool {
+        self.descriptors.contains_key(id)
+    }
+
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = &ColumnDescriptor> {
+        self.descriptors.values()
+    }
+
+    /// Atomically replaces every descriptor owned by one package. The registry copies descriptor
+    /// data into host-owned `String`/value fields; it never keeps a plugin allocation or callback
+    /// pointer. Existing layout entries are intentionally untouched so an uninstalled plugin's
+    /// preferences can be restored by a later persistence migration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the package or any descriptor is invalid, owned by another package,
+    /// or duplicates an existing ID.
+    pub fn replace_package(
+        &mut self,
+        package_id: &str,
+        descriptors: impl IntoIterator<Item = ColumnDescriptor>,
+    ) -> Result<(), ColumnRegistryError> {
+        validate_extension_owner(package_id).map_err(ColumnRegistryError::InvalidExtensionId)?;
+        let descriptors = descriptors.into_iter().collect::<Vec<_>>();
+        let mut replacement = std::collections::BTreeMap::new();
+        for descriptor in descriptors {
+            let Some((owner, _)) = descriptor.id.extension_parts() else {
+                return Err(ColumnRegistryError::ExtensionMustUseNamespacedId);
+            };
+            if owner != package_id {
+                return Err(ColumnRegistryError::OwnershipMismatch {
+                    expected: package_id.to_owned(),
+                    actual: owner.to_owned(),
+                });
+            }
+            descriptor.validate()?;
+            let id = descriptor.id.clone();
+            if replacement.insert(id.clone(), descriptor).is_some() {
+                return Err(ColumnRegistryError::DuplicateId(id));
+            }
+        }
+        if let Some(conflict) = replacement
+            .keys()
+            .find(|id| self.descriptors.contains_key(*id) && !id_owned_by_package(id, package_id))
+        {
+            return Err(ColumnRegistryError::DuplicateId(conflict.clone()));
+        }
+        self.descriptors
+            .retain(|id, _| !id_owned_by_package(id, package_id));
+        self.descriptors.extend(replacement);
+        self.generation = self.generation.saturating_add(1);
+        Ok(())
+    }
+
+    /// Removes a package's current descriptors without deleting its layout entries.
+    pub fn unregister_package(&mut self, package_id: &str) -> usize {
+        let before = self.descriptors.len();
+        self.descriptors
+            .retain(|id, _| !id_owned_by_package(id, package_id));
+        let removed = before - self.descriptors.len();
+        if removed > 0 {
+            self.generation = self.generation.saturating_add(1);
+        }
+        removed
+    }
+
+    fn register(&mut self, descriptor: ColumnDescriptor) -> Result<(), ColumnRegistryError> {
+        descriptor.validate()?;
+        let id = descriptor.id.clone();
+        if self.descriptors.contains_key(&id) {
+            return Err(ColumnRegistryError::DuplicateId(id));
+        }
+        self.descriptors.insert(id, descriptor);
+        self.generation = self.generation.saturating_add(1);
+        Ok(())
+    }
+}
+
+impl Default for ColumnRegistry {
+    fn default() -> Self {
+        Self::built_ins()
+    }
+}
+
+fn id_owned_by_package(id: &ColumnId, package_id: &str) -> bool {
+    id.extension_parts()
+        .is_some_and(|(owner, _)| owner == package_id)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ColumnRegistryError {
+    EmptyDisplayName,
+    InvalidDisplayName,
+    InvalidWidthRange {
+        minimum: u16,
+        default: u16,
+        maximum: u16,
+    },
+    DuplicateId(ColumnId),
+    BuiltinMustUseBuiltinId,
+    ExtensionMustUseNamespacedId,
+    InvalidExtensionId(ColumnIdError),
+    OwnershipMismatch {
+        expected: String,
+        actual: String,
+    },
+    IncompatibleSortSemantics,
+}
+
+impl std::fmt::Display for ColumnRegistryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyDisplayName => write!(formatter, "column display name is empty"),
+            Self::InvalidDisplayName => write!(
+                formatter,
+                "column display name is oversized or contains a control character"
+            ),
+            Self::InvalidWidthRange {
+                minimum,
+                default,
+                maximum,
+            } => write!(
+                formatter,
+                "invalid column width range {minimum}/{default}/{maximum}"
+            ),
+            Self::DuplicateId(id) => write!(formatter, "duplicate column ID {id:?}"),
+            Self::BuiltinMustUseBuiltinId => {
+                write!(formatter, "built-in column must use a built-in ID")
+            }
+            Self::ExtensionMustUseNamespacedId => {
+                write!(formatter, "extension column must use a namespaced ID")
+            }
+            Self::InvalidExtensionId(error) => error.fmt(formatter),
+            Self::OwnershipMismatch { expected, actual } => {
+                write!(formatter, "column is owned by {actual}, not {expected}")
+            }
+            Self::IncompatibleSortSemantics => write!(
+                formatter,
+                "column value type and sort semantics are incompatible"
+            ),
         }
     }
 }
 
-impl Default for DetailsColumnWidths {
+impl std::error::Error for ColumnRegistryError {}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ColumnLayoutEntry {
+    pub id: ColumnId,
+    pub width: u16,
+    pub visible: bool,
+}
+
+/// Ordered, extensible details-column preferences. Unknown extension IDs remain entries here;
+/// callers use the registry to decide whether an entry is currently renderable.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrderedColumnLayout {
+    entries: Vec<ColumnLayoutEntry>,
+}
+
+impl OrderedColumnLayout {
+    pub const MINIMUM_WIDTH: u16 = 48;
+    pub const MAXIMUM_WIDTH: u16 = 1_200;
+
+    pub fn entries(&self) -> &[ColumnLayoutEntry] {
+        &self.entries
+    }
+
+    pub fn entry(&self, id: &ColumnId) -> Option<&ColumnLayoutEntry> {
+        self.entries.iter().find(|entry| entry.id == *id)
+    }
+
+    pub fn width(&self, id: &ColumnId) -> Option<u16> {
+        self.entry(id).map(|entry| entry.width)
+    }
+
+    pub fn visible(&self, id: &ColumnId) -> bool {
+        self.entry(id).is_some_and(|entry| entry.visible)
+    }
+
+    pub fn set_width(&mut self, id: &ColumnId, width: u16) -> bool {
+        let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == *id) else {
+            return false;
+        };
+        entry.width = width.clamp(Self::MINIMUM_WIDTH, Self::MAXIMUM_WIDTH);
+        true
+    }
+
+    /// Stores the user's desired width after applying the descriptor's own safe range. The
+    /// descriptor is host-owned registry data, so a plugin cannot widen a persisted preference
+    /// beyond the host's global cap.
+    pub fn set_width_for(&mut self, descriptor: &ColumnDescriptor, width: u16) -> bool {
+        if descriptor.validate().is_err() {
+            return false;
+        }
+        let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.id == descriptor.id)
+        else {
+            return false;
+        };
+        entry.width = width.clamp(descriptor.minimum_width, descriptor.maximum_width);
+        true
+    }
+
+    pub fn effective_width(&self, descriptor: &ColumnDescriptor) -> Option<u16> {
+        if descriptor.validate().is_err() {
+            return None;
+        }
+        self.width(&descriptor.id)
+            .map(|width| width.clamp(descriptor.minimum_width, descriptor.maximum_width))
+    }
+
+    pub fn set_visible(&mut self, id: &ColumnId, visible: bool) -> bool {
+        let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == *id) else {
+            return false;
+        };
+        if entry.id == ColumnId::Name && !visible {
+            return false;
+        }
+        entry.visible = visible;
+        true
+    }
+
+    pub fn toggle_visible(&mut self, id: &ColumnId) -> bool {
+        let visible = self.entry(id).is_some_and(|entry| entry.visible);
+        self.set_visible(id, !visible)
+    }
+
+    /// Inserts a registered descriptor only once; re-registering a plugin never resets a user's
+    /// width, visibility, or ordering preference.
+    pub fn ensure_descriptor(&mut self, descriptor: &ColumnDescriptor, visible: bool) -> bool {
+        if descriptor.validate().is_err() {
+            return false;
+        }
+        if self.entry(&descriptor.id).is_none() {
+            self.entries.push(ColumnLayoutEntry {
+                id: descriptor.id.clone(),
+                width: descriptor
+                    .default_width
+                    .clamp(descriptor.minimum_width, descriptor.maximum_width),
+                visible,
+            });
+        }
+        true
+    }
+
+    pub fn move_before(&mut self, id: &ColumnId, before: Option<&ColumnId>) -> bool {
+        let Some(index) = self.entries.iter().position(|entry| entry.id == *id) else {
+            return false;
+        };
+        let Some(before) = before else {
+            let entry = self.entries.remove(index);
+            self.entries.push(entry);
+            return true;
+        };
+        if before == id {
+            return false;
+        }
+        let Some(target) = self.entries.iter().position(|entry| entry.id == *before) else {
+            return false;
+        };
+        let entry = self.entries.remove(index);
+        let insertion = if index < target { target - 1 } else { target };
+        self.entries.insert(insertion, entry);
+        true
+    }
+
+    /// Applies an ordered preference prefix once, then appends any unmentioned entries in their
+    /// deterministic registry order. This avoids the sequential-move reversal trap during legacy
+    /// four-column migrations.
+    pub fn reorder_known(&mut self, order: impl IntoIterator<Item = ColumnId>) {
+        let mut reordered = Vec::with_capacity(self.entries.len());
+        for id in order {
+            if let Some(index) = self.entries.iter().position(|entry| entry.id == id) {
+                reordered.push(self.entries.remove(index));
+            }
+        }
+        reordered.append(&mut self.entries);
+        self.entries = reordered;
+    }
+
+    pub fn visible_registered<'a>(
+        &'a self,
+        registry: &'a ColumnRegistry,
+    ) -> impl Iterator<Item = &'a ColumnLayoutEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.visible && registry.contains(&entry.id))
+    }
+}
+
+impl Default for OrderedColumnLayout {
     fn default() -> Self {
         Self {
-            name: 280,
-            date_modified: 150,
-            item_type: 115,
-            size: 90,
-            date_created: 150,
-            authors: 150,
-            tags: 150,
-            title: 180,
+            entries: builtin_column_descriptors()
+                .into_iter()
+                .map(|descriptor| {
+                    let visible = matches!(
+                        descriptor.id,
+                        ColumnId::Name | ColumnId::DateModified | ColumnId::Type | ColumnId::Size
+                    );
+                    ColumnLayoutEntry {
+                        id: descriptor.id,
+                        width: descriptor.default_width,
+                        visible,
+                    }
+                })
+                .collect(),
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+fn builtin_column_descriptors() -> [ColumnDescriptor; 8] {
+    [
+        builtin_descriptor(
+            ColumnId::Name,
+            "Name",
+            ColumnValueType::Text,
+            280,
+            ColumnAlignment::Start,
+            ColumnSortSemantics::Text,
+        ),
+        builtin_descriptor(
+            ColumnId::DateModified,
+            "Date modified",
+            ColumnValueType::Time,
+            150,
+            ColumnAlignment::Start,
+            ColumnSortSemantics::Time,
+        ),
+        builtin_descriptor(
+            ColumnId::Type,
+            "Type",
+            ColumnValueType::Text,
+            115,
+            ColumnAlignment::Start,
+            ColumnSortSemantics::Text,
+        ),
+        builtin_descriptor(
+            ColumnId::Size,
+            "Size",
+            ColumnValueType::Bytes,
+            90,
+            ColumnAlignment::End,
+            ColumnSortSemantics::Bytes,
+        ),
+        builtin_descriptor(
+            ColumnId::DateCreated,
+            "Date created",
+            ColumnValueType::Time,
+            150,
+            ColumnAlignment::Start,
+            ColumnSortSemantics::Time,
+        ),
+        builtin_descriptor(
+            ColumnId::Authors,
+            "Authors",
+            ColumnValueType::Text,
+            150,
+            ColumnAlignment::Start,
+            ColumnSortSemantics::Text,
+        ),
+        builtin_descriptor(
+            ColumnId::Tags,
+            "Tags",
+            ColumnValueType::Text,
+            150,
+            ColumnAlignment::Start,
+            ColumnSortSemantics::Text,
+        ),
+        builtin_descriptor(
+            ColumnId::Title,
+            "Title",
+            ColumnValueType::Text,
+            180,
+            ColumnAlignment::Start,
+            ColumnSortSemantics::Text,
+        ),
+    ]
+}
+
+fn builtin_descriptor(
+    id: ColumnId,
+    display_name: &str,
+    value_type: ColumnValueType,
+    default_width: u16,
+    alignment: ColumnAlignment,
+    sort_semantics: ColumnSortSemantics,
+) -> ColumnDescriptor {
+    ColumnDescriptor {
+        id,
+        display_name: display_name.to_owned(),
+        value_type,
+        default_width,
+        minimum_width: OrderedColumnLayout::MINIMUM_WIDTH,
+        maximum_width: OrderedColumnLayout::MAXIMUM_WIDTH,
+        alignment,
+        applicability: ColumnApplicability::AllEntries,
+        sort_semantics,
+        cost: ColumnCost::Immediate,
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "Explorer exposes these independent View menu toggles and each is persisted per tab"
@@ -958,8 +1656,7 @@ pub struct ViewSettings {
     pub compact_view: bool,
     pub always_show_icons: bool,
     pub sort: SortDescriptor,
-    pub details_columns: DetailsColumnWidths,
-    pub details_column_visibility: u16,
+    pub details_layout: OrderedColumnLayout,
     pub details_pane_width: u16,
     pub preview_pane_width: u16,
 }
@@ -977,14 +1674,22 @@ impl Default for ViewSettings {
             compact_view: false,
             always_show_icons: false,
             sort: SortDescriptor::default(),
-            details_columns: DetailsColumnWidths::default(),
-            details_column_visibility: SortColumn::Name.bit()
-                | SortColumn::DateModified.bit()
-                | SortColumn::Type.bit()
-                | SortColumn::Size.bit(),
+            details_layout: OrderedColumnLayout::default(),
             details_pane_width: 293,
             preview_pane_width: 293,
         }
+    }
+}
+
+impl ViewSettings {
+    pub fn details_column_width(&self, id: &ColumnId) -> u16 {
+        self.details_layout
+            .width(id)
+            .unwrap_or(OrderedColumnLayout::MINIMUM_WIDTH)
+    }
+
+    pub fn details_column_visible(&self, id: &ColumnId) -> bool {
+        self.details_layout.visible(id)
     }
 }
 
@@ -1004,7 +1709,7 @@ pub const fn default_icon_size_for_mode(mode: ViewMode) -> u16 {
 
 /// Normalizes restored or programmatically constructed settings to a valid
 /// notch for their named view mode.
-pub const fn effective_icon_size(settings: ViewSettings) -> u16 {
+pub fn effective_icon_size(settings: &ViewSettings) -> u16 {
     let valid = match settings.mode {
         ViewMode::SmallIcons => matches!(settings.icon_size, 24 | 32 | 48),
         ViewMode::MediumIcons => matches!(settings.icon_size, 64 | 72 | 84),

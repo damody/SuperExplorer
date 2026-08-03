@@ -6,7 +6,7 @@ use explorer_common::RoadmapLimits;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    DetailsColumnWidths, ExplorerWindowState, HistoryEntry, LocationDescriptor, SortColumn,
+    ColumnId, ExplorerWindowState, HistoryEntry, LocationDescriptor, OrderedColumnLayout,
     SortDescriptor, SortDirection, TabId, ViewMode, ViewSettings,
 };
 
@@ -400,7 +400,7 @@ impl PersistedSessionEnvelope {
                         .iter()
                         .map(PersistedHistoryEntry::from)
                         .collect(),
-                    view_settings: PersistedViewSettings::from(tab.view.settings),
+                    view_settings: PersistedViewSettings::from(tab.view.settings.clone()),
                 })
             })
             .collect::<Result<Vec<_>, SessionValidationError>>()?;
@@ -702,8 +702,11 @@ impl PersistedViewSettings {
             compact_view: self.compact_view,
             always_show_icons: self.always_show_icons,
             sort: self.sort.into(),
-            details_columns: self.details_columns.into(),
-            details_column_visibility: self.details_column_visibility | SortColumn::Name.bit(),
+            details_layout: layout_from_legacy(
+                &self.details_column_order,
+                self.details_columns,
+                self.details_column_visibility,
+            ),
             details_pane_width: self.details_pane_width,
             preview_pane_width: self.preview_pane_width,
         }
@@ -729,14 +732,14 @@ impl From<PersistedSort> for SortDescriptor {
     fn from(value: PersistedSort) -> Self {
         Self {
             column: match value.column {
-                PersistedColumn::Name => SortColumn::Name,
-                PersistedColumn::DateModified => SortColumn::DateModified,
-                PersistedColumn::Type => SortColumn::Type,
-                PersistedColumn::Size => SortColumn::Size,
-                PersistedColumn::DateCreated => SortColumn::DateCreated,
-                PersistedColumn::Authors => SortColumn::Authors,
-                PersistedColumn::Tags => SortColumn::Tags,
-                PersistedColumn::Title => SortColumn::Title,
+                PersistedColumn::Name => ColumnId::Name,
+                PersistedColumn::DateModified => ColumnId::DateModified,
+                PersistedColumn::Type => ColumnId::Type,
+                PersistedColumn::Size => ColumnId::Size,
+                PersistedColumn::DateCreated => ColumnId::DateCreated,
+                PersistedColumn::Authors => ColumnId::Authors,
+                PersistedColumn::Tags => ColumnId::Tags,
+                PersistedColumn::Title => ColumnId::Title,
             },
             direction: match value.direction {
                 PersistedSortDirection::Ascending => SortDirection::Ascending,
@@ -746,18 +749,52 @@ impl From<PersistedSort> for SortDescriptor {
     }
 }
 
-impl From<PersistedColumnWidths> for DetailsColumnWidths {
-    fn from(value: PersistedColumnWidths) -> Self {
-        Self {
-            name: value.name,
-            date_modified: value.date_modified,
-            item_type: value.item_type,
-            size: value.size,
-            date_created: value.date_created,
-            authors: value.authors,
-            tags: value.tags,
-            title: value.title,
-        }
+fn layout_from_legacy(
+    order: &[PersistedColumn],
+    widths: PersistedColumnWidths,
+    visibility: u16,
+) -> OrderedColumnLayout {
+    let mut layout = OrderedColumnLayout::default();
+    let ordered = order
+        .iter()
+        .copied()
+        .map(ColumnId::from)
+        .collect::<Vec<_>>();
+    layout.reorder_known(ordered);
+    for column in PersistedColumn::ALL {
+        let id = ColumnId::from(column);
+        let _ = layout.set_width(&id, legacy_width(widths, column));
+        let _ = layout.set_visible(
+            &id,
+            visibility & legacy_bit(column) != 0 || id == ColumnId::Name,
+        );
+    }
+    layout
+}
+
+fn legacy_width(widths: PersistedColumnWidths, column: PersistedColumn) -> u16 {
+    match column {
+        PersistedColumn::Name => widths.name,
+        PersistedColumn::DateModified => widths.date_modified,
+        PersistedColumn::Type => widths.item_type,
+        PersistedColumn::Size => widths.size,
+        PersistedColumn::DateCreated => widths.date_created,
+        PersistedColumn::Authors => widths.authors,
+        PersistedColumn::Tags => widths.tags,
+        PersistedColumn::Title => widths.title,
+    }
+}
+
+const fn legacy_bit(column: PersistedColumn) -> u16 {
+    match column {
+        PersistedColumn::Name => 1,
+        PersistedColumn::DateModified => 2,
+        PersistedColumn::Type => 4,
+        PersistedColumn::Size => 8,
+        PersistedColumn::DateCreated => 16,
+        PersistedColumn::Authors => 32,
+        PersistedColumn::Tags => 64,
+        PersistedColumn::Title => 128,
     }
 }
 
@@ -826,9 +863,14 @@ impl From<ViewSettings> for PersistedViewSettings {
             always_show_icons: settings.always_show_icons,
             sort: settings.sort.into(),
             group_by: None,
-            details_column_order: PersistedColumn::ALL.to_vec(),
-            details_columns: settings.details_columns.into(),
-            details_column_visibility: settings.details_column_visibility,
+            details_column_order: settings
+                .details_layout
+                .entries()
+                .iter()
+                .filter_map(|entry| PersistedColumn::try_from(&entry.id).ok())
+                .collect(),
+            details_columns: legacy_widths_from_layout(&settings.details_layout),
+            details_column_visibility: legacy_visibility_from_layout(&settings.details_layout),
             details_pane_width: settings.details_pane_width,
             preview_pane_width: settings.preview_pane_width,
         }
@@ -866,16 +908,10 @@ impl From<ViewMode> for PersistedViewMode {
 impl From<SortDescriptor> for PersistedSort {
     fn from(value: SortDescriptor) -> Self {
         Self {
-            column: match value.column {
-                SortColumn::Name => PersistedColumn::Name,
-                SortColumn::DateModified => PersistedColumn::DateModified,
-                SortColumn::Type => PersistedColumn::Type,
-                SortColumn::Size => PersistedColumn::Size,
-                SortColumn::DateCreated => PersistedColumn::DateCreated,
-                SortColumn::Authors => PersistedColumn::Authors,
-                SortColumn::Tags => PersistedColumn::Tags,
-                SortColumn::Title => PersistedColumn::Title,
-            },
+            // V1 has no extension sort ID. The pending dynamic-session schema work will retain
+            // it; until then use the deterministic built-in fallback rather than serializing a
+            // made-up ordinal.
+            column: PersistedColumn::try_from(&value.column).unwrap_or(PersistedColumn::Name),
             direction: match value.direction {
                 SortDirection::Ascending => PersistedSortDirection::Ascending,
                 SortDirection::Descending => PersistedSortDirection::Descending,
@@ -884,17 +920,66 @@ impl From<SortDescriptor> for PersistedSort {
     }
 }
 
-impl From<DetailsColumnWidths> for PersistedColumnWidths {
-    fn from(value: DetailsColumnWidths) -> Self {
-        Self {
-            name: value.name,
-            date_modified: value.date_modified,
-            item_type: value.item_type,
-            size: value.size,
-            date_created: value.date_created,
-            authors: value.authors,
-            tags: value.tags,
-            title: value.title,
+fn legacy_widths_from_layout(layout: &OrderedColumnLayout) -> PersistedColumnWidths {
+    let width = |id| {
+        layout
+            .width(&id)
+            .unwrap_or(OrderedColumnLayout::MINIMUM_WIDTH)
+    };
+    PersistedColumnWidths {
+        name: width(ColumnId::Name),
+        date_modified: width(ColumnId::DateModified),
+        item_type: width(ColumnId::Type),
+        size: width(ColumnId::Size),
+        date_created: width(ColumnId::DateCreated),
+        authors: width(ColumnId::Authors),
+        tags: width(ColumnId::Tags),
+        title: width(ColumnId::Title),
+    }
+}
+
+fn legacy_visibility_from_layout(layout: &OrderedColumnLayout) -> u16 {
+    PersistedColumn::ALL
+        .into_iter()
+        .fold(0, |visibility, column| {
+            let id = ColumnId::from(column);
+            if layout.visible(&id) {
+                visibility | legacy_bit(column)
+            } else {
+                visibility
+            }
+        })
+}
+
+impl From<PersistedColumn> for ColumnId {
+    fn from(value: PersistedColumn) -> Self {
+        match value {
+            PersistedColumn::Name => Self::Name,
+            PersistedColumn::DateModified => Self::DateModified,
+            PersistedColumn::Type => Self::Type,
+            PersistedColumn::Size => Self::Size,
+            PersistedColumn::DateCreated => Self::DateCreated,
+            PersistedColumn::Authors => Self::Authors,
+            PersistedColumn::Tags => Self::Tags,
+            PersistedColumn::Title => Self::Title,
+        }
+    }
+}
+
+impl TryFrom<&ColumnId> for PersistedColumn {
+    type Error = ();
+
+    fn try_from(value: &ColumnId) -> Result<Self, Self::Error> {
+        match value {
+            ColumnId::Name => Ok(Self::Name),
+            ColumnId::DateModified => Ok(Self::DateModified),
+            ColumnId::Type => Ok(Self::Type),
+            ColumnId::Size => Ok(Self::Size),
+            ColumnId::DateCreated => Ok(Self::DateCreated),
+            ColumnId::Authors => Ok(Self::Authors),
+            ColumnId::Tags => Ok(Self::Tags),
+            ColumnId::Title => Ok(Self::Title),
+            ColumnId::Extension { .. } => Err(()),
         }
     }
 }

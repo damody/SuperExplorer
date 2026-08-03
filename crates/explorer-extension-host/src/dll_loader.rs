@@ -17,8 +17,9 @@ use abi_stable::{
     std_types::ROption,
 };
 use explorer_extension_api::{
-    AbiErrorCodeV1, AbiErrorV1, ExtensionRootModuleV1_Ref, PluginMetadataV1, RegistrationOutcomeV1,
-    RegistrationStatusV1, SDK_MAJOR_VERSION_V1, UiAbiFingerprintV1, registrar_request_v1,
+    AbiErrorCodeV1, AbiErrorV1, ExtensionRootModuleV1_Ref, PluginMetadataV1,
+    ROOT_MODULE_CONTRACT_ID_V1, RegistrarOutputV1, RegistrationStatusV1, SDK_MAJOR_VERSION_V1,
+    UiAbiFingerprintV1, registrar_request_v1,
 };
 use serde::Deserialize;
 use thiserror::Error;
@@ -26,10 +27,12 @@ use thiserror::Error;
 use crate::{
     ExtensionHost, HostRegistrationErrorV1, PackageManifestErrorV1, PackageManifestV1,
     PackageValidationErrorV1, ResolvedPackageV1, SealedPackageActivationGuardV1,
+    SinglePluginContributionSummaryV1, SinglePluginLoadErrorV1, SinglePluginLoadSummaryV1,
     package_validation::sealed_manifest_canonical_digest, plugin_call_guard::PluginCallGuardV1,
 };
 
 const MANIFEST_ABI_SCHEMA_V1: u32 = 1;
+const ROOT_MODULE_CONTRACT_LABEL_V1: &str = "root-contract-v1";
 const HOST_UI_ABI_FINGERPRINT_ARTIFACT: &str = include_str!("../../../sdk/ui-abi-fingerprint.json");
 static HOST_UI_ABI_FINGERPRINT: OnceLock<Result<HostUiAbiFingerprintV1, ()>> = OnceLock::new();
 static RESIDENT_LOAD_STATE: OnceLock<Mutex<ResidentLoadStateV1>> = OnceLock::new();
@@ -143,7 +146,7 @@ impl ExtensionDllLoaderV1 {
                 });
             }
 
-            let root = load_root_from_sealed_path(
+            let root = load_root_from_path(
                 &activation_guard.package_root().join(&payload.path),
                 &entry.id,
             )?;
@@ -156,7 +159,7 @@ impl ExtensionDllLoaderV1 {
             Self::validate_binary_ui_fingerprint(manifest, entry.id.as_str(), root)?;
             roots.push(LoadedExtensionRootV1 {
                 entrypoint_id: entry.id.clone(),
-                root_module: entry.root_module.clone(),
+                root_contract_id: ROOT_MODULE_CONTRACT_LABEL_V1,
                 entrypoint_path: payload.path.clone(),
                 metadata,
                 root,
@@ -176,7 +179,6 @@ impl ExtensionDllLoaderV1 {
         }
 
         let mut entrypoint_paths = BTreeSet::new();
-        let mut root_modules = BTreeSet::new();
         for entry in &manifest.rust {
             if entry.sdk_major != SDK_MAJOR_VERSION_V1 {
                 return Err(ExtensionDllLoadErrorV1::EntrypointSdkMajorMismatch {
@@ -192,10 +194,14 @@ impl ExtensionDllLoaderV1 {
                     entrypoint: entry.entrypoint.clone(),
                 });
             }
-            if !root_modules.insert(entry.root_module.to_ascii_lowercase()) {
-                return Err(ExtensionDllLoadErrorV1::DuplicateRustRootModule {
+            if entry.root_contract_id.namespace != ROOT_MODULE_CONTRACT_ID_V1.namespace.into_raw()
+                || entry.root_contract_id.value != ROOT_MODULE_CONTRACT_ID_V1.value
+            {
+                return Err(ExtensionDllLoadErrorV1::RootContractMismatch {
                     package_id: manifest.package.id.clone(),
-                    root_module: entry.root_module.clone(),
+                    entrypoint_id: entry.id.clone(),
+                    actual_namespace: entry.root_contract_id.namespace,
+                    actual_value: entry.root_contract_id.value,
                 });
             }
             if !manifest.payloads.iter().any(|payload| {
@@ -234,7 +240,7 @@ impl ExtensionDllLoaderV1 {
         entrypoint_id: &str,
         root: ExtensionRootModuleV1_Ref,
     ) -> Result<(), ExtensionDllLoadErrorV1> {
-        let binary_fingerprint = root.registrar().ui_abi_fingerprint_sha256();
+        let binary_fingerprint = Some(root.ui_abi_fingerprint_sha256());
         if !manifest.sdk.gpui {
             if matches!(binary_fingerprint, Some(ROption::RSome(_))) {
                 return Err(ExtensionDllLoadErrorV1::UnexpectedBinaryUiFingerprint {
@@ -361,6 +367,56 @@ impl ExtensionDllLoaderV1 {
     }
 }
 
+/// Loads one explicitly supplied development DLL through the production
+/// `abi_stable` root and SDK registrar path.
+///
+/// This intentionally has no package discovery, manifest, lifecycle, or
+/// multi-plugin behavior. The returned value contains copied data only; the
+/// mapped DLL and its ABI objects remain private and process-resident.
+pub(crate) fn load_single_plugin_dll(
+    path: &Path,
+) -> Result<SinglePluginLoadSummaryV1, SinglePluginLoadErrorV1> {
+    if !path.is_absolute() {
+        return Err(SinglePluginLoadErrorV1::PathMustBeAbsolute);
+    }
+    if !path.is_file() {
+        return Err(SinglePluginLoadErrorV1::PathDoesNotExist);
+    }
+    if !path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("dll"))
+    {
+        return Err(SinglePluginLoadErrorV1::PathMustBeDll);
+    }
+
+    let root = load_root_from_path(path, "single-plugin")
+        .map_err(|error| SinglePluginLoadErrorV1::LoadFailed(error.to_string()))?;
+    let metadata = ExtensionHost::new().validate_root(root).map_err(|error| {
+        SinglePluginLoadErrorV1::LoadFailed(format!("invalid root data: {error:?}"))
+    })?;
+    let output = invoke_registrar(root).map_err(|error| {
+        SinglePluginLoadErrorV1::LoadFailed(format!("registrar rejected: {error:?}"))
+    })?;
+
+    if output.outcome.registered_interface_count as usize != output.contributions.len() {
+        return Err(SinglePluginLoadErrorV1::LoadFailed(
+            "registrar reported a contribution count different from its descriptors".to_owned(),
+        ));
+    }
+
+    Ok(SinglePluginLoadSummaryV1 {
+        plugin_id: metadata.plugin_id,
+        contributions: output
+            .contributions
+            .into_iter()
+            .map(|contribution| SinglePluginContributionSummaryV1 {
+                contribution_id: contribution.contribution_id.into_string(),
+                kind: contribution.kind,
+            })
+            .collect(),
+    })
+}
+
 struct ResidentLoadStateV1 {
     entries: BTreeMap<String, ResidentLoadEntryV1>,
 }
@@ -387,7 +443,7 @@ fn resident_load_state()
 #[derive(Clone)]
 pub(crate) struct LoadedExtensionRootV1 {
     entrypoint_id: String,
-    root_module: String,
+    root_contract_id: &'static str,
     entrypoint_path: String,
     metadata: PluginMetadataV1,
     #[allow(
@@ -402,7 +458,7 @@ impl fmt::Debug for LoadedExtensionRootV1 {
         formatter
             .debug_struct("LoadedExtensionRootV1")
             .field("entrypoint_id", &self.entrypoint_id)
-            .field("root_module", &self.root_module)
+            .field("root_contract_id", &self.root_contract_id)
             .field("entrypoint_path", &self.entrypoint_path)
             .field("metadata", &self.metadata)
             .finish_non_exhaustive()
@@ -420,10 +476,10 @@ impl LoadedExtensionRootV1 {
         &self.entrypoint_id
     }
 
-    /// Returns the manifest root-module identifier bound to this DLL.
+    /// Returns the fixed SDK root-contract identifier bound to this DLL.
     #[must_use]
-    pub(crate) fn root_module(&self) -> &str {
-        &self.root_module
+    pub(crate) fn root_contract_id(&self) -> &str {
+        self.root_contract_id
     }
 
     /// Returns the sealed manifest path bound to this DLL.
@@ -446,12 +502,18 @@ impl LoadedExtensionRootV1 {
 pub(crate) fn invoke_guarded_registrar(
     root: &LoadedExtensionRootV1,
     _guard: &PluginCallGuardV1,
-) -> Result<RegistrationOutcomeV1, HostRegistrationErrorV1> {
-    let registrar = root.root.registrar();
-    let _optional_contract_query = registrar.describe_contract();
-    registrar
-        .register()
-        .invoke(registrar_request_v1())
+) -> Result<RegistrarOutputV1, HostRegistrationErrorV1> {
+    invoke_registrar(root.root)
+}
+
+/// Invokes the SDK-owned registrar factory after a caller has completed root
+/// validation. The direct single-plugin slice and marker-guarded package path
+/// intentionally share this one ABI dispatch implementation.
+fn invoke_registrar(
+    root: ExtensionRootModuleV1_Ref,
+) -> Result<RegistrarOutputV1, HostRegistrationErrorV1> {
+    root.create_registrar()
+        .create()
         .into_result()
         .map_err(|error| {
             if error.code == AbiErrorCodeV1::CALLBACK_PANICKED {
@@ -460,10 +522,22 @@ pub(crate) fn invoke_guarded_registrar(
                 HostRegistrationErrorV1::Plugin(error)
             }
         })
-        .and_then(|outcome| {
-            let raw_status = outcome.status.into_raw();
+        .and_then(|registrar| {
+            registrar
+                .register(registrar_request_v1())
+                .into_result()
+                .map_err(|error| {
+                    if error.code == AbiErrorCodeV1::CALLBACK_PANICKED {
+                        HostRegistrationErrorV1::Panicked(error)
+                    } else {
+                        HostRegistrationErrorV1::Plugin(error)
+                    }
+                })
+        })
+        .and_then(|output| {
+            let raw_status = output.outcome.status.into_raw();
             if raw_status == RegistrationStatusV1::ACCEPTED.into_raw() {
-                Ok(outcome)
+                Ok(output)
             } else {
                 let code = if raw_status == RegistrationStatusV1::REJECTED.into_raw() {
                     AbiErrorCodeV1::REGISTRATION_OUTCOME_REJECTED
@@ -474,7 +548,7 @@ pub(crate) fn invoke_guarded_registrar(
                 };
                 Err(HostRegistrationErrorV1::Plugin(AbiErrorV1::new(
                     code,
-                    explorer_extension_api::ROOT_MODULE_CONTRACT_ID_V1,
+                    ROOT_MODULE_CONTRACT_ID_V1,
                     raw_status,
                 )))
             }
@@ -575,11 +649,15 @@ pub(crate) enum ExtensionDllLoadErrorV1 {
         package_id: String,
         entrypoint: String,
     },
-    /// More than one Rust entrypoint declares the same root-module identifier.
-    #[error("package {package_id:?} declares duplicate Rust root module {root_module:?}")]
-    DuplicateRustRootModule {
+    /// A Rust entrypoint declares a root contract other than the fixed SDK v1 contract.
+    #[error(
+        "package {package_id:?} Rust entrypoint {entrypoint_id:?} declares root contract namespace={actual_namespace} value={actual_value}, expected the SDK v1 root contract"
+    )]
+    RootContractMismatch {
         package_id: String,
-        root_module: String,
+        entrypoint_id: String,
+        actual_namespace: u32,
+        actual_value: u64,
     },
     /// A GPUI package omitted the fingerprint required by its own declaration.
     #[error("GPUI package {package_id:?} omitted sdk.ui_abi_fingerprint")]
@@ -697,9 +775,9 @@ fn parse_host_ui_abi_fingerprint() -> Result<HostUiAbiFingerprintV1, ()> {
 #[cfg(windows)]
 #[allow(
     unsafe_code,
-    reason = "the sealed absolute DLL path and abi_stable exported header are validated before their references escape"
+    reason = "the absolute DLL path and abi_stable exported header are validated before their references escape"
 )]
-fn load_root_from_sealed_path(
+fn load_root_from_path(
     path: &Path,
     entrypoint_id: &str,
 ) -> Result<ExtensionRootModuleV1_Ref, ExtensionDllLoadErrorV1> {
@@ -707,7 +785,7 @@ fn load_root_from_sealed_path(
         LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32, Library,
     };
 
-    debug_assert!(path.is_absolute(), "sealed activation roots are canonical");
+    debug_assert!(path.is_absolute(), "DLL paths are validated as absolute");
     let library = unsafe {
         Library::load_with_flags(
             path,
@@ -755,7 +833,7 @@ fn load_root_from_sealed_path(
 }
 
 #[cfg(not(windows))]
-fn load_root_from_sealed_path(
+fn load_root_from_path(
     _: &Path,
     _: &str,
 ) -> Result<ExtensionRootModuleV1_Ref, ExtensionDllLoadErrorV1> {
@@ -777,9 +855,9 @@ mod tests {
         std_types::{ROption, RResult},
     };
     use explorer_extension_api::{
-        AbiErrorV1, ExtensionRegistrarV1, ExtensionRootModuleV1, RegistrarCallbackV1,
-        RegistrarImplementationV1, RegistrarRequestV1, RegistrarResultV1, RegistrationOutcomeV1,
-        StableIdV1, UiAbiFingerprintV1,
+        AbiErrorV1, ExtensionRegistrarImplementationV1, ExtensionRootModuleV1, RegistrarFactoryV1,
+        RegistrarOutputV1, RegistrarRequestV1, RegistrationOutcomeV1, StableIdV1,
+        UiAbiFingerprintV1,
     };
     use serde_json::json;
 
@@ -801,7 +879,7 @@ mod tests {
                 "package": { "id": "example.loader", "version": "1.0.0" },
                 "publisher": { "id": "example.publisher", "display_name": "Example Publisher", "contacts": [{ "kind": "email", "value": "support@example.invalid", "purposes": ["support"] }] },
                 "sdk": { "bundle_id": "dev.20260802", "target": "x86_64-pc-windows-msvc", "abi_schema": 1, "gpui": gpui, "ui_abi_fingerprint": fingerprint },
-                "rust": [{ "id": "native", "entrypoint": "native/plugin.dll", "root_module": "example.root", "sdk_major": entry_sdk_major }],
+                "rust": [{ "id": "native", "entrypoint": "native/plugin.dll", "root_contract_id": { "namespace": 1_397_030_913, "value": 1 }, "sdk_major": entry_sdk_major }],
                 "lua": [], "skins": [], "locales": [], "tools": [], "features": [], "dependencies": [],
                 "payloads": [{ "path": "native/plugin.dll", "size": 1, "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "kind": "rust_dll" }],
                 "signature": { "kind": "unsigned" }, "data_version": 1
@@ -815,15 +893,20 @@ mod tests {
 
     struct MarksCallback;
 
-    impl RegistrarImplementationV1 for MarksCallback {
-        fn register(_: RegistrarRequestV1) -> RegistrarResultV1 {
-            CALLBACK_CALLED.store(true, Ordering::SeqCst);
-            RResult::ROk(RegistrationOutcomeV1::accepted(0))
+    impl ExtensionRegistrarImplementationV1 for MarksCallback {
+        fn create() -> Self {
+            Self
         }
-    }
-
-    extern "C" fn describe_contract() -> StableIdV1 {
-        explorer_extension_api::ROOT_MODULE_CONTRACT_ID_V1
+        fn register(
+            &self,
+            _: RegistrarRequestV1,
+        ) -> explorer_extension_api::RegistrarOutputResultV1 {
+            CALLBACK_CALLED.store(true, Ordering::SeqCst);
+            RResult::ROk(RegistrarOutputV1 {
+                outcome: RegistrationOutcomeV1::accepted(0),
+                contributions: abi_stable::std_types::RVec::new(),
+            })
+        }
     }
 
     fn root(
@@ -832,19 +915,16 @@ mod tests {
     ) -> ExtensionRootModuleV1_Ref {
         ExtensionRootModuleV1 {
             abi_schema,
-            root_contract_id: explorer_extension_api::ROOT_MODULE_CONTRACT_ID_V1,
+            root_contract_id: ROOT_MODULE_CONTRACT_ID_V1,
             sdk_major: SDK_MAJOR_VERSION_V1,
             reserved: 0,
             metadata: PluginMetadataV1 {
                 plugin_id: PLUGIN_ID,
                 primary_interface_id: INTERFACE_ID,
             },
-            registrar: ExtensionRegistrarV1 {
-                register: RegistrarCallbackV1::new::<MarksCallback>(),
-                describe_contract,
-                ui_abi_fingerprint_sha256,
-            }
-            .leak_into_prefix(),
+            ui_abi_fingerprint_sha256,
+            create_registrar: RegistrarFactoryV1::new::<MarksCallback>(),
+            descriptor_contract_revision: 1,
         }
         .leak_into_prefix()
     }

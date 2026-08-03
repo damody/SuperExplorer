@@ -12,6 +12,11 @@ publish.workspace = true
 name = "SuperExplorer"
 path = "src/main.rs"
 
+[features]
+# Deliberately non-default: enables only the isolated extension-state seam
+# used by the Windows headful Safe Mode gate.
+uitest-support = ["explorer-extension-host/integration-test-support"]
+
 [dependencies]
 anyhow.workspace = true
 explorer-common = { path = "../explorer-common" }
@@ -34,6 +39,9 @@ tracing-subscriber.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+abi_stable.workspace = true
+explorer-extension-api = { path = "../explorer-extension-api" }
+explorer-extension-host = { path = "../explorer-extension-host", features = ["integration-test-support"] }
 explorer-test-support = { path = "../explorer-test-support" }
 tempfile.workspace = true
 

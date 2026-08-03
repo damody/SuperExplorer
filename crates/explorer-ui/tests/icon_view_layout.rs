@@ -15,9 +15,9 @@ fn renderer_marquee_and_keyboard_share_spatial_grid_metrics() {
     let chrome = include_str!("../src/chrome.rs");
     let state = include_str!("../src/state.rs");
     let root = include_str!("../src/lib.rs");
-    assert!(chrome.contains("let spatial_metrics = spatial_grid_metrics(view_settings, layout)"));
+    assert!(chrome.contains("let spatial_metrics = spatial_grid_metrics(&view_settings, layout)"));
     assert!(chrome.contains("let spatial_layout = spatial_grid_layout("));
-    assert!(state.contains("crate::chrome::spatial_grid_metrics(settings, layout)"));
+    assert!(state.contains("crate::chrome::spatial_grid_metrics(&settings, layout)"));
     assert!(state.contains("crate::chrome::spatial_grid_layout(metrics, viewport_width"));
     assert!(root.contains("chrome::spatial_grid_metrics(settings, layout)"));
     assert!(root.contains("chrome::spatial_grid_columns("));

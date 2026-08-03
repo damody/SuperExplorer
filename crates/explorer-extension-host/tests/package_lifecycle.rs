@@ -2,8 +2,9 @@ use std::{fmt::Write as _, fs, path::PathBuf};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use explorer_extension_host::{
-    BuiltInPackageSourceV1, PackageResolverV1, PackageSourceV1, PackageValidationResultV1,
-    PackageValidatorV1, SealedPackageStoreV1, TrustedPublisherKeyStoreV1, TrustedPublisherKeyV1,
+    BuiltInPackageSourceV1, PackageResolverV1, PackageSourceV1, PackageValidationErrorV1,
+    PackageValidationResultV1, PackageValidatorV1, SealedPackageStoreV1,
+    TrustedPublisherKeyStoreV1, TrustedPublisherKeyV1,
 };
 use ring::{
     rand::SystemRandom,
@@ -202,6 +203,25 @@ fn tampered_payload_or_signature_never_produces_a_validated_activation_candidate
             .validate(&signature_fixture.validator)
             .is_err()
     );
+
+    let unknown_key_fixture = fixture(Vec::new());
+    let mut manifest: Value = serde_json::from_str(
+        &fs::read_to_string(&unknown_key_fixture.manifest_path).expect("signed manifest bytes"),
+    )
+    .expect("signed manifest JSON");
+    manifest["signature"]["key_id"] = Value::String("unknown.signing".to_owned());
+    fs::write(&unknown_key_fixture.manifest_path, manifest.to_string())
+        .expect("unknown signing-key manifest");
+    let unknown_key_candidate = unknown_key_fixture
+        .source()
+        .discover()
+        .expect("unknown-key source discovery")
+        .pop()
+        .expect("unknown-key package candidate");
+    assert!(matches!(
+        unknown_key_candidate.validate(&unknown_key_fixture.validator),
+        Err(PackageValidationErrorV1::UnknownSigningKey { .. })
+    ));
 
     let empty_resolution = PackageResolverV1::resolve(&[]);
     assert!(empty_resolution.resolved_packages().is_empty());

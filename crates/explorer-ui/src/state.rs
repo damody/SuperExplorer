@@ -29,7 +29,7 @@ struct NavigationHistoryMenuState {
     focused_index: usize,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FolderOptionsDraft {
     pub page: FolderOptionsPage,
     pub settings: explorer_model::ViewSettings,
@@ -333,12 +333,16 @@ pub struct AppViewState {
     more_menu_index: usize,
     extensions_menu_open: bool,
     tortoise_git_available: bool,
+    loaded_extension_summary: Option<String>,
     folder_options: Option<FolderOptionsDraft>,
     restore_previous_session: bool,
     view_show_submenu_open: bool,
+    /// Host-owned descriptor snapshot. Extension-host contribution validation will replace
+    /// package descriptors in task 5.2; UI only reads this registry.
+    column_registry: explorer_model::ColumnRegistry,
     details_column_resize: Option<DetailsColumnResizeSession>,
-    details_column_menu: Option<explorer_model::SortColumn>,
-    details_filter_menu: Option<explorer_model::SortColumn>,
+    details_column_menu: Option<explorer_model::ColumnId>,
+    details_filter_menu: Option<explorer_model::ColumnId>,
     details_filters: HashMap<TabId, crate::file_view::DetailsFilters>,
     side_pane_resize: Option<SidePaneResizeSession>,
     scrollbar_drag: Option<ScrollbarDragSession>,
@@ -355,10 +359,10 @@ pub(crate) struct MarqueeSelectionSession {
     base_selection: explorer_model::SelectionModel,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct DetailsColumnResizeSession {
     tab_id: TabId,
-    column: explorer_model::SortColumn,
+    column: explorer_model::ColumnId,
     pointer_x: f32,
     width: u16,
 }
@@ -478,9 +482,11 @@ impl AppViewState {
             more_menu_index: 0,
             extensions_menu_open: false,
             tortoise_git_available: false,
+            loaded_extension_summary: None,
             folder_options: None,
             restore_previous_session: true,
             view_show_submenu_open: false,
+            column_registry: explorer_model::ColumnRegistry::built_ins(),
             details_column_resize: None,
             details_column_menu: None,
             details_filter_menu: None,
@@ -499,6 +505,10 @@ impl AppViewState {
 
     pub const fn broker_health(&self) -> BrokerUiHealth {
         self.broker_health
+    }
+
+    pub fn column_registry(&self) -> &explorer_model::ColumnRegistry {
+        &self.column_registry
     }
 
     pub fn set_broker_health(&mut self, health: BrokerUiHealth) {
@@ -1042,6 +1052,14 @@ impl AppViewState {
         self.tortoise_git_available
     }
 
+    pub fn loaded_extension_summary(&self) -> Option<&str> {
+        self.loaded_extension_summary.as_deref()
+    }
+
+    pub(crate) fn set_loaded_extension_summary(&mut self, summary: Option<String>) {
+        self.loaded_extension_summary = summary;
+    }
+
     pub(crate) fn set_tortoise_git_available(&mut self, available: bool) {
         self.tortoise_git_available = available;
         if !available {
@@ -1123,7 +1141,7 @@ impl AppViewState {
         let settings = self.view_settings();
         let order = self.presentation_ids();
         let mut selected = base_selection;
-        let metrics = crate::chrome::spatial_grid_metrics(settings, layout);
+        let metrics = crate::chrome::spatial_grid_metrics(&settings, layout);
         let grid = crate::chrome::spatial_grid_layout(metrics, viewport_width, order.len());
         let metrics = grid.metrics;
         let item_width = metrics.cell_width.max(1.0);
@@ -1359,8 +1377,8 @@ impl AppViewState {
         true
     }
 
-    pub const fn folder_options(&self) -> Option<FolderOptionsDraft> {
-        self.folder_options
+    pub fn folder_options(&self) -> Option<FolderOptionsDraft> {
+        self.folder_options.clone()
     }
 
     pub(crate) fn open_folder_options(&mut self) {
@@ -1412,7 +1430,7 @@ impl AppViewState {
     }
 
     pub(crate) fn apply_folder_options(&mut self) {
-        if let Some(draft) = self.folder_options {
+        if let Some(draft) = self.folder_options.clone() {
             self.tabs.active_tab_mut().view.settings = draft.settings;
             self.restore_previous_session = draft.restore_previous_session;
         }
@@ -1428,7 +1446,7 @@ impl AppViewState {
     }
 
     pub fn view_settings(&self) -> explorer_model::ViewSettings {
-        self.tabs.active_tab().view.settings
+        self.tabs.active_tab().view.settings.clone()
     }
 
     pub(crate) fn toggle_view_menu(&mut self) {
@@ -1498,7 +1516,7 @@ impl AppViewState {
             (explorer_model::ViewMode::ExtraLargeIcons, 384),
             (explorer_model::ViewMode::ExtraLargeIcons, 512),
         ];
-        let current = self.tabs.active_tab().view.settings;
+        let current = self.tabs.active_tab().view.settings.clone();
         let index = LEVELS
             .iter()
             .position(|level| *level == (current.mode, current.icon_size))
@@ -1514,7 +1532,7 @@ impl AppViewState {
         self.close_view_menu();
     }
 
-    pub(crate) fn set_sort_column(&mut self, column: explorer_model::SortColumn) {
+    pub(crate) fn set_sort_column(&mut self, column: explorer_model::ColumnId) {
         let sort = &mut self.tabs.active_tab_mut().view.settings.sort;
         if sort.column == column {
             sort.direction = match sort.direction {
@@ -1526,23 +1544,31 @@ impl AppViewState {
                 }
             };
         } else {
-            sort.column = column;
-            sort.direction = match column {
-                explorer_model::SortColumn::DateModified
-                | explorer_model::SortColumn::DateCreated
-                | explorer_model::SortColumn::Size => explorer_model::SortDirection::Descending,
-                explorer_model::SortColumn::Name
-                | explorer_model::SortColumn::Type
-                | explorer_model::SortColumn::Authors
-                | explorer_model::SortColumn::Tags
-                | explorer_model::SortColumn::Title => explorer_model::SortDirection::Ascending,
+            let direction = match &column {
+                explorer_model::ColumnId::DateModified
+                | explorer_model::ColumnId::DateCreated
+                | explorer_model::ColumnId::Size => explorer_model::SortDirection::Descending,
+                explorer_model::ColumnId::Name
+                | explorer_model::ColumnId::Type
+                | explorer_model::ColumnId::Authors
+                | explorer_model::ColumnId::Tags
+                | explorer_model::ColumnId::Title => explorer_model::SortDirection::Ascending,
+                explorer_model::ColumnId::Extension { .. } => {
+                    explorer_model::SortDirection::Ascending
+                }
             };
+            sort.column = column;
+            sort.direction = direction;
         }
         self.close_sort_menu();
     }
 
-    pub(crate) fn sort_column_supported(&self, column: explorer_model::SortColumn) -> bool {
-        if column == explorer_model::SortColumn::Name {
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "action dispatch supplies an owned column identity and this reducer boundary deliberately has no borrow lifetime"
+    )]
+    pub(crate) fn sort_column_supported(&self, column: explorer_model::ColumnId) -> bool {
+        if column == explorer_model::ColumnId::Name {
             return true;
         }
         let tab = self.tabs.active_tab();
@@ -1557,20 +1583,21 @@ impl AppViewState {
             .snapshot()
             .is_some_and(|snapshot| {
                 snapshot.entries().iter().any(|entry| match column {
-                    explorer_model::SortColumn::Name => true,
-                    explorer_model::SortColumn::DateModified => {
+                    explorer_model::ColumnId::Name => true,
+                    explorer_model::ColumnId::DateModified => {
                         entry.metadata.modified_sort_key.is_some()
                             || entry.metadata.modified_display.is_some()
                     }
-                    explorer_model::SortColumn::Type => entry.metadata.type_display.is_some(),
-                    explorer_model::SortColumn::Size => entry.metadata.size_bytes.is_some(),
-                    explorer_model::SortColumn::DateCreated => {
+                    explorer_model::ColumnId::Type => entry.metadata.type_display.is_some(),
+                    explorer_model::ColumnId::Size => entry.metadata.size_bytes.is_some(),
+                    explorer_model::ColumnId::DateCreated => {
                         entry.metadata.created_sort_key.is_some()
                             || entry.metadata.created_display.is_some()
                     }
-                    explorer_model::SortColumn::Authors => entry.metadata.authors_display.is_some(),
-                    explorer_model::SortColumn::Tags => entry.metadata.tags_display.is_some(),
-                    explorer_model::SortColumn::Title => entry.metadata.title_display.is_some(),
+                    explorer_model::ColumnId::Authors => entry.metadata.authors_display.is_some(),
+                    explorer_model::ColumnId::Tags => entry.metadata.tags_display.is_some(),
+                    explorer_model::ColumnId::Title => entry.metadata.title_display.is_some(),
+                    explorer_model::ColumnId::Extension { .. } => false,
                 })
             })
     }
@@ -1580,23 +1607,29 @@ impl AppViewState {
         self.close_sort_menu();
     }
 
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the reducer accepts the owned action payload before looking up a host-owned descriptor"
+    )]
     pub(crate) fn set_details_column_width(
         &mut self,
-        column: explorer_model::SortColumn,
+        column: explorer_model::ColumnId,
         width: u16,
     ) {
-        self.tabs
-            .active_tab_mut()
-            .view
-            .settings
-            .details_columns
-            .set(column, width);
+        if let Some(descriptor) = self.column_registry.get(&column) {
+            self.tabs
+                .active_tab_mut()
+                .view
+                .settings
+                .details_layout
+                .set_width_for(descriptor, width);
+        }
     }
 
-    pub const fn details_column_menu(&self) -> Option<explorer_model::SortColumn> {
-        self.details_column_menu
+    pub fn details_column_menu(&self) -> Option<explorer_model::ColumnId> {
+        self.details_column_menu.clone()
     }
-    pub fn open_details_column_menu(&mut self, column: explorer_model::SortColumn) {
+    pub fn open_details_column_menu(&mut self, column: explorer_model::ColumnId) {
         self.details_column_menu = Some(column);
         self.details_filter_menu = None;
         self.sort_menu_open = false;
@@ -1609,12 +1642,12 @@ impl AppViewState {
         self.details_column_menu = None;
     }
 
-    pub const fn details_filter_menu(&self) -> Option<explorer_model::SortColumn> {
-        self.details_filter_menu
+    pub fn details_filter_menu(&self) -> Option<explorer_model::ColumnId> {
+        self.details_filter_menu.clone()
     }
 
-    pub fn open_details_filter_menu(&mut self, column: explorer_model::SortColumn) {
-        self.details_filter_menu = if self.details_filter_menu == Some(column) {
+    pub fn open_details_filter_menu(&mut self, column: explorer_model::ColumnId) {
+        self.details_filter_menu = if self.details_filter_menu == Some(column.clone()) {
             None
         } else {
             Some(column)
@@ -1633,28 +1666,40 @@ impl AppViewState {
         self.details_filter_menu = None;
     }
 
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the UI command boundary owns the column identity passed into its snapshot projection"
+    )]
     pub fn details_filter_options(
         &self,
-        column: explorer_model::SortColumn,
+        column: explorer_model::ColumnId,
     ) -> Vec<crate::file_view::DetailsFilterOption> {
         self.tabs
             .active_tab()
             .visible_snapshot()
             .map_or_else(Vec::new, |snapshot| {
-                crate::file_view::DetailsFilters::options(snapshot, column)
+                crate::file_view::DetailsFilters::options(snapshot, &column)
             })
     }
 
-    pub fn details_filter_selected(&self, column: explorer_model::SortColumn, key: &str) -> bool {
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the UI command boundary owns the column identity passed into its snapshot projection"
+    )]
+    pub fn details_filter_selected(&self, column: explorer_model::ColumnId, key: &str) -> bool {
         self.details_filters
             .get(&self.tabs.active_tab_id())
-            .is_some_and(|filters| filters.is_selected(column, key))
+            .is_some_and(|filters| filters.is_selected(&column, key))
     }
 
-    pub fn details_filter_active(&self, column: explorer_model::SortColumn) -> bool {
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the UI command boundary owns the column identity passed into its snapshot projection"
+    )]
+    pub fn details_filter_active(&self, column: explorer_model::ColumnId) -> bool {
         self.details_filters
             .get(&self.tabs.active_tab_id())
-            .is_some_and(|filters| filters.is_active(column))
+            .is_some_and(|filters| filters.is_active(&column))
     }
 
     pub fn active_details_filters(&self) -> crate::file_view::DetailsFilters {
@@ -1664,37 +1709,56 @@ impl AppViewState {
             .unwrap_or_default()
     }
 
-    pub fn toggle_details_filter(&mut self, column: explorer_model::SortColumn, key: String) {
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the action reducer consumes owned filter command data before storing stable copies"
+    )]
+    pub fn toggle_details_filter(&mut self, column: explorer_model::ColumnId, key: String) {
         self.details_filters
             .entry(self.tabs.active_tab_id())
             .or_default()
-            .toggle(column, key);
+            .toggle(&column, &key);
         self.details_filter_menu = Some(column);
     }
 
-    pub fn clear_details_filter(&mut self, column: explorer_model::SortColumn) {
+    pub fn clear_details_filter(&mut self, column: explorer_model::ColumnId) {
         self.details_filters
             .entry(self.tabs.active_tab_id())
             .or_default()
-            .clear(column);
+            .clear(&column);
         self.details_filter_menu = Some(column);
     }
-    pub fn toggle_details_column(&mut self, column: explorer_model::SortColumn) {
-        if column == explorer_model::SortColumn::Name {
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the action reducer receives an owned column identity"
+    )]
+    pub fn toggle_details_column(&mut self, column: explorer_model::ColumnId) {
+        if column == explorer_model::ColumnId::Name {
             return;
         }
         self.tabs
             .active_tab_mut()
             .view
             .settings
-            .details_column_visibility ^= column.bit();
+            .details_layout
+            .toggle_visible(&column);
     }
-    pub fn details_column_visible(&self, column: explorer_model::SortColumn) -> bool {
-        self.view_settings().details_column_visibility & column.bit() != 0
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the action/UI boundary owns the column identity used for the registry lookup"
+    )]
+    pub fn details_column_visible(&self, column: explorer_model::ColumnId) -> bool {
+        self.column_registry.contains(&column)
+            && self.view_settings().details_column_visible(&column)
     }
     pub fn auto_size_all_details_columns(&mut self) {
-        for column in explorer_model::SortColumn::ALL {
-            if self.details_column_visible(column) {
+        let columns = self
+            .column_registry
+            .iter()
+            .map(|descriptor| descriptor.id.clone())
+            .collect::<Vec<_>>();
+        for column in columns {
+            if self.details_column_visible(column.clone()) {
                 self.auto_size_details_column(column);
             }
         }
@@ -1703,17 +1767,18 @@ impl AppViewState {
     ///
     /// This intentionally performs no filesystem or Shell query on the UI thread. The estimate
     /// includes the header, row padding, and (for Name) the Explorer icon/gap allocation.
-    pub(crate) fn auto_size_details_column(&mut self, column: explorer_model::SortColumn) {
+    pub(crate) fn auto_size_details_column(&mut self, column: explorer_model::ColumnId) {
         self.end_details_column_resize();
         let header = match column {
-            explorer_model::SortColumn::Name => "名稱",
-            explorer_model::SortColumn::DateModified => "修改日期",
-            explorer_model::SortColumn::Type => "類型",
-            explorer_model::SortColumn::Size => "大小",
-            explorer_model::SortColumn::DateCreated => "建立日期",
-            explorer_model::SortColumn::Authors => "作者",
-            explorer_model::SortColumn::Tags => "標籤",
-            explorer_model::SortColumn::Title => "標題",
+            explorer_model::ColumnId::Name => "名稱",
+            explorer_model::ColumnId::DateModified => "修改日期",
+            explorer_model::ColumnId::Type => "類型",
+            explorer_model::ColumnId::Size => "大小",
+            explorer_model::ColumnId::DateCreated => "建立日期",
+            explorer_model::ColumnId::Authors => "作者",
+            explorer_model::ColumnId::Tags => "標籤",
+            explorer_model::ColumnId::Title => "標題",
+            explorer_model::ColumnId::Extension { .. } => "擴充欄位",
         };
         let header_width = estimated_text_width(header) + 32.0;
         let content_width = self
@@ -1723,59 +1788,58 @@ impl AppViewState {
             .into_iter()
             .flat_map(explorer_model::DirectorySnapshot::entries)
             .map(|entry| match column {
-                explorer_model::SortColumn::Name => {
+                explorer_model::ColumnId::Name => {
                     estimated_text_width(&entry.display_name) + 20.0 + 20.0
                 }
-                explorer_model::SortColumn::DateModified => entry
+                explorer_model::ColumnId::DateModified => entry
                     .metadata
                     .modified_display
                     .as_deref()
                     .map_or(16.0, |text| estimated_text_width(text) + 16.0),
-                explorer_model::SortColumn::Type => entry
+                explorer_model::ColumnId::Type => entry
                     .metadata
                     .type_display
                     .as_deref()
                     .map_or(16.0, |text| estimated_text_width(text) + 16.0),
-                explorer_model::SortColumn::Size => {
-                    entry.metadata.size_bytes.map_or(16.0, |size| {
-                        estimated_text_width(&crate::format_file_size(size)) + 16.0
-                    })
-                }
-                explorer_model::SortColumn::DateCreated => entry
+                explorer_model::ColumnId::Size => entry.metadata.size_bytes.map_or(16.0, |size| {
+                    estimated_text_width(&crate::format_file_size(size)) + 16.0
+                }),
+                explorer_model::ColumnId::DateCreated => entry
                     .metadata
                     .created_display
                     .as_deref()
                     .map_or(16.0, |text| estimated_text_width(text) + 16.0),
-                explorer_model::SortColumn::Authors => entry
+                explorer_model::ColumnId::Authors => entry
                     .metadata
                     .authors_display
                     .as_deref()
                     .map_or(16.0, |text| estimated_text_width(text) + 16.0),
-                explorer_model::SortColumn::Tags => entry
+                explorer_model::ColumnId::Tags => entry
                     .metadata
                     .tags_display
                     .as_deref()
                     .map_or(16.0, |text| estimated_text_width(text) + 16.0),
-                explorer_model::SortColumn::Title => entry
+                explorer_model::ColumnId::Title => entry
                     .metadata
                     .title_display
                     .as_deref()
                     .map_or(16.0, |text| estimated_text_width(text) + 16.0),
+                explorer_model::ColumnId::Extension { .. } => 16.0,
             })
             .fold(header_width, f32::max);
         self.set_details_column_width(
             column,
             clamped_u16(
                 content_width.ceil(),
-                explorer_model::DetailsColumnWidths::MINIMUM,
-                explorer_model::DetailsColumnWidths::MAXIMUM,
+                explorer_model::OrderedColumnLayout::MINIMUM_WIDTH,
+                explorer_model::OrderedColumnLayout::MAXIMUM_WIDTH,
             ),
         );
     }
 
     pub(crate) fn begin_details_column_resize(
         &mut self,
-        column: explorer_model::SortColumn,
+        column: explorer_model::ColumnId,
         pointer_x: f32,
     ) {
         if !pointer_x.is_finite() {
@@ -1788,8 +1852,9 @@ impl AppViewState {
             .active_tab()
             .view
             .settings
-            .details_columns
-            .width(column);
+            .details_layout
+            .width(&column)
+            .unwrap_or(explorer_model::OrderedColumnLayout::MINIMUM_WIDTH);
         self.details_column_resize = Some(DetailsColumnResizeSession {
             tab_id,
             column,
@@ -1799,7 +1864,7 @@ impl AppViewState {
     }
 
     pub(crate) fn update_details_column_resize(&mut self, pointer_x: f32) {
-        let Some(session) = self.details_column_resize else {
+        let Some(session) = self.details_column_resize.clone() else {
             return;
         };
         if !pointer_x.is_finite() || session.tab_id != self.tabs.active_tab_id() {
@@ -1808,15 +1873,15 @@ impl AppViewState {
         }
         let delta = (pointer_x - session.pointer_x).round();
         let width = (f32::from(session.width) + delta).clamp(
-            f32::from(explorer_model::DetailsColumnWidths::MINIMUM),
-            f32::from(explorer_model::DetailsColumnWidths::MAXIMUM),
+            f32::from(explorer_model::OrderedColumnLayout::MINIMUM_WIDTH),
+            f32::from(explorer_model::OrderedColumnLayout::MAXIMUM_WIDTH),
         );
         self.set_details_column_width(
             session.column,
             clamped_u16(
                 width,
-                explorer_model::DetailsColumnWidths::MINIMUM,
-                explorer_model::DetailsColumnWidths::MAXIMUM,
+                explorer_model::OrderedColumnLayout::MINIMUM_WIDTH,
+                explorer_model::OrderedColumnLayout::MAXIMUM_WIDTH,
             ),
         );
     }
@@ -1851,7 +1916,7 @@ impl AppViewState {
         if !pointer_x.is_finite() {
             return false;
         }
-        let settings = self.tabs.active_tab().view.settings;
+        let settings = self.tabs.active_tab().view.settings.clone();
         let (width, details) = if settings.details_pane {
             (settings.details_pane_width, true)
         } else if settings.preview_pane {
@@ -3120,7 +3185,7 @@ impl AppViewState {
                 .resolve_filtered(
                     snapshot,
                     tab.view.settings.hidden_items,
-                    tab.view.settings.sort,
+                    &tab.view.settings.sort,
                     self.details_filters
                         .get(&self.tabs.active_tab_id())
                         .cloned()
@@ -4490,7 +4555,7 @@ mod tests {
         let mut state = state_with_rows();
         assert!(state.select_row(1));
         assert!(state.begin_inline_rename(1));
-        state.set_sort_column(explorer_model::SortColumn::Size);
+        state.set_sort_column(explorer_model::ColumnId::Size);
         let before_selection = state.tabs().active_tab().selection.clone();
         let before_focus = state.focused_row_index();
         let before_rename = state.rename_editor().cloned();
@@ -4567,55 +4632,75 @@ mod tests {
     fn details_column_resize_is_clamped_and_owned_by_the_active_tab() {
         let mut state = AppViewState::default();
         let first = state.tabs().active_tab_id();
-        state.begin_details_column_resize(explorer_model::SortColumn::Name, 100.0);
+        state.begin_details_column_resize(explorer_model::ColumnId::Name, 100.0);
         assert!(state.details_column_resize_active());
         state.update_details_column_resize(160.0);
-        assert_eq!(state.view_settings().details_columns.name, 340);
+        assert_eq!(
+            state
+                .view_settings()
+                .details_column_width(&explorer_model::ColumnId::Name),
+            340
+        );
         state.update_details_column_resize(-10_000.0);
         assert_eq!(
-            state.view_settings().details_columns.name,
-            explorer_model::DetailsColumnWidths::MINIMUM
+            state
+                .view_settings()
+                .details_column_width(&explorer_model::ColumnId::Name),
+            explorer_model::OrderedColumnLayout::MINIMUM_WIDTH
         );
         state.end_details_column_resize();
         assert!(!state.details_column_resize_active());
         state.update_details_column_resize(500.0);
         assert_eq!(
-            state.view_settings().details_columns.name,
-            explorer_model::DetailsColumnWidths::MINIMUM
+            state
+                .view_settings()
+                .details_column_width(&explorer_model::ColumnId::Name),
+            explorer_model::OrderedColumnLayout::MINIMUM_WIDTH
         );
-        state.set_details_column_width(explorer_model::SortColumn::Name, 280);
-        state.begin_details_column_resize(explorer_model::SortColumn::Name, 0.0);
+        state.set_details_column_width(explorer_model::ColumnId::Name, 280);
+        state.begin_details_column_resize(explorer_model::ColumnId::Name, 0.0);
         state.update_details_column_resize(10_000.0);
         assert_eq!(
-            state.view_settings().details_columns.name,
-            explorer_model::DetailsColumnWidths::MAXIMUM
+            state
+                .view_settings()
+                .details_column_width(&explorer_model::ColumnId::Name),
+            explorer_model::OrderedColumnLayout::MAXIMUM_WIDTH
         );
         state.end_details_column_resize();
         state.set_details_column_width(
-            explorer_model::SortColumn::Name,
-            explorer_model::DetailsColumnWidths::MINIMUM,
+            explorer_model::ColumnId::Name,
+            explorer_model::OrderedColumnLayout::MINIMUM_WIDTH,
         );
 
-        state.begin_details_column_resize(explorer_model::SortColumn::Name, 0.0);
+        state.begin_details_column_resize(explorer_model::ColumnId::Name, 0.0);
         let second = state.new_tab();
         assert!(!state.details_column_resize_active());
         assert_ne!(first, second);
         assert_eq!(
-            state.view_settings().details_columns.name,
-            explorer_model::DetailsColumnWidths::MINIMUM
+            state
+                .view_settings()
+                .details_column_width(&explorer_model::ColumnId::Name),
+            explorer_model::OrderedColumnLayout::MINIMUM_WIDTH
         );
-        state.set_details_column_width(explorer_model::SortColumn::Name, 500);
+        state.set_details_column_width(explorer_model::ColumnId::Name, 500);
         assert!(state.activate_tab(first));
         assert_eq!(
-            state.view_settings().details_columns.name,
-            explorer_model::DetailsColumnWidths::MINIMUM
+            state
+                .view_settings()
+                .details_column_width(&explorer_model::ColumnId::Name),
+            explorer_model::OrderedColumnLayout::MINIMUM_WIDTH
         );
         assert!(state.activate_tab(second));
-        assert_eq!(state.view_settings().details_columns.name, 500);
-        state.begin_details_column_resize(explorer_model::SortColumn::Name, 0.0);
+        assert_eq!(
+            state
+                .view_settings()
+                .details_column_width(&explorer_model::ColumnId::Name),
+            500
+        );
+        state.begin_details_column_resize(explorer_model::ColumnId::Name, 0.0);
         state.set_view_mode(explorer_model::ViewMode::List);
         assert!(!state.details_column_resize_active());
-        state.begin_details_column_resize(explorer_model::SortColumn::Name, 0.0);
+        state.begin_details_column_resize(explorer_model::ColumnId::Name, 0.0);
         state.request_close();
         assert!(!state.details_column_resize_active());
     }
@@ -4670,25 +4755,23 @@ mod tests {
     #[test]
     fn details_column_auto_size_uses_owned_snapshot_text_and_header_only_when_empty() {
         let mut empty = AppViewState::default();
-        empty.auto_size_details_column(explorer_model::SortColumn::Name);
+        empty.auto_size_details_column(explorer_model::ColumnId::Name);
         assert_eq!(
             empty
                 .view_settings()
-                .details_columns
-                .width(explorer_model::SortColumn::Name),
+                .details_column_width(&explorer_model::ColumnId::Name),
             60,
             "empty folders size from the localized header without I/O"
         );
 
         let mut state = state_with_rows();
-        state.begin_details_column_resize(explorer_model::SortColumn::Name, 10.0);
-        state.auto_size_details_column(explorer_model::SortColumn::Name);
+        state.begin_details_column_resize(explorer_model::ColumnId::Name, 10.0);
+        state.auto_size_details_column(explorer_model::ColumnId::Name);
         assert!(!state.details_column_resize_active());
         assert_eq!(
             state
                 .view_settings()
-                .details_columns
-                .width(explorer_model::SortColumn::Name),
+                .details_column_width(&explorer_model::ColumnId::Name),
             98,
             "name estimate includes the longest owned row plus icon and padding"
         );
@@ -4702,13 +4785,12 @@ mod tests {
             metadata: explorer_model::FileEntryMetadata::default(),
         });
         state.tabs.active_tab_mut().directory = explorer_model::DirectoryState::Ready(snapshot);
-        state.auto_size_details_column(explorer_model::SortColumn::Name);
+        state.auto_size_details_column(explorer_model::ColumnId::Name);
         assert_eq!(
             state
                 .view_settings()
-                .details_columns
-                .width(explorer_model::SortColumn::Name),
-            explorer_model::DetailsColumnWidths::MAXIMUM
+                .details_column_width(&explorer_model::ColumnId::Name),
+            explorer_model::OrderedColumnLayout::MAXIMUM_WIDTH
         );
     }
 
@@ -4718,11 +4800,11 @@ mod tests {
         let first = state.tabs().active_tab_id();
         let second = state.new_tab();
         let _ = state.take_pending_new_tab_command();
-        state.set_sort_column(explorer_model::SortColumn::Size);
+        state.set_sort_column(explorer_model::ColumnId::Size);
         assert_eq!(
             state.view_settings().sort,
             explorer_model::SortDescriptor {
-                column: explorer_model::SortColumn::Size,
+                column: explorer_model::ColumnId::Size,
                 direction: explorer_model::SortDirection::Descending,
             }
         );
@@ -4735,7 +4817,7 @@ mod tests {
         assert!(state.activate_tab(second));
         assert_eq!(
             state.view_settings().sort.column,
-            explorer_model::SortColumn::Size
+            explorer_model::ColumnId::Size
         );
         assert_eq!(
             state.view_settings().sort.direction,
@@ -4749,8 +4831,8 @@ mod tests {
             explorer_model::LocationDescriptor::ParsingName("shell:RecycleBinFolder".to_owned()),
             "Recycle Bin",
         ));
-        assert!(state.sort_column_supported(explorer_model::SortColumn::Name));
-        assert!(!state.sort_column_supported(explorer_model::SortColumn::Size));
+        assert!(state.sort_column_supported(explorer_model::ColumnId::Name));
+        assert!(!state.sort_column_supported(explorer_model::ColumnId::Size));
 
         let command = state.begin_active_location_load().expect("namespace load");
         let context = command.context().expect("request context").clone();
@@ -4784,44 +4866,44 @@ mod tests {
         });
         let _ =
             state.apply_service_event(explorer_model::ExplorerEvent::DirectoryFinished { context });
-        assert!(state.sort_column_supported(explorer_model::SortColumn::Size));
-        assert!(state.sort_column_supported(explorer_model::SortColumn::Type));
-        assert!(!state.sort_column_supported(explorer_model::SortColumn::Authors));
+        assert!(state.sort_column_supported(explorer_model::ColumnId::Size));
+        assert!(state.sort_column_supported(explorer_model::ColumnId::Type));
+        assert!(!state.sort_column_supported(explorer_model::ColumnId::Authors));
     }
 
     #[test]
     fn details_column_menu_applies_all_columns_immediately_per_tab() {
         let mut state = AppViewState::default();
         let first = state.tabs().active_tab_id();
-        state.open_details_column_menu(explorer_model::SortColumn::Size);
+        state.open_details_column_menu(explorer_model::ColumnId::Size);
         assert_eq!(
             state.details_column_menu(),
-            Some(explorer_model::SortColumn::Size)
+            Some(explorer_model::ColumnId::Size)
         );
-        state.toggle_details_column(explorer_model::SortColumn::Name);
-        assert!(state.details_column_visible(explorer_model::SortColumn::Name));
-        state.toggle_details_column(explorer_model::SortColumn::Size);
-        assert!(!state.details_column_visible(explorer_model::SortColumn::Size));
+        state.toggle_details_column(explorer_model::ColumnId::Name);
+        assert!(state.details_column_visible(explorer_model::ColumnId::Name));
+        state.toggle_details_column(explorer_model::ColumnId::Size);
+        assert!(!state.details_column_visible(explorer_model::ColumnId::Size));
         let second = state.new_tab();
         let _ = state.take_pending_new_tab_command();
-        assert!(!state.details_column_visible(explorer_model::SortColumn::Size));
-        state.toggle_details_column(explorer_model::SortColumn::Size);
-        assert!(state.details_column_visible(explorer_model::SortColumn::Size));
+        assert!(!state.details_column_visible(explorer_model::ColumnId::Size));
+        state.toggle_details_column(explorer_model::ColumnId::Size);
+        assert!(state.details_column_visible(explorer_model::ColumnId::Size));
         assert!(state.activate_tab(first));
-        assert!(!state.details_column_visible(explorer_model::SortColumn::Size));
+        assert!(!state.details_column_visible(explorer_model::ColumnId::Size));
         assert!(state.activate_tab(second));
-        assert!(state.details_column_visible(explorer_model::SortColumn::Size));
+        assert!(state.details_column_visible(explorer_model::ColumnId::Size));
 
-        state.open_details_column_menu(explorer_model::SortColumn::Name);
-        state.toggle_details_column(explorer_model::SortColumn::Authors);
-        assert!(state.details_column_visible(explorer_model::SortColumn::Authors));
+        state.open_details_column_menu(explorer_model::ColumnId::Name);
+        state.toggle_details_column(explorer_model::ColumnId::Authors);
+        assert!(state.details_column_visible(explorer_model::ColumnId::Authors));
         assert_eq!(
             state.details_column_menu(),
-            Some(explorer_model::SortColumn::Name),
+            Some(explorer_model::ColumnId::Name),
             "immediate toggles keep the menu open for additional column choices"
         );
-        state.toggle_details_column(explorer_model::SortColumn::Authors);
-        assert!(!state.details_column_visible(explorer_model::SortColumn::Authors));
+        state.toggle_details_column(explorer_model::ColumnId::Authors);
+        assert!(!state.details_column_visible(explorer_model::ColumnId::Authors));
     }
 
     #[test]
@@ -4843,7 +4925,7 @@ mod tests {
         });
         state.tabs_mut().active_tab_mut().directory =
             explorer_model::DirectoryState::Ready(snapshot);
-        state.set_sort_column(explorer_model::SortColumn::Name);
+        state.set_sort_column(explorer_model::ColumnId::Name);
         state.set_sort_direction(explorer_model::SortDirection::Descending);
 
         assert!(
@@ -4969,14 +5051,14 @@ mod tests {
     fn details_resize_and_marquee_cannot_own_the_same_pointer_gesture() {
         let mut state = state_with_rows();
 
-        state.begin_details_column_resize(explorer_model::SortColumn::Name, 100.0);
+        state.begin_details_column_resize(explorer_model::ColumnId::Name, 100.0);
         assert!(state.details_column_resize_active());
         assert!(!state.begin_marquee(8.0, 40.0, false));
         assert!(state.marquee_session().is_none());
 
         state.end_details_column_resize();
         assert!(state.begin_marquee(8.0, 40.0, false));
-        state.begin_details_column_resize(explorer_model::SortColumn::Name, 100.0);
+        state.begin_details_column_resize(explorer_model::ColumnId::Name, 100.0);
         assert!(state.details_column_resize_active());
         assert!(state.marquee_session().is_none());
     }
@@ -6743,16 +6825,16 @@ mod tests {
     #[test]
     fn command_and_details_header_menus_are_mutually_exclusive() {
         let mut state = AppViewState::default();
-        state.open_details_column_menu(explorer_model::SortColumn::Name);
+        state.open_details_column_menu(explorer_model::ColumnId::Name);
         state.toggle_view_menu();
         assert!(state.details_column_menu().is_none());
         assert!(state.view_menu_open());
 
-        state.open_details_filter_menu(explorer_model::SortColumn::Size);
+        state.open_details_filter_menu(explorer_model::ColumnId::Size);
         assert!(!state.view_menu_open());
         assert_eq!(
             state.details_filter_menu(),
-            Some(explorer_model::SortColumn::Size)
+            Some(explorer_model::ColumnId::Size)
         );
         state.toggle_sort_menu();
         assert!(state.details_filter_menu().is_none());

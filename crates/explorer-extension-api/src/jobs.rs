@@ -4,14 +4,17 @@
 //! owned `abi_stable` data only. They never expose a path, native handle,
 //! `Instant`, cancellation token, closure, future, or private model object.
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
-
-use abi_stable::{
-    StableAbi,
-    std_types::{ROption, RString, RVec},
+use std::{
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::atomic::{AtomicU8, Ordering},
 };
 
-use crate::StableIdV1;
+use abi_stable::{
+    StableAbi, sabi_trait,
+    std_types::{RArc, RBox, ROption, RString, RVec},
+};
+
+use crate::{StableIdV1, dispose_caught_panic_payload_v1};
 
 /// Maximum entries accepted atomically by one sink call.
 pub const MAX_INCREMENTAL_RESULT_ITEMS_V1: usize = 1_024;
@@ -19,6 +22,8 @@ pub const MAX_INCREMENTAL_RESULT_ITEMS_V1: usize = 1_024;
 pub const MAX_INCREMENTAL_RESULT_BYTES_V1: usize = 1024 * 1024;
 /// Maximum encoded payload for one public value.
 pub const MAX_PLUGIN_VALUE_BYTES_V1: usize = 64 * 1024;
+/// Largest byte vector the host may allocate and return from one stream read.
+pub const MAX_INPUT_STREAM_READ_BYTES_V1: u32 = 64 * 1024;
 
 /// Opaque capability identifying one host-owned job generation.
 #[repr(C)]
@@ -121,24 +126,7 @@ impl JobControlStateV1 {
     }
 }
 
-/// Host function used by synchronous plugins to cooperatively poll a job.
-#[repr(transparent)]
-#[derive(Clone, Copy, StableAbi)]
-pub struct JobControlPollV1(extern "C" fn(JobHandleV1) -> JobControlStateV1);
-
-impl JobControlPollV1 {
-    #[must_use]
-    pub const fn from_host(callback: extern "C" fn(JobHandleV1) -> JobControlStateV1) -> Self {
-        Self(callback)
-    }
-
-    #[must_use]
-    pub fn poll(self, job: JobHandleV1) -> JobControlStateV1 {
-        (self.0)(job)
-    }
-}
-
-/// Fixed numeric transport kind. Constructors and sort semantics remain task 4.3.
+/// Fixed numeric value kind with validated constructors and host-defined sort semantics.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, StableAbi)]
 pub struct PluginValueKindV1(u32);
@@ -189,7 +177,101 @@ pub struct PluginValueV1 {
     pub reserved_tail: u32,
 }
 
+#[allow(clippy::double_must_use, clippy::missing_errors_doc)]
 impl PluginValueV1 {
+    const fn empty(kind: PluginValueKindV1) -> Self {
+        Self {
+            kind,
+            reserved: 0,
+            integer: 0,
+            float: 0.0,
+            text: RString::new(),
+            payload: RVec::new(),
+            opaque_schema: StableIdV1::new(crate::IdNamespaceV1::new(0, 0), 0),
+            opaque_schema_version: 0,
+            reserved_tail: 0,
+        }
+    }
+
+    #[must_use]
+    pub const fn boolean(value: bool) -> Self {
+        let mut result = Self::empty(PluginValueKindV1::BOOL);
+        result.integer = value as i64;
+        result
+    }
+    #[must_use]
+    pub const fn integer(value: i64) -> Self {
+        let mut result = Self::empty(PluginValueKindV1::I64);
+        result.integer = value;
+        result
+    }
+    #[must_use]
+    pub fn float(value: f64) -> Result<Self, PluginValueTransportErrorV1> {
+        if !value.is_finite() {
+            return Err(PluginValueTransportErrorV1::MalformedFloat);
+        }
+        let mut result = Self::empty(PluginValueKindV1::F64);
+        result.float = if value == 0.0 { 0.0 } else { value };
+        Ok(result)
+    }
+    #[must_use]
+    pub fn bytes(value: impl Into<RVec<u8>>) -> Result<Self, PluginValueTransportErrorV1> {
+        let mut result = Self::empty(PluginValueKindV1::BYTES);
+        result.payload = value.into();
+        result.validate_transport()?;
+        Ok(result)
+    }
+    #[must_use]
+    pub const fn time_unix_nanos(value: i64) -> Self {
+        let mut result = Self::empty(PluginValueKindV1::TIME_UNIX_NANOS);
+        result.integer = value;
+        result
+    }
+    #[must_use]
+    pub fn duration_nanos(value: u64) -> Result<Self, PluginValueTransportErrorV1> {
+        let integer =
+            i64::try_from(value).map_err(|_| PluginValueTransportErrorV1::MalformedScalar)?;
+        let mut result = Self::empty(PluginValueKindV1::DURATION_NANOS);
+        result.integer = integer;
+        Ok(result)
+    }
+    #[must_use]
+    pub fn text(value: impl Into<RString>) -> Result<Self, PluginValueTransportErrorV1> {
+        let mut result = Self::empty(PluginValueKindV1::TEXT);
+        result.text = value.into();
+        result.validate_transport()?;
+        Ok(result)
+    }
+    #[must_use]
+    pub fn localized_text(value: impl Into<RString>) -> Result<Self, PluginValueTransportErrorV1> {
+        let mut result = Self::empty(PluginValueKindV1::LOCALIZED_TEXT);
+        result.text = value.into();
+        result.validate_transport()?;
+        Ok(result)
+    }
+    #[must_use]
+    pub fn structured_canonical_json(
+        value: impl Into<RVec<u8>>,
+    ) -> Result<Self, PluginValueTransportErrorV1> {
+        let mut result = Self::empty(PluginValueKindV1::STRUCTURED);
+        result.payload = value.into();
+        result.validate_transport()?;
+        Ok(result)
+    }
+    #[must_use]
+    pub fn opaque(
+        schema: StableIdV1,
+        schema_version: u32,
+        value: impl Into<RVec<u8>>,
+    ) -> Result<Self, PluginValueTransportErrorV1> {
+        let mut result = Self::empty(PluginValueKindV1::OPAQUE);
+        result.payload = value.into();
+        result.opaque_schema = schema;
+        result.opaque_schema_version = schema_version;
+        result.validate_transport()?;
+        Ok(result)
+    }
+
     /// Validates the frozen v1 transport shape, not task-4.3 presentation/sort policy.
     ///
     /// # Errors
@@ -264,6 +346,272 @@ impl PluginValueV1 {
             _ => Err(PluginValueTransportErrorV1::UnknownKind),
         }
     }
+}
+
+/// Fixed semantic domain for a stable host sort key. It deliberately excludes
+/// structured and opaque values: neither has a host-generic ordering.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, StableAbi)]
+pub struct StableSortValueKindV1(u32);
+
+impl StableSortValueKindV1 {
+    pub const BOOL: Self = Self(1);
+    pub const I64: Self = Self(2);
+    pub const U64: Self = Self(3);
+    pub const F64: Self = Self(4);
+    pub const TIME_UNIX_NANOS: Self = Self(5);
+    pub const DURATION_NANOS: Self = Self(6);
+    pub const TEXT: Self = Self(7);
+    pub const BYTES: Self = Self(8);
+    #[must_use]
+    pub const fn into_raw(self) -> u32 {
+        self.0
+    }
+    #[must_use]
+    pub const fn from_raw(raw: u32) -> Self {
+        Self(raw)
+    }
+    #[must_use]
+    pub const fn is_known(self) -> bool {
+        matches!(self.0, 1..=8)
+    }
+}
+
+/// Canonical, display-independent stable sort key. Unused members are exactly
+/// zero so the host can compare a validated copy without callbacks or parsing.
+#[repr(C)]
+#[derive(Clone, Debug, StableAbi)]
+pub struct StableSortValueV1 {
+    pub kind: StableSortValueKindV1,
+    pub reserved: u32,
+    pub signed: i64,
+    pub unsigned: u64,
+    pub float: f64,
+    pub text: RString,
+    pub bytes: RVec<u8>,
+    pub reserved_tail: u32,
+}
+
+#[allow(clippy::double_must_use, clippy::missing_errors_doc)]
+impl StableSortValueV1 {
+    const fn empty(kind: StableSortValueKindV1) -> Self {
+        Self {
+            kind,
+            reserved: 0,
+            signed: 0,
+            unsigned: 0,
+            float: 0.0,
+            text: RString::new(),
+            bytes: RVec::new(),
+            reserved_tail: 0,
+        }
+    }
+    #[must_use]
+    pub const fn boolean(value: bool) -> Self {
+        let mut result = Self::empty(StableSortValueKindV1::BOOL);
+        result.unsigned = value as u64;
+        result
+    }
+    #[must_use]
+    pub const fn integer(value: i64) -> Self {
+        let mut result = Self::empty(StableSortValueKindV1::I64);
+        result.signed = value;
+        result
+    }
+    #[must_use]
+    pub const fn unsigned(value: u64) -> Self {
+        let mut result = Self::empty(StableSortValueKindV1::U64);
+        result.unsigned = value;
+        result
+    }
+    #[must_use]
+    pub fn float(value: f64) -> Result<Self, StableSortValueTransportErrorV1> {
+        if !value.is_finite() {
+            return Err(StableSortValueTransportErrorV1::MalformedFloat);
+        }
+        let mut result = Self::empty(StableSortValueKindV1::F64);
+        result.float = if value == 0.0 { 0.0 } else { value };
+        Ok(result)
+    }
+    #[must_use]
+    pub const fn time_unix_nanos(value: i64) -> Self {
+        let mut result = Self::empty(StableSortValueKindV1::TIME_UNIX_NANOS);
+        result.signed = value;
+        result
+    }
+    #[must_use]
+    pub const fn duration_nanos(value: u64) -> Self {
+        let mut result = Self::empty(StableSortValueKindV1::DURATION_NANOS);
+        result.unsigned = value;
+        result
+    }
+    #[must_use]
+    pub fn text(value: impl Into<RString>) -> Result<Self, StableSortValueTransportErrorV1> {
+        let mut result = Self::empty(StableSortValueKindV1::TEXT);
+        result.text = value.into();
+        result.validate_transport()?;
+        Ok(result)
+    }
+    #[must_use]
+    pub fn bytes(value: impl Into<RVec<u8>>) -> Result<Self, StableSortValueTransportErrorV1> {
+        let mut result = Self::empty(StableSortValueKindV1::BYTES);
+        result.bytes = value.into();
+        result.validate_transport()?;
+        Ok(result)
+    }
+    pub fn validate_transport(&self) -> Result<(), StableSortValueTransportErrorV1> {
+        if self.reserved != 0
+            || self.reserved_tail != 0
+            || self.text.len() > MAX_PLUGIN_VALUE_BYTES_V1
+            || self.bytes.len() > MAX_PLUGIN_VALUE_BYTES_V1
+        {
+            return Err(StableSortValueTransportErrorV1::ReservedOrOversized);
+        }
+        let zero = self.float.to_bits() == 0;
+        match self.kind.into_raw() {
+            1 => (self.unsigned <= 1
+                && self.signed == 0
+                && zero
+                && self.text.is_empty()
+                && self.bytes.is_empty())
+            .then_some(())
+            .ok_or(StableSortValueTransportErrorV1::MalformedScalar),
+            2 | 5 => (self.unsigned == 0 && zero && self.text.is_empty() && self.bytes.is_empty())
+                .then_some(())
+                .ok_or(StableSortValueTransportErrorV1::MalformedScalar),
+            3 | 6 => (self.signed == 0 && zero && self.text.is_empty() && self.bytes.is_empty())
+                .then_some(())
+                .ok_or(StableSortValueTransportErrorV1::MalformedScalar),
+            4 => (self.float.is_finite()
+                && self.float.to_bits() != (-0.0f64).to_bits()
+                && self.signed == 0
+                && self.unsigned == 0
+                && self.text.is_empty()
+                && self.bytes.is_empty())
+            .then_some(())
+            .ok_or(StableSortValueTransportErrorV1::MalformedFloat),
+            7 => (self.signed == 0 && self.unsigned == 0 && zero && self.bytes.is_empty())
+                .then_some(())
+                .ok_or(StableSortValueTransportErrorV1::MalformedText),
+            8 => (self.signed == 0 && self.unsigned == 0 && zero && self.text.is_empty())
+                .then_some(())
+                .ok_or(StableSortValueTransportErrorV1::MalformedBytes),
+            _ => Err(StableSortValueTransportErrorV1::UnknownKind),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StableSortValueTransportErrorV1 {
+    ReservedOrOversized,
+    MalformedScalar,
+    MalformedFloat,
+    MalformedText,
+    MalformedBytes,
+    UnknownKind,
+}
+
+/// Semantic item outcome. These are valid provider results, not sink failures.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, StableAbi)]
+pub struct PluginItemOutcomeV1(u32);
+impl PluginItemOutcomeV1 {
+    pub const VALUE: Self = Self(1);
+    pub const UNSUPPORTED: Self = Self(2);
+    pub const UNAVAILABLE: Self = Self(3);
+    pub const CANCELLED: Self = Self(4);
+    pub const PLUGIN_ERROR: Self = Self(5);
+    pub const INCOMPATIBLE: Self = Self(6);
+    #[must_use]
+    pub const fn into_raw(self) -> u32 {
+        self.0
+    }
+    #[must_use]
+    pub const fn from_raw(raw: u32) -> Self {
+        Self(raw)
+    }
+    #[must_use]
+    pub const fn is_known(self) -> bool {
+        matches!(self.0, 1..=6)
+    }
+}
+
+/// One value outcome with optional display and sort data.
+#[repr(C)]
+#[derive(Clone, Debug, StableAbi)]
+pub struct PluginItemResultV1 {
+    pub outcome: PluginItemOutcomeV1,
+    pub value: ROption<PluginValueV1>,
+    pub stable_sort: ROption<StableSortValueV1>,
+    pub reserved: u32,
+}
+#[allow(clippy::missing_errors_doc)]
+impl PluginItemResultV1 {
+    #[must_use]
+    pub fn value(value: PluginValueV1, stable_sort: ROption<StableSortValueV1>) -> Self {
+        Self {
+            outcome: PluginItemOutcomeV1::VALUE,
+            value: ROption::RSome(value),
+            stable_sort,
+            reserved: 0,
+        }
+    }
+    #[must_use]
+    pub const fn absent(outcome: PluginItemOutcomeV1) -> Self {
+        Self {
+            outcome,
+            value: ROption::RNone,
+            stable_sort: ROption::RNone,
+            reserved: 0,
+        }
+    }
+    pub fn validate_transport(
+        &self,
+        expected_sort: ROption<StableSortValueKindV1>,
+    ) -> Result<usize, PluginItemResultTransportErrorV1> {
+        if self.reserved != 0 || !self.outcome.is_known() {
+            return Err(PluginItemResultTransportErrorV1::MalformedOutcome);
+        }
+        match (self.outcome.into_raw(), &self.value, &self.stable_sort) {
+            (1, ROption::RSome(value), sort) => {
+                value
+                    .validate_transport()
+                    .map_err(|_| PluginItemResultTransportErrorV1::Value)?;
+                let mut bytes = value
+                    .text
+                    .len()
+                    .checked_add(value.payload.len())
+                    .ok_or(PluginItemResultTransportErrorV1::Oversized)?;
+                match (expected_sort, sort) {
+                    (ROption::RNone, ROption::RNone) => {}
+                    (ROption::RSome(expected), ROption::RSome(actual))
+                        if actual.kind == expected =>
+                    {
+                        actual
+                            .validate_transport()
+                            .map_err(|_| PluginItemResultTransportErrorV1::Sort)?;
+                        bytes = bytes
+                            .checked_add(actual.text.len())
+                            .and_then(|x| x.checked_add(actual.bytes.len()))
+                            .ok_or(PluginItemResultTransportErrorV1::Oversized)?;
+                    }
+                    _ => return Err(PluginItemResultTransportErrorV1::SortContract),
+                }
+                Ok(bytes)
+            }
+            (1, _, _) => Err(PluginItemResultTransportErrorV1::MalformedOutcome),
+            (_, ROption::RNone, ROption::RNone) => Ok(0),
+            _ => Err(PluginItemResultTransportErrorV1::MalformedOutcome),
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PluginItemResultTransportErrorV1 {
+    MalformedOutcome,
+    Value,
+    Sort,
+    SortContract,
+    Oversized,
 }
 
 fn is_canonical_structured_json(payload: &[u8]) -> bool {
@@ -531,7 +879,7 @@ pub struct IncrementalResultEntryV1 {
     pub item: ItemHandleV1,
     pub item_generation: u64,
     pub source_generation: u64,
-    pub value: PluginValueV1,
+    pub result: PluginItemResultV1,
 }
 
 /// Owned all-or-nothing sink batch. Sequence numbers are per job and monotonic.
@@ -583,36 +931,6 @@ pub struct SinkSubmitOutcomeV1 {
     pub rejected_batch: ROption<IncrementalResultBatchV1>,
 }
 
-/// FFI callback that consumes a batch only on [`SinkSubmitStatusV1::ACCEPTED`].
-#[repr(transparent)]
-#[derive(Clone, Copy, StableAbi)]
-pub struct IncrementalResultSubmitV1(
-    extern "C" fn(IncrementalResultBatchV1) -> SinkSubmitOutcomeV1,
-);
-
-impl IncrementalResultSubmitV1 {
-    #[must_use]
-    pub const fn from_host(
-        callback: extern "C" fn(IncrementalResultBatchV1) -> SinkSubmitOutcomeV1,
-    ) -> Self {
-        Self(callback)
-    }
-
-    #[must_use]
-    pub fn try_submit(self, batch: IncrementalResultBatchV1) -> SinkSubmitOutcomeV1 {
-        (self.0)(batch)
-    }
-}
-
-/// Capability-bound result sink valid only for the enclosing synchronous call.
-#[repr(C)]
-#[derive(Clone, Copy, StableAbi)]
-pub struct IncrementalResultSinkV1 {
-    pub job: JobHandleV1,
-    pub capability: SinkCapabilityV1,
-    pub submit: IncrementalResultSubmitV1,
-}
-
 /// Fixed progress update for one synchronous job invocation.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, StableAbi)]
@@ -652,51 +970,276 @@ impl JobProgressStatusV1 {
     }
 }
 
-/// FFI callback for bounded, latest-wins progress updates.
-#[repr(transparent)]
-#[derive(Clone, Copy, StableAbi)]
-pub struct JobProgressSubmitV1(extern "C" fn(JobProgressUpdateV1) -> JobProgressStatusV1);
+/// Stateful Rust-ABI host service object for one synchronous provider call.
+/// It is an `abi_stable` trait object, not a handwritten C callback table.
+#[sabi_trait]
+#[doc(hidden)]
+pub trait AbiJobHostServicesV1: Send + Sync + Clone {
+    fn poll_control(&self) -> JobControlStateV1;
+    fn submit_results(&self, batch: IncrementalResultBatchV1) -> SinkSubmitOutcomeV1;
+    #[sabi(last_prefix_field)]
+    fn submit_progress(&self, update: JobProgressUpdateV1) -> JobProgressStatusV1;
+}
 
-impl JobProgressSubmitV1 {
-    #[must_use]
-    pub const fn from_host(
-        callback: extern "C" fn(JobProgressUpdateV1) -> JobProgressStatusV1,
-    ) -> Self {
-        Self(callback)
+/// Opaque capability-bound service object retained by [`JobContextV1`].
+#[repr(transparent)]
+#[derive(Clone, StableAbi)]
+pub struct JobHostServicesV1(AbiJobHostServicesV1_TO<'static, RArc<()>>);
+
+impl JobHostServicesV1 {
+    #[doc(hidden)]
+    pub fn from_host<T>(services: T) -> Self
+    where
+        T: AbiJobHostServicesV1 + 'static,
+    {
+        Self(AbiJobHostServicesV1_TO::from_ptr(
+            RArc::new(services),
+            abi_stable::sabi_trait::TD_Opaque,
+        ))
     }
 
     #[must_use]
-    pub fn try_submit(self, update: JobProgressUpdateV1) -> JobProgressStatusV1 {
-        (self.0)(update)
+    pub fn poll_control(&self) -> JobControlStateV1 {
+        self.0.poll_control()
+    }
+
+    #[must_use]
+    pub fn try_submit(&self, batch: IncrementalResultBatchV1) -> SinkSubmitOutcomeV1 {
+        self.0.submit_results(batch)
+    }
+
+    #[must_use]
+    pub fn try_submit_progress(&self, update: JobProgressUpdateV1) -> JobProgressStatusV1 {
+        self.0.submit_progress(update)
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn result_sink(
+        &self,
+        job: JobHandleV1,
+        capability: SinkCapabilityV1,
+    ) -> IncrementalResultSinkV1 {
+        IncrementalResultSinkV1 {
+            job,
+            capability,
+            services: self.clone(),
+        }
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn progress_sink(
+        &self,
+        job: JobHandleV1,
+        capability: SinkCapabilityV1,
+    ) -> JobProgressSinkV1 {
+        JobProgressSinkV1 {
+            job,
+            capability,
+            services: self.clone(),
+        }
     }
 }
 
-/// Capability-bound, latest-wins progress sink for the enclosing provider call.
+/// Capability-bound result client backed by the stateful Rust-ABI services
+/// object. It contains no raw function pointer.
 #[repr(C)]
-#[derive(Clone, Copy, StableAbi)]
-pub struct JobProgressSinkV1 {
+#[derive(Clone, StableAbi)]
+pub struct IncrementalResultSinkV1 {
     pub job: JobHandleV1,
     pub capability: SinkCapabilityV1,
-    pub submit: JobProgressSubmitV1,
-}
-
-impl JobProgressSinkV1 {
-    #[must_use]
-    pub fn try_submit(self, update: JobProgressUpdateV1) -> JobProgressStatusV1 {
-        self.submit.try_submit(update)
-    }
+    services: JobHostServicesV1,
 }
 
 impl IncrementalResultSinkV1 {
     #[must_use]
-    pub fn try_submit(self, batch: IncrementalResultBatchV1) -> SinkSubmitOutcomeV1 {
-        self.submit.try_submit(batch)
+    pub fn try_submit(&self, batch: IncrementalResultBatchV1) -> SinkSubmitOutcomeV1 {
+        self.services.try_submit(batch)
+    }
+}
+
+/// Capability-bound progress client backed by the same Rust-ABI services
+/// object. It contains no raw function pointer.
+#[repr(C)]
+#[derive(Clone, StableAbi)]
+pub struct JobProgressSinkV1 {
+    pub job: JobHandleV1,
+    pub capability: SinkCapabilityV1,
+    services: JobHostServicesV1,
+}
+
+impl JobProgressSinkV1 {
+    #[must_use]
+    pub fn try_submit(&self, update: JobProgressUpdateV1) -> JobProgressStatusV1 {
+        self.services.try_submit_progress(update)
+    }
+}
+
+/// Opaque host capability for one generation-bound decoder input stream.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, StableAbi)]
+pub struct InputStreamCapabilityV1 {
+    nonce: [u8; 16],
+}
+
+impl InputStreamCapabilityV1 {
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn from_host(nonce: [u8; 16]) -> Self {
+        Self { nonce }
+    }
+}
+
+/// Typed stream operation terminal. Values never contain a path, OS error, or
+/// native handle. Cancellation and deadline are host-owned job controls.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, StableAbi)]
+pub struct InputStreamStatusV1(u32);
+
+impl InputStreamStatusV1 {
+    pub const OK: Self = Self(1);
+    pub const EOF: Self = Self(2);
+    pub const CANCELLED: Self = Self(3);
+    pub const DEADLINE_ELAPSED: Self = Self(4);
+    pub const STALE: Self = Self(5);
+    pub const CLOSED: Self = Self(6);
+    pub const WRONG_THREAD: Self = Self(7);
+    pub const UNSUPPORTED: Self = Self(8);
+    pub const INVALID: Self = Self(9);
+
+    #[must_use]
+    pub const fn into_raw(self) -> u32 {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn from_raw(raw: u32) -> Self {
+        Self(raw)
+    }
+}
+
+/// Seek reference point. The host validates all signed arithmetic and does not
+/// permit a plugin to address a native file handle directly.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, StableAbi)]
+pub struct InputStreamSeekOriginV1(u32);
+
+impl InputStreamSeekOriginV1 {
+    pub const START: Self = Self(1);
+    pub const CURRENT: Self = Self(2);
+    pub const END: Self = Self(3);
+
+    #[must_use]
+    pub const fn into_raw(self) -> u32 {
+        self.0
+    }
+}
+
+/// Bounded read request. `maximum_bytes` is an allocation upper bound, not a
+/// caller-provided buffer or pointer.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, StableAbi)]
+pub struct InputStreamReadRequestV1 {
+    pub maximum_bytes: u32,
+    pub reserved: u32,
+}
+
+/// Owned read response. `data` is present only for [`InputStreamStatusV1::OK`]
+/// and may be empty for a successful zero-length read.
+#[repr(C)]
+#[derive(Clone, Debug, StableAbi)]
+pub struct InputStreamReadOutcomeV1 {
+    pub status: InputStreamStatusV1,
+    pub reserved: u32,
+    pub source_generation: u64,
+    pub position: u64,
+    pub data: RVec<u8>,
+}
+
+/// Checked signed seek request.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, StableAbi)]
+pub struct InputStreamSeekRequestV1 {
+    pub origin: InputStreamSeekOriginV1,
+    pub reserved: u32,
+    pub offset: i64,
+}
+
+/// Seek result with the current host-attested source generation.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, StableAbi)]
+pub struct InputStreamSeekOutcomeV1 {
+    pub status: InputStreamStatusV1,
+    pub reserved: u32,
+    pub source_generation: u64,
+    pub position: u64,
+}
+
+/// Optional length response. V1 never truncates a host length to a 32-bit
+/// value; unavailable length is represented by `UNSUPPORTED`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, StableAbi)]
+pub struct InputStreamLengthOutcomeV1 {
+    pub status: InputStreamStatusV1,
+    pub reserved: u32,
+    pub source_generation: u64,
+    pub length: u64,
+}
+
+/// Stateful Rust-first service object for a host-minted stream. It uses
+/// `abi_stable` instead of raw callbacks and exposes no `Read`, `File`, path,
+/// native handle, clock, cancellation token, or future across the ABI.
+#[sabi_trait]
+#[doc(hidden)]
+pub trait AbiInputStreamServicesV1: Send + Sync + Clone {
+    fn read(&self, request: InputStreamReadRequestV1) -> InputStreamReadOutcomeV1;
+    fn seek(&self, request: InputStreamSeekRequestV1) -> InputStreamSeekOutcomeV1;
+    #[sabi(last_prefix_field)]
+    fn length(&self) -> InputStreamLengthOutcomeV1;
+}
+
+#[repr(C)]
+#[derive(Clone, StableAbi)]
+pub struct InputStreamV1 {
+    capability: InputStreamCapabilityV1,
+    services: AbiInputStreamServicesV1_TO<'static, RArc<()>>,
+}
+
+impl InputStreamV1 {
+    #[doc(hidden)]
+    pub fn from_host<T>(capability: InputStreamCapabilityV1, services: T) -> Self
+    where
+        T: AbiInputStreamServicesV1 + 'static,
+    {
+        Self {
+            capability,
+            services: AbiInputStreamServicesV1_TO::from_ptr(
+                RArc::new(services),
+                sabi_trait::TD_Opaque,
+            ),
+        }
+    }
+
+    #[must_use]
+    pub fn read(&self, request: InputStreamReadRequestV1) -> InputStreamReadOutcomeV1 {
+        self.services.read(request)
+    }
+
+    #[must_use]
+    pub fn seek(&self, request: InputStreamSeekRequestV1) -> InputStreamSeekOutcomeV1 {
+        self.services.seek(request)
+    }
+
+    #[must_use]
+    pub fn length(&self) -> InputStreamLengthOutcomeV1 {
+        self.services.length()
     }
 }
 
 /// Immutable ABI context for one synchronous provider callback.
 #[repr(C)]
-#[derive(Clone, Copy, StableAbi)]
+#[derive(Clone, StableAbi)]
 pub struct JobContextV1 {
     pub job: JobHandleV1,
     pub item: ROption<ItemHandleV1>,
@@ -706,9 +1249,28 @@ pub struct JobContextV1 {
     pub item_generation: u64,
     pub location_generation: u64,
     pub source_generation: u64,
-    pub control_poll: JobControlPollV1,
+    /// Present only for a host-attested source whose sealed contribution has
+    /// `filesystem.read`; it is absent for metadata-only jobs.
+    pub input: ROption<InputStreamV1>,
     pub sink: IncrementalResultSinkV1,
     pub progress: JobProgressSinkV1,
+}
+
+impl JobContextV1 {
+    #[must_use]
+    pub fn poll_control(&self) -> JobControlStateV1 {
+        self.sink.services.poll_control()
+    }
+
+    #[must_use]
+    pub fn try_submit(&self, batch: IncrementalResultBatchV1) -> SinkSubmitOutcomeV1 {
+        self.sink.try_submit(batch)
+    }
+
+    #[must_use]
+    pub fn try_submit_progress(&self, update: JobProgressUpdateV1) -> JobProgressStatusV1 {
+        self.progress.try_submit(update)
+    }
 }
 
 /// Non-exhaustive typed terminal returned by a synchronous provider callback.
@@ -746,34 +1308,106 @@ impl JobTerminalV1 {
     }
 }
 
-/// Static implementation trait; no Rust trait object crosses the ABI.
-pub trait JobProviderImplementationV1 {
-    fn run(context: JobContextV1) -> JobTerminalV1;
+/// Private ABI vtable. Plugin authors implement [`JobProviderImplementationV1`]
+/// instead; this trait and its generated `_TO` never form public API.
+#[sabi_trait]
+#[doc(hidden)]
+pub trait AbiJobProviderObjectV1: Send + Sync {
+    /// Runs one bounded synchronous job invocation.
+    #[sabi(last_prefix_field)]
+    fn run(&self, context: JobContextV1) -> JobTerminalV1;
 }
 
-/// SDK-owned panic-translating synchronous provider callback.
+/// ABI-owned provider object storage. `RArc` keeps the trait object resident
+/// and prevents plugin authors from passing arbitrary Rust vtables.
 #[repr(transparent)]
-#[derive(Clone, Copy, StableAbi)]
-pub struct JobProviderCallbackV1(extern "C" fn(JobContextV1) -> JobTerminalV1);
+#[derive(StableAbi)]
+pub struct JobProviderObjectV1(AbiJobProviderObjectV1_TO<'static, RBox<()>>);
 
-impl JobProviderCallbackV1 {
-    #[must_use]
-    pub fn new<T: JobProviderImplementationV1>() -> Self {
-        Self(job_provider_trampoline::<T>)
+/// Public plugin-facing provider implementation. The SDK wraps it in a private
+/// `#[sabi_trait]` object, catches panics before the ABI boundary returns, and
+/// permanently fault-latches that adapter after its first panic.
+pub trait JobProviderImplementationV1: Send + Sync {
+    fn run(&self, context: JobContextV1) -> JobTerminalV1;
+}
+
+const PROVIDER_IDLE_V1: u8 = 0;
+const PROVIDER_RUNNING_V1: u8 = 1;
+const PROVIDER_FAULTED_V1: u8 = 2;
+
+struct ProviderAdapterV1<T> {
+    provider: Option<T>,
+    invocation_state: AtomicU8,
+}
+
+impl<T: JobProviderImplementationV1> AbiJobProviderObjectV1 for ProviderAdapterV1<T> {
+    fn run(&self, context: JobContextV1) -> JobTerminalV1 {
+        if self
+            .invocation_state
+            .compare_exchange(
+                PROVIDER_IDLE_V1,
+                PROVIDER_RUNNING_V1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            // A faulted adapter stays quarantined. Concurrent reentry is also
+            // denied rather than allowing two callbacks to race across one
+            // stateful plugin provider.
+            return JobTerminalV1::PANICKED;
+        }
+        let Some(provider) = self.provider.as_ref() else {
+            self.invocation_state
+                .store(PROVIDER_FAULTED_V1, Ordering::Release);
+            return JobTerminalV1::INCOMPATIBLE;
+        };
+        match catch_unwind(AssertUnwindSafe(|| provider.run(context))) {
+            Ok(terminal) if terminal.is_known() => {
+                self.invocation_state
+                    .store(PROVIDER_IDLE_V1, Ordering::Release);
+                terminal
+            }
+            Ok(_) => {
+                self.invocation_state
+                    .store(PROVIDER_IDLE_V1, Ordering::Release);
+                JobTerminalV1::INCOMPATIBLE
+            }
+            Err(payload) => {
+                self.invocation_state
+                    .store(PROVIDER_FAULTED_V1, Ordering::Release);
+                dispose_caught_panic_payload_v1(payload);
+                JobTerminalV1::PANICKED
+            }
+        }
     }
-
-    #[must_use]
-    pub fn invoke(self, context: JobContextV1) -> JobTerminalV1 {
-        (self.0)(context)
+}
+impl<T> Drop for ProviderAdapterV1<T> {
+    fn drop(&mut self) {
+        if let Some(provider) = self.provider.take()
+            && let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(provider)))
+        {
+            dispose_caught_panic_payload_v1(payload);
+        }
     }
 }
 
-extern "C" fn job_provider_trampoline<T: JobProviderImplementationV1>(
-    context: JobContextV1,
-) -> JobTerminalV1 {
-    match catch_unwind(AssertUnwindSafe(|| T::run(context))) {
-        Ok(terminal) => terminal,
-        Err(_) => JobTerminalV1::PANICKED,
+impl JobProviderObjectV1 {
+    /// Wraps a stateful Rust provider in the SDK-owned ABI object.
+    #[must_use]
+    pub fn new<T: JobProviderImplementationV1 + 'static>(provider: T) -> Self {
+        Self(AbiJobProviderObjectV1_TO::from_value(
+            ProviderAdapterV1 {
+                provider: Some(provider),
+                invocation_state: AtomicU8::new(PROVIDER_IDLE_V1),
+            },
+            sabi_trait::TD_Opaque,
+        ))
+    }
+
+    #[doc(hidden)]
+    pub fn invoke(&self, context: JobContextV1) -> JobTerminalV1 {
+        self.0.run(context)
     }
 }
 
@@ -891,5 +1525,18 @@ mod tests {
             text.validate_transport(),
             Err(PluginValueTransportErrorV1::ReservedOrOversized)
         );
+    }
+
+    #[test]
+    fn stable_sort_rejects_noncanonical_float_and_preserves_integer_precision() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(StableSortValueV1::float(value).is_err());
+        }
+        assert_eq!(StableSortValueV1::float(-0.0).unwrap().float.to_bits(), 0);
+        assert!(StableSortValueV1::float(f64::from_bits(1)).is_ok());
+        let exact = StableSortValueV1::unsigned((1_u64 << 53) + 1);
+        assert_eq!(exact.unsigned, (1_u64 << 53) + 1);
+        assert!(StableSortValueV1::bytes(vec![0xff]).is_ok());
+        assert!(StableSortValueV1::text("é").is_ok());
     }
 }

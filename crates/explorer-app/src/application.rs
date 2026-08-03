@@ -7,7 +7,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context as _, Error};
@@ -27,6 +27,331 @@ use crate::{
 };
 
 const SHELL_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// App-owned boundary for projecting runtime-ready extension batches into the
+/// current list model. The application, rather than the host transport, owns
+/// stable item identities and therefore is the only layer allowed to drain,
+/// apply, and acknowledge ready work.
+trait ApplicationExtensionReadyProjectorV1 {
+    fn project_ready(
+        &mut self,
+        pump: &mut explorer_extension_host::ExtensionJobUiPumpV1,
+        runtime: &Arc<explorer_extension_host::ExtensionJobRuntimeV1>,
+        ingress: &explorer_extension_host::ExtensionJobUiIngressV1,
+    ) -> Result<usize, explorer_extension_host::ExtensionJobUiPumpErrorV1>;
+}
+
+/// Deliberately preserves ready work until the dynamic-column model installs
+/// its identity-aware projector. It must not consume a signal merely to make
+/// an incomplete composition path appear live.
+struct DeferredApplicationExtensionReadyProjectorV1;
+
+impl ApplicationExtensionReadyProjectorV1 for DeferredApplicationExtensionReadyProjectorV1 {
+    fn project_ready(
+        &mut self,
+        _pump: &mut explorer_extension_host::ExtensionJobUiPumpV1,
+        _runtime: &Arc<explorer_extension_host::ExtensionJobRuntimeV1>,
+        _ingress: &explorer_extension_host::ExtensionJobUiIngressV1,
+    ) -> Result<usize, explorer_extension_host::ExtensionJobUiPumpErrorV1> {
+        Ok(0)
+    }
+}
+
+/// GPUI-thread composition of the host's unique UI inbox and its !Send
+/// invalidation batcher. The UI crate sees only the host-agnostic poll trait;
+/// this app layer additionally owns the ready-projector callback.
+struct ApplicationExtensionUiPumpV1 {
+    pump: explorer_extension_host::ExtensionJobUiPumpV1,
+    runtime: Arc<explorer_extension_host::ExtensionJobRuntimeV1>,
+    ingress: explorer_extension_host::ExtensionJobUiIngressV1,
+    ready_projector: Box<dyn ApplicationExtensionReadyProjectorV1>,
+}
+
+impl ApplicationExtensionUiPumpV1 {
+    fn new(
+        inbox: explorer_extension_host::ExtensionJobUiInboxV1,
+        ingress: explorer_extension_host::ExtensionJobUiIngressV1,
+    ) -> Option<Self> {
+        Self::with_ready_projector(
+            inbox,
+            ingress,
+            Box::new(DeferredApplicationExtensionReadyProjectorV1),
+        )
+    }
+
+    fn with_ready_projector(
+        inbox: explorer_extension_host::ExtensionJobUiInboxV1,
+        ingress: explorer_extension_host::ExtensionJobUiIngressV1,
+        ready_projector: Box<dyn ApplicationExtensionReadyProjectorV1>,
+    ) -> Option<Self> {
+        if !ingress.is_for_runtime(inbox.runtime()) {
+            return None;
+        }
+        let config = explorer_extension_host::UiInvalidationBatcherConfigV1::try_new(
+            Duration::from_millis(20),
+            explorer_extension_host::MAX_UI_INVALIDATION_SCOPES_V1,
+        )
+        .ok()?;
+        let runtime = Arc::clone(inbox.runtime());
+        Some(Self {
+            pump: explorer_extension_host::ExtensionJobUiPumpV1::new(inbox, config),
+            runtime,
+            ingress,
+            ready_projector,
+        })
+    }
+
+    #[cfg(test)]
+    fn set_ready_projector(
+        &mut self,
+        ready_projector: Box<dyn ApplicationExtensionReadyProjectorV1>,
+    ) {
+        self.ready_projector = ready_projector;
+    }
+}
+
+impl explorer_ui::ExtensionUiPumpPortV1 for ApplicationExtensionUiPumpV1 {
+    fn poll_due(&mut self, now: Instant) -> bool {
+        // The current app has no dynamic-column identity model yet. Its
+        // deferred projector leaves ready signals intact; task 5 installs the
+        // concrete callback that drains, atomically applies, and then notifies
+        // through this same app-owned seam.
+        let _ = self
+            .ready_projector
+            .project_ready(&mut self.pump, &self.runtime, &self.ingress);
+        let _ = self.pump.poll_applied(1_024);
+        let _ = self.pump.next_deadline();
+        matches!(self.pump.drain_due(now), Ok(Some(_)))
+    }
+}
+
+#[cfg(feature = "uitest-support")]
+const UITEST_EXTENSION_STATE_ROOT_ENV_V1: &str = "EXPLORER_UITEST_EXTENSION_STATE_ROOT";
+
+#[cfg(feature = "uitest-support")]
+const UITEST_SAFE_MODE_PROBE_FILE_V1: &str = "safe-mode-probe-v1.json";
+
+/// Returns the test-owned extension state root only in a binary compiled with
+/// the non-default UITEST feature. Production binaries never inspect this
+/// environment variable and always use the host's Windows Known Folder root.
+#[cfg(feature = "uitest-support")]
+fn uitest_extension_state_root_v1() -> Result<Option<PathBuf>, Error> {
+    let Some(root) = std::env::var_os(UITEST_EXTENSION_STATE_ROOT_ENV_V1) else {
+        return Ok(None);
+    };
+    let root = PathBuf::from(root);
+    if !root.is_dir() {
+        anyhow::bail!("UITEST extension state root must be an existing directory");
+    }
+    root.canonicalize()
+        .map(Some)
+        .context("failed to canonicalize UITEST extension state root")
+}
+
+#[cfg(not(feature = "uitest-support"))]
+fn uitest_extension_state_root_v1() -> Result<Option<PathBuf>, Error> {
+    Ok(None)
+}
+
+#[cfg(feature = "uitest-support")]
+fn write_uitest_safe_mode_probe_v1(
+    state_root: &std::path::Path,
+    recovered_callback_denied: bool,
+) -> Result<(), Error> {
+    let bytes = if recovered_callback_denied {
+        b"{\"schema_version\":1,\"recovered_callback_denied\":true}".as_slice()
+    } else {
+        b"{\"schema_version\":1,\"recovered_callback_denied\":false}".as_slice()
+    };
+    let temporary = state_root.join("safe-mode-probe-v1.tmp");
+    let destination = state_root.join(UITEST_SAFE_MODE_PROBE_FILE_V1);
+    std::fs::write(&temporary, bytes).context("failed to write UITEST Safe Mode probe")?;
+    std::fs::rename(&temporary, &destination)
+        .context("failed to publish UITEST Safe Mode probe")?;
+    Ok(())
+}
+
+/// Path-free suspect identity presented by the application Safe Mode offer.
+///
+/// Every string originates from the host's recovered marker validation, which
+/// permits only bounded package/entrypoint/root identity components and a
+/// lowercase manifest digest. Filesystem locations and marker paths never
+/// reach this application-facing value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SafeModeSuspectV1 {
+    package_id: String,
+    sealed_manifest_digest: String,
+    entrypoint_id: String,
+    root_module_id: String,
+    primary_interface_namespace: u32,
+    primary_interface_value: u64,
+}
+
+impl SafeModeSuspectV1 {
+    #[must_use]
+    pub fn package_id(&self) -> &str {
+        &self.package_id
+    }
+
+    #[must_use]
+    pub fn sealed_manifest_digest(&self) -> &str {
+        &self.sealed_manifest_digest
+    }
+
+    #[must_use]
+    pub fn entrypoint_id(&self) -> &str {
+        &self.entrypoint_id
+    }
+
+    #[must_use]
+    pub fn root_module_id(&self) -> &str {
+        &self.root_module_id
+    }
+
+    #[must_use]
+    pub const fn primary_interface_namespace(&self) -> u32 {
+        self.primary_interface_namespace
+    }
+
+    #[must_use]
+    pub const fn primary_interface_value(&self) -> u64 {
+        self.primary_interface_value
+    }
+}
+
+/// An explicit, path-free Safe Mode confirmation offer owned by application
+/// startup. Its opaque ID can only be sent back to the resident extension host.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SafeModeIncidentOfferV1<IncidentId> {
+    incident_id: IncidentId,
+    presentation_token: u64,
+    kind: explorer_extension_host::NativeSafeModeIncidentKindV1,
+    suspect: Option<SafeModeSuspectV1>,
+}
+
+impl<IncidentId: Copy> SafeModeIncidentOfferV1<IncidentId> {
+    #[must_use]
+    pub const fn incident_id(&self) -> IncidentId {
+        self.incident_id
+    }
+
+    /// Returns the lifecycle-local opaque token used by a UI presenter.
+    #[must_use]
+    pub const fn presentation_token(&self) -> u64 {
+        self.presentation_token
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> explorer_extension_host::NativeSafeModeIncidentKindV1 {
+        self.kind
+    }
+
+    #[must_use]
+    pub const fn suspect(&self) -> Option<&SafeModeSuspectV1> {
+        self.suspect.as_ref()
+    }
+}
+
+/// Application's concrete Safe Mode offer, keyed by the host-owned opaque ID.
+pub type SafeModeIncidentOffer =
+    SafeModeIncidentOfferV1<explorer_extension_host::NativeSafeModeIncidentIdV1>;
+
+trait SafeModeIncidentPortV1 {
+    type IncidentId: Copy + Eq;
+    type Error;
+
+    fn offers(&self) -> Vec<SafeModeIncidentOfferV1<Self::IncidentId>>;
+    fn denies_native_callbacks(&self) -> bool;
+    fn confirm(&self, incident_id: Self::IncidentId) -> Result<(), Self::Error>;
+}
+
+impl SafeModeIncidentPortV1 for explorer_extension_host::ExtensionHost {
+    type IncidentId = explorer_extension_host::NativeSafeModeIncidentIdV1;
+    type Error = explorer_extension_host::NativeLifecycleErrorV1;
+
+    fn offers(&self) -> Vec<SafeModeIncidentOffer> {
+        self.safe_mode_incidents()
+            .into_iter()
+            .enumerate()
+            .map(|(index, incident)| match incident {
+                explorer_extension_host::NativeSafeModeIncidentV1::RegistrarInProgress {
+                    incident_id,
+                    package_id,
+                    sealed_manifest_digest,
+                    entrypoint_id,
+                    root_module_id,
+                    primary_interface_namespace,
+                    primary_interface_value,
+                    ..
+                } => SafeModeIncidentOfferV1 {
+                    incident_id,
+                    presentation_token: index as u64 + 1,
+                    kind:
+                        explorer_extension_host::NativeSafeModeIncidentKindV1::RegistrarInProgress,
+                    suspect: Some(SafeModeSuspectV1 {
+                        package_id,
+                        sealed_manifest_digest,
+                        entrypoint_id,
+                        root_module_id,
+                        primary_interface_namespace,
+                        primary_interface_value,
+                    }),
+                },
+                explorer_extension_host::NativeSafeModeIncidentV1::UnsafeMarkerState {
+                    incident_id,
+                } => SafeModeIncidentOfferV1 {
+                    incident_id,
+                    presentation_token: index as u64 + 1,
+                    kind: explorer_extension_host::NativeSafeModeIncidentKindV1::UnsafeMarkerState,
+                    suspect: None,
+                },
+            })
+            .collect()
+    }
+
+    fn denies_native_callbacks(&self) -> bool {
+        self.safe_mode_denies_all()
+    }
+
+    fn confirm(
+        &self,
+        incident_id: explorer_extension_host::NativeSafeModeIncidentIdV1,
+    ) -> Result<(), explorer_extension_host::NativeLifecycleErrorV1> {
+        self.confirm_safe_mode_incident(incident_id)
+    }
+}
+
+fn confirm_offered_safe_mode_incident_v1<P: SafeModeIncidentPortV1>(
+    port: &P,
+    offers: &mut Vec<SafeModeIncidentOfferV1<P::IncidentId>>,
+    incident_id: P::IncidentId,
+) -> Result<bool, P::Error> {
+    if !offers.iter().any(|offer| offer.incident_id == incident_id) {
+        return Ok(false);
+    }
+    port.confirm(incident_id)?;
+    offers.retain(|offer| offer.incident_id != incident_id);
+    Ok(true)
+}
+
+fn confirm_presented_safe_mode_incident_v1<P: SafeModeIncidentPortV1>(
+    port: &P,
+    offers: &mut Vec<SafeModeIncidentOfferV1<P::IncidentId>>,
+    presentation_token: u64,
+) -> Result<bool, P::Error> {
+    let Some(incident_id) = offers
+        .iter()
+        .find(|offer| offer.presentation_token() == presentation_token)
+        .map(SafeModeIncidentOfferV1::incident_id)
+    else {
+        return Ok(false);
+    };
+    confirm_offered_safe_mode_incident_v1(port, offers, incident_id)
+}
+
+fn emit_post_commit_safe_mode_telemetry_v1<E>(emit: impl FnOnce() -> Result<(), E>) {
+    let _ = emit();
+}
 
 fn schedule_visual_diagnostics(
     window: &mut gpui::Window,
@@ -77,6 +402,7 @@ fn schedule_visual_diagnostics(
 }
 
 /// Owns all process-wide resources around the blocking GPUI event loop.
+#[derive(Clone)]
 pub struct ApplicationLifecycle {
     resources: Arc<Mutex<ShutdownResources>>,
 }
@@ -85,6 +411,10 @@ struct ShutdownResources {
     diagnostics: DiagnosticsSession,
     automation: Option<AutomationComposition>,
     extension_host: Option<explorer_extension_host::ExtensionHost>,
+    loaded_extension_summary: Option<String>,
+    extension_job_ui_inbox: Option<explorer_extension_host::ExtensionJobUiInboxV1>,
+    extension_job_ui_ingress: Option<explorer_extension_host::ExtensionJobUiIngressV1>,
+    safe_mode_incident_offers: Vec<SafeModeIncidentOffer>,
     broker_warmup: Option<std::thread::JoinHandle<()>>,
     broker: Option<explorer_extension_broker::BrokerClient>,
     shell_sta: Option<Arc<ShellStaHandle>>,
@@ -98,6 +428,18 @@ impl ApplicationLifecycle {
     ///
     /// Returns DPI, Shell initialization, or diagnostic write failures without starting GPUI.
     pub fn start(diagnostics: DiagnosticsSession) -> Result<Self, Error> {
+        Self::start_with_plugin(diagnostics, None)
+    }
+
+    /// Starts the application and, when supplied, loads one development plugin DLL.
+    ///
+    /// # Errors
+    ///
+    /// Returns prerequisite, host startup, DLL loading, or diagnostic failures.
+    pub fn start_with_plugin(
+        diagnostics: DiagnosticsSession,
+        plugin_dll: Option<&std::path::Path>,
+    ) -> Result<Self, Error> {
         let dpi_outcome = initialize_dpi_awareness()?;
         let dpi_outcome_text = format!("{dpi_outcome:?}");
         diagnostics.record_event("windows_prerequisites_ready", &[("dpi", &dpi_outcome_text)])?;
@@ -106,8 +448,52 @@ impl ApplicationLifecycle {
         let automation = AutomationComposition::start()?;
         let script_count = automation.snapshots()?.len().to_string();
         diagnostics.record_event("automation_ready", &[("scripts", &script_count)])?;
-        let mut extension_host = explorer_extension_host::ExtensionHost::new();
-        extension_host.start();
+        let _uitest_state_root = uitest_extension_state_root_v1()?;
+        #[cfg(feature = "uitest-support")]
+        let extension_config = _uitest_state_root.as_ref().map_or_else(
+            explorer_extension_host::ExtensionHostConfigV1::default,
+            |state_root| {
+                explorer_extension_host::ExtensionHostConfigV1::default()
+                    .with_integration_test_state_root(state_root.clone())
+            },
+        );
+        #[cfg(not(feature = "uitest-support"))]
+        let extension_config = explorer_extension_host::ExtensionHostConfigV1::default();
+        let mut extension_host =
+            explorer_extension_host::ExtensionHost::with_config(extension_config);
+        extension_host.start()?;
+        let loaded_extension_summary = plugin_dll
+            .map(|path| {
+                explorer_extension_host::ExtensionHost::load_single_plugin_dll(path)
+                    .map(|summary| format_single_plugin_summary(path, summary))
+            })
+            .transpose()?;
+        if let Some(summary) = loaded_extension_summary.as_deref() {
+            diagnostics.record_event("development_plugin_loaded", &[("summary", summary)])?;
+        }
+        let extension_job_ui_ingress = extension_host.extension_job_ui_ingress();
+        let extension_job_ui_inbox = extension_host.take_extension_job_ui_inbox();
+        let safe_mode_incident_offers = extension_host.offers();
+        let safe_mode_denies_native_callbacks = extension_host.denies_native_callbacks();
+        #[cfg(feature = "uitest-support")]
+        if let Some(state_root) = _uitest_state_root.as_deref() {
+            write_uitest_safe_mode_probe_v1(
+                state_root,
+                extension_host.integration_test_recovered_callback_is_denied(),
+            )?;
+        }
+        if !safe_mode_incident_offers.is_empty() || safe_mode_denies_native_callbacks {
+            diagnostics.record_event(
+                "extension_safe_mode_offer_ready",
+                &[
+                    ("incidents", &safe_mode_incident_offers.len().to_string()),
+                    (
+                        "native_callbacks_denied",
+                        &safe_mode_denies_native_callbacks.to_string(),
+                    ),
+                ],
+            )?;
+        }
         diagnostics.record_event("extension_host_ready", &[])?;
         let broker = std::env::current_exe().ok().map(|application| {
             explorer_extension_broker::BrokerClient::adjacent_to(
@@ -168,12 +554,36 @@ impl ApplicationLifecycle {
                 diagnostics,
                 automation: Some(automation),
                 extension_host: Some(extension_host),
+                loaded_extension_summary,
+                extension_job_ui_inbox,
+                extension_job_ui_ingress,
+                safe_mode_incident_offers,
                 broker_warmup,
                 broker,
                 shell_sta: Some(shell_sta),
                 shutdown: false,
             })),
         })
+    }
+
+    fn take_extension_job_ui_bridge(
+        &self,
+    ) -> Result<
+        Option<(
+            explorer_extension_host::ExtensionJobUiInboxV1,
+            explorer_extension_host::ExtensionJobUiIngressV1,
+        )>,
+        Error,
+    > {
+        self.resources
+            .lock()
+            .map_err(|_| anyhow::anyhow!("application lifecycle mutex was poisoned"))
+            .map(|mut resources| {
+                resources
+                    .extension_job_ui_inbox
+                    .take()
+                    .zip(resources.extension_job_ui_ingress.take())
+            })
     }
 
     /// Runs GPUI until the final window closes or a test harness requests quit.
@@ -187,6 +597,7 @@ impl ApplicationLifecycle {
     )]
     pub fn run_gpui(&self) -> Result<(), Error> {
         let launch_error = Arc::new(Mutex::new(None::<String>));
+        let mut extension_job_ui_bridge = self.take_extension_job_ui_bridge()?;
         let closure_error = Arc::clone(&launch_error);
         let diagnostics = self.diagnostics()?;
         let diagnostics_after_run = diagnostics.clone();
@@ -203,6 +614,19 @@ impl ApplicationLifecycle {
             ));
         let shutdown_resources = Arc::clone(&self.resources);
         let folder_scripts = self.automation_handle()?;
+        let safe_mode_offers = self.safe_mode_ui_offers()?;
+        let loaded_extension_summary = self.loaded_extension_summary()?;
+        let safe_mode_lifecycle = self.clone();
+        let safe_mode_confirm: explorer_ui::SafeModeConfirmObserverV1 = Arc::new(move |token| {
+            safe_mode_lifecycle
+                .confirm_safe_mode_incident_for_presentation_token(token)
+                .map_err(|error| error.to_string())
+                .and_then(|confirmed| {
+                    confirmed
+                        .then_some(())
+                        .ok_or_else(|| "Safe Mode offer is no longer active".to_owned())
+                })
+        });
         let auto_close = std::env::var("EXPLORER_AUTO_CLOSE_MS")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
@@ -274,6 +698,7 @@ impl ApplicationLifecycle {
                 let reset_observer_for_window = reset_observer.clone();
                 let restore_preference_for_window = restore_preference;
                 let quick_access_for_window = quick_access.clone();
+                let loaded_extension_summary_for_window = loaded_extension_summary.clone();
                 let fixture_diagnostics = diagnostics.clone();
                 let tokens = fixture_tokens(fixture_for_window.as_ref());
                 let main_window = match cx.open_window(window_options, move |window, cx| {
@@ -288,6 +713,10 @@ impl ApplicationLifecycle {
                         schedule_visual_diagnostics(window, fixture, tokens, diagnostics, frames);
                     }
                     cx.new(move |cx| {
+                        let extension_ui_pump =
+                            extension_job_ui_bridge.take().and_then(|(inbox, ingress)| {
+                                ApplicationExtensionUiPumpV1::new(inbox, ingress)
+                            });
                         create_focused_explorer_root(
                             tokens,
                             shell_service,
@@ -302,6 +731,12 @@ impl ApplicationLifecycle {
                             broker_health,
                             broker_retry,
                             folder_scripts,
+                            safe_mode_offers,
+                            safe_mode_confirm,
+                            loaded_extension_summary_for_window,
+                            extension_ui_pump.map(|pump| {
+                                Box::new(pump) as Box<dyn explorer_ui::ExtensionUiPumpPortV1>
+                            }),
                             window,
                             cx,
                         )
@@ -373,10 +808,116 @@ impl ApplicationLifecycle {
         shutdown_shared(&self.resources)
     }
 
+    /// Returns the startup-recovered, path-free incidents that require explicit
+    /// user confirmation. Inspecting this list never clears native denial.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if application lifecycle state is unavailable.
+    pub fn safe_mode_incident_offers(&self) -> Result<Vec<SafeModeIncidentOffer>, Error> {
+        self.resources
+            .lock()
+            .map(|resources| resources.safe_mode_incident_offers.clone())
+            .map_err(|_| anyhow::anyhow!("application lifecycle mutex was poisoned"))
+    }
+
+    /// Explicitly confirms one startup Safe Mode offer through the resident
+    /// extension host. No offer is cleared merely by being displayed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a host confirmation failure or lifecycle-state error. Unknown or
+    /// already-confirmed offers return `Ok(false)` without calling the host.
+    pub fn confirm_safe_mode_incident(
+        &self,
+        incident_id: explorer_extension_host::NativeSafeModeIncidentIdV1,
+    ) -> Result<bool, Error> {
+        let mut resources = self
+            .resources
+            .lock()
+            .map_err(|_| anyhow::anyhow!("application lifecycle mutex was poisoned"))?;
+        let mut offers = std::mem::take(&mut resources.safe_mode_incident_offers);
+        let result = resources
+            .extension_host
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("extension host is not available"))
+            .and_then(|host| {
+                confirm_offered_safe_mode_incident_v1(host, &mut offers, incident_id)
+                    .map_err(Error::from)
+            });
+        resources.safe_mode_incident_offers = offers;
+        let confirmed = result?;
+        if confirmed {
+            let remaining = resources.safe_mode_incident_offers.len().to_string();
+            emit_post_commit_safe_mode_telemetry_v1(|| {
+                resources.diagnostics.record_event(
+                    "extension_safe_mode_incident_confirmed",
+                    &[("remaining_incidents", &remaining)],
+                )
+            });
+        }
+        Ok(confirmed)
+    }
+
+    fn confirm_safe_mode_incident_for_presentation_token(&self, token: u64) -> Result<bool, Error> {
+        let mut resources = self
+            .resources
+            .lock()
+            .map_err(|_| anyhow::anyhow!("application lifecycle mutex was poisoned"))?;
+        let mut offers = std::mem::take(&mut resources.safe_mode_incident_offers);
+        let result = resources
+            .extension_host
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("extension host is not available"))
+            .and_then(|host| {
+                confirm_presented_safe_mode_incident_v1(host, &mut offers, token)
+                    .map_err(Error::from)
+            });
+        resources.safe_mode_incident_offers = offers;
+        let confirmed = result?;
+        if confirmed {
+            let remaining = resources.safe_mode_incident_offers.len().to_string();
+            emit_post_commit_safe_mode_telemetry_v1(|| {
+                resources.diagnostics.record_event(
+                    "extension_safe_mode_incident_confirmed",
+                    &[("remaining_incidents", &remaining)],
+                )
+            });
+        }
+        Ok(confirmed)
+    }
+
+    fn safe_mode_ui_offers(&self) -> Result<Vec<explorer_ui::SafeModeOfferV1>, Error> {
+        self.safe_mode_incident_offers().map(|offers| {
+            offers
+                .into_iter()
+                .map(|offer| {
+                    let suspect = offer.suspect();
+                    explorer_ui::SafeModeOfferV1 {
+                        presentation_token: offer.presentation_token(),
+                        package_id: suspect.map(|value| value.package_id().to_owned()),
+                        primary_interface_namespace: suspect
+                            .map(SafeModeSuspectV1::primary_interface_namespace),
+                        primary_interface_value: suspect
+                            .map(SafeModeSuspectV1::primary_interface_value),
+                        operation: format!("{:?}", offer.kind()),
+                    }
+                })
+                .collect()
+        })
+    }
+
     fn diagnostics(&self) -> Result<DiagnosticsSession, Error> {
         self.resources
             .lock()
             .map(|resources| resources.diagnostics.clone())
+            .map_err(|_| anyhow::anyhow!("application lifecycle mutex was poisoned"))
+    }
+
+    fn loaded_extension_summary(&self) -> Result<Option<String>, Error> {
+        self.resources
+            .lock()
+            .map(|resources| resources.loaded_extension_summary.clone())
             .map_err(|_| anyhow::anyhow!("application lifecycle mutex was poisoned"))
     }
 
@@ -427,6 +968,7 @@ fn create_explorer_root(
     broker_health: explorer_ui::state::BrokerUiHealth,
     broker_retry: explorer_ui::BrokerRetryObserver,
     folder_scripts: explorer_automation::FolderScriptHandle,
+    extension_ui_pump: Option<Box<dyn explorer_ui::ExtensionUiPumpPortV1>>,
     window: &gpui::Window,
     cx: &mut gpui::Context<ExplorerRoot>,
 ) -> ExplorerRoot {
@@ -454,6 +996,9 @@ fn create_explorer_root(
     if let Some(observer) = reset_observer {
         root.attach_session_reset_observer(observer);
     }
+    if let Some(pump) = extension_ui_pump {
+        root.attach_extension_ui_pump(pump);
+    }
     root.start_service_pump(window.window_handle(), cx);
     root
 }
@@ -476,6 +1021,10 @@ fn create_focused_explorer_root(
     broker_health: explorer_ui::state::BrokerUiHealth,
     broker_retry: explorer_ui::BrokerRetryObserver,
     folder_scripts: explorer_automation::FolderScriptHandle,
+    safe_mode_offers: Vec<explorer_ui::SafeModeOfferV1>,
+    safe_mode_confirm: explorer_ui::SafeModeConfirmObserverV1,
+    loaded_extension_summary: Option<String>,
+    extension_ui_pump: Option<Box<dyn explorer_ui::ExtensionUiPumpPortV1>>,
     window: &mut gpui::Window,
     cx: &mut gpui::Context<ExplorerRoot>,
 ) -> ExplorerRoot {
@@ -495,6 +1044,7 @@ fn create_focused_explorer_root(
         broker_health,
         broker_retry,
         folder_scripts,
+        extension_ui_pump,
         window,
         cx,
     );
@@ -504,7 +1054,49 @@ fn create_focused_explorer_root(
     }));
     root.attach_text_inputs(cx);
     root.attach_focus_handle(focus_handle);
+    if !safe_mode_offers.is_empty() {
+        root.configure_safe_mode_offers(safe_mode_offers, safe_mode_confirm);
+    }
+    root.configure_loaded_extension_summary(loaded_extension_summary);
     root
+}
+
+fn format_single_plugin_summary(
+    path: &std::path::Path,
+    summary: explorer_extension_host::SinglePluginLoadSummaryV1,
+) -> String {
+    let plugin_id = summary.plugin_id();
+    let plugin_name = path
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("development-plugin")
+        .replace('_', "-");
+    let contributions = summary
+        .contributions()
+        .iter()
+        .map(|contribution| {
+            let kind = match contribution.kind().into_raw() {
+                1 => "Column",
+                2 => "GPUI Renderer",
+                3 => "Command",
+                4 => "Form",
+                5 => "Operation Plan",
+                6 => "View Mode",
+                7 => "Resource",
+                _ => "Unknown",
+            };
+            format!("{} ({})", contribution.contribution_id(), kind)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{} — Plugin {}:{}:{} — {}",
+        plugin_name,
+        plugin_id.namespace.authority(),
+        plugin_id.namespace.revision(),
+        plugin_id.value,
+        contributions
+    )
 }
 
 fn fixture_tokens(fixture: Option<&VisualFixtureConfig>) -> UiTokens {
@@ -863,16 +1455,335 @@ impl Drop for ApplicationLifecycle {
 
 #[cfg(test)]
 mod tests {
-    use super::should_restore_saved_tabs;
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering},
+        sync::{Arc, Mutex},
+        time::Instant,
+    };
+
+    use abi_stable::std_types::{ROption, RVec};
+    use explorer_extension_api::{
+        IncrementalResultBatchV1, IncrementalResultEntryV1, JobContextV1, JobTerminalV1,
+        PluginItemResultV1, PluginValueV1, SinkSubmitStatusV1,
+    };
+    use explorer_extension_host::{
+        ExtensionJobAuthorityV1, ExtensionJobRuntimeRequestV1, ExtensionJobRuntimeV1,
+        ExtensionJobUiIngressV1, ExtensionResultBufferConfigV1,
+    };
+    use explorer_model::{FileEntry, FileEntryMetadata, LocationDescriptor, ShellItemId, ViewMode};
+    use explorer_ui::ExtensionUiPumpPortV1 as _;
+
+    use super::{
+        ApplicationExtensionReadyProjectorV1, ApplicationExtensionUiPumpV1,
+        SafeModeIncidentOfferV1, SafeModeIncidentPortV1, confirm_offered_safe_mode_incident_v1,
+        confirm_presented_safe_mode_incident_v1, emit_post_commit_safe_mode_telemetry_v1,
+        should_restore_saved_tabs,
+    };
+
+    struct FakeSafeModePortV1 {
+        denied: bool,
+        confirmed: Mutex<Vec<u8>>,
+    }
+
+    impl SafeModeIncidentPortV1 for FakeSafeModePortV1 {
+        type IncidentId = u8;
+        type Error = ();
+
+        fn offers(&self) -> Vec<SafeModeIncidentOfferV1<Self::IncidentId>> {
+            Vec::new()
+        }
+
+        fn denies_native_callbacks(&self) -> bool {
+            self.denied
+        }
+
+        fn confirm(&self, incident_id: Self::IncidentId) -> Result<(), Self::Error> {
+            self.confirmed.lock().unwrap().push(incident_id);
+            Ok(())
+        }
+    }
+
+    struct CountingProjectorV1 {
+        calls: Arc<AtomicUsize>,
+        fail: bool,
+    }
+
+    impl ApplicationExtensionReadyProjectorV1 for CountingProjectorV1 {
+        fn project_ready(
+            &mut self,
+            _pump: &mut explorer_extension_host::ExtensionJobUiPumpV1,
+            _runtime: &Arc<ExtensionJobRuntimeV1>,
+            _ingress: &ExtensionJobUiIngressV1,
+        ) -> Result<usize, explorer_extension_host::ExtensionJobUiPumpErrorV1> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                return Err(explorer_extension_host::ExtensionJobUiPumpErrorV1::WrongUiThread);
+            }
+            Ok(0)
+        }
+    }
+
+    struct ApplyingProjectorV1 {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl ApplicationExtensionReadyProjectorV1 for ApplyingProjectorV1 {
+        fn project_ready(
+            &mut self,
+            pump: &mut explorer_extension_host::ExtensionJobUiPumpV1,
+            runtime: &Arc<ExtensionJobRuntimeV1>,
+            ingress: &ExtensionJobUiIngressV1,
+        ) -> Result<usize, explorer_extension_host::ExtensionJobUiPumpErrorV1> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let ready = pump.take_ready(16)?;
+            let mut applied = 0;
+            for signal in ready.signals {
+                let (item, location, source) = signal.generations();
+                for batch in runtime.drain(signal.job(), item, location, source, 16) {
+                    if runtime
+                        .apply_accepted_batch(&batch, |_| ("fixture-item".to_owned(), 1))
+                        .is_some()
+                    {
+                        ingress.notify_applied(&batch);
+                        applied += 1;
+                    }
+                }
+            }
+            Ok(applied)
+        }
+    }
+
+    fn runtime() -> Arc<ExtensionJobRuntimeV1> {
+        Arc::new(ExtensionJobRuntimeV1::new(
+            ExtensionResultBufferConfigV1::try_new(4, 4, 16, 16, 16, 16, 16, 16, 4096, 4096, 4096)
+                .unwrap(),
+        ))
+    }
+
+    fn request() -> ExtensionJobRuntimeRequestV1 {
+        ExtensionJobRuntimeRequestV1 {
+            authority: ExtensionJobAuthorityV1::for_integration_test("app-fixture"),
+            job_generation: 1,
+            item_generation: 1,
+            location_generation: 1,
+            source_generation: 1,
+            has_item: true,
+            input_stream: None,
+        }
+    }
+
+    fn batch(context: &JobContextV1) -> IncrementalResultBatchV1 {
+        IncrementalResultBatchV1 {
+            job: context.job,
+            sink_capability: context.sink.capability,
+            job_generation: context.job_generation,
+            location: context.location,
+            location_generation: context.location_generation,
+            source_generation: context.source_generation,
+            sequence: 0,
+            entries: RVec::from(vec![IncrementalResultEntryV1 {
+                item: context.item.into_option().unwrap(),
+                item_generation: context.item_generation,
+                source_generation: context.source_generation,
+                result: PluginItemResultV1::value(
+                    PluginValueV1::text("fixture").unwrap(),
+                    ROption::RNone,
+                ),
+            }]),
+        }
+    }
+
+    fn queued_fixture() -> (
+        Arc<ExtensionJobRuntimeV1>,
+        ExtensionJobUiIngressV1,
+        explorer_extension_host::ExtensionJobUiInboxV1,
+        JobContextV1,
+    ) {
+        let runtime = runtime();
+        let (ingress, inbox) = ExtensionJobUiIngressV1::new_integration_pair(Arc::clone(&runtime));
+        let context = runtime.open_job_for_integration_test(request()).unwrap();
+        assert_eq!(
+            runtime
+                .submit_for_integration_test(&context, batch(&context))
+                .status,
+            SinkSubmitStatusV1::ACCEPTED
+        );
+        (runtime, ingress, inbox, context)
+    }
+
+    fn directory_entries(count: u64) -> Vec<FileEntry> {
+        (0..count)
+            .map(|index| FileEntry {
+                id: ShellItemId::from_provider_bytes(index.to_le_bytes()).unwrap(),
+                location: LocationDescriptor::file_system(format!(r"C:\fixture\{index}.txt")),
+                display_name: format!("{index}.txt"),
+                is_container: false,
+                metadata: FileEntryMetadata::default(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn directory_fixture_is_visible_before_extension_projection_runs() {
+        let root = explorer_ui::ExplorerRoot::for_directory_fixture(
+            explorer_ui::UiTokens::default(),
+            directory_entries(1_000),
+            ViewMode::Details,
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        assert_eq!(root.fixture_visible_entry_count(), Some(1_000));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let (runtime, ingress, inbox, context) = queued_fixture();
+        let mut app_pump = ApplicationExtensionUiPumpV1::with_ready_projector(
+            inbox,
+            ingress,
+            Box::new(ApplyingProjectorV1 {
+                calls: Arc::clone(&calls),
+            }),
+        )
+        .unwrap();
+        let now = Instant::now();
+        assert!(!app_pump.poll_due(now));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(root.fixture_visible_entry_count(), Some(1_000));
+        let deadline = app_pump.pump.next_deadline().unwrap().unwrap();
+        assert!(app_pump.poll_due(deadline));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(matches!(
+            runtime.finish_for_integration_test(context.job, JobTerminalV1::COMPLETED),
+            explorer_extension_host::ExtensionJobFinishOutcomeV1::Published(
+                JobTerminalV1::COMPLETED
+            )
+        ));
+        runtime.retire(context.job).unwrap();
+    }
+
+    #[test]
+    fn projector_injection_runs_before_poll_and_neither_deferred_nor_error_consumes_ready_work() {
+        let (runtime, ingress, inbox, context) = queued_fixture();
+        let mut deferred = ApplicationExtensionUiPumpV1::new(inbox, ingress).unwrap();
+        assert!(!deferred.poll_due(Instant::now()));
+        assert_eq!(deferred.pump.take_ready(1).unwrap().signals.len(), 1);
+        assert!(matches!(
+            runtime.finish_for_integration_test(context.job, JobTerminalV1::COMPLETED),
+            explorer_extension_host::ExtensionJobFinishOutcomeV1::Published(
+                JobTerminalV1::COMPLETED
+            )
+        ));
+        runtime.retire(context.job).unwrap();
+
+        let (runtime, ingress, inbox, context) = queued_fixture();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut app_pump = ApplicationExtensionUiPumpV1::with_ready_projector(
+            inbox,
+            ingress,
+            Box::new(CountingProjectorV1 {
+                calls: Arc::clone(&calls),
+                fail: true,
+            }),
+        )
+        .unwrap();
+        app_pump.set_ready_projector(Box::new(CountingProjectorV1 {
+            calls: Arc::clone(&calls),
+            fail: true,
+        }));
+        assert!(!app_pump.poll_due(Instant::now()));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(app_pump.pump.take_ready(1).unwrap().signals.len(), 1);
+        assert!(matches!(
+            runtime.finish_for_integration_test(context.job, JobTerminalV1::COMPLETED),
+            explorer_extension_host::ExtensionJobFinishOutcomeV1::Published(
+                JobTerminalV1::COMPLETED
+            )
+        ));
+        runtime.retire(context.job).unwrap();
+    }
 
     #[test]
     fn explicit_start_location_overrides_saved_tabs() {
         let configured = explorer_model::HistoryEntry::new(
-            explorer_model::LocationDescriptor::file_system(r"D:\requested"),
+            LocationDescriptor::file_system(r"D:\requested"),
             "requested",
         );
 
         assert!(!should_restore_saved_tabs(Some(&configured)));
         assert!(should_restore_saved_tabs(None));
+    }
+
+    #[test]
+    fn safe_mode_offer_remains_denied_until_explicit_confirmation() {
+        let port = FakeSafeModePortV1 {
+            denied: true,
+            confirmed: Mutex::new(Vec::new()),
+        };
+        let mut offers = vec![SafeModeIncidentOfferV1 {
+            incident_id: 7,
+            presentation_token: 1,
+            kind: explorer_extension_host::NativeSafeModeIncidentKindV1::UnsafeMarkerState,
+            suspect: None,
+        }];
+
+        assert!(port.denies_native_callbacks());
+        assert_eq!(offers.len(), 1);
+        assert!(port.confirmed.lock().unwrap().is_empty());
+
+        assert_eq!(
+            confirm_offered_safe_mode_incident_v1(&port, &mut offers, 7),
+            Ok(true)
+        );
+        assert!(offers.is_empty());
+        assert_eq!(port.confirmed.lock().unwrap().as_slice(), &[7]);
+        assert_eq!(
+            confirm_offered_safe_mode_incident_v1(&port, &mut offers, 7),
+            Ok(false)
+        );
+        assert_eq!(port.confirmed.lock().unwrap().as_slice(), &[7]);
+    }
+
+    #[test]
+    fn stale_safe_mode_presenter_token_does_not_confirm_a_shifted_offer() {
+        let port = FakeSafeModePortV1 {
+            denied: true,
+            confirmed: Mutex::new(Vec::new()),
+        };
+        let mut offers = vec![
+            SafeModeIncidentOfferV1 {
+                incident_id: 7,
+                presentation_token: 101,
+                kind: explorer_extension_host::NativeSafeModeIncidentKindV1::UnsafeMarkerState,
+                suspect: None,
+            },
+            SafeModeIncidentOfferV1 {
+                incident_id: 9,
+                presentation_token: 202,
+                kind: explorer_extension_host::NativeSafeModeIncidentKindV1::UnsafeMarkerState,
+                suspect: None,
+            },
+        ];
+
+        assert_eq!(
+            confirm_presented_safe_mode_incident_v1(&port, &mut offers, 101),
+            Ok(true)
+        );
+        assert_eq!(port.confirmed.lock().unwrap().as_slice(), &[7]);
+
+        assert_eq!(
+            confirm_presented_safe_mode_incident_v1(&port, &mut offers, 101),
+            Ok(false)
+        );
+        assert_eq!(port.confirmed.lock().unwrap().as_slice(), &[7]);
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].incident_id(), 9);
+    }
+
+    #[test]
+    fn post_commit_safe_mode_telemetry_failure_does_not_mask_confirmation() {
+        let attempts = AtomicUsize::new(0);
+        emit_post_commit_safe_mode_telemetry_v1(|| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            Err::<(), _>(())
+        });
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 }

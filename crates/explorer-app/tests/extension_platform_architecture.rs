@@ -18,15 +18,22 @@ fn public_extension_crates_have_one_way_dependencies_and_a_host_composition_root
     }
 
     let metadata = cargo_metadata();
-    assert_dependency_allowlist(&metadata, "explorer-extension-api", &["abi_stable"]);
+    assert_dependency_allowlist(
+        &metadata,
+        "explorer-extension-api",
+        "normal",
+        &["abi_stable"],
+    );
     assert_dependency_allowlist(
         &metadata,
         "explorer-extension-ui-api",
+        "normal",
         &["explorer-extension-api"],
     );
     assert_dependency_allowlist(
         &metadata,
         "explorer-extension-host",
+        "normal",
         &[
             "abi_stable",
             "base64",
@@ -38,8 +45,19 @@ fn public_extension_crates_have_one_way_dependencies_and_a_host_composition_root
             "serde",
             "serde_json",
             "sha2",
-            "tempfile",
             "thiserror",
+            "windows",
+        ],
+    );
+    assert_dependency_allowlist(
+        &metadata,
+        "explorer-extension-host",
+        "dev",
+        &[
+            "explorer-common",
+            "explorer-jobs",
+            "explorer-model",
+            "tempfile",
         ],
     );
     assert!(
@@ -50,7 +68,8 @@ fn public_extension_crates_have_one_way_dependencies_and_a_host_composition_root
         APPLICATION_COMPOSITION
             .contains("extension_host: Option<explorer_extension_host::ExtensionHost>")
     );
-    assert!(APPLICATION_COMPOSITION.contains("extension_host.start();"));
+    assert!(APPLICATION_COMPOSITION.contains("extension_host.start()?;"));
+    assert!(APPLICATION_COMPOSITION.contains("ExtensionHostConfigV1::default()"));
     assert!(APPLICATION_COMPOSITION.contains("extension_host.shutdown();"));
     for package in [
         "explorer-ui",
@@ -123,11 +142,21 @@ fn package<'a>(metadata: &'a serde_json::Value, name: &str) -> &'a serde_json::V
         .unwrap_or_else(|| panic!("missing metadata package: {name}"))
 }
 
-fn assert_dependency_allowlist(metadata: &serde_json::Value, name: &str, allowed: &[&str]) {
+fn assert_dependency_allowlist(
+    metadata: &serde_json::Value,
+    name: &str,
+    dependency_kind: &str,
+    allowed: &[&str],
+) {
     let actual = package(metadata, name)["dependencies"]
         .as_array()
         .expect("package dependencies")
         .iter()
+        .filter(|dependency| match dependency_kind {
+            "normal" => dependency["kind"].is_null() || dependency["kind"] == "normal",
+            "dev" => dependency["kind"] == "dev",
+            unsupported => panic!("unsupported dependency kind: {unsupported}"),
+        })
         .map(|dependency| {
             dependency["name"]
                 .as_str()
@@ -140,7 +169,7 @@ fn assert_dependency_allowlist(metadata: &serde_json::Value, name: &str, allowed
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(
         actual, expected,
-        "{name} dependency surface changed; public extension crates require an explicit allowlist review"
+        "{name} {dependency_kind} dependency surface changed; public extension crates require an explicit allowlist review"
     );
 }
 

@@ -31,11 +31,12 @@ type ReopenDeadNamespaceHookV1 = (PathBuf, Box<dyn FnOnce() + Send>);
 #[cfg(all(test, windows))]
 static REOPEN_DEAD_NAMESPACE_HOOK: Mutex<Option<ReopenDeadNamespaceHookV1>> = Mutex::new(None);
 
-/// The only native operation currently guarded by a durable marker.
+/// A native extension callback guarded by a durable marker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NativeCallOperationV1 {
     Registrar,
+    JobProvider,
 }
 
 /// Opaque identifier for one recovered Safe Mode incident.
@@ -102,6 +103,8 @@ pub enum NativeCallTerminalV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeCallTimingV1 {
     pub package_id: String,
+    /// Sealed registrar entrypoint or provider contribution identity.
+    pub callback_id: String,
     pub primary_interface_namespace: u32,
     pub primary_interface_value: u64,
     pub operation: NativeCallOperationV1,
@@ -301,6 +304,22 @@ impl PluginCallGuardStoreV1 {
         })
     }
 
+    /// Returns whether Safe Mode currently blocks this exact callback marker.
+    /// This is used during startup preflight so a recovered incident prevents
+    /// every registrar callback in the affected package admission transaction.
+    pub(crate) fn denies(&self, marker: &MarkerV1) -> bool {
+        let Ok(overlay) = self.overlay.lock() else {
+            return true;
+        };
+        match &*overlay {
+            OverlayV1::Global(_) => true,
+            OverlayV1::Incidents(incidents) => {
+                incidents.values().any(|saved| saved.marker.matches(marker))
+            }
+            OverlayV1::Clean => false,
+        }
+    }
+
     pub(crate) fn incidents(&self) -> Vec<NativeSafeModeIncidentV1> {
         let Ok(overlay) = self.overlay.lock() else {
             return Vec::new();
@@ -395,6 +414,7 @@ impl PluginCallGuardStoreV1 {
             }
             timings.push_back(NativeCallTimingV1 {
                 package_id: marker.package_id.clone(),
+                callback_id: marker.entrypoint_id.clone(),
                 primary_interface_namespace: marker.primary_interface_namespace,
                 primary_interface_value: marker.primary_interface_value,
                 operation: marker.operation,
@@ -688,6 +708,26 @@ pub(crate) fn marker(
     namespace: u32,
     value: u64,
 ) -> MarkerV1 {
+    marker_with_operation(
+        package_id,
+        digest,
+        entrypoint,
+        root_module,
+        namespace,
+        value,
+        NativeCallOperationV1::Registrar,
+    )
+}
+
+pub(crate) fn marker_with_operation(
+    package_id: &str,
+    digest: &str,
+    entrypoint: &str,
+    root_module: &str,
+    namespace: u32,
+    value: u64,
+    operation: NativeCallOperationV1,
+) -> MarkerV1 {
     MarkerV1 {
         schema_version: MARKER_SCHEMA_V1,
         package_id: package_id.into(),
@@ -696,7 +736,7 @@ pub(crate) fn marker(
         root_module_id: root_module.into(),
         primary_interface_namespace: namespace,
         primary_interface_value: value,
-        operation: NativeCallOperationV1::Registrar,
+        operation,
     }
 }
 
@@ -1801,6 +1841,35 @@ mod tests {
         let timings = store.timings();
         assert_eq!(timings.len(), MAX_NATIVE_CALL_TIMINGS_V1);
         assert!(timings.iter().all(|timing| timing.slow));
+    }
+
+    #[test]
+    fn provider_timing_is_bounded_path_free_and_interface_scoped() {
+        let directory = tempfile::tempdir().expect("directory");
+        let store = store(directory.path());
+        let marker = marker_with_operation(
+            "provider-package",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "provider-contribution",
+            "provider",
+            0x5345_0001,
+            77,
+            NativeCallOperationV1::JobProvider,
+        );
+        for _ in 0..=MAX_NATIVE_CALL_TIMINGS_V1 {
+            store.record_timing(&marker, Duration::ZERO, NativeCallTerminalV1::Accepted);
+        }
+        let timings = store.timings();
+        assert_eq!(timings.len(), MAX_NATIVE_CALL_TIMINGS_V1);
+        assert!(timings.iter().all(|timing| {
+            timing.package_id == "provider-package"
+                && timing.callback_id == "provider-contribution"
+                && timing.primary_interface_namespace == 0x5345_0001
+                && timing.primary_interface_value == 77
+                && timing.operation == NativeCallOperationV1::JobProvider
+                && timing.terminal == NativeCallTerminalV1::Accepted
+                && timing.slow
+        }));
     }
 
     #[test]

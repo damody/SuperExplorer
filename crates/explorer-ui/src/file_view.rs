@@ -8,7 +8,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use explorer_model::{DirectorySnapshot, FileEntry, SortColumn, SortDescriptor, SortDirection};
+use explorer_model::{ColumnId, DirectorySnapshot, FileEntry, SortDescriptor, SortDirection};
 
 pub const MAX_STANDARD_REALIZED_ITEMS: usize = 250;
 
@@ -20,41 +20,41 @@ pub struct DetailsFilterOption {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DetailsFilters {
-    selected: HashMap<SortColumn, HashSet<String>>,
+    selected: HashMap<ColumnId, HashSet<String>>,
 }
 
 impl DetailsFilters {
-    pub fn is_active(&self, column: SortColumn) -> bool {
+    pub fn is_active(&self, column: &ColumnId) -> bool {
         self.selected
-            .get(&column)
+            .get(column)
             .is_some_and(|values| !values.is_empty())
     }
 
-    pub fn is_selected(&self, column: SortColumn, key: &str) -> bool {
+    pub fn is_selected(&self, column: &ColumnId, key: &str) -> bool {
         self.selected
-            .get(&column)
+            .get(column)
             .is_some_and(|values| values.contains(key))
     }
 
-    pub fn toggle(&mut self, column: SortColumn, key: String) {
-        let values = self.selected.entry(column).or_default();
-        if !values.insert(key.clone()) {
-            values.remove(&key);
+    pub fn toggle(&mut self, column: &ColumnId, key: &str) {
+        let values = self.selected.entry(column.clone()).or_default();
+        if !values.insert(key.to_owned()) {
+            values.remove(key);
         }
         if values.is_empty() {
-            self.selected.remove(&column);
+            self.selected.remove(column);
         }
     }
 
-    pub fn clear(&mut self, column: SortColumn) {
-        self.selected.remove(&column);
+    pub fn clear(&mut self, column: &ColumnId) {
+        self.selected.remove(column);
     }
 
     pub fn clear_all(&mut self) {
         self.selected.clear();
     }
 
-    pub fn options(snapshot: &DirectorySnapshot, column: SortColumn) -> Vec<DetailsFilterOption> {
+    pub fn options(snapshot: &DirectorySnapshot, column: &ColumnId) -> Vec<DetailsFilterOption> {
         let mut options = snapshot
             .entries()
             .iter()
@@ -70,15 +70,15 @@ impl DetailsFilters {
 
     fn matches(&self, entry: &FileEntry) -> bool {
         self.selected.iter().all(|(column, selected)| {
-            let (key, _) = filter_value(entry, *column);
+            let (key, _) = filter_value(entry, column);
             selected.contains(&key)
         })
     }
 }
 
-fn filter_value(entry: &FileEntry, column: SortColumn) -> (String, String) {
+fn filter_value(entry: &FileEntry, column: &ColumnId) -> (String, String) {
     match column {
-        SortColumn::Name => match entry
+        ColumnId::Name => match entry
             .display_name
             .chars()
             .next()
@@ -89,7 +89,7 @@ fn filter_value(entry: &FileEntry, column: SortColumn) -> (String, String) {
             Some('Q'..='Z') => ("name:q-z".into(), "Q–Z".into()),
             _ => ("name:other".into(), "其他".into()),
         },
-        SortColumn::Size => match entry.metadata.size_bytes {
+        ColumnId::Size => match entry.metadata.size_bytes {
             Some(bytes) if bytes <= 16 * 1024 => ("size:tiny".into(), "極小 (0–16 KB)".into()),
             Some(bytes) if bytes <= 1024 * 1024 => ("size:small".into(), "小 (16 KB–1 MB)".into()),
             Some(bytes) if bytes <= 128 * 1024 * 1024 => {
@@ -98,9 +98,9 @@ fn filter_value(entry: &FileEntry, column: SortColumn) -> (String, String) {
             Some(_) => ("size:large".into(), "大 (>128 MB)".into()),
             None => ("size:none".into(), "未指定".into()),
         },
-        SortColumn::DateModified => date_filter_value(entry.metadata.modified_sort_key),
-        SortColumn::DateCreated => date_filter_value(entry.metadata.created_sort_key),
-        SortColumn::Type => text_filter_value(
+        ColumnId::DateModified => date_filter_value(entry.metadata.modified_sort_key),
+        ColumnId::DateCreated => date_filter_value(entry.metadata.created_sort_key),
+        ColumnId::Type => text_filter_value(
             entry
                 .metadata
                 .type_display
@@ -112,11 +112,12 @@ fn filter_value(entry: &FileEntry, column: SortColumn) -> (String, String) {
                 }),
             "type",
         ),
-        SortColumn::Authors => {
+        ColumnId::Authors => {
             text_filter_value(entry.metadata.authors_display.as_deref(), "authors")
         }
-        SortColumn::Tags => text_filter_value(entry.metadata.tags_display.as_deref(), "tags"),
-        SortColumn::Title => text_filter_value(entry.metadata.title_display.as_deref(), "title"),
+        ColumnId::Tags => text_filter_value(entry.metadata.tags_display.as_deref(), "tags"),
+        ColumnId::Title => text_filter_value(entry.metadata.title_display.as_deref(), "title"),
+        ColumnId::Extension { .. } => ("extension:unavailable".into(), "無法使用".into()),
     }
 }
 
@@ -191,7 +192,7 @@ impl DirectoryPresentation {
                 !protected_system_item && (hidden_items || !ordinary_hidden_item)
             })
             .collect::<Vec<_>>();
-        ordered_indices.sort_by(|left, right| compare_file_entries(snapshot, *left, *right, sort));
+        ordered_indices.sort_by(|left, right| compare_file_entries(snapshot, *left, *right, &sort));
         Self {
             revision: snapshot.revision(),
             hidden_items,
@@ -233,12 +234,12 @@ impl DirectoryPresentation {
         &self,
         snapshot: &DirectorySnapshot,
         hidden_items: bool,
-        sort: SortDescriptor,
+        sort: &SortDescriptor,
         filters: &DetailsFilters,
     ) -> bool {
         self.revision == snapshot.revision()
             && self.hidden_items == hidden_items
-            && self.sort == sort
+            && self.sort == *sort
             && &self.filters == filters
             && Arc::ptr_eq(&self.entries, &snapshot.shared_entries())
     }
@@ -256,7 +257,7 @@ impl DirectoryPresentationCache {
         &mut self,
         snapshot: &DirectorySnapshot,
         hidden_items: bool,
-        sort: SortDescriptor,
+        sort: &SortDescriptor,
     ) -> DirectoryPresentation {
         self.resolve_filtered(snapshot, hidden_items, sort, DetailsFilters::default())
     }
@@ -265,7 +266,7 @@ impl DirectoryPresentationCache {
         &mut self,
         snapshot: &DirectorySnapshot,
         hidden_items: bool,
-        sort: SortDescriptor,
+        sort: &SortDescriptor,
         filters: DetailsFilters,
     ) -> DirectoryPresentation {
         if let Some(current) = self
@@ -276,7 +277,7 @@ impl DirectoryPresentationCache {
             return current.clone();
         }
         let presentation =
-            DirectoryPresentation::build_filtered(snapshot, hidden_items, sort, filters);
+            DirectoryPresentation::build_filtered(snapshot, hidden_items, sort.clone(), filters);
         self.current = Some(presentation.clone());
         self.rebuilds = self.rebuilds.saturating_add(1);
         presentation
@@ -291,7 +292,7 @@ fn compare_file_entries(
     snapshot: &DirectorySnapshot,
     left_index: usize,
     right_index: usize,
-    sort: SortDescriptor,
+    sort: &SortDescriptor,
 ) -> Ordering {
     let left = &snapshot.entries()[left_index];
     let right = &snapshot.entries()[right_index];
@@ -306,47 +307,48 @@ fn compare_file_entries(
     ) else {
         return left_index.cmp(&right_index);
     };
-    let ordering = match sort.column {
-        SortColumn::Name => compare_text(
+    let ordering = match &sort.column {
+        ColumnId::Name => compare_text(
             Some(left_keys.display_name()),
             Some(right_keys.display_name()),
             sort.direction,
         ),
-        SortColumn::DateModified => compare_optional(
+        ColumnId::DateModified => compare_optional(
             left.metadata.modified_sort_key,
             right.metadata.modified_sort_key,
             sort.direction,
         ),
-        SortColumn::Type => compare_text(
+        ColumnId::Type => compare_text(
             left_keys.type_display(),
             right_keys.type_display(),
             sort.direction,
         ),
-        SortColumn::Size => compare_optional(
+        ColumnId::Size => compare_optional(
             left.metadata.size_bytes,
             right.metadata.size_bytes,
             sort.direction,
         ),
-        SortColumn::DateCreated => compare_optional(
+        ColumnId::DateCreated => compare_optional(
             left.metadata.created_sort_key,
             right.metadata.created_sort_key,
             sort.direction,
         ),
-        SortColumn::Authors => compare_text(
+        ColumnId::Authors => compare_text(
             left.metadata.authors_display.as_deref(),
             right.metadata.authors_display.as_deref(),
             sort.direction,
         ),
-        SortColumn::Tags => compare_text(
+        ColumnId::Tags => compare_text(
             left.metadata.tags_display.as_deref(),
             right.metadata.tags_display.as_deref(),
             sort.direction,
         ),
-        SortColumn::Title => compare_text(
+        ColumnId::Title => compare_text(
             left.metadata.title_display.as_deref(),
             right.metadata.title_display.as_deref(),
             sort.direction,
         ),
+        ColumnId::Extension { .. } => Ordering::Equal,
     };
     ordering
         .then_with(|| left_keys.display_name().cmp(right_keys.display_name()))
@@ -494,8 +496,8 @@ pub fn fixed_grid_virtual_range(
 #[cfg(test)]
 mod tests {
     use explorer_model::{
-        DriveAvailability, DriveKind, DriveMetadata, FileEntryMetadata, LocationDescriptor,
-        ShellItemId, SortColumn, SortDescriptor, SortDirection,
+        ColumnId, DriveAvailability, DriveKind, DriveMetadata, FileEntryMetadata,
+        LocationDescriptor, ShellItemId, SortDescriptor, SortDirection,
     };
 
     use super::*;
@@ -534,7 +536,7 @@ mod tests {
             &snapshot,
             false,
             SortDescriptor {
-                column: SortColumn::Name,
+                column: ColumnId::Name,
                 direction: SortDirection::Ascending,
             },
         );
@@ -552,11 +554,11 @@ mod tests {
         snapshot.upsert(entry(2, "Alpha.txt"));
         let mut cache = DirectoryPresentationCache::default();
         let sort = SortDescriptor {
-            column: SortColumn::Name,
+            column: ColumnId::Name,
             direction: SortDirection::Ascending,
         };
-        let first = cache.resolve(&snapshot, false, sort);
-        let second = cache.resolve(&snapshot, false, sort);
+        let first = cache.resolve(&snapshot, false, &sort);
+        let second = cache.resolve(&snapshot, false, &sort);
         assert_eq!(cache.rebuilds(), 1);
         assert!(Arc::ptr_eq(
             first.ordered_indices(),
@@ -565,27 +567,24 @@ mod tests {
         assert_eq!(first.entry(0).unwrap().1.display_name, "Alpha.txt");
 
         snapshot.upsert(entry(1, "aardvark.txt"));
-        let changed = cache.resolve(&snapshot, false, sort);
+        let changed = cache.resolve(&snapshot, false, &sort);
         assert_eq!(cache.rebuilds(), 2);
         assert_eq!(changed.entry(0).unwrap().1.display_name, "aardvark.txt");
 
         // Hover, focus, selection, viewport geometry and resizing are deliberately absent from
         // the projection key, so resolving again cannot sort or allocate another index vector.
-        let after_interactions = cache.resolve(&snapshot, false, sort);
+        let after_interactions = cache.resolve(&snapshot, false, &sort);
         assert_eq!(cache.rebuilds(), 2);
         assert!(Arc::ptr_eq(
             changed.ordered_indices(),
             after_interactions.ordered_indices()
         ));
 
-        let descending = cache.resolve(
-            &snapshot,
-            false,
-            SortDescriptor {
-                direction: SortDirection::Descending,
-                ..sort
-            },
-        );
+        let descending_sort = SortDescriptor {
+            direction: SortDirection::Descending,
+            ..sort
+        };
+        let descending = cache.resolve(&snapshot, false, &descending_sort);
         assert_eq!(cache.rebuilds(), 3);
         assert_eq!(descending.entry(0).unwrap().1.display_name, "Alpha.txt");
     }
@@ -602,18 +601,18 @@ mod tests {
         snapshot.upsert(zebra);
         snapshot.upsert(alpha);
         let sort = SortDescriptor {
-            column: SortColumn::Name,
+            column: ColumnId::Name,
             direction: SortDirection::Ascending,
         };
 
         let mut filters = DetailsFilters::default();
-        filters.toggle(SortColumn::Name, "name:a-h".into());
-        filters.toggle(SortColumn::Size, "size:tiny".into());
+        filters.toggle(&ColumnId::Name, "name:a-h");
+        filters.toggle(&ColumnId::Size, "size:tiny");
         let presentation = DirectoryPresentation::build_filtered(&snapshot, false, sort, filters);
         assert_eq!(presentation.len(), 1);
         assert_eq!(presentation.entry(0).unwrap().1.display_name, "Alpha.txt");
 
-        let name_options = DetailsFilters::options(&snapshot, SortColumn::Name);
+        let name_options = DetailsFilters::options(&snapshot, &ColumnId::Name);
         assert!(name_options.iter().any(|option| option.label == "A–H"));
         assert!(name_options.iter().any(|option| option.label == "Q–Z"));
     }
@@ -624,16 +623,16 @@ mod tests {
         snapshot.upsert(entry(1, "Alpha.txt"));
         snapshot.upsert(entry(2, "Zebra.txt"));
         let sort = SortDescriptor {
-            column: SortColumn::Name,
+            column: ColumnId::Name,
             direction: SortDirection::Ascending,
         };
         let mut cache = DirectoryPresentationCache::default();
-        let all = cache.resolve_filtered(&snapshot, false, sort, DetailsFilters::default());
+        let all = cache.resolve_filtered(&snapshot, false, &sort, DetailsFilters::default());
         assert_eq!(all.len(), 2);
         let mut filters = DetailsFilters::default();
-        filters.toggle(SortColumn::Name, "name:q-z".into());
-        let filtered = cache.resolve_filtered(&snapshot, false, sort, filters.clone());
-        let reused = cache.resolve_filtered(&snapshot, false, sort, filters);
+        filters.toggle(&ColumnId::Name, "name:q-z");
+        let filtered = cache.resolve_filtered(&snapshot, false, &sort, filters.clone());
+        let reused = cache.resolve_filtered(&snapshot, false, &sort, filters);
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered.entry(0).unwrap().1.display_name, "Zebra.txt");
         assert_eq!(cache.rebuilds(), 2);

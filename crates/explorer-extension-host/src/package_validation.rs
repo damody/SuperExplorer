@@ -23,6 +23,7 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use ring::signature::{ED25519, UnparsedPublicKey};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -32,6 +33,25 @@ use crate::{
 };
 
 const ED25519_PUBLIC_KEY_BYTES: usize = 32;
+const RELEASE_TRUST_ROOTS_ARTIFACT_V1: &str = include_str!("../trusted-publisher-keys-v1.json");
+pub(crate) const RELEASE_TRUST_ROOTS_BUNDLE_ID_V1: &str = "sdk-c469f647d79d0534511b532c";
+const MAX_RELEASE_TRUST_ROOTS_V1: usize = 64;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReleaseTrustRootsArtifactV1 {
+    schema_version: u32,
+    sdk_bundle_id: String,
+    keys: Vec<ReleaseTrustRootRecordV1>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReleaseTrustRootRecordV1 {
+    key_id: String,
+    publisher_id: String,
+    ed25519_public_key_base64: String,
+}
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 const MAX_PAYLOAD_COUNT: usize = 128;
 const MAX_PAYLOAD_FILE_BYTES: u64 = 512 * 1024 * 1024;
@@ -47,7 +67,7 @@ static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Opaque local-developer authorization issued only by a host package source.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LocalDeveloperAuthorizationV1(());
+pub(crate) struct LocalDeveloperAuthorizationV1(());
 
 impl LocalDeveloperAuthorizationV1 {
     #[allow(dead_code)] // Task 2.6 package sources issue this authorization.
@@ -90,7 +110,7 @@ impl PackageValidationCancellationV1 {
     pub fn cancel(&self) {
         self.0.store(true, Ordering::Release);
     }
-    fn cancelled(&self) -> bool {
+    pub(crate) fn cancelled(&self) -> bool {
         self.0.load(Ordering::Acquire)
     }
 }
@@ -154,7 +174,7 @@ impl PackageValidationRequestV1 {
     }
 
     #[must_use]
-    pub fn with_local_developer_authorization(
+    pub(crate) fn with_local_developer_authorization(
         mut self,
         authorization: LocalDeveloperAuthorizationV1,
     ) -> Self {
@@ -264,6 +284,51 @@ impl TrustedPublisherKeyStoreV1 {
     fn resolve(&self, key_id: &str) -> Option<&TrustedPublisherKeyV1> {
         self.keys.get(key_id)
     }
+
+    /// Loads the public-only trust roots compiled into this release build.
+    ///
+    /// The artifact is release-bundle-bound and has no private signing material.
+    /// Its parse and key errors deliberately expose no filesystem path or key
+    /// bytes to startup diagnostics.
+    pub(crate) fn release_bound_v1() -> Result<Self, ReleaseTrustRootArtifactErrorV1> {
+        Self::from_release_artifact_v1(RELEASE_TRUST_ROOTS_ARTIFACT_V1)
+    }
+
+    pub(crate) fn from_release_artifact_v1(
+        bytes: &str,
+    ) -> Result<Self, ReleaseTrustRootArtifactErrorV1> {
+        let artifact: ReleaseTrustRootsArtifactV1 =
+            serde_json::from_str(bytes).map_err(|_| ReleaseTrustRootArtifactErrorV1::Malformed)?;
+        if artifact.schema_version != 1
+            || artifact.sdk_bundle_id != RELEASE_TRUST_ROOTS_BUNDLE_ID_V1
+            || artifact.keys.is_empty()
+            || artifact.keys.len() > MAX_RELEASE_TRUST_ROOTS_V1
+        {
+            return Err(ReleaseTrustRootArtifactErrorV1::Incompatible);
+        }
+        let mut keys = Vec::with_capacity(artifact.keys.len());
+        for key in artifact.keys {
+            let public_key = STANDARD
+                .decode(key.ed25519_public_key_base64)
+                .map_err(|_| ReleaseTrustRootArtifactErrorV1::Malformed)?;
+            keys.push(
+                TrustedPublisherKeyV1::new(key.key_id, key.publisher_id, &public_key)
+                    .map_err(|_| ReleaseTrustRootArtifactErrorV1::Malformed)?,
+            );
+        }
+        Self::new(keys).map_err(|_| ReleaseTrustRootArtifactErrorV1::Malformed)
+    }
+}
+
+/// Path-free failure while loading the public-only release trust-root artifact.
+#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+pub enum ReleaseTrustRootArtifactErrorV1 {
+    /// The compiled artifact could not be parsed or contains invalid key data.
+    #[error("compiled release trust-root artifact is malformed")]
+    Malformed,
+    /// The artifact schema or bundle binding does not match this host build.
+    #[error("compiled release trust-root artifact is incompatible")]
+    Incompatible,
 }
 
 /// Pre-load validator using a host-owned immutable trust store.
@@ -2186,7 +2251,8 @@ mod tests {
     use super::{
         LocalDeveloperAuthorizationV1, PackageValidationBudgetV1, PackageValidationCancellationV1,
         PackageValidationErrorV1, PackageValidationRequestV1, PackageValidatorV1,
-        SealedPackageStoreV1, TrustedPublisherKeyStoreV1, TrustedPublisherKeyV1,
+        ReleaseTrustRootArtifactErrorV1, SealedPackageStoreV1, TrustedPublisherKeyStoreV1,
+        TrustedPublisherKeyV1,
     };
     use crate::PackageManifestV1;
 
@@ -2230,6 +2296,27 @@ mod tests {
     fn sha256(bytes: &[u8]) -> String {
         let digest: [u8; 32] = Sha256::digest(bytes).into();
         super::hex_sha256(&digest)
+    }
+
+    #[test]
+    fn compiled_release_trust_roots_are_nonempty_and_bundle_bound() {
+        let roots = TrustedPublisherKeyStoreV1::release_bound_v1()
+            .expect("compiled public-only release trust roots");
+        assert!(roots.resolve("superexplorer.release.v1").is_some());
+    }
+
+    #[test]
+    fn malformed_or_wrong_bundle_release_trust_artifact_fails_closed() {
+        assert!(matches!(
+            TrustedPublisherKeyStoreV1::from_release_artifact_v1("{}"),
+            Err(ReleaseTrustRootArtifactErrorV1::Malformed)
+        ));
+        assert!(matches!(
+            TrustedPublisherKeyStoreV1::from_release_artifact_v1(
+                r#"{"schema_version":1,"sdk_bundle_id":"other","keys":[{"key_id":"example.signing","publisher_id":"example.publisher","ed25519_public_key_base64":"rBG2WDfhQL3UABa7cfhHdriZhndqff5jgzP+PZgfs4w="}]}"#,
+            ),
+            Err(ReleaseTrustRootArtifactErrorV1::Incompatible)
+        ));
     }
 
     fn payload(path: &str, bytes: &[u8], kind: &str) -> Value {

@@ -58,9 +58,11 @@ pub use namespace::{
 };
 pub use navigation::{
     AddressBarMode, AddressBarState, BreadcrumbIconHint, BreadcrumbMenuItem, BreadcrumbSegment,
-    BreadcrumbSegmentId, DetailsColumnWidths, DirectorySnapshot, DirectoryState, DriveAvailability,
+    BreadcrumbSegmentId, ColumnAlignment, ColumnApplicability, ColumnCost, ColumnDescriptor,
+    ColumnId, ColumnIdError, ColumnLayoutEntry, ColumnRegistry, ColumnRegistryError,
+    ColumnSortSemantics, ColumnValueType, DirectorySnapshot, DirectoryState, DriveAvailability,
     DriveKind, DriveMetadata, FileEntry, FileEntryMetadata, HistoryEntry, MenuFocusMovement,
-    NavigationHistory, PresentationChange, SelectionModel, SortColumn, SortDescriptor,
+    NavigationHistory, OrderedColumnLayout, PresentationChange, SelectionModel, SortDescriptor,
     SortDirection, TabRequestScopes, TabSearchState, TabState, TabViewState, ViewAnchor, ViewMode,
     ViewSettings, default_icon_size_for_mode, effective_icon_size,
 };
@@ -105,6 +107,19 @@ pub use window::{
     ExplorerWindowState, TabCloseOutcome, TabPresentationSnapshot, TabStateInvariantError,
     WindowEventOutcome, WindowInvariantError,
 };
+
+/// Transitional source alias for callers that have not yet renamed their event labels. Runtime
+/// state is `ColumnId`; new APIs must name that type directly.
+pub type SortColumn = ColumnId;
+
+/// Compatibility constants for pre-layout UI controls. Width preferences themselves live only in
+/// `OrderedColumnLayout`.
+pub struct DetailsColumnWidths;
+
+impl DetailsColumnWidths {
+    pub const MINIMUM: u16 = OrderedColumnLayout::MINIMUM_WIDTH;
+    pub const MAXIMUM: u16 = OrderedColumnLayout::MAXIMUM_WIDTH;
+}
 
 /// The smallest composition state used while the workspace is bootstrapped.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

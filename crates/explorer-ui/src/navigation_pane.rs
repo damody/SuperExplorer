@@ -470,7 +470,7 @@ pub const fn view_icon_logical_size(mode: explorer_model::ViewMode) -> u16 {
     explorer_model::default_icon_size_for_mode(mode)
 }
 
-pub const fn view_icon_logical_size_for_settings(settings: explorer_model::ViewSettings) -> u16 {
+pub fn view_icon_logical_size_for_settings(settings: &explorer_model::ViewSettings) -> u16 {
     explorer_model::effective_icon_size(settings)
 }
 

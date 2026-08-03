@@ -356,7 +356,8 @@ mod tests {
             snapshot.upsert(entry);
         }
         let mut cache = DirectoryPresentationCache::default();
-        let presentation = cache.resolve(&snapshot, false, SortDescriptor::default());
+        let sort = SortDescriptor::default();
+        let presentation = cache.resolve(&snapshot, false, &sort);
         let mut frame_measurements = Vec::with_capacity(10_000);
         let mut input_measurements = Vec::with_capacity(10_000);
         for sample in 0..10_000 {

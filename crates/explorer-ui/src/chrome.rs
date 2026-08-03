@@ -401,10 +401,10 @@ impl RenderOnce for ExplorerWindow {
                                 self.state.details_column_menu(),
                                 self.state.details_filter_menu(),
                                 self.state.active_details_filters(),
-                                explorer_model::SortColumn::ALL
+                                explorer_model::ColumnId::BUILT_INS
                                     .into_iter()
                                     .map(|column| {
-                                        (column, self.state.details_filter_options(column))
+                                        (column.clone(), self.state.details_filter_options(column))
                                     })
                                     .collect(),
                                 self.on_action.clone(),
@@ -423,7 +423,7 @@ impl RenderOnce for ExplorerWindow {
                                         |element| {
                                             element.child(explorer_horizontal_scrollbar(
                                                 &handle,
-                                                view_settings,
+                                                view_settings.clone(),
                                                 file_viewport_width,
                                                 self.tokens,
                                                 self.on_action.clone(),
@@ -974,7 +974,7 @@ fn folder_options_dialog(
                         .when(page == FolderOptionsPage::View, |body| {
                             body.child(folder_options_view_page(
                                 tokens,
-                                settings,
+                                &settings,
                                 on_action.clone(),
                             ))
                         }),
@@ -1102,7 +1102,7 @@ fn folder_option_group(
 
 fn folder_options_view_page(
     tokens: UiTokens,
-    settings: explorer_model::ViewSettings,
+    settings: &explorer_model::ViewSettings,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     div()
@@ -1349,9 +1349,19 @@ fn pointer_drag_capture_listener(
                 }
                 if let Some(on_action) = move_action.as_ref() {
                     let action = if marquee_active && event.dragging() {
+                        let actual_origin = file_scroll.as_ref().map(|handle| {
+                            let bounds = handle.bounds();
+                            (f32::from(bounds.left()), f32::from(bounds.top()))
+                        });
+                        let (x, y) = file_view_local_pointer(
+                            f32::from(event.position.x),
+                            f32::from(event.position.y),
+                            actual_origin,
+                            (file_origin_x, file_origin_y),
+                        );
                         ExplorerAction::UpdateMarquee {
-                            x: f32::from(event.position.x) - file_origin_x,
-                            y: f32::from(event.position.y) - file_origin_y,
+                            x,
+                            y,
                             scroll_y: file_scroll
                                 .as_ref()
                                 .map_or(0.0, |handle| -f32::from(handle.offset().y)),
@@ -1739,6 +1749,7 @@ impl RenderOnce for CommandBar {
         let more_index = self.state.more_menu_index();
         let extensions_open = self.state.extensions_menu_open();
         let tortoise_git_available = self.state.tortoise_git_available();
+        let loaded_extension_summary = self.state.loaded_extension_summary().map(str::to_owned);
         div()
             .id(COMMAND_BAR_ID)
             .debug_selector(|| COMMAND_BAR_ID.to_owned())
@@ -1863,7 +1874,7 @@ impl RenderOnce for CommandBar {
                 self.state.sort_menu_open().then(|| {
                     sort_menu(
                         self.tokens,
-                        self.state.view_settings(),
+                        &self.state.view_settings(),
                         sort_index,
                         self.on_action.clone(),
                     )
@@ -1924,6 +1935,7 @@ impl RenderOnce for CommandBar {
                     command_extensions_menu(
                         self.tokens,
                         tortoise_git_available,
+                        loaded_extension_summary,
                         self.on_action.clone(),
                     )
                     .into_any_element()
@@ -2014,6 +2026,7 @@ fn new_item_menu(
 fn command_extensions_menu(
     tokens: UiTokens,
     tortoise_git_available: bool,
+    loaded_extension_summary: Option<String>,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     let outside = on_action.clone();
@@ -2034,12 +2047,26 @@ fn command_extensions_menu(
                 callback(&ExplorerAction::CloseExtensionsMenu, window, cx);
             })
         })
+        .when_some(loaded_extension_summary, |menu, summary| {
+            menu.child(
+                div()
+                    .id("extensions-loaded-development-plugin")
+                    .role(Role::MenuItem)
+                    .aria_label(summary.clone())
+                    .h(px(tokens.layout.minimum_hit_target.value()))
+                    .flex()
+                    .items_center()
+                    .px(px(tokens.layout.control_padding_horizontal.value()))
+                    .text_color(tokens.theme.colors.text_primary.to_gpui())
+                    .child(summary),
+            )
+        })
         .child(command_more_item(
             "extensions-refresh-tortoisegit",
             if tortoise_git_available {
                 "更新 TortoiseGit 狀態"
             } else {
-                "沒有可用的擴充功能"
+                "沒有其它可用的擴充功能"
             },
             ExplorerAction::RefreshTortoiseGitStatus,
             tortoise_git_available,
@@ -2354,7 +2381,7 @@ fn command_more_item(
 
 fn sort_menu(
     tokens: UiTokens,
-    settings: explorer_model::ViewSettings,
+    settings: &explorer_model::ViewSettings,
     focused_index: usize,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
@@ -2382,44 +2409,44 @@ fn sort_menu(
         .child(view_menu_item(
             "sort-name".to_owned(),
             "名稱",
-            settings.sort.column == explorer_model::SortColumn::Name,
+            settings.sort.column == explorer_model::ColumnId::Name,
             false,
             focused_index == 0,
             Some(ExplorerAction::SetSortMenuFocus { index: 0 }),
-            ExplorerAction::SetSortColumn(explorer_model::SortColumn::Name),
+            ExplorerAction::SetColumnId(explorer_model::ColumnId::Name),
             tokens,
             on_action.clone(),
         ))
         .child(view_menu_item(
             "sort-date".to_owned(),
             "修改日期",
-            settings.sort.column == explorer_model::SortColumn::DateModified,
+            settings.sort.column == explorer_model::ColumnId::DateModified,
             false,
             focused_index == 1,
             Some(ExplorerAction::SetSortMenuFocus { index: 1 }),
-            ExplorerAction::SetSortColumn(explorer_model::SortColumn::DateModified),
+            ExplorerAction::SetColumnId(explorer_model::ColumnId::DateModified),
             tokens,
             on_action.clone(),
         ))
         .child(view_menu_item(
             "sort-type".to_owned(),
             "類型",
-            settings.sort.column == explorer_model::SortColumn::Type,
+            settings.sort.column == explorer_model::ColumnId::Type,
             false,
             focused_index == 2,
             Some(ExplorerAction::SetSortMenuFocus { index: 2 }),
-            ExplorerAction::SetSortColumn(explorer_model::SortColumn::Type),
+            ExplorerAction::SetColumnId(explorer_model::ColumnId::Type),
             tokens,
             on_action.clone(),
         ))
         .child(view_menu_item(
             "sort-size".to_owned(),
             "大小",
-            settings.sort.column == explorer_model::SortColumn::Size,
+            settings.sort.column == explorer_model::ColumnId::Size,
             false,
             focused_index == 3,
             Some(ExplorerAction::SetSortMenuFocus { index: 3 }),
-            ExplorerAction::SetSortColumn(explorer_model::SortColumn::Size),
+            ExplorerAction::SetColumnId(explorer_model::ColumnId::Size),
             tokens,
             on_action.clone(),
         ))
@@ -2459,6 +2486,10 @@ fn sort_menu(
     .with_priority(90)
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the GPUI menu builder may move settings into independent deferred child elements"
+)]
 fn view_menu(
     tokens: UiTokens,
     settings: explorer_model::ViewSettings,
@@ -2547,7 +2578,7 @@ fn view_menu(
             on_action.clone(),
         ))
         .when(show_submenu, |element| {
-            element.child(view_show_submenu(tokens, settings, on_action))
+            element.child(view_show_submenu(tokens, &settings, on_action))
         });
     deferred(
         div()
@@ -2564,7 +2595,7 @@ fn view_menu(
 
 fn view_show_submenu(
     tokens: UiTokens,
-    settings: explorer_model::ViewSettings,
+    settings: &explorer_model::ViewSettings,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     let layout = tokens.layout;
@@ -4650,11 +4681,11 @@ pub struct FileViewHost {
     scroll_handle: Option<gpui::ScrollHandle>,
     shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
     shell_icon_dpi: u16,
-    details_column_menu: Option<explorer_model::SortColumn>,
-    details_filter_menu: Option<explorer_model::SortColumn>,
+    details_column_menu: Option<explorer_model::ColumnId>,
+    details_filter_menu: Option<explorer_model::ColumnId>,
     details_filters: crate::file_view::DetailsFilters,
     details_filter_options:
-        HashMap<explorer_model::SortColumn, Vec<crate::file_view::DetailsFilterOption>>,
+        HashMap<explorer_model::ColumnId, Vec<crate::file_view::DetailsFilterOption>>,
     on_action: Option<ActionCallback>,
 }
 
@@ -4685,11 +4716,11 @@ impl FileViewHost {
         scroll_handle: Option<gpui::ScrollHandle>,
         shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
         shell_icon_dpi: u16,
-        details_column_menu: Option<explorer_model::SortColumn>,
-        details_filter_menu: Option<explorer_model::SortColumn>,
+        details_column_menu: Option<explorer_model::ColumnId>,
+        details_filter_menu: Option<explorer_model::ColumnId>,
         details_filters: crate::file_view::DetailsFilters,
         details_filter_options: HashMap<
-            explorer_model::SortColumn,
+            explorer_model::ColumnId,
             Vec<crate::file_view::DetailsFilterOption>,
         >,
         on_action: Option<ActionCallback>,
@@ -4724,6 +4755,49 @@ impl FileViewHost {
             details_filter_options,
             on_action,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct MarqueeContentRect {
+    left: f32,
+    top: f32,
+    width: f32,
+    height: f32,
+}
+
+fn file_view_local_pointer(
+    pointer_x: f32,
+    pointer_y: f32,
+    actual_origin: Option<(f32, f32)>,
+    fallback_origin: (f32, f32),
+) -> (f32, f32) {
+    let (origin_x, origin_y) = actual_origin.unwrap_or(fallback_origin);
+    (pointer_x - origin_x, pointer_y - origin_y)
+}
+
+fn details_name_column_contains(
+    viewport_x: f32,
+    horizontal_scroll: f32,
+    leading_padding: f32,
+    name_width: f32,
+) -> bool {
+    viewport_x + horizontal_scroll <= leading_padding + name_width
+}
+
+fn marquee_content_rect(
+    origin_x: f32,
+    origin_y: f32,
+    current_x: f32,
+    current_y: f32,
+    horizontal_scroll: f32,
+    vertical_scroll: f32,
+) -> MarqueeContentRect {
+    MarqueeContentRect {
+        left: origin_x.min(current_x) + horizontal_scroll,
+        top: origin_y.min(current_y) + vertical_scroll,
+        width: (current_x - origin_x).abs(),
+        height: (current_y - origin_y).abs(),
     }
 }
 
@@ -4765,6 +4839,9 @@ impl RenderOnce for FileViewHost {
         let file_origin_x = self.file_origin_x;
         let file_origin_y = self.file_origin_y;
         let view_settings = self.view_settings;
+        let details_mode = view_settings.mode == explorer_model::ViewMode::Details;
+        let details_name_width =
+            view_settings.details_column_width(&explorer_model::ColumnId::Name);
         let drive_view = presentation.as_ref().is_some_and(|presentation| {
             (0..presentation.len()).any(|index| {
                 presentation
@@ -4772,7 +4849,7 @@ impl RenderOnce for FileViewHost {
                     .is_some_and(|(_, entry)| entry.metadata.drive.is_some())
             })
         });
-        let spatial_metrics = spatial_grid_metrics(view_settings, layout);
+        let spatial_metrics = spatial_grid_metrics(&view_settings, layout);
         let spatial_metrics = if drive_view {
             this_pc_spatial_grid_metrics(view_settings.mode, layout)
         } else {
@@ -4791,11 +4868,12 @@ impl RenderOnce for FileViewHost {
             if drive_view && view_settings.mode == explorer_model::ViewMode::Details {
                 this_pc_details_width()
             } else {
-                view_item_width(view_settings)
+                view_item_width(&view_settings)
             };
         let scroll_handle = self.scroll_handle;
         let marquee_scroll = scroll_handle.clone();
         let background_scroll = scroll_handle.clone();
+        let row_pointer_scroll = scroll_handle.clone();
         if view_settings.mode == explorer_model::ViewMode::Details
             && let Some(handle) = scroll_handle.as_ref()
         {
@@ -4809,6 +4887,9 @@ impl RenderOnce for FileViewHost {
         let scroll_offset = scroll_handle
             .as_ref()
             .map_or(0.0, |handle| -f32::from(handle.offset().y));
+        let horizontal_scroll_offset = scroll_handle
+            .as_ref()
+            .map_or(0.0, |handle| -f32::from(handle.offset().x));
         let viewport_height = scroll_handle
             .as_ref()
             .map(|handle| f32::from(handle.bounds().size.height))
@@ -4902,6 +4983,7 @@ impl RenderOnce for FileViewHost {
             }
         );
         let scroll_performance = performance.clone();
+        let row_settings = Arc::new(view_settings.clone());
         let scroll_content = div()
             .id(FILE_VIEW_HOST_ID)
             .debug_selector(|| FILE_VIEW_HOST_ID.to_owned())
@@ -5064,10 +5146,20 @@ impl RenderOnce for FileViewHost {
                             cx.stop_propagation();
                             return;
                         }
+                        let actual_origin = background_scroll.as_ref().map(|handle| {
+                            let bounds = handle.bounds();
+                            (f32::from(bounds.left()), f32::from(bounds.top()))
+                        });
+                        let (x, y) = file_view_local_pointer(
+                            f32::from(event.position.x),
+                            f32::from(event.position.y),
+                            actual_origin,
+                            (file_origin_x, file_origin_y),
+                        );
                         marquee_begin(
                             &ExplorerAction::BeginMarquee {
-                                x: f32::from(event.position.x) - file_origin_x,
-                                y: f32::from(event.position.y) - file_origin_y,
+                                x,
+                                y,
                                 additive: event.modifiers.control,
                             },
                             window,
@@ -5076,10 +5168,20 @@ impl RenderOnce for FileViewHost {
                     })
                     .on_mouse_move(move |event, window, cx| {
                         if event.dragging() {
+                            let actual_origin = marquee_scroll.as_ref().map(|handle| {
+                                let bounds = handle.bounds();
+                                (f32::from(bounds.left()), f32::from(bounds.top()))
+                            });
+                            let (x, y) = file_view_local_pointer(
+                                f32::from(event.position.x),
+                                f32::from(event.position.y),
+                                actual_origin,
+                                (file_origin_x, file_origin_y),
+                            );
                             marquee_move(
                                 &ExplorerAction::UpdateMarquee {
-                                    x: f32::from(event.position.x) - file_origin_x,
-                                    y: f32::from(event.position.y) - file_origin_y,
+                                    x,
+                                    y,
                                     scroll_y: marquee_scroll
                                         .as_ref()
                                         .map_or(0.0, |handle| -f32::from(handle.offset().y)),
@@ -5140,6 +5242,7 @@ impl RenderOnce for FileViewHost {
                 element.child(div().w_full().h(px(leading_space as f32)).flex_none())
             })
             .children(entries.into_iter().map(move |item| {
+                let view_settings = Arc::clone(&row_settings);
                 let (visible_index, _snapshot_index, entry) = item;
                 let editor = rename_editor
                     .as_ref()
@@ -5154,7 +5257,7 @@ impl RenderOnce for FileViewHost {
                     } if items.iter().any(|item| item.id == entry.id)
                 );
                 let row_id = format!("shell-row-{:02x?}", entry.id.provider_bytes());
-                let display_name = file_display_name(&entry, view_settings);
+                let display_name = file_display_name(&entry, &view_settings);
                 let selected = selection.contains(&entry.id);
                 let context_item_id = entry.id.clone();
                 let kind = if entry.is_container { "Folder" } else { "File" };
@@ -5203,6 +5306,7 @@ impl RenderOnce for FileViewHost {
                 let row_drop_destination = entry.location.clone();
                 let row_drop_cue = drop_target_row == Some(visible_index);
                 let activate = on_action.clone();
+                let row_pointer_scroll = row_pointer_scroll.clone();
                 let accessibility_activate = on_action.clone();
                 let row_region_id = format!("file-row-{visible_index}");
                 let row_visual = file_row_visual(colors, selected, selection_active);
@@ -5211,7 +5315,7 @@ impl RenderOnce for FileViewHost {
                         &entry,
                         shell_icon_theme,
                         shell_icon_dpi,
-                        crate::navigation_pane::view_icon_logical_size_for_settings(view_settings),
+                        crate::navigation_pane::view_icon_logical_size_for_settings(&view_settings),
                     ))
                     .cloned();
                 div()
@@ -5341,6 +5445,38 @@ impl RenderOnce for FileViewHost {
                             })
                             .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                                 cx.stop_propagation();
+                                let actual_origin = row_pointer_scroll.as_ref().map(|handle| {
+                                    let bounds = handle.bounds();
+                                    (f32::from(bounds.left()), f32::from(bounds.top()))
+                                });
+                                let (local_x, local_y) = file_view_local_pointer(
+                                    f32::from(event.position.x),
+                                    f32::from(event.position.y),
+                                    actual_origin,
+                                    (file_origin_x, file_origin_y),
+                                );
+                                let horizontal_scroll = row_pointer_scroll
+                                    .as_ref()
+                                    .map_or(0.0, |handle| -f32::from(handle.offset().x));
+                                if details_mode
+                                    && !details_name_column_contains(
+                                        local_x,
+                                        horizontal_scroll,
+                                        layout.control_padding_horizontal.value(),
+                                        f32::from(details_name_width),
+                                    )
+                                {
+                                    callback(
+                                        &ExplorerAction::BeginMarquee {
+                                            x: local_x,
+                                            y: local_y,
+                                            additive: event.modifiers.control,
+                                        },
+                                        window,
+                                        cx,
+                                    );
+                                    return;
+                                }
                                 if event.click_count == 2 {
                                     callback(
                                         &ExplorerAction::OpenItem {
@@ -5504,9 +5640,9 @@ impl RenderOnce for FileViewHost {
                             .w(px(
                                 if view_settings.mode == explorer_model::ViewMode::Details {
                                     f32::from(
-                                        view_settings
-                                            .details_columns
-                                            .width(explorer_model::SortColumn::Name),
+                                        view_settings.details_column_width(
+                                            &explorer_model::ColumnId::Name,
+                                        ),
                                     )
                                 } else {
                                     item_width - layout.control_padding_horizontal.value() * 2.0
@@ -5838,15 +5974,15 @@ impl RenderOnce for FileViewHost {
                         |element| {
                             element
                                 .when(
-                                    view_settings.details_column_visibility
-                                        & explorer_model::SortColumn::DateModified.bit()
-                                        != 0,
+                                    view_settings.details_column_visible(
+                                        &explorer_model::ColumnId::DateModified,
+                                    ),
                                     |element| {
                                         element.child(
                                             div()
                                                 .w(px(f32::from(
-                                                    view_settings.details_columns.width(
-                                                        explorer_model::SortColumn::DateModified,
+                                                    view_settings.details_column_width(
+                                                        &explorer_model::ColumnId::DateModified,
                                                     ),
                                                 )))
                                                 .flex_none()
@@ -5855,16 +5991,12 @@ impl RenderOnce for FileViewHost {
                                     },
                                 )
                                 .when(
-                                    view_settings.details_column_visibility
-                                        & explorer_model::SortColumn::Type.bit()
-                                        != 0,
+                                    view_settings.details_column_visible(&explorer_model::ColumnId::Type),
                                     |element| {
                                         element.child(
                                             div()
                                                 .w(px(f32::from(
-                                                    view_settings
-                                                        .details_columns
-                                                        .width(explorer_model::SortColumn::Type),
+                                                    view_settings.details_column_width(&explorer_model::ColumnId::Type),
                                                 )))
                                                 .flex_none()
                                                 .child(type_display.clone()),
@@ -5872,16 +6004,12 @@ impl RenderOnce for FileViewHost {
                                     },
                                 )
                                 .when(
-                                    view_settings.details_column_visibility
-                                        & explorer_model::SortColumn::Size.bit()
-                                        != 0,
+                                    view_settings.details_column_visible(&explorer_model::ColumnId::Size),
                                     |element| {
                                         element.child(
                                             div()
                                                 .w(px(f32::from(
-                                                    view_settings
-                                                        .details_columns
-                                                        .width(explorer_model::SortColumn::Size),
+                                                    view_settings.details_column_width(&explorer_model::ColumnId::Size),
                                                 )))
                                                 .flex_none()
                                                 .child(size_display.clone()),
@@ -5889,15 +6017,15 @@ impl RenderOnce for FileViewHost {
                                     },
                                 )
                                 .when(
-                                    view_settings.details_column_visibility
-                                        & explorer_model::SortColumn::DateCreated.bit()
-                                        != 0,
+                                    view_settings.details_column_visible(
+                                        &explorer_model::ColumnId::DateCreated,
+                                    ),
                                     |element| {
                                         element.child(
                                             div()
                                                 .w(px(f32::from(
-                                                    view_settings.details_columns.width(
-                                                        explorer_model::SortColumn::DateCreated,
+                                                    view_settings.details_column_width(
+                                                        &explorer_model::ColumnId::DateCreated,
                                                     ),
                                                 )))
                                                 .flex_none()
@@ -5906,16 +6034,12 @@ impl RenderOnce for FileViewHost {
                                     },
                                 )
                                 .when(
-                                    view_settings.details_column_visibility
-                                        & explorer_model::SortColumn::Authors.bit()
-                                        != 0,
+                                    view_settings.details_column_visible(&explorer_model::ColumnId::Authors),
                                     |element| {
                                         element.child(
                                             div()
                                                 .w(px(f32::from(
-                                                    view_settings
-                                                        .details_columns
-                                                        .width(explorer_model::SortColumn::Authors),
+                                                    view_settings.details_column_width(&explorer_model::ColumnId::Authors),
                                                 )))
                                                 .flex_none()
                                                 .child(authors.clone()),
@@ -5923,16 +6047,12 @@ impl RenderOnce for FileViewHost {
                                     },
                                 )
                                 .when(
-                                    view_settings.details_column_visibility
-                                        & explorer_model::SortColumn::Tags.bit()
-                                        != 0,
+                                    view_settings.details_column_visible(&explorer_model::ColumnId::Tags),
                                     |element| {
                                         element.child(
                                             div()
                                                 .w(px(f32::from(
-                                                    view_settings
-                                                        .details_columns
-                                                        .width(explorer_model::SortColumn::Tags),
+                                                    view_settings.details_column_width(&explorer_model::ColumnId::Tags),
                                                 )))
                                                 .flex_none()
                                                 .child(tags.clone()),
@@ -5940,16 +6060,12 @@ impl RenderOnce for FileViewHost {
                                     },
                                 )
                                 .when(
-                                    view_settings.details_column_visibility
-                                        & explorer_model::SortColumn::Title.bit()
-                                        != 0,
+                                    view_settings.details_column_visible(&explorer_model::ColumnId::Title),
                                     |element| {
                                         element.child(
                                             div()
                                                 .w(px(f32::from(
-                                                    view_settings
-                                                        .details_columns
-                                                        .width(explorer_model::SortColumn::Title),
+                                                    view_settings.details_column_width(&explorer_model::ColumnId::Title),
                                                 )))
                                                 .flex_none()
                                                 .child(title.clone()),
@@ -6024,18 +6140,22 @@ impl RenderOnce for FileViewHost {
                 element.child(div().w_full().h(px(trailing_space as f32)).flex_none())
             })
             .when_some(marquee, |element, marquee| {
-                let left = marquee.origin_x.min(marquee.current_x);
-                let top = marquee.origin_y.min(marquee.current_y);
-                let width = (marquee.current_x - marquee.origin_x).abs();
-                let height = (marquee.current_y - marquee.origin_y).abs();
+                let rect = marquee_content_rect(
+                    marquee.origin_x,
+                    marquee.origin_y,
+                    marquee.current_x,
+                    marquee.current_y,
+                    horizontal_scroll_offset,
+                    scroll_offset,
+                );
                 element.child(
                     div()
                         .id("file-selection-marquee")
                         .absolute()
-                        .left(px(left))
-                        .top(px(top))
-                        .w(px(width))
-                        .h(px(height))
+                        .left(px(rect.left))
+                        .top(px(rect.top))
+                        .w(px(rect.width))
+                        .h(px(rect.height))
                         .border(px(1.0))
                         .border_color(colors.focus.to_gpui())
                         .bg(crate::theme::Rgba8 {
@@ -6083,9 +6203,9 @@ impl RenderOnce for FileViewHost {
                             .occlude()
                             .child(details_header(
                                 self.tokens,
-                                view_settings,
+                                view_settings.clone(),
                                 drive_view,
-                                details_filter_menu,
+                                details_filter_menu.clone(),
                                 &details_filters,
                                 &details_filter_options,
                                 header_action,
@@ -6094,7 +6214,7 @@ impl RenderOnce for FileViewHost {
                 },
             );
         let rendered = rendered.when_some(
-            details_filter_menu.zip(filter_menu_dismiss),
+            details_filter_menu.clone().zip(filter_menu_dismiss),
             |element, (_, callback)| {
                 let right_callback = callback.clone();
                 element.child(
@@ -6154,7 +6274,7 @@ fn format_explorer_size(bytes: u64) -> String {
 
 fn file_display_name(
     entry: &explorer_model::FileEntry,
-    settings: explorer_model::ViewSettings,
+    settings: &explorer_model::ViewSettings,
 ) -> String {
     if settings.file_name_extensions || entry.is_container {
         return entry.display_name.clone();
@@ -6224,7 +6344,7 @@ pub(crate) struct SpatialGridLayout {
 const SPATIAL_CELL_WIDTH_TOLERANCE: f32 = 0.10;
 
 pub(crate) fn spatial_grid_metrics(
-    settings: explorer_model::ViewSettings,
+    settings: &explorer_model::ViewSettings,
     layout: crate::layout::LayoutTokens,
 ) -> SpatialGridMetrics {
     let base_height = view_item_height(settings, layout);
@@ -6407,8 +6527,8 @@ pub(crate) fn spatial_grid_layout(
     SpatialGridLayout { metrics, columns }
 }
 
-const fn view_icon_size(
-    settings: explorer_model::ViewSettings,
+fn view_icon_size(
+    settings: &explorer_model::ViewSettings,
     layout: crate::layout::LayoutTokens,
 ) -> f32 {
     match settings.mode {
@@ -6416,7 +6536,7 @@ const fn view_icon_size(
         | explorer_model::ViewMode::LargeIcons
         | explorer_model::ViewMode::MediumIcons
         | explorer_model::ViewMode::SmallIcons => {
-            explorer_model::effective_icon_size(settings) as f32
+            f32::from(explorer_model::effective_icon_size(settings))
         }
         explorer_model::ViewMode::List => 20.0,
         explorer_model::ViewMode::Details => layout.navigation_icon_size.value(),
@@ -6425,7 +6545,7 @@ const fn view_icon_size(
     }
 }
 
-pub(crate) fn view_item_width(settings: explorer_model::ViewSettings) -> f32 {
+pub(crate) fn view_item_width(settings: &explorer_model::ViewSettings) -> f32 {
     match settings.mode {
         explorer_model::ViewMode::ExtraLargeIcons
         | explorer_model::ViewMode::LargeIcons
@@ -6437,10 +6557,10 @@ pub(crate) fn view_item_width(settings: explorer_model::ViewSettings) -> f32 {
         }
         explorer_model::ViewMode::List => 240.0,
         explorer_model::ViewMode::Details | explorer_model::ViewMode::Content => {
-            explorer_model::SortColumn::ALL
+            explorer_model::ColumnId::BUILT_INS
                 .into_iter()
-                .filter(|column| settings.details_column_visibility & column.bit() != 0)
-                .map(|column| f32::from(settings.details_columns.width(column)))
+                .filter(|column| settings.details_column_visible(column))
+                .map(|column| f32::from(settings.details_column_width(&column)))
                 .sum()
         }
         explorer_model::ViewMode::Tiles => 280.0,
@@ -6451,7 +6571,7 @@ pub(crate) fn details_horizontal_maximum(
     settings: &explorer_model::ViewSettings,
     viewport_width: f32,
 ) -> f32 {
-    (view_item_width(*settings) - viewport_width.max(0.0)).max(0.0)
+    (view_item_width(settings) - viewport_width.max(0.0)).max(0.0)
 }
 
 pub(crate) const fn details_header_overlay_position(scroll_offset: (f32, f32)) -> (f32, f32) {
@@ -6460,20 +6580,20 @@ pub(crate) const fn details_header_overlay_position(scroll_offset: (f32, f32)) -
     (scroll_offset.0, 0.0)
 }
 
-pub(crate) const fn view_item_height(
-    settings: explorer_model::ViewSettings,
+pub(crate) fn view_item_height(
+    settings: &explorer_model::ViewSettings,
     layout: crate::layout::LayoutTokens,
 ) -> f32 {
     match settings.mode {
         explorer_model::ViewMode::ExtraLargeIcons
         | explorer_model::ViewMode::LargeIcons
         | explorer_model::ViewMode::MediumIcons => {
-            explorer_model::effective_icon_size(settings) as f32
+            f32::from(explorer_model::effective_icon_size(settings))
                 + crate::layout::feature::STACKED_ICON_LABEL_GAP.value()
                 + crate::layout::feature::STACKED_ICON_LABEL_HEIGHT.value()
         }
         explorer_model::ViewMode::SmallIcons => {
-            let requested = explorer_model::effective_icon_size(settings) as f32 + 12.0;
+            let requested = f32::from(explorer_model::effective_icon_size(settings)) + 12.0;
             if requested > layout.file_row_height.value() {
                 requested
             } else {
@@ -6694,12 +6814,9 @@ fn details_header(
     tokens: UiTokens,
     settings: explorer_model::ViewSettings,
     this_pc: bool,
-    filter_menu: Option<explorer_model::SortColumn>,
+    filter_menu: Option<explorer_model::ColumnId>,
     filters: &crate::file_view::DetailsFilters,
-    filter_options: &HashMap<
-        explorer_model::SortColumn,
-        Vec<crate::file_view::DetailsFilterOption>,
-    >,
+    filter_options: &HashMap<explorer_model::ColumnId, Vec<crate::file_view::DetailsFilterOption>>,
     on_action: Option<ActionCallback>,
 ) -> gpui::AnyElement {
     if this_pc {
@@ -6735,53 +6852,53 @@ fn details_header(
                 (
                     "details-column-name",
                     "名稱",
-                    explorer_model::SortColumn::Name,
+                    explorer_model::ColumnId::Name,
                 ),
                 (
                     "details-column-date-modified",
                     "修改日期",
-                    explorer_model::SortColumn::DateModified,
+                    explorer_model::ColumnId::DateModified,
                 ),
                 (
                     "details-column-type",
                     "類型",
-                    explorer_model::SortColumn::Type,
+                    explorer_model::ColumnId::Type,
                 ),
                 (
                     "details-column-size",
                     "大小",
-                    explorer_model::SortColumn::Size,
+                    explorer_model::ColumnId::Size,
                 ),
                 (
                     "details-column-date-created",
                     "建立日期",
-                    explorer_model::SortColumn::DateCreated,
+                    explorer_model::ColumnId::DateCreated,
                 ),
                 (
                     "details-column-authors",
                     "作者",
-                    explorer_model::SortColumn::Authors,
+                    explorer_model::ColumnId::Authors,
                 ),
                 (
                     "details-column-tags",
                     "標籤",
-                    explorer_model::SortColumn::Tags,
+                    explorer_model::ColumnId::Tags,
                 ),
                 (
                     "details-column-title",
                     "標題",
-                    explorer_model::SortColumn::Title,
+                    explorer_model::ColumnId::Title,
                 ),
             ]
             .into_iter()
-            .filter(|(_, _, column)| settings.details_column_visibility & column.bit() != 0)
+            .filter(|(_, _, column)| settings.details_column_visible(column))
             .map(|(id, label, column)| {
                 details_header_column(
                     id,
                     label,
-                    column,
-                    settings,
-                    filter_menu,
+                    column.clone(),
+                    settings.clone(),
+                    filter_menu.clone(),
                     filters,
                     filter_options.get(&column).cloned().unwrap_or_default(),
                     on_action.clone(),
@@ -6852,7 +6969,7 @@ fn this_pc_details_header(tokens: UiTokens) -> gpui::AnyElement {
 )]
 fn details_column_menu(
     tokens: UiTokens,
-    target: explorer_model::SortColumn,
+    target: explorer_model::ColumnId,
     settings: explorer_model::ViewSettings,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
@@ -6909,16 +7026,16 @@ fn details_column_menu(
                 .bg(colors.divider.to_gpui()),
         )
         .children(
-            explorer_model::SortColumn::ALL
+            explorer_model::ColumnId::BUILT_INS
                 .into_iter()
                 .filter_map(|column| {
                     on_action.clone().map(|callback| {
                         column_menu_row(
                             tokens,
-                            column_label(column),
-                            settings.details_column_visibility & column.bit() != 0,
-                            column != explorer_model::SortColumn::Name,
-                            ExplorerAction::ToggleDetailsColumn(column),
+                            column_label(column.clone()),
+                            settings.details_column_visible(&column),
+                            column != explorer_model::ColumnId::Name,
+                            ExplorerAction::ToggleDetailsColumn(column.clone()),
                             callback,
                         )
                     })
@@ -6967,29 +7084,40 @@ fn column_menu_row(
         .child(label)
 }
 
-const fn column_label(column: explorer_model::SortColumn) -> &'static str {
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "details menu call sites intentionally own command-boundary column identities"
+)]
+fn column_label(column: explorer_model::ColumnId) -> &'static str {
     match column {
-        explorer_model::SortColumn::Name => "Name",
-        explorer_model::SortColumn::DateModified => "Date modified",
-        explorer_model::SortColumn::Type => "Type",
-        explorer_model::SortColumn::Size => "Size",
-        explorer_model::SortColumn::DateCreated => "Date created",
-        explorer_model::SortColumn::Authors => "Authors",
-        explorer_model::SortColumn::Tags => "Tags",
-        explorer_model::SortColumn::Title => "Title",
+        explorer_model::ColumnId::Name => "Name",
+        explorer_model::ColumnId::DateModified => "Date modified",
+        explorer_model::ColumnId::Type => "Type",
+        explorer_model::ColumnId::Size => "Size",
+        explorer_model::ColumnId::DateCreated => "Date created",
+        explorer_model::ColumnId::Authors => "Authors",
+        explorer_model::ColumnId::Tags => "Tags",
+        explorer_model::ColumnId::Title => "Title",
+        explorer_model::ColumnId::Extension { .. } => "Extension",
     }
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the deferred filter menu captures its column and callbacks into independently-lived GPUI handlers"
+)]
 fn details_filter_menu(
     tokens: UiTokens,
-    column: explorer_model::SortColumn,
+    column: explorer_model::ColumnId,
     options: Vec<crate::file_view::DetailsFilterOption>,
     filters: &crate::file_view::DetailsFilters,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     let colors = tokens.theme.colors;
+    let action_column = column.clone();
     let rows = options.into_iter().map(|option| {
-        let selected = filters.is_selected(column, &option.key);
+        let action_column = action_column.clone();
+        let selected = filters.is_selected(&column, &option.key);
         let callback = on_action.clone();
         div()
             .id(format!("details-filter-{}", option.key))
@@ -7007,11 +7135,12 @@ fn details_filter_menu(
             .gap(px(tokens.layout.content_spacing.value()))
             .hover(move |style| style.bg(colors.control_hover.to_gpui()))
             .when_some(callback, move |element, callback| {
+                let action_column = action_column.clone();
                 let key = option.key.clone();
                 element.on_click(move |_, window, cx| {
                     callback(
                         &ExplorerAction::ToggleDetailsFilter {
-                            column,
+                            column: action_column.clone(),
                             key: key.clone(),
                         },
                         window,
@@ -7028,7 +7157,7 @@ fn details_filter_menu(
         div()
             .id(format!("details-filter-menu-{column:?}"))
             .role(Role::Menu)
-            .aria_label(format!("Filter {}", column_label(column)))
+            .aria_label(format!("Filter {}", column_label(column.clone())))
             .absolute()
             .top(px(tokens.layout.details_header_height.value()))
             .left_0()
@@ -7042,7 +7171,7 @@ fn details_filter_menu(
             .occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .children(rows)
-            .when(filters.is_active(column), |element| {
+            .when(filters.is_active(&column), |element| {
                 element.child(
                     div()
                         .id("details-filter-clear")
@@ -7056,7 +7185,9 @@ fn details_filter_menu(
                         .when_some(clear_callback, move |element, callback| {
                             element.on_click(move |_, window, cx| {
                                 callback(
-                                    &ExplorerAction::ClearDetailsFilter { column },
+                                    &ExplorerAction::ClearDetailsFilter {
+                                        column: column.clone(),
+                                    },
                                     window,
                                     cx,
                                 );
@@ -7069,29 +7200,34 @@ fn details_filter_menu(
     )
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the header builder clones command-boundary values into independent resize and menu handlers"
+)]
 fn details_header_column(
     id: &'static str,
     label: &'static str,
-    column: explorer_model::SortColumn,
+    column: explorer_model::ColumnId,
     settings: explorer_model::ViewSettings,
-    filter_menu: Option<explorer_model::SortColumn>,
+    filter_menu: Option<explorer_model::ColumnId>,
     filters: &crate::file_view::DetailsFilters,
     filter_options: Vec<crate::file_view::DetailsFilterOption>,
     on_action: Option<ActionCallback>,
     tokens: UiTokens,
 ) -> impl IntoElement {
     let active = settings.sort.column == column;
-    let filter_open = filter_menu == Some(column);
-    let filter_active = filters.is_active(column);
-    let separator_id = match column {
-        explorer_model::SortColumn::Name => "details-column-name-separator",
-        explorer_model::SortColumn::DateModified => "details-column-date-modified-separator",
-        explorer_model::SortColumn::Type => "details-column-type-separator",
-        explorer_model::SortColumn::Size => "details-column-size-separator",
-        explorer_model::SortColumn::DateCreated => "details-column-date-created-separator",
-        explorer_model::SortColumn::Authors => "details-column-authors-separator",
-        explorer_model::SortColumn::Tags => "details-column-tags-separator",
-        explorer_model::SortColumn::Title => "details-column-title-separator",
+    let filter_open = filter_menu == Some(column.clone());
+    let filter_active = filters.is_active(&column);
+    let separator_id = match &column {
+        explorer_model::ColumnId::Name => "details-column-name-separator",
+        explorer_model::ColumnId::DateModified => "details-column-date-modified-separator",
+        explorer_model::ColumnId::Type => "details-column-type-separator",
+        explorer_model::ColumnId::Size => "details-column-size-separator",
+        explorer_model::ColumnId::DateCreated => "details-column-date-created-separator",
+        explorer_model::ColumnId::Authors => "details-column-authors-separator",
+        explorer_model::ColumnId::Tags => "details-column-tags-separator",
+        explorer_model::ColumnId::Title => "details-column-title-separator",
+        explorer_model::ColumnId::Extension { .. } => "details-column-extension-separator",
     };
     let indicator = if active {
         match settings.sort.direction {
@@ -7110,6 +7246,14 @@ fn details_header_column(
     let context_callback = on_action.clone();
     let sort_callback = on_action.clone();
     let filter_callback = on_action.clone();
+    let context_column = column.clone();
+    let sort_column = column.clone();
+    let filter_column = column.clone();
+    let decrement_column = column.clone();
+    let increment_column = column.clone();
+    let begin_column = column.clone();
+    let decrement_settings = settings.clone();
+    let increment_settings = settings.clone();
     div()
         .id(id)
         .debug_selector(move || id.to_owned())
@@ -7125,7 +7269,7 @@ fn details_header_column(
         // to receive the press and start a marquee drag.
         .relative()
         .h_full()
-        .w(px(f32::from(settings.details_columns.width(column))))
+        .w(px(f32::from(settings.details_column_width(&column))))
         .flex_none()
         .flex()
         .items_center()
@@ -7135,7 +7279,9 @@ fn details_header_column(
             element.on_mouse_down(MouseButton::Right, move |_, window, cx| {
                 cx.stop_propagation();
                 callback(
-                    &ExplorerAction::OpenDetailsColumnMenu { column },
+                    &ExplorerAction::OpenDetailsColumnMenu {
+                        column: context_column.clone(),
+                    },
                     window,
                     cx,
                 );
@@ -7158,7 +7304,11 @@ fn details_header_column(
                 .px(px(tokens.layout.content_spacing.value() / 2.0))
                 .when_some(sort_callback, move |element, callback| {
                     element.on_click(move |_, window, cx| {
-                        callback(&ExplorerAction::SetSortColumn(column), window, cx);
+                        callback(
+                            &ExplorerAction::SetColumnId(sort_column.clone()),
+                            window,
+                            cx,
+                        );
                         cx.stop_propagation();
                     })
                 })
@@ -7183,7 +7333,9 @@ fn details_header_column(
                 .when_some(filter_callback, move |element, callback| {
                     element.on_click(move |_, window, cx| {
                         callback(
-                            &ExplorerAction::OpenDetailsFilterMenu { column },
+                            &ExplorerAction::OpenDetailsFilterMenu {
+                                column: filter_column.clone(),
+                            },
                             window,
                             cx,
                         );
@@ -7199,7 +7351,7 @@ fn details_header_column(
         .when(filter_open, |element| {
             element.child(details_filter_menu(
                 tokens,
-                column,
+                column.clone(),
                 filter_options,
                 filters,
                 on_action.clone(),
@@ -7211,9 +7363,13 @@ fn details_header_column(
                 .debug_selector(move || separator_id.to_owned())
                 .role(Role::Splitter)
                 .aria_label(format!("Resize {label} column"))
-                .aria_numeric_value(f64::from(settings.details_columns.width(column)))
-                .aria_min_numeric_value(f64::from(explorer_model::DetailsColumnWidths::MINIMUM))
-                .aria_max_numeric_value(f64::from(explorer_model::DetailsColumnWidths::MAXIMUM))
+                .aria_numeric_value(f64::from(settings.details_column_width(&column)))
+                .aria_min_numeric_value(f64::from(
+                    explorer_model::OrderedColumnLayout::MINIMUM_WIDTH,
+                ))
+                .aria_max_numeric_value(f64::from(
+                    explorer_model::OrderedColumnLayout::MAXIMUM_WIDTH,
+                ))
                 .absolute()
                 // Keep the complete interactive area inside the owning header so
                 // the visible splitter and its pointer target cannot disagree.
@@ -7237,8 +7393,10 @@ fn details_header_column(
                     element.on_a11y_action(AccessibleAction::Decrement, move |_, window, cx| {
                         callback(
                             &ExplorerAction::SetDetailsColumnWidth {
-                                column,
-                                width: settings.details_columns.width(column).saturating_sub(8),
+                                column: decrement_column.clone(),
+                                width: decrement_settings
+                                    .details_column_width(&decrement_column)
+                                    .saturating_sub(8),
                             },
                             window,
                             cx,
@@ -7249,8 +7407,10 @@ fn details_header_column(
                     element.on_a11y_action(AccessibleAction::Increment, move |_, window, cx| {
                         callback(
                             &ExplorerAction::SetDetailsColumnWidth {
-                                column,
-                                width: settings.details_columns.width(column).saturating_add(8),
+                                column: increment_column.clone(),
+                                width: increment_settings
+                                    .details_column_width(&increment_column)
+                                    .saturating_add(8),
                             },
                             window,
                             cx,
@@ -7262,14 +7422,16 @@ fn details_header_column(
                         cx.stop_propagation();
                         if event.click_count == 2 {
                             callback(
-                                &ExplorerAction::AutoSizeDetailsColumn { column },
+                                &ExplorerAction::AutoSizeDetailsColumn {
+                                    column: begin_column.clone(),
+                                },
                                 window,
                                 cx,
                             );
                         } else {
                             callback(
                                 &ExplorerAction::BeginDetailsColumnResize {
-                                    column,
+                                    column: begin_column.clone(),
                                     pointer_x: f32::from(event.position.x),
                                 },
                                 window,
@@ -8744,8 +8906,9 @@ mod tests {
         CAPTION_MINIMIZE_ID, COMMAND_BAR_ID, EXPLORER_WINDOW_ID, FILE_VIEW_HOST_ID, FileViewState,
         NAVIGATION_BAR_ID, NAVIGATION_PANE_ID, NEW_TAB_BUTTON_ID, SEARCH_BOX_ID, STATUS_BAR_ID,
         TAB_STRIP_ID, WINDOW_CHROME_ID, WINDOW_DRAG_REGION_ID, breadcrumb_ancestry_partition,
-        breadcrumb_location_shell_texture, client_to_screen_point, editable_input_colors,
-        format_explorer_size, localized_search_placeholder, navigation_item_shell_texture,
+        breadcrumb_location_shell_texture, client_to_screen_point, details_name_column_contains,
+        editable_input_colors, file_view_local_pointer, format_explorer_size,
+        localized_search_placeholder, marquee_content_rect, navigation_item_shell_texture,
         navigation_shell_texture, new_tab_button_background, tab_background,
     };
     use crate::{UiTokens, theme::ThemeTokens};
@@ -8756,6 +8919,57 @@ mod tests {
         std::sync::Arc::new(gpui::RenderImage::new(smallvec::SmallVec::<
             [image::Frame; 1],
         >::new()))
+    }
+
+    #[test]
+    fn details_left_press_uses_only_the_name_column_for_item_activation() {
+        let leading_padding = 12.0;
+        let name_width = 320.0;
+        assert!(details_name_column_contains(
+            leading_padding + name_width,
+            0.0,
+            leading_padding,
+            name_width,
+        ));
+        assert!(!details_name_column_contains(
+            leading_padding + name_width + 1.0,
+            0.0,
+            leading_padding,
+            name_width,
+        ));
+        assert!(!details_name_column_contains(
+            250.0,
+            100.0,
+            leading_padding,
+            name_width,
+        ));
+    }
+
+    #[test]
+    fn marquee_pointer_uses_actual_laid_out_bounds_at_scaled_dpi() {
+        let pointer = (825.0, 477.0);
+        let actual_origin = (450.0, 240.0);
+        let stale_token_origin = (420.0, 224.0);
+        assert_eq!(
+            file_view_local_pointer(
+                pointer.0,
+                pointer.1,
+                Some(actual_origin),
+                stale_token_origin,
+            ),
+            (375.0, 237.0),
+        );
+    }
+
+    #[test]
+    fn marquee_overlay_compensates_scroll_content_translation() {
+        let rect = marquee_content_rect(40.0, 80.0, 340.0, 280.0, 35.0, 160.0);
+        assert_eq!(rect.left, 75.0);
+        assert_eq!(rect.top, 240.0);
+        assert_eq!(rect.width, 300.0);
+        assert_eq!(rect.height, 200.0);
+        assert_eq!(rect.left - 35.0, 40.0);
+        assert_eq!(rect.top - 160.0, 80.0);
     }
 
     fn external_paths_with_modifiers(
@@ -8921,54 +9135,55 @@ mod tests {
     fn compare_file_entries(
         left: &explorer_model::FileEntry,
         right: &explorer_model::FileEntry,
-        sort: explorer_model::SortDescriptor,
+        sort: &explorer_model::SortDescriptor,
     ) -> Ordering {
         match (left.is_container, right.is_container) {
             (true, false) => return Ordering::Less,
             (false, true) => return Ordering::Greater,
             _ => {}
         }
-        let ordering = match sort.column {
-            explorer_model::SortColumn::Name => compare_text(
+        let ordering = match &sort.column {
+            explorer_model::ColumnId::Name => compare_text(
                 Some(left.display_name.as_str()),
                 Some(right.display_name.as_str()),
                 sort.direction,
             ),
-            explorer_model::SortColumn::DateModified => compare_optional(
+            explorer_model::ColumnId::DateModified => compare_optional(
                 left.metadata.modified_sort_key,
                 right.metadata.modified_sort_key,
                 sort.direction,
             ),
-            explorer_model::SortColumn::Type => compare_text(
+            explorer_model::ColumnId::Type => compare_text(
                 left.metadata.type_display.as_deref(),
                 right.metadata.type_display.as_deref(),
                 sort.direction,
             ),
-            explorer_model::SortColumn::Size => compare_optional(
+            explorer_model::ColumnId::Size => compare_optional(
                 left.metadata.size_bytes,
                 right.metadata.size_bytes,
                 sort.direction,
             ),
-            explorer_model::SortColumn::DateCreated => compare_optional(
+            explorer_model::ColumnId::DateCreated => compare_optional(
                 left.metadata.created_sort_key,
                 right.metadata.created_sort_key,
                 sort.direction,
             ),
-            explorer_model::SortColumn::Authors => compare_text(
+            explorer_model::ColumnId::Authors => compare_text(
                 left.metadata.authors_display.as_deref(),
                 right.metadata.authors_display.as_deref(),
                 sort.direction,
             ),
-            explorer_model::SortColumn::Tags => compare_text(
+            explorer_model::ColumnId::Tags => compare_text(
                 left.metadata.tags_display.as_deref(),
                 right.metadata.tags_display.as_deref(),
                 sort.direction,
             ),
-            explorer_model::SortColumn::Title => compare_text(
+            explorer_model::ColumnId::Title => compare_text(
                 left.metadata.title_display.as_deref(),
                 right.metadata.title_display.as_deref(),
                 sort.direction,
             ),
+            explorer_model::ColumnId::Extension { .. } => Ordering::Equal,
         };
         ordering
             .then_with(|| {
@@ -8982,10 +9197,10 @@ mod tests {
     fn sorted_file_entries(
         snapshot: &explorer_model::DirectorySnapshot,
         hidden_items: bool,
-        sort: explorer_model::SortDescriptor,
+        sort: &explorer_model::SortDescriptor,
     ) -> Vec<(usize, explorer_model::FileEntry)> {
         let presentation =
-            crate::file_view::DirectoryPresentation::build(snapshot, hidden_items, sort);
+            crate::file_view::DirectoryPresentation::build(snapshot, hidden_items, sort.clone());
         presentation
             .ordered_indices()
             .iter()
@@ -9334,32 +9549,32 @@ mod tests {
         let large = sortable_entry(3, "large.bin", false, Some(20), Some(100), Some("Binary"));
         let missing = sortable_entry(4, "missing", false, None, None, None);
         let size_desc = explorer_model::SortDescriptor {
-            column: explorer_model::SortColumn::Size,
+            column: explorer_model::ColumnId::Size,
             direction: explorer_model::SortDirection::Descending,
         };
         assert_eq!(
-            compare_file_entries(&folder, &large, size_desc),
+            compare_file_entries(&folder, &large, &size_desc),
             Ordering::Less
         );
         assert_eq!(
-            compare_file_entries(&large, &small, size_desc),
+            compare_file_entries(&large, &small, &size_desc),
             Ordering::Less
         );
         assert_eq!(
-            compare_file_entries(&missing, &small, size_desc),
+            compare_file_entries(&missing, &small, &size_desc),
             Ordering::Greater
         );
 
         let date_asc = explorer_model::SortDescriptor {
-            column: explorer_model::SortColumn::DateModified,
+            column: explorer_model::ColumnId::DateModified,
             direction: explorer_model::SortDirection::Ascending,
         };
         assert_eq!(
-            compare_file_entries(&small, &large, date_asc),
+            compare_file_entries(&small, &large, &date_asc),
             Ordering::Less
         );
         assert_eq!(
-            compare_file_entries(&missing, &large, date_asc),
+            compare_file_entries(&missing, &large, &date_asc),
             Ordering::Greater
         );
     }
@@ -9370,11 +9585,19 @@ mod tests {
             mode: explorer_model::ViewMode::Details,
             ..explorer_model::ViewSettings::default()
         };
-        settings.details_columns.name = 700;
-        settings.details_columns.date_modified = 500;
-        settings.details_columns.item_type = 400;
-        settings.details_columns.size = 300;
-        assert!((super::view_item_width(settings) - 1_900.0).abs() < f32::EPSILON);
+        let _ = settings
+            .details_layout
+            .set_width(&explorer_model::ColumnId::Name, 700);
+        let _ = settings
+            .details_layout
+            .set_width(&explorer_model::ColumnId::DateModified, 500);
+        let _ = settings
+            .details_layout
+            .set_width(&explorer_model::ColumnId::Type, 400);
+        let _ = settings
+            .details_layout
+            .set_width(&explorer_model::ColumnId::Size, 300);
+        assert!((super::view_item_width(&settings) - 1_900.0).abs() < f32::EPSILON);
         assert!(
             (super::details_horizontal_maximum(&settings, 1_200.0) - 700.0).abs() < f32::EPSILON
         );
@@ -9402,14 +9625,12 @@ mod tests {
     fn explorer_icon_modes_expose_all_twelve_ctrl_wheel_sizes() {
         let layout = crate::layout::LayoutTokens::WINDOWS_11;
         let metrics = |mode, icon_size| {
-            super::spatial_grid_metrics(
-                explorer_model::ViewSettings {
-                    mode,
-                    icon_size,
-                    ..explorer_model::ViewSettings::default()
-                },
-                layout,
-            )
+            let settings = explorer_model::ViewSettings {
+                mode,
+                icon_size,
+                ..explorer_model::ViewSettings::default()
+            };
+            super::spatial_grid_metrics(&settings, layout)
         };
 
         for (mode, sizes, stacked) in [
@@ -9474,14 +9695,12 @@ mod tests {
             (explorer_model::ViewMode::ExtraLargeIcons, [256, 384, 512]),
         ] {
             for icon_size in sizes {
-                let metrics = super::spatial_grid_metrics(
-                    explorer_model::ViewSettings {
-                        mode,
-                        icon_size,
-                        ..explorer_model::ViewSettings::default()
-                    },
-                    layout,
-                );
+                let settings = explorer_model::ViewSettings {
+                    mode,
+                    icon_size,
+                    ..explorer_model::ViewSettings::default()
+                };
+                let metrics = super::spatial_grid_metrics(&settings, layout);
                 assert!(metrics.stacked);
                 let expected_height = f32::from(icon_size) + label_gap + label_height;
                 assert!(
@@ -9589,13 +9808,13 @@ mod tests {
             mode: explorer_model::ViewMode::SmallIcons,
             ..explorer_model::ViewSettings::default()
         };
-        let normal = super::spatial_grid_metrics(settings, layout);
+        let normal = super::spatial_grid_metrics(&settings, layout);
         assert_eq!(super::spatial_grid_columns(normal, 239.0, 20), 1);
         assert_eq!(super::spatial_grid_columns(normal, 480.0, 20), 2);
         assert_eq!(super::spatial_grid_columns(normal, 1_200.0, 3), 3);
 
         settings.compact_view = true;
-        let compact = super::spatial_grid_metrics(settings, layout);
+        let compact = super::spatial_grid_metrics(&settings, layout);
         assert!(
             (compact.cell_height - (normal.cell_height - layout.content_spacing.value())).abs()
                 < f32::EPSILON
@@ -9697,12 +9916,12 @@ mod tests {
             snapshot.upsert(entry);
         }
         let sort = explorer_model::SortDescriptor::default();
-        let concealed = sorted_file_entries(&snapshot, false, sort)
+        let concealed = sorted_file_entries(&snapshot, false, &sort)
             .into_iter()
             .map(|(_, entry)| entry.display_name)
             .collect::<Vec<_>>();
         assert_eq!(concealed, ["normal"]);
-        let revealed = sorted_file_entries(&snapshot, true, sort)
+        let revealed = sorted_file_entries(&snapshot, true, &sort)
             .into_iter()
             .map(|(_, entry)| entry.display_name)
             .collect::<Vec<_>>();
@@ -9711,13 +9930,16 @@ mod tests {
 
     fn sorted_names(
         snapshot: &explorer_model::DirectorySnapshot,
-        column: explorer_model::SortColumn,
+        column: &explorer_model::ColumnId,
         direction: explorer_model::SortDirection,
     ) -> Vec<String> {
         sorted_file_entries(
             snapshot,
             true,
-            explorer_model::SortDescriptor { column, direction },
+            &explorer_model::SortDescriptor {
+                column: column.clone(),
+                direction,
+            },
         )
         .into_iter()
         .map(|(_, entry)| entry.display_name)
@@ -9726,7 +9948,7 @@ mod tests {
 
     #[test]
     fn four_column_sort_matrix_covers_metadata_unicode_search_and_watcher_changes() {
-        use explorer_model::{DirectorySnapshot, PresentationChange, SortColumn, SortDirection};
+        use explorer_model::{ColumnId, DirectorySnapshot, PresentationChange, SortDirection};
 
         let folder = sortable_entry(1, "資料夾", true, Some(30), None, Some("檔案資料夾"));
         let zero = sortable_entry(2, "Alpha.txt", false, Some(10), Some(0), Some("文字文件"));
@@ -9752,39 +9974,39 @@ mod tests {
         }
 
         for column in [
-            SortColumn::Name,
-            SortColumn::DateModified,
-            SortColumn::Type,
-            SortColumn::Size,
+            ColumnId::Name,
+            ColumnId::DateModified,
+            ColumnId::Type,
+            ColumnId::Size,
         ] {
-            let ascending = sorted_names(&snapshot, column, SortDirection::Ascending);
-            let descending = sorted_names(&snapshot, column, SortDirection::Descending);
+            let ascending = sorted_names(&snapshot, &column, SortDirection::Ascending);
+            let descending = sorted_names(&snapshot, &column, SortDirection::Descending);
             assert_eq!(ascending.first().map(String::as_str), Some("資料夾"));
             assert_eq!(descending.first().map(String::as_str), Some("資料夾"));
-            if column != SortColumn::Name {
+            if column != ColumnId::Name {
                 assert_eq!(ascending.last().map(String::as_str), Some("missing"));
                 assert_eq!(descending.last().map(String::as_str), Some("missing"));
             }
             assert_eq!(
-                sorted_names(&snapshot, column, SortDirection::Ascending),
+                sorted_names(&snapshot, &column, SortDirection::Ascending),
                 ascending,
                 "equal values must resolve to a repeatable name/id tie order"
             );
         }
         assert_eq!(
-            sorted_names(&snapshot, SortColumn::Size, SortDirection::Ascending),
+            sorted_names(&snapshot, &ColumnId::Size, SortDirection::Ascending),
             ["資料夾", "Alpha.txt", "alpha.TXT", "Éclair.bin", "missing"]
         );
         assert_eq!(
-            sorted_names(&snapshot, SortColumn::Size, SortDirection::Descending),
+            sorted_names(&snapshot, &ColumnId::Size, SortDirection::Descending),
             ["資料夾", "Éclair.bin", "Alpha.txt", "alpha.TXT", "missing"]
         );
         assert_eq!(
             compare_file_entries(
                 &zero,
                 &case_tie,
-                explorer_model::SortDescriptor {
-                    column: SortColumn::Name,
+                &explorer_model::SortDescriptor {
+                    column: ColumnId::Name,
                     direction: SortDirection::Ascending,
                 },
             ),
@@ -9799,7 +10021,7 @@ mod tests {
         assert_eq!(
             sorted_names(
                 &search_results,
-                SortColumn::DateModified,
+                &ColumnId::DateModified,
                 SortDirection::Descending
             ),
             ["Éclair.bin", "Alpha.txt"]
@@ -9812,11 +10034,7 @@ mod tests {
             PresentationChange::Inserted(_)
         ));
         assert_eq!(
-            sorted_names(
-                &snapshot,
-                SortColumn::DateModified,
-                SortDirection::Ascending
-            )[1],
+            sorted_names(&snapshot, &ColumnId::DateModified, SortDirection::Ascending)[1],
             "watcher-zero.dat"
         );
         assert!(matches!(
@@ -9824,7 +10042,7 @@ mod tests {
             PresentationChange::Removed(_)
         ));
         assert!(
-            !sorted_names(&snapshot, SortColumn::Name, SortDirection::Ascending)
+            !sorted_names(&snapshot, &ColumnId::Name, SortDirection::Ascending)
                 .iter()
                 .any(|name| name == "watcher-zero.dat")
         );
@@ -9994,10 +10212,10 @@ mod tests {
         }
         assert!(production.contains("item.bg(colors.selected_inactive.to_gpui())"));
         for action in [
-            "SetSortColumn(explorer_model::SortColumn::Name)",
-            "SetSortColumn(explorer_model::SortColumn::DateModified)",
-            "SetSortColumn(explorer_model::SortColumn::Type)",
-            "SetSortColumn(explorer_model::SortColumn::Size)",
+            "SetColumnId(explorer_model::ColumnId::Name)",
+            "SetColumnId(explorer_model::ColumnId::DateModified)",
+            "SetColumnId(explorer_model::ColumnId::Type)",
+            "SetColumnId(explorer_model::ColumnId::Size)",
             "SetSortDirection(explorer_model::SortDirection::Ascending)",
             "SetSortDirection(explorer_model::SortDirection::Descending)",
         ] {
