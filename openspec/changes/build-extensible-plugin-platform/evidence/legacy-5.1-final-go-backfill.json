@@ -1,0 +1,30 @@
+{
+  "format": "legacy-final-go-backfill-candidate-v1",
+  "legacy_id": "5.1",
+  "label": "FINAL GO (historical claim; unsubstantiated)",
+  "status": "candidate-not-verified",
+  "historical_claims_to_reconcile": [
+    "architecture FINAL GO",
+    "242 passed / 2 ignored UI tests",
+    "7/7 dynamic-column tests",
+    "icon_view_layout 2/2"
+  ],
+  "claim_status": "These are recorded as historical claims requiring provenance; no immutable evidence or pass result is asserted here.",
+  "purpose": "Define the evidence bundle that must be collected before any legacy 5.1 FINAL GO claim can be carried into the expanded L3 ledger.",
+  "required_records": [
+    {"subcheck_key":"5.1.1","kind":"dynamic-column-contract","required_artifacts":["public ABI layout report","stable ColumnId/descriptor fixture","sha256"]},
+    {"subcheck_key":"5.1.2","kind":"provider-and-renderer-integration","required_artifacts":["single/batch/aggregate contract logs","renderer binding test report","sha256"]},
+    {"subcheck_key":"5.1.3","kind":"settings-and-session-migration","required_artifacts":["legacy settings migration golden","unknown-column round-trip report","sha256"]},
+    {"subcheck_key":"5.1.4","kind":"ui-and-accessibility","required_artifacts":["details/header/chooser/resize/UIA test report","UITEST manifest selector output","screenshots or approved non-visual substitute"]},
+    {"subcheck_key":"5.1.5","kind":"release-package","required_artifacts":["clean consumer build/validate/package logs","package hash","provenance and retention locator"]}
+  ],
+  "reopen_risks": [
+    {"id":"5.2","reason":"host registry authority and immutable snapshot behavior are expanded beyond the legacy 5.1 label; rerun registry lifecycle and disable/revoke/drain checks."},
+    {"id":"5.4","reason":"details UI, virtualization, keyboard/UIA, and session restore are separate L3 obligations; a legacy GO cannot cover them without leaf evidence."}
+  ],
+  "known_gaps": [
+    "No historical FINAL GO decision, reviewer identity, immutable bundle locator, or SHA-256 was found in repository history inspected through 65d780e.",
+    "No claim is made that current dirty-worktree tests or fixtures are equivalent to a historical release candidate.",
+    "The candidate remains blocked until each required L3 record is executed and indexed by the primary release integrator."
+  ]
+}

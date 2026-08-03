@@ -46,13 +46,17 @@ function Start-UitestExplorer {
         [Parameter(Mandatory)][string]$OutputDirectory,
         [ValidateSet('debug','release')][string]$Profile = 'debug',
         [switch]$SkipBuild,
-        [int]$TimeoutSeconds = 25
+        [int]$TimeoutSeconds = 25,
+        [string[]]$CargoFeatures = @(),
+        [hashtable]$AdditionalEnvironment = @{}
     )
     Initialize-UitestHeadful
     $workspace = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
     if (-not $SkipBuild) {
-        if ($Profile -eq 'release') { & cargo.exe build -p explorer-app --release --locked }
-        else { & cargo.exe build -p explorer-app --locked }
+        $featureArguments = @()
+        if ($CargoFeatures.Count -gt 0) { $featureArguments = @('--features', ($CargoFeatures -join ',')) }
+        if ($Profile -eq 'release') { & cargo.exe build -p explorer-app --release --locked @featureArguments }
+        else { & cargo.exe build -p explorer-app --locked @featureArguments }
         if ($LASTEXITCODE -ne 0) { throw "explorer-app build failed: $LASTEXITCODE" }
     }
     $executable = Join-Path $workspace "target\$Profile\SuperExplorer.exe"
@@ -64,6 +68,9 @@ function Start-UitestExplorer {
     $start.Environment['LOCALAPPDATA'] = (Join-Path $OutputDirectory 'localappdata')
     $start.Environment['EXPLORER_INITIAL_PATH'] = $InitialPath
     $start.Environment['EXPLORER_LOG_DIR'] = $OutputDirectory
+    foreach ($name in $AdditionalEnvironment.Keys) {
+        $start.Environment[[string]$name] = [string]$AdditionalEnvironment[$name]
+    }
     $process = [Diagnostics.Process]::Start($start)
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     do {

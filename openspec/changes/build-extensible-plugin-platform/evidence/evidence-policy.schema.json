@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://superexplorer.invalid/openspec/build-extensible-plugin-platform/evidence-policy.schema.json",
+  "title": "Authoritative evidence closure policy",
+  "description": "This release-integrator-owned policy, not claimant evidence, supplies L3 priority, blocking, mandatory, dependency, gate, N/A-approval, and global-ledger checkpoint authority. An individual leaf closes from an exact locally rerunnable command/manual result recorded with command, result, environment, and hash. Signed release:// bundles are created only for L2 milestones, RCs, or releases; they are not a per-leaf prerequisite. ci://, hosted workflows, and remote artifact services are rejected and test URL maps are never closure authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "required_prefix_event_sha256", "expected_ledger_sha256", "tasks"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "required_prefix_event_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "expected_ledger_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "tasks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["task_id", "priority", "release_blocking", "mandatory", "depends_on", "gate_ids"],
+        "properties": {
+          "task_id": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+          "priority": { "enum": ["P0", "P1"] },
+          "release_blocking": { "type": "boolean" },
+          "mandatory": { "type": "boolean" },
+          "depends_on": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" } },
+          "gate_ids": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+          "not_applicable": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["approved", "approval_id"],
+            "properties": { "approved": { "const": true }, "approval_id": { "type": "string", "minLength": 1 } }
+          }
+        }
+      }
+    }
+  }
+}

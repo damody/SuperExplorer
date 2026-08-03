@@ -1,22 +1,30 @@
 ## ADDED Requirements
 
 ### Requirement: Single extensible Rust root module
-Each Rust DLL SHALL export one `abi_stable` root module that reports metadata, SDK compatibility and a prefix-type registrar. A DLL MAY register multiple feature-scoped interfaces; SDK 1.x SHALL evolve the registrar only by appending optional functions or non-exhaustive data.
+Each Rust DLL SHALL export one `abi_stable` root prefix module that reports metadata and SDK compatibility and directly contains the required SDK-owned registrar factory. The earlier handwritten raw-callback/custom-root layout was unpublished and experimental, so it does not constitute SDK 1.x. The first published SDK 1.x baseline SHALL be the fixed Rust-first `ExtensionRootModuleV1` with SDK-owned factory and panic trampoline: plugin authors implement ordinary Rust traits and SHALL NOT hand-write `extern "C"` callbacks or ABI layouts. After publication SDK 1.x SHALL NOT append or reinterpret root, factory, or trait-object layout fields; compatible evolution SHALL use the baseline descriptor/capability data contract and approved non-exhaustive values, while structural ABI changes require a new SDK major.
 
-#### Scenario: Older 1.x plugin meets a newer host
-- **WHEN** a plugin omits a registrar function appended later in SDK 1.x
-- **THEN** the host loads its supported interfaces without interpreting the absent optional function
+#### Scenario: Superseded pre-release raw root meets the Rust-first host
+- **WHEN** a DLL exports the superseded unpublished raw-callback/custom-root layout
+- **THEN** `abi_stable` layout validation rejects it before any accessor, factory, callback or native-call marker executes
 
-#### Scenario: Existing ABI field changes meaning
-- **WHEN** a plugin's required layout or established numeric ID semantics differ from the host
+#### Scenario: Published baseline plugin meets a newer 1.x host
+- **WHEN** a plugin compiled against the published Rust-first baseline uses only descriptor/capability values understood by an older 1.x SDK
+- **THEN** the newer host loads the identical checked root shape and preserves or rejects unknown non-exhaustive values according to their typed contract, without layout guessing
+
+#### Scenario: Published ABI field changes meaning
+- **WHEN** a plugin's required published-baseline layout or established numeric ID semantics differ from the host
 - **THEN** layout/compatibility validation rejects the DLL before registration
 
 ### Requirement: Stable ABI data boundary
-Stable callbacks SHALL use fixed-width primitives and `abi_stable` FFI-safe owned types. They SHALL NOT cross `std` collections, ordinary Rust trait objects, futures, closures, GPUI entities, private model types, native handle wrappers or allocator-ambiguous memory.
+Stable callbacks SHALL use fixed-width primitives and `abi_stable` FFI-safe owned types. They SHALL NOT cross `std` collections, ordinary Rust trait objects, futures, closures, GPUI entities, private model types, native handle wrappers or allocator-ambiguous memory. The SDK contract SHALL define allocation origin, returned-value destruction, registrar/trait-object ownership, permitted drop thread and library lifetime. Factory, registrar, provider, renderer, service and destructor boundaries SHALL NOT unwind, and the bundle fingerprint SHALL identify the panic strategy used by both sides.
 
 #### Scenario: SDK API exposes a forbidden type
 - **WHEN** public ABI validation detects a forbidden Rust or private workspace type in an exported interface
 - **THEN** the SDK build or validator fails before publication
+
+#### Scenario: ABI-owned object is destroyed
+- **WHEN** the host releases a registrar, returned value or trait object created by a plugin
+- **THEN** destruction uses the SDK-defined owner and permitted thread while the DLL remains resident, and no panic unwinds across the ABI boundary
 
 ### Requirement: Exact P0-0 toolchain baseline
 The SDK SHALL fix Rust `1.97.1` for `x86_64-pc-windows-msvc`, Cargo from the same toolchain, and `abi_stable = 0.11.3` with the protected feature set recorded in `sdk-lock.json`. Builds SHALL verify compiler/Cargo commit hashes, not only display versions.
@@ -26,18 +34,18 @@ The SDK SHALL fix Rust `1.97.1` for `x86_64-pc-windows-msvc`, Cargo from the sam
 - **THEN** the UI fingerprint differs and GPUI contribution loading is rejected
 
 ### Requirement: Authorized GPUI source and immutable snapshots
-The only authorized GPUI source SHALL be `https://github.com/damody/gpui-ce-explorer.git`. Development `main` SHALL be used only by an update job to resolve a complete commit; every actual host, plugin and CI build SHALL use an immutable snapshot bundle ID, canonical lock and vendored tree for that commit.
+The only authorized GPUI source SHALL be `https://github.com/damody/gpui-ce-explorer.git`. Development `main` SHALL be read only during an explicit primary-agent update operation, which is the sole network operation permitted by this change and resolves a complete commit; every actual host/plugin build, fixture, test, promotion, rollback and release validation SHALL run locally from the checked-out repository against an immutable snapshot bundle ID, canonical lock and vendored tree for that commit.
 
 #### Scenario: GPUI main advances
-- **WHEN** the update job resolves a newer `main` commit and all host, SDK and eight-example gates pass
-- **THEN** it publishes a new snapshot bundle ID and atomically moves host and official consumers to it
+- **WHEN** the explicit primary-agent update operation resolves a newer `main` commit and every required local offline host, SDK, contract, UITEST and eight-example gate passes
+- **THEN** it records a new snapshot bundle ID and atomically moves the local host and official consumers to it
 
 #### Scenario: Candidate update fails
 - **WHEN** any compatibility, UI, example or packaging test fails for a GPUI candidate
 - **THEN** the previous approved snapshot remains active and no half-updated host/SDK state is published
 
 ### Requirement: Non-fast-forward update protection
-The GPUI update job SHALL detect non-fast-forward history and SHALL require explicit approval before switching. Published snapshots SHALL remain offline-rebuildable from their own vendor source even if the remote commit becomes unreachable.
+The explicit primary-agent GPUI update operation SHALL detect non-fast-forward history and SHALL require explicit approval before switching. Recorded snapshots SHALL remain offline-rebuildable from their own vendor source even if the remote commit becomes unreachable.
 
 #### Scenario: Main is force-pushed
 - **WHEN** the remote branch no longer descends from the current approved snapshot
@@ -55,7 +63,7 @@ Any DLL registering a GPUI interface SHALL match an exact fingerprint derived fr
 - **THEN** an already compatible plugin remains compatible without a rebuild-ID match
 
 ### Requirement: Release freeze
-At RC cut, the system SHALL select a fully tested development snapshot, create/record a protected GPUI tag, set `release_frozen = true`, generate a signed release bundle and rebuild host, fixtures and eight examples offline. A post-freeze commit change SHALL create a new RC/bundle ID and repeat all gates.
+At RC cut, the system SHALL select a fully validated local development snapshot, record its protected source revision, set `release_frozen = true`, create a signed local release evidence bundle, and rebuild host, fixtures and eight examples with `--locked --offline`. The release evidence bundle SHALL bind the exact commands or manual procedures, task and unique subcheck IDs, expected and actual results, source/environment metadata, SHA-256 inventory, RC identity and retention metadata; it SHALL be verified under the release-integrator trust policy before release readiness. A post-freeze commit change SHALL create a new RC/bundle ID and repeat every required local gate.
 
 #### Scenario: GPUI main changes after release
 - **WHEN** the remote `main` advances after the release bundle is published

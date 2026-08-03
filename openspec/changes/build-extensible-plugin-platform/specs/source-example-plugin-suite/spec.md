@@ -1,5 +1,20 @@
 ## ADDED Requirements
 
+### Requirement: 0→1 single-plugin product validation
+Before general platform implementation, the active milestone SHALL support exactly one explicitly selected local Rust plugin, `p0-consumer`. SuperExplorer SHALL load it only when launched with one absolute `--plugin-dll` path, SHALL reuse the real `abi_stable` root and registrar path, and SHALL show an owned read-only plugin/contribution summary in the existing Extensions menu. Absence of the flag SHALL preserve current behavior and SHALL NOT scan for unsigned local plugins. Multi-plugin discovery, dynamic column values/rendering, package-source, scheduler, evidence, snapshot and release frameworks SHALL remain deferred until the user records product-validation GO.
+
+#### Scenario: The single demo plugin is explicitly loaded
+- **WHEN** SuperExplorer starts with a compatible absolute `p0_consumer.dll` path
+- **THEN** the real host loads and registers it and the Extensions menu visibly identifies its plugin ID, contribution ID and contribution kind
+
+#### Scenario: SuperExplorer starts without the demo flag
+- **WHEN** SuperExplorer starts without `--plugin-dll`
+- **THEN** no unsigned local plugin is scanned or loaded and no demo entry is shown
+
+#### Scenario: The first slice is validated
+- **WHEN** the plugin is visible in the real app and the app remains usable
+- **THEN** an artificial contract, integration, evidence, snapshot, mock or fake framework is not required to declare product-validation GO; a manual demo or minimal smoke is sufficient
+
 ### Requirement: Complete independent example projects
 The SDK SHALL ship eight installable `.sepack` example projects in an independent consumer workspace. Each SHALL include complete source, manifest, zh-TW/en README, locales, license/NOTICE/provenance, fixtures, unit/integration tests, screenshots and package command, and SHALL explain how an author can modify it.
 
@@ -12,7 +27,7 @@ Examples SHALL depend only on public SDK crates, their precisely locked private 
 
 #### Scenario: Private crate dependency is introduced
 - **WHEN** example metadata or source references a private workspace crate
-- **THEN** CI rejects the example and the platform cannot be marked complete
+- **THEN** the local offline dependency-validation gate rejects the example and the platform cannot be marked complete
 
 ### Requirement: Folder-size visual column example
 `rust-folder-size-visual-column` SHALL recursively calculate folder bytes in background, expose exact numeric sorting and largest-sibling aggregation, render a customizable GPUI cell, support cancellation/partial errors/cache invalidation and register separate column/recalculate/settings features.
@@ -82,7 +97,7 @@ Every example SHALL classify dependencies as static Rust libraries or bundled ex
 
 #### Scenario: Dependency classification is incomplete
 - **WHEN** an example needs a parser or executable but omits its payload/provenance/license classification
-- **THEN** package validation or CI release gate fails
+- **THEN** package validation or the local release gate fails
 
 ### Requirement: Example-driven interface completion
 Every public interface claimed by this change SHALL be exercised by at least one official example from the independent workspace. An interface implemented only as a trait, empty crate, mock or unwired code SHALL NOT satisfy completion.
@@ -92,11 +107,33 @@ Every public interface claimed by this change SHALL be exercised by at least one
 - **THEN** the associated task remains incomplete and stable SDK publication is blocked
 
 ### Requirement: SDK and example release gate
-CI SHALL build/package all eight examples with the same approved bundle ID in an isolated empty Cargo home, offline, and SHALL run unit, integration, UITEST, manifest-capability, security, performance and documentation-reproduction checks. Stable SDK publication SHALL require all checks to pass.
+The release integrator SHALL build/package all eight examples locally with the same approved bundle ID in an isolated empty Cargo home and with networking disabled. Rust unit/integration gates SHALL run through exact `cargo test --locked --offline` commands; PowerShell contract gates SHALL run through exact `powershell -NoProfile -ExecutionPolicy Bypass -File <script>` commands; and every UI or headful gate SHALL run through the checked-out repository's `explorer-uitest` binary and `uitest/manifest.json` using `cargo run -p explorer-uitest --bin explorer-uitest --locked --offline -- --case <case-id>`. Each gate matrix entry SHALL declare exactly one command or manual review procedure, working directory, environment, expected exit status and required artifacts. Stable SDK publication SHALL require every local unit, integration, contract, UITEST, manifest-capability, security, performance and documentation-reproduction check to pass.
 
 #### Scenario: One example fails clean reproduction
 - **WHEN** any README build, `.sepack` validation, UITEST or capability mapping fails
 - **THEN** no stable SDK/release bundle is published even if the other seven examples pass
+
+### Requirement: UITEST sequencing and non-substitution
+Phases 1–5 and every Task 6 activity before its final gate SHALL execute zero UITEST cases. The first UITEST SHALL be Task 6's final gate and SHALL run only after every other Task 6 leaf is complete end-to-end, including its framework, consumer contract, implementation, production wiring, SDK surface, fixtures, documentation and deterministic package. A later official example's UITEST SHALL run only after that example has separately completed the same production-wiring, SDK, fixture, documentation and deterministic-package prerequisites. UITEST SHALL NOT substitute for local unit, integration, ABI or PowerShell contract gates and SHALL NOT close incomplete, mock-only or source-shape-only work.
+
+#### Scenario: A pre-final phase 6 gate requests a UI test
+- **WHEN** a phase 1–5 gate or any phase 6 gate before the final example gate attempts to execute an `explorer-uitest` case
+- **THEN** the plan is invalid because no UITEST executes before phase 6 is complete
+
+#### Scenario: Phase 6 reaches its final example gate
+- **WHEN** every Task 6 leaf before the final gate has completed its framework, consumer contract, production wiring, SDK surface, fixtures, documentation and deterministic package obligations
+- **THEN** Task 6's final gate is the first UITEST and runs through `explorer-uitest` and `uitest/manifest.json`
+
+#### Scenario: A later official example is only partially complete
+- **WHEN** a later example lacks any production wiring, SDK, fixture, documentation or deterministic-package prerequisite
+- **THEN** its UITEST does not run and the incomplete work remains open to its required non-UITEST gates
+
+### Requirement: Local validation and release-evidence authority
+Completion, stable SDK publication and release readiness SHALL be established only by successful local gate records and a signed, retained local release evidence bundle. The bundle SHALL be deterministic, store-only and content-addressed, and SHALL contain the evidence manifest, exact commands or manual procedures, task and unique subcheck IDs, expected and actual results, source/environment metadata, SHA-256 inventory, RC identity and retention metadata. CI, GitHub Actions, remote artifacts and `ci://` locators SHALL NOT be required for any gate or evidence lookup and SHALL NOT confer completion.
+
+#### Scenario: An external automation service reports success
+- **WHEN** CI, GitHub Actions or a remote artifact service reports a successful run without the required locally executed gate records and verified signed local release evidence bundle
+- **THEN** the associated task and release gate remain incomplete
 
 ### Requirement: Rust-only AI prompt fixture
 The SDK SHALL ship a Rust-only AI development prompt that reads machine-readable SDK/manifest data, uses the current bundle rev and official scripts, avoids private crates and generates manifest/tests/locales. A maintained fixture SHALL build, validate and package a minimal provider plus GPUI renderer.
