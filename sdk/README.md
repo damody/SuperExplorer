@@ -106,3 +106,14 @@ offline resolver contract with:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/package-resolution-v1-contract.ps1
 ```
+
+## Native Rust plugin operations
+
+The in-process native-plugin risk model, startup-only/resident lifecycle,
+Safe Mode recovery, diagnostic privacy rules, operator runbook, and author
+guidance are documented in [NATIVE_PLUGIN_OPERATIONS.md](NATIVE_PLUGIN_OPERATIONS.md)
+(English and zh-TW). Reproduce its real-DLL lifecycle contract with:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File sdk/tests/native-call-guard-contract.ps1
+```
