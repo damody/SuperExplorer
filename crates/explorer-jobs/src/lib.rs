@@ -19,9 +19,20 @@ use std::collections::VecDeque;
 use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError};
 use explorer_model::TabId;
 
+mod extension_scheduler;
 mod preview;
 mod qos;
 mod thumbnail;
+pub use extension_scheduler::{
+    ExtensionCancellationActionsV1, ExtensionCancellationResultV1,
+    ExtensionCancellationSignalReportV1, ExtensionCompletionOutcomeV1, ExtensionCompletionResultV1,
+    ExtensionDrainFenceV1, ExtensionJobClassV1, ExtensionJobIdV1, ExtensionJobRequestV1,
+    ExtensionJobSchedulerV1, ExtensionJobScopeV1, ExtensionPackageIdV1, ExtensionQueueLimitsV1,
+    ExtensionQueueStatsV1, ExtensionScheduleOutcomeV1, ExtensionSchedulerConfigErrorV1,
+    ExtensionSchedulerConfigV1, ExtensionSchedulerLimitV1, ExtensionScopeActivityV1,
+    ExtensionScopeCloseOutcomeV1, ExtensionStartPollV1, ExtensionStartedJobV1,
+    MAX_EXTENSION_QUEUE_LIMIT_V1,
+};
 pub use preview::{PreviewCoordinator, PreviewCoordinatorAction};
 pub use qos::{
     DegradationLevel, DegradationPolicyConfig, DegradationTransition, FrameDrain, FrameDrainBudget,

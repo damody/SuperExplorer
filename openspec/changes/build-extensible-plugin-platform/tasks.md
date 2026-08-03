@@ -34,7 +34,7 @@
 
 ## 4. Extension Jobs、Values、Streams 與 Cache
 
-- [ ] 4.1 在 `explorer-jobs` 實作 extension CPU/I/O queues、global/per-package limits、visible-row priority、deadline 與 cancellation
+- [x] 4.1 在 `explorer-jobs` 實作 extension CPU/I/O queues、global/per-package limits、visible-row priority、deadline 與 cancellation
 - [ ] 4.2 實作 `JobContextV1`、generation-safe handles、`IncrementalResultSinkV1`、backpressure 與 typed terminal states
 - [ ] 4.3 實作 `PluginValueV1`、`StableSortValueV1`、opaque payload routing 與 unsupported/unavailable/cancelled/error sorting policies
 - [ ] 4.4 實作 `UiInvalidationBatcher` 的 16–50 ms 合併與 extension timing/slow-callback diagnostics
