@@ -13,7 +13,7 @@
         "additionalProperties": false,
         "required": ["rc_id", "bundle_id", "source"],
         "properties": {
-          "rc_id": { "type": "string", "minLength": 1 },
+          "rc_id": { "type": "string", "pattern": "^(?!\\.{1,2}$)[A-Za-z0-9][A-Za-z0-9._-]*$" },
           "bundle_id": { "type": "string", "minLength": 1 },
           "source": {
             "type": "object",

@@ -64,6 +64,97 @@ function Assert-GpuiRepositoryComplete {
  }
 }
 
+function Assert-GpuiCandidateCheckout {
+ param(
+  [Parameter(Mandatory)][string]$Repository,
+  [Parameter(Mandatory)][string]$ExpectedOrigin,
+  [Parameter(Mandatory)][string]$CandidateRevision,
+  [Parameter(Mandatory)][string]$CandidateTree,
+  [Parameter(Mandatory)][string]$ExpectedPackageVersion
+ )
+ $origin=((Invoke-GpuiGit $Repository @('remote','get-url','origin'))-join "`n").Trim()
+ if($origin -ne $ExpectedOrigin){throw 'unauthorized GPUI origin'}
+ Assert-GpuiRepositoryComplete $Repository @($CandidateRevision)
+ $head=((Invoke-GpuiGit $Repository @('rev-parse','HEAD'))-join "`n").Trim()
+ if($head -ne $CandidateRevision){throw 'GPUI candidate checkout HEAD does not match the resolved candidate revision'}
+ $tree=((Invoke-GpuiGit $Repository @('rev-parse',"$CandidateRevision`^{tree}"))-join "`n").Trim()
+ if($tree -ne $CandidateTree){throw 'GPUI candidate checkout tree does not match the resolved candidate tree'}
+ $tracked=((Invoke-GpuiGit $Repository @('rev-parse','refs/remotes/origin/main'))-join "`n").Trim()
+ if($tracked -ne $CandidateRevision){throw 'GPUI candidate revision is no longer the resolved origin/main revision'}
+ $manifest=Join-Path $Repository 'crates\gpui\Cargo.toml'
+ if(-not(Test-Path -LiteralPath $manifest)){throw 'GPUI candidate package manifest is missing'}
+ $content=[IO.File]::ReadAllText($manifest)
+ if($content -notmatch "(?ms)^\s*\[package\].*?^\s*version\s*=\s*\`"$([regex]::Escape($ExpectedPackageVersion))\`"\s*$"){throw 'GPUI candidate package version does not match the approved contract'}
+}
+
+function Assert-GpuiCandidateStagedGitlink {
+ param(
+  [Parameter(Mandatory)][string]$RepositoryRoot,
+  [Parameter(Mandatory)][string]$GitlinkPath,
+  [Parameter(Mandatory)][string]$CandidateRevision
+ )
+ $staged=((Invoke-GpuiGit $RepositoryRoot @('rev-parse',":$GitlinkPath"))-join "`n").Trim()
+ if($staged -ne $CandidateRevision){throw 'staged GPUI gitlink does not match the resolved candidate revision'}
+ $mode=((Invoke-GpuiGit $RepositoryRoot @('ls-files','--stage','--',$GitlinkPath))-join "`n").Trim()
+ if($mode -notmatch '^160000\s+[0-9a-f]{40}\s+0\s+'){throw 'candidate GPUI path is not staged as a gitlink'}
+}
+
+function Assert-GpuiCandidatePromotionSurface {
+ param([Parameter(Mandatory)][string]$RepositoryRoot,[Parameter(Mandatory)][string]$GitlinkPath)
+ $allowed=@(
+  'sdk/snapshot/approved-gpui.json',
+  'sdk/sdk-lock.json',
+  'sdk/bundle-manifest.json',
+ 'sdk/ui-abi-fingerprint.json',
+  'Cargo.lock',
+  'sdk/Cargo.lock',
+  'sdk/snapshot/protected-dependency-closure.json',
+  'sdk/fixtures/p0-consumer/Cargo.lock',
+  $GitlinkPath
+ )
+ $changed=@(@(Invoke-GpuiGit $RepositoryRoot @('diff','--name-only','HEAD','--'))|ForEach-Object{$_.Trim()}|Where-Object{$_})
+ if($GitlinkPath -notin $changed){throw 'candidate transaction did not include the staged GPUI gitlink in its promotion surface'}
+ foreach($path in $changed){
+  if($path -notin $allowed -and -not $path.StartsWith('sdk/vendor/cargo-sources/',[StringComparison]::Ordinal)){throw "candidate transaction changed an unauthorized promotion path: $path"}
+ }
+ $untracked=@(@(Invoke-GpuiGit $RepositoryRoot @('ls-files','--others','--exclude-standard'))|ForEach-Object{$_.Trim()}|Where-Object{$_})
+ if(@($untracked).Count){throw "candidate transaction left untracked outputs: $($untracked -join ', ')"}
+}
+
+function Invoke-GpuiCandidateTransaction {
+ param(
+  [Parameter(Mandatory)][string[]]$Path,
+  [Parameter(Mandatory)][string[]]$RollbackGitPath,
+  [Parameter(Mandatory)][string]$RepositoryRoot,
+  [Parameter(Mandatory)][string]$Repository,
+  [Parameter(Mandatory)][string]$ExpectedOrigin,
+  [Parameter(Mandatory)][string]$CandidateRevision,
+  [Parameter(Mandatory)][string]$CandidateTree,
+  [Parameter(Mandatory)][string]$ExpectedPackageVersion,
+  [Parameter(Mandatory)][string]$GitlinkPath,
+  [Parameter(Mandatory)][scriptblock]$PrepareCandidate,
+  [Parameter(Mandatory)][scriptblock]$RunCandidateGates,
+  [Parameter(Mandatory)][scriptblock]$VerifyRemote
+ )
+ try {
+  Invoke-WithFileTransaction $Path {
+   Invoke-GpuiGit $Repository @('checkout','--detach',$CandidateRevision)|Out-Null
+   Invoke-GpuiGit $RepositoryRoot @('add','--',$GitlinkPath)|Out-Null
+   Assert-GpuiCandidateCheckout $Repository $ExpectedOrigin $CandidateRevision $CandidateTree $ExpectedPackageVersion
+   Assert-GpuiCandidateStagedGitlink $RepositoryRoot $GitlinkPath $CandidateRevision
+   & $PrepareCandidate
+   & $RunCandidateGates
+   Assert-GpuiCandidatePromotionSurface $RepositoryRoot $GitlinkPath
+   & $VerifyRemote
+  }
+ } catch {
+  $failure=$_
+  try { $restoreArguments=@('restore','--source=HEAD','--staged','--worktree','--')+$RollbackGitPath;Invoke-GpuiGit $RepositoryRoot $restoreArguments | Out-Null;$cleanArguments=@('clean','-fd','--')+$RollbackGitPath;Invoke-GpuiGit $RepositoryRoot $cleanArguments | Out-Null }
+  catch { throw "candidate transaction failed: $($failure.Exception.Message); Git rollback failed: $($_.Exception.Message)" }
+  throw $failure
+ }
+}
+
 function Restore-GpuiCheckoutState {
  param([Parameter(Mandatory)][string]$Repository,[Parameter(Mandatory)]$State)
  if([string]::IsNullOrWhiteSpace([string]$State.branch)){Invoke-GpuiGit $Repository @('checkout','--detach',$State.head)|Out-Null}
@@ -74,4 +165,4 @@ function Restore-GpuiCheckoutState {
  if(@(Invoke-GpuiGit $Repository @('status','--porcelain')).Count){throw 'GPUI checkout rollback left tracked changes'}
 }
 
-Export-ModuleMember Assert-GpuiUpdateApproval,Invoke-WithFileTransaction,Invoke-GpuiGit,Get-GpuiCheckoutState,Assert-GpuiRepositoryComplete,Restore-GpuiCheckoutState
+Export-ModuleMember Assert-GpuiUpdateApproval,Invoke-WithFileTransaction,Invoke-GpuiGit,Get-GpuiCheckoutState,Assert-GpuiRepositoryComplete,Assert-GpuiCandidateCheckout,Assert-GpuiCandidateStagedGitlink,Assert-GpuiCandidatePromotionSurface,Invoke-GpuiCandidateTransaction,Restore-GpuiCheckoutState

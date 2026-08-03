@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "item_count": 1000,
+  "arrival_interval_ms": 1,
+  "coalescing_window_ms": 20,
+  "expected_max_redraws": 50,
+  "package_id": "fixture.ui-batcher",
+  "interface_namespace": 4242,
+  "interface_value": 7,
+  "slow_threshold_ms": 50
+}

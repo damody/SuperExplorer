@@ -1,0 +1,13 @@
+[package]
+name = "private-dependency-contract"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+exif-lite = "=0.1.0"
+
+[patch.crates-io]
+exif-lite = { path = "vendor/private/exif-lite-0.1.0" }

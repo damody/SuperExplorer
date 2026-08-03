@@ -9,9 +9,17 @@ path = "src/lib.rs"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# This is deliberately the public, pinned SDK dependency.  The consumer must
-# not reach into a SuperExplorer workspace crate before Task 2 publishes one.
+# Both dependencies are consumed from the sealed SDK source directory while
+# Cargo is offline. `explorer-extension-api` is the public author surface; it
+# owns the ABI-safe factory trampoline and never exposes a handwritten callback
+# contract to extension authors.
 abi_stable = { version = "=0.11.3", default-features = false }
+explorer-extension-api = "=1.2.0"
+exif-lite = "=0.1.0"
+
+[patch.crates-io]
+exif-lite = { path = "vendor/private/exif-lite-0.1.0" }
+explorer-extension-api = { path = "../../../crates/explorer-extension-api" }
 
 [profile.release]
 panic = "unwind"

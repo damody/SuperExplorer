@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "required_gate_count": 8,
+  "gates": [
+    { "id": "toolchain", "kind": "powershell", "path": "sdk/tests/toolchain-contract.ps1", "required": true },
+    { "id": "abi-layout", "kind": "powershell", "path": "sdk/tests/abi-layout-contract.ps1", "required": true },
+    { "id": "protected-dependency", "kind": "powershell", "path": "sdk/tests/protected-dependency-contract.ps1", "required": true },
+    { "id": "bundle-generator", "kind": "powershell", "path": "sdk/tests/bundle-generator-contract.ps1", "required": true },
+    { "id": "ui-fingerprint", "kind": "powershell", "path": "sdk/tests/ui-abi-fingerprint-contract.ps1", "required": true },
+    { "id": "offline-host-plugin", "kind": "powershell", "path": "sdk/tests/offline-host-plugin-contract.ps1", "required": true },
+    { "id": "p0-consumer", "kind": "powershell", "path": "sdk/tests/p0-consumer-abi-contract.ps1", "required": true },
+    { "id": "package-validation", "kind": "powershell", "path": "sdk/tests/package-validation-v1-contract.ps1", "required": true }
+  ],
+  "future_examples": [
+    { "id": "official-example-1", "required_future": false, "activation": "publish before enabling" },
+    { "id": "official-example-2", "required_future": false, "activation": "publish before enabling" }
+  ]
+}

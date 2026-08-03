@@ -4,7 +4,7 @@
   "publisher": {
     "id": "example-publisher",
     "display_name": "Example Publisher",
-    "contacts": [{ "kind": "support", "value": "mailto:support@example.invalid" }]
+    "contacts": [{ "kind": "support", "value": "support@example.invalid" }]
   },
   "sdk": {
     "bundle_id": "@SDK_BUNDLE_ID@",
@@ -15,8 +15,7 @@
   },
   "rust": {
     "crate_name": "p0-consumer",
-    "entrypoint": "plugin.dll",
-    "root_module": "plugin_root"
+    "entrypoint": "plugin.dll"
   },
   "features": [{ "id": "main", "capabilities": ["abi"] }],
   "contributions": [
@@ -34,6 +33,23 @@
       "size": @SOURCE_SIZE@,
       "sha256": "@SOURCE_SHA256@",
       "kind": "rust-source"
+    }
+  ],
+  "private_dependencies": [
+    {
+      "name": "exif-lite",
+      "version": "0.1.0",
+      "path": "vendor/private/exif-lite-0.1.0",
+      "tree_sha256": "1cda6f7ea4875874894dddd139065d9e9efab4dbac73041de3832275860e905d",
+      "provenance": {
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "crate_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "license_expression": "MIT OR Apache-2.0",
+        "license_hashes": {
+          "LICENSE-APACHE": "62127bfe3b52eb1cde27ddcd6765b1e6fb5a17629e3df797e43b4786c99231f3",
+          "LICENSE-MIT": "d91083b0f30e9c451b22eeb23f926d0fd2f35a930560358233f50b0253ada96f"
+        }
+      }
     }
   ],
   "verification": {

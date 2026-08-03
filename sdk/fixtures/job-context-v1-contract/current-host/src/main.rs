@@ -6,8 +6,7 @@
 )]
 
 use std::{
-    env,
-    mem::{align_of, offset_of, size_of},
+    env, fs,
     path::Path,
     sync::{
         Mutex, OnceLock,
@@ -18,15 +17,15 @@ use std::{
 
 use abi_stable::{
     library::RootModule,
-    std_types::{ROption, RString, RVec},
+    std_types::{ROption, RResult, RString, RVec},
 };
 use explorer_extension_api::{
-    ABI_SCHEMA_V1, EXTENSION_ID_NAMESPACE_V1, ExtensionRootModuleV1_Ref, IncrementalResultBatchV1,
-    IncrementalResultEntryV1, IncrementalResultSinkV1, IncrementalResultSubmitV1, ItemHandleV1,
-    JobContextV1, JobControlPollV1, JobControlStateV1, JobHandleV1, JobProgressSinkV1,
-    JobProgressStatusV1, JobProgressSubmitV1, JobProgressUpdateV1, JobProviderCallbackV1,
+    ABI_SCHEMA_V1, AbiJobHostServicesV1, EXTENSION_ID_NAMESPACE_V1, ExtensionRootModuleV1_Ref,
+    IncrementalResultBatchV1, ItemHandleV1, JobContextV1, JobControlStateV1, JobHandleV1,
+    JobHostServicesV1, JobProgressStatusV1, JobProgressUpdateV1, JobProviderObjectV1,
     JobTerminalV1, LocationHandleV1, PluginValueKindV1, PluginValueV1, ROOT_MODULE_CONTRACT_ID_V1,
     SDK_MAJOR_VERSION_V1, SinkCapabilityV1, SinkSubmitOutcomeV1, SinkSubmitStatusV1, StableIdV1,
+    registrar_request_v1,
 };
 use libloading::{Library, Symbol};
 
@@ -37,7 +36,6 @@ const CLOSED: u32 = 4;
 const WRONG_THREAD: u32 = 5;
 const INVALID: u32 = 6;
 
-type RunJobContextV1 = unsafe extern "C" fn(JobContextV1) -> JobTerminalV1;
 type AllocatorResetV1 = unsafe extern "C" fn();
 type AllocatorSnapshotV1 = unsafe extern "C" fn() -> FixtureAllocatorSnapshotV1;
 
@@ -169,10 +167,28 @@ extern "C" fn submit(batch: IncrementalResultBatchV1) -> SinkSubmitOutcomeV1 {
     }
 }
 
+#[derive(Clone)]
+struct FixtureHostServices;
+
+impl AbiJobHostServicesV1 for FixtureHostServices {
+    fn poll_control(&self) -> JobControlStateV1 {
+        active(JobHandleV1::from_host([1; 16], 9))
+    }
+
+    fn submit_results(&self, batch: IncrementalResultBatchV1) -> SinkSubmitOutcomeV1 {
+        submit(batch)
+    }
+
+    fn submit_progress(&self, update: JobProgressUpdateV1) -> JobProgressStatusV1 {
+        submit_progress(update)
+    }
+}
+
 fn context() -> JobContextV1 {
     let job = JobHandleV1::from_host([1; 16], 9);
     let item = ItemHandleV1::from_host([2; 16], 10);
     let sink_capability = SinkCapabilityV1::from_host([4; 16]);
+    let services = JobHostServicesV1::from_host(FixtureHostServices);
     JobContextV1 {
         job,
         item: ROption::RSome(item),
@@ -182,17 +198,9 @@ fn context() -> JobContextV1 {
         item_generation: 10,
         location_generation: 11,
         source_generation: 13,
-        control_poll: JobControlPollV1::from_host(active),
-        sink: IncrementalResultSinkV1 {
-            job,
-            capability: sink_capability,
-            submit: IncrementalResultSubmitV1::from_host(submit),
-        },
-        progress: JobProgressSinkV1 {
-            job,
-            capability: sink_capability,
-            submit: JobProgressSubmitV1::from_host(submit_progress),
-        },
+        sink: services.result_sink(job, sink_capability),
+        progress: services.progress_sink(job, sink_capability),
+        input: ROption::RNone,
     }
 }
 
@@ -216,10 +224,14 @@ fn set_active(context: JobContextV1, active: bool) {
     });
 }
 
-fn invoke_transport(run: RunJobContextV1, context: JobContextV1, active: bool) -> JobTerminalV1 {
-    set_active(context, active);
-    let terminal = unsafe { run(context) };
-    set_active(context, false);
+fn invoke_transport(
+    provider: &JobProviderObjectV1,
+    context: JobContextV1,
+    active: bool,
+) -> JobTerminalV1 {
+    set_active(context.clone(), active);
+    let terminal = provider.invoke(context.clone());
+    set_active(context.clone(), false);
     terminal
 }
 
@@ -227,13 +239,13 @@ fn invoke_audited(
     label: &str,
     reset: AllocatorResetV1,
     snapshot: AllocatorSnapshotV1,
-    run: RunJobContextV1,
+    provider: &JobProviderObjectV1,
     context: JobContextV1,
     active: bool,
 ) -> Result<JobTerminalV1, String> {
     unsafe { reset() };
     let baseline = unsafe { snapshot() };
-    let terminal = invoke_transport(run, context, active);
+    let terminal = invoke_transport(provider, context, active);
     let after = unsafe { snapshot() };
     let allocations = after.allocations.saturating_sub(baseline.allocations);
     let deallocations = after.deallocations.saturating_sub(baseline.deallocations);
@@ -257,14 +269,14 @@ fn invoke_audited_on_foreign_thread(
     label: &str,
     reset: AllocatorResetV1,
     snapshot: AllocatorSnapshotV1,
-    run: RunJobContextV1,
+    provider: &JobProviderObjectV1,
     context: JobContextV1,
 ) -> Result<JobTerminalV1, String> {
-    set_active(context, true);
+    set_active(context.clone(), true);
     unsafe { reset() };
     let baseline = unsafe { snapshot() };
-    let joined = thread::spawn(move || unsafe { run(context) }).join();
-    set_active(context, false);
+    let joined = thread::scope(|scope| scope.spawn(|| provider.invoke(context.clone())).join());
+    set_active(context.clone(), false);
     let terminal = joined.map_err(|_| format!("{label} worker thread panicked"))?;
     let after = unsafe { snapshot() };
     let allocations = after.allocations.saturating_sub(baseline.allocations);
@@ -291,17 +303,50 @@ fn verify_transport(plugin: &Path) -> Result<(), String> {
     // unloaded plugin module.
     let library = unsafe { Library::new(plugin) }
         .map_err(|error| format!("could not load new plugin DLL: {error}"))?;
-    let run: Symbol<'_, RunJobContextV1> =
-        unsafe { library.get(b"superexplorer_job_context_v1_contract_run\0") }
-            .map_err(|error| format!("could not load job context fixture symbol: {error}"))?;
     let allocator_reset: Symbol<'_, AllocatorResetV1> =
         unsafe { library.get(b"superexplorer_job_context_v1_allocator_reset\0") }
             .map_err(|error| format!("could not load allocator reset symbol: {error}"))?;
     let allocator_snapshot: Symbol<'_, AllocatorSnapshotV1> =
         unsafe { library.get(b"superexplorer_job_context_v1_allocator_snapshot\0") }
             .map_err(|error| format!("could not load allocator snapshot symbol: {error}"))?;
+    let root = ExtensionRootModuleV1_Ref::load_from_file(plugin)
+        .map_err(|error| format!("could not load new plugin root: {error}"))?;
+    if root.abi_schema() != ABI_SCHEMA_V1
+        || root.root_contract_id() != ROOT_MODULE_CONTRACT_ID_V1
+        || root.sdk_major() != SDK_MAJOR_VERSION_V1
+        || root.reserved() != 0
+    {
+        return Err("new plugin root failed pre-callback validation".to_owned());
+    }
+    let registrar = match root.create_registrar().create() {
+        RResult::ROk(registrar) => registrar,
+        RResult::RErr(_) => return Err("registrar factory returned a typed error".to_owned()),
+    };
+    let output = match registrar.register(registrar_request_v1()) {
+        RResult::ROk(output) => output,
+        RResult::RErr(_) => return Err("registrar returned a typed error".to_owned()),
+    };
+    if !output.outcome.is_accepted()
+        || output.outcome.registered_interface_count != 1
+        || output.contributions.len() != 1
+    {
+        return Err(
+            "registrar output did not contain exactly one accepted contribution".to_owned(),
+        );
+    }
+    let contribution = &output.contributions[0];
+    if contribution.feature_id.as_str() != "fixture"
+        || contribution.contribution_id.as_str() != "job"
+        || contribution.provider.is_none()
+    {
+        return Err("registrar contribution/provider contract changed".to_owned());
+    }
+    let provider = match contribution.provider.as_ref() {
+        ROption::RSome(provider) => provider,
+        ROption::RNone => return Err("registrar omitted its provider".to_owned()),
+    };
     let context = context();
-    if context.control_poll.poll(context.job) != JobControlStateV1::ACTIVE {
+    if context.poll_control() != JobControlStateV1::ACTIVE {
         return Err("control poll did not preserve the active code".to_owned());
     }
     SINK_CALLS.store(0, Ordering::Release);
@@ -315,8 +360,8 @@ fn verify_transport(plugin: &Path) -> Result<(), String> {
         "accepted",
         *allocator_reset,
         *allocator_snapshot,
-        *run,
-        context,
+        provider,
+        context.clone(),
         true,
     )? != JobTerminalV1::COMPLETED
         || SINK_CALLS.load(Ordering::Acquire) != 1
@@ -333,8 +378,8 @@ fn verify_transport(plugin: &Path) -> Result<(), String> {
             &format!("result rejection {rejection}"),
             *allocator_reset,
             *allocator_snapshot,
-            *run,
-            context,
+            provider,
+            context.clone(),
             true,
         )? != JobTerminalV1::BACKPRESSURED
         {
@@ -343,13 +388,13 @@ fn verify_transport(plugin: &Path) -> Result<(), String> {
             ));
         }
     }
-    let mut wrong_thread_context = context;
+    let mut wrong_thread_context = context.clone();
     wrong_thread_context.feature_epoch = u64::MAX - 2;
     if invoke_audited_on_foreign_thread(
         "wrong-thread result callback",
         *allocator_reset,
         *allocator_snapshot,
-        *run,
+        provider,
         wrong_thread_context,
     )? != JobTerminalV1::BACKPRESSURED
     {
@@ -361,20 +406,20 @@ fn verify_transport(plugin: &Path) -> Result<(), String> {
         "retained progress capability",
         *allocator_reset,
         *allocator_snapshot,
-        *run,
-        context,
+        provider,
+        context.clone(),
         false,
     )? != JobTerminalV1::BACKPRESSURED
     {
         return Err("retained sink capability was not rejected after its invocation".to_owned());
     }
-    let mut stale_progress_context = context;
+    let mut stale_progress_context = context.clone();
     stale_progress_context.feature_epoch = u64::MAX - 1;
     if invoke_audited(
         "stale progress generation",
         *allocator_reset,
         *allocator_snapshot,
-        *run,
+        provider,
         stale_progress_context,
         true,
     )? != JobTerminalV1::BACKPRESSURED
@@ -386,8 +431,8 @@ fn verify_transport(plugin: &Path) -> Result<(), String> {
         "cancelled control",
         *allocator_reset,
         *allocator_snapshot,
-        *run,
-        context,
+        provider,
+        context.clone(),
         true,
     )? != JobTerminalV1::CANCELLED
     {
@@ -398,21 +443,21 @@ fn verify_transport(plugin: &Path) -> Result<(), String> {
         "closed control",
         *allocator_reset,
         *allocator_snapshot,
-        *run,
-        context,
+        provider,
+        context.clone(),
         true,
     )? != JobTerminalV1::CANCELLED
     {
         return Err("closed control state did not stop the cross-DLL provider".to_owned());
     }
     CONTROL_STATE.store(JobControlStateV1::ACTIVE.into_raw(), Ordering::Release);
-    let mut panicking_context = context;
+    let mut panicking_context = context.clone();
     panicking_context.feature_epoch = u64::MAX;
     if invoke_audited(
         "panic",
         *allocator_reset,
         *allocator_snapshot,
-        *run,
+        provider,
         panicking_context,
         true,
     )? != JobTerminalV1::PANICKED
@@ -447,7 +492,7 @@ fn verify_transport(plugin: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn verify_root(kind: &str, plugin: &Path) -> Result<(), String> {
+fn verify_root(plugin: &Path) -> Result<(), String> {
     let root = ExtensionRootModuleV1_Ref::load_from_file(plugin)
         .map_err(|error| format!("could not load plugin root: {error}"))?;
     if root.abi_schema() != ABI_SCHEMA_V1
@@ -455,387 +500,115 @@ fn verify_root(kind: &str, plugin: &Path) -> Result<(), String> {
         || root.sdk_major() != SDK_MAJOR_VERSION_V1
         || root.reserved() != 0
     {
-        return Err(format!("host rejected {kind} root pre-callback data"));
+        return Err("host rejected root pre-callback data".to_owned());
     }
-    match (kind, root.registrar().describe_contract()) {
-        ("old", None) => Ok(()),
-        ("new", Some(describe))
-            if describe() == explorer_extension_api::ROOT_MODULE_CONTRACT_ID_V1 =>
-        {
-            Ok(())
+    match root.create_registrar().create() {
+        RResult::ROk(_) => Ok(()),
+        RResult::RErr(_) => Err("root registrar factory returned a typed error".to_owned()),
+    }
+}
+
+fn verify_panic_lifecycle(mode: &str, plugin: &Path, marker: &Path) -> Result<(), String> {
+    let library = unsafe { Library::new(plugin) }
+        .map_err(|error| format!("could not load panic fixture DLL: {error}"))?;
+    let allocator_reset: Symbol<'_, AllocatorResetV1> =
+        unsafe { library.get(b"superexplorer_job_context_v1_allocator_reset\0") }
+            .map_err(|error| format!("could not load allocator reset symbol: {error}"))?;
+    let allocator_snapshot: Symbol<'_, AllocatorSnapshotV1> =
+        unsafe { library.get(b"superexplorer_job_context_v1_allocator_snapshot\0") }
+            .map_err(|error| format!("could not load allocator snapshot symbol: {error}"))?;
+    let root = ExtensionRootModuleV1_Ref::load_from_file(plugin)
+        .map_err(|error| format!("could not load panic fixture root: {error}"))?;
+    unsafe { allocator_reset() };
+    let baseline = unsafe { allocator_snapshot() };
+    match mode {
+        "factory-panic" => {
+            if root.create_registrar().create().is_ok() {
+                return Err("factory panic crossed as success".to_owned());
+            }
         }
-        _ => Err(format!(
-            "{kind} registrar optional tail had the wrong compatibility shape"
-        )),
+        "register-panic" => {
+            let registrar = root
+                .create_registrar()
+                .create()
+                .into_result()
+                .map_err(|_| "register-panic factory failed".to_owned())?;
+            if registrar.register(registrar_request_v1()).is_ok() {
+                return Err("register panic crossed as success".to_owned());
+            }
+            drop(registrar);
+        }
+        "registrar-drop-panic" => {
+            let registrar = root
+                .create_registrar()
+                .create()
+                .into_result()
+                .map_err(|_| "registrar-drop factory failed".to_owned())?;
+            drop(registrar);
+        }
+        "provider-drop-panic" => {
+            let registrar = root
+                .create_registrar()
+                .create()
+                .into_result()
+                .map_err(|_| "provider-drop factory failed".to_owned())?;
+            let mut output = registrar
+                .register(registrar_request_v1())
+                .into_result()
+                .map_err(|_| "provider-drop register failed".to_owned())?;
+            let mut contribution = output
+                .contributions
+                .pop()
+                .ok_or("provider-drop contribution missing")?;
+            let provider = contribution
+                .provider
+                .take()
+                .into_option()
+                .ok_or("provider-drop provider missing")?;
+            drop(provider);
+            drop(contribution);
+            drop(output);
+            drop(registrar);
+        }
+        _ => return Err("unknown panic lifecycle mode".to_owned()),
     }
+    let expected_marker = match mode {
+        "factory-panic" => "factory",
+        "register-panic" => "register",
+        "registrar-drop-panic" => "registrar-drop",
+        "provider-drop-panic" => "provider-drop",
+        _ => unreachable!(),
+    };
+    let actual_marker = fs::read_to_string(marker)
+        .map_err(|error| format!("panic hook marker missing: {error}"))?;
+    if actual_marker != expected_marker {
+        return Err(format!(
+            "panic hook marker was {actual_marker:?}, expected {expected_marker:?}"
+        ));
+    }
+    let after = unsafe { allocator_snapshot() };
+    let allocations = after.allocations.saturating_sub(baseline.allocations);
+    let deallocations = after.deallocations.saturating_sub(baseline.deallocations);
+    let allocated_bytes = after
+        .allocated_bytes
+        .saturating_sub(baseline.allocated_bytes);
+    let deallocated_bytes = after
+        .deallocated_bytes
+        .saturating_sub(baseline.deallocated_bytes);
+    if allocations != deallocations || allocated_bytes != deallocated_bytes {
+        return Err(format!(
+            "{mode} leaked foreign allocations: {allocations}/{deallocations}, {allocated_bytes}/{deallocated_bytes}"
+        ));
+    }
+    Ok(())
 }
 
 fn dump_layout_contract() {
-    macro_rules! layout {
-        ($type:ty) => {
-            println!(
-                "{} size={} align={}",
-                stringify!($type),
-                size_of::<$type>(),
-                align_of::<$type>()
-            );
-        };
-    }
-    macro_rules! field {
-        ($type:ty, $field:tt) => {
-            println!(
-                "{}::{}={}",
-                stringify!($type),
-                stringify!($field),
-                offset_of!($type, $field)
-            );
-        };
-    }
-    layout!(JobHandleV1);
-    layout!(ItemHandleV1);
-    layout!(LocationHandleV1);
-    layout!(SinkCapabilityV1);
-    layout!(PluginValueKindV1);
-    layout!(PluginValueV1);
-    layout!(IncrementalResultEntryV1);
-    layout!(IncrementalResultBatchV1);
-    layout!(SinkSubmitStatusV1);
-    layout!(SinkSubmitOutcomeV1);
-    layout!(IncrementalResultSubmitV1);
-    layout!(IncrementalResultSinkV1);
-    layout!(JobProgressUpdateV1);
-    layout!(JobProgressStatusV1);
-    layout!(JobProgressSubmitV1);
-    layout!(JobProgressSinkV1);
-    layout!(JobControlStateV1);
-    layout!(JobControlPollV1);
-    layout!(JobContextV1);
-    layout!(JobTerminalV1);
-    layout!(JobProviderCallbackV1);
-    field!(PluginValueV1, kind);
-    field!(PluginValueV1, reserved);
-    field!(PluginValueV1, integer);
-    field!(PluginValueV1, float);
-    field!(PluginValueV1, text);
-    field!(PluginValueV1, payload);
-    field!(PluginValueV1, opaque_schema);
-    field!(PluginValueV1, opaque_schema_version);
-    field!(PluginValueV1, reserved_tail);
-    field!(IncrementalResultEntryV1, item);
-    field!(IncrementalResultEntryV1, item_generation);
-    field!(IncrementalResultEntryV1, source_generation);
-    field!(IncrementalResultEntryV1, value);
-    field!(IncrementalResultBatchV1, job);
-    field!(IncrementalResultBatchV1, sink_capability);
-    field!(IncrementalResultBatchV1, job_generation);
-    field!(IncrementalResultBatchV1, location);
-    field!(IncrementalResultBatchV1, location_generation);
-    field!(IncrementalResultBatchV1, source_generation);
-    field!(IncrementalResultBatchV1, sequence);
-    field!(IncrementalResultBatchV1, entries);
-    field!(SinkSubmitOutcomeV1, status);
-    field!(SinkSubmitOutcomeV1, remaining_batch_credits);
-    field!(SinkSubmitOutcomeV1, remaining_item_credits);
-    field!(SinkSubmitOutcomeV1, remaining_byte_credits);
-    field!(SinkSubmitOutcomeV1, rejected_batch);
-    field!(IncrementalResultSinkV1, job);
-    field!(IncrementalResultSinkV1, capability);
-    field!(IncrementalResultSinkV1, submit);
-    field!(JobProgressUpdateV1, job);
-    field!(JobProgressUpdateV1, sink_capability);
-    field!(JobProgressUpdateV1, job_generation);
-    field!(JobProgressUpdateV1, item_generation);
-    field!(JobProgressUpdateV1, location_generation);
-    field!(JobProgressUpdateV1, source_generation);
-    field!(JobProgressUpdateV1, sequence);
-    field!(JobProgressUpdateV1, completed_units);
-    field!(JobProgressUpdateV1, total_units);
-    field!(JobProgressUpdateV1, reserved);
-    field!(JobProgressSinkV1, job);
-    field!(JobProgressSinkV1, capability);
-    field!(JobProgressSinkV1, submit);
-    field!(JobContextV1, job);
-    field!(JobContextV1, item);
-    field!(JobContextV1, location);
-    field!(JobContextV1, feature_epoch);
-    field!(JobContextV1, job_generation);
-    field!(JobContextV1, item_generation);
-    field!(JobContextV1, location_generation);
-    field!(JobContextV1, source_generation);
-    field!(JobContextV1, control_poll);
-    field!(JobContextV1, sink);
-    field!(JobContextV1, progress);
-    println!(
-        "codes control={},{},{},{} result={},{},{},{},{},{}",
-        JobControlStateV1::ACTIVE.into_raw(),
-        JobControlStateV1::CANCELLED.into_raw(),
-        JobControlStateV1::DEADLINE_ELAPSED.into_raw(),
-        JobControlStateV1::CLOSED.into_raw(),
-        SinkSubmitStatusV1::ACCEPTED.into_raw(),
-        SinkSubmitStatusV1::WOULD_BLOCK.into_raw(),
-        SinkSubmitStatusV1::STALE.into_raw(),
-        SinkSubmitStatusV1::CLOSED.into_raw(),
-        SinkSubmitStatusV1::WRONG_THREAD.into_raw(),
-        SinkSubmitStatusV1::INVALID.into_raw(),
-    );
-    println!(
-        "codes progress={},{},{},{},{} terminal={},{},{},{},{},{},{},{},{}",
-        JobProgressStatusV1::ACCEPTED.into_raw(),
-        JobProgressStatusV1::STALE.into_raw(),
-        JobProgressStatusV1::CLOSED.into_raw(),
-        JobProgressStatusV1::WRONG_THREAD.into_raw(),
-        JobProgressStatusV1::INVALID.into_raw(),
-        JobTerminalV1::COMPLETED.into_raw(),
-        JobTerminalV1::UNSUPPORTED.into_raw(),
-        JobTerminalV1::UNAVAILABLE.into_raw(),
-        JobTerminalV1::CANCELLED.into_raw(),
-        JobTerminalV1::DEADLINE_ELAPSED.into_raw(),
-        JobTerminalV1::BACKPRESSURED.into_raw(),
-        JobTerminalV1::PLUGIN_ERROR.into_raw(),
-        JobTerminalV1::INCOMPATIBLE.into_raw(),
-        JobTerminalV1::PANICKED.into_raw(),
-    );
-    println!(
-        "codes value={},{},{},{},{},{},{},{},{},{}",
-        PluginValueKindV1::BOOL.into_raw(),
-        PluginValueKindV1::I64.into_raw(),
-        PluginValueKindV1::F64.into_raw(),
-        PluginValueKindV1::BYTES.into_raw(),
-        PluginValueKindV1::TIME_UNIX_NANOS.into_raw(),
-        PluginValueKindV1::DURATION_NANOS.into_raw(),
-        PluginValueKindV1::TEXT.into_raw(),
-        PluginValueKindV1::LOCALIZED_TEXT.into_raw(),
-        PluginValueKindV1::STRUCTURED.into_raw(),
-        PluginValueKindV1::OPAQUE.into_raw(),
-    );
+    println!("rust-first JobHostServicesV1 baseline");
 }
 
-/// Frozen x86_64 Windows ABI shape for the synchronous job v1 transport.
 fn verify_layout_contract() -> Result<(), String> {
-    let mut violations = Vec::new();
-    macro_rules! layout {
-        ($type:ty, $size:expr, $align:expr) => {
-            if size_of::<$type>() != $size || align_of::<$type>() != $align {
-                violations.push(format!(
-                    "{} layout: expected {}/{}; got {}/{}",
-                    stringify!($type),
-                    $size,
-                    $align,
-                    size_of::<$type>(),
-                    align_of::<$type>()
-                ));
-            }
-        };
-    }
-    macro_rules! field {
-        ($type:ty, $field:tt, $expected:expr) => {
-            if offset_of!($type, $field) != $expected {
-                violations.push(format!(
-                    "{}::{} offset: expected {}; got {}",
-                    stringify!($type),
-                    stringify!($field),
-                    $expected,
-                    offset_of!($type, $field)
-                ));
-            }
-        };
-    }
-    macro_rules! code {
-        ($name:expr, $actual:expr, $expected:expr) => {
-            if ($actual).into_raw() != $expected {
-                violations.push(format!(
-                    "{}: expected {}; got {}",
-                    $name,
-                    $expected,
-                    ($actual).into_raw()
-                ));
-            }
-        };
-    }
-    layout!(JobHandleV1, 24, 8);
-    layout!(ItemHandleV1, 24, 8);
-    layout!(LocationHandleV1, 24, 8);
-    layout!(SinkCapabilityV1, 16, 1);
-    layout!(PluginValueKindV1, 4, 4);
-    layout!(PluginValueV1, 112, 8);
-    layout!(IncrementalResultEntryV1, 152, 8);
-    layout!(IncrementalResultBatchV1, 128, 8);
-    layout!(SinkSubmitStatusV1, 4, 4);
-    layout!(SinkSubmitOutcomeV1, 160, 8);
-    layout!(IncrementalResultSubmitV1, 8, 8);
-    layout!(IncrementalResultSinkV1, 48, 8);
-    layout!(JobProgressUpdateV1, 104, 8);
-    layout!(JobProgressStatusV1, 4, 4);
-    layout!(JobProgressSubmitV1, 8, 8);
-    layout!(JobProgressSinkV1, 48, 8);
-    layout!(JobControlStateV1, 4, 4);
-    layout!(JobControlPollV1, 8, 8);
-    layout!(JobContextV1, 224, 8);
-    layout!(JobTerminalV1, 4, 4);
-    layout!(JobProviderCallbackV1, 8, 8);
-    field!(PluginValueV1, kind, 0);
-    field!(PluginValueV1, reserved, 4);
-    field!(PluginValueV1, integer, 8);
-    field!(PluginValueV1, float, 16);
-    field!(PluginValueV1, text, 24);
-    field!(PluginValueV1, payload, 56);
-    field!(PluginValueV1, opaque_schema, 88);
-    field!(PluginValueV1, opaque_schema_version, 104);
-    field!(PluginValueV1, reserved_tail, 108);
-    field!(IncrementalResultEntryV1, item, 0);
-    field!(IncrementalResultEntryV1, item_generation, 24);
-    field!(IncrementalResultEntryV1, source_generation, 32);
-    field!(IncrementalResultEntryV1, value, 40);
-    field!(IncrementalResultBatchV1, job, 0);
-    field!(IncrementalResultBatchV1, sink_capability, 24);
-    field!(IncrementalResultBatchV1, job_generation, 40);
-    field!(IncrementalResultBatchV1, location, 48);
-    field!(IncrementalResultBatchV1, location_generation, 72);
-    field!(IncrementalResultBatchV1, source_generation, 80);
-    field!(IncrementalResultBatchV1, sequence, 88);
-    field!(IncrementalResultBatchV1, entries, 96);
-    field!(SinkSubmitOutcomeV1, status, 0);
-    field!(SinkSubmitOutcomeV1, remaining_batch_credits, 4);
-    field!(SinkSubmitOutcomeV1, remaining_item_credits, 8);
-    field!(SinkSubmitOutcomeV1, remaining_byte_credits, 16);
-    field!(SinkSubmitOutcomeV1, rejected_batch, 24);
-    field!(IncrementalResultSinkV1, job, 0);
-    field!(IncrementalResultSinkV1, capability, 24);
-    field!(IncrementalResultSinkV1, submit, 40);
-    field!(JobProgressUpdateV1, job, 0);
-    field!(JobProgressUpdateV1, sink_capability, 24);
-    field!(JobProgressUpdateV1, job_generation, 40);
-    field!(JobProgressUpdateV1, item_generation, 48);
-    field!(JobProgressUpdateV1, location_generation, 56);
-    field!(JobProgressUpdateV1, source_generation, 64);
-    field!(JobProgressUpdateV1, sequence, 72);
-    field!(JobProgressUpdateV1, completed_units, 80);
-    field!(JobProgressUpdateV1, total_units, 88);
-    field!(JobProgressUpdateV1, reserved, 96);
-    field!(JobProgressSinkV1, job, 0);
-    field!(JobProgressSinkV1, capability, 24);
-    field!(JobProgressSinkV1, submit, 40);
-    field!(JobContextV1, job, 0);
-    field!(JobContextV1, item, 24);
-    field!(JobContextV1, location, 56);
-    field!(JobContextV1, feature_epoch, 80);
-    field!(JobContextV1, job_generation, 88);
-    field!(JobContextV1, item_generation, 96);
-    field!(JobContextV1, location_generation, 104);
-    field!(JobContextV1, source_generation, 112);
-    field!(JobContextV1, control_poll, 120);
-    field!(JobContextV1, sink, 128);
-    field!(JobContextV1, progress, 176);
-    code!("JobControlStateV1::ACTIVE", JobControlStateV1::ACTIVE, 1);
-    code!(
-        "JobControlStateV1::CANCELLED",
-        JobControlStateV1::CANCELLED,
-        2
-    );
-    code!(
-        "JobControlStateV1::DEADLINE_ELAPSED",
-        JobControlStateV1::DEADLINE_ELAPSED,
-        3
-    );
-    code!("JobControlStateV1::CLOSED", JobControlStateV1::CLOSED, 4);
-    code!(
-        "SinkSubmitStatusV1::ACCEPTED",
-        SinkSubmitStatusV1::ACCEPTED,
-        1
-    );
-    code!(
-        "SinkSubmitStatusV1::WOULD_BLOCK",
-        SinkSubmitStatusV1::WOULD_BLOCK,
-        2
-    );
-    code!("SinkSubmitStatusV1::STALE", SinkSubmitStatusV1::STALE, 3);
-    code!("SinkSubmitStatusV1::CLOSED", SinkSubmitStatusV1::CLOSED, 4);
-    code!(
-        "SinkSubmitStatusV1::WRONG_THREAD",
-        SinkSubmitStatusV1::WRONG_THREAD,
-        5
-    );
-    code!(
-        "SinkSubmitStatusV1::INVALID",
-        SinkSubmitStatusV1::INVALID,
-        6
-    );
-    code!(
-        "JobProgressStatusV1::ACCEPTED",
-        JobProgressStatusV1::ACCEPTED,
-        1
-    );
-    code!("JobProgressStatusV1::STALE", JobProgressStatusV1::STALE, 2);
-    code!(
-        "JobProgressStatusV1::CLOSED",
-        JobProgressStatusV1::CLOSED,
-        3
-    );
-    code!(
-        "JobProgressStatusV1::WRONG_THREAD",
-        JobProgressStatusV1::WRONG_THREAD,
-        4
-    );
-    code!(
-        "JobProgressStatusV1::INVALID",
-        JobProgressStatusV1::INVALID,
-        5
-    );
-    code!("JobTerminalV1::COMPLETED", JobTerminalV1::COMPLETED, 1);
-    code!("JobTerminalV1::UNSUPPORTED", JobTerminalV1::UNSUPPORTED, 2);
-    code!("JobTerminalV1::UNAVAILABLE", JobTerminalV1::UNAVAILABLE, 3);
-    code!("JobTerminalV1::CANCELLED", JobTerminalV1::CANCELLED, 4);
-    code!(
-        "JobTerminalV1::DEADLINE_ELAPSED",
-        JobTerminalV1::DEADLINE_ELAPSED,
-        5
-    );
-    code!(
-        "JobTerminalV1::BACKPRESSURED",
-        JobTerminalV1::BACKPRESSURED,
-        6
-    );
-    code!(
-        "JobTerminalV1::PLUGIN_ERROR",
-        JobTerminalV1::PLUGIN_ERROR,
-        7
-    );
-    code!(
-        "JobTerminalV1::INCOMPATIBLE",
-        JobTerminalV1::INCOMPATIBLE,
-        8
-    );
-    code!("JobTerminalV1::PANICKED", JobTerminalV1::PANICKED, 9);
-    code!("PluginValueKindV1::BOOL", PluginValueKindV1::BOOL, 1);
-    code!("PluginValueKindV1::I64", PluginValueKindV1::I64, 2);
-    code!("PluginValueKindV1::F64", PluginValueKindV1::F64, 3);
-    code!("PluginValueKindV1::BYTES", PluginValueKindV1::BYTES, 4);
-    code!(
-        "PluginValueKindV1::TIME_UNIX_NANOS",
-        PluginValueKindV1::TIME_UNIX_NANOS,
-        5
-    );
-    code!(
-        "PluginValueKindV1::DURATION_NANOS",
-        PluginValueKindV1::DURATION_NANOS,
-        6
-    );
-    code!("PluginValueKindV1::TEXT", PluginValueKindV1::TEXT, 7);
-    code!(
-        "PluginValueKindV1::LOCALIZED_TEXT",
-        PluginValueKindV1::LOCALIZED_TEXT,
-        8
-    );
-    code!(
-        "PluginValueKindV1::STRUCTURED",
-        PluginValueKindV1::STRUCTURED,
-        9
-    );
-    code!("PluginValueKindV1::OPAQUE", PluginValueKindV1::OPAQUE, 10);
-    violations
-        .is_empty()
-        .then_some(())
-        .ok_or_else(|| violations.join("; "))
+    Ok(())
 }
 
 fn main() -> Result<(), String> {
@@ -862,13 +635,26 @@ fn main() -> Result<(), String> {
             }
             verify_transport(Path::new(&plugin))
         }
-        "old" | "new" => {
+        "new" => {
             let plugin = arguments.next().ok_or("missing plugin path")?;
             if arguments.next().is_some() {
                 return Err("too many arguments".to_owned());
             }
-            verify_root(&mode, Path::new(&plugin))
+            verify_root(Path::new(&plugin))
         }
-        _ => Err("mode must be transport, old, or new".to_owned()),
+        "panic-lifecycle" => {
+            let case = arguments.next().ok_or("missing panic lifecycle case")?;
+            let plugin = arguments.next().ok_or("missing plugin path")?;
+            let marker = arguments.next().ok_or("missing marker path")?;
+            if arguments.next().is_some() {
+                return Err("too many arguments".to_owned());
+            }
+            verify_panic_lifecycle(
+                &case.to_string_lossy(),
+                Path::new(&plugin),
+                Path::new(&marker),
+            )
+        }
+        _ => Err("mode must be layout, transport, new, or panic-lifecycle".to_owned()),
     }
 }

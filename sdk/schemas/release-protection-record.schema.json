@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://superexplorer.invalid/schemas/release-protection-record.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "provider", "policy_id", "repository", "tag_name", "tag_object", "object_revision", "tree"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "provider": { "const": "github-environment" },
+    "policy_id": { "const": "sdk-release-freeze-v1" },
+    "repository": { "const": "https://github.com/damody/gpui-ce-explorer.git" },
+    "tag_name": { "type": "string", "pattern": "^gpui-sdk-v[0-9A-Za-z._-]+$" },
+    "tag_object": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "object_revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "tree": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+  }
+}

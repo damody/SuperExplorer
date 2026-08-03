@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "built_in": [
+    {"id": "builtin:name", "value_type": "text", "width": 280, "alignment": "leading", "applicability": "all", "sort": "text", "cost": "constant"},
+    {"id": "builtin:date_modified", "value_type": "time", "width": 180, "alignment": "trailing", "applicability": "all", "sort": "numeric", "cost": "constant"},
+    {"id": "builtin:type", "value_type": "text", "width": 160, "alignment": "leading", "applicability": "all", "sort": "text", "cost": "constant"},
+    {"id": "builtin:size", "value_type": "bytes", "width": 120, "alignment": "trailing", "applicability": "file_or_folder", "sort": "bytes", "cost": "constant"}
+  ],
+  "extension": {
+    "id": "org.example.folder-size",
+    "column": {"id": "org.example.folder-size:column", "value_type": "bytes", "width": 144, "alignment": "trailing", "applicability": "folder", "sort": "bytes", "cost": "bounded_io"}
+  },
+  "ordered_layout": ["builtin:name", "builtin:date_modified", "builtin:type", "builtin:size", "org.example.folder-size:column"],
+  "visible": ["builtin:name", "builtin:type", "builtin:size"],
+  "foundation_scope": "registry-and-layout-only; persistence migration and unknown-plugin restoration are task-5.4"
+}

@@ -86,6 +86,31 @@ if ($sdkLockText -match '(?i)[a-z]:\\' -or $manifestText -match '(?i)[a-z]:\\' -
 $lock = $sdkLockText | ConvertFrom-Json
 $manifest = $manifestText | ConvertFrom-Json
 $fingerprint = $fingerprintText | ConvertFrom-Json
+foreach ($field in @('cargo_sha256','rustc_sha256')) {
+    if ([string]$lock.toolchain.$field -notmatch '^[0-9a-f]{64}$') {
+        throw "sdk-lock toolchain.$field must record the actual pinned executable SHA-256"
+    }
+}
+$generatorBinary = Join-Path $generator 'target\release\superexplorer-bundle-generator.exe'
+if (-not (Test-Path -LiteralPath $generatorBinary)) { throw 'release bundle generator binary was not produced' }
+$fakeToolchainPath = Join-Path ([IO.Path]::GetTempPath()) ('superexplorer-generator-fake-rustup-' + [guid]::NewGuid().ToString('N'))
+$savedPath = [Environment]::GetEnvironmentVariable('PATH', 'Process')
+$savedUserProfile = [Environment]::GetEnvironmentVariable('USERPROFILE', 'Process')
+$savedRustupHome = [Environment]::GetEnvironmentVariable('RUSTUP_HOME', 'Process')
+try {
+    New-Item -ItemType Directory -Path $fakeToolchainPath -Force | Out-Null
+    foreach ($name in @('cargo.exe','rustc.exe','rustup.exe')) { Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\cmd.exe') -Destination (Join-Path $fakeToolchainPath $name) }
+    [Environment]::SetEnvironmentVariable('PATH', "$fakeToolchainPath;$savedPath", 'Process')
+    [Environment]::SetEnvironmentVariable('USERPROFILE', $fakeToolchainPath, 'Process')
+    [Environment]::SetEnvironmentVariable('RUSTUP_HOME', $fakeToolchainPath, 'Process')
+    & $generatorBinary verify
+    if ($LASTEXITCODE -ne 0) { throw 'bundle generator accepted PATH-prepended fake cargo/rustc/rustup authority' }
+} finally {
+    [Environment]::SetEnvironmentVariable('PATH', $savedPath, 'Process')
+    [Environment]::SetEnvironmentVariable('USERPROFILE', $savedUserProfile, 'Process')
+    [Environment]::SetEnvironmentVariable('RUSTUP_HOME', $savedRustupHome, 'Process')
+    if (Test-Path -LiteralPath $fakeToolchainPath) { Remove-Item -LiteralPath $fakeToolchainPath -Recurse -Force }
+}
 if ($manifest.files.path -notcontains 'sdk/vendor/cargo-sources/cc/src/target/apple.rs') {
     throw 'inventory omitted vendored cc/src/target/apple.rs source'
 }
@@ -107,6 +132,17 @@ if ($fingerprintEntries.Count -ne 1 -or $fingerprintEntries[0].sha256 -ne (Get-F
 }
 if ($fingerprint.bundle_id -ne $lock.bundle_id -or [string]::IsNullOrWhiteSpace($fingerprint.fingerprint)) {
     throw 'UI ABI fingerprint artifact does not identify the canonical bundle'
+}
+$trustArtifactPath = Join-Path $workspace 'crates\explorer-extension-host\trusted-publisher-keys-v1.json'
+$hostValidationSourcePath = Join-Path $workspace 'crates\explorer-extension-host\src\package_validation.rs'
+$trustArtifact = Get-Content -LiteralPath $trustArtifactPath -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($trustArtifact.sdk_bundle_id -ne $lock.bundle_id) {
+    throw 'release trust-root artifact bundle ID differs from the canonical SDK bundle'
+}
+$hostValidationSource = Get-Content -LiteralPath $hostValidationSourcePath -Raw -Encoding UTF8
+$expectedTrustRootConstant = 'pub(crate) const RELEASE_TRUST_ROOTS_BUNDLE_ID_V1: &str = "' + [string]$lock.bundle_id + '";'
+if (-not $hostValidationSource.Contains($expectedTrustRootConstant)) {
+    throw 'host release trust-root bundle constant differs from the canonical SDK bundle'
 }
 foreach ($file in $manifest.files) {
     if ([IO.Path]::IsPathRooted($file.path) -or $file.path.Contains('\')) {

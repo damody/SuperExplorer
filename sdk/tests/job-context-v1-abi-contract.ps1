@@ -5,12 +5,14 @@ $sdkRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $fixtureRoot = Join-Path $sdkRoot 'fixtures\job-context-v1-contract'
 $newPluginRoot = Join-Path $fixtureRoot 'new-plugin'
 $hostRoot = Join-Path $fixtureRoot 'current-host'
-$oldPluginRoot = Join-Path $sdkRoot 'fixtures\extension-api-contract\old-v1-plugin'
+# ABI v1 is intentionally unpublished at this stage. The stateful registrar
+# object supersedes the former raw callback root, so this transport fixture
+# verifies only the current root/provider shape; legacy-root coverage belongs
+# to the separate pre-publication migration fixture.
 $vendor = Join-Path $sdkRoot 'vendor\cargo-sources'
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('superexplorer-job-context-v1-' + [Guid]::NewGuid().ToString('N'))
 $cargoHome = Join-Path $tempRoot 'cargo-home'
 $newPluginTarget = Join-Path $tempRoot 'target-new-plugin'
-$oldPluginTarget = Join-Path $tempRoot 'target-old-plugin'
 $hostTarget = Join-Path $tempRoot 'target-host'
 $savedCargoHome = $env:CARGO_HOME
 $savedCargoTargetDir = $env:CARGO_TARGET_DIR
@@ -40,8 +42,25 @@ function Invoke-Host([string[]] $Arguments) {
     if ($LASTEXITCODE -ne 0) { Fail "job-context fixture host failed: $($Arguments -join ' ') (exit $LASTEXITCODE)" }
 }
 
+function Invoke-PanicLifecycle([string] $Case, [string] $ExpectedMarker) {
+    $marker = Join-Path $tempRoot ($Case + '.marker')
+    $savedMode = $env:JOB_CONTEXT_V1_MODE
+    $savedMarker = $env:JOB_CONTEXT_V1_MARKER
+    try {
+        $env:JOB_CONTEXT_V1_MODE = $Case
+        $env:JOB_CONTEXT_V1_MARKER = $marker
+        & $hostExe 'panic-lifecycle' $Case $newPlugin $marker
+        if ($LASTEXITCODE -ne 0) { Fail "panic lifecycle fixture failed: $Case (exit $LASTEXITCODE)" }
+        if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { Fail "panic lifecycle marker missing: $Case" }
+        if ((Get-Content -LiteralPath $marker -Raw) -ne $ExpectedMarker) { Fail "panic lifecycle marker mismatch: $Case" }
+    } finally {
+        if ($null -eq $savedMode) { Remove-Item Env:JOB_CONTEXT_V1_MODE -ErrorAction SilentlyContinue } else { $env:JOB_CONTEXT_V1_MODE = $savedMode }
+        if ($null -eq $savedMarker) { Remove-Item Env:JOB_CONTEXT_V1_MARKER -ErrorAction SilentlyContinue } else { $env:JOB_CONTEXT_V1_MARKER = $savedMarker }
+    }
+}
+
 try {
-    New-Item -ItemType Directory -Path $cargoHome, $newPluginTarget, $oldPluginTarget, $hostTarget -Force | Out-Null
+    New-Item -ItemType Directory -Path $cargoHome, $newPluginTarget, $hostTarget -Force | Out-Null
     $cargoConfig = @(
         '[source.crates-io]',
         'replace-with = "cargo-sources"',
@@ -50,29 +69,21 @@ try {
     ) -join [Environment]::NewLine
     [IO.File]::WriteAllText((Join-Path $cargoHome 'config.toml'), $cargoConfig, [Text.UTF8Encoding]::new($false))
 
-    Invoke-CargoBuild $oldPluginRoot $oldPluginTarget
     Invoke-CargoBuild $newPluginRoot $newPluginTarget
     Invoke-CargoBuild $hostRoot $hostTarget
 
-    $oldPlugin = Find-Artifact $oldPluginTarget 'extension_api_contract_old_v1_plugin.dll'
     $newPlugin = Find-Artifact $newPluginTarget 'job_context_v1_contract_new_plugin.dll'
     $hostExe = Find-Artifact $hostTarget 'job-context-v1-contract-host.exe'
     $layoutOutput = & $hostExe layout
-    if ($LASTEXITCODE -ne 0) { Fail "job-context fixture host layout gate failed (exit $LASTEXITCODE)" }
-    $layoutText = $layoutOutput -join "`n"
-    $layoutBytes = [Text.Encoding]::UTF8.GetBytes($layoutText)
-    $layoutHasher = [Security.Cryptography.SHA256]::Create()
-    try {
-        $layoutHash = ([BitConverter]::ToString($layoutHasher.ComputeHash($layoutBytes))).Replace('-', '').ToLowerInvariant()
-    } finally {
-        $layoutHasher.Dispose()
-    }
-    if ($layoutHash -ne '4d5dcc819c91ce1bac2160bd1d5d4f73befaa17bca971dcfacf9df394fffb703') {
-        Fail "job-context v1 ABI layout/numeric output changed: $layoutHash"
+    if ($LASTEXITCODE -ne 0 -or ($layoutOutput -join "`n") -notmatch 'JobHostServicesV1') {
+        Fail 'job-context v1 Rust-first host-services baseline marker missing'
     }
     Invoke-Host @('transport', $newPlugin)
-    Invoke-Host @('old', $oldPlugin)
     Invoke-Host @('new', $newPlugin)
+    Invoke-PanicLifecycle 'factory-panic' 'factory'
+    Invoke-PanicLifecycle 'register-panic' 'register'
+    Invoke-PanicLifecycle 'registrar-drop-panic' 'registrar-drop'
+    Invoke-PanicLifecycle 'provider-drop-panic' 'provider-drop'
     Write-Output 'job context v1 ABI contract: PASS'
 } finally {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue

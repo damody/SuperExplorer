@@ -9,18 +9,73 @@ if (Test-Path -LiteralPath $canonicalFreeze) {
     throw 'The development checkout must not contain a canonical release-freeze record.'
 }
 Import-Module (Join-Path $sdkRoot 'scripts\release-freeze-transaction.psm1') -Force
+Import-Module (Join-Path $sdkRoot 'scripts\release-freeze-support.psm1') -Force
+$fixturePrimary = (('A' * 40) -join ''); $fixtureSubkey = (('B' * 40) -join ''); $otherPrimary = (('C' * 40) -join '')
+if ((Get-GpgValidSigPrimaryFingerprintV1 -StatusLines @("[GNUPG:] VALIDSIG $fixturePrimary 0 0 0 4 0 1 10 00") -ExpectedPrimaryFingerprint $fixturePrimary -EvidenceName 'primary-direct fixture') -ne $fixturePrimary) { throw 'primary-direct VALIDSIG fixture did not resolve the signing primary fingerprint' }
+if ((Get-GpgValidSigPrimaryFingerprintV1 -StatusLines @("[GNUPG:] VALIDSIG $fixtureSubkey 0 0 0 4 0 1 10 00 $fixturePrimary") -ExpectedPrimaryFingerprint $fixturePrimary -EvidenceName 'subkey fixture') -ne $fixturePrimary) { throw 'subkey VALIDSIG fixture did not resolve the primary fingerprint' }
+$twoKeyRejected = $false
+try { Get-GpgValidSigPrimaryFingerprintV1 -StatusLines @("[GNUPG:] VALIDSIG $otherPrimary 0 0 0 4 0 1 10 00") -ExpectedPrimaryFingerprint $fixturePrimary -EvidenceName 'two-key negative fixture' | Out-Null } catch { $twoKeyRejected = $true }
+if (-not $twoKeyRejected) { throw 'two-key negative VALIDSIG fixture accepted an untrusted primary key' }
+$remoteTagFixture = Join-Path ([IO.Path]::GetTempPath()) ('superexplorer-release-remote-tag-' + [guid]::NewGuid().ToString('N'))
+try {
+    $remoteBare = Join-Path $remoteTagFixture 'remote.git'; $clone = Join-Path $remoteTagFixture 'clone'
+    New-Item -ItemType Directory -Path $remoteTagFixture -Force | Out-Null
+    & git init --bare --quiet $remoteBare; if ($LASTEXITCODE -ne 0) { throw 'remote tag fixture could not initialize bare origin' }
+    & git clone --quiet $remoteBare $clone; if ($LASTEXITCODE -ne 0) { throw 'remote tag fixture could not clone origin' }
+    & git -C $clone config user.email 'fixture@example.invalid'; & git -C $clone config user.name 'Remote Tag Fixture'
+    [IO.File]::WriteAllText((Join-Path $clone 'source.txt'), "one`n", [Text.UTF8Encoding]::new($false)); & git -C $clone add source.txt; & git -C $clone commit --quiet -m one; & git -C $clone tag -a gpui-sdk-v0.0.1 -m one; & git -C $clone push --quiet origin HEAD refs/tags/gpui-sdk-v0.0.1
+    $oldTagObject = (& git -C $clone rev-parse refs/tags/gpui-sdk-v0.0.1).Trim(); $oldRevision = (& git -C $clone rev-parse 'gpui-sdk-v0.0.1^{}').Trim(); $oldTree = (& git -C $clone show -s --format=%T $oldRevision).Trim()
+    Assert-ExactRemoteProtectedTagV1 -Repository $clone -Tag 'gpui-sdk-v0.0.1' -ExpectedTagObject $oldTagObject -ExpectedRevision $oldRevision -ExpectedTree $oldTree
+    [IO.File]::WriteAllText((Join-Path $clone 'source.txt'), "two`n", [Text.UTF8Encoding]::new($false)); & git -C $clone add source.txt; & git -C $clone commit --quiet -m two; & git -C $clone tag -fa gpui-sdk-v0.0.1 -m two; & git -C $clone push --quiet --force origin refs/tags/gpui-sdk-v0.0.1
+    $remoteMoveRejected = $false
+    try { Assert-ExactRemoteProtectedTagV1 -Repository $clone -Tag 'gpui-sdk-v0.0.1' -ExpectedTagObject $oldTagObject -ExpectedRevision $oldRevision -ExpectedTree $oldTree } catch { $remoteMoveRejected = $true }
+    if (-not $remoteMoveRejected) { throw 'remote protected tag fixture accepted a moved tag/revision after publication preflight' }
+} finally {
+    if (Test-Path -LiteralPath $remoteTagFixture) { Remove-Item -LiteralPath $remoteTagFixture -Recurse -Force }
+}
 $policy = Get-Content -LiteralPath (Join-Path $sdkRoot 'ci\release-policy.json') -Raw | ConvertFrom-Json
 if ($policy.schema_version -ne 1 -or $policy.policy_id -ne 'sdk-release-freeze-v1' -or $policy.protection.provider -ne 'github-environment') {
     throw 'versioned release trust policy is incomplete'
 }
+$freezeSchema = Get-Content -LiteralPath (Join-Path $sdkRoot 'schemas\release-freeze.schema.json') -Raw | ConvertFrom-Json
+$ledgerSchema = Get-Content -LiteralPath (Join-Path $sdkRoot 'schemas\release-ledger.schema.json') -Raw | ConvertFrom-Json
+$protectionSchema = Get-Content -LiteralPath (Join-Path $sdkRoot 'schemas\release-protection-record.schema.json') -Raw | ConvertFrom-Json
+if ($freezeSchema.properties.release_frozen.const -ne $true -or
+    $freezeSchema.properties.rc_id.pattern -notmatch 'A-Za-z0-9' -or
+    $freezeSchema.'$defs'.protected_tag.properties.name.pattern -ne '^gpui-sdk-v[0-9A-Za-z._-]+$' -or
+    $ledgerSchema.properties.releases.items.properties.rc_id.pattern -notmatch 'A-Za-z0-9') {
+    throw 'release schemas do not constrain immutable frozen release identifiers'
+}
+if ($freezeSchema.'$defs'.protected_tag.required -notcontains 'repository' -or $freezeSchema.'$defs'.protected_tag.required -notcontains 'signer_primary_fingerprint' -or $freezeSchema.'$defs'.signature.required -notcontains 'primary_fingerprint' -or $protectionSchema.required -notcontains 'tag_object' -or $protectionSchema.required -notcontains 'object_revision') {
+    throw 'release schemas do not bind signatures and protection evidence to the exact protected tag identity'
+}
 $releaseWorkflow = Get-Content -LiteralPath (Join-Path $repo '.github\workflows\freeze-gpui-release.yml') -Raw
-foreach ($requiredWorkflowControl in @('environment: sdk-release-freeze', 'fetch-depth: 0', 'fetch-tags: true', '--batch --import', 'Invoke-OfflineSdkGuest.template.ps1', "load.mode -ne 'compatible'", 'RELEASE_TAG:', 'RELEASE_BASE_SHA', '--force-with-lease')) {
+foreach ($requiredWorkflowControl in @('environment: sdk-release-freeze', 'fetch-depth: 0', 'fetch-tags: true', '--batch --import', 'Invoke-OfflineSdkGuest.template.ps1', "load.mode -ne 'compatible'", 'RELEASE_TAG:', 'RELEASE_BASE_SHA', 'refs/heads/main', '--force-with-lease')) {
     if (-not $releaseWorkflow.Contains($requiredWorkflowControl)) { throw "protected release workflow is missing control: $requiredWorkflowControl" }
+}
+foreach ($requiredFrozenGuestControl in @('release-frozen-offline-attestation.json', 'frozen release offline guest gate failed', 'proof.bundle_sha256 -ne $manifestHash', 'frozenSnapshot.release_frozen', 'lock.gpui.approved_snapshot.release_frozen')) {
+    if (-not $releaseWorkflow.Contains($requiredFrozenGuestControl)) { throw "protected release workflow is missing frozen guest binding: $requiredFrozenGuestControl" }
+}
+$freezeStep = $releaseWorkflow.IndexOf('name: freeze-release-under-protected-policy')
+$frozenGuestStep = $releaseWorkflow.IndexOf('name: Rebuild frozen SDK fixtures in an isolated guest')
+$commitStep = $releaseWorkflow.IndexOf('name: Commit immutable freeze record')
+if ($freezeStep -lt 0 -or $frozenGuestStep -le $freezeStep -or $commitStep -le $frozenGuestStep) {
+    throw 'release workflow must rebuild the frozen bundle after freeze and before commit'
 }
 if ($releaseWorkflow.Contains('GPG_HOME_B64')) { throw 'protected release workflow uses a misleading GPG home secret' }
 $freezeSource = Get-Content -LiteralPath (Join-Path $sdkRoot 'scripts\freeze-release.ps1') -Raw
+$freezeSupportSource = Get-Content -LiteralPath (Join-Path $sdkRoot 'scripts\release-freeze-support.psm1') -Raw
 if (-not $freezeSource.Contains('& git -C $gpui @Arguments') -or -not $freezeSource.Contains("git -C `$repo status --porcelain") -or -not $freezeSource.Contains("remote', 'get-url', 'origin'")) {
     throw 'freeze script must resolve protected tags in the authorized GPUI repository while checking superproject cleanliness separately'
+}
+foreach ($requiredFreezeControl in @('approvedSnapshot.release_frozen = $true', "approval.channel -ne 'development'", "approval.state -ne 'approved'", 'Get-CanonicalGateAttestationDigestV1', 'Assert-RemoteProtectedTag', 'verify-tag --raw', 'Invoke-GpgvVerifiedPrimaryV1', 'Assert-ProtectionRecord', 'cargo.exe run --release --locked --offline -- generate', 'approved_snapshot.release_frozen -ne $true', 'Bundle ID is already immutable for a different frozen revision/tree', '[IO.File]::WriteAllBytes($path, [byte[]]$releaseArtifactBaselines[$path])')) {
+    if (-not $freezeSource.Contains($requiredFreezeControl)) { throw "freeze script is missing frozen-bundle transaction control: $requiredFreezeControl" }
+}
+foreach ($requiredSupportControl in @('VALIDSIG', 'fields[2]', '--status-fd 1', 'ls-remote --tags origin', 'Assert-ExactRemoteProtectedTagV1')) {
+    if (-not $freezeSupportSource.Contains($requiredSupportControl)) { throw "release-freeze support module is missing signature/remote authority control: $requiredSupportControl" }
+}
+if ([regex]::Matches($freezeSource, 'Assert-RemoteProtectedTag \$ReleaseTag \$tagObject \$revision \$tree').Count -lt 2) {
+    throw 'freeze production callgraph must revalidate the exact remote protected tag before both freeze and publication'
 }
 
 function Write-Json([string]$Path, $Value) {
@@ -100,7 +155,7 @@ try {
 $fixture = Join-Path ([IO.Path]::GetTempPath()) ("superexplorer-release-freeze-contract-" + [Guid]::NewGuid().ToString('N'))
 try {
     New-Item -ItemType Directory -Path $fixture -Force | Out-Null
-    foreach ($relative in @('sdk', 'sdk\snapshot', 'evidence')) {
+    foreach ($relative in @('sdk', 'sdk\snapshot', 'sdk\ci', 'evidence')) {
         New-Item -ItemType Directory -Path (Join-Path $fixture $relative) -Force | Out-Null
     }
     & git -C $fixture init --quiet
@@ -118,14 +173,21 @@ try {
     $manifestPath = Join-Path $fixture 'sdk\bundle-manifest.json'
     $fingerprintPath = Join-Path $fixture 'sdk\ui-abi-fingerprint.json'
     $ledgerPath = Join-Path $fixture 'sdk\snapshot\release-ledger.json'
+    $gateManifestPath = Join-Path $fixture 'sdk\ci\gpui-update-gates.json'
     $protectionPath = Join-Path $fixture 'evidence\protection.json'
     $signaturePath = Join-Path $fixture 'evidence\signature.json'
     $provenancePath = Join-Path $fixture 'evidence\provenance.json'
     $metadataPath = Join-Path $fixture 'sdk\snapshot\release-freeze.json'
+    Copy-Item -LiteralPath (Join-Path $sdkRoot 'ci\gpui-update-gates.json') -Destination $gateManifestPath -Force
+    $fixtureGateManifest = Get-Content -LiteralPath $gateManifestPath -Raw | ConvertFrom-Json
+    $fixturePlanDigest = (('D' * 64) -join '').ToLowerInvariant(); $fixtureNonce = (('1' * 32) -join '')
+    $fixtureProof = [ordered]@{ baseline_revision = $revision; old_revision = $revision; new_revision = $revision; new_tree = $tree; candidate_plan_digest = $fixturePlanDigest; workflow_run_id = 'fixture-run'; nonce = $fixtureNonce }
+    $fixtureGates = [ordered]@{ schema_version = 1; gate_manifest_sha256 = Get-Sha256 $gateManifestPath; candidate_plan_digest = $fixturePlanDigest; workflow_run_id = 'fixture-run'; nonce = $fixtureNonce; results = @($fixtureGateManifest.gates | Where-Object { $_.required -eq $true } | ForEach-Object { [ordered]@{ id = [string]$_.id; exit_code = 0 } }); attestation_sha256 = ('0' * 64) }
+    $fixtureGates.attestation_sha256 = Get-CanonicalGateAttestationDigestV1 $fixtureGates
     $lock = [ordered]@{
         bundle_id = 'fixture-bundle'
         toolchain = [ordered]@{ rustc_release = '1.97.1'; rustc_commit_hash = 'a'; cargo_release = '1.97.1'; cargo_commit_hash = 'b'; target = 'x86_64-pc-windows-msvc' }
-        gpui = [ordered]@{ revision = $revision; tree = $tree; approved_snapshot = [ordered]@{ production = [ordered]@{ features = @() } } }
+        gpui = [ordered]@{ revision = $revision; tree = $tree; approved_snapshot = [ordered]@{ source = [ordered]@{ revision = $revision; tree = $tree }; approval = [ordered]@{ channel = 'development'; state = 'approved'; proof = $fixtureProof; gates = $fixtureGates }; candidate_plan_digest = $fixturePlanDigest; production = [ordered]@{ features = @() }; release_frozen = $true } }
         protected_dependency_graph = @()
         protected_dependency_contract = [ordered]@{ schema_version = 2; edge_digest = 'x' }
         sdk_public_source_hashes = @()
@@ -139,32 +201,47 @@ try {
     Write-Json $manifestPath ([ordered]@{ bundle_id = 'fixture-bundle'; files = @() })
     Write-Json $fingerprintPath ([ordered]@{ bundle_id = 'fixture-bundle'; fingerprint = $fingerprint })
     Write-Json $ledgerPath ([ordered]@{ schema_version = 1; releases = @() })
-    Write-Json $protectionPath ([ordered]@{ policy = 'fixture-protected-tag' })
+    Write-Json $protectionPath ([ordered]@{ schema_version = 1; provider = 'fixture'; policy_id = 'fixture-policy'; repository = 'https://fixture.invalid/gpui.git'; tag_name = 'gpui-sdk-v0.1.0-rc.1'; tag_object = $tagObject; object_revision = $revision; tree = $tree })
     Write-Json $signaturePath ([ordered]@{ fixture_unsigned = $true })
     Write-Json $provenancePath ([ordered]@{ builder = 'fixture' })
     $metadata = [ordered]@{
         schema_version = 2
         release_frozen = $true
         evidence_mode = 'fixture'
-        protected_tag = [ordered]@{ name = 'gpui-sdk-v0.1.0-rc.1'; tag_object = $tagObject; object_revision = $revision; tree = $tree }
+        protected_tag = [ordered]@{ name = 'gpui-sdk-v0.1.0-rc.1'; repository = 'https://github.com/damody/gpui-ce-explorer.git'; tag_object = $tagObject; object_revision = $revision; tree = $tree; signer_primary_fingerprint = $fixturePrimary }
         source = [ordered]@{ revision = $revision; tree = $tree }
         rc_id = '0.1.0-rc.1'
         bundle_id = 'fixture-bundle'
         release_input_digest = ('0' * 64)
         artifacts = [ordered]@{ sdk_lock = (Artifact $fixture $lockPath); bundle_manifest = (Artifact $fixture $manifestPath); ui_abi_fingerprint = (Artifact $fixture $fingerprintPath) }
         protection = [ordered]@{ provider = 'fixture'; policy_id = 'fixture-policy'; record = (Artifact $fixture $protectionPath) }
-        signature = [ordered]@{ verification = 'fixture_unsigned'; signer = 'fixture'; artifact = (Artifact $fixture $signaturePath) }
+        signature = [ordered]@{ verification = 'fixture_unsigned'; signer = 'fixture'; primary_fingerprint = $fixturePrimary; artifact = (Artifact $fixture $signaturePath) }
         provenance = [ordered]@{ builder = 'fixture'; predicate_type = 'fixture'; artifact = (Artifact $fixture $provenancePath) }
         prior_release_ledger = (Artifact $fixture $ledgerPath)
     }
     Write-Json $metadataPath $metadata
     Set-InputDigest $metadataPath
     $metadataBackup = [IO.File]::ReadAllBytes($metadataPath)
+    $lockBackup = [IO.File]::ReadAllBytes($lockPath)
     $ledgerBackup = [IO.File]::ReadAllBytes($ledgerPath)
     $protectionBackup = [IO.File]::ReadAllBytes($protectionPath)
 
     Invoke-FixtureValidator $fixture $true 'valid annotated fixture release'
     Invoke-Tool @('verify', '--root', $fixture) $false 'production CLI must not accept a fixture root'
+
+    $lock = Read-Json $lockPath
+    $lock.gpui.approved_snapshot.approval.state = 'candidate'
+    Write-Json $lockPath $lock
+    $metadata = Read-Json $metadataPath; $metadata.artifacts.sdk_lock.sha256 = Get-Sha256 $lockPath; Write-Json $metadataPath $metadata; Set-InputDigest $metadataPath
+    Invoke-FixtureValidator $fixture $false 'candidate approval state cannot become a release freeze'
+    [IO.File]::WriteAllBytes($lockPath, $lockBackup); [IO.File]::WriteAllBytes($metadataPath, $metadataBackup)
+
+    $lock = Read-Json $lockPath
+    $lock.gpui.approved_snapshot.approval.gates.attestation_sha256 = (('0' * 64) -join '')
+    Write-Json $lockPath $lock
+    $metadata = Read-Json $metadataPath; $metadata.artifacts.sdk_lock.sha256 = Get-Sha256 $lockPath; Write-Json $metadataPath $metadata; Set-InputDigest $metadataPath
+    Invoke-FixtureValidator $fixture $false 'tampered full-gate attestation digest'
+    [IO.File]::WriteAllBytes($lockPath, $lockBackup); [IO.File]::WriteAllBytes($metadataPath, $metadataBackup)
 
     $metadata = Read-Json $metadataPath
     $metadata.signature.verification = 'detached_gpg'
@@ -208,7 +285,7 @@ try {
     $saved = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     $gpgHome = Join-Path $fixture 'trusted-gpg-home'; New-Item -ItemType Directory -Path $gpgHome -Force | Out-Null
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $freezeScript -ReleaseTag 'gpui-sdk-v0.1.0-rc.1' -RcId '0.1.0-rc.1' -ProtectionProvider fixture -ProtectionPolicyId fixture -ProtectionRecord $protectionPath -DetachedSignature $signaturePath -Signer fixture -GpgKeyring $signaturePath -GpgHome $gpgHome -GpgPrimaryFingerprint ('A' * 40) -Provenance $provenancePath -Builder fixture -PredicateType fixture 2>$null
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $freezeScript -ReleaseTag 'gpui-sdk-v0.1.0-rc.1' -RcId '0.1.0-rc.1' -ProtectionProvider fixture -ProtectionPolicyId fixture -ProtectionRecord $protectionPath -DetachedSignature $signaturePath -Signer fixture -GpgKeyring $signaturePath -GpgHome $gpgHome -GpgPrimaryFingerprint $fixturePrimary -Provenance $provenancePath -Builder fixture -PredicateType fixture 2>$null
     $freezeExit = $LASTEXITCODE
     $ErrorActionPreference = $saved
     if ($freezeExit -eq 0) { throw 'production freeze script accepted unsigned fixture evidence' }

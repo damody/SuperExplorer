@@ -3,10 +3,11 @@ Set-StrictMode -Version Latest
 $sdkRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $fixtureRoot = Join-Path $sdkRoot 'fixtures\extension-api-contract'
 $oldPluginRoot = Join-Path $fixtureRoot 'old-v1-plugin'
+$baselinePluginRoot = Join-Path $fixtureRoot 'rust-first-baseline-plugin'
 $hostRoot = Join-Path $fixtureRoot 'current-host'
 $vendor = Join-Path $sdkRoot 'vendor\cargo-sources'
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('superexplorer-extension-api-' + [Guid]::NewGuid().ToString('N'))
-$cargoHome = Join-Path $tempRoot 'cargo-home'; $pluginTarget = Join-Path $tempRoot 'target-old-v1-plugin'; $hostTarget = Join-Path $tempRoot 'target-current-host'; $markerRoot = Join-Path $tempRoot 'markers'
+$cargoHome = Join-Path $tempRoot 'cargo-home'; $pluginTarget = Join-Path $tempRoot 'target-old-v1-plugin'; $baselineTarget = Join-Path $tempRoot 'target-rust-first-baseline'; $hostTarget = Join-Path $tempRoot 'target-current-host'; $markerRoot = Join-Path $tempRoot 'markers'
 $savedCargoHome = $env:CARGO_HOME; $savedCargoTargetDir = $env:CARGO_TARGET_DIR
 function Fail([string] $Message) { throw $Message }
 function Invoke-CargoBuild([string] $Project, [string] $TargetDir) {
@@ -34,11 +35,13 @@ function Invoke-Host([string] $Mode, [string] $Plugin, [bool] $ExpectProcessSucc
     if ($markerExists -ne $ExpectMarker) { Fail "$Mode marker presence was $markerExists, expected $ExpectMarker" }
 }
 try {
-    New-Item -ItemType Directory -Path $cargoHome, $pluginTarget, $hostTarget, $markerRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $cargoHome, $pluginTarget, $baselineTarget, $hostTarget, $markerRoot -Force | Out-Null
     $cargoConfig = @('[source.crates-io]','replace-with = "cargo-sources"','[source.cargo-sources]',('directory = "' + ($vendor -replace '\\','/') + '"')) -join [Environment]::NewLine
     [IO.File]::WriteAllText((Join-Path $cargoHome 'config.toml'), $cargoConfig, [Text.UTF8Encoding]::new($false))
-    Invoke-CargoBuild $oldPluginRoot $pluginTarget; Invoke-CargoBuild $hostRoot $hostTarget
+    Invoke-CargoBuild $oldPluginRoot $pluginTarget; Invoke-CargoBuild $baselinePluginRoot $baselineTarget; Invoke-CargoBuild $hostRoot $hostTarget
     $pluginDll = Find-Artifact $pluginTarget 'extension_api_contract_old_v1_plugin.dll'; $hostExe = Find-Artifact $hostTarget 'extension-api-contract-host.exe'
+    $baselineDll = Find-Artifact $baselineTarget 'extension_api_contract_rust_first_baseline_plugin.dll'
+    Invoke-Host 'rust-first-baseline' $baselineDll $true $true
     Invoke-Host 'compatible' $pluginDll $true $false
     Invoke-Host 'schema-mismatch' $pluginDll $true $false
     Invoke-Host 'root-contract-mismatch' $pluginDll $true $false

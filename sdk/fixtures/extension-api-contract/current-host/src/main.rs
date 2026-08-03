@@ -1,42 +1,51 @@
-//! Process-isolated pre-callback ABI verifier for an old SDK 1.0 plugin.
+//! Process-isolated pre-callback ABI verifier for legacy and Rust-first fixtures.
 
 use std::{env, path::Path};
 
 use abi_stable::library::RootModule;
-use explorer_extension_api::ExtensionRootModuleV1_Ref;
-use explorer_extension_host::{ExtensionHost, HostRegistrationErrorV1};
+use explorer_extension_api::{ExtensionRootModuleV1_Ref, registrar_request_v1};
+use explorer_extension_host::ExtensionHost;
 
 fn run(mode: &str, plugin: &Path, marker: &Path) -> Result<(), String> {
-    let root = ExtensionRootModuleV1_Ref::load_from_file(plugin)
-        .map_err(|error| format!("current host rejected old plugin layout: {error}"))?;
-    if root.registrar().describe_contract().is_some() {
-        return Err("old v1 plugin unexpectedly exposes the optional registrar tail".to_owned());
-    }
-    if root.registrar().ui_abi_fingerprint_sha256().is_some() {
-        return Err(
-            "old v1 plugin unexpectedly exposes the optional UI fingerprint tail".to_owned(),
-        );
-    }
-    // Registrar dispatch is intentionally private to the task 3.5 guarded
-    // executor. This fixture preserves the old-v1 layout and required-root-data
-    // compatibility contract without reopening a public raw-root callback path.
-    let result = ExtensionHost::new().validate_root(root);
-    match mode {
-        "compatible" | "panic" | "raw-panic" => {
-            if result.is_err() {
-                return Err(format!("old v1 plugin failed pre-callback validation: {result:?}"));
-            }
-            if marker.exists() {
-                Err("pre-callback ABI validation unexpectedly invoked a registrar".to_owned())
-            } else {
-                Ok(())
-            }
+    if mode == "rust-first-baseline" {
+        let root = ExtensionRootModuleV1_Ref::load_from_file(plugin)
+            .map_err(|error| format!("current host rejected Rust-first baseline: {error}"))?;
+        ExtensionHost::new()
+            .validate_root(root)
+            .map_err(|error| format!("Rust-first baseline root rejected: {error:?}"))?;
+        if root.descriptor_contract_revision() != 1 {
+            return Err("Rust-first baseline reports the wrong descriptor contract revision".into());
         }
-        "schema-mismatch" | "root-contract-mismatch" | "sdk-major-mismatch" => match result {
-            Err(HostRegistrationErrorV1::Incompatible(_)) if !marker.exists() => Ok(()),
-            other => Err(format!("{mode} did not reject before callback: {other:?}")),
-        },
-        _ => Err("mode must be compatible, schema-mismatch, root-contract-mismatch, sdk-major-mismatch, panic, or raw-panic".to_owned()),
+        let registrar = root
+            .create_registrar()
+            .create()
+            .into_result()
+            .map_err(|error| format!("baseline registrar factory failed: {error:?}"))?;
+        let output = registrar
+            .register(registrar_request_v1())
+            .into_result()
+            .map_err(|error| format!("baseline registrar failed: {error:?}"))?;
+        if !output.outcome.is_accepted() || !marker.exists() {
+            return Err("baseline registrar did not execute successfully".into());
+        }
+        return Ok(());
+    }
+
+    if !matches!(
+        mode,
+        "compatible"
+            | "schema-mismatch"
+            | "root-contract-mismatch"
+            | "sdk-major-mismatch"
+            | "panic"
+            | "raw-panic"
+    ) {
+        return Err("unknown legacy raw fixture mode".to_owned());
+    }
+    match ExtensionRootModuleV1_Ref::load_from_file(plugin) {
+        Err(_) if !marker.exists() => Ok(()),
+        Err(error) => Err(format!("legacy layout rejection ran foreign code: {error}")),
+        Ok(_) => Err("legacy raw root was not layout-rejected before callback".to_owned()),
     }
 }
 

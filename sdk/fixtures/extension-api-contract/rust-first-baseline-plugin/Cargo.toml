@@ -1,0 +1,20 @@
+[package]
+name = "extension-api-contract-rust-first-baseline-plugin"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+
+[lib]
+name = "extension_api_contract_rust_first_baseline_plugin"
+crate-type = ["cdylib"]
+
+[dependencies]
+abi_stable = { version = "=0.11.3", default-features = false }
+explorer-extension-api = { path = "../rust-first-baseline-api" }
+
+[profile.dev]
+panic = "unwind"
+[profile.release]
+panic = "unwind"
+[workspace]

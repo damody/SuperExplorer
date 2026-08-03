@@ -1,0 +1,16 @@
+[package]
+name = "plugin-value-v1-contract-new-plugin"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+
+[lib]
+name = "plugin_value_v1_contract_new_plugin"
+crate-type = ["cdylib"]
+
+[dependencies]
+abi_stable = { version = "=0.11.3", default-features = false }
+explorer-extension-api = { path = "../../../../crates/explorer-extension-api" }
+
+[workspace]

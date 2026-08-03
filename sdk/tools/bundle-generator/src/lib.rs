@@ -1,8 +1,9 @@
 //! Deterministically generates the SDK bundle lock and manifest from the checked-out tree.
 //!
 //! This binary deliberately has no path or command-output overrides. Its only production
-//! inputs are the repository containing this source file and trusted local tools (`rustc`,
-//! `cargo`, and `git`). That keeps a generated bundle record tied to the checked-out source.
+//! inputs are the repository containing this source file, the SDK-owned pinned toolchain
+//! installation, and `git`. The generator never resolves Rust tools through `PATH` or a
+//! rustup shim, so the signed record remains tied to the actual compiler binaries.
 
 use std::{
     collections::BTreeMap,
@@ -14,6 +15,9 @@ use std::{
     path::{Component, Path, PathBuf},
     process::Command,
 };
+
+#[cfg(windows)]
+use std::{ffi::OsString, os::windows::ffi::OsStringExt, ptr};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -37,6 +41,7 @@ const PUBLIC_SDK_CRATE_ROOTS: [&str; 2] = [
     "crates/explorer-extension-api",
     "crates/explorer-extension-ui-api",
 ];
+const PINNED_TOOLCHAIN_DIRECTORY: &str = "1.97.1-x86_64-pc-windows-msvc";
 type LockPackageKey = (String, String, Option<String>);
 type LockChecksumMap = BTreeMap<LockPackageKey, Option<String>>;
 
@@ -50,9 +55,17 @@ struct FileHash {
 struct Toolchain {
     rustc_release: String,
     rustc_commit_hash: String,
+    rustc_sha256: String,
     cargo_release: String,
     cargo_commit_hash: String,
+    cargo_sha256: String,
     target: String,
+}
+
+#[derive(Debug)]
+struct ToolchainBinaries {
+    cargo: PathBuf,
+    rustc: PathBuf,
 }
 
 #[derive(Debug, Serialize)]
@@ -203,16 +216,22 @@ fn generate(root: &Path) -> Result<(SdkLock, BundleManifest), String> {
     let gpui_snapshot = read_json(&root.join("sdk/snapshot/approved-gpui.json"))?;
     let gpui_snapshot_sha256 = hash_file(&root.join("sdk/snapshot/approved-gpui.json"))?;
     let gpui = read_gpui(root, gpui_snapshot, gpui_snapshot_sha256)?;
-    let protected_dependency_graph = cargo_graph(root)?;
+    let binaries = pinned_toolchain_binaries()?;
+    let toolchain = parse_toolchain(
+        &command_output(&binaries.rustc, &["-Vv"], root)?,
+        &command_output(&binaries.cargo, &["-Vv"], root)?,
+        hash_file(&binaries.rustc)?,
+        hash_file(&binaries.cargo)?,
+    )?;
+    if toolchain.rustc_release != "1.97.1" || toolchain.cargo_release != "1.97.1" {
+        return Err("SDK-owned toolchain directory did not contain Rust 1.97.1".to_owned());
+    }
+    let protected_dependency_graph = cargo_graph(root, &binaries.cargo)?;
     let protected_dependency_contract =
         read_json(&root.join("sdk/snapshot/protected-dependency-closure.json"))?;
     validate_protected_dependency_contract(&protected_dependency_contract)?;
     let release_profiles = release_profiles(root)?;
     let abi = abi_contract(&policy, &protected_dependency_graph)?;
-    let toolchain = parse_toolchain(
-        &command_output("rustc", &["-Vv"], root)?,
-        &command_output("cargo", &["-Vv"], root)?,
-    )?;
     let sdk_public_source_hashes = public_sdk_source_hashes(&inventory);
     let bundle_identity = serde_json::json!({
         "inventory_root_sha256": inventory_root_sha256,
@@ -275,9 +294,13 @@ fn read_gpui(root: &Path, snapshot: Value, snapshot_hash: String) -> Result<Gpui
             .ok_or_else(|| format!("approved GPUI snapshot has no source.{key}"))
     };
     let repository = required("repository")?;
-    let revision = command_output("git", &["-C", "vendor/gpui-ce", "rev-parse", "HEAD"], root)?;
+    let revision = command_output(
+        Path::new("git"),
+        &["-C", "vendor/gpui-ce", "rev-parse", "HEAD"],
+        root,
+    )?;
     let tree = command_output(
-        "git",
+        Path::new("git"),
         &["-C", "vendor/gpui-ce", "rev-parse", "HEAD^{tree}"],
         root,
     )?;
@@ -297,9 +320,9 @@ fn read_gpui(root: &Path, snapshot: Value, snapshot_hash: String) -> Result<Gpui
     })
 }
 
-fn cargo_graph(root: &Path) -> Result<Vec<ProtectedPackage>, String> {
+fn cargo_graph(root: &Path, cargo: &Path) -> Result<Vec<ProtectedPackage>, String> {
     let metadata = command_output(
-        "cargo",
+        cargo,
         &[
             "metadata",
             "--locked",
@@ -616,7 +639,8 @@ fn collect_directory(
             }
         } else if file_type.is_file() {
             let relative = relative_path(root, &path)?;
-            if !GENERATED_FILES.contains(&relative.as_str())
+            if !is_cargo_runtime_marker(&path)
+                && !GENERATED_FILES.contains(&relative.as_str())
                 && !NON_INVENTORY_RELEASE_RECORDS.contains(&relative.as_str())
                 && !non_inventory_release_evidence_file(&relative)
             {
@@ -634,15 +658,29 @@ fn is_git_metadata(path: &Path) -> bool {
     path.file_name() == Some(OsStr::new(".git"))
 }
 
+fn is_cargo_runtime_marker(path: &Path) -> bool {
+    path.file_name() == Some(OsStr::new(".package-cache"))
+        || (path.file_name() == Some(OsStr::new(".global-cache"))
+            && path
+                .parent()
+                .and_then(Path::file_name)
+                .is_some_and(|name| name == OsStr::new(".cargo")))
+}
+
 fn excluded_build_directory(root: &Path, path: &Path) -> Result<bool, String> {
     let relative = relative_path(root, path)?;
     let components = relative.split('/').collect::<Vec<_>>();
-    Ok(matches!(
-        components.as_slice(),
-        ["sdk", "target"]
-            | ["sdk", "fixtures" | "tools", _, "target"]
-            | ["vendor", "gpui-ce", "target"]
-    ))
+    let nested_sdk_build_output = components.len() >= 4
+        && components.first() == Some(&"sdk")
+        && matches!(components.get(1), Some(&"fixtures" | &"tools"))
+        && components.last() == Some(&"target");
+    Ok(nested_sdk_build_output
+        || matches!(
+            components.as_slice(),
+            ["sdk", "target" | "registry"]
+                | ["sdk", ".cargo", "registry"]
+                | ["vendor", "gpui-ce", "target"]
+        ))
 }
 
 fn non_inventory_release_evidence_file(relative: &str) -> bool {
@@ -740,26 +778,32 @@ fn read_json(path: &Path) -> Result<Value, String> {
         .map_err(|error| format!("could not parse {}: {error}", path.display()))
 }
 
-fn command_output(program: &str, arguments: &[&str], root: &Path) -> Result<String, String> {
+fn command_output(program: &Path, arguments: &[&str], root: &Path) -> Result<String, String> {
     let output = Command::new(program)
         .args(arguments)
         .current_dir(root)
         .output()
-        .map_err(|error| format!("could not invoke {program}: {error}"))?;
+        .map_err(|error| format!("could not invoke {}: {error}", program.display()))?;
     if !output.status.success() {
         return Err(format!(
-            "{program} {} failed with {}: {}",
+            "{} {} failed with {}: {}",
+            program.display(),
             arguments.join(" "),
             output.status,
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
     String::from_utf8(output.stdout)
-        .map_err(|error| format!("{program} emitted non-UTF-8 output: {error}"))
+        .map_err(|error| format!("{} emitted non-UTF-8 output: {error}", program.display()))
         .map(|output| output.replace("\r\n", "\n").trim_end().to_owned())
 }
 
-fn parse_toolchain(rustc: &str, cargo: &str) -> Result<Toolchain, String> {
+fn parse_toolchain(
+    rustc: &str,
+    cargo: &str,
+    rustc_sha256: String,
+    cargo_sha256: String,
+) -> Result<Toolchain, String> {
     let field = |text: &str, key: &str| {
         text.lines()
             .find_map(|line| line.strip_prefix(&format!("{key}: ")))
@@ -778,10 +822,149 @@ fn parse_toolchain(rustc: &str, cargo: &str) -> Result<Toolchain, String> {
     Ok(Toolchain {
         rustc_release,
         rustc_commit_hash,
+        rustc_sha256,
         cargo_release,
         cargo_commit_hash,
+        cargo_sha256,
         target,
     })
+}
+
+/// Resolves the fixed SDK toolchain directly from the current Windows profile.
+///
+/// This deliberately does not read `PATH`, execute `rustup`, or honor a caller's
+/// `RUSTUP_HOME`. The approved directory name is SDK policy and both executables
+/// must be regular, non-reparse children of its one `bin` directory.
+fn pinned_toolchain_binaries() -> Result<ToolchainBinaries, String> {
+    let profile = windows_profile_directory()?;
+    let root = profile
+        .join(".rustup")
+        .join("toolchains")
+        .join(PINNED_TOOLCHAIN_DIRECTORY);
+    assert_no_reparse_ancestors(&root)?;
+    let bin = root.join("bin");
+    let cargo = verified_tool_binary(&bin.join("cargo.exe"), &bin, "cargo")?;
+    let rustc = verified_tool_binary(&bin.join("rustc.exe"), &bin, "rustc")?;
+    Ok(ToolchainBinaries { cargo, rustc })
+}
+
+/// Gets the current account's profile through the Windows Known Folder API.
+/// Environment variables such as `USERPROFILE` and `RUSTUP_HOME` are caller
+/// inputs, so they are intentionally not consulted for toolchain authority.
+#[cfg(windows)]
+#[allow(unsafe_code)] // Narrow FFI boundary for the Windows Known Folder API.
+fn windows_profile_directory() -> Result<PathBuf, String> {
+    #[repr(C)]
+    struct Guid {
+        data1: u32,
+        data2: u16,
+        data3: u16,
+        data4: [u8; 8],
+    }
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn SHGetKnownFolderPath(
+            folder_id: *const Guid,
+            flags: u32,
+            token: isize,
+            path: *mut *mut u16,
+        ) -> i32;
+    }
+    #[link(name = "ole32")]
+    unsafe extern "system" {
+        fn CoTaskMemFree(memory: *mut std::ffi::c_void);
+    }
+    const FOLDERID_PROFILE: Guid = Guid {
+        data1: 0x5e6c_858f,
+        data2: 0x0e22,
+        data3: 0x4760,
+        data4: [0x9a, 0xfe, 0xea, 0x33, 0x17, 0xb6, 0x71, 0x73],
+    };
+    let mut raw = ptr::null_mut();
+    // SHGetKnownFolderPath allocates a null-terminated UTF-16 buffer with the
+    // COM allocator. Both pointers originate from Windows, never the caller.
+    let status = unsafe { SHGetKnownFolderPath(&FOLDERID_PROFILE, 0, 0, &raw mut raw) };
+    if status < 0 || raw.is_null() {
+        return Err(format!(
+            "Windows profile known-folder lookup failed ({status:#x})"
+        ));
+    }
+    let result = unsafe {
+        let mut length = 0usize;
+        while *raw.add(length) != 0 {
+            length += 1;
+            if length > 32_767 {
+                CoTaskMemFree(raw.cast());
+                return Err("Windows profile known-folder path is oversized".into());
+            }
+        }
+        let path = OsString::from_wide(std::slice::from_raw_parts(raw, length));
+        CoTaskMemFree(raw.cast());
+        PathBuf::from(path)
+    };
+    Ok(result)
+}
+
+#[cfg(not(windows))]
+fn windows_profile_directory() -> Result<PathBuf, String> {
+    Err("SDK toolchain authority is supported only on Windows".into())
+}
+
+fn verified_tool_binary(
+    candidate: &Path,
+    expected_bin: &Path,
+    label: &str,
+) -> Result<PathBuf, String> {
+    assert_no_reparse_ancestors(candidate)?;
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|error| format!("pinned {label} is unavailable: {error}"))?;
+    let expected_bin = expected_bin
+        .canonicalize()
+        .map_err(|error| format!("SDK toolchain bin directory is unavailable: {error}"))?;
+    if canonical.parent() != Some(expected_bin.as_path()) {
+        return Err(format!(
+            "pinned {label} escaped the SDK toolchain bin directory"
+        ));
+    }
+    let metadata = fs::metadata(&canonical)
+        .map_err(|error| format!("pinned {label} metadata cannot be read: {error}"))?;
+    if !metadata.is_file() {
+        return Err(format!("pinned {label} is not a regular executable"));
+    }
+    Ok(canonical)
+}
+
+fn assert_no_reparse_ancestors(path: &Path) -> Result<(), String> {
+    let mut cursor = path;
+    loop {
+        let metadata = fs::symlink_metadata(cursor).map_err(|error| {
+            format!(
+                "toolchain path {} is unavailable: {error}",
+                cursor.display()
+            )
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!("toolchain path {} is a symlink", cursor.display()));
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+            if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                return Err(format!(
+                    "toolchain path {} is a reparse point",
+                    cursor.display()
+                ));
+            }
+        }
+        let Some(parent) = cursor.parent() else { break };
+        if parent == cursor {
+            break;
+        }
+        cursor = parent;
+    }
+    Ok(())
 }
 
 fn canonical_json<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
@@ -1047,10 +1230,12 @@ mod tests {
     fn toolchain_parser_uses_only_required_fields() {
         let rustc = "rustc 1\nrelease: 1.97.1\ncommit-hash: rust\nhost: x86_64-pc-windows-msvc\nOS: ignored";
         let cargo = "cargo 1\nrelease: 1.97.1\ncommit-hash: cargo\nlibgit2: ignored";
-        let first = parse_toolchain(rustc, cargo).unwrap();
+        let first = parse_toolchain(rustc, cargo, "a".repeat(64), "b".repeat(64)).unwrap();
         let second = parse_toolchain(
             &format!("{rustc}\nextra: changed"),
             &format!("{cargo}\nextra: changed"),
+            "a".repeat(64),
+            "b".repeat(64),
         )
         .unwrap();
         assert_eq!(
@@ -1059,9 +1244,14 @@ mod tests {
         );
         assert_ne!(
             first.rustc_commit_hash,
-            parse_toolchain(&rustc.replace("rust", "other"), cargo)
-                .unwrap()
-                .rustc_commit_hash
+            parse_toolchain(
+                &rustc.replace("rust", "other"),
+                cargo,
+                "a".repeat(64),
+                "b".repeat(64),
+            )
+            .unwrap()
+            .rustc_commit_hash
         );
     }
 
@@ -1127,7 +1317,18 @@ mod tests {
             excluded_build_directory(root, Path::new("D:/repo/sdk/tools/tool/target")).unwrap()
         );
         assert!(
+            excluded_build_directory(
+                root,
+                Path::new("D:/repo/sdk/fixtures/contract/current-host/target")
+            )
+            .unwrap()
+        );
+        assert!(
             excluded_build_directory(root, Path::new("D:/repo/vendor/gpui-ce/target")).unwrap()
+        );
+        assert!(excluded_build_directory(root, Path::new("D:/repo/sdk/registry")).unwrap());
+        assert!(
+            excluded_build_directory(root, Path::new("D:/repo/sdk/.cargo/registry")).unwrap()
         );
         assert!(
             !excluded_build_directory(
@@ -1152,6 +1353,18 @@ mod tests {
             "sdk/releases/../provenance.json"
         ));
         assert!(is_git_metadata(Path::new("D:/repo/vendor/gpui-ce/.git")));
+        assert!(is_cargo_runtime_marker(Path::new(
+            "D:/repo/sdk/.package-cache"
+        )));
+        assert!(is_cargo_runtime_marker(Path::new(
+            "D:/repo/sdk/vendor/cargo-sources/.package-cache"
+        )));
+        assert!(is_cargo_runtime_marker(Path::new(
+            "D:/repo/sdk/.cargo/.global-cache"
+        )));
+        assert!(!is_cargo_runtime_marker(Path::new(
+            "D:/repo/sdk/package-cache-contract.md"
+        )));
         assert!(!is_git_metadata(Path::new(
             "D:/repo/vendor/gpui-ce/.gitignore"
         )));

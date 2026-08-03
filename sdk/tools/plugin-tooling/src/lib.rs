@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -12,7 +13,26 @@ use toml::Value as TomlValue;
 const MAX_PAYLOADS: usize = 128;
 const MAX_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_TOTAL_PAYLOAD_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+// These mirror the production PackageManifestV1 and canonical ZIP importer.
+const HOST_MAX_RUNTIME_PAYLOADS: usize = 128;
+const HOST_MAX_RUNTIME_PATH_BYTES: usize = 1_024;
+const HOST_MAX_RUNTIME_MANIFEST_BYTES: usize = 256 * 1024;
+const HOST_MAX_CANONICAL_ZIP_BYTES: u64 = 512 * 1024 * 1024;
+const CANONICAL_ZIP_LOCAL_HEADER_BYTES: u64 = 30;
+const CANONICAL_ZIP_CENTRAL_HEADER_BYTES: u64 = 46;
+const CANONICAL_ZIP_END_OF_CENTRAL_DIRECTORY_BYTES: u64 = 22;
+const MAX_CARGO_FILE_BYTES: u64 = 4 * 1024 * 1024;
 const ABI_STABLE_ROOT_MODULE_LOADER_EXPORT: &str = "_1as_0lib_1header_0root_bmodule_bloader";
+const ROOT_MODULE_CONTRACT_NAMESPACE_V1: u32 = 0x5345_0001;
+const ROOT_MODULE_CONTRACT_VALUE_V1: u64 = 1;
+const PUBLIC_SDK_CONTRACT_DEPENDENCY: &str = "explorer-extension-api";
+const PUBLIC_SDK_CONTRACT_VERSION: &str = "=1.2.0";
+const TRUSTED_CARGO_PATH_ENV: &str = "SUPEREXPLORER_TRUSTED_CARGO";
+const TRUSTED_CARGO_SHA256_ENV: &str = "SUPEREXPLORER_TRUSTED_CARGO_SHA256";
+const TRUSTED_RUSTC_PATH_ENV: &str = "SUPEREXPLORER_TRUSTED_RUSTC";
+const TRUSTED_RUSTC_SHA256_ENV: &str = "SUPEREXPLORER_TRUSTED_RUSTC_SHA256";
+const CRATES_IO_REGISTRY_SOURCE: &str = "registry+https://github.com/rust-lang/crates.io-index";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -25,6 +45,8 @@ struct Manifest {
     features: Vec<Feature>,
     contributions: Vec<Contribution>,
     payloads: Vec<Payload>,
+    #[serde(default)]
+    private_dependencies: Vec<PrivateDependency>,
     verification: Verification,
 }
 
@@ -65,7 +87,6 @@ struct Sdk {
 struct RustPlugin {
     crate_name: String,
     entrypoint: String,
-    root_module: String,
 }
 
 #[derive(Deserialize)]
@@ -94,6 +115,25 @@ struct Payload {
     kind: String,
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivateDependency {
+    name: String,
+    version: String,
+    path: String,
+    tree_sha256: String,
+    provenance: PrivateDependencyProvenance,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivateDependencyProvenance {
+    source: String,
+    crate_sha256: String,
+    license_expression: String,
+    license_hashes: BTreeMap<String, String>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Verification {
@@ -117,7 +157,7 @@ struct Evidence {
     docs: Vec<String>,
 }
 
-#[derive(Clone, Serialize, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Serialize, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Diagnostic {
     pub code: String,
     pub severity: String,
@@ -138,6 +178,12 @@ struct ExpectedSdk {
     bundle_id: String,
     target: String,
     abi_schema: u32,
+    rustc_release: String,
+    rustc_commit_hash: String,
+    rustc_sha256: String,
+    cargo_release: String,
+    cargo_commit_hash: String,
+    cargo_sha256: String,
     ui_abi_fingerprint: String,
     gpui_repository: String,
     gpui_revision: String,
@@ -184,13 +230,13 @@ struct ProtectedDependencyKind {
     target: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct CargoMetadata {
     packages: Vec<CargoMetadataPackage>,
     resolve: Option<CargoMetadataResolve>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct CargoMetadataPackage {
     id: String,
     name: String,
@@ -199,13 +245,13 @@ struct CargoMetadataPackage {
     manifest_path: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct CargoMetadataResolve {
     root: Option<String>,
     nodes: Vec<CargoMetadataNode>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct CargoMetadataNode {
     id: String,
     #[serde(default)]
@@ -214,7 +260,7 @@ struct CargoMetadataNode {
     features: Vec<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct CargoMetadataDependency {
     name: String,
     pkg: String,
@@ -222,7 +268,7 @@ struct CargoMetadataDependency {
     dep_kinds: Vec<CargoMetadataDependencyKind>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct CargoMetadataDependencyKind {
     kind: Option<String>,
     target: Option<String>,
@@ -234,6 +280,19 @@ struct CargoLockPackage {
     version: String,
     source: Option<String>,
     checksum: Option<String>,
+}
+
+#[derive(Clone)]
+struct InputIdentity {
+    relative: PathBuf,
+    size: u64,
+    sha256: String,
+}
+
+struct StagedPayload {
+    path: String,
+    kind: &'static str,
+    bytes: Vec<u8>,
 }
 
 #[derive(Deserialize)]
@@ -248,6 +307,7 @@ struct TrustedGates {
 pub fn validate(root: &Path) -> Report {
     match validate_inner(root) {
         Ok(mut diagnostics) => {
+            redact_plugin_paths(&mut diagnostics, root);
             diagnostics.sort();
             diagnostics.dedup();
             Report {
@@ -263,16 +323,582 @@ pub fn validate(root: &Path) -> Report {
                 "SESDK-INPUT-001",
                 "input",
                 "plugin-project.json",
-                message,
+                redact_absolute_paths(&message),
             )],
         },
     }
 }
 
+/// Synthesizes the canonical host `manifest.json` for a P0 local-developer
+/// `.sepack`. The archive deliberately contains only its runtime DLL; source
+/// payloads are validation/build inputs and are never runtime package content.
+///
+/// The returned JSON is structurally compatible with `PackageManifestV1` and
+/// is intentionally unsigned. A caller must place it in a package imported
+/// through the host's local-developer provenance boundary.
+///
+/// # Errors
+///
+/// Returns an error when the project manifest, publisher email mapping, or
+/// runtime DLL cannot be safely read and bound to the generated manifest.
+pub fn synthesize_package_manifest(root: &Path, dll: &Path) -> Result<String, String> {
+    if is_link_or_reparse(root)? {
+        return Err("plugin root is a symlink or reparse point".into());
+    }
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|error| format!("plugin root cannot be canonicalized: {error}"))?;
+    if !canonical_root.is_dir() || is_link_or_reparse(&canonical_root)? {
+        return Err("plugin root is not a regular directory".into());
+    }
+    let manifest_path = canonical_root.join("plugin-project.json");
+    let source = read_regular_utf8_file(
+        &canonical_root,
+        &manifest_path,
+        MAX_MANIFEST_BYTES,
+        "plugin-project.json",
+    )?;
+    let manifest: Manifest = serde_json::from_str(&source).map_err(|error| {
+        format!("plugin-project.json does not match the exact P0 schema: {error}")
+    })?;
+    validate_synthesis_manifest(&manifest)?;
+    let dll_bytes = read_regular_bytes(&canonical_root, dll, MAX_PAYLOAD_BYTES)?;
+    package_manifest_json(
+        &manifest,
+        &[StagedPayload {
+            path: "plugin/plugin.dll".into(),
+            kind: "rust_dll",
+            bytes: dll_bytes,
+        }],
+    )
+}
+
+fn package_manifest_json(
+    manifest: &Manifest,
+    payloads: &[StagedPayload],
+) -> Result<String, String> {
+    let contacts = manifest
+        .publisher
+        .contacts
+        .iter()
+        .map(|contact| {
+            if !matches!(contact.kind.as_str(), "support" | "security")
+                || !canonical_email(&contact.value)
+            {
+                return Err(format!(
+                    "publisher contact {:?} must be an unambiguous plain email for P0 package synthesis",
+                    contact.value
+                ));
+            }
+            Ok(json!({
+                "kind": "email",
+                "value": contact.value,
+                "purposes": [contact.kind],
+            }))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let features = manifest
+        .features
+        .iter()
+        .map(|feature| {
+            json!({
+                "id": feature.id,
+                "capabilities": feature.capabilities,
+                "dependencies": [],
+            })
+        })
+        .collect::<Vec<_>>();
+    let payloads = payloads
+        .iter()
+        .map(|payload| {
+            json!({
+                "path": payload.path,
+                "size": payload.bytes.len(),
+                "sha256": sha256_hex(&payload.bytes),
+                "kind": payload.kind,
+            })
+        })
+        .collect::<Vec<_>>();
+    let package_manifest = json!({
+        "manifest_version": 1,
+        "package": { "id": manifest.package.id, "version": manifest.package.version },
+        "publisher": {
+            "id": manifest.publisher.id,
+            "display_name": manifest.publisher.display_name,
+            "contacts": contacts,
+        },
+        "sdk": {
+            "bundle_id": manifest.sdk.bundle_id,
+            "target": manifest.sdk.target,
+            "abi_schema": manifest.sdk.abi_schema,
+            "gpui": manifest.sdk.gpui,
+            "ui_abi_fingerprint": manifest.sdk.ui_abi_fingerprint,
+        },
+        "rust": [{
+            "id": manifest.rust.crate_name,
+            "entrypoint": "plugin/plugin.dll",
+            // This is a fixed mirror of ROOT_MODULE_CONTRACT_ID_V1. The
+            // production loader compares it to root binary data before it
+            // constructs a registrar; no author-provided source symbol is used.
+            "root_contract_id": {
+                "namespace": ROOT_MODULE_CONTRACT_NAMESPACE_V1,
+                "value": ROOT_MODULE_CONTRACT_VALUE_V1,
+            },
+            "sdk_major": 1,
+        }],
+        "lua": [],
+        "skins": [],
+        "locales": [],
+        "tools": [],
+        "features": features,
+        "dependencies": [],
+        "payloads": payloads,
+        "signature": { "kind": "unsigned" },
+        "data_version": 1,
+    });
+    serde_json::to_string(&package_manifest)
+        .map_err(|error| format!("could not serialize canonical package manifest: {error}"))
+}
+
+/// Stages one canonical local-developer package directory from a fully validated
+/// plugin project. The newly-created output directory contains only package
+/// runtime payloads and provenance notices, never private Rust source trees.
+///
+/// # Errors
+///
+/// Returns an error if project validation fails, an input/output path is unsafe,
+/// private provenance cannot be copied exactly, or the private output directory
+/// cannot be cleaned after a failed stage.
+pub fn stage_package(root: &Path, dll: &Path, output: &Path) -> Result<(), String> {
+    let report = validate(root);
+    if !report.valid {
+        let codes = report
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "plugin validation failed before package staging: {codes}"
+        ));
+    }
+    let canonical_root = canonical_plugin_root(root)?;
+    let manifest_source = read_regular_utf8_file(
+        &canonical_root,
+        &canonical_root.join("plugin-project.json"),
+        MAX_MANIFEST_BYTES,
+        "plugin-project.json",
+    )?;
+    let manifest: Manifest = serde_json::from_str(&manifest_source).map_err(|error| {
+        format!("plugin-project.json does not match the exact P0 schema: {error}")
+    })?;
+    validate_synthesis_manifest(&manifest)?;
+    let canonical_dll = dll
+        .canonicalize()
+        .map_err(|error| format!("plugin DLL cannot be canonicalized: {error}"))?;
+    if !canonical_dll.starts_with(&canonical_root) {
+        return Err("plugin DLL resolves outside the plugin root".into());
+    }
+    stage_validated_package(&canonical_root, &manifest, &canonical_dll, output)
+}
+
+fn stage_validated_package(
+    root: &Path,
+    manifest: &Manifest,
+    dll: &Path,
+    output: &Path,
+) -> Result<(), String> {
+    validate_synthesis_manifest(manifest)?;
+    let mut private_diagnostics = Vec::new();
+    validate_private_dependencies(
+        root,
+        &manifest.private_dependencies,
+        &mut private_diagnostics,
+    );
+    if !private_diagnostics.is_empty() {
+        return Err("private dependency provenance changed before package staging".into());
+    }
+    let mut payloads = vec![StagedPayload {
+        path: "plugin/plugin.dll".into(),
+        kind: "rust_dll",
+        bytes: read_regular_bytes(root, dll, MAX_PAYLOAD_BYTES)?,
+    }];
+    let mut private_dependencies = manifest.private_dependencies.iter().collect::<Vec<_>>();
+    private_dependencies.sort_by(|left, right| left.name.cmp(&right.name));
+    let mut notice_dependencies = Vec::new();
+    for dependency in private_dependencies {
+        let mut licenses = Vec::new();
+        for (license_path, hash) in &dependency.provenance.license_hashes {
+            let package_path = format!(
+                "licenses/private/{}-{}/{}",
+                dependency.name, dependency.version, license_path
+            );
+            let bytes = read_regular_bytes(
+                root,
+                &root.join(&dependency.path).join(license_path),
+                MAX_PAYLOAD_BYTES,
+            )?;
+            if sha256_hex(&bytes) != *hash {
+                return Err(format!(
+                    "private dependency license changed after validation: {}:{}",
+                    dependency.name, license_path
+                ));
+            }
+            payloads.push(StagedPayload {
+                path: package_path.clone(),
+                kind: "license",
+                bytes,
+            });
+            licenses.push(json!({
+                "source_path": license_path,
+                "package_path": package_path,
+                "sha256": hash,
+            }));
+        }
+        notice_dependencies.push(json!({
+            "name": dependency.name,
+            "version": dependency.version,
+            "vendor_path": dependency.path,
+            "tree_sha256": dependency.tree_sha256,
+            "source": dependency.provenance.source,
+            "crate_sha256": dependency.provenance.crate_sha256,
+            "license_expression": dependency.provenance.license_expression,
+            "licenses": licenses,
+        }));
+    }
+    if !notice_dependencies.is_empty() {
+        payloads.push(StagedPayload {
+            path: "notices/private-dependencies.json".into(),
+            kind: "notice",
+            bytes: serde_json::to_vec(&json!({
+                "schema_version": 1,
+                "private_dependencies": notice_dependencies,
+            }))
+            .map_err(|error| format!("could not serialize private dependency notice: {error}"))?,
+        });
+    }
+    payloads.sort_by(|left, right| left.path.cmp(&right.path));
+    if payloads
+        .iter()
+        .any(|payload| !safe_relative_path(&payload.path))
+        || payloads
+            .windows(2)
+            .any(|pair| pair[0].path.eq_ignore_ascii_case(&pair[1].path))
+    {
+        return Err("canonical package payload paths are unsafe or collide".into());
+    }
+    let manifest_json = package_manifest_json(manifest, &payloads)?;
+    validate_host_runtime_package_bounds(&payloads, &manifest_json)?;
+    let output = create_private_stage_directory(output)?;
+    let result = (|| {
+        for payload in &payloads {
+            write_new_stage_file(&output, &payload.path, &payload.bytes)?;
+        }
+        write_new_stage_file(&output, "manifest.json", manifest_json.as_bytes())
+    })();
+    if let Err(error) = result {
+        return match remove_private_stage_directory(&output) {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(format!("{error}; private stage cleanup failed: {cleanup}")),
+        };
+    }
+    Ok(())
+}
+
+/// Checks the exact limits the production PackageManifestV1 parser and
+/// store-only ZIP importer apply. The ZIP calculation intentionally includes
+/// local headers, central-directory headers, names, and the EOCD record.
+fn validate_host_runtime_package_bounds(
+    payloads: &[StagedPayload],
+    manifest_json: &str,
+) -> Result<(), String> {
+    if payloads.len() > HOST_MAX_RUNTIME_PAYLOADS {
+        return Err(format!(
+            "runtime package has {} payloads; host accepts at most {HOST_MAX_RUNTIME_PAYLOADS}",
+            payloads.len()
+        ));
+    }
+    if manifest_json.len() > HOST_MAX_RUNTIME_MANIFEST_BYTES {
+        return Err(format!(
+            "runtime manifest is {} bytes; host accepts at most {HOST_MAX_RUNTIME_MANIFEST_BYTES}",
+            manifest_json.len()
+        ));
+    }
+    let mut archive_bytes = CANONICAL_ZIP_END_OF_CENTRAL_DIRECTORY_BYTES;
+    for payload in payloads {
+        archive_bytes =
+            canonical_store_zip_entry_size(archive_bytes, &payload.path, payload.bytes.len())?;
+    }
+    archive_bytes =
+        canonical_store_zip_entry_size(archive_bytes, "manifest.json", manifest_json.len())?;
+    validate_host_canonical_zip_size(archive_bytes)
+}
+
+fn validate_host_canonical_zip_size(archive_bytes: u64) -> Result<(), String> {
+    if archive_bytes > HOST_MAX_CANONICAL_ZIP_BYTES {
+        return Err(format!(
+            "canonical runtime ZIP is {archive_bytes} bytes; host accepts at most {HOST_MAX_CANONICAL_ZIP_BYTES}"
+        ));
+    }
+    Ok(())
+}
+
+fn canonical_store_zip_entry_size(
+    current: u64,
+    path: &str,
+    content_length: usize,
+) -> Result<u64, String> {
+    let path_length = path.len();
+    if path_length > HOST_MAX_RUNTIME_PATH_BYTES {
+        return Err(format!(
+            "runtime package path exceeds the host {HOST_MAX_RUNTIME_PATH_BYTES}-byte limit: {path}"
+        ));
+    }
+    let path_length =
+        u64::try_from(path_length).map_err(|_| "runtime package path is oversized")?;
+    let content_length =
+        u64::try_from(content_length).map_err(|_| "runtime package payload is oversized")?;
+    current
+        .checked_add(CANONICAL_ZIP_LOCAL_HEADER_BYTES)
+        .and_then(|size| size.checked_add(path_length))
+        .and_then(|size| size.checked_add(content_length))
+        .and_then(|size| size.checked_add(CANONICAL_ZIP_CENTRAL_HEADER_BYTES))
+        .and_then(|size| size.checked_add(path_length))
+        .ok_or_else(|| "canonical runtime ZIP size overflowed".into())
+}
+
+fn canonical_plugin_root(root: &Path) -> Result<PathBuf, String> {
+    if is_link_or_reparse(root)? {
+        return Err("plugin root is a symlink or reparse point".into());
+    }
+    let canonical = root
+        .canonicalize()
+        .map_err(|error| format!("plugin root cannot be canonicalized: {error}"))?;
+    if !fs::metadata(&canonical).is_ok_and(|metadata| metadata.is_dir())
+        || is_link_or_reparse(&canonical)?
+    {
+        return Err("plugin root is not a regular directory".into());
+    }
+    Ok(canonical)
+}
+
+fn create_private_stage_directory(output: &Path) -> Result<PathBuf, String> {
+    if !output.is_absolute() || output.file_name().is_none() {
+        return Err("package stage output must be an absolute directory leaf".into());
+    }
+    let parent = output
+        .parent()
+        .ok_or("package stage output has no parent directory")?;
+    ensure_regular_directory_ancestors(parent)?;
+    match fs::create_dir(output) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err("package stage output directory must be private and newly created".into());
+        }
+        Err(error) => {
+            return Err(format!(
+                "could not create private package stage directory: {error}"
+            ));
+        }
+    }
+    if is_link_or_reparse(output)? || !fs::metadata(output).is_ok_and(|metadata| metadata.is_dir())
+    {
+        let _ = fs::remove_dir(output);
+        return Err("package stage output directory is unsafe".into());
+    }
+    output
+        .canonicalize()
+        .map_err(|error| format!("package stage output cannot be canonicalized: {error}"))
+}
+
+fn ensure_regular_directory_ancestors(path: &Path) -> Result<(), String> {
+    let mut ancestors = path.ancestors().collect::<Vec<_>>();
+    ancestors.reverse();
+    for ancestor in ancestors {
+        if is_link_or_reparse(ancestor)?
+            || !fs::metadata(ancestor).is_ok_and(|metadata| metadata.is_dir())
+        {
+            return Err(format!(
+                "package stage ancestor is not a regular directory: {}",
+                ancestor.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn write_new_stage_file(root: &Path, relative: &str, bytes: &[u8]) -> Result<(), String> {
+    if !safe_relative_path(relative) {
+        return Err("package stage path is unsafe".into());
+    }
+    let path = root.join(relative);
+    let parent = path.parent().ok_or("package stage payload has no parent")?;
+    let relative_parent = parent
+        .strip_prefix(root)
+        .map_err(|_| "package stage payload escapes its root")?;
+    let mut current = root.to_owned();
+    for component in relative_parent.components() {
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink()
+                    || !fs::metadata(&current).is_ok_and(|value| value.is_dir())
+                    || is_link_or_reparse(&current)?
+                {
+                    return Err("package stage parent is unsafe".into());
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&current).map_err(|create| {
+                    format!("could not create package stage directory: {create}")
+                })?;
+            }
+            Err(error) => return Err(format!("package stage parent cannot be inspected: {error}")),
+        }
+    }
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|error| format!("could not create package stage file: {error}"))?;
+    file.write_all(bytes)
+        .map_err(|error| format!("could not write package stage file: {error}"))?;
+    file.flush()
+        .map_err(|error| format!("could not flush package stage file: {error}"))?;
+    ensure_regular_project_path(root, &path)
+}
+
+fn remove_private_stage_directory(path: &Path) -> Result<(), String> {
+    if is_link_or_reparse(path)? || !fs::metadata(path).is_ok_and(|metadata| metadata.is_dir()) {
+        return Err("private stage root became unsafe".into());
+    }
+    for entry in
+        fs::read_dir(path).map_err(|error| format!("cannot read private stage: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("cannot read private stage entry: {error}"))?;
+        let child = entry.path();
+        let metadata = fs::symlink_metadata(&child)
+            .map_err(|error| format!("cannot inspect private stage entry: {error}"))?;
+        if metadata.file_type().is_symlink() || is_link_or_reparse(&child)? {
+            return Err("private stage contains a symlink or reparse point".into());
+        }
+        if fs::metadata(&child).is_ok_and(|value| value.is_dir()) {
+            remove_private_stage_directory(&child)?;
+        } else if fs::metadata(&child).is_ok_and(|value| value.is_file()) {
+            fs::remove_file(&child)
+                .map_err(|error| format!("cannot remove private stage file: {error}"))?;
+        } else {
+            return Err("private stage contains a non-regular entry".into());
+        }
+    }
+    fs::remove_dir(path).map_err(|error| format!("cannot remove private stage directory: {error}"))
+}
+
+fn validate_synthesis_manifest(manifest: &Manifest) -> Result<(), String> {
+    if manifest.schema_version != 1
+        || !valid_id(&manifest.package.id)
+        || !valid_version(&manifest.package.version)
+        || !valid_id(&manifest.publisher.id)
+        || manifest.publisher.display_name.trim().is_empty()
+        || !valid_id(&manifest.rust.crate_name)
+        || manifest.rust.entrypoint != "plugin.dll"
+    {
+        return Err(
+            "project manifest cannot be represented as the canonical P0 package manifest".into(),
+        );
+    }
+    if manifest.publisher.contacts.is_empty()
+        || manifest
+            .payloads
+            .iter()
+            .any(|payload| payload.kind != "rust-source")
+        || manifest.features.iter().any(|feature| {
+            !valid_id(&feature.id)
+                || has_duplicates(&feature.capabilities)
+                || feature
+                    .capabilities
+                    .iter()
+                    .any(|capability| !valid_id(capability))
+        })
+        || has_duplicates(
+            &manifest
+                .features
+                .iter()
+                .map(|feature| feature.id.clone())
+                .collect::<Vec<_>>(),
+        )
+    {
+        return Err(
+            "project manifest has unsupported runtime payloads, invalid publisher contacts, or invalid features"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn canonical_email(value: &str) -> bool {
+    if !value.is_ascii()
+        || value.trim() != value
+        || value
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+        || value.matches('@').count() != 1
+    {
+        return false;
+    }
+    let Some((local, domain)) = value.split_once('@') else {
+        return false;
+    };
+    (1..=64).contains(&local.len())
+        && !local.starts_with('.')
+        && !local.ends_with('.')
+        && !local.contains("..")
+        && local.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'.' | b'!'
+                        | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'/'
+                        | b'='
+                        | b'?'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'{'
+                        | b'|'
+                        | b'}'
+                        | b'~'
+                )
+        })
+        && canonical_email_domain(domain)
+}
+
+fn canonical_email_domain(value: &str) -> bool {
+    (1..=253).contains(&value.len())
+        && value.contains('.')
+        && value.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+}
+
 /// Inspects a DLL's PE headers and exports without loading it into the validator process.
 #[must_use]
 pub fn inspect_dll(path: &Path) -> Report {
-    let result = fs::read(path).and_then(|bytes| {
+    let result = read_bounded_dll(path).and_then(|bytes| {
         inspect_pe_exports(&bytes, ABI_STABLE_ROOT_MODULE_LOADER_EXPORT)
             .map_err(std::io::Error::other)
     });
@@ -288,11 +914,40 @@ pub fn inspect_dll(path: &Path) -> Report {
             diagnostics: vec![diagnostic(
                 "SESDK-DLL-001",
                 "binary",
-                &path.to_string_lossy(),
+                "plugin.dll",
                 format!("DLL inspection failed: {error}"),
             )],
         },
     }
+}
+
+fn read_bounded_dll(path: &Path) -> std::io::Result<Vec<u8>> {
+    let link_metadata = fs::symlink_metadata(path)?;
+    if link_metadata.file_type().is_symlink()
+        || is_link_or_reparse(path).map_err(std::io::Error::other)?
+    {
+        return Err(std::io::Error::other("DLL is a symlink or reparse point"));
+    }
+    let file = fs::File::open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::other("DLL is not a regular file"));
+    }
+    if metadata.len() > MAX_PAYLOAD_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("DLL exceeds the {MAX_PAYLOAD_BYTES}-byte limit"),
+        ));
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0));
+    file.take(MAX_PAYLOAD_BYTES + 1).read_to_end(&mut bytes)?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_PAYLOAD_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("DLL exceeds the {MAX_PAYLOAD_BYTES}-byte limit"),
+        ));
+    }
+    Ok(bytes)
 }
 
 fn inspect_pe_exports(bytes: &[u8], required_root_export: &str) -> Result<(), String> {
@@ -412,14 +1067,114 @@ fn validate_inner(root: &Path) -> Result<Vec<Diagnostic>, String> {
     if !canonical_root.is_dir() {
         return Err("plugin root is not a directory".into());
     }
+    ensure_no_consumer_cargo_config(&canonical_root)?;
     let manifest_path = canonical_root.join("plugin-project.json");
-    let source = fs::read_to_string(&manifest_path)
-        .map_err(|error| format!("could not read plugin-project.json: {error}"))?;
+    let source = read_regular_utf8_file(
+        &canonical_root,
+        &manifest_path,
+        MAX_MANIFEST_BYTES,
+        "plugin-project.json",
+    )?;
     let manifest: Manifest = serde_json::from_str(&source).map_err(|error| {
         format!("plugin-project.json does not match the exact P0 schema: {error}")
     })?;
+    let input_identities = capture_input_identities(&canonical_root, &manifest, &source)?;
     let expected = expected_sdk()?;
-    Ok(validate_manifest(&manifest, &canonical_root, &expected))
+    let mut diagnostics = validate_manifest(&manifest, &canonical_root, &expected);
+    if let Err(message) = verify_input_identities(&canonical_root, &input_identities) {
+        diagnostics.push(diagnostic(
+            "SESDK-TOCTOU-001",
+            "input",
+            "plugin-project.json",
+            message,
+        ));
+    }
+    if canonical_root
+        != root
+            .canonicalize()
+            .map_err(|error| format!("plugin root changed during validation: {error}"))?
+    {
+        diagnostics.push(diagnostic(
+            "SESDK-TOCTOU-002",
+            "input",
+            "plugin-project.json",
+            "plugin root identity changed during validation",
+        ));
+    }
+    Ok(diagnostics)
+}
+
+fn ensure_no_consumer_cargo_config(root: &Path) -> Result<(), String> {
+    let cargo_directory = root.join(".cargo");
+    if cargo_directory.exists() && is_link_or_reparse(&cargo_directory)? {
+        return Err("consumer .cargo directory is a symlink or reparse point".into());
+    }
+    for relative in [".cargo/config", ".cargo/config.toml"] {
+        let path = root.join(relative);
+        if path.exists() {
+            return Err(format!(
+                "consumer Cargo configuration is forbidden: {relative}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn capture_input_identities(
+    root: &Path,
+    manifest: &Manifest,
+    manifest_source: &str,
+) -> Result<Vec<InputIdentity>, String> {
+    let mut identities = vec![InputIdentity {
+        relative: PathBuf::from("plugin-project.json"),
+        size: u64::try_from(manifest_source.len()).map_err(|_| "manifest is too large")?,
+        sha256: sha256_hex(manifest_source.as_bytes()),
+    }];
+    for relative in [Path::new("Cargo.toml"), Path::new("Cargo.lock")]
+        .into_iter()
+        .chain(
+            manifest
+                .payloads
+                .iter()
+                .filter(|payload| safe_relative_path(&payload.path))
+                .map(|payload| Path::new(&payload.path)),
+        )
+    {
+        let path = root.join(relative);
+        if !path.exists() {
+            continue;
+        }
+        let maximum = if relative == Path::new("Cargo.toml") || relative == Path::new("Cargo.lock")
+        {
+            MAX_CARGO_FILE_BYTES
+        } else {
+            MAX_PAYLOAD_BYTES
+        };
+        let bytes = read_regular_bytes(root, &path, maximum)?;
+        identities.push(InputIdentity {
+            relative: relative.to_owned(),
+            size: u64::try_from(bytes.len()).map_err(|_| "plugin input is too large")?,
+            sha256: sha256_hex(&bytes),
+        });
+    }
+    identities.sort_by(|left, right| left.relative.cmp(&right.relative));
+    identities.dedup_by(|left, right| left.relative == right.relative);
+    Ok(identities)
+}
+
+fn verify_input_identities(root: &Path, identities: &[InputIdentity]) -> Result<(), String> {
+    for identity in identities {
+        let bytes = read_regular_bytes(root, &root.join(&identity.relative), MAX_PAYLOAD_BYTES)?;
+        if u64::try_from(bytes.len()).ok() != Some(identity.size)
+            || sha256_hex(&bytes) != identity.sha256
+        {
+            return Err(format!(
+                "validated input changed during validation: {}",
+                identity.relative.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn expected_sdk() -> Result<ExpectedSdk, String> {
@@ -461,6 +1216,12 @@ fn expected_sdk() -> Result<ExpectedSdk, String> {
             .and_then(Value::as_u64)
             .and_then(|value| u32::try_from(value).ok())
             .ok_or("sdk-lock ABI schema is missing")?,
+        cargo_release: required_string(&lock, "/toolchain/cargo_release")?,
+        cargo_commit_hash: required_string(&lock, "/toolchain/cargo_commit_hash")?,
+        cargo_sha256: required_string(&lock, "/toolchain/cargo_sha256")?,
+        rustc_release: required_string(&lock, "/toolchain/rustc_release")?,
+        rustc_commit_hash: required_string(&lock, "/toolchain/rustc_commit_hash")?,
+        rustc_sha256: required_string(&lock, "/toolchain/rustc_sha256")?,
         ui_abi_fingerprint: required_string(&fingerprint, "/fingerprint")?,
         gpui_repository: required_string(&lock, "/gpui/repository")?,
         gpui_revision: required_string(&lock, "/gpui/revision")?,
@@ -580,7 +1341,6 @@ fn validate_manifest(manifest: &Manifest, root: &Path, expected: &ExpectedSdk) -
         ("package.id", manifest.package.id.as_str()),
         ("publisher.id", manifest.publisher.id.as_str()),
         ("rust.crate_name", manifest.rust.crate_name.as_str()),
-        ("rust.root_module", manifest.rust.root_module.as_str()),
     ] {
         if !valid_id(value) {
             diagnostics.push(diagnostic(
@@ -634,15 +1394,16 @@ fn validate_manifest(manifest: &Manifest, root: &Path, expected: &ExpectedSdk) -
             "GPUI usage and the exact UI ABI fingerprint must agree",
         )),
     }
-    if !safe_relative_path(&manifest.rust.entrypoint) {
+    if manifest.rust.entrypoint != "plugin.dll" {
         diagnostics.push(diagnostic(
             "SESDK-PATH-001",
             "manifest",
             "rust.entrypoint",
-            "entrypoint path is unsafe",
+            "P0 package entrypoint must be the canonical plugin.dll",
         ));
     }
-    validate_cargo_project(root, manifest.sdk.gpui, expected, &mut diagnostics);
+    validate_private_dependencies(root, &manifest.private_dependencies, &mut diagnostics);
+    validate_cargo_project(root, manifest, expected, &mut diagnostics);
     validate_built_dll(root, manifest, expected, &mut diagnostics);
 
     validate_payload_bounds(&manifest.payloads, &mut diagnostics);
@@ -683,20 +1444,17 @@ fn validate_manifest(manifest: &Manifest, root: &Path, expected: &ExpectedSdk) -
             ));
             continue;
         }
-        if !matches!(
-            payload.kind.as_str(),
-            "rust-source" | "license" | "notice" | "locale" | "dll"
-        ) {
+        if payload.kind != "rust-source" {
             diagnostics.push(diagnostic(
                 "SESDK-PAYLOAD-001",
                 "payload",
                 &path,
-                "P0 payload kind is unsupported",
+                "P0 runtime packages accept build-time rust-source payloads only",
             ));
         }
         if payload.size > MAX_PAYLOAD_BYTES {
             diagnostics.push(diagnostic(
-                "SESDK-PAYLOAD-BOUND-003",
+                "SESDK-BOUND-003",
                 "payload",
                 &path,
                 format!(
@@ -776,6 +1534,154 @@ fn validate_manifest(manifest: &Manifest, root: &Path, expected: &ExpectedSdk) -
     diagnostics
 }
 
+fn validate_private_dependencies(
+    root: &Path,
+    private_dependencies: &[PrivateDependency],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let mut names = BTreeSet::new();
+    let mut paths = BTreeSet::new();
+    for (index, dependency) in private_dependencies.iter().enumerate() {
+        let location = format!("private_dependencies[{index}]");
+        let path_is_private_vendor = private_vendor_path_is_canonical(dependency);
+        if !valid_id(&dependency.name)
+            || !valid_version(&dependency.version)
+            || !path_is_private_vendor
+            || !lower_hex(&dependency.tree_sha256, 64)
+            || dependency.provenance.source != CRATES_IO_REGISTRY_SOURCE
+            || !lower_hex(&dependency.provenance.crate_sha256, 64)
+            || dependency.provenance.license_expression.trim().is_empty()
+            || dependency.provenance.license_hashes.is_empty()
+            || dependency
+                .provenance
+                .license_hashes
+                .keys()
+                .any(|path| !safe_relative_path(path))
+            || dependency
+                .provenance
+                .license_hashes
+                .values()
+                .any(|hash| !lower_hex(hash, 64))
+            || !names.insert(dependency.name.as_str())
+            || !paths.insert(dependency.path.as_str())
+        {
+            diagnostics.push(diagnostic(
+                "SESDK-PRIVATE-001",
+                "manifest",
+                &location,
+                "private dependency metadata must bind a unique vendor/private crate, tree hash, crates.io provenance, checksum, and license hashes",
+            ));
+            continue;
+        }
+        let tree = match private_dependency_tree_sha256(root, &dependency.path) {
+            Ok(tree) => tree,
+            Err(message) => {
+                diagnostics.push(diagnostic(
+                    "SESDK-PRIVATE-002",
+                    "vendor",
+                    &location,
+                    message,
+                ));
+                continue;
+            }
+        };
+        if tree != dependency.tree_sha256 {
+            diagnostics.push(diagnostic(
+                "SESDK-PRIVATE-003",
+                "vendor",
+                &location,
+                "private dependency tree hash differs from the manifest binding",
+            ));
+        }
+        for (license, expected_hash) in &dependency.provenance.license_hashes {
+            let license_path = format!("{}/{}", dependency.path, license);
+            let actual = read_regular_bytes(root, &root.join(&license_path), MAX_PAYLOAD_BYTES);
+            if !matches!(actual, Ok(ref bytes) if sha256_hex(bytes) == *expected_hash) {
+                diagnostics.push(diagnostic(
+                    "SESDK-PRIVATE-004",
+                    "vendor",
+                    &location,
+                    "private dependency license path is missing, unsafe, or differs from its provenance hash",
+                ));
+            }
+        }
+    }
+}
+
+fn private_vendor_path_is_canonical(dependency: &PrivateDependency) -> bool {
+    let mut segments = dependency.path.split('/');
+    let expected_leaf = format!("{}-{}", dependency.name, dependency.version);
+    safe_relative_path(&dependency.path)
+        && segments.next() == Some("vendor")
+        && segments.next() == Some("private")
+        && segments.next() == Some(expected_leaf.as_str())
+        && segments.next().is_none()
+}
+
+fn private_dependency_tree_sha256(root: &Path, relative: &str) -> Result<String, String> {
+    const MAX_PRIVATE_TREE_FILES: usize = 10_000;
+    const MAX_PRIVATE_TREE_BYTES: u64 = 512 * 1024 * 1024;
+    const MAX_PRIVATE_TREE_DEPTH: usize = 32;
+    let tree_root = root.join(relative);
+    if is_link_or_reparse(&tree_root)?
+        || !fs::metadata(&tree_root).is_ok_and(|metadata| metadata.is_dir())
+    {
+        return Err("private dependency vendor directory is missing or unsafe".into());
+    }
+    let mut pending = vec![(tree_root, PathBuf::new(), 0_usize)];
+    let mut files = Vec::new();
+    let mut total = 0_u64;
+    while let Some((directory, prefix, depth)) = pending.pop() {
+        for entry in
+            fs::read_dir(&directory).map_err(|_| "private dependency tree cannot be read")?
+        {
+            let entry = entry.map_err(|_| "private dependency tree cannot be read")?;
+            let name = entry.file_name();
+            let name = name
+                .to_str()
+                .ok_or("private dependency tree has a non-UTF-8 entry")?;
+            if !safe_relative_path(name) {
+                return Err("private dependency tree has an unsafe entry name".into());
+            }
+            let child_relative = prefix.join(name);
+            let child = directory.join(name);
+            if is_link_or_reparse(&child)? {
+                return Err("private dependency tree has a symlink or reparse point".into());
+            }
+            let metadata =
+                fs::metadata(&child).map_err(|_| "private dependency tree cannot be read")?;
+            if metadata.is_dir() {
+                if depth + 1 > MAX_PRIVATE_TREE_DEPTH {
+                    return Err("private dependency tree exceeds its depth limit".into());
+                }
+                pending.push((child, child_relative, depth + 1));
+            } else if metadata.is_file() {
+                total = total
+                    .checked_add(metadata.len())
+                    .ok_or("private dependency tree is too large")?;
+                if total > MAX_PRIVATE_TREE_BYTES || files.len() == MAX_PRIVATE_TREE_FILES {
+                    return Err("private dependency tree exceeds its resource limits".into());
+                }
+                files.push(child_relative);
+            } else {
+                return Err("private dependency tree has a non-regular entry".into());
+            }
+        }
+    }
+    files.sort();
+    let mut canonical = Vec::new();
+    for file in files {
+        let file_path = root.join(relative).join(&file);
+        let bytes = read_regular_bytes(root, &file_path, MAX_PAYLOAD_BYTES)?;
+        canonical.extend_from_slice(file.to_string_lossy().replace('\\', "/").as_bytes());
+        canonical.push(0);
+        canonical.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+        canonical.extend_from_slice(sha256_hex(&bytes).as_bytes());
+        canonical.push(0);
+    }
+    Ok(sha256_hex(&canonical))
+}
+
 fn validate_built_dll(
     root: &Path,
     _manifest: &Manifest,
@@ -817,7 +1723,7 @@ fn validate_built_dll(
 fn validate_payload_bounds(payloads: &[Payload], diagnostics: &mut Vec<Diagnostic>) {
     if payloads.len() > MAX_PAYLOADS {
         diagnostics.push(diagnostic(
-            "SESDK-PAYLOAD-BOUND-001",
+            "SESDK-BOUND-001",
             "payload",
             "payloads",
             format!("a plugin may declare at most {MAX_PAYLOADS} payloads"),
@@ -828,7 +1734,7 @@ fn validate_payload_bounds(payloads: &[Payload], diagnostics: &mut Vec<Diagnosti
         .try_fold(0_u64, |total, payload| total.checked_add(payload.size));
     if total_size.is_none_or(|total| total > MAX_TOTAL_PAYLOAD_BYTES) {
         diagnostics.push(diagnostic(
-            "SESDK-PAYLOAD-BOUND-002",
+            "SESDK-BOUND-002",
             "payload",
             "payloads",
             format!(
@@ -841,7 +1747,7 @@ fn validate_payload_bounds(payloads: &[Payload], diagnostics: &mut Vec<Diagnosti
 
 fn validate_cargo_project(
     root: &Path,
-    gpui_plugin: bool,
+    plugin: &Manifest,
     expected: &ExpectedSdk,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -890,20 +1796,70 @@ fn validate_cargo_project(
         return;
     };
     let lock_packages = cargo_lock_packages(&packages);
+    let cargo_name = manifest
+        .get("package")
+        .and_then(TomlValue::as_table)
+        .and_then(|table| table.get("name"))
+        .and_then(TomlValue::as_str)
+        .unwrap_or("");
+    let lib = manifest.get("lib").and_then(TomlValue::as_table);
+    let crate_types = lib
+        .and_then(|table| table.get("crate-type"))
+        .and_then(TomlValue::as_array);
+    let lib_path = lib
+        .and_then(|table| table.get("path"))
+        .and_then(TomlValue::as_str)
+        .unwrap_or("src/lib.rs");
+    let expected_crate = plugin.rust.crate_name.replace('-', "_");
+    if cargo_name.replace('-', "_") != expected_crate
+        || !crate_types
+            .is_some_and(|types| types.iter().any(|value| value.as_str() == Some("cdylib")))
+        || !safe_relative_path(lib_path)
+    {
+        diagnostics.push(diagnostic(
+            "SESDK-ENTRY-001",
+            "cargo",
+            "Cargo.toml",
+            "manifest rust.crate_name or Cargo cdylib target is not canonical",
+        ));
+    }
     validate_cargo_policy(&manifest, expected, diagnostics);
     let mut dependencies = BTreeMap::new();
     collect_direct_dependencies(&manifest, "", &mut dependencies);
+    let private_names = plugin
+        .private_dependencies
+        .iter()
+        .map(|dependency| dependency.name.as_str())
+        .collect::<BTreeSet<_>>();
     for (location, dependency) in dependencies {
-        validate_direct_dependency(&location, &dependency, &packages, expected, diagnostics);
-    }
-    match cargo_metadata(root) {
-        Ok(metadata) => validate_protected_metadata(
-            &metadata,
-            &lock_packages,
-            gpui_plugin,
+        validate_direct_dependency(
+            &location,
+            &dependency,
+            &packages,
+            &private_names,
             expected,
             diagnostics,
-        ),
+        );
+    }
+    match cargo_metadata(root, expected) {
+        Ok(metadata) => {
+            validate_protected_metadata(
+                &metadata,
+                &lock_packages,
+                plugin.sdk.gpui,
+                expected,
+                diagnostics,
+            );
+            validate_private_dependency_cargo_binding(
+                root,
+                &manifest,
+                &lock_packages,
+                &metadata,
+                &plugin.private_dependencies,
+                expected,
+                diagnostics,
+            );
+        }
         Err(message) => diagnostics.push(diagnostic(
             "SESDK-METADATA-001",
             "cargo",
@@ -931,6 +1887,395 @@ fn cargo_lock_packages(packages: &[&toml::map::Map<String, TomlValue>]) -> Vec<C
             })
         })
         .collect()
+}
+
+/// Binds author-provided private crates to Cargo's patched resolution graph.
+///
+/// Cargo deliberately omits registry source and checksum for a patched path
+/// package in `Cargo.lock`. The manifest and vendored `.cargo-checksum.json`
+/// retain that provenance, while the exact patch, lock record, and metadata
+/// path prove that Cargo resolved the declared vendor tree.
+fn validate_private_dependency_cargo_binding(
+    root: &Path,
+    manifest: &TomlValue,
+    lock_packages: &[CargoLockPackage],
+    metadata: &CargoMetadata,
+    private_dependencies: &[PrivateDependency],
+    expected: &ExpectedSdk,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let private_by_name = private_dependencies
+        .iter()
+        .map(|dependency| (dependency.name.as_str(), dependency))
+        .collect::<BTreeMap<_, _>>();
+    let protected_names = expected
+        .protected_graph
+        .values()
+        .map(|package| package.name.as_str())
+        .collect::<BTreeSet<_>>();
+    for (index, dependency) in private_dependencies.iter().enumerate() {
+        let location = format!("private_dependencies[{index}]");
+        if protected_names.contains(dependency.name.as_str()) {
+            diagnostics.push(diagnostic(
+                "SESDK-PRIVATE-010",
+                "compatibility",
+                &location,
+                "private dependency may not shadow a protected SDK closure package",
+            ));
+        }
+        validate_private_vendor_provenance(root, dependency, &location, diagnostics);
+    }
+
+    let patch_table = manifest.get("patch").and_then(TomlValue::as_table);
+    if patch_table.is_some_and(|patch| patch.keys().any(|source| source != "crates-io")) {
+        diagnostics.push(diagnostic(
+            "SESDK-PRIVATE-005",
+            "cargo",
+            "patch",
+            "private dependencies may only use the controlled [patch.crates-io] table",
+        ));
+    }
+    let patches = patch_table
+        .and_then(|patch| patch.get("crates-io"))
+        .and_then(TomlValue::as_table);
+    let mut patched_names = BTreeSet::new();
+    for (name, patch) in patches.into_iter().flat_map(|table| table.iter()) {
+        patched_names.insert(name.as_str());
+        let Some(dependency) = private_by_name.get(name.as_str()) else {
+            diagnostics.push(diagnostic(
+                "SESDK-PRIVATE-005",
+                "cargo",
+                &format!("patch.crates-io.{name}"),
+                "[patch.crates-io] contains an undeclared private dependency",
+            ));
+            continue;
+        };
+        let exact_path_patch = patch.as_table().is_some_and(|table| {
+            table.len() == 1
+                && table.get("path").and_then(TomlValue::as_str) == Some(dependency.path.as_str())
+        });
+        if !exact_path_patch {
+            diagnostics.push(diagnostic(
+                "SESDK-PRIVATE-005",
+                "cargo",
+                &format!("patch.crates-io.{name}"),
+                "private dependency patch must contain only its exact manifest vendor/private path",
+            ));
+        }
+    }
+    for dependency in private_dependencies {
+        if !patched_names.contains(dependency.name.as_str()) {
+            diagnostics.push(diagnostic(
+                "SESDK-PRIVATE-005",
+                "cargo",
+                &format!("patch.crates-io.{}", dependency.name),
+                "every declared private dependency requires an exact [patch.crates-io] path binding",
+            ));
+        }
+    }
+
+    let mut direct_dependencies = BTreeMap::new();
+    collect_direct_dependencies(manifest, "", &mut direct_dependencies);
+    for dependency in private_dependencies {
+        let expected_version = format!("={}", dependency.version);
+        let is_exact_direct_registry_dependency = direct_dependencies.values().any(|direct| {
+            direct.package == dependency.name
+                && direct.version.as_deref() == Some(expected_version.as_str())
+                && direct.git.is_none()
+                && !direct.path
+                && !direct.workspace
+                && !direct.malformed
+        });
+        if !is_exact_direct_registry_dependency {
+            diagnostics.push(diagnostic(
+                "SESDK-PRIVATE-006",
+                "cargo",
+                &format!("dependencies.{}", dependency.name),
+                "private dependency must be a direct exact-version registry dependency resolved through its patch",
+            ));
+        }
+        let matching_locks = lock_packages
+            .iter()
+            .filter(|locked| locked.name == dependency.name && locked.version == dependency.version)
+            .collect::<Vec<_>>();
+        if matching_locks.len() != 1
+            || matching_locks
+                .first()
+                .is_none_or(|locked| locked.source.is_some() || locked.checksum.is_some())
+        {
+            diagnostics.push(diagnostic(
+                "SESDK-PRIVATE-007",
+                "cargo",
+                &format!("Cargo.lock.{}", dependency.name),
+                "patched private dependency must have one exact source-less, checksum-less Cargo.lock record",
+            ));
+        }
+    }
+
+    validate_private_metadata_bijection(
+        root,
+        metadata,
+        private_dependencies,
+        &private_by_name,
+        &protected_names,
+        diagnostics,
+    );
+}
+
+fn validate_private_vendor_provenance(
+    root: &Path,
+    dependency: &PrivateDependency,
+    location: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let cargo_toml = root.join(&dependency.path).join("Cargo.toml");
+    let cargo = read_project_toml(root, &cargo_toml);
+    let package = cargo
+        .as_ref()
+        .ok()
+        .and_then(|value| value.get("package"))
+        .and_then(TomlValue::as_table);
+    if package.and_then(|package| package.get("name").and_then(TomlValue::as_str))
+        != Some(dependency.name.as_str())
+        || package.and_then(|package| package.get("version").and_then(TomlValue::as_str))
+            != Some(dependency.version.as_str())
+        || package.and_then(|package| package.get("license").and_then(TomlValue::as_str))
+            != Some(dependency.provenance.license_expression.as_str())
+    {
+        diagnostics.push(diagnostic(
+            "SESDK-PRIVATE-011",
+            "vendor",
+            location,
+            "vendored Cargo.toml name, version, or license differs from private dependency provenance",
+        ));
+    }
+    let checksum_path = root.join(&dependency.path).join(".cargo-checksum.json");
+    let checksum = read_regular_utf8_file(
+        root,
+        &checksum_path,
+        MAX_CARGO_FILE_BYTES,
+        "private dependency checksum",
+    )
+    .ok()
+    .and_then(|source| serde_json::from_str::<Value>(&source).ok());
+    let checksum_files = checksum.as_ref().and_then(cargo_checksum_file_hashes);
+    let inventory_matches = checksum_files.as_ref().is_some_and(|declared| {
+        private_vendor_file_hashes(root, &dependency.path).is_ok_and(|actual| actual == *declared)
+    });
+    if checksum
+        .as_ref()
+        .and_then(|value| value.get("package"))
+        .and_then(Value::as_str)
+        != Some(dependency.provenance.crate_sha256.as_str())
+        || !inventory_matches
+    {
+        diagnostics.push(diagnostic(
+            "SESDK-PRIVATE-012",
+            "vendor",
+            location,
+            "vendored .cargo-checksum.json does not exactly bind the crate checksum and non-checksum file inventory",
+        ));
+    }
+}
+
+fn cargo_checksum_file_hashes(value: &Value) -> Option<BTreeMap<String, String>> {
+    let files = value.get("files")?.as_object()?;
+    let mut normalized = BTreeSet::new();
+    let mut hashes = BTreeMap::new();
+    for (path, hash) in files {
+        if path == ".cargo-checksum.json"
+            || !safe_relative_path(path)
+            || !lower_hex(hash.as_str()?, 64)
+            || !normalized.insert(path.to_ascii_lowercase())
+        {
+            return None;
+        }
+        hashes.insert(path.clone(), hash.as_str()?.to_owned());
+    }
+    Some(hashes)
+}
+
+fn private_vendor_file_hashes(
+    root: &Path,
+    relative: &str,
+) -> Result<BTreeMap<String, String>, String> {
+    const MAX_PRIVATE_TREE_FILES: usize = 10_000;
+    const MAX_PRIVATE_TREE_BYTES: u64 = 512 * 1024 * 1024;
+    const MAX_PRIVATE_TREE_DEPTH: usize = 32;
+    let tree_root = root.join(relative);
+    if is_link_or_reparse(&tree_root)?
+        || !fs::metadata(&tree_root).is_ok_and(|metadata| metadata.is_dir())
+    {
+        return Err("private dependency vendor directory is missing or unsafe".into());
+    }
+    let mut pending = vec![(tree_root, PathBuf::new(), 0_usize)];
+    let mut total = 0_u64;
+    let mut hashes = BTreeMap::new();
+    let mut folded_paths = BTreeSet::new();
+    while let Some((directory, prefix, depth)) = pending.pop() {
+        for entry in
+            fs::read_dir(&directory).map_err(|_| "private dependency tree cannot be read")?
+        {
+            let entry = entry.map_err(|_| "private dependency tree cannot be read")?;
+            let name = entry.file_name();
+            let name = name
+                .to_str()
+                .ok_or("private dependency tree has a non-UTF-8 entry")?;
+            if !safe_relative_path(name) {
+                return Err("private dependency tree has an unsafe entry name".into());
+            }
+            let child_relative = prefix.join(name);
+            let child = directory.join(name);
+            if is_link_or_reparse(&child)? {
+                return Err("private dependency tree has a symlink or reparse point".into());
+            }
+            let metadata =
+                fs::metadata(&child).map_err(|_| "private dependency tree cannot be read")?;
+            if metadata.is_dir() {
+                if depth + 1 > MAX_PRIVATE_TREE_DEPTH {
+                    return Err("private dependency tree exceeds its depth limit".into());
+                }
+                pending.push((child, child_relative, depth + 1));
+                continue;
+            }
+            if !metadata.is_file() {
+                return Err("private dependency tree has a non-regular entry".into());
+            }
+            let normalized_path = child_relative.to_string_lossy().replace('\\', "/");
+            if normalized_path == ".cargo-checksum.json" {
+                continue;
+            }
+            total = total
+                .checked_add(metadata.len())
+                .ok_or("private dependency tree is too large")?;
+            if total > MAX_PRIVATE_TREE_BYTES || hashes.len() == MAX_PRIVATE_TREE_FILES {
+                return Err("private dependency tree exceeds its resource limits".into());
+            }
+            if !folded_paths.insert(normalized_path.to_ascii_lowercase()) {
+                return Err("private dependency tree has a case-colliding file path".into());
+            }
+            hashes.insert(
+                normalized_path,
+                sha256_hex(&read_regular_bytes(root, &child, MAX_PAYLOAD_BYTES)?),
+            );
+        }
+    }
+    Ok(hashes)
+}
+
+fn validate_private_metadata_bijection(
+    root: &Path,
+    metadata: &CargoMetadata,
+    private_dependencies: &[PrivateDependency],
+    private_by_name: &BTreeMap<&str, &PrivateDependency>,
+    protected_names: &BTreeSet<&str>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(resolve) = &metadata.resolve else {
+        diagnostics.push(diagnostic(
+            "SESDK-PRIVATE-008",
+            "cargo",
+            "cargo.metadata",
+            "cargo metadata has no graph for private dependency binding",
+        ));
+        return;
+    };
+    let Some(root_id) = &resolve.root else {
+        diagnostics.push(diagnostic(
+            "SESDK-PRIVATE-008",
+            "cargo",
+            "cargo.metadata",
+            "cargo metadata has no root for private dependency binding",
+        ));
+        return;
+    };
+    let nodes = resolve
+        .nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node))
+        .collect::<BTreeMap<_, _>>();
+    let packages = metadata
+        .packages
+        .iter()
+        .map(|package| (package.id.as_str(), package))
+        .collect::<BTreeMap<_, _>>();
+    let reachable = reachable_node_ids(root_id, &nodes);
+    let Some(root_node) = nodes.get(root_id.as_str()) else {
+        diagnostics.push(diagnostic(
+            "SESDK-PRIVATE-008",
+            "cargo",
+            "cargo.metadata",
+            "cargo metadata root has no resolve node",
+        ));
+        return;
+    };
+
+    let mut declared_metadata_ids = BTreeSet::new();
+    for dependency in private_dependencies {
+        let matching = reachable
+            .iter()
+            .filter_map(|id| packages.get(id.as_str()).map(|package| (id, *package)))
+            .filter(|(_, package)| {
+                package.name == dependency.name
+                    && package.version == dependency.version
+                    && package.source.is_none()
+                    && metadata_package_path(package, root).as_deref()
+                        == Some(dependency.path.as_str())
+            })
+            .collect::<Vec<_>>();
+        let root_has_exact_edge = matching.iter().any(|(id, _)| {
+            root_node
+                .deps
+                .iter()
+                .any(|edge| edge.name == dependency.name.replace('-', "_") && edge.pkg == **id)
+        });
+        if matching.len() != 1 || !root_has_exact_edge {
+            diagnostics.push(diagnostic(
+                "SESDK-PRIVATE-008",
+                "cargo",
+                &format!("cargo.metadata.{}", dependency.name),
+                "declared private dependency is absent, ambiguous, or not directly reachable from the plugin root",
+            ));
+        } else if let Some((id, _)) = matching.first() {
+            declared_metadata_ids.insert((*id).to_owned());
+        }
+    }
+
+    for id in &reachable {
+        let Some(package) = packages.get(id.as_str()) else {
+            continue;
+        };
+        let relative = metadata_package_path(package, root);
+        let is_private_path = relative
+            .as_deref()
+            .is_some_and(|path| path.starts_with("vendor/private/"));
+        if protected_names.contains(package.name.as_str()) && is_private_path {
+            diagnostics.push(diagnostic(
+                "SESDK-PRIVATE-010",
+                "compatibility",
+                &format!("cargo.metadata.{}", package.name),
+                "private vendor path shadows a protected SDK closure package",
+            ));
+        }
+        if !is_private_path {
+            continue;
+        }
+        let declared = private_by_name.get(package.name.as_str());
+        let exact_declared_path = declared.is_some_and(|dependency| {
+            package.version == dependency.version
+                && package.source.is_none()
+                && relative.as_deref() == Some(dependency.path.as_str())
+                && declared_metadata_ids.contains(id)
+        });
+        if !exact_declared_path {
+            diagnostics.push(diagnostic(
+                "SESDK-PRIVATE-009",
+                "cargo",
+                &format!("cargo.metadata.{}", package.name),
+                "reachable vendor/private crate is undeclared or differs from its manifest binding",
+            ));
+        }
+    }
 }
 
 fn validate_cargo_policy(
@@ -1074,10 +2419,29 @@ fn collect_cargo_override_keys(
     }
 }
 
-fn cargo_metadata(root: &Path) -> Result<CargoMetadata, String> {
-    let output = Command::new("cargo")
-        .args(["metadata", "--locked", "--offline", "--format-version", "1"])
-        .current_dir(root)
+fn cargo_metadata(root: &Path, expected: &ExpectedSdk) -> Result<CargoMetadata, String> {
+    let rustc = trusted_rustc_path(expected)?;
+    if let Some(variable) = forbidden_cargo_environment_variable(expected, &rustc) {
+        return Err(format!(
+            "fingerprint-affecting Cargo environment override is forbidden: {variable}"
+        ));
+    }
+    let cargo = trusted_cargo_path(expected)?;
+    let output = Command::new(cargo)
+        .args([
+            "metadata",
+            "--locked",
+            "--offline",
+            "--format-version",
+            "1",
+            "--manifest-path",
+        ])
+        .arg(root.join("Cargo.toml"))
+        .current_dir(&expected.repository_root)
+        .env("CARGO_NET_OFFLINE", "true")
+        .env("RUSTC", rustc)
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_MANIFEST_DIR")
         .output()
         .map_err(|error| format!("could not execute cargo metadata: {error}"))?;
     if !output.status.success() {
@@ -1088,6 +2452,156 @@ fn cargo_metadata(root: &Path) -> Result<CargoMetadata, String> {
     }
     serde_json::from_slice(&output.stdout)
         .map_err(|error| format!("cargo metadata emitted invalid JSON: {error}"))
+}
+
+fn trusted_cargo_path(expected: &ExpectedSdk) -> Result<PathBuf, String> {
+    let configured = std::env::var_os(TRUSTED_CARGO_PATH_ENV)
+        .ok_or_else(|| format!("{TRUSTED_CARGO_PATH_ENV} is required"))?;
+    let configured = PathBuf::from(configured);
+    if !configured.is_absolute() || is_link_or_reparse(&configured)? {
+        return Err("trusted Cargo path must be an absolute non-reparse executable".into());
+    }
+    let canonical = configured
+        .canonicalize()
+        .map_err(|error| format!("trusted Cargo cannot be resolved: {error}"))?;
+    let metadata = fs::metadata(&canonical)
+        .map_err(|error| format!("trusted Cargo metadata cannot be read: {error}"))?;
+    if !metadata.is_file() {
+        return Err("trusted Cargo path is not a regular file".into());
+    }
+    let expected_hash = std::env::var(TRUSTED_CARGO_SHA256_ENV)
+        .map_err(|_| format!("{TRUSTED_CARGO_SHA256_ENV} is required"))?;
+    if expected_hash != expected.cargo_sha256
+        || !lower_hex(&expected_hash, 64)
+        || sha256_hex(&fs::read(&canonical).map_err(|error| error.to_string())?) != expected_hash
+    {
+        return Err(
+            "trusted Cargo executable hash differs from its explicit authority contract".into(),
+        );
+    }
+    let output = Command::new(&canonical)
+        .arg("-Vv")
+        .env_remove("RUSTC")
+        .env_remove("RUSTC_WRAPPER")
+        .env_remove("RUSTC_WORKSPACE_WRAPPER")
+        .env_remove("RUSTFLAGS")
+        .env_remove("RUSTDOCFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("CARGO_BUILD_RUSTFLAGS")
+        .output()
+        .map_err(|error| format!("could not execute trusted Cargo: {error}"))?;
+    if !output.status.success() {
+        return Err("trusted Cargo -Vv failed".into());
+    }
+    let version = String::from_utf8(output.stdout)
+        .map_err(|_| "trusted Cargo -Vv emitted non-UTF-8 output")?;
+    if toolchain_field(&version, "release") != Some(expected.cargo_release.as_str())
+        || toolchain_field(&version, "commit-hash") != Some(expected.cargo_commit_hash.as_str())
+    {
+        return Err("trusted Cargo version or commit hash differs from sdk-lock".into());
+    }
+    Ok(canonical)
+}
+
+fn trusted_rustc_path(expected: &ExpectedSdk) -> Result<PathBuf, String> {
+    let configured = std::env::var_os(TRUSTED_RUSTC_PATH_ENV)
+        .ok_or_else(|| format!("{TRUSTED_RUSTC_PATH_ENV} is required"))?;
+    let configured = PathBuf::from(configured);
+    if !configured.is_absolute() || is_link_or_reparse(&configured)? {
+        return Err("trusted rustc path must be an absolute non-reparse executable".into());
+    }
+    let canonical = configured
+        .canonicalize()
+        .map_err(|error| format!("trusted rustc cannot be resolved: {error}"))?;
+    let metadata = fs::metadata(&canonical)
+        .map_err(|error| format!("trusted rustc metadata cannot be read: {error}"))?;
+    if !metadata.is_file() {
+        return Err("trusted rustc path is not a regular file".into());
+    }
+    let expected_hash = std::env::var(TRUSTED_RUSTC_SHA256_ENV)
+        .map_err(|_| format!("{TRUSTED_RUSTC_SHA256_ENV} is required"))?;
+    if expected_hash != expected.rustc_sha256
+        || !lower_hex(&expected_hash, 64)
+        || sha256_hex(&fs::read(&canonical).map_err(|error| error.to_string())?) != expected_hash
+    {
+        return Err(
+            "trusted rustc executable hash differs from the sdk-lock authority contract".into(),
+        );
+    }
+    let output = Command::new(&canonical)
+        .arg("-Vv")
+        .env_remove("RUSTC")
+        .env_remove("RUSTC_WRAPPER")
+        .env_remove("RUSTC_WORKSPACE_WRAPPER")
+        .env_remove("RUSTFLAGS")
+        .env_remove("RUSTDOCFLAGS")
+        .output()
+        .map_err(|error| format!("could not execute trusted rustc: {error}"))?;
+    if !output.status.success() {
+        return Err("trusted rustc -Vv failed".into());
+    }
+    let version = String::from_utf8(output.stdout)
+        .map_err(|_| "trusted rustc -Vv emitted non-UTF-8 output")?;
+    if toolchain_field(&version, "release") != Some(expected.rustc_release.as_str())
+        || toolchain_field(&version, "commit-hash") != Some(expected.rustc_commit_hash.as_str())
+        || toolchain_field(&version, "host") != Some(expected.target.as_str())
+    {
+        return Err("trusted rustc version, commit hash, or host differs from sdk-lock".into());
+    }
+    Ok(canonical)
+}
+
+fn toolchain_field<'a>(output: &'a str, name: &str) -> Option<&'a str> {
+    output
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{name}: ")))
+        .filter(|value| !value.is_empty())
+}
+
+fn forbidden_cargo_environment_variable(
+    expected: &ExpectedSdk,
+    trusted_rustc: &Path,
+) -> Option<String> {
+    std::env::vars_os().find_map(|(name, value)| {
+        if value.is_empty() {
+            return None;
+        }
+        let name = name.to_string_lossy().into_owned();
+        if name == "RUSTC"
+            && PathBuf::from(&value).canonicalize().ok().as_deref() == Some(trusted_rustc)
+            && std::env::var(TRUSTED_RUSTC_SHA256_ENV).ok().as_deref()
+                == Some(expected.rustc_sha256.as_str())
+        {
+            return None;
+        }
+        is_forbidden_cargo_environment_name(&name).then_some(name)
+    })
+}
+
+fn is_forbidden_cargo_environment_name(name: &str) -> bool {
+    name == "RUSTC"
+        || name == "RUSTC_BOOTSTRAP"
+        || name == "RUSTC_WRAPPER"
+        || name == "RUSTC_WORKSPACE_WRAPPER"
+        || name == "RUSTFLAGS"
+        || name == "RUSTDOCFLAGS"
+        || name == "CARGO_ENCODED_RUSTFLAGS"
+        || name == "CARGO_BUILD_RUSTFLAGS"
+        || name == "CARGO_BUILD_RUSTC"
+        || name == "CARGO_INCREMENTAL"
+        || name == "CC"
+        || name == "CXX"
+        || name == "AR"
+        || name == "LINKER"
+        || name.starts_with("CARGO_PROFILE_")
+        || (name.starts_with("CARGO_TARGET_")
+            && (name.ends_with("_RUSTFLAGS")
+                || name.ends_with("_LINKER")
+                || name.ends_with("_RUNNER")))
+        || name.ends_with("_CC")
+        || name.ends_with("_CXX")
+        || name.ends_with("_AR")
+        || name.ends_with("_LINKER")
 }
 
 fn validate_protected_metadata(
@@ -1285,11 +2799,28 @@ fn canonical_package_for_metadata<'a>(
 }
 
 fn metadata_package_path(package: &CargoMetadataPackage, repository_root: &Path) -> Option<String> {
-    Path::new(&package.manifest_path)
+    let package_root = normalized_metadata_path(Path::new(&package.manifest_path))
         .parent()?
+        .to_owned();
+    let repository_root = normalized_metadata_path(repository_root);
+    package_root
         .strip_prefix(repository_root)
         .ok()
         .map(|path| path.to_string_lossy().replace('\\', "/"))
+}
+
+/// `std::fs::canonicalize` returns a Windows verbatim path (`\\?\`) while
+/// Cargo's JSON metadata emits ordinary drive paths. Compare their ordinary
+/// forms so a no-reparse consumer snapshot still binds its private crates.
+fn normalized_metadata_path(path: &Path) -> PathBuf {
+    let value = path.to_string_lossy();
+    if let Some(path) = value.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{path}"));
+    }
+    if let Some(path) = value.strip_prefix(r"\\?\") {
+        return PathBuf::from(path);
+    }
+    path.to_owned()
 }
 
 fn normalized_edge(name: &str, to: &str, kind: &str, target: Option<&str>) -> String {
@@ -1301,22 +2832,49 @@ fn string_set(values: &[String]) -> BTreeSet<&str> {
 }
 
 fn read_project_toml(root: &Path, path: &Path) -> Result<TomlValue, String> {
-    if !path.starts_with(root) {
-        return Err("project file escapes plugin root".into());
-    }
-    ensure_regular_project_path(root, path)?;
-    let source = fs::read_to_string(path).map_err(|error| {
-        format!(
-            "{} cannot be read: {error}",
-            path.file_name().unwrap().display()
-        )
-    })?;
+    let source = read_regular_utf8_file(root, path, MAX_CARGO_FILE_BYTES, "Cargo project file")?;
     source.parse::<TomlValue>().map_err(|error| {
         format!(
             "{} is not valid TOML: {error}",
             path.file_name().unwrap().display()
         )
     })
+}
+
+fn read_regular_utf8_file(
+    root: &Path,
+    path: &Path,
+    maximum_bytes: u64,
+    label: &str,
+) -> Result<String, String> {
+    let bytes = read_regular_bytes(root, path, maximum_bytes)?;
+    String::from_utf8(bytes).map_err(|error| format!("{label} is not UTF-8: {error}"))
+}
+
+fn read_regular_bytes(root: &Path, path: &Path, maximum_bytes: u64) -> Result<Vec<u8>, String> {
+    ensure_regular_project_path(root, path)?;
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| format!("{} cannot be canonicalized: {error}", path.display()))?;
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|error| format!("plugin root cannot be canonicalized: {error}"))?;
+    if !canonical.starts_with(canonical_root) {
+        return Err(format!(
+            "{} resolves outside the plugin root",
+            path.display()
+        ));
+    }
+    let metadata = fs::metadata(&canonical)
+        .map_err(|error| format!("{} cannot be read: {error}", path.display()))?;
+    if metadata.len() > maximum_bytes {
+        return Err(format!(
+            "{} exceeds the {} byte input limit",
+            path.file_name().unwrap_or_default().to_string_lossy(),
+            maximum_bytes
+        ));
+    }
+    fs::read(&canonical).map_err(|error| format!("{} cannot be read: {error}", path.display()))
 }
 
 fn collect_direct_dependencies(
@@ -1418,6 +2976,7 @@ fn validate_direct_dependency(
     location: &str,
     dependency: &DirectDependency,
     packages: &[&toml::map::Map<String, TomlValue>],
+    private_names: &BTreeSet<&str>,
     expected: &ExpectedSdk,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -1430,7 +2989,9 @@ fn validate_direct_dependency(
         ));
         return;
     }
-    if is_private_workspace_crate(&dependency.package) {
+    if is_private_workspace_crate(&dependency.package)
+        && dependency.package != PUBLIC_SDK_CONTRACT_DEPENDENCY
+    {
         diagnostics.push(diagnostic(
             "SESDK-CARGO-005",
             "cargo",
@@ -1438,7 +2999,22 @@ fn validate_direct_dependency(
             "direct dependency references a SuperExplorer private workspace crate",
         ));
     }
-    if dependency.path || dependency.workspace {
+    if dependency.package == PUBLIC_SDK_CONTRACT_DEPENDENCY
+        && (dependency.path
+            || dependency.workspace
+            || dependency.git.is_some()
+            || dependency.version.as_deref() != Some(PUBLIC_SDK_CONTRACT_VERSION))
+    {
+        diagnostics.push(diagnostic(
+            "SESDK-CARGO-014",
+            "cargo",
+            location,
+            "the public SDK ABI contract must be the exact registry-pinned explorer-extension-api = 1.2.0 dependency",
+        ));
+    }
+    if (dependency.path || dependency.workspace)
+        && !private_names.contains(dependency.package.as_str())
+    {
         diagnostics.push(diagnostic(
             "SESDK-CARGO-006",
             "cargo",
@@ -1477,12 +3053,14 @@ fn validate_direct_dependency(
         ));
         return;
     }
-    if matches.iter().all(|package| {
-        package
-            .get("source")
-            .and_then(TomlValue::as_str)
-            .is_none_or(str::is_empty)
-    }) {
+    if !private_names.contains(dependency.package.as_str())
+        && matches.iter().all(|package| {
+            package
+                .get("source")
+                .and_then(TomlValue::as_str)
+                .is_none_or(str::is_empty)
+        })
+    {
         diagnostics.push(diagnostic(
             "SESDK-CARGO-010",
             "cargo",
@@ -1549,26 +3127,28 @@ fn ensure_regular_project_path(root: &Path, path: &Path) -> Result<(), String> {
 
 fn ensure_regular_relative_path(root: &Path, relative: &Path) -> Result<(), String> {
     let mut current = root.to_owned();
+    let mut traversed = PathBuf::new();
     for component in relative.components() {
         current.push(component);
+        traversed.push(component);
         if is_link_or_reparse(&current)? {
             return Err(format!(
                 "{} is a symlink or reparse point",
-                current.display()
+                traversed.display()
             ));
         }
     }
     let metadata = fs::metadata(&current)
-        .map_err(|error| format!("{} is unavailable: {error}", current.display()))?;
+        .map_err(|error| format!("{} is unavailable: {error}", relative.display()))?;
     if !metadata.is_file() {
-        return Err(format!("{} is not a regular file", current.display()));
+        return Err(format!("{} is not a regular file", relative.display()));
     }
     Ok(())
 }
 
 fn is_link_or_reparse(path: &Path) -> Result<bool, String> {
     let metadata = fs::symlink_metadata(path)
-        .map_err(|error| format!("{} metadata cannot be read: {error}", path.display()))?;
+        .map_err(|error| format!("filesystem metadata cannot be read: {error}"))?;
     if metadata.file_type().is_symlink() {
         return Ok(true);
     }
@@ -1626,7 +3206,7 @@ fn validate_payload(root: &Path, payload: &Payload, path: &str, diagnostics: &mu
     };
     if metadata.len() > MAX_PAYLOAD_BYTES {
         diagnostics.push(diagnostic(
-            "SESDK-PAYLOAD-BOUND-004",
+            "SESDK-BOUND-004",
             "payload",
             path,
             format!(
@@ -1732,6 +3312,60 @@ fn diagnostic(code: &str, phase: &str, path: &str, message: impl Into<String>) -
         path: path.into(),
         message: message.into(),
     }
+}
+
+fn redact_plugin_paths(diagnostics: &mut [Diagnostic], root: &Path) {
+    let mut roots = vec![root.to_string_lossy().into_owned()];
+    if let Ok(canonical) = root.canonicalize() {
+        roots.push(canonical.to_string_lossy().into_owned());
+    }
+    for diagnostic in diagnostics {
+        for root in &roots {
+            diagnostic.path = diagnostic.path.replace(root, "<plugin-root>");
+            diagnostic.message = diagnostic.message.replace(root, "<plugin-root>");
+        }
+        diagnostic.path = redact_absolute_paths(&diagnostic.path);
+        diagnostic.message = redact_absolute_paths(&diagnostic.message);
+    }
+}
+
+fn redact_absolute_paths(value: &str) -> String {
+    let characters = value.chars().collect::<Vec<_>>();
+    let mut output = String::with_capacity(value.len());
+    let mut cursor = 0_usize;
+    while cursor < characters.len() {
+        let is_drive_path = cursor + 2 < characters.len()
+            && characters[cursor].is_ascii_alphabetic()
+            && characters[cursor + 1] == ':'
+            && matches!(characters[cursor + 2], '\\' | '/');
+        let is_unc_path = cursor + 1 < characters.len()
+            && characters[cursor] == '\\'
+            && characters[cursor + 1] == '\\';
+        if !is_drive_path && !is_unc_path {
+            output.push(characters[cursor]);
+            cursor += 1;
+            continue;
+        }
+        output.push_str("<path>");
+        let quote = cursor
+            .checked_sub(1)
+            .and_then(|index| characters.get(index))
+            .copied()
+            .filter(|character| matches!(character, '\'' | '"' | '`'));
+        cursor += if is_drive_path { 3 } else { 2 };
+        while cursor < characters.len()
+            && !matches!(characters[cursor], '\n' | '\r')
+            && quote.is_none_or(|delimiter| characters[cursor] != delimiter)
+            && !(quote.is_none()
+                && characters[cursor].is_whitespace()
+                && characters
+                    .get(cursor + 1)
+                    .is_some_and(|next| !next.is_ascii_alphanumeric()))
+        {
+            cursor += 1;
+        }
+    }
+    output
 }
 
 fn valid_id(value: &str) -> bool {
@@ -1862,6 +3496,12 @@ mod tests {
             bundle_id: "sdk-test".into(),
             target: "x86_64-pc-windows-msvc".into(),
             abi_schema: 1,
+            rustc_release: "1.97.1".into(),
+            rustc_commit_hash: "a".into(),
+            rustc_sha256: "c".repeat(64),
+            cargo_release: "1.97.1".into(),
+            cargo_commit_hash: "b".into(),
+            cargo_sha256: "d".repeat(64),
             ui_abi_fingerprint: "a".repeat(64),
             gpui_repository: "https://github.com/damody/gpui-ce-explorer.git".into(),
             gpui_revision: "a".repeat(40),
@@ -1900,15 +3540,98 @@ mod tests {
             rust: RustPlugin {
                 crate_name: "plugin".into(),
                 entrypoint: "plugin.dll".into(),
-                root_module: "plugin_root".into(),
             },
             features: vec![],
             contributions: vec![],
             payloads: vec![],
+            private_dependencies: vec![],
             verification: Verification {
                 requirements: vec![],
             },
         }
+    }
+
+    #[test]
+    fn package_entrypoint_must_be_the_canonical_dll_name() {
+        let directory = TestDirectory::new();
+        let mut manifest = manifest_for_test();
+        manifest.rust.entrypoint = "nested/plugin.dll".into();
+
+        let diagnostics = validate_manifest(&manifest, &directory.0, &expected_for_test());
+
+        assert!(has_code(&diagnostics, "SESDK-PATH-001"));
+    }
+
+    #[test]
+    fn consumer_cargo_configuration_is_rejected() {
+        let directory = TestDirectory::new();
+        let cargo_directory = directory.0.join(".cargo");
+        fs::create_dir(&cargo_directory).expect("create Cargo configuration directory");
+        fs::write(cargo_directory.join("config.toml"), "[build]\n").expect("write Cargo config");
+
+        assert!(ensure_no_consumer_cargo_config(&directory.0).is_err());
+    }
+
+    #[test]
+    fn input_identity_detects_changed_content() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("payload.txt");
+        fs::write(&path, "before").expect("write initial payload");
+        let identity = InputIdentity {
+            relative: PathBuf::from("payload.txt"),
+            size: 6,
+            sha256: sha256_hex(b"before"),
+        };
+        fs::write(path, "after!").expect("mutate payload");
+
+        assert!(verify_input_identities(&directory.0, &[identity]).is_err());
+    }
+
+    #[test]
+    fn cargo_environment_filter_rejects_toolchain_overrides() {
+        assert!(is_forbidden_cargo_environment_name("RUSTC_WRAPPER"));
+        assert!(is_forbidden_cargo_environment_name("CARGO_BUILD_RUSTC"));
+        assert!(is_forbidden_cargo_environment_name(
+            "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"
+        ));
+        assert!(!is_forbidden_cargo_environment_name("CARGO_HOME"));
+    }
+
+    #[test]
+    fn toolchain_field_reads_exact_key_value_pairs() {
+        let output = "cargo 1.97.1\nrelease: 1.97.1\ncommit-hash: abc123\n";
+
+        assert_eq!(toolchain_field(output, "release"), Some("1.97.1"));
+        assert_eq!(toolchain_field(output, "commit-hash"), Some("abc123"));
+        assert_eq!(toolchain_field(output, "host"), None);
+    }
+
+    #[test]
+    fn diagnostic_path_redaction_preserves_unicode_text() {
+        let message = "驗證失敗：D:\\temporary\\外掛\\plugin-project.json 不可讀";
+        let redacted = redact_absolute_paths(message);
+
+        assert_eq!(redacted, "驗證失敗：<path> 不可讀");
+    }
+
+    #[test]
+    fn diagnostic_path_redaction_consumes_spaced_drive_unc_and_extended_paths() {
+        assert_eq!(
+            redact_absolute_paths("failed at D:\\Program Files\\Secret\\x"),
+            "failed at <path>"
+        );
+        assert_eq!(
+            redact_absolute_paths("failed at \\\\server\\share name\\Secret\\x"),
+            "failed at <path>"
+        );
+        assert_eq!(
+            redact_absolute_paths("failed at \\\\?\\C:\\Program Files\\Secret\\x"),
+            "failed at <path>"
+        );
+        assert_eq!(
+            redact_absolute_paths("failed at \"D:\\Program Files\\Secret\\x\" safely"),
+            "failed at \"<path>\" safely"
+        );
     }
 
     fn dependency_diagnostics(
@@ -1932,6 +3655,7 @@ mod tests {
             location,
             &dependency,
             &packages,
+            &BTreeSet::new(),
             &expected_for_test(),
             &mut diagnostics,
         );
@@ -1996,6 +3720,21 @@ mod tests {
         .expect("valid injected metadata")
     }
 
+    #[test]
+    fn metadata_paths_normalize_windows_verbatim_snapshot_roots() {
+        let package = CargoMetadataPackage {
+            id: "private".into(),
+            name: "private".into(),
+            version: "1.0.0".into(),
+            source: None,
+            manifest_path: r"D:\plugin\vendor\private\crate\Cargo.toml".into(),
+        };
+        assert_eq!(
+            metadata_package_path(&package, Path::new(r"\\?\D:\plugin")),
+            Some("vendor/private/crate".into())
+        );
+    }
+
     fn protected_lock_for_test() -> Vec<CargoLockPackage> {
         vec![
             CargoLockPackage {
@@ -2025,8 +3764,584 @@ mod tests {
         diagnostics
     }
 
+    fn private_fixture_contract() -> (
+        PathBuf,
+        TomlValue,
+        Vec<CargoLockPackage>,
+        CargoMetadata,
+        Vec<PrivateDependency>,
+    ) {
+        let sdk_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("sdk root")
+            .to_owned();
+        let root = sdk_root.join("fixtures/private-dependency-contract");
+        let vendor = "vendor/private/exif-lite-0.1.0";
+        let private = PrivateDependency {
+            name: "exif-lite".into(),
+            version: "0.1.0".into(),
+            path: vendor.into(),
+            tree_sha256: private_dependency_tree_sha256(&root, vendor)
+                .expect("fixture vendor tree"),
+            provenance: PrivateDependencyProvenance {
+                source: CRATES_IO_REGISTRY_SOURCE.into(),
+                crate_sha256: "f".repeat(64),
+                license_expression: "MIT OR Apache-2.0".into(),
+                license_hashes: BTreeMap::from([
+                    (
+                        "LICENSE-MIT".into(),
+                        sha256_hex(&fs::read(root.join(vendor).join("LICENSE-MIT")).unwrap()),
+                    ),
+                    (
+                        "LICENSE-APACHE".into(),
+                        sha256_hex(&fs::read(root.join(vendor).join("LICENSE-APACHE")).unwrap()),
+                    ),
+                ]),
+            },
+        };
+        let cargo_toml =
+            read_project_toml(&root, &root.join("Cargo.toml")).expect("fixture Cargo.toml");
+        let lock = read_project_toml(&root, &root.join("Cargo.lock")).expect("fixture Cargo.lock");
+        let package_tables = lock
+            .get("package")
+            .and_then(TomlValue::as_array)
+            .unwrap()
+            .iter()
+            .map(TomlValue::as_table)
+            .collect::<Option<Vec<_>>>()
+            .unwrap();
+        let output = Command::new("cargo")
+            .args(["metadata", "--locked", "--offline", "--format-version", "1"])
+            .current_dir(&root)
+            .env("CARGO_NET_OFFLINE", "true")
+            .output()
+            .expect("run Cargo metadata for private fixture");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let metadata = serde_json::from_slice(&output.stdout).expect("fixture Cargo metadata");
+        (
+            root,
+            cargo_toml,
+            cargo_lock_packages(&package_tables),
+            metadata,
+            vec![private],
+        )
+    }
+
+    fn private_binding_diagnostics(
+        root: &Path,
+        cargo_toml: &TomlValue,
+        lock: &[CargoLockPackage],
+        metadata: &CargoMetadata,
+        dependencies: &[PrivateDependency],
+        expected: &ExpectedSdk,
+    ) -> Vec<Diagnostic> {
+        let mut diagnostics = Vec::new();
+        validate_private_dependencies(root, dependencies, &mut diagnostics);
+        validate_private_dependency_cargo_binding(
+            root,
+            cargo_toml,
+            lock,
+            metadata,
+            dependencies,
+            expected,
+            &mut diagnostics,
+        );
+        diagnostics
+    }
+
+    fn copied_private_fixture_vendor() -> (TestDirectory, PrivateDependency) {
+        let (fixture_root, _, _, _, dependencies) = private_fixture_contract();
+        let directory = TestDirectory::new();
+        let relative = Path::new("vendor/private/exif-lite-0.1.0");
+        let source_root = fixture_root.join(relative);
+        let destination_root = directory.0.join(relative);
+        for file in [
+            ".cargo-checksum.json",
+            "Cargo.toml",
+            "LICENSE-APACHE",
+            "LICENSE-MIT",
+            "src/lib.rs",
+        ] {
+            let source = source_root.join(file);
+            let destination = destination_root.join(file);
+            fs::create_dir_all(destination.parent().unwrap())
+                .expect("create copied fixture parent");
+            fs::write(&destination, fs::read(source).expect("read fixture file"))
+                .expect("copy fixture file");
+        }
+        let mut dependency = dependencies.into_iter().next().unwrap();
+        dependency.tree_sha256 = private_dependency_tree_sha256(&directory.0, &dependency.path)
+            .expect("copied fixture tree");
+        (directory, dependency)
+    }
+
+    fn private_vendor_diagnostics(root: &Path, dependency: &PrivateDependency) -> Vec<Diagnostic> {
+        let mut diagnostics = Vec::new();
+        validate_private_dependencies(root, std::slice::from_ref(dependency), &mut diagnostics);
+        validate_private_vendor_provenance(
+            root,
+            dependency,
+            "private_dependencies[0]",
+            &mut diagnostics,
+        );
+        diagnostics
+    }
+
     fn has_code(diagnostics: &[Diagnostic], code: &str) -> bool {
         diagnostics.iter().any(|diagnostic| diagnostic.code == code)
+    }
+
+    #[test]
+    fn private_exif_fixture_binds_patch_lock_metadata_and_provenance() {
+        let (root, cargo_toml, lock, metadata, dependencies) = private_fixture_contract();
+        let diagnostics = private_binding_diagnostics(
+            &root,
+            &cargo_toml,
+            &lock,
+            &metadata,
+            &dependencies,
+            &expected_for_test(),
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn private_exif_fixture_mutations_fail_closed() {
+        let (root, cargo_toml, lock, metadata, dependencies) = private_fixture_contract();
+
+        let mut nested_path = dependencies.clone();
+        nested_path[0].path = "vendor/private/exif-lite/0.1.0".into();
+        assert!(has_code(
+            &private_binding_diagnostics(
+                &root,
+                &cargo_toml,
+                &lock,
+                &metadata,
+                &nested_path,
+                &expected_for_test(),
+            ),
+            "SESDK-PRIVATE-001"
+        ));
+
+        let mut wrong_leaf = dependencies.clone();
+        wrong_leaf[0].path = "vendor/private/not-exif-lite-0.1.0".into();
+        assert!(has_code(
+            &private_binding_diagnostics(
+                &root,
+                &cargo_toml,
+                &lock,
+                &metadata,
+                &wrong_leaf,
+                &expected_for_test(),
+            ),
+            "SESDK-PRIVATE-001"
+        ));
+
+        let mut wrong_patch = cargo_toml.clone();
+        wrong_patch["patch"]["crates-io"]["exif-lite"]["path"] =
+            TomlValue::String("vendor/private/other".into());
+        assert!(has_code(
+            &private_binding_diagnostics(
+                &root,
+                &wrong_patch,
+                &lock,
+                &metadata,
+                &dependencies,
+                &expected_for_test(),
+            ),
+            "SESDK-PRIVATE-005"
+        ));
+
+        let mut wrong_source = dependencies.clone();
+        wrong_source[0].provenance.source = "registry+https://example.invalid/index".into();
+        assert!(has_code(
+            &private_binding_diagnostics(
+                &root,
+                &cargo_toml,
+                &lock,
+                &metadata,
+                &wrong_source,
+                &expected_for_test(),
+            ),
+            "SESDK-PRIVATE-001"
+        ));
+
+        let mut wrong_version = dependencies.clone();
+        wrong_version[0].version = "0.1.1".into();
+        assert!(has_code(
+            &private_binding_diagnostics(
+                &root,
+                &cargo_toml,
+                &lock,
+                &metadata,
+                &wrong_version,
+                &expected_for_test(),
+            ),
+            "SESDK-PRIVATE-006"
+        ));
+
+        let mut wrong_checksum = dependencies.clone();
+        wrong_checksum[0].provenance.crate_sha256 = "a".repeat(64);
+        assert!(has_code(
+            &private_binding_diagnostics(
+                &root,
+                &cargo_toml,
+                &lock,
+                &metadata,
+                &wrong_checksum,
+                &expected_for_test(),
+            ),
+            "SESDK-PRIVATE-012"
+        ));
+
+        let mut wrong_license = dependencies.clone();
+        wrong_license[0]
+            .provenance
+            .license_hashes
+            .insert("LICENSE-MIT".into(), "a".repeat(64));
+        assert!(has_code(
+            &private_binding_diagnostics(
+                &root,
+                &cargo_toml,
+                &lock,
+                &metadata,
+                &wrong_license,
+                &expected_for_test(),
+            ),
+            "SESDK-PRIVATE-004"
+        ));
+
+        let mut unreachable = metadata.clone();
+        let root_id = unreachable.resolve.as_ref().unwrap().root.clone().unwrap();
+        unreachable
+            .resolve
+            .as_mut()
+            .unwrap()
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == root_id)
+            .unwrap()
+            .deps
+            .clear();
+        assert!(has_code(
+            &private_binding_diagnostics(
+                &root,
+                &cargo_toml,
+                &lock,
+                &unreachable,
+                &dependencies,
+                &expected_for_test(),
+            ),
+            "SESDK-PRIVATE-008"
+        ));
+
+        let mut extra = metadata.clone();
+        let extra_id = "extra-private 0.1.0 (path+file:///private)".to_owned();
+        extra.packages.push(CargoMetadataPackage {
+            id: extra_id.clone(),
+            name: "extra-private".into(),
+            version: "0.1.0".into(),
+            source: None,
+            manifest_path: root
+                .join("vendor/private/extra-private-0.1.0/Cargo.toml")
+                .to_string_lossy()
+                .into_owned(),
+        });
+        extra
+            .resolve
+            .as_mut()
+            .unwrap()
+            .nodes
+            .push(CargoMetadataNode {
+                id: extra_id.clone(),
+                deps: vec![],
+                features: vec![],
+            });
+        extra
+            .resolve
+            .as_mut()
+            .unwrap()
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == root_id)
+            .unwrap()
+            .deps
+            .push(CargoMetadataDependency {
+                name: "extra-private".into(),
+                pkg: extra_id,
+                dep_kinds: vec![CargoMetadataDependencyKind {
+                    kind: None,
+                    target: None,
+                }],
+            });
+        assert!(has_code(
+            &private_binding_diagnostics(
+                &root,
+                &cargo_toml,
+                &lock,
+                &extra,
+                &dependencies,
+                &expected_for_test(),
+            ),
+            "SESDK-PRIVATE-009"
+        ));
+
+        let mut shadow = dependencies.clone();
+        shadow[0].name = "abi_stable".into();
+        assert!(has_code(
+            &private_binding_diagnostics(
+                &root,
+                &cargo_toml,
+                &lock,
+                &metadata,
+                &shadow,
+                &expected_protected_for_test(),
+            ),
+            "SESDK-PRIVATE-010"
+        ));
+    }
+
+    #[test]
+    fn private_vendor_checksum_inventory_rejects_tampered_source_license_and_extra_files() {
+        for (path, replacement) in [
+            ("src/lib.rs", b"tampered parser source".as_slice()),
+            ("LICENSE-MIT", b"tampered license text".as_slice()),
+            ("README.md", b"undeclared extra file".as_slice()),
+        ] {
+            let (directory, dependency) = copied_private_fixture_vendor();
+            let target = directory.0.join(&dependency.path).join(path);
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).expect("create mutation parent");
+            }
+            fs::write(target, replacement).expect("mutate copied fixture");
+            assert!(
+                has_code(
+                    &private_vendor_diagnostics(&directory.0, &dependency),
+                    "SESDK-PRIVATE-012"
+                ),
+                "mutation {path} must invalidate the vendored file inventory"
+            );
+        }
+
+        let hash = "a".repeat(64);
+        let collision = serde_json::json!({
+            "files": { "src/lib.rs": hash, "SRC/lib.rs": "b".repeat(64) },
+            "package": "f".repeat(64),
+        });
+        assert!(cargo_checksum_file_hashes(&collision).is_none());
+    }
+
+    #[test]
+    fn stage_package_emits_only_runtime_payloads_without_private_dependencies() {
+        let directory = TestDirectory::new();
+        let dll = directory.0.join("plugin.dll");
+        fs::write(&dll, b"runtime dll").expect("write test dll");
+        let output = directory.0.join("stage");
+        let mut manifest = manifest_for_test();
+        manifest.publisher.contacts.push(Contact {
+            kind: "support".into(),
+            value: "support@example.invalid".into(),
+        });
+
+        stage_validated_package(&directory.0, &manifest, &dll, &output)
+            .expect("stage package without private dependencies");
+
+        let manifest: Value = serde_json::from_slice(
+            &fs::read(output.join("manifest.json")).expect("read staged manifest"),
+        )
+        .expect("parse staged manifest");
+        let payloads = manifest["payloads"].as_array().unwrap();
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(payloads[0]["path"], "plugin/plugin.dll");
+        let rust = manifest["rust"].as_array().expect("runtime Rust entries");
+        assert_eq!(rust.len(), 1);
+        assert_eq!(
+            rust[0]["root_contract_id"],
+            json!({
+                "namespace": ROOT_MODULE_CONTRACT_NAMESPACE_V1,
+                "value": ROOT_MODULE_CONTRACT_VALUE_V1,
+            })
+        );
+        assert!(rust[0].get("root_module").is_none());
+        assert!(!output.join("notices/private-dependencies.json").exists());
+        assert_eq!(
+            fs::read(output.join("plugin/plugin.dll")).unwrap(),
+            b"runtime dll"
+        );
+    }
+
+    #[test]
+    fn runtime_staging_matches_host_payload_and_path_bounds() {
+        let payload = |index| StagedPayload {
+            path: format!("payloads/{index:03}.bin"),
+            kind: "notice",
+            bytes: vec![],
+        };
+        let accepted = (0..HOST_MAX_RUNTIME_PAYLOADS)
+            .map(payload)
+            .collect::<Vec<_>>();
+        assert!(validate_host_runtime_package_bounds(&accepted, "{}").is_ok());
+
+        let rejected = (0..=HOST_MAX_RUNTIME_PAYLOADS)
+            .map(payload)
+            .collect::<Vec<_>>();
+        assert!(validate_host_runtime_package_bounds(&rejected, "{}").is_err());
+
+        let long_path = StagedPayload {
+            path: "p".repeat(HOST_MAX_RUNTIME_PATH_BYTES + 1),
+            kind: "notice",
+            bytes: vec![],
+        };
+        assert!(validate_host_runtime_package_bounds(&[long_path], "{}").is_err());
+    }
+
+    #[test]
+    fn runtime_staging_matches_host_manifest_and_exact_zip_bounds() {
+        let payload = StagedPayload {
+            path: "plugin/plugin.dll".into(),
+            kind: "rust_dll",
+            bytes: vec![],
+        };
+        assert!(
+            validate_host_runtime_package_bounds(
+                &[payload],
+                &" ".repeat(HOST_MAX_RUNTIME_MANIFEST_BYTES),
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_host_runtime_package_bounds(
+                &[],
+                &" ".repeat(HOST_MAX_RUNTIME_MANIFEST_BYTES + 1),
+            )
+            .is_err()
+        );
+
+        let empty_archive = CANONICAL_ZIP_END_OF_CENTRAL_DIRECTORY_BYTES;
+        assert_eq!(
+            canonical_store_zip_entry_size(empty_archive, "a", 0).unwrap(),
+            CANONICAL_ZIP_END_OF_CENTRAL_DIRECTORY_BYTES
+                + CANONICAL_ZIP_LOCAL_HEADER_BYTES
+                + CANONICAL_ZIP_CENTRAL_HEADER_BYTES
+                + 2
+        );
+        let content = usize::try_from(
+            HOST_MAX_CANONICAL_ZIP_BYTES
+                - CANONICAL_ZIP_END_OF_CENTRAL_DIRECTORY_BYTES
+                - CANONICAL_ZIP_LOCAL_HEADER_BYTES
+                - CANONICAL_ZIP_CENTRAL_HEADER_BYTES
+                - 2,
+        )
+        .unwrap();
+        assert_eq!(
+            canonical_store_zip_entry_size(empty_archive, "a", content).unwrap(),
+            HOST_MAX_CANONICAL_ZIP_BYTES
+        );
+        assert!(validate_host_canonical_zip_size(HOST_MAX_CANONICAL_ZIP_BYTES).is_ok());
+        assert!(validate_host_canonical_zip_size(HOST_MAX_CANONICAL_ZIP_BYTES + 1).is_err());
+    }
+
+    #[test]
+    fn stage_package_carries_private_licenses_and_canonical_provenance_notice() {
+        let (directory, dependency) = copied_private_fixture_vendor();
+        let dll = directory.0.join("plugin.dll");
+        fs::write(&dll, b"runtime dll").expect("write test dll");
+        let output = directory.0.join("stage-private");
+        let mut manifest = manifest_for_test();
+        manifest.publisher.contacts.push(Contact {
+            kind: "support".into(),
+            value: "support@example.invalid".into(),
+        });
+        manifest.private_dependencies = vec![dependency.clone()];
+
+        stage_validated_package(&directory.0, &manifest, &dll, &output)
+            .expect("stage package with private dependency");
+
+        let staged_manifest: Value = serde_json::from_slice(
+            &fs::read(output.join("manifest.json")).expect("read staged manifest"),
+        )
+        .expect("parse staged manifest");
+        let payloads = staged_manifest["payloads"].as_array().unwrap();
+        assert!(payloads.iter().any(|payload| {
+            payload["path"] == "licenses/private/exif-lite-0.1.0/LICENSE-MIT"
+                && payload["kind"] == "license"
+        }));
+        assert!(payloads.iter().any(|payload| {
+            payload["path"] == "notices/private-dependencies.json" && payload["kind"] == "notice"
+        }));
+        assert_eq!(
+            fs::read(output.join("licenses/private/exif-lite-0.1.0/LICENSE-MIT")).unwrap(),
+            fs::read(directory.0.join(&dependency.path).join("LICENSE-MIT")).unwrap()
+        );
+        let notice: Value = serde_json::from_slice(
+            &fs::read(output.join("notices/private-dependencies.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(notice["schema_version"], 1);
+        assert_eq!(notice["private_dependencies"][0]["name"], "exif-lite");
+        assert_eq!(
+            notice["private_dependencies"][0]["crate_sha256"],
+            dependency.provenance.crate_sha256
+        );
+    }
+
+    #[test]
+    fn stage_package_rejects_private_license_and_provenance_mutations_before_output_creation() {
+        let (directory, dependency) = copied_private_fixture_vendor();
+        let dll = directory.0.join("plugin.dll");
+        fs::write(&dll, b"runtime dll").expect("write test dll");
+        let mut manifest = manifest_for_test();
+        manifest.publisher.contacts.push(Contact {
+            kind: "support".into(),
+            value: "support@example.invalid".into(),
+        });
+        manifest.private_dependencies = vec![dependency.clone()];
+
+        fs::write(
+            directory.0.join(&dependency.path).join("LICENSE-MIT"),
+            b"changed license",
+        )
+        .expect("mutate private license");
+        let output = directory.0.join("stage-tampered-license");
+        assert!(stage_validated_package(&directory.0, &manifest, &dll, &output).is_err());
+        assert!(!output.exists());
+
+        let (directory, mut dependency) = copied_private_fixture_vendor();
+        let dll = directory.0.join("plugin.dll");
+        fs::write(&dll, b"runtime dll").expect("write test dll");
+        dependency.provenance.source = "registry+https://example.invalid/index".into();
+        let mut manifest = manifest_for_test();
+        manifest.publisher.contacts.push(Contact {
+            kind: "support".into(),
+            value: "support@example.invalid".into(),
+        });
+        manifest.private_dependencies = vec![dependency];
+        let output = directory.0.join("stage-tampered-provenance");
+        assert!(stage_validated_package(&directory.0, &manifest, &dll, &output).is_err());
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn stage_package_requires_a_new_private_output_directory() {
+        let directory = TestDirectory::new();
+        let dll = directory.0.join("plugin.dll");
+        fs::write(&dll, b"runtime dll").expect("write test dll");
+        let output = directory.0.join("existing-stage");
+        fs::create_dir(&output).expect("create non-private output directory");
+        let mut manifest = manifest_for_test();
+        manifest.publisher.contacts.push(Contact {
+            kind: "support".into(),
+            value: "support@example.invalid".into(),
+        });
+
+        assert!(stage_validated_package(&directory.0, &manifest, &dll, &output).is_err());
+        assert!(output.is_dir());
+        assert!(fs::read_dir(output).unwrap().next().is_none());
     }
 
     #[test]
@@ -2066,7 +4381,12 @@ mod tests {
     fn cargo_files_are_required_and_regular() {
         let directory = TestDirectory::new();
         let mut diagnostics = Vec::new();
-        validate_cargo_project(&directory.0, false, &expected_for_test(), &mut diagnostics);
+        validate_cargo_project(
+            &directory.0,
+            &manifest_for_test(),
+            &expected_for_test(),
+            &mut diagnostics,
+        );
         assert!(has_code(&diagnostics, "SESDK-CARGO-001"));
 
         fs::write(
@@ -2075,8 +4395,16 @@ mod tests {
         )
         .expect("write test manifest");
         diagnostics.clear();
-        validate_cargo_project(&directory.0, false, &expected_for_test(), &mut diagnostics);
-        assert!(has_code(&diagnostics, "SESDK-CARGO-002"));
+        validate_cargo_project(
+            &directory.0,
+            &manifest_for_test(),
+            &expected_for_test(),
+            &mut diagnostics,
+        );
+        assert!(
+            has_code(&diagnostics, "SESDK-CARGO-002"),
+            "{diagnostics:#?}"
+        );
     }
 
     #[test]
@@ -2111,6 +4439,91 @@ mod tests {
         );
         assert!(has_code(&diagnostics, "SESDK-CARGO-007"));
         assert!(has_code(&diagnostics, "SESDK-CARGO-011"));
+    }
+
+    #[test]
+    fn public_sdk_contract_dependency_is_the_only_allowed_explorer_crate() {
+        let lock = "[[package]]\nname='explorer-extension-api'\nversion='1.2.0'\nsource='registry+https://github.com/rust-lang/crates.io-index'\n";
+        let valid = dependency_diagnostics(
+            "dependencies.explorer-extension-api",
+            DirectDependency {
+                package: PUBLIC_SDK_CONTRACT_DEPENDENCY.into(),
+                version: Some(PUBLIC_SDK_CONTRACT_VERSION.into()),
+                git: None,
+                rev: None,
+                path: false,
+                workspace: false,
+                malformed: false,
+            },
+            lock,
+        );
+        assert!(valid.is_empty(), "{valid:#?}");
+
+        let path_dependency = dependency_diagnostics(
+            "dependencies.explorer-extension-api",
+            DirectDependency {
+                package: PUBLIC_SDK_CONTRACT_DEPENDENCY.into(),
+                version: Some(PUBLIC_SDK_CONTRACT_VERSION.into()),
+                git: None,
+                rev: None,
+                path: true,
+                workspace: false,
+                malformed: false,
+            },
+            lock,
+        );
+        assert!(has_code(&path_dependency, "SESDK-CARGO-014"));
+        assert!(has_code(&path_dependency, "SESDK-CARGO-006"));
+
+        let wrong_version = dependency_diagnostics(
+            "dependencies.explorer-extension-api",
+            DirectDependency {
+                package: PUBLIC_SDK_CONTRACT_DEPENDENCY.into(),
+                version: Some("=1.2.1".into()),
+                git: None,
+                rev: None,
+                path: false,
+                workspace: false,
+                malformed: false,
+            },
+            lock,
+        );
+        assert!(has_code(&wrong_version, "SESDK-CARGO-014"));
+
+        let private_explorer = dependency_diagnostics(
+            "dependencies.explorer-ui",
+            DirectDependency {
+                package: "explorer-ui".into(),
+                version: Some("=1.2.0".into()),
+                git: None,
+                rev: None,
+                path: false,
+                workspace: false,
+                malformed: false,
+            },
+            "[[package]]\nname='explorer-ui'\nversion='1.2.0'\nsource='registry+https://github.com/rust-lang/crates.io-index'\n",
+        );
+        assert!(has_code(&private_explorer, "SESDK-CARGO-005"));
+    }
+
+    #[test]
+    fn vendored_public_sdk_contract_matches_the_author_api_source() {
+        let repository_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let author_api = repository_root.join("crates/explorer-extension-api");
+        let vendored_api =
+            repository_root.join("sdk/vendor/cargo-sources/explorer-extension-api-1.2.0");
+
+        for (author_path, vendored_path) in [
+            ("Cargo.toml", "Cargo.toml.orig"),
+            ("src/lib.rs", "src/lib.rs"),
+            ("src/jobs.rs", "src/jobs.rs"),
+        ] {
+            assert_eq!(
+                fs::read(author_api.join(author_path)).expect("read public author API source"),
+                fs::read(vendored_api.join(vendored_path)).expect("read SDK vendored API source"),
+                "SDK vendored source drifted from {author_path}; refresh the sealed SDK package"
+            );
+        }
     }
 
     #[test]
@@ -2289,12 +4702,21 @@ mod tests {
             .is_err()
         );
         assert!(inspect_pe_exports(b"not a dll", ABI_STABLE_ROOT_MODULE_LOADER_EXPORT).is_err());
+
+        let directory = TestDirectory::new();
+        let oversized = directory.0.join("oversized.dll");
+        let file = fs::File::create(&oversized).expect("create sparse oversized DLL");
+        file.set_len(MAX_PAYLOAD_BYTES + 1)
+            .expect("extend sparse oversized DLL");
+        let report = inspect_dll(&oversized);
+        assert!(!report.valid);
+        assert!(report.diagnostics[0].message.contains("byte limit"));
     }
 
     #[test]
     fn canonical_built_dll_is_optional_before_build_and_checked_after_build() {
         let directory = TestDirectory::new();
-        let mut manifest = manifest_for_test();
+        let manifest = manifest_for_test();
         let expected = expected_for_test();
         let mut diagnostics = Vec::new();
         validate_built_dll(&directory.0, &manifest, &expected, &mut diagnostics);
@@ -2306,10 +4728,6 @@ mod tests {
         fs::create_dir_all(dll.parent().unwrap()).expect("create canonical DLL directory");
         fs::write(&dll, pe_with_export(ABI_STABLE_ROOT_MODULE_LOADER_EXPORT))
             .expect("write valid PE test DLL");
-        validate_built_dll(&directory.0, &manifest, &expected, &mut diagnostics);
-        assert!(diagnostics.is_empty());
-
-        manifest.rust.root_module = "logical_plugin_root".into();
         validate_built_dll(&directory.0, &manifest, &expected, &mut diagnostics);
         assert!(diagnostics.is_empty());
 
@@ -2429,14 +4847,14 @@ mod tests {
         let mut diagnostics = Vec::new();
         let payloads = (0..=MAX_PAYLOADS).map(|_| payload(1)).collect::<Vec<_>>();
         validate_payload_bounds(&payloads, &mut diagnostics);
-        assert!(has_code(&diagnostics, "SESDK-PAYLOAD-BOUND-001"));
+        assert!(has_code(&diagnostics, "SESDK-BOUND-001"));
 
         diagnostics.clear();
         validate_payload_bounds(
             &[payload(MAX_TOTAL_PAYLOAD_BYTES), payload(1)],
             &mut diagnostics,
         );
-        assert!(has_code(&diagnostics, "SESDK-PAYLOAD-BOUND-002"));
+        assert!(has_code(&diagnostics, "SESDK-BOUND-002"));
     }
 
     #[test]

@@ -29,15 +29,11 @@ try {
     Copy-Item -LiteralPath (Join-Path $fixture 'Cargo.toml') -Destination (Join-Path $consumer 'Cargo.toml')
     Copy-Item -LiteralPath (Join-Path $fixture 'Cargo.lock') -Destination (Join-Path $consumer 'Cargo.lock')
     Copy-Item -LiteralPath (Join-Path $fixture 'src\lib.rs') -Destination (Join-Path $consumer 'src\lib.rs')
+    Copy-Item -LiteralPath (Join-Path $fixture 'vendor') -Destination $consumer -Recurse
 
     $sourcePath = Join-Path $consumer 'src\lib.rs'
     $sourceBytes = [IO.File]::ReadAllBytes($sourcePath)
     $sourceHash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
-    $source = [Text.Encoding]::UTF8.GetString($sourceBytes)
-    if ($source -notmatch ([regex]::Escape([string]$artifact.fingerprint))) {
-        throw 'consumer source does not embed the canonical immutable UI ABI fingerprint'
-    }
-
     $manifestTemplate = Get-Content -LiteralPath (Join-Path $fixture 'plugin-project.json') -Raw
     $manifest = $manifestTemplate.Replace('@SDK_BUNDLE_ID@', [string]$lock.bundle_id).Replace('@ABI_SCHEMA@', [string]$lock.build_policy.abi_schema_version).Replace('@UI_ABI_FINGERPRINT@', [string]$artifact.fingerprint).Replace('@SOURCE_SIZE@', [string]$sourceBytes.Length).Replace('@SOURCE_SHA256@', $sourceHash)
     if ($manifest -match '@[A-Z0-9_]+@') { throw 'consumer template placeholder was not materialized' }
@@ -65,7 +61,7 @@ publish = false
 
 [dependencies]
 abi_stable = { version = "=0.11.3", default-features = false }
-p0-consumer = { path = "../consumer" }
+explorer-extension-api = "=1.2.0"
 
 [workspace]
 "@
@@ -74,35 +70,42 @@ p0-consumer = { path = "../consumer" }
 
 use std::{env, path::Path};
 
-use abi_stable::{library::RootModule, std_types::{RResult, RStr}};
-use p0_consumer::{P0ConsumerRoot_Ref, ABI_SCHEMA_VERSION, RegistrarResult};
-
-const EXPECTED_FINGERPRINT: &str = "__EXPECTED_FINGERPRINT__";
-const MISMATCHED_FINGERPRINT: &str = "0000000000000000000000000000000000000000000000000000000000000000";
-
-fn terminal(result: RegistrarResult, expected: bool) -> Result<(), String> {
-    match (expected, result) {
-        (true, RResult::ROk(7)) | (false, RResult::RErr(_)) => Ok(()),
-        (true, RResult::ROk(value)) => Err(format!("matching registrar returned {value}, expected 7")),
-        (true, RResult::RErr(error)) => Err(format!("matching registrar failed: {error}")),
-        (false, RResult::ROk(value)) => Err(format!("mismatched registrar unexpectedly succeeded with {value}")),
-    }
-}
+use abi_stable::{library::RootModule, std_types::ROption};
+use explorer_extension_api::{
+    ABI_SCHEMA_V1, AbiErrorCodeV1, AbiSchemaIdV1, DESCRIPTOR_CONTRACT_REVISION_V1,
+    ExtensionRootModuleV1_Ref, ROOT_MODULE_CONTRACT_ID_V1, RegistrationOutcomeV1,
+    SDK_MAJOR_VERSION_V1, registrar_request_v1,
+};
 
 fn run(path: &Path, marker: &Path) -> Result<(), String> {
-    let root = P0ConsumerRoot_Ref::load_from_file(path)
+    let root = ExtensionRootModuleV1_Ref::load_from_file(path)
         .map_err(|error| format!("P0 consumer root export could not load: {error}"))?;
-    if root.abi_schema() != ABI_SCHEMA_VERSION {
-        return Err("P0 consumer root ABI schema is not the P0 layout".into());
+    if root.abi_schema() != ABI_SCHEMA_V1
+        || root.root_contract_id() != ROOT_MODULE_CONTRACT_ID_V1
+        || root.sdk_major() != SDK_MAJOR_VERSION_V1
+        || root.reserved() != 0
+        || root.descriptor_contract_revision() != DESCRIPTOR_CONTRACT_REVISION_V1
+        || root.ui_abi_fingerprint_sha256() != ROption::RNone
+    {
+        return Err("P0 consumer root data is not the fixed data-only V1 contract".into());
     }
-    if (root.ui_abi_fingerprint())().as_str() != EXPECTED_FINGERPRINT {
-        return Err("P0 consumer root did not expose the canonical immutable UI ABI fingerprint".into());
+    let registrar = root.create_registrar().create().into_result()
+        .map_err(|error| format!("P0 registrar factory failed: {error:?}"))?;
+    let mut mismatched = registrar_request_v1();
+    mismatched.abi_schema = AbiSchemaIdV1::new(0x5345, 2);
+    match registrar.register(mismatched).into_result() {
+        Err(error) if error.code == AbiErrorCodeV1::SCHEMA_MISMATCH => {}
+        Err(error) => return Err(format!("schema mismatch returned code {}", error.code.into_raw())),
+        Ok(_) => return Err("schema mismatch unexpectedly registered".into()),
     }
-    terminal((root.registrar())(ABI_SCHEMA_VERSION, RStr::from_str(MISMATCHED_FINGERPRINT)), false)?;
     if marker.exists() {
-        return Err("fingerprint mismatch invoked the registrar marker".into());
+        return Err("schema mismatch invoked the registrar marker".into());
     }
-    terminal((root.registrar())(ABI_SCHEMA_VERSION, RStr::from_str(EXPECTED_FINGERPRINT)), true)?;
+    let output = registrar.register(registrar_request_v1()).into_result()
+        .map_err(|error| format!("matching registrar failed: {error:?}"))?;
+    if output.outcome != RegistrationOutcomeV1::accepted(1) || output.contributions.len() != 1 {
+        return Err("matching registrar returned the wrong descriptor batch".into());
+    }
     if !marker.exists() {
         return Err("matching fingerprint did not invoke the registrar marker".into());
     }
@@ -119,7 +122,7 @@ fn main() -> Result<(), String> {
     }
     run(Path::new(&plugin), Path::new(&marker))
 }
-'@.Replace('__EXPECTED_FINGERPRINT__', [string]$artifact.fingerprint)
+'@
     Write-Utf8NoBom (Join-Path $contractHost 'src\main.rs') $hostSource
 
     # CARGO_HOME is a fresh, isolated directory containing only this explicit
@@ -145,11 +148,11 @@ fn main() -> Result<(), String> {
     if (-not (Test-Path -LiteralPath $hostExe)) { throw 'contract host executable was not produced' }
     $env:P0_CONSUMER_REGISTRAR_MARKER = $marker
     & $hostExe $pluginDll $marker
-    if ($LASTEXITCODE -ne 0) { throw 'P0 consumer ABI root/fingerprint pre-callback contract failed' }
+    if ($LASTEXITCODE -ne 0) { throw 'P0 consumer ABI root/data pre-callback contract failed' }
     if ((Get-Content -LiteralPath $marker -Raw).Trim() -ne 'p0 consumer registrar invoked') {
         throw 'P0 consumer registrar marker had unexpected content'
     }
-    Write-Host 'P0 consumer standalone abi_stable root and fingerprint pre-callback contract passed.'
+    Write-Host 'P0 consumer standalone Rust-first abi_stable root contract passed.'
 } finally {
     [Environment]::SetEnvironmentVariable('CARGO_HOME', $savedCargoHome, 'Process')
     [Environment]::SetEnvironmentVariable('P0_CONSUMER_REGISTRAR_MARKER', $null, 'Process')

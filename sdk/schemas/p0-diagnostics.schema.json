@@ -2,10 +2,18 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "valid", "diagnostics"],
+  "required": ["schema_version", "valid", "diagnostics", "inputs"],
   "properties": {
     "schema_version": { "const": 1 },
     "valid": { "type": "boolean" },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["consumer_tree_sha256"],
+      "properties": {
+        "consumer_tree_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
     "diagnostics": {
       "type": "array",
       "items": {
@@ -13,7 +21,7 @@
         "additionalProperties": false,
         "required": ["code", "severity", "phase", "path", "message"],
         "properties": {
-          "code": { "type": "string", "pattern": "^SESDK-[A-Z]+-[0-9]{3}$" },
+          "code": { "type": "string", "pattern": "^SESDK-[A-Z]+(?:-[A-Z]+)*-[0-9]{3}$" },
           "severity": { "const": "error" },
           "phase": { "type": "string" },
           "path": { "type": "string" },

@@ -24,9 +24,14 @@ Authors must not rely on the host to contain `unsafe`, an infinite wait, native
 process termination, or data access performed by their DLL.
 
 V1 provides no process isolation or sandbox and no hot load, hot update, hot
-replace, or hot unload. Its native target is Windows x64 MSVC. The guarded
-operation currently attributable by a durable marker is the registrar; failures
-in plugin-created threads or outside guarded calls may have no Safe Mode incident.
+replace, or hot unload. Its native target is Windows x64 MSVC. A durable marker
+guards both `Registrar` and `JobProvider` operations. `RegistrarInProgress` is a
+historical incident kind alias; the marker's `operation` may be `JobProvider`.
+Failures in plugin-created threads or outside guarded calls remain untracked.
+
+繁中：durable marker 同時保護 `Registrar` 與 `JobProvider`；
+`RegistrarInProgress` 是歷史型別別名，但 `operation` 可以是 `JobProvider`。
+外掛自行建立的 thread 或 guard 外故障仍可能沒有 Safe Mode incident。
 
 ### Load, disable, and restart lifecycle
 
@@ -71,13 +76,13 @@ replacement while SuperExplorer is running.
 
 ### Panic, typed failure, and raw termination
 
-Before a guarded native registrar call, the host writes and durably flushes a
+Before a guarded native `Registrar` or `JobProvider` call, the host writes and durably flushes a
 call marker. On a normal return, a typed plugin error, or a recoverable Rust
 panic, the host attempts a durable marker clear before recording completion. A
 call is complete only when delete and directory sync succeed. Clear failure
 records `MarkerFailure`, faults activation, preserves fail-closed evidence, and
 enters global denial rather than hiding an uncertain call. A
-recoverable unwind panic crossing the supported registrar boundary is translated
+recoverable unwind panic crossing the supported guarded native callback boundary is translated
 to a plugin error/`Panicked` diagnostic; it is
 not permission to continue using corrupted author state.
 
@@ -93,7 +98,7 @@ They must not use raw termination as a control-flow or recovery mechanism.
 ### Safe Mode incidents and confirmation
 
 Startup recovery exposes path-free `NativeSafeModeIncidentV1` records. A normal
-`RegistrarInProgress` recovered registrar incident identifies the package ID, sealed manifest digest,
+`RegistrarInProgress` recovered guarded-native incident identifies the package ID, sealed manifest digest,
 entrypoint ID, root-module ID, interface namespace/value, and operation. The
 host blocks the matching callback until the user explicitly confirms that one
 incident through `confirm_safe_mode_incident`. Confirmation is scoped: it does
@@ -151,7 +156,7 @@ anonymous data; verify that the user may disclose them before sharing a report.
 
 1. When Safe Mode appears, record the incident kind and its path-free identity
    fields, then leave the suspected contribution disabled.
-2. For a scoped registrar incident, update or remove the suspected package if a
+2. For a scoped guarded native incident/callback, update or remove the suspected package if a
    fixed build is available. Confirm only the displayed incident after an
    informed user decision; verify that only that callback is re-admitted.
 3. For `UnsafeMarkerState`/global quarantine, do not confirm repeatedly and do
@@ -198,8 +203,9 @@ hash、簽章、publisher identity 與 ABI 驗證也不是安全背書。只安�
 已審查的 publisher；Safe Mode 是可用性與復原機制，**不是安全邊界**。
 
 V1 沒有行程隔離、sandbox、hot load、hot update、hot replace 或 hot unload，native
-目標為 Windows x64 MSVC。目前 durable marker 只保護 registrar；外掛自行建立的
-thread 或 guard 以外的故障可能完全沒有 Safe Mode 事件。
+目標為 Windows x64 MSVC。目前 durable marker 會保護 `Registrar` 與 `JobProvider`
+兩種 guarded native operation；外掛自行建立的 thread 或 guard 以外的故障可能完全
+沒有 Safe Mode 事件。
 
 ### 載入、停用與重新啟動
 
@@ -229,7 +235,7 @@ deadline drain，但不會 hot unload。
 
 ### panic、typed error 與異常終止
 
-每個受 guard 保護的 registrar callback 前都會寫入並同步 call marker。正常返回、
+每個受 guard 保護的 `Registrar` 或 `JobProvider` callback 前都會寫入並同步 call marker。正常返回、
 typed plugin error 與可復原 Rust panic 後，host 會嘗試 durable clear；只有 marker
 delete 與目錄 sync 都成功才算完成。clear 失敗會記錄 `MarkerFailure`、使 activation
 fault、保留 fail-closed 證據並進入全域拒絕，而不會隱藏不確定狀態。可復原 panic 會轉為
@@ -242,8 +248,9 @@ infinite loop、任意 plugin thread，或已受損的 allocator／GPUI state。
 
 ### Safe Mode、事件與診斷
 
-`NativeSafeModeIncidentV1` 的 `RegistrarInProgress` registrar 事件只提供無路徑識別：package、sealed
-manifest digest、entrypoint、root module、interface namespace/value 與 operation。
+`NativeSafeModeIncidentV1` 的 `RegistrarInProgress` 是歷史型別名稱；它代表未完成的
+guarded native `Registrar` 或 `JobProvider` 呼叫，並只提供無路徑識別：package、sealed
+manifest digest、entrypoint、root module、interface namespace/value 與 `operation`。
 使用者以 `confirm_safe_mode_incident` 確認的範圍只限該事件，不會重新啟用其他外掛
 或介面。若可讀的 marker residue 格式錯誤、overflow、含 reparse 或無法安全歸因，會顯示
 `UnsafeMarkerState` 並啟動全域 quarantine：

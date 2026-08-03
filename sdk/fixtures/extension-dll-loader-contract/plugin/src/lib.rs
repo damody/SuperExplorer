@@ -1,18 +1,19 @@
 #![cfg_attr(feature = "foreign-root", allow(dead_code, non_camel_case_types))]
 
 #[cfg(not(feature = "foreign-root"))]
-use abi_stable::std_types::{ROption, RResult};
-use abi_stable::{export_root_module, prefix_type::PrefixTypeTrait};
+use abi_stable::std_types::{ROption, RResult, RString, RVec};
 #[cfg(feature = "foreign-root")]
-use abi_stable::{library::RootModule, sabi_types::VersionStrings, StableAbi};
+use abi_stable::{StableAbi, library::RootModule, sabi_types::VersionStrings};
+use abi_stable::{export_root_module, prefix_type::PrefixTypeTrait};
 #[cfg(feature = "foreign-root")]
 use explorer_extension_api::ExtensionRootModuleV1_Ref;
 #[cfg(not(feature = "foreign-root"))]
 use explorer_extension_api::{
-    ExtensionRegistrarV1, ExtensionRootModuleV1, ExtensionRootModuleV1_Ref, PluginMetadataV1,
-    RegistrarCallbackV1, RegistrarImplementationV1, RegistrarRequestV1, RegistrarResultV1,
-    RegistrationOutcomeV1, StableIdV1, UiAbiFingerprintV1, ABI_SCHEMA_V1,
-    ROOT_MODULE_CONTRACT_ID_V1, SDK_MAJOR_VERSION_V1,
+    ABI_SCHEMA_V1, ExtensionRegistrarImplementationV1, ExtensionRootModuleV1,
+    ExtensionRootModuleV1_Ref, PluginMetadataV1, ROOT_MODULE_CONTRACT_ID_V1,
+    RegisteredContributionKindV1, RegisteredContributionV1,
+    RegistrarOutputResultV1, RegistrarOutputV1, RegistrarRequestV1, RegistrationOutcomeV1,
+    SDK_MAJOR_VERSION_V1, StableIdV1, UiAbiFingerprintV1,
 };
 
 include!(concat!(env!("OUT_DIR"), "/fingerprint.rs"));
@@ -20,8 +21,12 @@ include!(concat!(env!("OUT_DIR"), "/fingerprint.rs"));
 #[cfg(not(feature = "foreign-root"))]
 struct Registrar;
 #[cfg(not(feature = "foreign-root"))]
-impl RegistrarImplementationV1 for Registrar {
-    fn register(_: RegistrarRequestV1) -> RegistrarResultV1 {
+impl ExtensionRegistrarImplementationV1 for Registrar {
+    fn create() -> Self {
+        Self
+    }
+
+    fn register(&self, _: RegistrarRequestV1) -> RegistrarOutputResultV1 {
         mark_callback("register");
         if std::env::var_os("EXTENSION_DLL_LOADER_CONTRACT_RAW_ABORT").is_some() {
             // Fixture-only raw termination: this intentionally bypasses the
@@ -34,13 +39,32 @@ impl RegistrarImplementationV1 for Registrar {
         {
             std::thread::sleep(std::time::Duration::from_millis(delay));
         }
-        RResult::ROk(RegistrationOutcomeV1::accepted(0))
+        RResult::ROk(RegistrarOutputV1 {
+            outcome: RegistrationOutcomeV1::accepted(1),
+            contributions: RVec::from(vec![RegisteredContributionV1 {
+                feature_id: RString::from("fixture"),
+                contribution_id: RString::from(if cfg!(feature = "alternate") {
+                    "alternate-column"
+                } else {
+                    "loader-column"
+                }),
+                kind: RegisteredContributionKindV1::COLUMN,
+                required_capabilities: RVec::new(),
+                interface_id: StableIdV1::new(
+                    explorer_extension_api::EXTENSION_ID_NAMESPACE_V1,
+                    if cfg!(feature = "alternate") {
+                        203
+                    } else {
+                        201
+                    },
+                ),
+                expected_sort: ROption::RNone,
+                opaque_contract: ROption::RNone,
+                renderer_contribution_id: ROption::RNone,
+                provider: ROption::RNone,
+            }]),
+        })
     }
-}
-#[cfg(not(feature = "foreign-root"))]
-extern "C" fn describe_contract() -> StableIdV1 {
-    mark_callback("describe_contract");
-    ROOT_MODULE_CONTRACT_ID_V1
 }
 
 #[cfg(not(feature = "foreign-root"))]
@@ -83,25 +107,16 @@ pub fn get_library() -> ExtensionRootModuleV1_Ref {
     } else {
         ROption::RNone
     };
-    ExtensionRootModuleV1 {
-        abi_schema: ABI_SCHEMA_V1,
-        root_contract_id: ROOT_MODULE_CONTRACT_ID_V1,
-        sdk_major: SDK_MAJOR_VERSION_V1,
-        reserved: 0,
-        metadata: PluginMetadataV1 {
+    ExtensionRootModuleV1::new::<Registrar>(
+        PluginMetadataV1 {
             plugin_id: StableIdV1::new(explorer_extension_api::EXTENSION_ID_NAMESPACE_V1, plugin),
             primary_interface_id: StableIdV1::new(
                 explorer_extension_api::EXTENSION_ID_NAMESPACE_V1,
                 interface,
             ),
         },
-        registrar: ExtensionRegistrarV1 {
-            register: RegistrarCallbackV1::new::<Registrar>(),
-            describe_contract,
-            ui_abi_fingerprint_sha256: fingerprint,
-        }
-        .leak_into_prefix(),
-    }
+        fingerprint,
+    )
     .leak_into_prefix()
 }
 
