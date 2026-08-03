@@ -11,7 +11,7 @@ use std::{
     fmt,
     marker::PhantomData,
     path::Path,
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use abi_stable::{
@@ -19,21 +19,26 @@ use abi_stable::{
     std_types::ROption,
 };
 use explorer_extension_api::{
-    AbiErrorCodeV1, AbiErrorV1, CellRenderContextV1, CellRenderPlanV1, ExtensionRootModuleV1_Ref,
-    FolderSizeMeasureRequestV1, FolderSizeMeasureResultV1, PluginMetadataV1,
-    ROOT_MODULE_CONTRACT_ID_V1, RegisteredContributionKindV1, RegistrarOutputV1,
-    RegistrationStatusV1, SDK_MAJOR_VERSION_V1, SizeMapRenderContextV1, SizeMapRenderPlanV1,
-    SizeMapViewObjectV1, UiAbiFingerprintV1, VisualColumnObjectV1, registrar_request_v1,
+    AbiErrorCodeV1, AbiErrorV1, BatchColumnContextV1, BatchColumnProviderObjectV1,
+    CellRenderContextV1, CellRenderPlanV1, ExtensionRootModuleV1_Ref, FolderSizeMeasureRequestV1,
+    FolderSizeMeasureResultV1, PluginMetadataV1, ROOT_MODULE_CONTRACT_ID_V1,
+    RegisteredContributionKindV1, RegistrarOutputV1, RegistrationStatusV1, SDK_MAJOR_VERSION_V1,
+    SizeMapRenderContextV1, SizeMapRenderPlanV1, SizeMapViewObjectV1, UiAbiFingerprintV1,
+    VisualColumnObjectV1, registrar_request_v1,
 };
 use serde::Deserialize;
 use thiserror::Error;
 
 use crate::{
-    ExtensionHost, HostRegistrationErrorV1, PackageManifestErrorV1, PackageManifestV1,
-    PackageValidationErrorV1, ResolvedPackageV1, SealedPackageActivationGuardV1,
-    SinglePluginContributionSummaryV1, SinglePluginLoadErrorV1, SinglePluginLoadSummaryV1,
-    SinglePluginSizeMapViewCallErrorV1, SinglePluginVisualColumnCallErrorV1,
-    package_validation::sealed_manifest_canonical_digest, plugin_call_guard::PluginCallGuardV1,
+    BatchColumnRuntimeRequestV1, ExtensionHost, ExtensionJobAuthorityV1,
+    ExtensionJobRuntimeErrorV1, ExtensionJobRuntimeV1, HostBatchColumnItemV1,
+    HostRegistrationErrorV1, PackageManifestErrorV1, PackageManifestV1, PackageValidationErrorV1,
+    PreparedBatchColumnDispatchTicketV1, ResolvedPackageV1, SealedPackageActivationGuardV1,
+    SinglePluginBatchColumnCallErrorV1, SinglePluginContributionSummaryV1, SinglePluginLoadErrorV1,
+    SinglePluginLoadSummaryV1, SinglePluginSizeMapViewCallErrorV1,
+    SinglePluginVisualColumnCallErrorV1,
+    package_validation::sealed_manifest_canonical_digest,
+    plugin_call_guard::{self, NativeCallOperationV1, PluginCallGuardStoreV1, PluginCallGuardV1},
 };
 
 const MANIFEST_ABI_SCHEMA_V1: u32 = 1;
@@ -380,8 +385,9 @@ impl ExtensionDllLoaderV1 {
 /// mapped DLL and its ABI objects remain private and process-resident.
 pub(crate) fn load_single_plugin_dll(
     path: &Path,
+    markers: Arc<PluginCallGuardStoreV1>,
 ) -> Result<SinglePluginLoadSummaryV1, SinglePluginLoadErrorV1> {
-    load_single_plugin_visual_column_runtime(path).map(|runtime| runtime.into_summary())
+    load_single_plugin_visual_column_runtime(path, markers).map(|runtime| runtime.into_summary())
 }
 
 /// Direct-loader runtime retaining the ABI-safe objects registered by one DLL.
@@ -395,11 +401,92 @@ pub struct SinglePluginVisualColumnRuntimeV1 {
     measure_columns: BTreeMap<String, VisualColumnObjectV1>,
     render_columns: BTreeMap<String, VisualColumnObjectV1>,
     size_map_views: BTreeMap<String, SizeMapViewObjectV1>,
+    batch_column_providers: BTreeMap<String, BatchColumnProviderObjectV1>,
+    direct_call_guard: DirectPluginCallGuardV1,
+}
+
+/// Durable marker identity for direct development-DLL callbacks. The direct
+/// one-plugin path has no package manifest, so it derives the stable marker
+/// identity solely from already validated root metadata.
+#[derive(Clone)]
+struct DirectPluginCallGuardV1 {
+    markers: Arc<PluginCallGuardStoreV1>,
+    package_id: String,
+    digest: String,
+    namespace: u32,
+    value: u64,
+}
+
+impl DirectPluginCallGuardV1 {
+    fn from_metadata(metadata: PluginMetadataV1, markers: Arc<PluginCallGuardStoreV1>) -> Self {
+        let plugin = metadata.plugin_id;
+        let primary = metadata.primary_interface_id;
+        Self {
+            markers,
+            package_id: format!(
+                "direct-{:08x}-{:016x}",
+                plugin.namespace.into_raw(),
+                plugin.value
+            ),
+            // The marker format requires a 64-hex digest.  Direct DLLs have
+            // no sealed manifest, so bind it deterministically to the two
+            // root identities that validation has already accepted.
+            digest: format!(
+                "{:08x}{:016x}{:08x}{:016x}{:016x}",
+                plugin.namespace.into_raw(),
+                plugin.value,
+                primary.namespace.into_raw(),
+                primary.value,
+                0_u64,
+            ),
+            namespace: primary.namespace.into_raw(),
+            value: primary.value,
+        }
+    }
+
+    fn marker(
+        &self,
+        callback_id: &str,
+        operation: NativeCallOperationV1,
+    ) -> plugin_call_guard::MarkerV1 {
+        plugin_call_guard::marker_with_operation(
+            &self.package_id,
+            &self.digest,
+            callback_id,
+            ROOT_MODULE_CONTRACT_LABEL_V1,
+            self.namespace,
+            self.value,
+            operation,
+        )
+    }
+
+    fn begin(
+        &self,
+        callback_id: &str,
+        operation: NativeCallOperationV1,
+    ) -> Result<PluginCallGuardV1, ()> {
+        self.markers
+            .begin(&self.marker(callback_id, operation))
+            .map_err(|_| ())
+    }
+
+    fn denies_any_direct_callback(&self) -> bool {
+        [
+            ("direct-registrar", NativeCallOperationV1::Registrar),
+            ("direct-batch", NativeCallOperationV1::BatchColumnProvider),
+            ("direct-measure", NativeCallOperationV1::VisualMeasure),
+            ("direct-render", NativeCallOperationV1::VisualRender),
+            ("direct-size-map", NativeCallOperationV1::VisualRender),
+        ]
+        .into_iter()
+        .any(|(callback, operation)| self.markers.denies(&self.marker(callback, operation)))
+    }
 }
 
 /// Background-worker owner for retained folder-size measure objects.
 pub struct SinglePluginVisualMeasureRuntimeV1 {
     columns: BTreeMap<String, VisualColumnObjectV1>,
+    direct_call_guard: DirectPluginCallGuardV1,
     // Retained ABI objects are intentionally single-worker owned even though
     // their generated trait vtables are Send + Sync.
     _single_owner: PhantomData<Cell<()>>,
@@ -408,12 +495,25 @@ pub struct SinglePluginVisualMeasureRuntimeV1 {
 /// GPUI-thread owner for retained visual renderer objects.
 pub struct SinglePluginVisualRenderRuntimeV1 {
     columns: BTreeMap<String, VisualColumnObjectV1>,
+    direct_call_guard: DirectPluginCallGuardV1,
     _single_owner: PhantomData<Cell<()>>,
 }
 
 /// GPUI-thread owner for retained data-only Size Map renderer objects.
 pub struct SinglePluginSizeMapViewRuntimeV1 {
     views: BTreeMap<String, SizeMapViewObjectV1>,
+    direct_call_guard: DirectPluginCallGuardV1,
+    _single_owner: PhantomData<Cell<()>>,
+}
+
+/// Background-worker owner for retained bounded batch-column providers.
+///
+/// The provider's ABI adapter rejects concurrent re-entry; the wrapper keeps
+/// the direct single-plugin loader's same one-worker ownership rule.
+pub struct SinglePluginBatchColumnRuntimeV1 {
+    plugin_id: explorer_extension_api::StableIdV1,
+    providers: BTreeMap<String, BatchColumnProviderObjectV1>,
+    direct_call_guard: DirectPluginCallGuardV1,
     _single_owner: PhantomData<Cell<()>>,
 }
 
@@ -442,10 +542,12 @@ impl SinglePluginVisualColumnRuntimeV1 {
             self.summary,
             SinglePluginVisualMeasureRuntimeV1 {
                 columns: self.measure_columns,
+                direct_call_guard: self.direct_call_guard.clone(),
                 _single_owner: PhantomData,
             },
             SinglePluginVisualRenderRuntimeV1 {
                 columns: self.render_columns,
+                direct_call_guard: self.direct_call_guard,
                 _single_owner: PhantomData,
             },
         )
@@ -469,17 +571,167 @@ impl SinglePluginVisualColumnRuntimeV1 {
             self.summary,
             SinglePluginVisualMeasureRuntimeV1 {
                 columns: self.measure_columns,
+                direct_call_guard: self.direct_call_guard.clone(),
                 _single_owner: PhantomData,
             },
             SinglePluginVisualRenderRuntimeV1 {
                 columns: self.render_columns,
+                direct_call_guard: self.direct_call_guard.clone(),
                 _single_owner: PhantomData,
             },
             SinglePluginSizeMapViewRuntimeV1 {
                 views: self.size_map_views,
+                direct_call_guard: self.direct_call_guard,
                 _single_owner: PhantomData,
             },
         )
+    }
+
+    /// Separates all retained direct-loader objects, including the bounded
+    /// batch-column provider used by the Rust tokei example.
+    #[must_use]
+    pub fn into_parts_with_batch_columns(
+        self,
+    ) -> (
+        SinglePluginLoadSummaryV1,
+        SinglePluginVisualMeasureRuntimeV1,
+        SinglePluginVisualRenderRuntimeV1,
+        SinglePluginSizeMapViewRuntimeV1,
+        SinglePluginBatchColumnRuntimeV1,
+    ) {
+        let plugin_id = self.summary.plugin_id;
+        (
+            self.summary,
+            SinglePluginVisualMeasureRuntimeV1 {
+                columns: self.measure_columns,
+                direct_call_guard: self.direct_call_guard.clone(),
+                _single_owner: PhantomData,
+            },
+            SinglePluginVisualRenderRuntimeV1 {
+                columns: self.render_columns,
+                direct_call_guard: self.direct_call_guard.clone(),
+                _single_owner: PhantomData,
+            },
+            SinglePluginSizeMapViewRuntimeV1 {
+                views: self.size_map_views,
+                direct_call_guard: self.direct_call_guard.clone(),
+                _single_owner: PhantomData,
+            },
+            SinglePluginBatchColumnRuntimeV1 {
+                plugin_id,
+                providers: self.batch_column_providers,
+                direct_call_guard: self.direct_call_guard,
+                _single_owner: PhantomData,
+            },
+        )
+    }
+}
+
+impl SinglePluginBatchColumnRuntimeV1 {
+    /// Prepares the one explicit-DLL batch provider with a direct, bounded
+    /// host authority. This is deliberately not package discovery: only a
+    /// provider retained from the selected `--plugin-dll` can be dispatched.
+    pub fn prepare_dispatch(
+        &self,
+        runtime: &ExtensionJobRuntimeV1,
+        contribution_id: &str,
+        job_generation: u64,
+        item_generation: u64,
+        location_generation: u64,
+        source_generation: u64,
+        items: Vec<HostBatchColumnItemV1>,
+    ) -> Result<PreparedBatchColumnDispatchTicketV1, SinglePluginBatchColumnCallErrorV1> {
+        if !self.providers.contains_key(contribution_id) {
+            return Err(SinglePluginBatchColumnCallErrorV1::MissingContribution {
+                contribution_id: contribution_id.to_owned(),
+            });
+        }
+        let authority =
+            ExtensionJobAuthorityV1::for_direct_batch_column(self.plugin_id, contribution_id)
+                .ok_or(SinglePluginBatchColumnCallErrorV1::Runtime(
+                    ExtensionJobRuntimeErrorV1::InvalidRequest,
+                ))?;
+        runtime
+            .prepare_batch_column_dispatch(BatchColumnRuntimeRequestV1 {
+                authority,
+                job_generation,
+                item_generation,
+                location_generation,
+                source_generation,
+                items,
+            })
+            .map_err(SinglePluginBatchColumnCallErrorV1::Runtime)
+    }
+
+    /// Invokes a ticket prepared by [`Self::prepare_dispatch`]. The retained
+    /// provider is selected only by its registered contribution ID.
+    pub fn invoke_prepared(
+        &self,
+        contribution_id: &str,
+        ticket: &mut PreparedBatchColumnDispatchTicketV1,
+    ) -> Result<explorer_extension_api::JobTerminalV1, SinglePluginBatchColumnCallErrorV1> {
+        let provider = self.providers.get(contribution_id).ok_or_else(|| {
+            SinglePluginBatchColumnCallErrorV1::MissingContribution {
+                contribution_id: contribution_id.to_owned(),
+            }
+        })?;
+        let permit = self
+            .direct_call_guard
+            .begin("direct-batch", NativeCallOperationV1::BatchColumnProvider)
+            .map_err(|_| {
+                SinglePluginBatchColumnCallErrorV1::Runtime(
+                    ExtensionJobRuntimeErrorV1::UnauthorizedAuthority,
+                )
+            })?;
+        let terminal = ticket.invoke_once(provider);
+        if permit.clear().is_err() {
+            ticket.fail_marker_clear();
+            return Err(SinglePluginBatchColumnCallErrorV1::Runtime(
+                ExtensionJobRuntimeErrorV1::UnauthorizedAuthority,
+            ));
+        }
+        match terminal {
+            Ok(terminal) => Ok(terminal),
+            Err(error) => {
+                ticket.fail_marker_clear();
+                Err(SinglePluginBatchColumnCallErrorV1::Runtime(error))
+            }
+        }
+    }
+
+    /// Invokes the retained provider identified by its registered contribution.
+    /// Missing contributions return a typed direct-loader error instead of
+    /// falling back to an arbitrary provider.
+    pub fn run(
+        &self,
+        contribution_id: &str,
+        context: BatchColumnContextV1,
+    ) -> Result<explorer_extension_api::JobTerminalV1, SinglePluginBatchColumnCallErrorV1> {
+        let provider = self.providers.get(contribution_id).ok_or_else(|| {
+            SinglePluginBatchColumnCallErrorV1::MissingContribution {
+                contribution_id: contribution_id.to_owned(),
+            }
+        })?;
+        let permit = self
+            .direct_call_guard
+            .begin("direct-batch", NativeCallOperationV1::BatchColumnProvider)
+            .map_err(|_| {
+                SinglePluginBatchColumnCallErrorV1::Runtime(
+                    ExtensionJobRuntimeErrorV1::UnauthorizedAuthority,
+                )
+            })?;
+        let terminal = provider.invoke(context);
+        permit.clear().map_err(|_| {
+            SinglePluginBatchColumnCallErrorV1::Runtime(
+                ExtensionJobRuntimeErrorV1::UnauthorizedAuthority,
+            )
+        })?;
+        Ok(terminal)
+    }
+
+    #[must_use]
+    pub fn contains(&self, contribution_id: &str) -> bool {
+        self.providers.contains_key(contribution_id)
     }
 }
 
@@ -492,14 +744,26 @@ impl SinglePluginVisualMeasureRuntimeV1 {
         contribution_id: &str,
         request: FolderSizeMeasureRequestV1,
     ) -> Result<FolderSizeMeasureResultV1, SinglePluginVisualColumnCallErrorV1> {
-        self.columns
-            .get(contribution_id)
-            .map(|column| column.measure_folder_size(request))
-            .ok_or_else(|| {
+        let column = self.columns.get(contribution_id).ok_or_else(|| {
+            SinglePluginVisualColumnCallErrorV1::UnknownMeasureContribution(
+                contribution_id.to_owned(),
+            )
+        })?;
+        let permit = self
+            .direct_call_guard
+            .begin("direct-measure", NativeCallOperationV1::VisualMeasure)
+            .map_err(|_| {
                 SinglePluginVisualColumnCallErrorV1::UnknownMeasureContribution(
                     contribution_id.to_owned(),
                 )
-            })
+            })?;
+        let result = column.measure_folder_size(request);
+        permit.clear().map_err(|_| {
+            SinglePluginVisualColumnCallErrorV1::UnknownMeasureContribution(
+                contribution_id.to_owned(),
+            )
+        })?;
+        Ok(result)
     }
 }
 
@@ -511,14 +775,26 @@ impl SinglePluginVisualRenderRuntimeV1 {
         contribution_id: &str,
         context: CellRenderContextV1,
     ) -> Result<CellRenderPlanV1, SinglePluginVisualColumnCallErrorV1> {
-        self.columns
-            .get(contribution_id)
-            .map(|column| column.render(context))
-            .ok_or_else(|| {
+        let column = self.columns.get(contribution_id).ok_or_else(|| {
+            SinglePluginVisualColumnCallErrorV1::UnknownRenderContribution(
+                contribution_id.to_owned(),
+            )
+        })?;
+        let permit = self
+            .direct_call_guard
+            .begin("direct-render", NativeCallOperationV1::VisualRender)
+            .map_err(|_| {
                 SinglePluginVisualColumnCallErrorV1::UnknownRenderContribution(
                     contribution_id.to_owned(),
                 )
-            })
+            })?;
+        let result = column.render(context);
+        permit.clear().map_err(|_| {
+            SinglePluginVisualColumnCallErrorV1::UnknownRenderContribution(
+                contribution_id.to_owned(),
+            )
+        })?;
+        Ok(result)
     }
 }
 
@@ -539,14 +815,23 @@ impl SinglePluginSizeMapViewRuntimeV1 {
         contribution_id: &str,
         context: SizeMapRenderContextV1,
     ) -> Result<SizeMapRenderPlanV1, SinglePluginSizeMapViewCallErrorV1> {
-        self.views
-            .get(contribution_id)
-            .map(|view| view.render_size_map(context))
-            .ok_or_else(|| {
-                SinglePluginSizeMapViewCallErrorV1::UnknownViewContribution(
-                    contribution_id.to_owned(),
-                )
-            })
+        let view = self.views.get(contribution_id).ok_or_else(|| {
+            SinglePluginSizeMapViewCallErrorV1::UnknownViewContribution(contribution_id.to_owned())
+        })?;
+        let callback_error = || {
+            SinglePluginSizeMapViewCallErrorV1::Plugin(AbiErrorV1::new(
+                AbiErrorCodeV1::CALLBACK_UNAVAILABLE,
+                ROOT_MODULE_CONTRACT_ID_V1,
+                0,
+            ))
+        };
+        let permit = self
+            .direct_call_guard
+            .begin("direct-size-map", NativeCallOperationV1::VisualRender)
+            .map_err(|_| callback_error())?;
+        let plan = view.render_size_map(context).into_result();
+        permit.clear().map_err(|_| callback_error())?;
+        plan.map_err(SinglePluginSizeMapViewCallErrorV1::Plugin)
     }
 }
 
@@ -554,6 +839,7 @@ impl SinglePluginSizeMapViewRuntimeV1 {
 /// into its contribution-kind-specific single-owner runtime map.
 pub(crate) fn load_single_plugin_visual_column_runtime(
     path: &Path,
+    markers: Arc<PluginCallGuardStoreV1>,
 ) -> Result<SinglePluginVisualColumnRuntimeV1, SinglePluginLoadErrorV1> {
     if !path.is_absolute() {
         return Err(SinglePluginLoadErrorV1::PathMustBeAbsolute);
@@ -573,9 +859,22 @@ pub(crate) fn load_single_plugin_visual_column_runtime(
     let metadata = ExtensionHost::new().validate_root(root).map_err(|error| {
         SinglePluginLoadErrorV1::LoadFailed(format!("invalid root data: {error:?}"))
     })?;
+    let direct_call_guard = DirectPluginCallGuardV1::from_metadata(metadata, markers);
+    if direct_call_guard.denies_any_direct_callback() {
+        return Err(SinglePluginLoadErrorV1::BlockedBySafeMode);
+    }
+    let registrar_permit = direct_call_guard
+        .begin("direct-registrar", NativeCallOperationV1::Registrar)
+        .map_err(|_| SinglePluginLoadErrorV1::BlockedBySafeMode)?;
     let output = invoke_registrar(root).map_err(|error| {
         SinglePluginLoadErrorV1::LoadFailed(format!("registrar rejected: {error:?}"))
+    });
+    registrar_permit.clear().map_err(|_| {
+        SinglePluginLoadErrorV1::LoadFailed(
+            "direct plugin registrar marker could not clear".to_owned(),
+        )
     })?;
+    let output = output?;
 
     if output.outcome.registered_interface_count as usize != output.contributions.len() {
         return Err(SinglePluginLoadErrorV1::LoadFailed(
@@ -597,6 +896,7 @@ pub(crate) fn load_single_plugin_visual_column_runtime(
     let mut measure_columns = BTreeMap::new();
     let mut render_columns = BTreeMap::new();
     let mut size_map_views = BTreeMap::new();
+    let mut batch_column_providers = BTreeMap::new();
     for contribution in output.contributions.into_iter() {
         let contribution_id = contribution.contribution_id.into_string();
         if let Some(object) = contribution.visual_column.into_option() {
@@ -630,6 +930,21 @@ pub(crate) fn load_single_plugin_visual_column_runtime(
                 )));
             }
         }
+        if let Some(provider) = contribution.batch_column_provider.into_option() {
+            if contribution.kind != RegisteredContributionKindV1::COLUMN {
+                return Err(SinglePluginLoadErrorV1::LoadFailed(format!(
+                    "batch-column provider contribution {contribution_id:?} has a non-column kind"
+                )));
+            }
+            if batch_column_providers
+                .insert(contribution_id.clone(), provider)
+                .is_some()
+            {
+                return Err(SinglePluginLoadErrorV1::LoadFailed(format!(
+                    "registrar returned duplicate batch-column contribution {contribution_id:?}"
+                )));
+            }
+        }
     }
 
     Ok(SinglePluginVisualColumnRuntimeV1 {
@@ -637,6 +952,8 @@ pub(crate) fn load_single_plugin_visual_column_runtime(
         measure_columns,
         render_columns,
         size_map_views,
+        batch_column_providers,
+        direct_call_guard,
     })
 }
 
@@ -1071,6 +1388,7 @@ mod tests {
             atomic::{AtomicBool, Ordering},
         },
         thread,
+        time::Duration,
     };
 
     use abi_stable::{
@@ -1078,10 +1396,10 @@ mod tests {
         std_types::{ROption, RResult},
     };
     use explorer_extension_api::{
-        AbiErrorV1, ExtensionRegistrarImplementationV1, ExtensionRootModuleV1, RegistrarFactoryV1,
-        RegistrarOutputV1, RegistrarRequestV1, RegistrationOutcomeV1, SizeMapRenderContextV1,
-        SizeMapRenderPlanV1, SizeMapViewImplementationV1, SizeMapViewObjectV1, StableIdV1,
-        UiAbiFingerprintV1,
+        AbiErrorV1, ExtensionRegistrarImplementationV1, ExtensionRootModuleV1, PluginMetadataV1,
+        RegistrarFactoryV1, RegistrarOutputV1, RegistrarRequestV1, RegistrationOutcomeV1,
+        SizeMapRenderContextV1, SizeMapRenderPlanV1, SizeMapViewImplementationV1,
+        SizeMapViewObjectV1, StableIdV1, UiAbiFingerprintV1,
     };
     use serde_json::json;
 
@@ -1109,14 +1427,26 @@ mod tests {
 
     impl SizeMapViewImplementationV1 for TestSizeMapView {
         fn render_size_map(&self, context: SizeMapRenderContextV1) -> SizeMapRenderPlanV1 {
-            SizeMapRenderPlanV1::empty(context.generation, "test")
+            SizeMapRenderPlanV1::empty(context.generation, context.render_revision, "test")
         }
     }
 
     #[test]
     fn retained_size_map_renderer_is_distinct_from_an_empty_view_runtime() {
+        let directory = tempfile::tempdir().expect("marker directory");
+        let markers =
+            PluginCallGuardStoreV1::open(directory.path().join("markers"), Duration::ZERO)
+                .expect("markers");
+        let guard = DirectPluginCallGuardV1::from_metadata(
+            PluginMetadataV1 {
+                plugin_id: PLUGIN_ID,
+                primary_interface_id: INTERFACE_ID,
+            },
+            markers,
+        );
         let empty = SinglePluginSizeMapViewRuntimeV1 {
             views: BTreeMap::new(),
+            direct_call_guard: guard.clone(),
             _single_owner: PhantomData,
         };
         assert!(!empty.has_view_contribution("size-map"));
@@ -1126,9 +1456,62 @@ mod tests {
                 "size-map".to_owned(),
                 SizeMapViewObjectV1::new(TestSizeMapView),
             )]),
+            direct_call_guard: guard,
             _single_owner: PhantomData,
         };
         assert!(supplied.has_view_contribution("size-map"));
+    }
+
+    #[test]
+    fn recovered_direct_render_marker_denies_the_same_loader_identity() {
+        let directory = tempfile::tempdir().expect("marker directory");
+        let root = directory.path().join("markers");
+        let first = PluginCallGuardStoreV1::open(root.clone(), Duration::ZERO).expect("markers");
+        let metadata = PluginMetadataV1 {
+            plugin_id: PLUGIN_ID,
+            primary_interface_id: INTERFACE_ID,
+        };
+        let first_identity = DirectPluginCallGuardV1::from_metadata(metadata, Arc::clone(&first));
+        let permit = first_identity
+            .begin("direct-render", NativeCallOperationV1::VisualRender)
+            .expect("pre-armed session marker");
+        drop(permit);
+        drop(first_identity);
+        drop(first);
+
+        let recovered = PluginCallGuardStoreV1::open(root, Duration::ZERO).expect("recovered");
+        let recovered_identity = DirectPluginCallGuardV1::from_metadata(metadata, recovered);
+        assert!(recovered_identity.denies_any_direct_callback());
+    }
+
+    #[test]
+    fn direct_render_marker_clears_after_callback() {
+        let directory = tempfile::tempdir().expect("marker directory");
+        let root = directory.path().join("markers");
+        let markers = PluginCallGuardStoreV1::open(root.clone(), Duration::ZERO).expect("markers");
+        let identity = DirectPluginCallGuardV1::from_metadata(
+            PluginMetadataV1 {
+                plugin_id: PLUGIN_ID,
+                primary_interface_id: INTERFACE_ID,
+            },
+            Arc::clone(&markers),
+        );
+        let permit = identity
+            .begin("direct-render", NativeCallOperationV1::VisualRender)
+            .expect("callback marker");
+        permit.clear().expect("clear callback marker");
+        drop(identity);
+        drop(markers);
+
+        let reopened = PluginCallGuardStoreV1::open(root, Duration::ZERO).expect("reopened");
+        let identity = DirectPluginCallGuardV1::from_metadata(
+            PluginMetadataV1 {
+                plugin_id: PLUGIN_ID,
+                primary_interface_id: INTERFACE_ID,
+            },
+            reopened,
+        );
+        assert!(!identity.denies_any_direct_callback());
     }
 
     fn manifest(gpui: bool, fingerprint: Option<&str>, entry_sdk_major: u16) -> PackageManifestV1 {

@@ -1,18 +1,18 @@
 ## ADDED Requirements
 
 ### Requirement: Dynamic view mode registration
-Rust extensions SHALL register feature-scoped stable view IDs with localized name/icon, supported location kinds, priority, selection capability and GPUI renderer factory. The view switcher and session state SHALL accept built-in and extension IDs.
+Rust extensions SHALL register feature-scoped stable view IDs with localized name/icon, supported location kinds, priority, selection capability and a data-only render-plan factory. The view switcher and session state SHALL accept built-in and extension IDs; the host owns the GPUI element.
 
 #### Scenario: Size Map feature is enabled
 - **WHEN** its package and view feature are effective
 - **THEN** `Size Map` appears beside built-in view modes and can be selected for the current tab
 
-### Requirement: Public GPUI view lifecycle
-`GpuiViewModeRendererV1` SHALL receive only public location/refresh generations, viewport, DPI, theme facade, focus, selection snapshot and action sink. It SHALL support create/render/focus/blur/location/selection/refresh/suspend/resume/close and SHALL NOT retain ExplorerState or internal GPUI entities.
+### Requirement: Public worker-safe view plan lifecycle
+`ViewModeRenderPlanV1` SHALL receive only public location/refresh generations, viewport, DPI, theme facade and selection snapshot. Its synchronous ABI callback SHALL run on a bounded host worker with a per-call durable marker, return a data-only plan, and SHALL NOT receive an action sink, GPUI thread/entity/context, ExplorerState, or internal handle. The host owns lifecycle, GPUI painting, focus, navigation, refresh, suspension, and close; it accepts only the current full host-minted revision.
 
 #### Scenario: Tab changes location
 - **WHEN** navigation commits a new current location
-- **THEN** the renderer receives an owned new-generation context and cannot use the old mutable tab model
+- **THEN** the worker callback receives an owned new-generation snapshot and cannot use the old mutable tab model; GPUI rejects a returned old revision
 
 ### Requirement: Host-owned recursive tree scan
 `DirectoryTreeScanServiceV1` SHALL accept an authorized location, recursive/symlink/hard-link/ignore/metadata policy, deadline, quotas, cancellation and refresh generation. It SHALL perform filesystem I/O off the GPUI thread and return bounded add/update/remove/partial/subtree-complete/scan-complete deltas.

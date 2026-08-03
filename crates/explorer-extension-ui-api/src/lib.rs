@@ -17,7 +17,7 @@
 pub use explorer_extension_api::{
     CellAggregateV1, CellColorV1, CellRenderContextV1, CellRenderPlanV1, CellThemeV1,
     EXTENSION_ID_NAMESPACE_V1, FolderSizeMeasureRequestV1, FolderSizeMeasureResultV1,
-    SizeMapNodeKindV1, SizeMapNodeStatusV1, SizeMapNodeV1, SizeMapRectangleV1,
+    PluginValueV1, SizeMapNodeKindV1, SizeMapNodeStatusV1, SizeMapNodeV1, SizeMapRectangleV1,
     SizeMapRenderContextV1, SizeMapRenderPlanV1, SizeMapViewImplementationV1, SizeMapViewObjectV1,
     SizeMapViewportV1, StableIdV1, VisualColumnImplementationV1, VisualColumnObjectV1,
 };

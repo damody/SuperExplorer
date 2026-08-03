@@ -13,16 +13,18 @@ use std::{
     thread::ThreadId,
 };
 
-use abi_stable::std_types::{ROption, RVec};
+use abi_stable::std_types::{ROption, RString, RVec};
 use explorer_extension_api::{
-    AbiInputStreamServicesV1, AbiJobHostServicesV1, IncrementalResultBatchV1,
-    InputStreamCapabilityV1, InputStreamLengthOutcomeV1, InputStreamReadOutcomeV1,
-    InputStreamReadRequestV1, InputStreamSeekOriginV1, InputStreamSeekOutcomeV1,
-    InputStreamSeekRequestV1, InputStreamStatusV1, InputStreamV1, ItemHandleV1, JobContextV1,
-    JobControlStateV1, JobHandleV1, JobHostServicesV1, JobProgressStatusV1, JobProgressUpdateV1,
-    JobTerminalV1, LocationHandleV1, MAX_INCREMENTAL_RESULT_BYTES_V1,
-    MAX_INCREMENTAL_RESULT_ITEMS_V1, MAX_INPUT_STREAM_READ_BYTES_V1, SinkCapabilityV1,
-    SinkSubmitOutcomeV1, SinkSubmitStatusV1, StableIdV1, StableSortValueKindV1,
+    AbiInputStreamServicesV1, AbiJobHostServicesV1, BatchColumnContextV1, BatchColumnItemV1,
+    BatchColumnProviderObjectV1, IncrementalResultBatchV1, InputStreamCapabilityV1,
+    InputStreamLengthOutcomeV1, InputStreamReadOutcomeV1, InputStreamReadRequestV1,
+    InputStreamSeekOriginV1, InputStreamSeekOutcomeV1, InputStreamSeekRequestV1,
+    InputStreamStatusV1, InputStreamV1, ItemHandleV1, JobContextV1, JobControlStateV1, JobHandleV1,
+    JobHostServicesV1, JobProgressStatusV1, JobProgressUpdateV1, JobTerminalV1, LocationHandleV1,
+    MAX_BATCH_COLUMN_FILE_NAME_BYTES_V1, MAX_BATCH_COLUMN_ITEMS_V1,
+    MAX_INCREMENTAL_RESULT_BYTES_V1, MAX_INCREMENTAL_RESULT_ITEMS_V1,
+    MAX_INPUT_STREAM_READ_BYTES_V1, SinkCapabilityV1, SinkSubmitOutcomeV1, SinkSubmitStatusV1,
+    StableIdV1, StableSortValueKindV1,
 };
 use ring::rand::{SecureRandom as _, SystemRandom};
 use thiserror::Error;
@@ -221,6 +223,42 @@ impl fmt::Debug for ExtensionJobAuthorityV1 {
 }
 
 impl ExtensionJobAuthorityV1 {
+    /// Mints the narrow authority used by the one explicit direct-DLL batch
+    /// column example. It has no package discovery or manifest semantics: the
+    /// caller must already hold a retained contribution from the direct loader.
+    #[must_use]
+    pub fn for_direct_batch_column(plugin_id: StableIdV1, contribution_id: &str) -> Option<Self> {
+        if !plugin_id.is_valid()
+            || contribution_id.is_empty()
+            || contribution_id.len() > 64
+            || !contribution_id.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b':')
+            })
+        {
+            return None;
+        }
+        Some(Self {
+            producer: ExtensionJobProducerV1 {
+                package_id: format!("direct-dll-{:016x}", plugin_id.value),
+                sealed_manifest_digest: "explicit-direct-dll-v1".to_owned(),
+                data_version: 1,
+                contribution_id: contribution_id.to_owned(),
+                interface_id: plugin_id,
+                feature_id: contribution_id.to_owned(),
+                feature_epoch: 1,
+                opaque_schema: None,
+                opaque_schema_version: None,
+                renderer_contribution_id: None,
+            },
+            expected_sort: ROption::RSome(StableSortValueKindV1::U64),
+            contribution_kind: ContributionKindV1::Column,
+            opaque_schema: None,
+            opaque_schema_version: None,
+            filesystem_read_authorized: true,
+            _lease: None,
+        })
+    }
+
     #[allow(clippy::missing_errors_doc)]
     pub(crate) fn mint_sealed(
         validated: &ValidatedContributionSetV1,
@@ -332,6 +370,8 @@ impl ExtensionJobAuthorityV1 {
 /// owns an immutable byte snapshot rather than a plugin-selected filesystem
 /// path or native handle; replacing it advances the authoritative generation.
 pub const MAX_HOST_INPUT_STREAM_SOURCE_BYTES_V1: usize = 8 * 1024 * 1024;
+/// Aggregate input ceiling for one bounded batch callback.
+pub const MAX_BATCH_COLUMN_INPUT_BYTES_V1: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct HostInputStreamSourceV1 {
@@ -419,6 +459,29 @@ pub struct ExtensionJobRuntimeRequestV1 {
     pub source_generation: u64,
     pub has_item: bool,
     pub input_stream: Option<HostInputStreamSourceV1>,
+}
+
+/// One ordinary-file input selected by the host for a batch column callback.
+///
+/// Construction is deliberately host-only in practice: the source itself can
+/// only be minted from a size-limited host snapshot and is later wrapped in an
+/// opaque `InputStreamV1` service.
+#[derive(Clone, Debug)]
+pub struct HostBatchColumnItemV1 {
+    /// Host-attested basename only; never a path.
+    pub file_name: RString,
+    pub source: HostInputStreamSourceV1,
+}
+
+/// Host-owned request for one Rust batch-column provider invocation.
+#[derive(Debug)]
+pub struct BatchColumnRuntimeRequestV1 {
+    pub authority: ExtensionJobAuthorityV1,
+    pub job_generation: u64,
+    pub item_generation: u64,
+    pub location_generation: u64,
+    pub source_generation: u64,
+    pub items: Vec<HostBatchColumnItemV1>,
 }
 
 /// Deep-copied host result. Producer identity never originates from plugin bytes.
@@ -650,6 +713,11 @@ struct RuntimeJobV1 {
     location_generation: u64,
     source_generation: u64,
     input_stream: Option<HostInputStreamSourceV1>,
+    batch_input_streams: Vec<RuntimeBatchInputV1>,
+    /// A batch-column callback produces one complete, host-ordered outcome
+    /// record.  This keeps the direct one-plugin application path from ever
+    /// associating a valid result with the wrong visible file.
+    batch_result_submitted: bool,
     input_stream_bytes: usize,
     expected_sort: ROption<StableSortValueKindV1>,
     /// Shared by every host row published from this job. A revoked generation
@@ -669,6 +737,13 @@ struct RuntimeJobV1 {
     queued_batches: VecDeque<StoredBatchV1>,
     queued_items: usize,
     queued_bytes: usize,
+}
+
+#[derive(Clone, Debug)]
+struct RuntimeBatchInputV1 {
+    item: ItemHandleV1,
+    file_name: RString,
+    source: HostInputStreamSourceV1,
 }
 
 /// Per-invocation gate retained by the Rust-ABI host-services object. Clones
@@ -767,10 +842,7 @@ impl HostJobServicesAdapterV1 {
             .map_or(JobControlStateV1::CLOSED, |job| {
                 let source_current = self.invocation.matches(job)
                     && job.value_generation.is_current()
-                    && job
-                        .input_stream
-                        .as_ref()
-                        .is_none_or(|source| source.matches_generation(job.source_generation));
+                    && job_sources_current(job);
                 if job.sink_capability == self.capability
                     && job.provider_call_active
                     && source_current
@@ -882,10 +954,7 @@ impl HostInputStreamServicesAdapterV1 {
         };
         if !job.provider_call_active
             || job.source_generation != self.expected_source_generation
-            || !job
-                .input_stream
-                .as_ref()
-                .is_some_and(|source| source.same_weak_state(&self.source))
+            || !job_source_matches(job, &self.source)
         {
             return Err(InputStreamStatusV1::STALE);
         }
@@ -1556,6 +1625,144 @@ impl ExtensionJobRuntimeV1 {
         })
     }
 
+    /// Prepares one bounded Rust batch-column callback. The host supplies only
+    /// ordinary-file snapshots from the current folder; every snapshot is
+    /// capped at 8 MiB and all results share one generation-bound sink.
+    pub fn prepare_batch_column_dispatch(
+        &self,
+        request: BatchColumnRuntimeRequestV1,
+    ) -> Result<PreparedBatchColumnDispatchTicketV1, ExtensionJobRuntimeErrorV1> {
+        if request.items.is_empty()
+            || request.items.len() > MAX_BATCH_COLUMN_ITEMS_V1
+            || !request.authority.filesystem_read_authorized
+            || request.items.iter().any(|item| {
+                !item.source.matches_generation(request.source_generation)
+                    || item.source.byte_len().is_none()
+                    || item.file_name.is_empty()
+                    || item.file_name.len() > MAX_BATCH_COLUMN_FILE_NAME_BYTES_V1
+                    || item.file_name.contains(['/', '\\'])
+            })
+        {
+            return Err(ExtensionJobRuntimeErrorV1::InvalidRequest);
+        }
+        let total_bytes = request.items.iter().try_fold(0_usize, |total, item| {
+            total.checked_add(item.source.byte_len()?)
+        });
+        if total_bytes.is_none_or(|bytes| bytes > MAX_BATCH_COLUMN_INPUT_BYTES_V1) {
+            return Err(ExtensionJobRuntimeErrorV1::InputStreamCapacityExceeded);
+        }
+        let sources = request
+            .items
+            .into_iter()
+            .map(|item| {
+                Self::mint_item_handle(request.item_generation).map(|handle| RuntimeBatchInputV1 {
+                    item: handle,
+                    file_name: item.file_name,
+                    source: item.source,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let context = self.open_job_inner(ExtensionJobRuntimeRequestV1 {
+            authority: request.authority,
+            job_generation: request.job_generation,
+            item_generation: request.item_generation,
+            location_generation: request.location_generation,
+            source_generation: request.source_generation,
+            has_item: false,
+            input_stream: None,
+        })?;
+        let batch_items = (|| -> Result<RVec<BatchColumnItemV1>, ExtensionJobRuntimeErrorV1> {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| ExtensionJobRuntimeErrorV1::StatePoisoned)?;
+            let Some(job) = state.jobs.get(&context.job) else {
+                return Err(ExtensionJobRuntimeErrorV1::UnknownJob);
+            };
+            let package_id = job.authority.producer.package_id.clone();
+            let Some(total) = total_bytes else {
+                return Err(ExtensionJobRuntimeErrorV1::InputStreamCapacityExceeded);
+            };
+            let package_current = state
+                .input_stream_bytes_per_package
+                .get(&package_id)
+                .copied()
+                .unwrap_or(0);
+            let Some(next_total) = state.input_stream_bytes.checked_add(total) else {
+                return Err(ExtensionJobRuntimeErrorV1::InputStreamCapacityExceeded);
+            };
+            let Some(next_package) = package_current.checked_add(total) else {
+                return Err(ExtensionJobRuntimeErrorV1::InputStreamCapacityExceeded);
+            };
+            if next_total > state.config.max_bytes
+                || next_package > state.config.max_bytes_per_package
+            {
+                return Err(ExtensionJobRuntimeErrorV1::InputStreamCapacityExceeded);
+            }
+            let (gate, batch_sources) = {
+                let Some(job) = state.jobs.get_mut(&context.job) else {
+                    return Err(ExtensionJobRuntimeErrorV1::UnknownJob);
+                };
+                job.input_stream_bytes = total;
+                job.batch_input_streams = sources;
+                (Arc::clone(&job.gate), job.batch_input_streams.clone())
+            };
+            state.input_stream_bytes = next_total;
+            state
+                .input_stream_bytes_per_package
+                .insert(package_id, next_package);
+            batch_sources
+                .iter()
+                .map(|item| {
+                    Ok(BatchColumnItemV1 {
+                        item: item.item,
+                        item_generation: context.item_generation,
+                        file_name: item.file_name.clone(),
+                        input: InputStreamV1::from_host(
+                            InputStreamCapabilityV1::from_host(random_nonce()?),
+                            HostInputStreamServicesAdapterV1 {
+                                state: Arc::downgrade(&self.state),
+                                job: context.job,
+                                gate: Arc::clone(&gate),
+                                source: item.source.downgrade(),
+                                expected_source_generation: context.source_generation,
+                                position: Arc::new(Mutex::new(0)),
+                            },
+                        ),
+                    })
+                })
+                .collect::<Result<RVec<_>, ExtensionJobRuntimeErrorV1>>()
+        })();
+        let batch_items = match batch_items {
+            Ok(items) => items,
+            Err(error) => {
+                fail_close_ticket(
+                    &self.state,
+                    context.job,
+                    ProducerRevocationReasonV1::LifecycleCancelled,
+                );
+                return Err(error);
+            }
+        };
+        Ok(PreparedBatchColumnDispatchTicketV1 {
+            state: Arc::clone(&self.state),
+            context: BatchColumnContextV1 {
+                job: context.job,
+                location: context.location,
+                feature_epoch: context.feature_epoch,
+                job_generation: context.job_generation,
+                item_generation: context.item_generation,
+                location_generation: context.location_generation,
+                source_generation: context.source_generation,
+                items: batch_items,
+                sink: context.sink,
+                progress: context.progress,
+            },
+            invoked: false,
+            terminal_published: false,
+        })
+    }
+
     /// Mints a capability-bound ABI context on the worker that will invoke it.
     ///
     /// This raw test seam deliberately has no production callers.  Production
@@ -1689,6 +1896,8 @@ impl ExtensionJobRuntimeV1 {
             location_generation: request.location_generation,
             source_generation: request.source_generation,
             input_stream: request.input_stream.clone(),
+            batch_input_streams: Vec::new(),
+            batch_result_submitted: false,
             input_stream_bytes,
             expected_sort,
             value_generation: input_generation_token.map_or_else(
@@ -2378,6 +2587,88 @@ impl Drop for PreparedProviderDispatchTicketV1 {
     }
 }
 
+/// Linear host-owned transaction for one bounded batch-column callback.
+///
+/// It has the same marker-clear lifetime rules as ordinary provider dispatch;
+/// the only difference is that the callback sees at most 128 host-attested
+/// item streams on one current generation.
+pub struct PreparedBatchColumnDispatchTicketV1 {
+    state: Arc<Mutex<RuntimeStateV1>>,
+    context: BatchColumnContextV1,
+    invoked: bool,
+    terminal_published: bool,
+}
+
+impl PreparedBatchColumnDispatchTicketV1 {
+    /// Returns the opaque job capability used for bounded result draining.
+    #[must_use]
+    pub const fn job(&self) -> JobHandleV1 {
+        self.context.job
+    }
+
+    /// Invokes the one retained batch provider exactly once.
+    pub fn invoke_once(
+        &mut self,
+        provider: &BatchColumnProviderObjectV1,
+    ) -> Result<JobTerminalV1, ExtensionJobRuntimeErrorV1> {
+        if self.invoked {
+            return Err(ExtensionJobRuntimeErrorV1::ProviderAlreadyInvoked);
+        }
+        self.invoked = true;
+        let scope = ProviderCallScopeV1::enter_batch(&self.state, &self.context)?;
+        let terminal = provider.invoke(self.context.clone());
+        drop(scope);
+        Ok(if terminal.is_known() {
+            terminal
+        } else {
+            JobTerminalV1::INCOMPATIBLE
+        })
+    }
+
+    /// Publishes the callback terminal after the caller's durable marker clear.
+    pub fn publish_terminal_after_marker_clear(
+        &mut self,
+        terminal: JobTerminalV1,
+    ) -> Result<ExtensionJobFinishOutcomeV1, ExtensionJobRuntimeErrorV1> {
+        if !self.invoked || self.terminal_published {
+            return Err(ExtensionJobRuntimeErrorV1::TerminalPublicationDenied);
+        }
+        let outcome = finish_job(&self.state, self.context.job, terminal);
+        if matches!(outcome, ExtensionJobFinishOutcomeV1::UnknownJob) {
+            return Err(ExtensionJobRuntimeErrorV1::UnknownJob);
+        }
+        authorize_retirement(&self.state, self.context.job)?;
+        self.terminal_published = true;
+        Ok(outcome)
+    }
+
+    /// Fail-closes the generation when the outer dispatch marker cannot clear.
+    pub fn fail_marker_clear(&mut self) {
+        if !self.terminal_published {
+            fail_close_ticket(
+                &self.state,
+                self.context.job,
+                ProducerRevocationReasonV1::MarkerFailure,
+            );
+            self.terminal_published = true;
+        }
+    }
+}
+
+impl Drop for PreparedBatchColumnDispatchTicketV1 {
+    fn drop(&mut self) {
+        if self.terminal_published {
+            let _ = retire_job(&self.state, self.context.job);
+        } else {
+            fail_close_ticket(
+                &self.state,
+                self.context.job,
+                ProducerRevocationReasonV1::LifecycleCancelled,
+            );
+        }
+    }
+}
+
 /// Publishes exactly one terminal. Cancellation/deadline host state wins over a plugin claim.
 fn finish_job(
     state: &Arc<Mutex<RuntimeStateV1>>,
@@ -2400,10 +2691,7 @@ fn finish_job(
     if let Some(terminal) = runtime_job.terminal {
         return ExtensionJobFinishOutcomeV1::AlreadyTerminal(terminal);
     }
-    let source_stale = !runtime_job
-        .input_stream
-        .as_ref()
-        .is_none_or(|source| source.matches_generation(runtime_job.source_generation));
+    let source_stale = !job_sources_current(runtime_job);
     let terminal = terminal_precedence(
         runtime_job.control,
         if source_stale {
@@ -2467,10 +2755,27 @@ fn result_job_is_ui_current(job: &RuntimeJobV1) -> bool {
         || (job.terminal.is_none()
             && job.control.into_raw() == JobControlStateV1::ACTIVE.into_raw()))
         && job.value_generation.is_current()
+        && job_sources_current(job)
+}
+
+fn job_sources_current(job: &RuntimeJobV1) -> bool {
+    job.input_stream
+        .as_ref()
+        .is_none_or(|source| source.matches_generation(job.source_generation))
         && job
-            .input_stream
-            .as_ref()
-            .is_none_or(|source| source.matches_generation(job.source_generation))
+            .batch_input_streams
+            .iter()
+            .all(|item| item.source.matches_generation(job.source_generation))
+}
+
+fn job_source_matches(job: &RuntimeJobV1, source: &Weak<Mutex<HostInputStreamStateV1>>) -> bool {
+    job.input_stream
+        .as_ref()
+        .is_some_and(|candidate| candidate.same_weak_state(source))
+        || job
+            .batch_input_streams
+            .iter()
+            .any(|item| item.source.same_weak_state(source))
 }
 
 /// Sets and clears the per-callback sink authorization without retaining a
@@ -2511,10 +2816,67 @@ impl ProviderCallScopeV1 {
             || context.location_generation != job.location_generation
             || context.source_generation != job.source_generation
             || context.feature_epoch != job.authority.producer.feature_epoch
-            || !job
-                .input_stream
-                .as_ref()
-                .is_none_or(|source| source.matches_generation(job.source_generation))
+            || !job_sources_current(job)
+            || job.provider_call_active
+            || job.terminal.is_some()
+            || job.control.into_raw() != JobControlStateV1::ACTIVE.into_raw()
+        {
+            return Err(ExtensionJobRuntimeErrorV1::InactiveProviderCall);
+        }
+        if !job.gate.activate() {
+            return Err(ExtensionJobRuntimeErrorV1::InactiveProviderCall);
+        }
+        job.owner_thread = Some(owner_thread);
+        job.provider_call_active = true;
+        job.finalization = JobFinalizationV1::MarkerPending;
+        locked.active_provider_threads.insert(owner_thread);
+        Ok(Self {
+            state: Arc::clone(state),
+            job: context.job,
+            capability: context.sink.capability,
+            owner_thread,
+        })
+    }
+
+    fn enter_batch(
+        state: &Arc<Mutex<RuntimeStateV1>>,
+        context: &BatchColumnContextV1,
+    ) -> Result<Self, ExtensionJobRuntimeErrorV1> {
+        if !context.is_well_formed() {
+            return Err(ExtensionJobRuntimeErrorV1::InvalidRequest);
+        }
+        let mut locked = state
+            .lock()
+            .map_err(|_| ExtensionJobRuntimeErrorV1::StatePoisoned)?;
+        let owner_thread = std::thread::current().id();
+        if locked.active_provider_threads.contains(&owner_thread) {
+            return Err(ExtensionJobRuntimeErrorV1::InactiveProviderCall);
+        }
+        let job = locked
+            .jobs
+            .get_mut(&context.job)
+            .ok_or(ExtensionJobRuntimeErrorV1::UnknownJob)?;
+        let items_match = job.batch_input_streams.len() == context.items.len()
+            && job
+                .batch_input_streams
+                .iter()
+                .zip(context.items.iter())
+                .all(|(expected, actual)| {
+                    expected.item == actual.item && actual.item_generation == job.item_generation
+                });
+        if context.sink.job != context.job
+            || context.sink.capability != job.sink_capability
+            || context.progress.job != context.job
+            || context.progress.capability != job.sink_capability
+            || job.owner_thread.is_some_and(|owner| owner != owner_thread)
+            || !items_match
+            || context.job_generation != job.job_generation
+            || context.location != job.location
+            || context.location_generation != job.location_generation
+            || context.item_generation != job.item_generation
+            || context.source_generation != job.source_generation
+            || context.feature_epoch != job.authority.producer.feature_epoch
+            || !job_sources_current(job)
             || job.provider_call_active
             || job.terminal.is_some()
             || job.control.into_raw() != JobControlStateV1::ACTIVE.into_raw()
@@ -2840,11 +3202,7 @@ fn submit_locked(
     if job.terminal.is_some() || job.control.into_raw() != JobControlStateV1::ACTIVE.into_raw() {
         return SubmitDecisionV1::from_credits(SinkSubmitStatusV1::CLOSED, credits);
     }
-    if !job
-        .input_stream
-        .as_ref()
-        .is_none_or(|source| source.matches_generation(job.source_generation))
-    {
+    if !job_sources_current(job) {
         return SubmitDecisionV1::from_credits(SinkSubmitStatusV1::STALE, credits);
     }
     if !job.provider_call_active
@@ -2884,6 +3242,13 @@ fn submit_locked(
         let Some(job) = state.jobs.get_mut(&batch.job) else {
             return SubmitDecisionV1::from_credits(SinkSubmitStatusV1::CLOSED, credits);
         };
+        if !job.batch_input_streams.is_empty() {
+            // `validate_batch_preflight` established exact item cardinality
+            // and order. A second accepted batch would necessarily duplicate
+            // the same host items, so reject it rather than letting a caller
+            // accidentally project it onto later requests.
+            job.batch_result_submitted = true;
+        }
         job.next_sequence = next_sequence;
         job.queued_batches.push_back(StoredBatchV1 {
             sequence,
@@ -3033,10 +3398,28 @@ fn validate_batch_preflight(
     if batch.entries.is_empty() || batch.entries.len() > MAX_INCREMENTAL_RESULT_ITEMS_V1 {
         return Err(());
     }
-    let item = job.item.ok_or(())?;
+    if !job.batch_input_streams.is_empty()
+        && (job.batch_result_submitted
+            || batch.entries.len() != job.batch_input_streams.len()
+            || batch
+                .entries
+                .iter()
+                .zip(&job.batch_input_streams)
+                .any(|(entry, expected)| entry.item != expected.item))
+    {
+        // Batch providers receive host-minted capabilities in visible-file
+        // order. Require one result for each input in that exact order so
+        // reordered, duplicate, and omitted output all fail closed.
+        return Err(());
+    }
     let mut bytes = 0_usize;
     for entry in &batch.entries {
-        if entry.item != item
+        let item_authorized = job.item == Some(entry.item)
+            || job
+                .batch_input_streams
+                .iter()
+                .any(|candidate| candidate.item == entry.item);
+        if !item_authorized
             || entry.item_generation != job.item_generation
             || entry.source_generation != job.source_generation
         {
@@ -4244,6 +4627,144 @@ mod tests {
                 });
             JobTerminalV1::COMPLETED
         }
+    }
+
+    #[derive(Clone)]
+    struct BatchProbeProviderV1(Arc<Mutex<(usize, InputStreamStatusV1)>>);
+
+    impl explorer_extension_api::BatchColumnProviderImplementationV1 for BatchProbeProviderV1 {
+        fn run(&self, context: BatchColumnContextV1) -> JobTerminalV1 {
+            let status = context.items[0].input.length().status;
+            *self.0.lock().unwrap() = (context.items.len(), status);
+            JobTerminalV1::COMPLETED
+        }
+    }
+
+    #[derive(Clone)]
+    struct ReorderedBatchProviderV1(Arc<Mutex<SinkSubmitStatusV1>>);
+
+    impl explorer_extension_api::BatchColumnProviderImplementationV1 for ReorderedBatchProviderV1 {
+        fn run(&self, context: BatchColumnContextV1) -> JobTerminalV1 {
+            let entries = context
+                .items
+                .iter()
+                .rev()
+                .map(|item| IncrementalResultEntryV1 {
+                    item: item.item,
+                    item_generation: context.item_generation,
+                    source_generation: context.source_generation,
+                    result: explorer_extension_api::PluginItemResultV1::value(
+                        text_value(),
+                        ROption::RNone,
+                    ),
+                })
+                .collect::<RVec<_>>();
+            let outcome = context.try_submit(IncrementalResultBatchV1 {
+                job: context.job,
+                sink_capability: context.sink.capability,
+                job_generation: context.job_generation,
+                location: context.location,
+                location_generation: context.location_generation,
+                source_generation: context.source_generation,
+                sequence: 0,
+                entries,
+            });
+            *self.0.lock().unwrap() = outcome.status;
+            JobTerminalV1::COMPLETED
+        }
+    }
+
+    #[test]
+    fn batch_column_dispatch_is_bounded_host_attested_and_generation_safe() {
+        let runtime = ExtensionJobRuntimeV1::new(config());
+        let observed = Arc::new(Mutex::new((0, InputStreamStatusV1::CLOSED)));
+        let provider =
+            BatchColumnProviderObjectV1::new(BatchProbeProviderV1(Arc::clone(&observed)));
+        let source_one = HostInputStreamSourceV1::from_host_snapshot(vec![1], 1, true).unwrap();
+        let source_two = HostInputStreamSourceV1::from_host_snapshot(vec![2], 1, true).unwrap();
+        let mut ticket = runtime
+            .prepare_batch_column_dispatch(BatchColumnRuntimeRequestV1 {
+                authority: ExtensionJobAuthorityV1::for_test("batch")
+                    .with_filesystem_read_for_test(),
+                job_generation: 1,
+                item_generation: 1,
+                location_generation: 1,
+                source_generation: 1,
+                items: vec![
+                    HostBatchColumnItemV1 {
+                        file_name: RString::from("one.rs"),
+                        source: source_one,
+                    },
+                    HostBatchColumnItemV1 {
+                        file_name: RString::from("two.py"),
+                        source: source_two,
+                    },
+                ],
+            })
+            .unwrap();
+        assert_eq!(
+            ticket.invoke_once(&provider).unwrap(),
+            JobTerminalV1::COMPLETED
+        );
+        assert_eq!(*observed.lock().unwrap(), (2, InputStreamStatusV1::OK));
+        assert!(matches!(
+            ticket.publish_terminal_after_marker_clear(JobTerminalV1::COMPLETED),
+            Ok(ExtensionJobFinishOutcomeV1::Published(
+                JobTerminalV1::COMPLETED
+            ))
+        ));
+
+        let over_limit = (0..=MAX_BATCH_COLUMN_ITEMS_V1)
+            .map(|_| HostBatchColumnItemV1 {
+                file_name: RString::from("limit.rs"),
+                source: HostInputStreamSourceV1::from_host_snapshot(vec![], 1, true).unwrap(),
+            })
+            .collect();
+        assert!(matches!(
+            runtime.prepare_batch_column_dispatch(BatchColumnRuntimeRequestV1 {
+                authority: ExtensionJobAuthorityV1::for_test("batch-limit")
+                    .with_filesystem_read_for_test(),
+                job_generation: 1,
+                item_generation: 1,
+                location_generation: 1,
+                source_generation: 1,
+                items: over_limit,
+            }),
+            Err(ExtensionJobRuntimeErrorV1::InvalidRequest)
+        ));
+    }
+
+    #[test]
+    fn batch_column_output_must_match_host_input_order_exactly_once() {
+        let runtime = ExtensionJobRuntimeV1::new(config());
+        let observed = Arc::new(Mutex::new(SinkSubmitStatusV1::ACCEPTED));
+        let provider =
+            BatchColumnProviderObjectV1::new(ReorderedBatchProviderV1(Arc::clone(&observed)));
+        let source = || HostInputStreamSourceV1::from_host_snapshot(vec![1], 1, true).unwrap();
+        let mut ticket = runtime
+            .prepare_batch_column_dispatch(BatchColumnRuntimeRequestV1 {
+                authority: ExtensionJobAuthorityV1::for_test("batch-order")
+                    .with_filesystem_read_for_test(),
+                job_generation: 1,
+                item_generation: 1,
+                location_generation: 1,
+                source_generation: 1,
+                items: vec![
+                    HostBatchColumnItemV1 {
+                        file_name: RString::from("one.rs"),
+                        source: source(),
+                    },
+                    HostBatchColumnItemV1 {
+                        file_name: RString::from("two.rs"),
+                        source: source(),
+                    },
+                ],
+            })
+            .unwrap();
+        assert_eq!(ticket.invoke_once(&provider), Ok(JobTerminalV1::COMPLETED));
+        assert_eq!(*observed.lock().unwrap(), SinkSubmitStatusV1::INVALID);
+        assert!(runtime.drain(ticket.job(), 1, 1, 1, 1).is_empty());
+        ticket.fail_marker_clear();
     }
 
     #[test]

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "package": "tokei",
+  "version": "14.0.0",
+  "crates_io_checksum": "e4de7875c0c312f30e090edb0da5df9f6586033132d36d94c8f9133e82826797",
+  "rust_version": "1.71",
+  "features": [],
+  "default_features": false,
+  "lockfile": {
+    "path": "Cargo.lock",
+    "sha256": "f18a3f1ec00625d71fd423664995d19d7bc99241af5a4176dfb9f132a399d4e7",
+    "registry_package_count": 156
+  },
+  "source": {
+    "directory": "../../vendor/cargo-sources",
+    "package_directory": "tokei-14.0.0",
+    "static_link": true
+  },
+  "policy": {
+    "target": "x86_64-pc-windows-msvc",
+    "requires_locked_offline": true,
+    "external_processes": false
+  }
+}

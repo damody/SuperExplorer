@@ -2,10 +2,29 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    hash::{Hash, Hasher},
     rc::Rc,
     sync::Arc,
     time::Instant,
 };
+
+fn extension_render_item_id(
+    item_id: &explorer_model::ShellItemId,
+) -> explorer_extension_ui_api::StableIdV1 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    item_id.provider_bytes().hash(&mut hasher);
+    explorer_extension_ui_api::StableIdV1::new(
+        explorer_extension_ui_api::EXTENSION_ID_NAMESPACE_V1,
+        hasher.finish().max(1),
+    )
+}
+
+fn extension_render_generation(item_id: &explorer_model::ShellItemId, snapshot: impl Hash) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    item_id.provider_bytes().hash(&mut hasher);
+    snapshot.hash(&mut hasher);
+    hasher.finish().max(1)
+}
 
 use abi_stable::std_types::{ROption, RString};
 use explorer_model::{DirectoryState, TabId, TabSearchState};
@@ -188,6 +207,8 @@ pub struct ExplorerWindow {
     preview_thumbnail_failed: bool,
     folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
     visual_column_runtime: Option<crate::folder_size_column::VisualColumnRuntimeHandleV1>,
+    code_lines_visuals: Option<crate::code_lines_column::CodeLinesColumnVisuals>,
+    code_lines_runtime: Option<crate::code_lines_column::CodeLinesRuntimeHandleV1>,
     size_map_active: bool,
     size_map_visuals: Option<crate::size_map_view::SizeMapVisualsV1>,
     size_map_runtime: Option<crate::size_map_view::SizeMapRuntimeHandleV1>,
@@ -215,6 +236,8 @@ impl ExplorerWindow {
             preview_thumbnail_failed: false,
             folder_size_visuals: None,
             visual_column_runtime: None,
+            code_lines_visuals: None,
+            code_lines_runtime: None,
             size_map_active: false,
             size_map_visuals: None,
             size_map_runtime: None,
@@ -320,6 +343,24 @@ impl ExplorerWindow {
         runtime: Option<crate::folder_size_column::VisualColumnRuntimeHandleV1>,
     ) -> Self {
         self.visual_column_runtime = runtime;
+        self
+    }
+
+    #[must_use]
+    pub fn with_code_lines_visuals(
+        mut self,
+        visuals: Option<crate::code_lines_column::CodeLinesColumnVisuals>,
+    ) -> Self {
+        self.code_lines_visuals = visuals;
+        self
+    }
+
+    #[must_use]
+    pub fn with_code_lines_runtime(
+        mut self,
+        runtime: Option<crate::code_lines_column::CodeLinesRuntimeHandleV1>,
+    ) -> Self {
+        self.code_lines_runtime = runtime;
         self
     }
 
@@ -487,10 +528,16 @@ impl RenderOnce for ExplorerWindow {
                                     .collect(),
                                 self.folder_size_visuals,
                                 self.visual_column_runtime,
+                                self.code_lines_visuals,
+                                self.code_lines_runtime,
                                 self.size_map_active,
                                 self.size_map_visuals,
                                 self.size_map_runtime,
                                 self.size_map_context,
+                                explorer_model::RequestContext::new(
+                                    self.state.tabs().active_tab().id,
+                                    self.state.tabs().active_tab().generation,
+                                ),
                                 self.on_action.clone(),
                             ))
                             .when_some(self.file_scroll.clone(), |element, handle| {
@@ -4822,10 +4869,13 @@ pub struct FileViewHost {
         HashMap<explorer_model::ColumnId, Vec<crate::file_view::DetailsFilterOption>>,
     folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
     visual_column_runtime: Option<crate::folder_size_column::VisualColumnRuntimeHandleV1>,
+    code_lines_visuals: Option<crate::code_lines_column::CodeLinesColumnVisuals>,
+    code_lines_runtime: Option<crate::code_lines_column::CodeLinesRuntimeHandleV1>,
     size_map_active: bool,
     size_map_visuals: Option<crate::size_map_view::SizeMapVisualsV1>,
     size_map_runtime: Option<crate::size_map_view::SizeMapRuntimeHandleV1>,
     size_map_context: Option<explorer_model::RequestContext>,
+    active_request_context: explorer_model::RequestContext,
     on_action: Option<ActionCallback>,
 }
 
@@ -4865,10 +4915,13 @@ impl FileViewHost {
         >,
         folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
         visual_column_runtime: Option<crate::folder_size_column::VisualColumnRuntimeHandleV1>,
+        code_lines_visuals: Option<crate::code_lines_column::CodeLinesColumnVisuals>,
+        code_lines_runtime: Option<crate::code_lines_column::CodeLinesRuntimeHandleV1>,
         size_map_active: bool,
         size_map_visuals: Option<crate::size_map_view::SizeMapVisualsV1>,
         size_map_runtime: Option<crate::size_map_view::SizeMapRuntimeHandleV1>,
         size_map_context: Option<explorer_model::RequestContext>,
+        active_request_context: explorer_model::RequestContext,
         on_action: Option<ActionCallback>,
     ) -> Self {
         Self {
@@ -4901,10 +4954,13 @@ impl FileViewHost {
             details_filter_options,
             folder_size_visuals,
             visual_column_runtime,
+            code_lines_visuals,
+            code_lines_runtime,
             size_map_active,
             size_map_visuals,
             size_map_runtime,
             size_map_context,
+            active_request_context,
             on_action,
         }
     }
@@ -5070,12 +5126,17 @@ impl RenderOnce for FileViewHost {
         let details_filter_options = self.details_filter_options;
         let folder_size_visuals = self.folder_size_visuals;
         let visual_column_runtime = self.visual_column_runtime;
+        let code_lines_visuals = self.code_lines_visuals;
+        let code_lines_runtime = self.code_lines_runtime;
         let size_map_active = self.size_map_active;
         let size_map_visuals = self.size_map_visuals;
         let size_map_runtime = self.size_map_runtime;
         let size_map_context = self.size_map_context;
+        let cell_request_generation = self.active_request_context.generation.value();
         let row_folder_size_visuals = folder_size_visuals.clone();
         let row_visual_column_runtime = visual_column_runtime.clone();
+        let row_code_lines_visuals = code_lines_visuals.clone();
+        let row_code_lines_runtime = code_lines_runtime.clone();
         let background_drop = on_action.clone();
         let zoom_action = on_action.clone();
         let rename_editor = self.rename_editor;
@@ -5553,6 +5614,8 @@ impl RenderOnce for FileViewHost {
                 let (visible_index, _snapshot_index, entry) = item;
                 let folder_size_visuals = row_folder_size_visuals.clone();
                 let visual_column_runtime = row_visual_column_runtime.clone();
+                let code_lines_visuals = row_code_lines_visuals.clone();
+                let code_lines_runtime = row_code_lines_runtime.clone();
                 let editor = rename_editor
                     .as_ref()
                     .filter(|editor| editor.item.id == entry.id)
@@ -6388,6 +6451,14 @@ impl RenderOnce for FileViewHost {
                                     let exact_bytes = visuals.value_for(&entry.id);
                                     let measurement_error = visuals.error_for(&entry.id);
                                     let maximum = visuals.maximum_value();
+                                    let item_id = extension_render_item_id(&entry.id);
+                                    let render_generation = extension_render_generation(
+                                        &entry.id,
+                                        format!(
+                                            "{exact_bytes:?}:{measurement_error:?}:{maximum}:{selected}:{:?}",
+                                            visuals.config.folder_size_display,
+                                        ),
+                                    );
                                     let plan = runtime.render_cell(
                                         crate::folder_size_column::CellRenderContextV1 {
                                             value: ROption::RNone,
@@ -6422,6 +6493,9 @@ impl RenderOnce for FileViewHost {
                                                     crate::folder_size_column::FolderSizeDisplayMode::TextOnly => "text-only",
                                                 },
                                             ),
+                                            item_id,
+                                            render_generation,
+                                            request_generation: cell_request_generation,
                                         },
                                     );
                                     element.when(
@@ -6502,6 +6576,151 @@ impl RenderOnce for FileViewHost {
                                         },
                                     )
                                 },
+                                )
+                                .when_some(
+                                    code_lines_visuals.zip(code_lines_runtime),
+                                    |element, (visuals, runtime)| {
+                                        let descriptor = &visuals.config.descriptor;
+                                        let value = visuals.values.get(&entry.id);
+                                        let error = visuals.errors.get(&entry.id);
+                                        let maximum = visuals.maximum_value();
+                                        let item_id = extension_render_item_id(&entry.id);
+                                        let render_generation = extension_render_generation(
+                                            &entry.id,
+                                            format!("{value:?}:{error:?}:{maximum}:{selected}:{:?}", visuals.config.display),
+                                        );
+                                        let plan = runtime.render_cell(
+                                            crate::code_lines_column::CellRenderContextV1 {
+                                                value: value
+                                                    .and_then(|value| {
+                                                        serde_json::to_vec(&serde_json::json!({
+                                                            "blanks": value.blanks,
+                                                            "code": value.code,
+                                                            "comments": value.comments,
+                                                            "language": value.language,
+                                                            "total": value.total,
+                                                        }))
+                                                        .ok()
+                                                        .and_then(|bytes| {
+                                                            explorer_extension_ui_api::PluginValueV1::structured_canonical_json(bytes).ok()
+                                                        })
+                                                    })
+                                                    .map_or(ROption::RNone, ROption::RSome),
+                                                exact_bytes: ROption::RNone,
+                                                aggregate: ROption::RSome(
+                                                    explorer_extension_ui_api::CellAggregateV1 {
+                                                        largest_sibling_value: (maximum > 0)
+                                                            .then(|| serde_json::to_vec(&serde_json::json!({
+                                                                "blanks": 0,
+                                                                "code": maximum,
+                                                                "comments": 0,
+                                                                "language": "aggregate",
+                                                                "total": maximum,
+                                                            })).ok())
+                                                            .flatten()
+                                                            .and_then(|bytes| explorer_extension_ui_api::PluginValueV1::structured_canonical_json(bytes).ok())
+                                                            .map_or(ROption::RNone, ROption::RSome),
+                                                        largest_sibling_bytes: ROption::RNone,
+                                                    },
+                                                ),
+                                                loading: !entry.is_container
+                                                    && value.is_none()
+                                                    && error.is_none(),
+                                                error: error
+                                                    .map(|error| ROption::RSome(error.as_str().into()))
+                                                    .unwrap_or(ROption::RNone),
+                                                selected,
+                                                hovered: false,
+                                                dpi_milli: u32::from(shell_icon_dpi)
+                                                    .saturating_mul(1_000)
+                                                    / 96,
+                                                theme: visual_column_theme,
+                                                settings: if visuals.config.display.shows_detail() {
+                                                    value.map_or_else(
+                                                        || RString::from("with-detail"),
+                                                        |value| RString::from(format!(
+                                                            "with-detail;language={};comments={};blanks={};total={}",
+                                                            value.language,
+                                                            value.comments,
+                                                            value.blanks,
+                                                            value.total
+                                                        )),
+                                                    )
+                                                } else {
+                                                    RString::from("code-only")
+                                                },
+                                                item_id,
+                                                render_generation,
+                                                request_generation: cell_request_generation,
+                                            },
+                                        );
+                                        element.when(
+                                            view_settings.details_column_visible(&descriptor.id),
+                                            |element| {
+                                                let width = f32::from(
+                                                    view_settings.details_column_width(&descriptor.id),
+                                                );
+                                                element.child(
+                                                    div()
+                                                        .id(format!("code-lines-column-{visible_index}"))
+                                                        .role(Role::Status)
+                                                        .aria_label(format!(
+                                                            "{}: {} {}",
+                                                            descriptor.display_name,
+                                                            plan.label,
+                                                            plan.detail
+                                                        ))
+                                                        .w(px(width))
+                                                        .flex_none()
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_end()
+                                                        .gap(px(layout.content_spacing.value() / 2.0))
+                                                        .px(px(layout.content_spacing.value() / 2.0))
+                                                        .when(
+                                                            plan.proportional_bar_millionths > 0,
+                                                            |cell| {
+                                                                let fill_color = crate::theme::Rgba8 {
+                                                                    red: plan.bar_color.red,
+                                                                    green: plan.bar_color.green,
+                                                                    blue: plan.bar_color.blue,
+                                                                    alpha: plan.bar_color.alpha,
+                                                                };
+                                                                cell.child(
+                                                                    div()
+                                                                        .w(px((width * 0.30).max(12.0)))
+                                                                        .h(px(4.0))
+                                                                        .rounded(px(2.0))
+                                                                        .bg(colors.control_fill.to_gpui())
+                                                                        .child(
+                                                                            div()
+                                                                                .h_full()
+                                                                                .w(px((width * 0.30
+                                                                                    * plan.proportional_bar_millionths as f32
+                                                                                    / 1_000_000.0)
+                                                                                    .max(1.0)))
+                                                                                .rounded(px(2.0))
+                                                                                .bg(fill_color.to_gpui()),
+                                                                        ),
+                                                                )
+                                                            },
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .min_w_0()
+                                                                .overflow_hidden()
+                                                                .whitespace_nowrap()
+                                                                .text_ellipsis()
+                                                                .child(if plan.detail.is_empty() {
+                                                                    plan.label.to_string()
+                                                                } else {
+                                                                    format!("{}  {}", plan.label, plan.detail)
+                                                                }),
+                                                        ),
+                                                )
+                                            },
+                                        )
+                                    },
                                 )
                         },
                     )
@@ -6649,6 +6868,7 @@ impl RenderOnce for FileViewHost {
                                 &details_filters,
                                 &details_filter_options,
                                 folder_size_visuals.clone(),
+                                code_lines_visuals.clone(),
                                 header_action,
                             )),
                     )
@@ -6700,6 +6920,7 @@ impl RenderOnce for FileViewHost {
                     target,
                     view_settings,
                     folder_size_visuals,
+                    code_lines_visuals,
                     column_menu_action,
                 ))
         });
@@ -7260,6 +7481,7 @@ fn details_header(
     filters: &crate::file_view::DetailsFilters,
     filter_options: &HashMap<explorer_model::ColumnId, Vec<crate::file_view::DetailsFilterOption>>,
     folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
+    code_lines_visuals: Option<crate::code_lines_column::CodeLinesColumnVisuals>,
     on_action: Option<ActionCallback>,
 ) -> gpui::AnyElement {
     if this_pc {
@@ -7365,6 +7587,22 @@ fn details_header(
                 ))
             })
         })
+        .when_some(code_lines_visuals, |element, visuals| {
+            let descriptor = &visuals.config.descriptor;
+            element.when(settings.details_column_visible(&descriptor.id), |element| {
+                element.child(details_header_column(
+                    "details-column-code-lines".to_owned(),
+                    descriptor.display_name.clone(),
+                    descriptor.id.clone(),
+                    settings.clone(),
+                    filter_menu.clone(),
+                    filters,
+                    Vec::new(),
+                    on_action.clone(),
+                    tokens,
+                ))
+            })
+        })
         .into_any_element()
 }
 
@@ -7431,6 +7669,7 @@ fn details_column_menu(
     target: explorer_model::ColumnId,
     settings: explorer_model::ViewSettings,
     folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
+    code_lines_visuals: Option<crate::code_lines_column::CodeLinesColumnVisuals>,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     let colors = tokens.theme.colors;
@@ -7522,6 +7761,31 @@ fn details_column_menu(
                         tokens,
                         "Show proportional bar".to_owned(),
                         visuals.config.folder_size_display.shows_bar(),
+                        true,
+                        ExplorerAction::ToggleFolderSizeProportionalBar,
+                        callback,
+                    ))
+                })
+            })
+        })
+        .when_some(code_lines_visuals, |element, visuals| {
+            let descriptor = &visuals.config.descriptor;
+            let element = element.when_some(on_action.clone(), |element, callback| {
+                element.child(column_menu_row(
+                    tokens,
+                    descriptor.display_name.clone(),
+                    settings.details_column_visible(&descriptor.id),
+                    true,
+                    ExplorerAction::ToggleDetailsColumn(descriptor.id.clone()),
+                    callback,
+                ))
+            });
+            element.when(target == descriptor.id, |element| {
+                element.when_some(on_action.clone(), |element, callback| {
+                    element.child(column_menu_row(
+                        tokens,
+                        "Show comment and blank detail".to_owned(),
+                        visuals.config.display.shows_detail(),
                         true,
                         ExplorerAction::ToggleFolderSizeProportionalBar,
                         callback,

@@ -39,7 +39,7 @@ SuperExplorer 是 Windows x64 MSVC 的 Rust／GPUI 檔案總管。目前詳細�
 
 `build_install.bat` 的同一條 release 流程必須使用 fixture manifest 以 `--release --target x86_64-pc-windows-msvc --offline` 建置唯一的 `p0_consumer.dll`，驗證明確產物後交給 NSIS。NSIS 固定安裝為 `$INSTDIR\plugins\p0_consumer.dll`，並讓桌面捷徑、開始選單捷徑及完成頁傳入 `--plugin-dll "$INSTDIR\plugins\p0_consumer.dll"`。不採用 app 目錄掃描或額外 launcher；uninstaller 只刪除該已知 DLL 與空目錄，不遞迴刪除未知檔案。
 
-folder-size slice 完成後，下一個 active consumer 是獨立 `rust-folder-size-map-view`。它仍單獨透過 `--plugin-dll` 載入，不改變 installer 的唯一 bundled Plugin。SDK-owned `abi_stable` view renderer 只接收 owned node snapshot、viewport/theme/settings並回傳data-only treemap rectangles；實際 GPUI element、正式 selection/navigation/F5 action與worker lifecycle由host擁有。P0先呈現目前位置第一層節點，使用有界且generation-aware的背景計量逐步補值；通用100,000-node scan framework保留在deferred roadmap，不阻擋這個產品驗證slice。
+folder-size slice 完成後，下一個 active consumer 是獨立 `rust-folder-size-map-view`。它仍單獨透過 `--plugin-dll` 載入，不改變 installer 的唯一 bundled Plugin。SDK-owned `abi_stable` renderer 只接收完整 host-minted revision 的 owned node snapshot、viewport/theme/selection/settings並回傳data-only treemap rectangles；同步 ABI callback 只在有界 host worker 內執行並以每次呼叫的 durable marker 保護。實際 GPUI element只畫已返回且revision相符的 plan，並保有正式 selection/navigation/F5 action；GPUI thread、entity、handle與I/O均不跨 ABI。P0先呈現目前位置第一層節點，使用有界且generation-aware的背景計量逐步補值；通用100,000-node scan framework保留在deferred roadmap，不阻擋這個產品驗證slice。
 
 ### 1. Extension Host 是唯一擴充入口
 
@@ -81,7 +81,7 @@ DLL 只在啟動階段載入並保持 resident。已載入 feature 可停止新 
 
 ### 6. 有界 Scheduler 與 owned typed snapshots 隔離背景工作
 
-在 `explorer-jobs` 上建立 CPU/I/O queue、global/per-package limits、visible-row priority、generation、cancellation、incremental sink、backpressure、16–50 ms UI batching 與 timing diagnostics。ABI callback 保持同步，但由 host worker 呼叫；不跨 ABI 傳遞 Future 或 runtime handle。
+在 `explorer-jobs` 上建立 CPU/I/O queue、global/per-package limits、visible-row priority、generation、cancellation、incremental sink、backpressure、16–50 ms UI batching 與 timing diagnostics。包括 visual cell 與 Size Map render-plan callback 在內的 ABI callback 保持同步，但只由 host worker 呼叫；每次 native callback 都以 durable marker 保護。GPUI 只消費相符完整revision的 data plan，不跨 ABI 傳遞 Future、runtime handle、GPUI object 或 render context。
 
 資料以 `PluginValueV1` 與 `StableSortValueV1` 表示。Opaque payload 只能回到同一外掛 renderer。Item、location、scan 與 cache 都攜帶 generation，拒絕導航或刷新後的 stale result。
 
@@ -89,7 +89,7 @@ DLL 只在啟動階段載入並保持 resident。已載入 feature 可停止新 
 
 固定 `SortColumn`／bitmask 遷移為 dynamic registry、ordered layout 與 stable `ColumnId`。Header、row virtualization、selection、sorting、width/order persistence、UIA 與 session restore 都使用 registry。
 
-GPUI context 只提供 immutable public data、theme facade、action sink 與 scoped invalidation handle。Renderer 只在 GPUI thread 執行，不得做 I/O、網路或長時間解析。
+Data-only render-plan context 只提供 immutable public data、theme facade、settings 與 host-minted full-snapshot revision，不提供 action sink、invalidation handle 或任何 GPUI type。每次同步 ABI callback 只在有界 host worker 執行，並各自建立與清除 durable call marker；不得做 I/O、網路或長時間解析。GPUI thread 只布局並繪製 revision 仍相符的 returned plan。
 
 ### 8. 命令與檔案變更統一走 typed Operation Plan
 
@@ -160,6 +160,12 @@ Runtime disable 的順序固定為：原子關閉 new-dispatch gate、取消 job
 - **C — material change：** scope、公開承諾、ABI major/layout/numeric semantics、blocking gate/threshold/required evidence、platform/framework、permission、external write、destructive operation、non-fast-forward approval、protected tag/signing等必須先取得使用者核准。
 
 任何 blocking gate、resource/performance threshold 或 required evidence 不得為了讓 candidate 通過而降低。Contract改變時，contract owner先落地與審查，所有consumer evidence失效後才可更新；共享 locks/manifests、local orchestration、UITEST manifest、evidence ledger、trust policy 與 final signed bundle只由 primary release integrator 整合。任何 external automation 的成功都不能完成 task，亦不能取代、弱化或成為上述本機 evidence 的權威。
+
+### Active Rust tokei vertical slice
+
+`rust-tokei-code-lines-column` follows the same one-implementation-first rule as the first two examples. The public ABI adds one SDK-owned `abi_stable` batch provider object, while authors implement an ordinary Rust trait. One invocation receives at most 128 owned item records and host-attested generation-bound `InputStreamV1` objects; it never receives filesystem paths, native handles, futures, or runtime objects. The host limits every input to 8 MiB and rejects stale results after F5, navigation, or tab generation changes.
+
+The consumer statically links one exact locked Rust `tokei` dependency closure and never launches `tokei.exe`. It returns typed language/code/comment/blank/total counts, uses exact unsigned code lines for sorting, and reports binary, unknown, oversized, or otherwise unsupported sources as `Unsupported` rather than zero. Production UI installs one `Code lines` integer/background-batch Details column and reuses the public data-only cell plan for host-owned GPUI rendering. One setting toggles comment/blank detail. No generic multi-plugin scheduler, Lua/tool path, installer bundle change, or release evidence framework is part of this slice. Its single local UITEST runs only after the consumer, loader/runtime, production UI, README/package path, fixture, unit checks, and real-window smoke are complete.
 
 ## Risks / Trade-offs
 

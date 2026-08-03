@@ -31,8 +31,9 @@ mod sepack_import;
 mod ui_invalidation_batcher;
 
 pub use dll_loader::{
-    SinglePluginSizeMapViewRuntimeV1, SinglePluginVisualColumnRuntimeV1,
-    SinglePluginVisualMeasureRuntimeV1, SinglePluginVisualRenderRuntimeV1,
+    SinglePluginBatchColumnRuntimeV1, SinglePluginSizeMapViewRuntimeV1,
+    SinglePluginVisualColumnRuntimeV1, SinglePluginVisualMeasureRuntimeV1,
+    SinglePluginVisualRenderRuntimeV1,
 };
 
 pub use contribution_gate::{
@@ -41,10 +42,12 @@ pub use contribution_gate::{
     MAX_CONTRIBUTIONS_PER_BATCH_V1, ValidatedContributionSetV1,
 };
 pub use extension_job_runtime::{
-    AcceptedIncrementalResultBatchV1, ExtensionJobAuthorityV1, ExtensionJobCacheLookupV1,
-    ExtensionJobFinishOutcomeV1, ExtensionJobProducerV1, ExtensionJobQuarantineEventV1,
-    ExtensionJobRuntimeErrorV1, ExtensionJobRuntimeRequestV1, ExtensionJobRuntimeV1,
-    ExtensionResultBufferConfigV1, HostInputStreamSourceV1, MAX_HOST_INPUT_STREAM_SOURCE_BYTES_V1,
+    AcceptedIncrementalResultBatchV1, BatchColumnRuntimeRequestV1, ExtensionJobAuthorityV1,
+    ExtensionJobCacheLookupV1, ExtensionJobFinishOutcomeV1, ExtensionJobProducerV1,
+    ExtensionJobQuarantineEventV1, ExtensionJobRuntimeErrorV1, ExtensionJobRuntimeRequestV1,
+    ExtensionJobRuntimeV1, ExtensionResultBufferConfigV1, HostBatchColumnItemV1,
+    HostInputStreamSourceV1, MAX_BATCH_COLUMN_INPUT_BYTES_V1,
+    MAX_HOST_INPUT_STREAM_SOURCE_BYTES_V1, PreparedBatchColumnDispatchTicketV1,
 };
 pub use extension_job_ui_bridge::{
     ExtensionJobUiInboxV1, ExtensionJobUiIngressV1, ExtensionJobUiPumpErrorV1,
@@ -158,6 +161,8 @@ pub enum SinglePluginLoadErrorV1 {
     PathDoesNotExist,
     #[error("plugin path must name a .dll file")]
     PathMustBeDll,
+    #[error("plugin callback is blocked by recovered Safe Mode incident")]
+    BlockedBySafeMode,
     #[error("could not load plugin DLL: {0}")]
     LoadFailed(String),
 }
@@ -172,11 +177,22 @@ pub enum SinglePluginVisualColumnCallErrorV1 {
     UnknownRenderContribution(String),
 }
 
+/// A requested direct bounded batch-column contribution is unavailable.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+pub enum SinglePluginBatchColumnCallErrorV1 {
+    #[error("no retained batch-column contribution named {contribution_id:?}")]
+    MissingContribution { contribution_id: String },
+    #[error("batch-column runtime rejected the direct invocation: {0}")]
+    Runtime(ExtensionJobRuntimeErrorV1),
+}
+
 /// A requested direct Size Map view contribution is unavailable.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum SinglePluginSizeMapViewCallErrorV1 {
     #[error("no retained Size Map view contribution named {0:?}")]
     UnknownViewContribution(String),
+    #[error("Size Map renderer failed with ABI error {0:?}")]
+    Plugin(AbiErrorV1),
 }
 
 use explorer_extension_api::{
@@ -670,9 +686,21 @@ impl ExtensionHost {
     ///
     /// Returns a user-presentable path, loader, ABI, or registration error.
     pub fn load_single_plugin_dll(
+        &self,
         path: &Path,
     ) -> Result<SinglePluginLoadSummaryV1, SinglePluginLoadErrorV1> {
-        dll_loader::load_single_plugin_dll(path)
+        if !path.is_absolute() {
+            return Err(SinglePluginLoadErrorV1::PathMustBeAbsolute);
+        }
+        let markers = self
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.native_lifecycle.as_ref())
+            .and_then(NativeExtensionLifecycleV1::direct_callback_marker_store)
+            .ok_or_else(|| {
+                SinglePluginLoadErrorV1::LoadFailed("extension host is not running".to_owned())
+            })?;
+        dll_loader::load_single_plugin_dll(path, markers)
     }
 
     /// Loads one explicit development DLL and retains its visual-column objects
@@ -682,9 +710,21 @@ impl ExtensionHost {
     /// move its `Send`, non-`Clone`, non-`Sync` measure, cell-render, and
     /// optional Size Map render owners to their background/GPUI threads.
     pub fn load_single_plugin_visual_column_runtime(
+        &self,
         path: &Path,
     ) -> Result<SinglePluginVisualColumnRuntimeV1, SinglePluginLoadErrorV1> {
-        dll_loader::load_single_plugin_visual_column_runtime(path)
+        if !path.is_absolute() {
+            return Err(SinglePluginLoadErrorV1::PathMustBeAbsolute);
+        }
+        let markers = self
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.native_lifecycle.as_ref())
+            .and_then(NativeExtensionLifecycleV1::direct_callback_marker_store)
+            .ok_or_else(|| {
+                SinglePluginLoadErrorV1::LoadFailed("extension host is not running".to_owned())
+            })?;
+        dll_loader::load_single_plugin_visual_column_runtime(path, markers)
     }
 
     /// Creates the inert host seam in its unstarted state.
@@ -1559,8 +1599,9 @@ mod tests {
 
     #[test]
     fn single_plugin_loader_rejects_relative_paths_before_mapping_a_dll() {
+        let host = ExtensionHost::new();
         assert!(matches!(
-            ExtensionHost::load_single_plugin_dll(std::path::Path::new("p0_consumer.dll")),
+            host.load_single_plugin_dll(std::path::Path::new("p0_consumer.dll")),
             Err(super::SinglePluginLoadErrorV1::PathMustBeAbsolute)
         ));
     }

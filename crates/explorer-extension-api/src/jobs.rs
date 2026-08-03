@@ -24,6 +24,14 @@ pub const MAX_INCREMENTAL_RESULT_BYTES_V1: usize = 1024 * 1024;
 pub const MAX_PLUGIN_VALUE_BYTES_V1: usize = 64 * 1024;
 /// Largest byte vector the host may allocate and return from one stream read.
 pub const MAX_INPUT_STREAM_READ_BYTES_V1: u32 = 64 * 1024;
+/// Maximum host-attested file items delivered to one code-column callback.
+///
+/// The limit is deliberately fixed at the ABI boundary so a plugin cannot turn
+/// a Details refresh into an unbounded allocation or callback. Hosts may elect
+/// to issue a smaller batch.
+pub const MAX_BATCH_COLUMN_ITEMS_V1: usize = 128;
+/// Largest UTF-8 basename supplied for one batch-column item.
+pub const MAX_BATCH_COLUMN_FILE_NAME_BYTES_V1: usize = 255;
 
 /// Opaque capability identifying one host-owned job generation.
 #[repr(C)]
@@ -1273,6 +1281,75 @@ impl JobContextV1 {
     }
 }
 
+/// One host-attested file input in a bounded column-provider callback.
+///
+/// The item capability and stream are minted by the host for the context's
+/// generation. Authors receive neither a path nor a native file handle.
+#[repr(C)]
+#[derive(Clone, StableAbi)]
+pub struct BatchColumnItemV1 {
+    pub item: ItemHandleV1,
+    pub item_generation: u64,
+    /// Host-attested basename only. It never contains a directory path or
+    /// native handle and lets a source parser select its language safely.
+    pub file_name: RString,
+    pub input: InputStreamV1,
+}
+
+/// Immutable context for one bounded batch-column callback.
+///
+/// Results are submitted through the existing [`IncrementalResultSinkV1`], so
+/// columns reuse the V1 typed value, outcome, and stable-sort transports. The
+/// host validates every submitted result against the item capabilities below.
+#[repr(C)]
+#[derive(Clone, StableAbi)]
+pub struct BatchColumnContextV1 {
+    pub job: JobHandleV1,
+    pub location: LocationHandleV1,
+    pub feature_epoch: u64,
+    pub job_generation: u64,
+    pub item_generation: u64,
+    pub location_generation: u64,
+    pub source_generation: u64,
+    pub items: RVec<BatchColumnItemV1>,
+    pub sink: IncrementalResultSinkV1,
+    pub progress: JobProgressSinkV1,
+}
+
+impl BatchColumnContextV1 {
+    /// Returns the current host control state for this one synchronous call.
+    #[must_use]
+    pub fn poll_control(&self) -> JobControlStateV1 {
+        self.sink.services.poll_control()
+    }
+
+    /// Submits an existing typed incremental result batch.
+    #[must_use]
+    pub fn try_submit(&self, batch: IncrementalResultBatchV1) -> SinkSubmitOutcomeV1 {
+        self.sink.try_submit(batch)
+    }
+
+    /// Submits an existing typed progress update.
+    #[must_use]
+    pub fn try_submit_progress(&self, update: JobProgressUpdateV1) -> JobProgressStatusV1 {
+        self.progress.try_submit(update)
+    }
+
+    /// Validates the fixed V1 shape before an author spends work on it.
+    #[must_use]
+    pub fn is_well_formed(&self) -> bool {
+        !self.items.is_empty()
+            && self.items.len() <= MAX_BATCH_COLUMN_ITEMS_V1
+            && self.items.iter().all(|item| {
+                item.item_generation == self.item_generation
+                    && item.item.generation() == self.item_generation
+                    && !item.file_name.is_empty()
+                    && item.file_name.len() <= MAX_BATCH_COLUMN_FILE_NAME_BYTES_V1
+                    && !item.file_name.contains(['/', '\\'])
+            })
+    }
+}
+
 /// Non-exhaustive typed terminal returned by a synchronous provider callback.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, StableAbi)]
@@ -1407,6 +1484,108 @@ impl JobProviderObjectV1 {
 
     #[doc(hidden)]
     pub fn invoke(&self, context: JobContextV1) -> JobTerminalV1 {
+        self.0.run(context)
+    }
+}
+
+/// Private ABI vtable. Plugin authors implement
+/// [`BatchColumnProviderImplementationV1`] instead; this trait and its
+/// generated `_TO` never form public API.
+#[sabi_trait]
+#[doc(hidden)]
+pub trait AbiBatchColumnProviderObjectV1: Send + Sync {
+    /// Runs one bounded, synchronous code-column callback.
+    #[sabi(last_prefix_field)]
+    fn run(&self, context: BatchColumnContextV1) -> JobTerminalV1;
+}
+
+/// SDK-owned ABI storage for one bounded batch-column provider.
+#[repr(transparent)]
+#[derive(StableAbi)]
+pub struct BatchColumnProviderObjectV1(AbiBatchColumnProviderObjectV1_TO<'static, RBox<()>>);
+
+/// Public Rust-first implementation trait for a bounded batch column.
+///
+/// The SDK owns the `abi_stable` adapter and panic boundary. Implementors are
+/// called synchronously with at most [`MAX_BATCH_COLUMN_ITEMS_V1`] items and
+/// must use the existing typed result sink for all output.
+pub trait BatchColumnProviderImplementationV1: Send + Sync {
+    fn run(&self, context: BatchColumnContextV1) -> JobTerminalV1;
+}
+
+struct BatchColumnProviderAdapterV1<T> {
+    provider: Option<T>,
+    invocation_state: AtomicU8,
+}
+
+impl<T: BatchColumnProviderImplementationV1> AbiBatchColumnProviderObjectV1
+    for BatchColumnProviderAdapterV1<T>
+{
+    fn run(&self, context: BatchColumnContextV1) -> JobTerminalV1 {
+        if !context.is_well_formed()
+            || self
+                .invocation_state
+                .compare_exchange(
+                    PROVIDER_IDLE_V1,
+                    PROVIDER_RUNNING_V1,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_err()
+        {
+            return JobTerminalV1::PANICKED;
+        }
+        let Some(provider) = self.provider.as_ref() else {
+            self.invocation_state
+                .store(PROVIDER_FAULTED_V1, Ordering::Release);
+            return JobTerminalV1::INCOMPATIBLE;
+        };
+        match catch_unwind(AssertUnwindSafe(|| provider.run(context))) {
+            Ok(terminal) if terminal.is_known() => {
+                self.invocation_state
+                    .store(PROVIDER_IDLE_V1, Ordering::Release);
+                terminal
+            }
+            Ok(_) => {
+                self.invocation_state
+                    .store(PROVIDER_IDLE_V1, Ordering::Release);
+                JobTerminalV1::INCOMPATIBLE
+            }
+            Err(payload) => {
+                self.invocation_state
+                    .store(PROVIDER_FAULTED_V1, Ordering::Release);
+                dispose_caught_panic_payload_v1(payload);
+                JobTerminalV1::PANICKED
+            }
+        }
+    }
+}
+
+impl<T> Drop for BatchColumnProviderAdapterV1<T> {
+    fn drop(&mut self) {
+        if let Some(provider) = self.provider.take()
+            && let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(provider)))
+        {
+            dispose_caught_panic_payload_v1(payload);
+        }
+    }
+}
+
+impl BatchColumnProviderObjectV1 {
+    /// Wraps an ordinary Rust batch provider in the SDK-owned ABI adapter.
+    #[must_use]
+    pub fn new<T: BatchColumnProviderImplementationV1 + 'static>(provider: T) -> Self {
+        Self(AbiBatchColumnProviderObjectV1_TO::from_value(
+            BatchColumnProviderAdapterV1 {
+                provider: Some(provider),
+                invocation_state: AtomicU8::new(PROVIDER_IDLE_V1),
+            },
+            sabi_trait::TD_Opaque,
+        ))
+    }
+
+    #[doc(hidden)]
+    pub fn invoke(&self, context: BatchColumnContextV1) -> JobTerminalV1 {
         self.0.run(context)
     }
 }

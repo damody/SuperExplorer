@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Bounded extension scheduler
-The Extension Job Scheduler SHALL provide separate CPU/I/O queues, global and per-package concurrency limits, visible-row priority, cancellation, deadlines, progress, backpressure and typed terminal states. Provider callbacks SHALL be synchronous ABI functions invoked by host workers; futures/runtime handles SHALL NOT cross the ABI.
+The Extension Job Scheduler SHALL provide separate CPU/I/O queues, global and per-package concurrency limits, visible-row priority, cancellation, deadlines, progress, backpressure and typed terminal states. Provider and data-only render-plan callbacks SHALL be synchronous ABI functions invoked by bounded host workers with a per-call durable marker; futures/runtime handles, GPUI objects, and render contexts SHALL NOT cross the ABI. GPUI SHALL only paint a returned plan whose host-minted full snapshot revision is current.
 
 #### Scenario: Large folder opens
 - **WHEN** a folder with 1,000 items is opened with several extension columns enabled
@@ -46,12 +46,12 @@ Column visibility, order and widths SHALL use an extensible map/ordered-list mod
 - **WHEN** a user removes a plugin column and later reinstalls the same stable ID
 - **THEN** its prior width/order/visibility preferences can be restored
 
-### Requirement: Column GPUI render context
-Column renderers SHALL receive only public value/aggregate/loading/error state, selection/hover geometry, DPI, theme facade and invalidation handle. Renderer execution SHALL occur on the GPUI thread and SHALL NOT enumerate files or perform parsing.
+### Requirement: Worker-safe column render-plan context
+Column render-plan callbacks SHALL receive only public value/aggregate/loading/error state, selection/hover state, DPI, theme facade, settings, host-attested item identity and full-snapshot revision. Every synchronous ABI invocation SHALL run on a bounded host worker under its own durable call marker and SHALL NOT enumerate files, perform parsing, receive an invalidation handle, or access GPUI types. GPUI SHALL only paint a returned data-only plan while its full-snapshot revision remains current.
 
 #### Scenario: Folder size visual renders
 - **WHEN** background aggregation provides a folder byte value and largest-sibling value
-- **THEN** the renderer can draw a proportional custom GPUI cell without accessing internal Explorer state
+- **THEN** the renderer returns a proportional-bar data plan and the host draws the custom GPUI cell without exposing internal Explorer state
 
 ### Requirement: Input stream for decoders
 The host SHALL provide `InputStreamV1` only when `filesystem.read` is authorized, with bounded read, optional seek, length, deadline, cancellation and source generation, without exposing arbitrary paths or native handles.

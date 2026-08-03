@@ -83,8 +83,8 @@ An author MAY add precisely locked private dependencies, but SHALL preserve the 
 - **WHEN** an external author adds a static Rust EXIF parser without changing the protected closure
 - **THEN** the plugin can build after its private dependency is locked, vendored and documented
 
-### Requirement: GPUI callback execution boundary
-GPUI callbacks SHALL run only on the GPUI thread with public immutable snapshots, a theme facade, action sink and scoped invalidation handle. They SHALL NOT perform file/network I/O or retain private host entities.
+### Requirement: True GPUI callback execution boundary
+Any feature explicitly declared as a true GPUI callback SHALL run only on the GPUI thread with public immutable snapshots, a theme facade, action sink and scoped invalidation handle. It SHALL NOT perform file/network I/O or retain private host entities. Data-only column and view render-plan callbacks are not GPUI callbacks: they SHALL follow their worker-safe bounded-dispatch contracts, and GPUI SHALL only paint their returned current-revision plans.
 
 #### Scenario: Renderer performs slow work
 - **WHEN** a renderer exceeds timing thresholds

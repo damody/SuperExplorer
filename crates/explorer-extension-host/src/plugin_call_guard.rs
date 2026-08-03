@@ -37,6 +37,9 @@ static REOPEN_DEAD_NAMESPACE_HOOK: Mutex<Option<ReopenDeadNamespaceHookV1>> = Mu
 pub enum NativeCallOperationV1 {
     Registrar,
     JobProvider,
+    BatchColumnProvider,
+    VisualMeasure,
+    VisualRender,
 }
 
 /// Opaque identifier for one recovered Safe Mode incident.

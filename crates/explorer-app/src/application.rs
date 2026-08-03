@@ -1,7 +1,10 @@
 //! Production process composition root.
 
 use std::{
+    collections::{HashMap, HashSet},
     fs,
+    hash::{Hash, Hasher},
+    io::Read as _,
     path::{Path, PathBuf},
     rc::Rc,
     sync::{
@@ -35,6 +38,408 @@ const FOLDER_SIZE_RENDERER_CONTRIBUTION_ID_V1: &str = "folder-size-renderer";
 const SIZE_MAP_VIEW_CONTRIBUTION_ID_V1: &str = "size-map";
 const SIZE_MAP_BATCH_DEADLINE_V1: Duration = Duration::from_secs(2);
 const SIZE_MAP_REQUEST_QUEUE_CAP_V1: usize = 1_024;
+const CODE_LINES_CONTRIBUTION_ID_V1: &str = "rust-tokei:code-lines";
+const CODE_LINES_RENDERER_CONTRIBUTION_ID_V1: &str = "rust-tokei:code-lines-renderer";
+const CODE_LINES_BATCH_ITEMS_V1: usize = 128;
+const DIRECT_RENDER_QUEUE_CAP_V1: usize = 256;
+const DIRECT_RENDER_CACHE_CAP_V1: usize = 512;
+const SIZE_MAP_RENDER_QUEUE_CAP_V1: usize = 8;
+const SIZE_MAP_RENDER_CACHE_CAP_V1: usize = 4;
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct CellRenderKeyV1(Vec<u8>);
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct SizeMapRenderKeyV1(Vec<u8>);
+
+fn append_bytes(target: &mut Vec<u8>, value: &[u8]) {
+    target.extend_from_slice(&(value.len() as u64).to_le_bytes());
+    target.extend_from_slice(value);
+}
+
+fn append_id(target: &mut Vec<u8>, value: explorer_extension_ui_api::StableIdV1) {
+    target.extend_from_slice(&value.namespace.into_raw().to_le_bytes());
+    target.extend_from_slice(&value.value.to_le_bytes());
+}
+
+fn append_option_u64(target: &mut Vec<u8>, value: Option<u64>) {
+    match value {
+        Some(value) => {
+            target.push(1);
+            target.extend_from_slice(&value.to_le_bytes());
+        }
+        None => target.push(0),
+    }
+}
+
+fn append_plugin_value(target: &mut Vec<u8>, value: &explorer_extension_ui_api::PluginValueV1) {
+    target.extend_from_slice(&value.kind.into_raw().to_le_bytes());
+    target.extend_from_slice(&value.reserved.to_le_bytes());
+    target.extend_from_slice(&value.integer.to_le_bytes());
+    target.extend_from_slice(&value.float.to_bits().to_le_bytes());
+    append_bytes(target, value.text.as_bytes());
+    append_bytes(target, value.payload.as_slice());
+    append_id(target, value.opaque_schema);
+    target.extend_from_slice(&value.opaque_schema_version.to_le_bytes());
+    target.extend_from_slice(&value.reserved_tail.to_le_bytes());
+}
+
+fn append_option_plugin_value(
+    target: &mut Vec<u8>,
+    value: Option<&explorer_extension_ui_api::PluginValueV1>,
+) {
+    match value {
+        Some(value) => {
+            target.push(1);
+            append_plugin_value(target, value);
+        }
+        None => target.push(0),
+    }
+}
+
+fn append_color(target: &mut Vec<u8>, color: explorer_extension_ui_api::CellColorV1) {
+    target.extend_from_slice(&[color.red, color.green, color.blue, color.alpha]);
+}
+
+fn append_theme(target: &mut Vec<u8>, theme: explorer_extension_ui_api::CellThemeV1) {
+    append_color(target, theme.foreground);
+    append_color(target, theme.muted_foreground);
+    append_color(target, theme.background);
+    append_color(target, theme.selection_background);
+    append_color(target, theme.accent);
+}
+
+fn cell_render_key(context: &explorer_extension_ui_api::CellRenderContextV1) -> CellRenderKeyV1 {
+    let mut bytes = Vec::new();
+    let value = context.value.clone().into_option();
+    append_option_plugin_value(&mut bytes, value.as_ref());
+    append_option_u64(&mut bytes, context.exact_bytes.clone().into_option());
+    match context.aggregate.clone().into_option() {
+        Some(aggregate) => {
+            bytes.push(1);
+            let aggregate_value = aggregate.largest_sibling_value.clone().into_option();
+            append_option_plugin_value(&mut bytes, aggregate_value.as_ref());
+            append_option_u64(&mut bytes, aggregate.largest_sibling_bytes.into_option());
+        }
+        None => bytes.push(0),
+    }
+    bytes.extend_from_slice(&[
+        u8::from(context.loading),
+        u8::from(context.selected),
+        u8::from(context.hovered),
+    ]);
+    match context.error.clone().into_option() {
+        Some(error) => {
+            bytes.push(1);
+            append_bytes(&mut bytes, error.as_bytes());
+        }
+        None => bytes.push(0),
+    }
+    bytes.extend_from_slice(&context.dpi_milli.to_le_bytes());
+    append_theme(&mut bytes, context.theme);
+    append_bytes(&mut bytes, context.settings.as_bytes());
+    append_id(&mut bytes, context.item_id);
+    bytes.extend_from_slice(&context.request_generation.to_le_bytes());
+    bytes.extend_from_slice(&context.render_generation.to_le_bytes());
+    CellRenderKeyV1(bytes)
+}
+
+fn revision_for(bytes: &[u8]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish().max(1)
+}
+
+fn size_map_snapshot_bytes(context: &explorer_extension_ui_api::SizeMapRenderContextV1) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&context.generation.to_le_bytes());
+    bytes.extend_from_slice(&context.render_revision.to_le_bytes());
+    bytes.extend_from_slice(&(context.nodes.len() as u64).to_le_bytes());
+    for node in &context.nodes {
+        append_id(&mut bytes, node.node_id);
+        match node.parent_id.clone().into_option() {
+            Some(parent_id) => {
+                bytes.push(1);
+                append_id(&mut bytes, parent_id);
+            }
+            None => bytes.push(0),
+        }
+        append_bytes(&mut bytes, node.name.as_bytes());
+        bytes.extend_from_slice(&node.kind.into_raw().to_le_bytes());
+        append_option_u64(&mut bytes, node.exact_bytes.clone().into_option());
+        bytes.extend_from_slice(&node.status.into_raw().to_le_bytes());
+    }
+    bytes.extend_from_slice(&context.viewport.width_milli.to_le_bytes());
+    bytes.extend_from_slice(&context.viewport.height_milli.to_le_bytes());
+    bytes.extend_from_slice(&context.viewport.dpi_milli.to_le_bytes());
+    append_theme(&mut bytes, context.theme);
+    bytes.extend_from_slice(&(context.selected_node_ids.len() as u64).to_le_bytes());
+    for selected in &context.selected_node_ids {
+        append_id(&mut bytes, *selected);
+    }
+    append_bytes(&mut bytes, context.settings.as_bytes());
+    bytes
+}
+
+fn size_map_render_key(
+    context: &mut explorer_extension_ui_api::SizeMapRenderContextV1,
+) -> SizeMapRenderKeyV1 {
+    context.render_revision = 0;
+    context.render_revision = revision_for(&size_map_snapshot_bytes(context));
+    SizeMapRenderKeyV1(size_map_snapshot_bytes(context))
+}
+
+/// Bounded bridge between GPUI and one retained direct-DLL renderer. The GPUI
+/// caller only polls a cache and uses `try_send`; the plugin callback (and its
+/// durable call marker) always run on this worker thread.
+struct AsyncCellRendererV1 {
+    requests: mpsc::SyncSender<explorer_extension_ui_api::CellRenderContextV1>,
+    results: Mutex<
+        mpsc::Receiver<(
+            CellRenderKeyV1,
+            Option<explorer_extension_ui_api::CellRenderPlanV1>,
+        )>,
+    >,
+    pending: Mutex<HashSet<CellRenderKeyV1>>,
+    cache: Mutex<HashMap<CellRenderKeyV1, explorer_extension_ui_api::CellRenderPlanV1>>,
+}
+
+impl AsyncCellRendererV1 {
+    fn start(
+        mut renderer: explorer_extension_host::SinglePluginVisualRenderRuntimeV1,
+        contribution_id: &'static str,
+    ) -> Result<Self, Error> {
+        let (request_tx, request_rx) = mpsc::sync_channel::<
+            explorer_extension_ui_api::CellRenderContextV1,
+        >(DIRECT_RENDER_QUEUE_CAP_V1);
+        // At most the bounded request capacity can be outstanding, so this
+        // receiver cannot grow without bound. Unlike a sync reply queue it
+        // guarantees every pending key receives a terminal response.
+        let (result_tx, result_rx) = mpsc::channel();
+        std::thread::Builder::new()
+            .name(format!("plugin-render-{contribution_id}"))
+            .spawn(move || {
+                while let Ok(context) = request_rx.recv() {
+                    let key = cell_render_key(&context);
+                    let plan = renderer.render(contribution_id, context).ok();
+                    if result_tx.send((key, plan)).is_err() {
+                        return;
+                    }
+                }
+            })
+            .context("failed to start direct plugin render worker")?;
+        Ok(Self {
+            requests: request_tx,
+            results: Mutex::new(result_rx),
+            pending: Mutex::new(HashSet::new()),
+            cache: Mutex::new(HashMap::new()),
+        })
+    }
+
+    fn drain_ready(&self) -> bool {
+        let mut changed = false;
+        if let Ok(results) = self.results.lock() {
+            while let Ok((ready_key, plan)) = results.try_recv() {
+                if let Ok(mut pending) = self.pending.lock() {
+                    pending.remove(&ready_key);
+                }
+                if let Some(plan) = plan
+                    && let Ok(mut cache) = self.cache.lock()
+                {
+                    if cache.len() >= DIRECT_RENDER_CACHE_CAP_V1 {
+                        cache.clear();
+                    }
+                    cache.insert(ready_key, plan);
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    fn render_or_enqueue(
+        &self,
+        context: explorer_extension_ui_api::CellRenderContextV1,
+        unavailable_label: &'static str,
+    ) -> explorer_extension_ui_api::CellRenderPlanV1 {
+        let key = cell_render_key(&context);
+        let _ = self.drain_ready();
+        if let Ok(cache) = self.cache.lock()
+            && let Some(plan) = cache.get(&key)
+        {
+            return plan.clone();
+        }
+        let should_enqueue = self
+            .pending
+            .lock()
+            .map(|mut pending| pending.insert(key.clone()))
+            .unwrap_or(false);
+        if should_enqueue && self.requests.try_send(context.clone()).is_err() {
+            if let Ok(mut pending) = self.pending.lock() {
+                pending.remove(&key);
+            }
+        }
+        explorer_extension_ui_api::CellRenderPlanV1::text_only(
+            unavailable_label,
+            context.theme.muted_foreground,
+        )
+    }
+}
+
+struct SizeMapRenderRequestV1 {
+    key: SizeMapRenderKeyV1,
+    context: explorer_extension_ui_api::SizeMapRenderContextV1,
+    mappings: HashMap<explorer_extension_ui_api::StableIdV1, (explorer_model::ShellItemId, String)>,
+    width: f32,
+    height: f32,
+}
+
+struct AsyncSizeMapRendererV1 {
+    requests: mpsc::SyncSender<SizeMapRenderRequestV1>,
+    results: Mutex<
+        mpsc::Receiver<(
+            SizeMapRenderKeyV1,
+            explorer_ui::size_map_view::SizeMapRenderPlanV1,
+        )>,
+    >,
+    pending: Mutex<HashSet<SizeMapRenderKeyV1>>,
+    cache: Mutex<HashMap<SizeMapRenderKeyV1, explorer_ui::size_map_view::SizeMapRenderPlanV1>>,
+}
+
+impl AsyncSizeMapRendererV1 {
+    fn start(
+        mut renderer: explorer_extension_host::SinglePluginSizeMapViewRuntimeV1,
+    ) -> Result<Self, Error> {
+        let (request_tx, request_rx) =
+            mpsc::sync_channel::<SizeMapRenderRequestV1>(SIZE_MAP_RENDER_QUEUE_CAP_V1);
+        let (result_tx, result_rx) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("plugin-render-size-map".to_owned())
+            .spawn(move || {
+                while let Ok(request) = request_rx.recv() {
+                    let SizeMapRenderRequestV1 {
+                        key,
+                        context,
+                        mappings,
+                        width,
+                        height,
+                    } = request;
+                    let generation = context.generation;
+                    let render_revision = context.render_revision;
+                    let plan = match renderer.render(SIZE_MAP_VIEW_CONTRIBUTION_ID_V1, context) {
+                        Ok(plan)
+                            if plan.generation == generation
+                                && plan.render_revision == render_revision =>
+                        {
+                            project_size_map_plan(plan, mappings, width, height)
+                        }
+                        Ok(_) => {
+                            size_map_render_fallback("Size Map renderer returned a stale plan")
+                        }
+                        Err(error) => size_map_render_fallback(&format!(
+                            "Size Map renderer unavailable: {error}"
+                        )),
+                    };
+                    if result_tx.send((key, plan)).is_err() {
+                        return;
+                    }
+                }
+            })
+            .context("failed to start Size Map plugin render worker")?;
+        Ok(Self {
+            requests: request_tx,
+            results: Mutex::new(result_rx),
+            pending: Mutex::new(HashSet::new()),
+            cache: Mutex::new(HashMap::new()),
+        })
+    }
+
+    fn drain_ready(&self) -> bool {
+        let mut changed = false;
+        if let Ok(results) = self.results.lock() {
+            while let Ok((key, plan)) = results.try_recv() {
+                if let Ok(mut pending) = self.pending.lock() {
+                    pending.remove(&key);
+                }
+                if let Ok(mut cache) = self.cache.lock() {
+                    if cache.len() >= SIZE_MAP_RENDER_CACHE_CAP_V1 {
+                        cache.clear();
+                    }
+                    cache.insert(key, plan);
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    fn render_or_enqueue(
+        &self,
+        request: SizeMapRenderRequestV1,
+    ) -> explorer_ui::size_map_view::SizeMapRenderPlanV1 {
+        let _ = self.drain_ready();
+        if let Ok(cache) = self.cache.lock()
+            && let Some(plan) = cache.get(&request.key)
+        {
+            return plan.clone();
+        }
+        let key = request.key.clone();
+        let should_enqueue = self
+            .pending
+            .lock()
+            .map(|mut pending| pending.insert(key.clone()))
+            .unwrap_or(false);
+        if should_enqueue && self.requests.try_send(request).is_err() {
+            if let Ok(mut pending) = self.pending.lock() {
+                pending.remove(&key);
+            }
+        }
+        size_map_render_fallback("Loading Size Map")
+    }
+}
+
+fn size_map_render_fallback(status: &str) -> explorer_ui::size_map_view::SizeMapRenderPlanV1 {
+    explorer_ui::size_map_view::SizeMapRenderPlanV1 {
+        rectangles: Vec::new(),
+        status: Some(status.to_owned()),
+        available: false,
+    }
+}
+
+fn project_size_map_plan(
+    plan: explorer_extension_ui_api::SizeMapRenderPlanV1,
+    mappings: HashMap<explorer_extension_ui_api::StableIdV1, (explorer_model::ShellItemId, String)>,
+    width: f32,
+    height: f32,
+) -> explorer_ui::size_map_view::SizeMapRenderPlanV1 {
+    explorer_ui::size_map_view::SizeMapRenderPlanV1 {
+        rectangles: plan
+            .rectangles
+            .into_iter()
+            .filter_map(|rectangle| {
+                let (item_id, status) = mappings.get(&rectangle.node_id)?.clone();
+                Some(explorer_ui::size_map_view::SizeMapRectangleV1 {
+                    item_id,
+                    x: width * rectangle.x_millionths as f32 / 1_000_000.0,
+                    y: height * rectangle.y_millionths as f32 / 1_000_000.0,
+                    width: width * rectangle.width_millionths as f32 / 1_000_000.0,
+                    height: height * rectangle.height_millionths as f32 / 1_000_000.0,
+                    label: rectangle.label.into_string(),
+                    detail: rectangle.detail.into_string(),
+                    color: explorer_ui::theme::Rgba8 {
+                        red: rectangle.color.red,
+                        green: rectangle.color.green,
+                        blue: rectangle.color.blue,
+                        alpha: rectangle.color.alpha,
+                    },
+                    status,
+                })
+            })
+            .collect(),
+        status: (!plan.status.is_empty()).then(|| plan.status.into_string()),
+        available: true,
+    }
+}
 
 /// App-owned boundary for projecting runtime-ready extension batches into the
 /// current list model. The application, rather than the host transport, owns
@@ -140,7 +545,7 @@ struct ApplicationVisualColumnRuntimeV1 {
     pending: Arc<(Mutex<PendingFolderSizeWorkV1>, Condvar)>,
     request_epoch: Arc<AtomicU64>,
     results: Mutex<mpsc::Receiver<explorer_ui::folder_size_column::FolderSizeResultV1>>,
-    renderer: Mutex<explorer_extension_host::SinglePluginVisualRenderRuntimeV1>,
+    renderer: AsyncCellRendererV1,
 }
 
 #[derive(Default)]
@@ -235,7 +640,10 @@ impl ApplicationVisualColumnRuntimeV1 {
             pending,
             request_epoch,
             results: Mutex::new(result_rx),
-            renderer: Mutex::new(renderer),
+            renderer: AsyncCellRendererV1::start(
+                renderer,
+                FOLDER_SIZE_RENDERER_CONTRIBUTION_ID_V1,
+            )?,
         }))
     }
 }
@@ -269,25 +677,16 @@ impl explorer_ui::folder_size_column::VisualColumnRuntimePortV1
         results.try_iter().collect()
     }
 
+    fn drain_render_results(&self) -> bool {
+        self.renderer.drain_ready()
+    }
+
     fn render_cell(
         &self,
         context: explorer_extension_ui_api::CellRenderContextV1,
     ) -> explorer_extension_ui_api::CellRenderPlanV1 {
-        let fallback_theme = context.theme;
         self.renderer
-            .lock()
-            .ok()
-            .and_then(|mut renderer| {
-                renderer
-                    .render(FOLDER_SIZE_RENDERER_CONTRIBUTION_ID_V1, context)
-                    .ok()
-            })
-            .unwrap_or_else(|| {
-                explorer_extension_ui_api::CellRenderPlanV1::text_only(
-                    "Folder size unavailable",
-                    fallback_theme.muted_foreground,
-                )
-            })
+            .render_or_enqueue(context, "Loading folder size")
     }
 }
 
@@ -304,6 +703,382 @@ impl Drop for ApplicationVisualColumnRuntimeV1 {
     }
 }
 
+struct ApplicationCodeLinesRuntimeV1 {
+    pending: Arc<(Mutex<PendingCodeLinesWorkV1>, Condvar)>,
+    request_epoch: Arc<AtomicU64>,
+    results: Mutex<mpsc::Receiver<explorer_ui::code_lines_column::CodeLinesResultV1>>,
+    renderer: AsyncCellRendererV1,
+}
+
+#[derive(Default)]
+struct PendingCodeLinesWorkV1 {
+    requests: Option<Vec<explorer_ui::code_lines_column::CodeLinesRequestV1>>,
+    /// The generation currently being processed or queued. Incremental
+    /// requests for this same visible folder append instead of cancelling
+    /// earlier files that have not reached the provider yet.
+    active: Option<(explorer_model::TabId, explorer_model::Generation)>,
+    stopped: bool,
+}
+
+impl ApplicationCodeLinesRuntimeV1 {
+    fn start(
+        provider: explorer_extension_host::SinglePluginBatchColumnRuntimeV1,
+        renderer: explorer_extension_host::SinglePluginVisualRenderRuntimeV1,
+    ) -> Result<explorer_ui::code_lines_column::CodeLinesRuntimeHandleV1, Error> {
+        let pending = Arc::new((
+            Mutex::new(PendingCodeLinesWorkV1::default()),
+            Condvar::new(),
+        ));
+        let worker_pending = pending.clone();
+        let request_epoch = Arc::new(AtomicU64::new(0));
+        let worker_epoch = request_epoch.clone();
+        let (result_tx, result_rx) =
+            mpsc::sync_channel::<explorer_ui::code_lines_column::CodeLinesResultV1>(1_024);
+        std::thread::Builder::new()
+            .name("rust-tokei-code-lines".to_owned())
+            .spawn(move || {
+                let Ok(config) = explorer_extension_host::ExtensionResultBufferConfigV1::try_new(
+                    8,
+                    8,
+                    64,
+                    64,
+                    64,
+                    1_024,
+                    1_024,
+                    1_024,
+                    64 * 1024 * 1024,
+                    64 * 1024 * 1024,
+                    64 * 1024 * 1024,
+                ) else {
+                    return;
+                };
+                let runtime = explorer_extension_host::ExtensionJobRuntimeV1::new(config);
+                loop {
+                    let requests = {
+                        let (lock, ready) = &*worker_pending;
+                        let mut state = lock
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        while state.requests.is_none() && !state.stopped {
+                            state = ready
+                                .wait(state)
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        }
+                        if state.stopped {
+                            return;
+                        }
+                        state.requests.take().unwrap_or_default()
+                    };
+                    let epoch = worker_epoch.load(Ordering::Acquire);
+                    let mut prepared = Vec::new();
+                    let mut prepared_bytes = 0_usize;
+                    for request in requests {
+                        if worker_epoch.load(Ordering::Acquire) != epoch {
+                            break;
+                        }
+                        let bytes = match read_code_lines_file_bounded(&request.path) {
+                            Ok(bytes) => bytes,
+                            Err(error) => {
+                                if current_code_lines_epoch(&worker_epoch, epoch)
+                                    && !publish_code_lines_result(
+                                        &result_tx,
+                                        explorer_ui::code_lines_column::CodeLinesResultV1 {
+                                            context: request.context,
+                                            item_id: request.item_id,
+                                            value: None,
+                                            error: Some(error),
+                                        },
+                                    )
+                                {
+                                    return;
+                                }
+                                continue;
+                            }
+                        };
+                        if worker_epoch.load(Ordering::Acquire) != epoch {
+                            continue;
+                        }
+                        if !prepared.is_empty()
+                            && (prepared.len() == CODE_LINES_BATCH_ITEMS_V1
+                                || prepared_bytes.saturating_add(bytes.len())
+                                    > explorer_extension_host::MAX_BATCH_COLUMN_INPUT_BYTES_V1)
+                        {
+                            process_code_lines_batch(
+                                &provider,
+                                &runtime,
+                                std::mem::take(&mut prepared),
+                                epoch,
+                                &worker_epoch,
+                                &result_tx,
+                            );
+                            prepared_bytes = 0;
+                        }
+                        prepared_bytes = prepared_bytes.saturating_add(bytes.len());
+                        prepared.push((request, bytes));
+                    }
+                    if !prepared.is_empty() && worker_epoch.load(Ordering::Acquire) == epoch {
+                        process_code_lines_batch(
+                            &provider,
+                            &runtime,
+                            prepared,
+                            epoch,
+                            &worker_epoch,
+                            &result_tx,
+                        );
+                    }
+                }
+            })
+            .context("failed to start Rust tokei Code lines worker")?;
+        Ok(Arc::new(Self {
+            pending,
+            request_epoch,
+            results: Mutex::new(result_rx),
+            renderer: AsyncCellRendererV1::start(renderer, CODE_LINES_RENDERER_CONTRIBUTION_ID_V1)?,
+        }))
+    }
+}
+
+fn process_code_lines_batch(
+    provider: &explorer_extension_host::SinglePluginBatchColumnRuntimeV1,
+    runtime: &explorer_extension_host::ExtensionJobRuntimeV1,
+    requests: Vec<(explorer_ui::code_lines_column::CodeLinesRequestV1, Vec<u8>)>,
+    epoch: u64,
+    current_epoch: &AtomicU64,
+    results: &mpsc::SyncSender<explorer_ui::code_lines_column::CodeLinesResultV1>,
+) {
+    let Some(first) = requests.first() else {
+        return;
+    };
+    let generation = first.0.context.generation.value().max(1);
+    let inputs = requests
+        .iter()
+        .filter_map(|(request, bytes)| {
+            Some(explorer_extension_host::HostBatchColumnItemV1 {
+                file_name: request
+                    .path
+                    .file_name()?
+                    .to_string_lossy()
+                    .into_owned()
+                    .into(),
+                source: explorer_extension_host::HostInputStreamSourceV1::from_host_snapshot(
+                    bytes.clone(),
+                    generation,
+                    true,
+                )?,
+            })
+        })
+        .collect::<Vec<_>>();
+    if current_epoch.load(Ordering::Acquire) != epoch {
+        return;
+    }
+    if inputs.len() != requests.len() {
+        emit_code_lines_batch_error(requests, "Code lines input could not be prepared", results);
+        return;
+    }
+    let Ok(mut ticket) = provider.prepare_dispatch(
+        runtime,
+        CODE_LINES_CONTRIBUTION_ID_V1,
+        generation,
+        generation,
+        generation,
+        generation,
+        inputs,
+    ) else {
+        emit_code_lines_batch_error(requests, "Code lines provider is unavailable", results);
+        return;
+    };
+    let terminal = match provider.invoke_prepared(CODE_LINES_CONTRIBUTION_ID_V1, &mut ticket) {
+        Ok(terminal) => terminal,
+        Err(_) => {
+            ticket.fail_marker_clear();
+            emit_code_lines_batch_error(requests, "Code lines provider failed", results);
+            return;
+        }
+    };
+    let accepted = runtime.drain(ticket.job(), generation, generation, generation, 64);
+    let mut emitted = 0_usize;
+    for batch in accepted {
+        let Some(rows) = runtime.apply_accepted_batch(&batch, |index| {
+            let display = requests
+                .get(index)
+                .and_then(|(request, _)| request.path.file_name())
+                .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+            (display, index as u128 + 1)
+        }) else {
+            continue;
+        };
+        for row in rows {
+            let Some((request, _)) = requests.get(emitted) else {
+                break;
+            };
+            let value = match row.value() {
+                Some(explorer_extension_host::ExtensionValueViewV1::StructuredCanonicalJson(
+                    bytes,
+                )) => parse_code_lines_value(bytes),
+                _ => None,
+            };
+            let error = (value.is_none()).then(|| match row.outcome().into_raw() {
+                2 => "Unsupported source".to_owned(),
+                3 => "Source unavailable".to_owned(),
+                _ => "Code lines provider returned no value".to_owned(),
+            });
+            if current_epoch.load(Ordering::Acquire) == epoch {
+                if !publish_code_lines_result(
+                    results,
+                    explorer_ui::code_lines_column::CodeLinesResultV1 {
+                        context: request.context.clone(),
+                        item_id: request.item_id.clone(),
+                        value,
+                        error,
+                    },
+                ) {
+                    return;
+                }
+            }
+            emitted += 1;
+        }
+    }
+    let _ = ticket.publish_terminal_after_marker_clear(terminal);
+    if emitted < requests.len() {
+        emit_code_lines_batch_error(
+            requests.into_iter().skip(emitted).collect(),
+            "Code lines provider returned an incomplete batch",
+            results,
+        );
+    }
+}
+
+fn emit_code_lines_batch_error(
+    requests: Vec<(explorer_ui::code_lines_column::CodeLinesRequestV1, Vec<u8>)>,
+    message: &str,
+    results: &mpsc::SyncSender<explorer_ui::code_lines_column::CodeLinesResultV1>,
+) {
+    for (request, _) in requests {
+        if !publish_code_lines_result(
+            results,
+            explorer_ui::code_lines_column::CodeLinesResultV1 {
+                context: request.context,
+                item_id: request.item_id,
+                value: None,
+                error: Some(message.to_owned()),
+            },
+        ) {
+            return;
+        }
+    }
+}
+
+fn current_code_lines_epoch(current_epoch: &AtomicU64, epoch: u64) -> bool {
+    current_epoch.load(Ordering::Acquire) == epoch
+}
+
+fn publish_code_lines_result(
+    results: &mpsc::SyncSender<explorer_ui::code_lines_column::CodeLinesResultV1>,
+    result: explorer_ui::code_lines_column::CodeLinesResultV1,
+) -> bool {
+    // A result is terminal for one visible file. Blocking until the GPUI side
+    // drains preserves it; `try_send` used to discard it silently when a
+    // directory arrived faster than the UI pump.
+    results.send(result).is_ok()
+}
+
+fn read_code_lines_file_bounded(path: &Path) -> Result<Vec<u8>, String> {
+    let file = fs::File::open(path).map_err(|_| "Source unavailable".to_owned())?;
+    let maximum = explorer_extension_host::MAX_HOST_INPUT_STREAM_SOURCE_BYTES_V1;
+    let mut bytes = Vec::new();
+    file.take(u64::try_from(maximum).unwrap_or(u64::MAX).saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Source unavailable".to_owned())?;
+    if bytes.len() > maximum {
+        return Err("Source is larger than 8 MiB".to_owned());
+    }
+    Ok(bytes)
+}
+
+fn parse_code_lines_value(
+    bytes: &[u8],
+) -> Option<explorer_ui::code_lines_column::CodeLinesValueV1> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    Some(explorer_ui::code_lines_column::CodeLinesValueV1 {
+        language: value.get("language")?.as_str()?.to_owned(),
+        code: value.get("code")?.as_u64()?,
+        comments: value.get("comments")?.as_u64()?,
+        blanks: value.get("blanks")?.as_u64()?,
+        total: value.get("total")?.as_u64()?,
+    })
+}
+
+impl explorer_ui::code_lines_column::CodeLinesRuntimePortV1 for ApplicationCodeLinesRuntimeV1 {
+    fn config(&self) -> explorer_ui::code_lines_column::CodeLinesColumnConfigV1 {
+        explorer_ui::code_lines_column::CodeLinesColumnConfigV1::default()
+    }
+
+    fn submit_code_lines_requests(
+        &self,
+        requests: Vec<explorer_ui::code_lines_column::CodeLinesRequestV1>,
+    ) {
+        let Some(first) = requests.first() else {
+            return;
+        };
+        let active = (first.context.tab_id, first.context.generation);
+        let (lock, ready) = &*self.pending;
+        let mut state = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.active != Some(active) {
+            self.request_epoch.fetch_add(1, Ordering::AcqRel);
+            state.active = Some(active);
+            state.requests = Some(requests);
+        } else {
+            let queued = state.requests.get_or_insert_with(Vec::new);
+            for request in requests {
+                if request.context.tab_id == active.0
+                    && request.context.generation == active.1
+                    && !queued.iter().any(|queued_request| {
+                        queued_request.item_id == request.item_id
+                            && queued_request.path == request.path
+                    })
+                {
+                    queued.push(request);
+                }
+            }
+        }
+        ready.notify_one();
+    }
+
+    fn drain_code_lines_results(&self) -> Vec<explorer_ui::code_lines_column::CodeLinesResultV1> {
+        self.results
+            .lock()
+            .map_or_else(|_| Vec::new(), |results| results.try_iter().collect())
+    }
+
+    fn drain_render_results(&self) -> bool {
+        self.renderer.drain_ready()
+    }
+
+    fn render_cell(
+        &self,
+        context: explorer_extension_ui_api::CellRenderContextV1,
+    ) -> explorer_extension_ui_api::CellRenderPlanV1 {
+        self.renderer
+            .render_or_enqueue(context, "Loading code lines")
+    }
+}
+
+impl Drop for ApplicationCodeLinesRuntimeV1 {
+    fn drop(&mut self) {
+        self.request_epoch.fetch_add(1, Ordering::AcqRel);
+        let (lock, ready) = &*self.pending;
+        let mut state = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.stopped = true;
+        state.active = None;
+        state.requests = None;
+        ready.notify_one();
+    }
+}
+
 /// App-owned bridge for the one independent Size Map example. Requests for the
 /// current request context are merged, while a changed context replaces the
 /// pending batch and cancels in-flight work. Filesystem work is bounded off
@@ -313,7 +1088,7 @@ struct ApplicationSizeMapRuntimeV1 {
     request_epoch: Arc<AtomicU64>,
     results: Mutex<mpsc::Receiver<explorer_ui::size_map_view::SizeMapMeasureResultV1>>,
     result_tx: mpsc::Sender<explorer_ui::size_map_view::SizeMapMeasureResultV1>,
-    renderer: Mutex<explorer_extension_host::SinglePluginSizeMapViewRuntimeV1>,
+    renderer: AsyncSizeMapRendererV1,
 }
 
 #[derive(Default)]
@@ -411,7 +1186,7 @@ impl ApplicationSizeMapRuntimeV1 {
             request_epoch,
             results: Mutex::new(result_rx),
             result_tx,
-            renderer: Mutex::new(renderer),
+            renderer: AsyncSizeMapRendererV1::start(renderer)?,
         }))
     }
 }
@@ -577,6 +1352,10 @@ impl explorer_ui::size_map_view::ExtensionSizeMapRuntimePortV1 for ApplicationSi
         results.try_iter().collect()
     }
 
+    fn drain_render_results(&self) -> bool {
+        self.renderer.drain_ready()
+    }
+
     fn render_size_map(
         &self,
         context: explorer_ui::size_map_view::SizeMapRenderContextV1,
@@ -590,41 +1369,51 @@ impl explorer_ui::size_map_view::ExtensionSizeMapRuntimePortV1 for ApplicationSi
             .iter()
             .enumerate()
             .map(|(index, node)| {
+                let status = if node.partial {
+                    "Partial"
+                } else if node.error.is_some() {
+                    "Failed"
+                } else if node.exact_bytes.is_some() {
+                    "Complete"
+                } else {
+                    "Unavailable"
+                };
                 (
                     explorer_extension_ui_api::StableIdV1::new(
                         explorer_extension_ui_api::EXTENSION_ID_NAMESPACE_V1,
                         u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1),
                     ),
-                    node.item_id.clone(),
+                    (node.item_id.clone(), status.to_owned()),
                 )
             })
-            .collect::<Vec<_>>();
+            .collect::<HashMap<_, _>>();
         let public_nodes = context
             .nodes
             .iter()
-            .zip(&mappings)
-            .map(
-                |(node, (node_id, _))| explorer_extension_ui_api::SizeMapNodeV1 {
-                    node_id: *node_id,
-                    parent_id: None.into(),
-                    name: node.display_name.clone().into(),
-                    kind: if node.is_container {
-                        SizeMapNodeKindV1::DIRECTORY
-                    } else {
-                        SizeMapNodeKindV1::FILE
-                    },
-                    exact_bytes: node.exact_bytes.into(),
-                    status: if node.partial {
-                        SizeMapNodeStatusV1::PARTIAL
-                    } else if node.error.is_some() {
-                        SizeMapNodeStatusV1::FAILED
-                    } else if node.exact_bytes.is_some() {
-                        SizeMapNodeStatusV1::COMPLETE
-                    } else {
-                        SizeMapNodeStatusV1::UNAVAILABLE
-                    },
+            .enumerate()
+            .map(|(index, node)| explorer_extension_ui_api::SizeMapNodeV1 {
+                node_id: explorer_extension_ui_api::StableIdV1::new(
+                    explorer_extension_ui_api::EXTENSION_ID_NAMESPACE_V1,
+                    u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1),
+                ),
+                parent_id: None.into(),
+                name: node.display_name.clone().into(),
+                kind: if node.is_container {
+                    SizeMapNodeKindV1::DIRECTORY
+                } else {
+                    SizeMapNodeKindV1::FILE
                 },
-            )
+                exact_bytes: node.exact_bytes.into(),
+                status: if node.partial {
+                    SizeMapNodeStatusV1::PARTIAL
+                } else if node.error.is_some() {
+                    SizeMapNodeStatusV1::FAILED
+                } else if node.exact_bytes.is_some() {
+                    SizeMapNodeStatusV1::COMPLETE
+                } else {
+                    SizeMapNodeStatusV1::UNAVAILABLE
+                },
+            })
             .collect::<Vec<_>>();
         let foreground = if context.dark_theme {
             CellColorV1::rgba(245, 245, 245, 255)
@@ -636,8 +1425,21 @@ impl explorer_ui::size_map_view::ExtensionSizeMapRuntimePortV1 for ApplicationSi
         } else {
             CellColorV1::rgba(250, 250, 250, 255)
         };
-        let public_context = explorer_extension_ui_api::SizeMapRenderContextV1 {
+        let selected_node_ids = context
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| context.selected.contains(&node.item_id))
+            .map(|(index, _)| {
+                explorer_extension_ui_api::StableIdV1::new(
+                    explorer_extension_ui_api::EXTENSION_ID_NAMESPACE_V1,
+                    u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1),
+                )
+            })
+            .collect();
+        let mut public_context = explorer_extension_ui_api::SizeMapRenderContextV1 {
             generation,
+            render_revision: 0,
             nodes: public_nodes.into(),
             viewport: explorer_extension_ui_api::SizeMapViewportV1 {
                 width_milli: context.viewport_width_milli,
@@ -651,93 +1453,19 @@ impl explorer_ui::size_map_view::ExtensionSizeMapRuntimePortV1 for ApplicationSi
                 selection_background: CellColorV1::rgba(0, 95, 184, 255),
                 accent: CellColorV1::rgba(0, 120, 212, 255),
             },
+            selected_node_ids,
             settings: "default".into(),
         };
-        let plan = match self.renderer.lock() {
-            Ok(mut renderer) => {
-                match renderer.render(SIZE_MAP_VIEW_CONTRIBUTION_ID_V1, public_context) {
-                    Ok(plan) => plan,
-                    Err(error) => {
-                        tracing::warn!(%error, "Size Map renderer call failed; using Details fallback");
-                        return explorer_ui::size_map_view::SizeMapRenderPlanV1 {
-                            rectangles: Vec::new(),
-                            status: Some(format!("Size Map renderer unavailable: {error}")),
-                            available: false,
-                        };
-                    }
-                }
-            }
-            Err(_) => {
-                tracing::warn!("Size Map renderer lock failed; using Details fallback");
-                return explorer_ui::size_map_view::SizeMapRenderPlanV1 {
-                    rectangles: Vec::new(),
-                    status: Some("Size Map renderer lock is unavailable".to_owned()),
-                    available: false,
-                };
-            }
-        };
-        if plan.generation != generation {
-            tracing::warn!(
-                expected_generation = generation,
-                actual_generation = plan.generation,
-                "Size Map renderer returned a stale plan; using Details fallback"
-            );
-            return explorer_ui::size_map_view::SizeMapRenderPlanV1 {
-                rectangles: Vec::new(),
-                status: Some("Size Map renderer returned a stale plan".to_owned()),
-                available: false,
-            };
-        }
+        let key = size_map_render_key(&mut public_context);
         let width = context.viewport_width_milli as f32 / 1_000.0;
         let height = context.viewport_height_milli as f32 / 1_000.0;
-        explorer_ui::size_map_view::SizeMapRenderPlanV1 {
-            rectangles: plan
-                .rectangles
-                .into_iter()
-                .filter_map(|rectangle| {
-                    let item_id = mappings
-                        .iter()
-                        .find(|(node_id, _)| *node_id == rectangle.node_id)
-                        .map(|(_, item_id)| item_id.clone())?;
-                    let status = context
-                        .nodes
-                        .iter()
-                        .find(|node| node.item_id == item_id)
-                        .map_or_else(
-                            || "Unavailable".to_owned(),
-                            |node| {
-                                if node.partial {
-                                    "Partial".to_owned()
-                                } else if node.error.is_some() {
-                                    "Failed".to_owned()
-                                } else if node.exact_bytes.is_some() {
-                                    "Complete".to_owned()
-                                } else {
-                                    "Unavailable".to_owned()
-                                }
-                            },
-                        );
-                    Some(explorer_ui::size_map_view::SizeMapRectangleV1 {
-                        item_id,
-                        x: width * rectangle.x_millionths as f32 / 1_000_000.0,
-                        y: height * rectangle.y_millionths as f32 / 1_000_000.0,
-                        width: width * rectangle.width_millionths as f32 / 1_000_000.0,
-                        height: height * rectangle.height_millionths as f32 / 1_000_000.0,
-                        label: rectangle.label.into_string(),
-                        detail: rectangle.detail.into_string(),
-                        color: explorer_ui::theme::Rgba8 {
-                            red: rectangle.color.red,
-                            green: rectangle.color.green,
-                            blue: rectangle.color.blue,
-                            alpha: rectangle.color.alpha,
-                        },
-                        status,
-                    })
-                })
-                .collect(),
-            status: (!plan.status.is_empty()).then(|| plan.status.into_string()),
-            available: true,
-        }
+        self.renderer.render_or_enqueue(SizeMapRenderRequestV1 {
+            key,
+            context: public_context,
+            mappings,
+            width,
+            height,
+        })
     }
 }
 
@@ -1041,6 +1769,7 @@ struct ShutdownResources {
     extension_host: Option<explorer_extension_host::ExtensionHost>,
     loaded_extension_summary: Option<String>,
     visual_column_runtime: Option<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1>,
+    code_lines_runtime: Option<explorer_ui::code_lines_column::CodeLinesRuntimeHandleV1>,
     size_map_runtime: Option<explorer_ui::size_map_view::SizeMapRuntimeHandleV1>,
     extension_job_ui_inbox: Option<explorer_extension_host::ExtensionJobUiInboxV1>,
     extension_job_ui_ingress: Option<explorer_extension_host::ExtensionJobUiIngressV1>,
@@ -1092,24 +1821,43 @@ impl ApplicationLifecycle {
         let mut extension_host =
             explorer_extension_host::ExtensionHost::with_config(extension_config);
         extension_host.start()?;
-        let (loaded_extension_summary, visual_column_runtime, size_map_runtime) =
-            if let Some(path) = plugin_dll {
-                let loaded =
-                explorer_extension_host::ExtensionHost::load_single_plugin_visual_column_runtime(
-                    path,
-                )?;
-                let (summary, measure, renderer, size_map_renderer) =
-                    loaded.into_parts_with_size_map();
+        let direct_loaded = match plugin_dll {
+            Some(path) => match extension_host.load_single_plugin_visual_column_runtime(path) {
+                Ok(loaded) => Some((path, loaded)),
+                Err(explorer_extension_host::SinglePluginLoadErrorV1::BlockedBySafeMode) => {
+                    diagnostics.record_event("development_plugin_blocked_by_safe_mode", &[])?;
+                    None
+                }
+                Err(error) => return Err(error.into()),
+            },
+            None => None,
+        };
+        let (loaded_extension_summary, visual_column_runtime, code_lines_runtime, size_map_runtime) =
+            if let Some((path, loaded)) = direct_loaded {
+                let (summary, measure, renderer, size_map_renderer, batch_columns) =
+                    loaded.into_parts_with_batch_columns();
                 let supports_folder_size =
                     summary.contributions().iter().any(|contribution| {
                         contribution.contribution_id() == FOLDER_SIZE_CONTRIBUTION_ID_V1
                     }) && summary.contributions().iter().any(|contribution| {
                         contribution.contribution_id() == FOLDER_SIZE_RENDERER_CONTRIBUTION_ID_V1
                     });
-                let visual_runtime = if supports_folder_size {
-                    Some(ApplicationVisualColumnRuntimeV1::start(measure, renderer)?)
+                let supports_code_lines = batch_columns.contains(CODE_LINES_CONTRIBUTION_ID_V1);
+                let (visual_runtime, code_lines_runtime) = if supports_code_lines {
+                    (
+                        None,
+                        Some(ApplicationCodeLinesRuntimeV1::start(
+                            batch_columns,
+                            renderer,
+                        )?),
+                    )
+                } else if supports_folder_size {
+                    (
+                        Some(ApplicationVisualColumnRuntimeV1::start(measure, renderer)?),
+                        None,
+                    )
                 } else {
-                    None
+                    (None, None)
                 };
                 // The host retains a Size Map renderer only after validating
                 // that its descriptor is a VIEW_MODE contribution, so this
@@ -1124,10 +1872,11 @@ impl ApplicationLifecycle {
                 (
                     Some(format_single_plugin_summary(path, &summary)),
                     visual_runtime,
+                    code_lines_runtime,
                     size_map_runtime,
                 )
             } else {
-                (None, None, None)
+                (None, None, None, None)
             };
         if let Some(summary) = loaded_extension_summary.as_deref() {
             diagnostics.record_event("development_plugin_loaded", &[("summary", summary)])?;
@@ -1217,6 +1966,7 @@ impl ApplicationLifecycle {
                 extension_host: Some(extension_host),
                 loaded_extension_summary,
                 visual_column_runtime,
+                code_lines_runtime,
                 size_map_runtime,
                 extension_job_ui_inbox,
                 extension_job_ui_ingress,
@@ -1280,6 +2030,7 @@ impl ApplicationLifecycle {
         let safe_mode_offers = self.safe_mode_ui_offers()?;
         let loaded_extension_summary = self.loaded_extension_summary()?;
         let visual_column_runtime = self.visual_column_runtime()?;
+        let code_lines_runtime = self.code_lines_runtime()?;
         let size_map_runtime = self.size_map_runtime()?;
         let safe_mode_resources = Arc::clone(&self.resources);
         let safe_mode_confirm: explorer_ui::SafeModeConfirmObserverV1 = Arc::new(move |token| {
@@ -1367,6 +2118,7 @@ impl ApplicationLifecycle {
                 let quick_access_for_window = quick_access.clone();
                 let loaded_extension_summary_for_window = loaded_extension_summary.clone();
                 let visual_column_runtime_for_window = visual_column_runtime.clone();
+                let code_lines_runtime_for_window = code_lines_runtime.clone();
                 let size_map_runtime_for_window = size_map_runtime.clone();
                 let fixture_diagnostics = diagnostics.clone();
                 let tokens = fixture_tokens(fixture_for_window.as_ref());
@@ -1404,6 +2156,7 @@ impl ApplicationLifecycle {
                             safe_mode_confirm,
                             loaded_extension_summary_for_window,
                             visual_column_runtime_for_window,
+                            code_lines_runtime_for_window,
                             size_map_runtime_for_window,
                             extension_ui_pump.map(|pump| {
                                 Box::new(pump) as Box<dyn explorer_ui::ExtensionUiPumpPortV1>
@@ -1603,6 +2356,15 @@ impl ApplicationLifecycle {
             .map_err(|_| anyhow::anyhow!("application lifecycle mutex was poisoned"))
     }
 
+    fn code_lines_runtime(
+        &self,
+    ) -> Result<Option<explorer_ui::code_lines_column::CodeLinesRuntimeHandleV1>, Error> {
+        self.resources
+            .lock()
+            .map(|resources| resources.code_lines_runtime.clone())
+            .map_err(|_| anyhow::anyhow!("application lifecycle mutex was poisoned"))
+    }
+
     fn size_map_runtime(
         &self,
     ) -> Result<Option<explorer_ui::size_map_view::SizeMapRuntimeHandleV1>, Error> {
@@ -1660,6 +2422,7 @@ fn create_explorer_root(
     broker_retry: explorer_ui::BrokerRetryObserver,
     folder_scripts: explorer_automation::FolderScriptHandle,
     visual_column_runtime: Option<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1>,
+    code_lines_runtime: Option<explorer_ui::code_lines_column::CodeLinesRuntimeHandleV1>,
     size_map_runtime: Option<explorer_ui::size_map_view::SizeMapRuntimeHandleV1>,
     extension_ui_pump: Option<Box<dyn explorer_ui::ExtensionUiPumpPortV1>>,
     window: &gpui::Window,
@@ -1685,6 +2448,9 @@ fn create_explorer_root(
     root.configure_broker_health(broker_health, broker_retry);
     if let Some(runtime) = visual_column_runtime {
         root.attach_visual_column_runtime(runtime);
+    }
+    if let Some(runtime) = code_lines_runtime {
+        root.attach_code_lines_runtime(runtime);
     }
     if let Some(runtime) = size_map_runtime {
         root.attach_size_map_runtime(runtime);
@@ -1724,6 +2490,7 @@ fn create_focused_explorer_root(
     safe_mode_confirm: explorer_ui::SafeModeConfirmObserverV1,
     loaded_extension_summary: Option<String>,
     visual_column_runtime: Option<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1>,
+    code_lines_runtime: Option<explorer_ui::code_lines_column::CodeLinesRuntimeHandleV1>,
     size_map_runtime: Option<explorer_ui::size_map_view::SizeMapRuntimeHandleV1>,
     extension_ui_pump: Option<Box<dyn explorer_ui::ExtensionUiPumpPortV1>>,
     window: &mut gpui::Window,
@@ -1746,6 +2513,7 @@ fn create_focused_explorer_root(
         broker_retry,
         folder_scripts,
         visual_column_runtime,
+        code_lines_runtime,
         size_map_runtime,
         extension_ui_pump,
         window,
@@ -2182,14 +2950,110 @@ mod tests {
     use super::{
         ApplicationExtensionReadyProjectorV1, ApplicationExtensionUiPumpV1, PendingSizeMapWorkV1,
         SIZE_MAP_REQUEST_QUEUE_CAP_V1, SafeModeIncidentOfferV1, SafeModeIncidentPortV1,
-        confirm_offered_safe_mode_incident_v1, confirm_presented_safe_mode_incident_v1,
-        emit_post_commit_safe_mode_telemetry_v1, enqueue_size_map_requests,
-        should_restore_saved_tabs,
+        cell_render_key, confirm_offered_safe_mode_incident_v1,
+        confirm_presented_safe_mode_incident_v1, emit_post_commit_safe_mode_telemetry_v1,
+        enqueue_size_map_requests, should_restore_saved_tabs, size_map_render_key,
     };
 
     struct FakeSafeModePortV1 {
         denied: bool,
         confirmed: Mutex<Vec<u8>>,
+    }
+
+    #[test]
+    fn cell_render_key_covers_request_theme_and_value_snapshot() {
+        let color = explorer_extension_ui_api::CellColorV1::rgba(1, 2, 3, 255);
+        let context = explorer_extension_ui_api::CellRenderContextV1 {
+            value: ROption::RSome(PluginValueV1::integer(7)),
+            exact_bytes: ROption::RSome(7),
+            aggregate: ROption::RNone,
+            loading: false,
+            error: ROption::RNone,
+            selected: false,
+            hovered: false,
+            dpi_milli: 1_000,
+            theme: explorer_extension_ui_api::CellThemeV1 {
+                foreground: color,
+                muted_foreground: color,
+                background: color,
+                selection_background: color,
+                accent: color,
+            },
+            settings: "default".into(),
+            item_id: explorer_extension_ui_api::StableIdV1::new(
+                explorer_extension_ui_api::EXTENSION_ID_NAMESPACE_V1,
+                1,
+            ),
+            render_generation: 1,
+            request_generation: 1,
+        };
+        let baseline = cell_render_key(&context);
+        let changed_request = explorer_extension_ui_api::CellRenderContextV1 {
+            request_generation: 2,
+            ..context.clone()
+        };
+        let changed_theme = explorer_extension_ui_api::CellRenderContextV1 {
+            theme: explorer_extension_ui_api::CellThemeV1 {
+                accent: explorer_extension_ui_api::CellColorV1::rgba(9, 2, 3, 255),
+                ..context.theme
+            },
+            ..context.clone()
+        };
+        let changed_value = explorer_extension_ui_api::CellRenderContextV1 {
+            value: ROption::RSome(PluginValueV1::integer(8)),
+            ..context
+        };
+        assert_ne!(baseline, cell_render_key(&changed_request));
+        assert_ne!(baseline, cell_render_key(&changed_theme));
+        assert_ne!(baseline, cell_render_key(&changed_value));
+    }
+
+    #[test]
+    fn size_map_render_key_covers_measurements_viewport_and_selection() {
+        let color = explorer_extension_ui_api::CellColorV1::rgba(1, 2, 3, 255);
+        let mut context = explorer_extension_ui_api::SizeMapRenderContextV1 {
+            generation: 1,
+            render_revision: 0,
+            nodes: RVec::from(vec![explorer_extension_ui_api::SizeMapNodeV1 {
+                node_id: explorer_extension_ui_api::StableIdV1::new(
+                    explorer_extension_ui_api::EXTENSION_ID_NAMESPACE_V1,
+                    1,
+                ),
+                parent_id: ROption::RNone,
+                name: "one".into(),
+                kind: explorer_extension_ui_api::SizeMapNodeKindV1::FILE,
+                exact_bytes: ROption::RSome(10),
+                status: explorer_extension_ui_api::SizeMapNodeStatusV1::COMPLETE,
+            }]),
+            viewport: explorer_extension_ui_api::SizeMapViewportV1 {
+                width_milli: 1_000,
+                height_milli: 1_000,
+                dpi_milli: 1_000,
+            },
+            theme: explorer_extension_ui_api::CellThemeV1 {
+                foreground: color,
+                muted_foreground: color,
+                background: color,
+                selection_background: color,
+                accent: color,
+            },
+            selected_node_ids: RVec::new(),
+            settings: "default".into(),
+        };
+        let baseline = size_map_render_key(&mut context);
+        let mut changed_viewport = context.clone();
+        changed_viewport.viewport.width_milli = 1_001;
+        let mut changed_selection = context.clone();
+        changed_selection.selected_node_ids =
+            RVec::from(vec![explorer_extension_ui_api::StableIdV1::new(
+                explorer_extension_ui_api::EXTENSION_ID_NAMESPACE_V1,
+                1,
+            )]);
+        let mut changed_measurement = context;
+        changed_measurement.nodes[0].exact_bytes = ROption::RSome(11);
+        assert_ne!(baseline, size_map_render_key(&mut changed_viewport));
+        assert_ne!(baseline, size_map_render_key(&mut changed_selection));
+        assert_ne!(baseline, size_map_render_key(&mut changed_measurement));
     }
 
     impl SafeModeIncidentPortV1 for FakeSafeModePortV1 {

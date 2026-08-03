@@ -1,0 +1,11 @@
+[build]
+target = "x86_64-pc-windows-msvc"
+
+[net]
+offline = true
+
+[source.crates-io]
+replace-with = "cargo-sources"
+
+[source.cargo-sources]
+directory = "../../vendor/cargo-sources"
