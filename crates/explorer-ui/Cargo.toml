@@ -14,6 +14,7 @@ explorer-automation = { path = "../explorer-automation" }
 explorer-model = { path = "../explorer-model" }
 explorer-jobs = { path = "../explorer-jobs" }
 explorer-search = { path = "../explorer-search" }
+explorer-extension-ui-api = { path = "../explorer-extension-ui-api" }
 gpui.workspace = true
 gpui_elements.workspace = true
 raw-window-handle.workspace = true
@@ -21,6 +22,7 @@ serde.workspace = true
 tracing.workspace = true
 image.workspace = true
 smallvec.workspace = true
+abi_stable.workspace = true
 
 [dev-dependencies]
 explorer-test-support = { path = "../explorer-test-support" }

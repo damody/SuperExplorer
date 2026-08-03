@@ -73,6 +73,7 @@ use abi_stable::{
 };
 
 mod jobs;
+mod visual_column;
 
 pub use jobs::{
     AbiInputStreamServicesV1, AbiJobHostServicesV1, IncrementalResultBatchV1,
@@ -87,6 +88,11 @@ pub use jobs::{
     PluginItemResultTransportErrorV1, PluginItemResultV1, PluginValueKindV1,
     PluginValueTransportErrorV1, PluginValueV1, SinkCapabilityV1, SinkSubmitOutcomeV1,
     SinkSubmitStatusV1, StableSortValueKindV1, StableSortValueTransportErrorV1, StableSortValueV1,
+};
+pub use visual_column::{
+    CellAggregateV1, CellColorV1, CellRenderContextV1, CellRenderPlanV1, CellThemeV1,
+    FolderSizeMeasureRequestV1, FolderSizeMeasureResultV1, VisualColumnImplementationV1,
+    VisualColumnObjectV1,
 };
 
 /// The `SE` namespace revision one (`0x5345` is ASCII `SE`).
@@ -459,6 +465,8 @@ pub struct RegisteredContributionV1 {
     pub opaque_contract: ROption<OpaquePayloadContractV1>,
     pub renderer_contribution_id: ROption<RString>,
     pub provider: ROption<JobProviderObjectV1>,
+    /// Optional visual-column object retained by the host after registration.
+    pub visual_column: ROption<VisualColumnObjectV1>,
 }
 
 /// Complete stateful registrar result; registration status cannot claim success

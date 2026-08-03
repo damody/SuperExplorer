@@ -15,6 +15,7 @@ crate-type = ["cdylib", "rlib"]
 # contract to extension authors.
 abi_stable = { version = "=0.11.3", default-features = false }
 explorer-extension-api = "=1.2.0"
+explorer-extension-ui-api = { path = "../../../crates/explorer-extension-ui-api" }
 exif-lite = "=0.1.0"
 
 [patch.crates-io]

@@ -20,6 +20,7 @@ pub mod chrome;
 pub mod diagnostics;
 pub mod file_view;
 mod fluent_assets;
+pub mod folder_size_column;
 pub use fluent_assets::ExplorerAssets;
 mod formatting;
 pub use formatting::format_file_size;
@@ -704,6 +705,14 @@ pub struct ExplorerRoot {
     safe_mode_confirm: Option<SafeModeConfirmObserverV1>,
     safe_mode_confirmation_error: Option<String>,
     extension_ui_pump: Option<Box<dyn ExtensionUiPumpPortV1>>,
+    visual_column_runtime: Option<folder_size_column::VisualColumnRuntimeHandleV1>,
+    folder_size_visuals: Option<folder_size_column::FolderSizeColumnVisuals>,
+    folder_size_requested: HashSet<(
+        explorer_model::TabId,
+        explorer_model::Generation,
+        explorer_model::ShellItemId,
+    )>,
+    folder_size_display_override: Option<folder_size_column::FolderSizeDisplayMode>,
 }
 
 /// Receives owned durable model snapshots after accepted reducer transitions.
@@ -977,6 +986,10 @@ impl ExplorerRoot {
             safe_mode_confirm: None,
             safe_mode_confirmation_error: None,
             extension_ui_pump: None,
+            visual_column_runtime: None,
+            folder_size_visuals: None,
+            folder_size_requested: HashSet::new(),
+            folder_size_display_override: None,
         }
     }
 
@@ -985,6 +998,149 @@ impl ExplorerRoot {
     /// during composition; workers cannot reach this UI-owned object.
     pub fn attach_extension_ui_pump(&mut self, pump: Box<dyn ExtensionUiPumpPortV1>) {
         self.extension_ui_pump = Some(pump);
+    }
+
+    /// Connects the application-owned folder-size provider to the Details UI.
+    /// The provider is deliberately narrow: it receives filesystem container
+    /// paths and returns copied exact-byte values, never Shell/extension-host
+    /// objects.
+    pub fn attach_visual_column_runtime(
+        &mut self,
+        runtime: folder_size_column::VisualColumnRuntimeHandleV1,
+    ) {
+        let mut config = runtime.config();
+        if !folder_size_column::is_supported_folder_size_descriptor(&config.descriptor)
+            || !self
+                .state
+                .install_visual_column_descriptor(config.descriptor.clone())
+        {
+            tracing::warn!("rejected unsupported visual-column runtime configuration");
+            return;
+        }
+        self.visual_column_runtime = Some(runtime);
+        if let Some(display) = self.folder_size_display_override {
+            config.folder_size_display = display;
+        }
+        self.folder_size_visuals = Some(folder_size_column::FolderSizeColumnVisuals {
+            config,
+            values: HashMap::new(),
+        });
+        self.folder_size_requested.clear();
+    }
+
+    fn submit_folder_size_requests(&mut self) {
+        let Some(runtime) = self.visual_column_runtime.as_mut() else {
+            return;
+        };
+        let (tab_id, generation, entries) = {
+            let tab = self.state.tabs().active_tab();
+            let Some(snapshot) = tab.visible_snapshot() else {
+                return;
+            };
+            (tab.id, tab.generation, snapshot.entries().to_vec())
+        };
+        let request_context = explorer_model::RequestContext::new(tab_id, generation);
+        let requests = entries
+            .iter()
+            .filter(|entry| entry.is_container)
+            .filter_map(|entry| match &entry.location {
+                explorer_model::LocationDescriptor::FileSystem(path)
+                    if self.folder_size_requested.insert((
+                        tab_id,
+                        generation,
+                        entry.id.clone(),
+                    )) =>
+                {
+                    Some(folder_size_column::FolderSizeRequestV1 {
+                        context: request_context.clone(),
+                        item_id: entry.id.clone(),
+                        path: path.clone(),
+                    })
+                }
+                explorer_model::LocationDescriptor::FileSystem(_) => None,
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if !requests.is_empty() {
+            runtime.submit_folder_size_requests(requests);
+        }
+    }
+
+    fn pump_visual_column_runtime(&mut self) -> bool {
+        let Some(runtime) = self.visual_column_runtime.as_mut() else {
+            return false;
+        };
+        let mut config = runtime.config();
+        let results = runtime.drain_folder_size_results();
+        if let Some(display) = self.folder_size_display_override {
+            config.folder_size_display = display;
+        }
+        if !folder_size_column::is_supported_folder_size_descriptor(&config.descriptor) {
+            return false;
+        }
+        let descriptor_changed = self
+            .folder_size_visuals
+            .as_ref()
+            .is_none_or(|visuals| visuals.config.descriptor != config.descriptor);
+        let mut changed = false;
+        if descriptor_changed
+            && self
+                .state
+                .install_visual_column_descriptor(config.descriptor.clone())
+        {
+            changed = true;
+        }
+        let visuals = self.folder_size_visuals.get_or_insert_with(|| {
+            folder_size_column::FolderSizeColumnVisuals {
+                config: config.clone(),
+                values: HashMap::new(),
+            }
+        });
+        let visible_ids = self
+            .state
+            .tabs()
+            .active_tab()
+            .visible_snapshot()
+            .map(|snapshot| {
+                snapshot
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.id.clone())
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        let previous_value_count = visuals.values.len();
+        visuals
+            .values
+            .retain(|item_id, _| visible_ids.contains(item_id));
+        if visuals.values.len() != previous_value_count {
+            changed = true;
+        }
+        if visuals.config != config {
+            visuals.config = config;
+            changed = true;
+        }
+        let active_tab = self.state.tabs().active_tab();
+        let current_context =
+            explorer_model::RequestContext::new(active_tab.id, active_tab.generation);
+        for result in results.into_iter().filter(|result| {
+            result.context.tab_id == current_context.tab_id
+                && result.context.generation == current_context.generation
+        }) {
+            let value = folder_size_column::FolderSizeValueV1 {
+                exact_bytes: result.exact_bytes,
+                partial: result.partial,
+                error: result.error,
+            };
+            if visuals.values.insert(result.item_id, value.clone()) != Some(value) {
+                changed = true;
+            }
+        }
+        if changed {
+            self.state
+                .set_folder_size_sort_values(visuals.exact_sort_values());
+        }
+        changed
     }
 
     /// Shows the one explicitly loaded development plugin in the existing
@@ -1421,6 +1577,10 @@ impl ExplorerRoot {
             safe_mode_confirm: None,
             safe_mode_confirmation_error: None,
             extension_ui_pump: None,
+            visual_column_runtime: None,
+            folder_size_visuals: None,
+            folder_size_requested: HashSet::new(),
+            folder_size_display_override: None,
         };
         root.submit_active_location_load();
         root.submit_navigation_icon_loads();
@@ -1495,6 +1655,10 @@ impl ExplorerRoot {
             safe_mode_confirm: None,
             safe_mode_confirmation_error: None,
             extension_ui_pump: None,
+            visual_column_runtime: None,
+            folder_size_visuals: None,
+            folder_size_requested: HashSet::new(),
+            folder_size_display_override: None,
         };
         root.submit_active_location_load();
         root.submit_navigation_icon_loads();
@@ -1635,7 +1799,9 @@ impl ExplorerRoot {
                     .await;
                 if this
                     .update(cx, |this, cx| {
-                        if extension_ui_pump_due(this.extension_ui_pump.as_mut(), Instant::now()) {
+                        if extension_ui_pump_due(this.extension_ui_pump.as_mut(), Instant::now())
+                            || this.pump_visual_column_runtime()
+                        {
                             cx.notify();
                         }
                     })
@@ -3392,6 +3558,26 @@ impl ExplorerRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if action == ExplorerAction::ToggleFolderSizeProportionalBar {
+            let current = self.folder_size_visuals.as_ref().map_or(
+                folder_size_column::FolderSizeDisplayMode::default(),
+                |visuals| visuals.config.folder_size_display,
+            );
+            let next = match current {
+                folder_size_column::FolderSizeDisplayMode::BarAndText => {
+                    folder_size_column::FolderSizeDisplayMode::TextOnly
+                }
+                folder_size_column::FolderSizeDisplayMode::TextOnly => {
+                    folder_size_column::FolderSizeDisplayMode::BarAndText
+                }
+            };
+            self.folder_size_display_override = Some(next);
+            if let Some(visuals) = self.folder_size_visuals.as_mut() {
+                visuals.config.folder_size_display = next;
+            }
+            cx.notify();
+            return;
+        }
         self.capture_durable_window_placement(window, cx);
         if matches!(action, ExplorerAction::OpenNavigationHistory { .. }) {
             self.navigation_history_release_deadline =
@@ -4900,6 +5086,7 @@ impl Render for ExplorerRoot {
         };
         self.synchronize_preview_thumbnail(preview_entry.as_ref());
         self.synchronize_preview_handler(preview_entry.as_ref());
+        self.submit_folder_size_requests();
         let shell_icons = self.navigation_icon_snapshot(&realized_entries);
         let safe_mode_offer = self.safe_mode_offers.first().cloned();
         let safe_mode_error = self.safe_mode_confirmation_error.clone();
@@ -4917,6 +5104,8 @@ impl Render for ExplorerRoot {
             .with_breadcrumb_menu_focus(self.breadcrumb_menu_focus.clone())
             .with_command_menu_focus(self.command_menu_focus.clone())
             .with_preview_thumbnail(self.preview_texture.clone(), self.preview_thumbnail_failed)
+            .with_folder_size_visuals(self.folder_size_visuals.clone())
+            .with_visual_column_runtime(self.visual_column_runtime.clone())
             .on_action(std::rc::Rc::new(cx.listener(
                 |this, action: &ExplorerAction, window, cx| {
                     this.handle_action(action.clone(), ActionSource::Mouse, window, cx);
