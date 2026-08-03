@@ -34,9 +34,9 @@ pub use context_menu::{
     ContextMenuSession, ContextMenuSessionState, MenuPoint,
 };
 pub use domain::{
-    CancellationRegistration, CancellationToken, Generation, LocationDescriptor,
-    LocationDescriptorValidationError, MAX_LOCATION_DESCRIPTOR_BYTES, RequestContext,
-    RequestRejection, ShellItemId, SyntheticRoot, TabId,
+    CancellationRegistration, CancellationSignalReport, CancellationToken, Generation,
+    LocationDescriptor, LocationDescriptorValidationError, MAX_LOCATION_DESCRIPTOR_BYTES,
+    RequestContext, RequestRejection, ShellItemId, SyntheticRoot, TabId,
 };
 pub use drag_drop::{
     AutoScrollDirection, DragButton, DragEffect, DragModifiers, DragSession, DragSessionState,

@@ -321,6 +321,17 @@ struct CancellationState {
 #[derive(Clone, Default)]
 pub struct CancellationToken(Arc<CancellationState>);
 
+/// Aggregate outcome of one cooperative cancellation signal.
+///
+/// Callback panics are contained per callback so one faulty observer cannot
+/// prevent later observers from receiving the cancellation notification.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CancellationSignalReport {
+    pub callbacks_invoked: usize,
+    pub panicked_callbacks: usize,
+    pub already_cancelled: bool,
+}
+
 impl CancellationToken {
     /// Creates an active token.
     pub fn new() -> Self {
@@ -328,7 +339,19 @@ impl CancellationToken {
     }
 
     /// Requests cancellation. Repeated calls are idempotent.
+    ///
+    /// Each registered callback runs outside the token mutex and behind its own
+    /// panic boundary. Call [`Self::cancel_with_report`] when aggregate callback
+    /// diagnostics are required.
     pub fn cancel(&self) {
+        let _ = self.cancel_with_report();
+    }
+
+    /// Requests cancellation and reports isolated callback failures.
+    ///
+    /// Repeated calls are idempotent. Each registered callback runs outside the
+    /// token mutex and behind its own panic boundary.
+    pub fn cancel_with_report(&self) -> CancellationSignalReport {
         let callbacks = {
             let mut callbacks = self
                 .0
@@ -336,13 +359,21 @@ impl CancellationToken {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if self.0.cancelled.swap(true, Ordering::AcqRel) {
-                return;
+                return CancellationSignalReport {
+                    already_cancelled: true,
+                    ..CancellationSignalReport::default()
+                };
             }
             std::mem::take(&mut *callbacks)
         };
+        let mut report = CancellationSignalReport::default();
         for callback in callbacks.into_values() {
-            callback();
+            report.callbacks_invoked += 1;
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback())).is_err() {
+                report.panicked_callbacks += 1;
+            }
         }
+        report
     }
 
     /// Returns whether cancellation has been requested.
@@ -366,7 +397,7 @@ impl CancellationToken {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.0.cancelled.load(Ordering::Acquire) {
             drop(callbacks);
-            callback();
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback()));
             return CancellationRegistration::inert();
         }
         let id = Uuid::new_v4();
@@ -506,7 +537,10 @@ mod tests {
     use std::{
         collections::HashSet,
         path::PathBuf,
-        sync::atomic::{AtomicUsize, Ordering},
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
     };
 
     use super::*;
@@ -666,5 +700,28 @@ mod tests {
         drop(registration);
         dropped_consumer.cancel();
         assert_eq!(dropped_calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn cancellation_isolates_each_callback_panic_and_reports_it() {
+        let token = CancellationToken::new();
+        let ran_after_panic = Arc::new(AtomicUsize::new(0));
+        let _first = token.register(|| panic!("faulty cancellation callback"));
+        let ran = Arc::clone(&ran_after_panic);
+        let _second = token.register(move || {
+            ran.fetch_add(1, Ordering::Relaxed);
+        });
+        let report = token.cancel_with_report();
+        assert_eq!(report.callbacks_invoked, 2);
+        assert_eq!(report.panicked_callbacks, 1);
+        assert!(!report.already_cancelled);
+        assert_eq!(ran_after_panic.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            token.cancel_with_report(),
+            CancellationSignalReport {
+                already_cancelled: true,
+                ..CancellationSignalReport::default()
+            }
+        );
     }
 }
