@@ -51,7 +51,7 @@
 - [x] 8.3 讓 development DLL loader 保留單一 Plugin 的 Visual Column object，並由 application composition 傳入 `ExplorerRoot`；未載入 Plugin 時維持原本檔案總管行為。
 - [x] 8.4 將 `p0-consumer:folder-size` 註冊到 production `ColumnRegistry` / Details layout，顯示動態 header、cell、column chooser，並以 host-owned GPUI element 畫出 Plugin render plan。
 - [x] 8.5 以最小 Cargo check/unit 與真實視窗 smoke 驗證：一般資料夾與 icon 正常載入、資料夾大小逐步出現、比例條可見、設定生效、排序使用 exact bytes；不執行 CI 或 UITEST。
-- [ ] 8.6 更新 bundled Plugin 與安裝腳本輸入，重建並驗證 `dist\\SuperExplorer-Setup-1.2026.8.4-x64.exe` 包含完成的 example。
+- [x] 8.6 更新 bundled Plugin 與安裝腳本輸入，重建並驗證 `dist\\SuperExplorer-Setup-1.2026.8.4-x64.exe` 包含完成的 example。
 
 # Deferred roadmap（不屬於目前 apply scope）
 
