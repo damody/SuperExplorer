@@ -16,6 +16,7 @@
 
 mod contribution_gate;
 mod dll_loader;
+mod extension_job_runtime;
 mod feature_state;
 mod manifest;
 mod native_lifecycle;
@@ -28,6 +29,11 @@ pub use contribution_gate::{
     ContributionGateErrorV1, ContributionGateV1, ContributionKindV1, ContributionRegistrationV1,
     MAX_CAPABILITIES_PER_CONTRIBUTION_V1, MAX_CONTRIBUTIONS_PER_BATCH_V1,
     ValidatedContributionSetV1,
+};
+pub use extension_job_runtime::{
+    AcceptedIncrementalResultBatchV1, ExtensionJobFinishOutcomeV1, ExtensionJobProducerV1,
+    ExtensionJobRuntimeErrorV1, ExtensionJobRuntimeRequestV1, ExtensionJobRuntimeV1,
+    ExtensionResultBufferConfigV1,
 };
 pub use feature_state::{
     DesiredStateV1, EffectiveFeatureReasonV1, EffectiveFeatureResolverErrorV1,

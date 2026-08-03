@@ -53,6 +53,18 @@ use abi_stable::{
     std_types::{ROption, RResult},
 };
 
+mod jobs;
+
+pub use jobs::{
+    IncrementalResultBatchV1, IncrementalResultEntryV1, IncrementalResultSinkV1,
+    IncrementalResultSubmitV1, ItemHandleV1, JobContextV1, JobControlPollV1, JobControlStateV1,
+    JobHandleV1, JobProgressSinkV1, JobProgressStatusV1, JobProgressSubmitV1, JobProgressUpdateV1,
+    JobProviderCallbackV1, JobProviderImplementationV1, JobTerminalV1, LocationHandleV1,
+    MAX_INCREMENTAL_RESULT_BYTES_V1, MAX_INCREMENTAL_RESULT_ITEMS_V1, MAX_PLUGIN_VALUE_BYTES_V1,
+    PluginValueKindV1, PluginValueTransportErrorV1, PluginValueV1, SinkCapabilityV1,
+    SinkSubmitOutcomeV1, SinkSubmitStatusV1,
+};
+
 /// The `SE` namespace revision one (`0x5345` is ASCII `SE`).
 ///
 /// The high 16 bits name the authority and the low 16 bits are its semantic
