@@ -140,6 +140,7 @@ impl ExtensionRegistrarImplementationV1 for FixtureRegistrar {
                 renderer_contribution_id: ROption::RNone,
                 provider: ROption::RSome(JobProviderObjectV1::new(TransportProvider)),
                 visual_column: ROption::RNone,
+                size_map_view: ROption::RNone,
             }]),
         })
     }

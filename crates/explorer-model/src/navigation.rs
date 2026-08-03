@@ -1644,6 +1644,10 @@ fn builtin_descriptor(
 )]
 pub struct ViewSettings {
     pub mode: ViewMode,
+    /// The last selected extension view identity for this tab. Built-in
+    /// `ViewMode` remains closed so an unavailable extension can fall back
+    /// without losing the user's recoverable choice.
+    pub extension_view_id: Option<String>,
     /// The exact Explorer Ctrl+wheel icon-size notch for the active view.
     /// Non-icon views keep their presentation icon size here as well so the
     /// Shell request and rendered geometry always agree.
@@ -1665,6 +1669,7 @@ impl Default for ViewSettings {
     fn default() -> Self {
         Self {
             mode: ViewMode::Details,
+            extension_view_id: None,
             icon_size: default_icon_size_for_mode(ViewMode::Details),
             details_pane: false,
             preview_pane: false,
@@ -1682,6 +1687,18 @@ impl Default for ViewSettings {
 }
 
 impl ViewSettings {
+    /// Resolves an extension view preference without making the model depend
+    /// on a plugin registry. Callers render the returned ID only while their
+    /// host-owned runtime reports it available; otherwise they use `mode`.
+    pub fn effective_extension_view_id(
+        &self,
+        mut available: impl FnMut(&str) -> bool,
+    ) -> Option<&str> {
+        self.extension_view_id
+            .as_deref()
+            .filter(|view_id| available(view_id))
+    }
+
     pub fn details_column_width(&self, id: &ColumnId) -> u16 {
         self.details_layout
             .width(id)

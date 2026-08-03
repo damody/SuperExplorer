@@ -22,8 +22,8 @@ use explorer_extension_api::{
     AbiErrorCodeV1, AbiErrorV1, CellRenderContextV1, CellRenderPlanV1, ExtensionRootModuleV1_Ref,
     FolderSizeMeasureRequestV1, FolderSizeMeasureResultV1, PluginMetadataV1,
     ROOT_MODULE_CONTRACT_ID_V1, RegisteredContributionKindV1, RegistrarOutputV1,
-    RegistrationStatusV1, SDK_MAJOR_VERSION_V1, UiAbiFingerprintV1, VisualColumnObjectV1,
-    registrar_request_v1,
+    RegistrationStatusV1, SDK_MAJOR_VERSION_V1, SizeMapRenderContextV1, SizeMapRenderPlanV1,
+    SizeMapViewObjectV1, UiAbiFingerprintV1, VisualColumnObjectV1, registrar_request_v1,
 };
 use serde::Deserialize;
 use thiserror::Error;
@@ -32,8 +32,8 @@ use crate::{
     ExtensionHost, HostRegistrationErrorV1, PackageManifestErrorV1, PackageManifestV1,
     PackageValidationErrorV1, ResolvedPackageV1, SealedPackageActivationGuardV1,
     SinglePluginContributionSummaryV1, SinglePluginLoadErrorV1, SinglePluginLoadSummaryV1,
-    SinglePluginVisualColumnCallErrorV1, package_validation::sealed_manifest_canonical_digest,
-    plugin_call_guard::PluginCallGuardV1,
+    SinglePluginSizeMapViewCallErrorV1, SinglePluginVisualColumnCallErrorV1,
+    package_validation::sealed_manifest_canonical_digest, plugin_call_guard::PluginCallGuardV1,
 };
 
 const MANIFEST_ABI_SCHEMA_V1: u32 = 1;
@@ -394,6 +394,7 @@ pub struct SinglePluginVisualColumnRuntimeV1 {
     summary: SinglePluginLoadSummaryV1,
     measure_columns: BTreeMap<String, VisualColumnObjectV1>,
     render_columns: BTreeMap<String, VisualColumnObjectV1>,
+    size_map_views: BTreeMap<String, SizeMapViewObjectV1>,
 }
 
 /// Background-worker owner for retained folder-size measure objects.
@@ -407,6 +408,12 @@ pub struct SinglePluginVisualMeasureRuntimeV1 {
 /// GPUI-thread owner for retained visual renderer objects.
 pub struct SinglePluginVisualRenderRuntimeV1 {
     columns: BTreeMap<String, VisualColumnObjectV1>,
+    _single_owner: PhantomData<Cell<()>>,
+}
+
+/// GPUI-thread owner for retained data-only Size Map renderer objects.
+pub struct SinglePluginSizeMapViewRuntimeV1 {
+    views: BTreeMap<String, SizeMapViewObjectV1>,
     _single_owner: PhantomData<Cell<()>>,
 }
 
@@ -439,6 +446,37 @@ impl SinglePluginVisualColumnRuntimeV1 {
             },
             SinglePluginVisualRenderRuntimeV1 {
                 columns: self.render_columns,
+                _single_owner: PhantomData,
+            },
+        )
+    }
+
+    /// Separates the unified direct-loader result into the existing folder-size
+    /// runtimes plus an optional Size Map GPUI-thread renderer runtime.
+    ///
+    /// A direct DLL can supply either example. Empty maps are valid so the
+    /// existing folder-size startup path never requires a Size Map object.
+    #[must_use]
+    pub fn into_parts_with_size_map(
+        self,
+    ) -> (
+        SinglePluginLoadSummaryV1,
+        SinglePluginVisualMeasureRuntimeV1,
+        SinglePluginVisualRenderRuntimeV1,
+        SinglePluginSizeMapViewRuntimeV1,
+    ) {
+        (
+            self.summary,
+            SinglePluginVisualMeasureRuntimeV1 {
+                columns: self.measure_columns,
+                _single_owner: PhantomData,
+            },
+            SinglePluginVisualRenderRuntimeV1 {
+                columns: self.render_columns,
+                _single_owner: PhantomData,
+            },
+            SinglePluginSizeMapViewRuntimeV1 {
+                views: self.size_map_views,
                 _single_owner: PhantomData,
             },
         )
@@ -478,6 +516,34 @@ impl SinglePluginVisualRenderRuntimeV1 {
             .map(|column| column.render(context))
             .ok_or_else(|| {
                 SinglePluginVisualColumnCallErrorV1::UnknownRenderContribution(
+                    contribution_id.to_owned(),
+                )
+            })
+    }
+}
+
+impl SinglePluginSizeMapViewRuntimeV1 {
+    /// Reports whether the direct DLL supplied a retained renderer for this
+    /// view-mode contribution. A descriptor by itself is not sufficient to
+    /// activate a Size Map in the application.
+    #[must_use]
+    pub fn has_view_contribution(&self, contribution_id: &str) -> bool {
+        self.views.contains_key(contribution_id)
+    }
+
+    /// Calls the retained Size Map renderer on the GPUI thread with a copied
+    /// node snapshot. The host owns scan I/O, generation rejection, selection,
+    /// navigation, and final rectangle clipping.
+    pub fn render(
+        &mut self,
+        contribution_id: &str,
+        context: SizeMapRenderContextV1,
+    ) -> Result<SizeMapRenderPlanV1, SinglePluginSizeMapViewCallErrorV1> {
+        self.views
+            .get(contribution_id)
+            .map(|view| view.render_size_map(context))
+            .ok_or_else(|| {
+                SinglePluginSizeMapViewCallErrorV1::UnknownViewContribution(
                     contribution_id.to_owned(),
                 )
             })
@@ -530,20 +596,39 @@ pub(crate) fn load_single_plugin_visual_column_runtime(
     };
     let mut measure_columns = BTreeMap::new();
     let mut render_columns = BTreeMap::new();
+    let mut size_map_views = BTreeMap::new();
     for contribution in output.contributions.into_iter() {
         let contribution_id = contribution.contribution_id.into_string();
-        let Some(object) = contribution.visual_column.into_option() else {
-            continue;
-        };
-        let target = match contribution.kind {
-            kind if kind == RegisteredContributionKindV1::COLUMN => &mut measure_columns,
-            kind if kind == RegisteredContributionKindV1::GPUI_RENDERER => &mut render_columns,
-            _ => continue,
-        };
-        if target.insert(contribution_id.clone(), object).is_some() {
-            return Err(SinglePluginLoadErrorV1::LoadFailed(format!(
-                "registrar returned duplicate visual contribution {contribution_id:?}"
-            )));
+        if let Some(object) = contribution.visual_column.into_option() {
+            let target = if contribution.kind == RegisteredContributionKindV1::COLUMN {
+                &mut measure_columns
+            } else if contribution.kind == RegisteredContributionKindV1::GPUI_RENDERER {
+                &mut render_columns
+            } else {
+                return Err(SinglePluginLoadErrorV1::LoadFailed(format!(
+                    "visual column contribution {contribution_id:?} has a non-column kind"
+                )));
+            };
+            if target.insert(contribution_id.clone(), object).is_some() {
+                return Err(SinglePluginLoadErrorV1::LoadFailed(format!(
+                    "registrar returned duplicate visual contribution {contribution_id:?}"
+                )));
+            }
+        }
+        if let Some(view) = contribution.size_map_view.into_option() {
+            if contribution.kind != RegisteredContributionKindV1::VIEW_MODE {
+                return Err(SinglePluginLoadErrorV1::LoadFailed(format!(
+                    "Size Map view contribution {contribution_id:?} has a non-view kind"
+                )));
+            }
+            if size_map_views
+                .insert(contribution_id.clone(), view)
+                .is_some()
+            {
+                return Err(SinglePluginLoadErrorV1::LoadFailed(format!(
+                    "registrar returned duplicate Size Map view contribution {contribution_id:?}"
+                )));
+            }
         }
     }
 
@@ -551,6 +636,7 @@ pub(crate) fn load_single_plugin_visual_column_runtime(
         summary,
         measure_columns,
         render_columns,
+        size_map_views,
     })
 }
 
@@ -993,7 +1079,8 @@ mod tests {
     };
     use explorer_extension_api::{
         AbiErrorV1, ExtensionRegistrarImplementationV1, ExtensionRootModuleV1, RegistrarFactoryV1,
-        RegistrarOutputV1, RegistrarRequestV1, RegistrationOutcomeV1, StableIdV1,
+        RegistrarOutputV1, RegistrarRequestV1, RegistrationOutcomeV1, SizeMapRenderContextV1,
+        SizeMapRenderPlanV1, SizeMapViewImplementationV1, SizeMapViewObjectV1, StableIdV1,
         UiAbiFingerprintV1,
     };
     use serde_json::json;
@@ -1015,6 +1102,33 @@ mod tests {
 
         assert_send::<SinglePluginVisualMeasureRuntimeV1>();
         assert_send::<SinglePluginVisualRenderRuntimeV1>();
+        assert_send::<SinglePluginSizeMapViewRuntimeV1>();
+    }
+
+    struct TestSizeMapView;
+
+    impl SizeMapViewImplementationV1 for TestSizeMapView {
+        fn render_size_map(&self, context: SizeMapRenderContextV1) -> SizeMapRenderPlanV1 {
+            SizeMapRenderPlanV1::empty(context.generation, "test")
+        }
+    }
+
+    #[test]
+    fn retained_size_map_renderer_is_distinct_from_an_empty_view_runtime() {
+        let empty = SinglePluginSizeMapViewRuntimeV1 {
+            views: BTreeMap::new(),
+            _single_owner: PhantomData,
+        };
+        assert!(!empty.has_view_contribution("size-map"));
+
+        let supplied = SinglePluginSizeMapViewRuntimeV1 {
+            views: BTreeMap::from([(
+                "size-map".to_owned(),
+                SizeMapViewObjectV1::new(TestSizeMapView),
+            )]),
+            _single_owner: PhantomData,
+        };
+        assert!(supplied.has_view_contribution("size-map"));
     }
 
     fn manifest(gpui: bool, fingerprint: Option<&str>, entry_sdk_major: u16) -> PackageManifestV1 {

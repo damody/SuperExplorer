@@ -1,7 +1,8 @@
 //! Production process composition root.
 
 use std::{
-    path::PathBuf,
+    fs,
+    path::{Path, PathBuf},
     rc::Rc,
     sync::{
         Arc, Condvar, Mutex,
@@ -31,6 +32,9 @@ const SHELL_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 const FOLDER_SIZE_CONTRIBUTION_ID_V1: &str = "folder-size";
 const FOLDER_SIZE_RENDERER_CONTRIBUTION_ID_V1: &str = "folder-size-renderer";
+const SIZE_MAP_VIEW_CONTRIBUTION_ID_V1: &str = "size-map";
+const SIZE_MAP_BATCH_DEADLINE_V1: Duration = Duration::from_secs(2);
+const SIZE_MAP_REQUEST_QUEUE_CAP_V1: usize = 1_024;
 
 /// App-owned boundary for projecting runtime-ready extension batches into the
 /// current list model. The application, rather than the host transport, owns
@@ -184,8 +188,8 @@ impl ApplicationVisualColumnRuntimeV1 {
                         if worker_epoch.load(Ordering::Acquire) != batch_epoch {
                             break;
                         }
-                        let Some(remaining) = Duration::from_secs(2)
-                            .checked_sub(batch_started.elapsed())
+                        let Some(remaining) =
+                            Duration::from_secs(2).checked_sub(batch_started.elapsed())
                         else {
                             break;
                         };
@@ -296,6 +300,456 @@ impl Drop for ApplicationVisualColumnRuntimeV1 {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.stopped = true;
         state.requests = None;
+        ready.notify_one();
+    }
+}
+
+/// App-owned bridge for the one independent Size Map example. Requests for the
+/// current request context are merged, while a changed context replaces the
+/// pending batch and cancels in-flight work. Filesystem work is bounded off
+/// the GPUI thread and only copied nodes reach the plugin renderer.
+struct ApplicationSizeMapRuntimeV1 {
+    pending: Arc<(Mutex<PendingSizeMapWorkV1>, Condvar)>,
+    request_epoch: Arc<AtomicU64>,
+    results: Mutex<mpsc::Receiver<explorer_ui::size_map_view::SizeMapMeasureResultV1>>,
+    result_tx: mpsc::Sender<explorer_ui::size_map_view::SizeMapMeasureResultV1>,
+    renderer: Mutex<explorer_extension_host::SinglePluginSizeMapViewRuntimeV1>,
+}
+
+#[derive(Default)]
+struct PendingSizeMapWorkV1 {
+    context: Option<explorer_model::RequestContext>,
+    epoch: u64,
+    requests: Vec<explorer_ui::size_map_view::SizeMapMeasureRequestV1>,
+    stopped: bool,
+}
+
+impl ApplicationSizeMapRuntimeV1 {
+    fn start(
+        renderer: explorer_extension_host::SinglePluginSizeMapViewRuntimeV1,
+    ) -> Result<explorer_ui::size_map_view::SizeMapRuntimeHandleV1, Error> {
+        let pending = Arc::new((Mutex::new(PendingSizeMapWorkV1::default()), Condvar::new()));
+        let worker_pending = pending.clone();
+        let request_epoch = Arc::new(AtomicU64::new(0));
+        let worker_epoch = request_epoch.clone();
+        // A bounded result channel used to drop the tail of a directory would
+        // leave those nodes permanently loading: the UI deliberately submits
+        // each item only once per generation. Keep the bounded input batch and
+        // terminalize overflow instead; results themselves must not be shed.
+        let (result_tx, result_rx) =
+            mpsc::channel::<explorer_ui::size_map_view::SizeMapMeasureResultV1>();
+        let worker_result_tx = result_tx.clone();
+        std::thread::Builder::new()
+            .name("p0-size-map-scan".to_owned())
+            .spawn(move || {
+                loop {
+                    let (batch_epoch, requests) = {
+                        let (lock, ready) = &*worker_pending;
+                        let mut state = lock
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        while state.requests.is_empty() && !state.stopped {
+                            state = ready
+                                .wait(state)
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        }
+                        if state.stopped {
+                            return;
+                        }
+                        (state.epoch, std::mem::take(&mut state.requests))
+                    };
+                    if worker_epoch.load(Ordering::Acquire) != batch_epoch {
+                        continue;
+                    }
+                    let batch_started = Instant::now();
+                    for (index, request) in requests.iter().cloned().enumerate() {
+                        if worker_epoch.load(Ordering::Acquire) != batch_epoch {
+                            break;
+                        }
+                        let Some(remaining) =
+                            SIZE_MAP_BATCH_DEADLINE_V1.checked_sub(batch_started.elapsed())
+                        else {
+                            for request in requests.iter().skip(index).cloned() {
+                                if worker_epoch.load(Ordering::Acquire) != batch_epoch {
+                                    break;
+                                }
+                                if worker_result_tx
+                                    .send(size_map_terminal_result(
+                                        request,
+                                        "Size Map scan deadline reached; refresh to retry",
+                                    ))
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                            }
+                            break;
+                        };
+                        let (bytes, partial, error) =
+                            measure_size_map_path(&request.path, remaining, 100_000, 128);
+                        if worker_epoch.load(Ordering::Acquire) != batch_epoch {
+                            break;
+                        }
+                        if worker_result_tx
+                            .send(explorer_ui::size_map_view::SizeMapMeasureResultV1 {
+                                context: request.context,
+                                item_id: request.item_id,
+                                exact_bytes: (!partial).then_some(bytes),
+                                partial,
+                                error,
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }
+            })
+            .context("failed to start P0 Size Map worker")?;
+        Ok(Arc::new(Self {
+            pending,
+            request_epoch,
+            results: Mutex::new(result_rx),
+            result_tx,
+            renderer: Mutex::new(renderer),
+        }))
+    }
+}
+
+fn size_map_terminal_result(
+    request: explorer_ui::size_map_view::SizeMapMeasureRequestV1,
+    message: impl Into<String>,
+) -> explorer_ui::size_map_view::SizeMapMeasureResultV1 {
+    explorer_ui::size_map_view::SizeMapMeasureResultV1 {
+        context: request.context,
+        item_id: request.item_id,
+        exact_bytes: None,
+        partial: true,
+        error: Some(message.into()),
+    }
+}
+
+fn enqueue_size_map_requests(
+    state: &mut PendingSizeMapWorkV1,
+    request_epoch: &AtomicU64,
+    requests: Vec<explorer_ui::size_map_view::SizeMapMeasureRequestV1>,
+) -> Vec<explorer_ui::size_map_view::SizeMapMeasureResultV1> {
+    let Some(context) = requests.first().map(|request| request.context.clone()) else {
+        return Vec::new();
+    };
+    let mut rejected = Vec::new();
+    let mut accepted = Vec::new();
+    for request in requests {
+        if request.context != context {
+            rejected.push(size_map_terminal_result(
+                request,
+                "Size Map request batch mixed contexts; refresh to retry",
+            ));
+        } else {
+            accepted.push(request);
+        }
+    }
+    if state.context.as_ref() != Some(&context) {
+        state.context = Some(context);
+        state.epoch = request_epoch
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        state.requests.clear();
+    }
+    for request in accepted {
+        if state
+            .requests
+            .iter()
+            .any(|queued| queued.item_id == request.item_id)
+        {
+            continue;
+        }
+        if state.requests.len() >= SIZE_MAP_REQUEST_QUEUE_CAP_V1 {
+            rejected.push(size_map_terminal_result(
+                request,
+                "Size Map request queue limit reached; refresh to retry",
+            ));
+        } else {
+            state.requests.push(request);
+        }
+    }
+    rejected
+}
+
+fn measure_size_map_path(
+    root: &Path,
+    deadline: Duration,
+    max_entries: u32,
+    max_depth: u16,
+) -> (u64, bool, Option<String>) {
+    let started = Instant::now();
+    let mut pending = vec![(root.to_path_buf(), 0_u16)];
+    let mut visited = 0_u32;
+    let mut bytes = 0_u64;
+    let mut error = None;
+    while let Some((path, depth)) = pending.pop() {
+        if visited >= max_entries || started.elapsed() >= deadline {
+            error.get_or_insert_with(|| "Size Map scan resource limit reached".to_owned());
+            break;
+        }
+        visited = visited.saturating_add(1);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(cause) => {
+                error.get_or_insert_with(|| cause.to_string());
+                continue;
+            }
+        };
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_file() {
+            bytes = bytes.saturating_add(metadata.len());
+            continue;
+        }
+        if !metadata.is_dir() {
+            continue;
+        }
+        if depth >= max_depth {
+            error.get_or_insert_with(|| "Size Map scan depth limit reached".to_owned());
+            continue;
+        }
+        match fs::read_dir(path) {
+            Ok(entries) => {
+                for entry in entries {
+                    let queued = u32::try_from(pending.len()).unwrap_or(u32::MAX);
+                    if visited.saturating_add(queued) >= max_entries
+                        || started.elapsed() >= deadline
+                    {
+                        error.get_or_insert_with(|| {
+                            "Size Map scan resource limit reached".to_owned()
+                        });
+                        break;
+                    }
+                    match entry {
+                        Ok(entry) => pending.push((entry.path(), depth.saturating_add(1))),
+                        Err(cause) => {
+                            error.get_or_insert_with(|| cause.to_string());
+                        }
+                    }
+                }
+            }
+            Err(cause) => {
+                error.get_or_insert_with(|| cause.to_string());
+            }
+        }
+    }
+    (bytes, error.is_some(), error)
+}
+
+impl explorer_ui::size_map_view::ExtensionSizeMapRuntimePortV1 for ApplicationSizeMapRuntimeV1 {
+    fn config(&self) -> explorer_ui::size_map_view::SizeMapViewConfigV1 {
+        explorer_ui::size_map_view::SizeMapViewConfigV1::default()
+    }
+
+    fn submit_measure_requests(
+        &self,
+        requests: Vec<explorer_ui::size_map_view::SizeMapMeasureRequestV1>,
+    ) {
+        let (lock, ready) = &*self.pending;
+        let mut state = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let rejected = enqueue_size_map_requests(&mut state, &self.request_epoch, requests);
+        let has_pending = !state.requests.is_empty();
+        drop(state);
+        for result in rejected {
+            // A terminal queue-limit result must not be dropped because the UI
+            // will not re-submit it within this generation.
+            if self.result_tx.send(result).is_err() {
+                return;
+            }
+        }
+        if has_pending {
+            ready.notify_one();
+        }
+    }
+
+    fn drain_measure_results(&self) -> Vec<explorer_ui::size_map_view::SizeMapMeasureResultV1> {
+        let Ok(results) = self.results.lock() else {
+            return Vec::new();
+        };
+        results.try_iter().collect()
+    }
+
+    fn render_size_map(
+        &self,
+        context: explorer_ui::size_map_view::SizeMapRenderContextV1,
+    ) -> explorer_ui::size_map_view::SizeMapRenderPlanV1 {
+        use explorer_extension_ui_api::{
+            CellColorV1, CellThemeV1, SizeMapNodeKindV1, SizeMapNodeStatusV1,
+        };
+        let generation = context.request_context.generation.value();
+        let mappings = context
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| {
+                (
+                    explorer_extension_ui_api::StableIdV1::new(
+                        explorer_extension_ui_api::EXTENSION_ID_NAMESPACE_V1,
+                        u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1),
+                    ),
+                    node.item_id.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let public_nodes = context
+            .nodes
+            .iter()
+            .zip(&mappings)
+            .map(
+                |(node, (node_id, _))| explorer_extension_ui_api::SizeMapNodeV1 {
+                    node_id: *node_id,
+                    parent_id: None.into(),
+                    name: node.display_name.clone().into(),
+                    kind: if node.is_container {
+                        SizeMapNodeKindV1::DIRECTORY
+                    } else {
+                        SizeMapNodeKindV1::FILE
+                    },
+                    exact_bytes: node.exact_bytes.into(),
+                    status: if node.partial {
+                        SizeMapNodeStatusV1::PARTIAL
+                    } else if node.error.is_some() {
+                        SizeMapNodeStatusV1::FAILED
+                    } else if node.exact_bytes.is_some() {
+                        SizeMapNodeStatusV1::COMPLETE
+                    } else {
+                        SizeMapNodeStatusV1::UNAVAILABLE
+                    },
+                },
+            )
+            .collect::<Vec<_>>();
+        let foreground = if context.dark_theme {
+            CellColorV1::rgba(245, 245, 245, 255)
+        } else {
+            CellColorV1::rgba(32, 32, 32, 255)
+        };
+        let background = if context.dark_theme {
+            CellColorV1::rgba(32, 32, 32, 255)
+        } else {
+            CellColorV1::rgba(250, 250, 250, 255)
+        };
+        let public_context = explorer_extension_ui_api::SizeMapRenderContextV1 {
+            generation,
+            nodes: public_nodes.into(),
+            viewport: explorer_extension_ui_api::SizeMapViewportV1 {
+                width_milli: context.viewport_width_milli,
+                height_milli: context.viewport_height_milli,
+                dpi_milli: 1_000,
+            },
+            theme: CellThemeV1 {
+                foreground,
+                muted_foreground: CellColorV1::rgba(112, 112, 112, 255),
+                background,
+                selection_background: CellColorV1::rgba(0, 95, 184, 255),
+                accent: CellColorV1::rgba(0, 120, 212, 255),
+            },
+            settings: "default".into(),
+        };
+        let plan = match self.renderer.lock() {
+            Ok(mut renderer) => {
+                match renderer.render(SIZE_MAP_VIEW_CONTRIBUTION_ID_V1, public_context) {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        tracing::warn!(%error, "Size Map renderer call failed; using Details fallback");
+                        return explorer_ui::size_map_view::SizeMapRenderPlanV1 {
+                            rectangles: Vec::new(),
+                            status: Some(format!("Size Map renderer unavailable: {error}")),
+                            available: false,
+                        };
+                    }
+                }
+            }
+            Err(_) => {
+                tracing::warn!("Size Map renderer lock failed; using Details fallback");
+                return explorer_ui::size_map_view::SizeMapRenderPlanV1 {
+                    rectangles: Vec::new(),
+                    status: Some("Size Map renderer lock is unavailable".to_owned()),
+                    available: false,
+                };
+            }
+        };
+        if plan.generation != generation {
+            tracing::warn!(
+                expected_generation = generation,
+                actual_generation = plan.generation,
+                "Size Map renderer returned a stale plan; using Details fallback"
+            );
+            return explorer_ui::size_map_view::SizeMapRenderPlanV1 {
+                rectangles: Vec::new(),
+                status: Some("Size Map renderer returned a stale plan".to_owned()),
+                available: false,
+            };
+        }
+        let width = context.viewport_width_milli as f32 / 1_000.0;
+        let height = context.viewport_height_milli as f32 / 1_000.0;
+        explorer_ui::size_map_view::SizeMapRenderPlanV1 {
+            rectangles: plan
+                .rectangles
+                .into_iter()
+                .filter_map(|rectangle| {
+                    let item_id = mappings
+                        .iter()
+                        .find(|(node_id, _)| *node_id == rectangle.node_id)
+                        .map(|(_, item_id)| item_id.clone())?;
+                    let status = context
+                        .nodes
+                        .iter()
+                        .find(|node| node.item_id == item_id)
+                        .map_or_else(
+                            || "Unavailable".to_owned(),
+                            |node| {
+                                if node.partial {
+                                    "Partial".to_owned()
+                                } else if node.error.is_some() {
+                                    "Failed".to_owned()
+                                } else if node.exact_bytes.is_some() {
+                                    "Complete".to_owned()
+                                } else {
+                                    "Unavailable".to_owned()
+                                }
+                            },
+                        );
+                    Some(explorer_ui::size_map_view::SizeMapRectangleV1 {
+                        item_id,
+                        x: width * rectangle.x_millionths as f32 / 1_000_000.0,
+                        y: height * rectangle.y_millionths as f32 / 1_000_000.0,
+                        width: width * rectangle.width_millionths as f32 / 1_000_000.0,
+                        height: height * rectangle.height_millionths as f32 / 1_000_000.0,
+                        label: rectangle.label.into_string(),
+                        detail: rectangle.detail.into_string(),
+                        color: explorer_ui::theme::Rgba8 {
+                            red: rectangle.color.red,
+                            green: rectangle.color.green,
+                            blue: rectangle.color.blue,
+                            alpha: rectangle.color.alpha,
+                        },
+                        status,
+                    })
+                })
+                .collect(),
+            status: (!plan.status.is_empty()).then(|| plan.status.into_string()),
+            available: true,
+        }
+    }
+}
+
+impl Drop for ApplicationSizeMapRuntimeV1 {
+    fn drop(&mut self) {
+        self.request_epoch.fetch_add(1, Ordering::AcqRel);
+        let (lock, ready) = &*self.pending;
+        let mut state = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.stopped = true;
+        state.requests.clear();
         ready.notify_one();
     }
 }
@@ -587,6 +1041,7 @@ struct ShutdownResources {
     extension_host: Option<explorer_extension_host::ExtensionHost>,
     loaded_extension_summary: Option<String>,
     visual_column_runtime: Option<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1>,
+    size_map_runtime: Option<explorer_ui::size_map_view::SizeMapRuntimeHandleV1>,
     extension_job_ui_inbox: Option<explorer_extension_host::ExtensionJobUiInboxV1>,
     extension_job_ui_ingress: Option<explorer_extension_host::ExtensionJobUiIngressV1>,
     safe_mode_incident_offers: Vec<SafeModeIncidentOffer>,
@@ -613,7 +1068,7 @@ impl ApplicationLifecycle {
     /// Returns prerequisite, host startup, DLL loading, or diagnostic failures.
     pub fn start_with_plugin(
         diagnostics: DiagnosticsSession,
-        plugin_dll: Option<&std::path::Path>,
+        plugin_dll: Option<&Path>,
     ) -> Result<Self, Error> {
         let dpi_outcome = initialize_dpi_awareness()?;
         let dpi_outcome_text = format!("{dpi_outcome:?}");
@@ -637,26 +1092,43 @@ impl ApplicationLifecycle {
         let mut extension_host =
             explorer_extension_host::ExtensionHost::with_config(extension_config);
         extension_host.start()?;
-        let (loaded_extension_summary, visual_column_runtime) = if let Some(path) = plugin_dll {
-            let loaded =
+        let (loaded_extension_summary, visual_column_runtime, size_map_runtime) =
+            if let Some(path) = plugin_dll {
+                let loaded =
                 explorer_extension_host::ExtensionHost::load_single_plugin_visual_column_runtime(
                     path,
                 )?;
-            let (summary, measure, renderer) = loaded.into_parts();
-            let supports_folder_size = summary.contributions().iter().any(|contribution| {
-                contribution.contribution_id() == FOLDER_SIZE_CONTRIBUTION_ID_V1
-            }) && summary.contributions().iter().any(|contribution| {
-                contribution.contribution_id() == FOLDER_SIZE_RENDERER_CONTRIBUTION_ID_V1
-            });
-            let runtime = if supports_folder_size {
-                Some(ApplicationVisualColumnRuntimeV1::start(measure, renderer)?)
+                let (summary, measure, renderer, size_map_renderer) =
+                    loaded.into_parts_with_size_map();
+                let supports_folder_size =
+                    summary.contributions().iter().any(|contribution| {
+                        contribution.contribution_id() == FOLDER_SIZE_CONTRIBUTION_ID_V1
+                    }) && summary.contributions().iter().any(|contribution| {
+                        contribution.contribution_id() == FOLDER_SIZE_RENDERER_CONTRIBUTION_ID_V1
+                    });
+                let visual_runtime = if supports_folder_size {
+                    Some(ApplicationVisualColumnRuntimeV1::start(measure, renderer)?)
+                } else {
+                    None
+                };
+                // The host retains a Size Map renderer only after validating
+                // that its descriptor is a VIEW_MODE contribution, so this
+                // single check rejects descriptor-only and wrong-kind entries.
+                let supports_size_map =
+                    size_map_renderer.has_view_contribution(SIZE_MAP_VIEW_CONTRIBUTION_ID_V1);
+                let size_map_runtime = if supports_size_map {
+                    Some(ApplicationSizeMapRuntimeV1::start(size_map_renderer)?)
+                } else {
+                    None
+                };
+                (
+                    Some(format_single_plugin_summary(path, &summary)),
+                    visual_runtime,
+                    size_map_runtime,
+                )
             } else {
-                None
+                (None, None, None)
             };
-            (Some(format_single_plugin_summary(path, &summary)), runtime)
-        } else {
-            (None, None)
-        };
         if let Some(summary) = loaded_extension_summary.as_deref() {
             diagnostics.record_event("development_plugin_loaded", &[("summary", summary)])?;
         }
@@ -745,6 +1217,7 @@ impl ApplicationLifecycle {
                 extension_host: Some(extension_host),
                 loaded_extension_summary,
                 visual_column_runtime,
+                size_map_runtime,
                 extension_job_ui_inbox,
                 extension_job_ui_ingress,
                 safe_mode_incident_offers,
@@ -807,6 +1280,7 @@ impl ApplicationLifecycle {
         let safe_mode_offers = self.safe_mode_ui_offers()?;
         let loaded_extension_summary = self.loaded_extension_summary()?;
         let visual_column_runtime = self.visual_column_runtime()?;
+        let size_map_runtime = self.size_map_runtime()?;
         let safe_mode_resources = Arc::clone(&self.resources);
         let safe_mode_confirm: explorer_ui::SafeModeConfirmObserverV1 = Arc::new(move |token| {
             ApplicationLifecycle::confirm_safe_mode_incident_for_presentation_token(
@@ -893,6 +1367,7 @@ impl ApplicationLifecycle {
                 let quick_access_for_window = quick_access.clone();
                 let loaded_extension_summary_for_window = loaded_extension_summary.clone();
                 let visual_column_runtime_for_window = visual_column_runtime.clone();
+                let size_map_runtime_for_window = size_map_runtime.clone();
                 let fixture_diagnostics = diagnostics.clone();
                 let tokens = fixture_tokens(fixture_for_window.as_ref());
                 let main_window = match cx.open_window(window_options, move |window, cx| {
@@ -929,6 +1404,7 @@ impl ApplicationLifecycle {
                             safe_mode_confirm,
                             loaded_extension_summary_for_window,
                             visual_column_runtime_for_window,
+                            size_map_runtime_for_window,
                             extension_ui_pump.map(|pump| {
                                 Box::new(pump) as Box<dyn explorer_ui::ExtensionUiPumpPortV1>
                             }),
@@ -1127,6 +1603,15 @@ impl ApplicationLifecycle {
             .map_err(|_| anyhow::anyhow!("application lifecycle mutex was poisoned"))
     }
 
+    fn size_map_runtime(
+        &self,
+    ) -> Result<Option<explorer_ui::size_map_view::SizeMapRuntimeHandleV1>, Error> {
+        self.resources
+            .lock()
+            .map(|resources| resources.size_map_runtime.clone())
+            .map_err(|_| anyhow::anyhow!("application lifecycle mutex was poisoned"))
+    }
+
     fn shell_service(&self) -> Result<Arc<ShellStaHandle>, Error> {
         self.resources
             .lock()
@@ -1175,6 +1660,7 @@ fn create_explorer_root(
     broker_retry: explorer_ui::BrokerRetryObserver,
     folder_scripts: explorer_automation::FolderScriptHandle,
     visual_column_runtime: Option<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1>,
+    size_map_runtime: Option<explorer_ui::size_map_view::SizeMapRuntimeHandleV1>,
     extension_ui_pump: Option<Box<dyn explorer_ui::ExtensionUiPumpPortV1>>,
     window: &gpui::Window,
     cx: &mut gpui::Context<ExplorerRoot>,
@@ -1199,6 +1685,9 @@ fn create_explorer_root(
     root.configure_broker_health(broker_health, broker_retry);
     if let Some(runtime) = visual_column_runtime {
         root.attach_visual_column_runtime(runtime);
+    }
+    if let Some(runtime) = size_map_runtime {
+        root.attach_size_map_runtime(runtime);
     }
     if let Some(observer) = durable_observer {
         root.attach_durable_state_observer(observer, window, cx);
@@ -1235,6 +1724,7 @@ fn create_focused_explorer_root(
     safe_mode_confirm: explorer_ui::SafeModeConfirmObserverV1,
     loaded_extension_summary: Option<String>,
     visual_column_runtime: Option<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1>,
+    size_map_runtime: Option<explorer_ui::size_map_view::SizeMapRuntimeHandleV1>,
     extension_ui_pump: Option<Box<dyn explorer_ui::ExtensionUiPumpPortV1>>,
     window: &mut gpui::Window,
     cx: &mut gpui::Context<ExplorerRoot>,
@@ -1256,6 +1746,7 @@ fn create_focused_explorer_root(
         broker_retry,
         folder_scripts,
         visual_column_runtime,
+        size_map_runtime,
         extension_ui_pump,
         window,
         cx,
@@ -1274,7 +1765,7 @@ fn create_focused_explorer_root(
 }
 
 fn format_single_plugin_summary(
-    path: &std::path::Path,
+    path: &Path,
     summary: &explorer_extension_host::SinglePluginLoadSummaryV1,
 ) -> String {
     let plugin_id = summary.plugin_id();
@@ -1668,7 +2159,7 @@ impl Drop for ApplicationLifecycle {
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::atomic::{AtomicUsize, Ordering},
+        sync::atomic::{AtomicU64, AtomicUsize, Ordering},
         sync::{Arc, Mutex},
         time::Instant,
     };
@@ -1682,13 +2173,17 @@ mod tests {
         ExtensionJobAuthorityV1, ExtensionJobRuntimeRequestV1, ExtensionJobRuntimeV1,
         ExtensionJobUiIngressV1, ExtensionResultBufferConfigV1,
     };
-    use explorer_model::{FileEntry, FileEntryMetadata, LocationDescriptor, ShellItemId, ViewMode};
+    use explorer_model::{
+        FileEntry, FileEntryMetadata, Generation, LocationDescriptor, RequestContext, ShellItemId,
+        TabId, ViewMode,
+    };
     use explorer_ui::ExtensionUiPumpPortV1 as _;
 
     use super::{
-        ApplicationExtensionReadyProjectorV1, ApplicationExtensionUiPumpV1,
-        SafeModeIncidentOfferV1, SafeModeIncidentPortV1, confirm_offered_safe_mode_incident_v1,
-        confirm_presented_safe_mode_incident_v1, emit_post_commit_safe_mode_telemetry_v1,
+        ApplicationExtensionReadyProjectorV1, ApplicationExtensionUiPumpV1, PendingSizeMapWorkV1,
+        SIZE_MAP_REQUEST_QUEUE_CAP_V1, SafeModeIncidentOfferV1, SafeModeIncidentPortV1,
+        confirm_offered_safe_mode_incident_v1, confirm_presented_safe_mode_incident_v1,
+        emit_post_commit_safe_mode_telemetry_v1, enqueue_size_map_requests,
         should_restore_saved_tabs,
     };
 
@@ -1997,5 +2492,67 @@ mod tests {
             Err::<(), _>(())
         });
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn size_map_requests_merge_per_context_and_terminalize_queue_overflow() {
+        let tab = TabId::new();
+        let first_context = RequestContext::new(tab, Generation::new(1));
+        let second_context = RequestContext::new(tab, Generation::new(2));
+        let request = |context: RequestContext, id: u64| {
+            explorer_ui::size_map_view::SizeMapMeasureRequestV1 {
+                context,
+                item_id: ShellItemId::from_provider_bytes(id.to_le_bytes()).unwrap(),
+                path: format!(r"C:\\fixture\\{id}").into(),
+            }
+        };
+        let epoch = AtomicU64::new(0);
+        let mut pending = PendingSizeMapWorkV1::default();
+
+        assert!(
+            enqueue_size_map_requests(
+                &mut pending,
+                &epoch,
+                vec![request(first_context.clone(), 1)],
+            )
+            .is_empty()
+        );
+        assert_eq!(pending.epoch, 1);
+        assert_eq!(pending.requests.len(), 1);
+
+        assert!(
+            enqueue_size_map_requests(&mut pending, &epoch, vec![request(first_context, 2)],)
+                .is_empty()
+        );
+        assert_eq!(pending.epoch, 1, "same context must not cancel work");
+        assert_eq!(pending.requests.len(), 2);
+
+        assert!(
+            enqueue_size_map_requests(
+                &mut pending,
+                &epoch,
+                vec![request(second_context.clone(), 3)],
+            )
+            .is_empty()
+        );
+        assert_eq!(pending.epoch, 2);
+        assert_eq!(pending.requests.len(), 1, "new context replaces old batch");
+
+        let overflow = enqueue_size_map_requests(
+            &mut pending,
+            &epoch,
+            (4..u64::try_from(SIZE_MAP_REQUEST_QUEUE_CAP_V1).unwrap() + 4)
+                .map(|id| request(second_context.clone(), id))
+                .collect(),
+        );
+        assert_eq!(pending.requests.len(), SIZE_MAP_REQUEST_QUEUE_CAP_V1);
+        assert_eq!(overflow.len(), 1);
+        assert!(overflow[0].partial);
+        assert!(
+            overflow[0]
+                .error
+                .as_deref()
+                .is_some_and(|message| message.contains("queue limit"))
+        );
     }
 }

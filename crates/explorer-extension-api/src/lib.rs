@@ -73,6 +73,7 @@ use abi_stable::{
 };
 
 mod jobs;
+mod size_map_view;
 mod visual_column;
 
 pub use jobs::{
@@ -88,6 +89,11 @@ pub use jobs::{
     PluginItemResultTransportErrorV1, PluginItemResultV1, PluginValueKindV1,
     PluginValueTransportErrorV1, PluginValueV1, SinkCapabilityV1, SinkSubmitOutcomeV1,
     SinkSubmitStatusV1, StableSortValueKindV1, StableSortValueTransportErrorV1, StableSortValueV1,
+};
+pub use size_map_view::{
+    SizeMapNodeKindV1, SizeMapNodeStatusV1, SizeMapNodeV1, SizeMapRectangleV1,
+    SizeMapRenderContextV1, SizeMapRenderPlanV1, SizeMapViewImplementationV1, SizeMapViewObjectV1,
+    SizeMapViewportV1,
 };
 pub use visual_column::{
     CellAggregateV1, CellColorV1, CellRenderContextV1, CellRenderPlanV1, CellThemeV1,
@@ -467,6 +473,9 @@ pub struct RegisteredContributionV1 {
     pub provider: ROption<JobProviderObjectV1>,
     /// Optional visual-column object retained by the host after registration.
     pub visual_column: ROption<VisualColumnObjectV1>,
+    /// Optional data-only Size Map view renderer retained by the host after
+    /// registration. Only a `VIEW_MODE` contribution may supply this object.
+    pub size_map_view: ROption<SizeMapViewObjectV1>,
 }
 
 /// Complete stateful registrar result; registration status cannot claim success

@@ -355,6 +355,9 @@ pub enum ExplorerAction {
     },
     ToggleViewShowSubmenu,
     SetViewMode(explorer_model::ViewMode),
+    SetExtensionView {
+        view_id: String,
+    },
     ZoomView {
         direction: i8,
     },
@@ -581,6 +584,7 @@ impl ExplorerAction {
             Self::SetViewMenuFocus { .. } => "SetViewMenuFocus",
             Self::ToggleViewShowSubmenu => "ToggleViewShowSubmenu",
             Self::SetViewMode(_) => "SetViewMode",
+            Self::SetExtensionView { .. } => "SetExtensionView",
             Self::ZoomView { .. } => "ZoomView",
             Self::SetColumnId(_) => "SetColumnId",
             Self::SetSortDirection(_) => "SetSortDirection",
@@ -885,6 +889,7 @@ pub fn dispatch_action(
             | ExplorerAction::SetViewMenuFocus { .. }
             | ExplorerAction::ToggleViewShowSubmenu
             | ExplorerAction::SetViewMode(_)
+            | ExplorerAction::SetExtensionView { .. }
             | ExplorerAction::ZoomView { .. }
             | ExplorerAction::ToggleMoreMenu
             | ExplorerAction::CloseMoreMenu
@@ -1192,6 +1197,7 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::SetViewMenuFocus { .. }
         | ExplorerAction::ToggleViewShowSubmenu
         | ExplorerAction::SetViewMode(_)
+        | ExplorerAction::SetExtensionView { .. }
         | ExplorerAction::ZoomView { .. }
         | ExplorerAction::SetSortDirection(_)
         | ExplorerAction::SetDetailsColumnWidth { .. }
@@ -1804,6 +1810,10 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         }
         ExplorerAction::SetViewMode(mode) => {
             state.set_view_mode(mode);
+            FocusSurface::FileView
+        }
+        ExplorerAction::SetExtensionView { view_id } => {
+            state.set_extension_view(view_id);
             FocusSurface::FileView
         }
         ExplorerAction::ZoomView { direction } => {

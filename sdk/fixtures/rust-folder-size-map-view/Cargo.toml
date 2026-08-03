@@ -1,0 +1,27 @@
+[package]
+name = "rust-folder-size-map-view"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.97.1"
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The consumer intentionally depends only on the public SDK crates. The SDK
+# owns the abi_stable object adapter; no private host/UI crate or GPUI type is
+# available to this example.
+abi_stable = { version = "=0.11.3", default-features = false }
+explorer-extension-api = "=1.2.0"
+explorer-extension-ui-api = { path = "../../../crates/explorer-extension-ui-api" }
+
+[patch.crates-io]
+explorer-extension-api = { path = "../../../crates/explorer-extension-api" }
+
+[profile.release]
+panic = "unwind"
+lto = "thin"
+codegen-units = 1
+
+[workspace]

@@ -200,7 +200,10 @@ pub fn run_from_env() -> Result<()> {
     let manifest = read_manifest(&manifest_path)?;
     validate_manifest(&manifest)?;
     let requirements = scan_requirements(&workspace)?;
-    let coverage = build_coverage(&manifest, &requirements)?;
+    // An explicitly selected case is a local/example run, not a repository
+    // release gate. Validate its selectors without requiring unrelated OpenSpec
+    // requirements to have UITEST coverage before the case can even start.
+    let coverage = build_coverage_with_gate(&manifest, &requirements, cli.cases.is_empty())?;
     let selected = select_cases(&manifest, &cli)?;
 
     if cli.list || cli.validate_only {
@@ -521,6 +524,14 @@ fn normalize_identity(title: &str) -> String {
 ///
 /// Returns an error when a selector matches nothing or a requirement remains uncovered.
 pub fn build_coverage(manifest: &Manifest, requirements: &[Requirement]) -> Result<Coverage> {
+    build_coverage_with_gate(manifest, requirements, true)
+}
+
+fn build_coverage_with_gate(
+    manifest: &Manifest,
+    requirements: &[Requirement],
+    require_complete_coverage: bool,
+) -> Result<Coverage> {
     let requirement_ids = requirements
         .iter()
         .map(|requirement| requirement.id.as_str())
@@ -565,7 +576,7 @@ pub fn build_coverage(manifest: &Manifest, requirements: &[Requirement]) -> Resu
         .filter(|id| !by_requirement.contains_key(**id))
         .copied()
         .collect::<Vec<_>>();
-    if !uncovered.is_empty() {
+    if require_complete_coverage && !uncovered.is_empty() {
         bail!(
             "OpenSpec coverage gate failed; {} uncovered requirement(s):\n{}",
             uncovered.len(),
