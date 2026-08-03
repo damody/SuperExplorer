@@ -19,6 +19,7 @@ gpui.workspace = true
 gpui_elements.workspace = true
 raw-window-handle.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 tracing.workspace = true
 image.workspace = true
 smallvec.workspace = true
@@ -27,7 +28,6 @@ abi_stable.workspace = true
 [dev-dependencies]
 explorer-test-support = { path = "../explorer-test-support" }
 gpui = { workspace = true, features = ["test-support"] }
-serde_json.workspace = true
 
 [lints]
 workspace = true

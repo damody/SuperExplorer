@@ -77,13 +77,15 @@ mod size_map_view;
 mod visual_column;
 
 pub use jobs::{
-    AbiInputStreamServicesV1, AbiJobHostServicesV1, IncrementalResultBatchV1,
+    AbiInputStreamServicesV1, AbiJobHostServicesV1, BatchColumnContextV1, BatchColumnItemV1,
+    BatchColumnProviderImplementationV1, BatchColumnProviderObjectV1, IncrementalResultBatchV1,
     IncrementalResultEntryV1, IncrementalResultSinkV1, InputStreamCapabilityV1,
     InputStreamLengthOutcomeV1, InputStreamReadOutcomeV1, InputStreamReadRequestV1,
     InputStreamSeekOriginV1, InputStreamSeekOutcomeV1, InputStreamSeekRequestV1,
     InputStreamStatusV1, InputStreamV1, ItemHandleV1, JobContextV1, JobControlStateV1, JobHandleV1,
     JobHostServicesV1, JobProgressSinkV1, JobProgressStatusV1, JobProgressUpdateV1,
     JobProviderImplementationV1, JobProviderObjectV1, JobTerminalV1, LocationHandleV1,
+    MAX_BATCH_COLUMN_FILE_NAME_BYTES_V1, MAX_BATCH_COLUMN_ITEMS_V1,
     MAX_INCREMENTAL_RESULT_BYTES_V1, MAX_INCREMENTAL_RESULT_ITEMS_V1,
     MAX_INPUT_STREAM_READ_BYTES_V1, MAX_PLUGIN_VALUE_BYTES_V1, PluginItemOutcomeV1,
     PluginItemResultTransportErrorV1, PluginItemResultV1, PluginValueKindV1,
@@ -91,9 +93,10 @@ pub use jobs::{
     SinkSubmitStatusV1, StableSortValueKindV1, StableSortValueTransportErrorV1, StableSortValueV1,
 };
 pub use size_map_view::{
-    SizeMapNodeKindV1, SizeMapNodeStatusV1, SizeMapNodeV1, SizeMapRectangleV1,
-    SizeMapRenderContextV1, SizeMapRenderPlanV1, SizeMapViewImplementationV1, SizeMapViewObjectV1,
-    SizeMapViewportV1,
+    MAX_SIZE_MAP_DETAIL_BYTES_V1, MAX_SIZE_MAP_LABEL_BYTES_V1, MAX_SIZE_MAP_PLAN_TEXT_BYTES_V1,
+    MAX_SIZE_MAP_RECTANGLES_V1, MAX_SIZE_MAP_STATUS_BYTES_V1, SizeMapNodeKindV1,
+    SizeMapNodeStatusV1, SizeMapNodeV1, SizeMapRectangleV1, SizeMapRenderContextV1,
+    SizeMapRenderPlanV1, SizeMapViewImplementationV1, SizeMapViewObjectV1, SizeMapViewportV1,
 };
 pub use visual_column::{
     CellAggregateV1, CellColorV1, CellRenderContextV1, CellRenderPlanV1, CellThemeV1,
@@ -127,7 +130,7 @@ pub const DESCRIPTOR_CONTRACT_REVISION_V1: u32 = 1;
 /// Its high 16 bits identify the assigning authority; its low 16 bits are that
 /// authority's namespace revision. A namespace value of zero is never valid.
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, StableAbi)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, StableAbi)]
 pub struct IdNamespaceV1(u32);
 
 impl IdNamespaceV1 {
@@ -169,7 +172,7 @@ impl IdNamespaceV1 {
 /// values are never re-used for a different semantic meaning within a namespace
 /// revision.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, StableAbi)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, StableAbi)]
 pub struct StableIdV1 {
     /// The assigning authority and semantic namespace revision.
     pub namespace: IdNamespaceV1,
@@ -311,6 +314,10 @@ impl AbiErrorCodeV1 {
     pub const MALFORMED_REGISTRATION_OUTCOME: Self = Self(8);
     /// A registrar returned a future status unknown to this host.
     pub const UNKNOWN_REGISTRATION_OUTCOME: Self = Self(9);
+    /// A retained plugin callback is busy or has entered a terminal fault.
+    pub const CALLBACK_UNAVAILABLE: Self = Self(10);
+    /// A callback returned a structurally invalid or over-budget data plan.
+    pub const MALFORMED_CALLBACK_OUTPUT: Self = Self(11);
 
     /// Returns the wire representation.
     #[must_use]
@@ -476,6 +483,13 @@ pub struct RegisteredContributionV1 {
     /// Optional data-only Size Map view renderer retained by the host after
     /// registration. Only a `VIEW_MODE` contribution may supply this object.
     pub size_map_view: ROption<SizeMapViewObjectV1>,
+    /// Optional bounded batch-column provider retained by the host after
+    /// registration. Only a `COLUMN` contribution may supply this object.
+    ///
+    /// This is deliberately the final V1 field: prerelease consumers are
+    /// rebuilt against the new schema while prefix-compatible root machinery
+    /// continues to own the ABI object layout.
+    pub batch_column_provider: ROption<BatchColumnProviderObjectV1>,
 }
 
 /// Complete stateful registrar result; registration status cannot claim success

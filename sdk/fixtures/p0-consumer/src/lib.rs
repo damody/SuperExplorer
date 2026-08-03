@@ -257,6 +257,7 @@ impl ExtensionRegistrarImplementationV1 for P0ConsumerRegistrar {
                         FolderSizeMeasureColumn,
                     )),
                     size_map_view: ROption::RNone,
+                    batch_column_provider: ROption::RNone,
                 },
                 RegisteredContributionV1 {
                     feature_id: RString::from("main"),
@@ -270,6 +271,7 @@ impl ExtensionRegistrarImplementationV1 for P0ConsumerRegistrar {
                     provider: ROption::RNone,
                     visual_column: ROption::RSome(VisualColumnObjectV1::new(FolderSizeRenderer)),
                     size_map_view: ROption::RNone,
+                    batch_column_provider: ROption::RNone,
                 },
             ]),
         })
@@ -398,6 +400,12 @@ mod tests {
                 accent: color,
             },
             settings: RString::from("bar-and-text"),
+            item_id: explorer_extension_api::StableIdV1::new(
+                explorer_extension_api::EXTENSION_ID_NAMESPACE_V1,
+                1,
+            ),
+            render_generation: 1,
+            request_generation: 1,
         };
         let plan = FolderSizeRenderer.render(context.clone());
         assert_eq!(plan.proportional_bar_millionths, 500_000);

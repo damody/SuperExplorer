@@ -17,6 +17,7 @@
 pub mod actions;
 pub mod automation;
 pub mod chrome;
+pub mod code_lines_column;
 pub mod diagnostics;
 pub mod file_view;
 mod fluent_assets;
@@ -714,6 +715,14 @@ pub struct ExplorerRoot {
         explorer_model::ShellItemId,
     )>,
     folder_size_display_override: Option<folder_size_column::FolderSizeDisplayMode>,
+    code_lines_runtime: Option<code_lines_column::CodeLinesRuntimeHandleV1>,
+    code_lines_visuals: Option<code_lines_column::CodeLinesColumnVisuals>,
+    code_lines_requested: HashSet<(
+        explorer_model::TabId,
+        explorer_model::Generation,
+        explorer_model::ShellItemId,
+    )>,
+    code_lines_display_override: Option<code_lines_column::CodeLinesDisplayMode>,
     size_map_runtime: Option<size_map_view::SizeMapRuntimeHandleV1>,
     size_map_visuals: Option<size_map_view::SizeMapVisualsV1>,
     size_map_visual_context: Option<explorer_model::RequestContext>,
@@ -1000,6 +1009,10 @@ impl ExplorerRoot {
             folder_size_visuals: None,
             folder_size_requested: HashSet::new(),
             folder_size_display_override: None,
+            code_lines_runtime: None,
+            code_lines_visuals: None,
+            code_lines_requested: HashSet::new(),
+            code_lines_display_override: None,
             size_map_runtime: None,
             size_map_visuals: None,
             size_map_visual_context: None,
@@ -1040,6 +1053,32 @@ impl ExplorerRoot {
             values: HashMap::new(),
         });
         self.folder_size_requested.clear();
+    }
+
+    /// Connects the one Rust tokei batch-column example to production Details.
+    pub fn attach_code_lines_runtime(
+        &mut self,
+        runtime: code_lines_column::CodeLinesRuntimeHandleV1,
+    ) {
+        let mut config = runtime.config();
+        if !code_lines_column::is_supported_code_lines_descriptor(&config.descriptor)
+            || !self
+                .state
+                .install_code_lines_column_descriptor(config.descriptor.clone())
+        {
+            tracing::warn!("rejected unsupported Code lines runtime configuration");
+            return;
+        }
+        if let Some(display) = self.code_lines_display_override {
+            config.display = display;
+        }
+        self.code_lines_runtime = Some(runtime);
+        self.code_lines_visuals = Some(code_lines_column::CodeLinesColumnVisuals {
+            config,
+            values: HashMap::new(),
+            errors: HashMap::new(),
+        });
+        self.code_lines_requested.clear();
     }
 
     /// Connects the application-owned Size Map adapter. A malformed or
@@ -1127,6 +1166,7 @@ impl ExplorerRoot {
         let Some(runtime) = self.size_map_runtime.as_ref() else {
             return false;
         };
+        let render_ready = runtime.drain_render_results();
         if !size_map_view::is_supported_size_map_config(&runtime.config()) {
             return false;
         }
@@ -1162,7 +1202,7 @@ impl ExplorerRoot {
         }
         let previous_count = visuals.values.len();
         visuals.values.retain(|id, _| visible_ids.contains(id));
-        let mut changed = stale_context || visuals.values.len() != previous_count;
+        let mut changed = render_ready || stale_context || visuals.values.len() != previous_count;
         for result in runtime
             .drain_measure_results()
             .into_iter()
@@ -1225,6 +1265,7 @@ impl ExplorerRoot {
         let Some(runtime) = self.visual_column_runtime.as_mut() else {
             return false;
         };
+        let render_ready = runtime.drain_render_results();
         let mut config = runtime.config();
         let results = runtime.drain_folder_size_results();
         if let Some(display) = self.folder_size_display_override {
@@ -1237,7 +1278,7 @@ impl ExplorerRoot {
             .folder_size_visuals
             .as_ref()
             .is_none_or(|visuals| visuals.config.descriptor != config.descriptor);
-        let mut changed = false;
+        let mut changed = render_ready;
         if descriptor_changed
             && self
                 .state
@@ -1294,6 +1335,120 @@ impl ExplorerRoot {
         if changed {
             self.state
                 .set_folder_size_sort_values(visuals.exact_sort_values());
+        }
+        changed
+    }
+
+    fn submit_code_lines_requests(&mut self) {
+        let Some(runtime) = self.code_lines_runtime.as_mut() else {
+            return;
+        };
+        let (tab_id, generation, entries) = {
+            let tab = self.state.tabs().active_tab();
+            let Some(snapshot) = tab.visible_snapshot() else {
+                return;
+            };
+            (tab.id, tab.generation, snapshot.entries().to_vec())
+        };
+        let request_context = explorer_model::RequestContext::new(tab_id, generation);
+        let requests = entries
+            .iter()
+            .filter(|entry| !entry.is_container)
+            .filter_map(|entry| match &entry.location {
+                explorer_model::LocationDescriptor::FileSystem(path)
+                    if self
+                        .code_lines_requested
+                        .insert((tab_id, generation, entry.id.clone())) =>
+                {
+                    Some(code_lines_column::CodeLinesRequestV1 {
+                        context: request_context.clone(),
+                        item_id: entry.id.clone(),
+                        path: path.clone(),
+                    })
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if !requests.is_empty() {
+            runtime.submit_code_lines_requests(requests);
+        }
+    }
+
+    fn pump_code_lines_runtime(&mut self) -> bool {
+        let Some(runtime) = self.code_lines_runtime.as_mut() else {
+            return false;
+        };
+        let render_ready = runtime.drain_render_results();
+        let mut config = runtime.config();
+        let results = runtime.drain_code_lines_results();
+        if let Some(display) = self.code_lines_display_override {
+            config.display = display;
+        }
+        if !code_lines_column::is_supported_code_lines_descriptor(&config.descriptor) {
+            return false;
+        }
+        let descriptor_changed = self
+            .code_lines_visuals
+            .as_ref()
+            .is_none_or(|visuals| visuals.config.descriptor != config.descriptor);
+        let mut changed = render_ready
+            || (descriptor_changed
+                && self
+                    .state
+                    .install_code_lines_column_descriptor(config.descriptor.clone()));
+        let visuals = self.code_lines_visuals.get_or_insert_with(|| {
+            code_lines_column::CodeLinesColumnVisuals {
+                config: config.clone(),
+                values: HashMap::new(),
+                errors: HashMap::new(),
+            }
+        });
+        let visible_ids = self
+            .state
+            .tabs()
+            .active_tab()
+            .visible_snapshot()
+            .map(|snapshot| {
+                snapshot
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.id.clone())
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        let old_values = visuals.values.len();
+        let old_errors = visuals.errors.len();
+        visuals.values.retain(|id, _| visible_ids.contains(id));
+        visuals.errors.retain(|id, _| visible_ids.contains(id));
+        changed |= visuals.values.len() != old_values || visuals.errors.len() != old_errors;
+        if visuals.config != config {
+            visuals.config = config;
+            changed = true;
+        }
+        let active_tab = self.state.tabs().active_tab();
+        let current_context =
+            explorer_model::RequestContext::new(active_tab.id, active_tab.generation);
+        for result in results.into_iter().filter(|result| {
+            result.context.tab_id == current_context.tab_id
+                && result.context.generation == current_context.generation
+        }) {
+            if let Some(value) = result.value {
+                visuals.errors.remove(&result.item_id);
+                if visuals.values.insert(result.item_id, value.clone()) != Some(value) {
+                    changed = true;
+                }
+            } else {
+                visuals.values.remove(&result.item_id);
+                if let Some(error) = result.error
+                    && visuals.errors.insert(result.item_id, error.clone()) != Some(error)
+                {
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.state
+                .set_code_lines_sort_values(visuals.exact_sort_values());
         }
         changed
     }
@@ -1736,6 +1891,10 @@ impl ExplorerRoot {
             folder_size_visuals: None,
             folder_size_requested: HashSet::new(),
             folder_size_display_override: None,
+            code_lines_runtime: None,
+            code_lines_visuals: None,
+            code_lines_requested: HashSet::new(),
+            code_lines_display_override: None,
             size_map_runtime: None,
             size_map_visuals: None,
             size_map_visual_context: None,
@@ -1818,6 +1977,10 @@ impl ExplorerRoot {
             folder_size_visuals: None,
             folder_size_requested: HashSet::new(),
             folder_size_display_override: None,
+            code_lines_runtime: None,
+            code_lines_visuals: None,
+            code_lines_requested: HashSet::new(),
+            code_lines_display_override: None,
             size_map_runtime: None,
             size_map_visuals: None,
             size_map_visual_context: None,
@@ -1968,8 +2131,13 @@ impl ExplorerRoot {
                         let extension_changed =
                             extension_ui_pump_due(this.extension_ui_pump.as_mut(), Instant::now());
                         let visual_column_changed = this.pump_visual_column_runtime();
+                        let code_lines_changed = this.pump_code_lines_runtime();
                         let size_map_changed = this.pump_size_map_runtime();
-                        if extension_changed || visual_column_changed || size_map_changed {
+                        if extension_changed
+                            || visual_column_changed
+                            || code_lines_changed
+                            || size_map_changed
+                        {
                             cx.notify();
                         }
                     })
@@ -3727,6 +3895,26 @@ impl ExplorerRoot {
         cx: &mut Context<Self>,
     ) {
         if action == ExplorerAction::ToggleFolderSizeProportionalBar {
+            if self.code_lines_runtime.is_some() {
+                let current = self.code_lines_visuals.as_ref().map_or(
+                    code_lines_column::CodeLinesDisplayMode::default(),
+                    |visuals| visuals.config.display,
+                );
+                let next = match current {
+                    code_lines_column::CodeLinesDisplayMode::CodeOnly => {
+                        code_lines_column::CodeLinesDisplayMode::WithCommentAndBlank
+                    }
+                    code_lines_column::CodeLinesDisplayMode::WithCommentAndBlank => {
+                        code_lines_column::CodeLinesDisplayMode::CodeOnly
+                    }
+                };
+                self.code_lines_display_override = Some(next);
+                if let Some(visuals) = self.code_lines_visuals.as_mut() {
+                    visuals.config.display = next;
+                }
+                cx.notify();
+                return;
+            }
             let current = self.folder_size_visuals.as_ref().map_or(
                 folder_size_column::FolderSizeDisplayMode::default(),
                 |visuals| visuals.config.folder_size_display,
@@ -3747,7 +3935,11 @@ impl ExplorerRoot {
             return;
         }
         self.capture_durable_window_placement(window, cx);
-        if matches!(action, ExplorerAction::OpenNavigationHistory { .. }) {
+        if matches!(
+            action,
+            ExplorerAction::OpenNavigationHistory { .. }
+                | ExplorerAction::OpenDetailsColumnMenu { .. }
+        ) {
             self.navigation_history_release_deadline =
                 Some(Instant::now() + Duration::from_millis(250));
         } else if matches!(action, ExplorerAction::ShowContextMenu { .. }) {
@@ -3756,11 +3948,10 @@ impl ExplorerRoot {
                 .is_some_and(|deadline| Instant::now() <= deadline);
             self.navigation_history_release_deadline = None;
             if suppress_release {
-                // Opening a history popup happens on right-button down. Its matching release can
-                // be retargeted to a file row or the view background after the popup rerenders the
-                // button. Scope suppression to this one gesture; later item context menus are
-                // never gated by potentially stale popup state.
-                tracing::debug!("ignoring history-button release retargeted into the file view");
+                // Opening a popup on right-button down can retarget the matching release to the
+                // file view after rerender. Scope suppression to this one gesture; later item
+                // context menus are never gated by potentially stale popup state.
+                tracing::debug!("ignoring popup release retargeted into the file view");
                 return;
             }
         }
@@ -5268,6 +5459,7 @@ impl Render for ExplorerRoot {
         self.synchronize_preview_thumbnail(preview_entry.as_ref());
         self.synchronize_preview_handler(preview_entry.as_ref());
         self.submit_folder_size_requests();
+        self.submit_code_lines_requests();
         self.submit_size_map_requests();
         let size_map_context = {
             let tab = self.state.tabs().active_tab();
@@ -5295,6 +5487,8 @@ impl Render for ExplorerRoot {
             .with_preview_thumbnail(self.preview_texture.clone(), self.preview_thumbnail_failed)
             .with_folder_size_visuals(self.folder_size_visuals.clone())
             .with_visual_column_runtime(self.visual_column_runtime.clone())
+            .with_code_lines_visuals(self.code_lines_visuals.clone())
+            .with_code_lines_runtime(self.code_lines_runtime.clone())
             .with_size_map(
                 self.size_map_is_active(),
                 size_map_context

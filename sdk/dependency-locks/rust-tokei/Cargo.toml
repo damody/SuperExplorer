@@ -1,0 +1,13 @@
+[package]
+name = "superexplorer-rust-tokei-dependency"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+
+# This lock anchor intentionally has no production code.  It pins the exact
+# library-only tokei closure that the public-SDK example will consume.
+[dependencies]
+tokei = { version = "=14.0.0", default-features = false }
+
+[workspace]

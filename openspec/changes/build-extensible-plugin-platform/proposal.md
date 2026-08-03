@@ -33,6 +33,13 @@ SuperExplorer 目前缺少第三方作者可穩定建置、載入及整合的擴
 - 本 change 永不使用 CI、GitHub Actions、remote artifact service、`ci://` locator 或 hosted release gate 作為實作、完成、evidence 或 release prerequisite；external automation 不得取代、弱化或取得本機驗證流程的完成權威。
 - 第一階段不實作 Steamworks、Workshop 上傳下載、DLC entitlement、付費與分潤；只保留 Package Source／Entitlement Provider 抽象接點。
 
+### Next active Rust tokei milestone
+
+- Size Map example 已以真實視窗與單一UITEST完成。下一個apply scope只啟用獨立 `rust-tokei-code-lines-column` vertical slice。
+- 新增一個窄化的public batch-column provider：每批最多128 items、每檔最多8 MiB，host提供generation-bound `InputStreamV1`，Plugin以既有typed outcomes與exact integer sort回傳結果。
+- DLL靜態連結locked Rust `tokei` library，不執行外部程式；UI只加入一個 `Code lines` Details欄位與一個detail設定。
+- 不啟用Lua、Lock Owner、package/evidence/snapshot framework、multi-plugin discovery或CI；完整example完成後才執行其單一UITEST。
+
 ## Capabilities
 
 ### New Capabilities

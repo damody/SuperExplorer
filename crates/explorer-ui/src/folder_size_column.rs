@@ -80,6 +80,11 @@ pub trait VisualColumnRuntimePortV1: Send + Sync {
     fn config(&self) -> VisualColumnConfigV1;
     fn submit_folder_size_requests(&self, requests: Vec<FolderSizeRequestV1>);
     fn drain_folder_size_results(&self) -> Vec<FolderSizeResultV1>;
+    /// Moves completed asynchronous render plans into the host cache. Returns
+    /// true only when GPUI needs another frame to consume a newly-ready plan.
+    fn drain_render_results(&self) -> bool {
+        false
+    }
     fn render_cell(&self, context: CellRenderContextV1) -> CellRenderPlanV1;
 }
 

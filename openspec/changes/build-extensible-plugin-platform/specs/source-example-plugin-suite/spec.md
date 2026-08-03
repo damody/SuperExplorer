@@ -98,7 +98,7 @@ Examples SHALL depend only on public SDK crates, their precisely locked private 
 - **THEN** the original archive remains bit-for-bit unchanged and temporary staging is cleaned
 
 ### Requirement: Folder Size Map view example
-`rust-folder-size-map-view` SHALL register a real view mode and render a complete-recursive incremental GPUI treemap where area is logical size, nesting is folder hierarchy and default color is file type. It SHALL share selection, use formal double-click navigation, be accessible, refresh by generation and perform no renderer I/O.
+`rust-folder-size-map-view` SHALL register a real view mode and return a complete-recursive incremental data-only treemap plan where area is logical size, nesting is folder hierarchy and default color is file type. Its synchronous callback SHALL run on a bounded host worker with a per-call marker; GPUI SHALL only paint the current host-minted revision and perform no renderer callback or I/O. It SHALL share selection, use formal double-click navigation, be accessible, and reject stale refresh/layout results.
 
 #### Scenario: User explores and refreshes Size Map
 - **WHEN** the user selects a rectangle, double-clicks a folder and presses F5 while an old scan remains active

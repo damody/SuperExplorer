@@ -1613,6 +1613,44 @@
         "size-map-selected.png",
         "size-map-after-f5.png"
       ]
+    },
+    {
+      "id": "rust-tokei-code-lines-headful",
+      "description": "Load the independent public-SDK Rust tokei plugin and verify exact Code lines values, numeric sorting, public-render-context bars/details, and ordinary shell icons.",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": [
+        "-Sta",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "{workspace_root}\\scripts\\smoke_tokei_plugin_headful.ps1",
+        "-Executable",
+        "{workspace_root}\\target\\debug\\SuperExplorer.exe",
+        "-PluginDll",
+        "{workspace_root}\\sdk\\fixtures\\rust-tokei-code-lines-column\\target\\x86_64-pc-windows-msvc\\debug\\rust_tokei_code_lines_column.dll",
+        "-InitialPath",
+        "{workspace_root}\\sdk\\fixtures\\rust-tokei-code-lines-column\\samples",
+        "-OutputDirectory",
+        "{evidence_dir}"
+      ],
+      "timeout_seconds": 120,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"},
+        {"kind": "path", "path": "{workspace_root}\\sdk\\fixtures\\rust-tokei-code-lines-column\\target\\x86_64-pc-windows-msvc\\debug\\rust_tokei_code_lines_column.dll"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "explorer"],
+      "covers": [
+        "build-extensible-plugin-platform/source-example-plugin-suite/rust-tokei-column-example"
+      ],
+      "required_artifacts": [
+        "report.json",
+        "code-lines.png",
+        "code-lines-detail.png"
+      ]
     }
   ]
 }

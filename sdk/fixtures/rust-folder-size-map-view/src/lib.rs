@@ -31,7 +31,11 @@ impl SizeMapViewImplementationV1 for FolderSizeMapView {
     fn render_size_map(&self, context: SizeMapRenderContextV1) -> SizeMapRenderPlanV1 {
         let visible = context.nodes.iter().collect::<Vec<_>>();
         if visible.is_empty() {
-            return SizeMapRenderPlanV1::empty(context.generation, "Folder is empty");
+            return SizeMapRenderPlanV1::empty(
+                context.generation,
+                context.render_revision,
+                "Folder is empty",
+            );
         }
         let exact_total = visible.iter().fold(0_u64, |total, node| {
             if node.status == SizeMapNodeStatusV1::COMPLETE {
@@ -108,6 +112,7 @@ impl SizeMapViewImplementationV1 for FolderSizeMapView {
 
         SizeMapRenderPlanV1 {
             generation: context.generation,
+            render_revision: context.render_revision,
             rectangles: RVec::from(rectangles),
             status: RString::from("Exact sizes"),
         }
@@ -214,6 +219,7 @@ impl ExtensionRegistrarImplementationV1 for FolderSizeMapRegistrar {
                 provider: ROption::RNone,
                 visual_column: ROption::RNone,
                 size_map_view: ROption::RSome(SizeMapViewObjectV1::new(FolderSizeMapView)),
+                batch_column_provider: ROption::RNone,
             }]),
         })
     }
@@ -248,6 +254,7 @@ mod tests {
         let color = color();
         let plan = FolderSizeMapView.render_size_map(SizeMapRenderContextV1 {
             generation: 7,
+            render_revision: 71,
             nodes: RVec::from(vec![
                 SizeMapNodeV1 {
                     node_id: StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 31),
@@ -278,6 +285,7 @@ mod tests {
                 selection_background: color,
                 accent: color,
             },
+            selected_node_ids: RVec::new(),
             settings: RString::new(),
         });
         assert_eq!(plan.generation, 7);
@@ -291,6 +299,7 @@ mod tests {
         let color = color();
         let plan = FolderSizeMapView.render_size_map(SizeMapRenderContextV1 {
             generation: 8,
+            render_revision: 81,
             nodes: RVec::from(vec![SizeMapNodeV1 {
                 node_id: StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 41),
                 parent_id: ROption::RNone,
@@ -311,6 +320,7 @@ mod tests {
                 selection_background: color,
                 accent: color,
             },
+            selected_node_ids: RVec::new(),
             settings: RString::new(),
         });
         assert_eq!(plan.rectangles.len(), 1);

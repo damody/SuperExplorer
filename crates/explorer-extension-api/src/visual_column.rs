@@ -14,7 +14,7 @@ use abi_stable::{
     std_types::{RBox, ROption, RString},
 };
 
-use crate::{PluginValueV1, dispose_caught_panic_payload_v1};
+use crate::{PluginValueV1, StableIdV1, dispose_caught_panic_payload_v1};
 
 /// A data-only RGBA color selected by the host theme or a render plan.
 #[repr(C)]
@@ -60,11 +60,13 @@ pub struct CellAggregateV1 {
     pub largest_sibling_bytes: ROption<u64>,
 }
 
-/// Public, immutable input for a GPUI-thread visual-column render callback.
+/// Public, immutable input for a worker-safe visual-column render callback.
 ///
 /// `settings` is extension-owned UTF-8 data selected by the host.  Renderers
 /// must only transform this snapshot into a [`CellRenderPlanV1`]; they must not
-/// enumerate files or perform parsing/I/O.
+/// enumerate files or perform parsing/I/O. The host invokes this synchronous
+/// ABI callback on its bounded worker and owns all GPUI painting of the
+/// returned plan; no GPUI thread, entity, handle, or context crosses the ABI.
 #[repr(C)]
 #[derive(Clone, Debug, StableAbi)]
 pub struct CellRenderContextV1 {
@@ -80,9 +82,18 @@ pub struct CellRenderContextV1 {
     pub dpi_milli: u32,
     pub theme: CellThemeV1,
     pub settings: RString,
+    /// Host-attested opaque item identity. It is stable only for the current
+    /// rendering scope and never encodes a filesystem path or host handle.
+    pub item_id: StableIdV1,
+    /// Host-issued render revision for this exact public render snapshot.
+    /// Render plans for another revision must be ignored by the host.
+    pub render_generation: u64,
+    /// Host request/tab generation that scoped this immutable render snapshot.
+    /// It is data-only and participates in host stale-result rejection.
+    pub request_generation: u64,
 }
 
-/// A pure-data render instruction for the host-owned GPUI cell element.
+/// A pure-data render instruction painted by the host-owned GPUI cell element.
 #[repr(C)]
 #[derive(Clone, Debug, StableAbi)]
 pub struct CellRenderPlanV1 {
@@ -174,8 +185,9 @@ pub struct VisualColumnObjectV1(AbiVisualColumnObjectV1_TO<'static, RBox<()>>);
 /// Ordinary Rust author surface for a visual column.
 ///
 /// A P0 plugin registers separate instances for its background `COLUMN` and
-/// GPUI-thread `GPUI_RENDERER` contributions.  The host keeps the instances in
-/// separate single-owner runtimes and invokes only the corresponding method.
+/// worker-safe `GPUI_RENDERER` plan contributions. The host keeps the
+/// instances in separate single-owner runtimes and invokes only the
+/// corresponding method; GPUI only paints a returned data plan.
 pub trait VisualColumnImplementationV1: Send + Sync {
     fn measure_folder_size(&self, request: FolderSizeMeasureRequestV1)
     -> FolderSizeMeasureResultV1;
@@ -364,6 +376,9 @@ mod tests {
             dpi_milli: 1_000,
             theme: theme(),
             settings: RString::new(),
+            item_id: StableIdV1::new(crate::EXTENSION_ID_NAMESPACE_V1, 1),
+            render_generation: 1,
+            request_generation: 1,
         });
         assert_eq!(plan.proportional_bar_millionths, 1_000_000);
     }

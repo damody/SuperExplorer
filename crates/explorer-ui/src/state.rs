@@ -350,6 +350,7 @@ pub struct AppViewState {
     /// Exact values for the one P0 runtime column. Keeping these in view state
     /// makes its sorted presentation authoritative for every row action.
     folder_size_sort_values: HashMap<ShellItemId, Option<u64>>,
+    code_lines_sort_values: HashMap<ShellItemId, Option<u64>>,
     presentation_cache: Arc<Mutex<crate::file_view::DirectoryPresentationCache>>,
 }
 
@@ -501,6 +502,7 @@ impl AppViewState {
             scrollbar_drag: None,
             marquee: None,
             folder_size_sort_values: HashMap::new(),
+            code_lines_sort_values: HashMap::new(),
             presentation_cache: Arc::new(Mutex::new(
                 crate::file_view::DirectoryPresentationCache::default(),
             )),
@@ -543,6 +545,31 @@ impl AppViewState {
             .ensure_descriptor(&descriptor, true)
     }
 
+    pub(crate) fn install_code_lines_column_descriptor(
+        &mut self,
+        descriptor: explorer_model::ColumnDescriptor,
+    ) -> bool {
+        if !crate::code_lines_column::is_supported_code_lines_descriptor(&descriptor) {
+            return false;
+        }
+        if self
+            .column_registry
+            .replace_package(
+                crate::code_lines_column::CODE_LINES_COLUMN_PACKAGE_ID,
+                [descriptor.clone()],
+            )
+            .is_err()
+        {
+            return false;
+        }
+        self.tabs
+            .active_tab_mut()
+            .view
+            .settings
+            .details_layout
+            .ensure_descriptor(&descriptor, true)
+    }
+
     pub(crate) fn set_folder_size_sort_values(
         &mut self,
         values: HashMap<ShellItemId, Option<u64>>,
@@ -551,6 +578,21 @@ impl AppViewState {
             return false;
         }
         self.folder_size_sort_values = values;
+        self.presentation_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        true
+    }
+
+    pub(crate) fn set_code_lines_sort_values(
+        &mut self,
+        values: HashMap<ShellItemId, Option<u64>>,
+    ) -> bool {
+        if self.code_lines_sort_values == values {
+            return false;
+        }
+        self.code_lines_sort_values = values;
         self.presentation_cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -3262,6 +3304,13 @@ impl AppViewState {
         {
             Some(presentation.sorted_by_extension_bytes(
                 &self.folder_size_sort_values,
+                tab.view.settings.sort.direction,
+            ))
+        } else if tab.view.settings.sort.column
+            == crate::code_lines_column::code_lines_column_descriptor().id
+        {
+            Some(presentation.sorted_by_extension_bytes(
+                &self.code_lines_sort_values,
                 tab.view.settings.sort.direction,
             ))
         } else {

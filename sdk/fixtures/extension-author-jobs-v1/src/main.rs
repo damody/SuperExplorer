@@ -133,6 +133,7 @@ impl ExtensionRegistrarImplementationV1 for AuthorRegistrar {
                 provider: ROption::RSome(JobProviderObjectV1::new(AuthorProvider)),
                 visual_column: ROption::RNone,
                 size_map_view: ROption::RNone,
+                batch_column_provider: ROption::RNone,
             }]),
         })
     }

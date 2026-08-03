@@ -942,6 +942,13 @@ impl NativeExtensionLifecycleV1 {
             .is_some_and(|markers| markers.is_global())
     }
 
+    /// Shares the already-started host's durable marker store with the one
+    /// explicit development DLL path. Keeping this crate-private prevents a
+    /// second store from hiding recovered incidents from host Safe Mode UI.
+    pub(crate) fn direct_callback_marker_store(&self) -> Option<Arc<PluginCallGuardStoreV1>> {
+        self.markers.clone()
+    }
+
     /// Exercises the same exact-marker deny branch that native registrar
     /// dispatch uses, without loading a test DLL. This is compiled only for
     /// the isolated Windows integration harness.

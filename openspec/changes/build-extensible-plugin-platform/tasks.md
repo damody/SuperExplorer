@@ -62,6 +62,17 @@
 - [x] 9.5 完成missing/faulted/no-plugin fallback至Details、獨立README與最小build/package路徑；不修改目前installer的唯一bundled folder-size Plugin。
 - [x] 9.6 在9.1–9.5全部完成後執行Cargo最小unit/smoke、真實視窗demo與既有本機UITEST runner單一Size Map case；驗證icon/一般資料夾行為不回歸，且永遠不跑CI。
 
+## 10. Rust tokei Code lines column example
+
+- [x] 10.1 定義最小 public `BatchColumnProviderV1`：ordinary Rust author trait、SDK-owned `abi_stable` adapter、每批最多128個host-attested item/`InputStreamV1`，結果重用既有typed outcome/value/stable-sort types；不傳路徑、native handle、future或runtime。
+- [x] 10.2 讓尚未發布的V1 registration與單Plugin DLL loader保留一個batch provider及其Visual Column renderer；只支援 `rust-tokei:code-lines`，不建立多Plugin registry或通用framework。
+- [x] 10.3 建立app-owned bounded batch runtime：只讀目前資料夾普通檔案、單檔上限8 MiB、每批128、generation-aware cancellation/stale rejection；unsupported/binary/unknown/oversized不得顯示為有效0。
+- [x] 10.4 鎖定並靜態連結一個Rust `tokei` library及其精確dependency closure，使獨立consumer可在clean `CARGO_HOME`以`--locked --offline`建置；不得spawn `tokei.exe`或每檔建立process。
+- [x] 10.5 建立獨立 `rust-tokei-code-lines-column` public-SDK consumer，對Rust、C/C++、Python、Lua與JavaScript輸出language/code/comment/blank/total，主要欄位與sort key使用exact code-lines integer。
+- [x] 10.6 在production Details安裝唯一的 `Code lines` 動態欄位、column chooser、integer sorting與host-owned GPUI cell；提供一個最小設定切換comment/blank detail，並維持folder-size與無Plugin fallback。
+- [x] 10.7 完成README與最小build/package路徑，加入mixed-language/empty/binary/unknown fixture及最小Cargo unit/smoke；明確觀察沒有child process，不擴充installer bundled Plugin。
+- [x] 10.8 僅在10.1–10.7完整完成後，加入並執行一筆本機 `rust-tokei-code-lines-headful` UITEST，驗證真實欄位值、numeric sorting、設定切換與一般icon/資料夾行為；永遠不跑CI。
+
 # Deferred roadmap（不屬於目前 apply scope）
 
 以下內容保留為產品可行後的候選 roadmap。所有 `[deferred]` 都不是目前 task、completion gate 或子代理工作來源；除非使用者明確重新啟用，禁止實作、補測試或建立 framework。

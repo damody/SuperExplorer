@@ -64,6 +64,7 @@ impl ExtensionRegistrarImplementationV1 for Registrar {
                 provider: ROption::RNone,
                 visual_column: ROption::RNone,
                 size_map_view: ROption::RNone,
+                batch_column_provider: ROption::RNone,
             }]),
         })
     }

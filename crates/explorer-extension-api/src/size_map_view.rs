@@ -6,16 +6,31 @@
 //! GPUI entity crosses this boundary.
 
 use std::{
+    collections::HashSet,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::atomic::{AtomicU8, Ordering},
 };
 
 use abi_stable::{
     StableAbi, sabi_trait,
-    std_types::{RBox, ROption, RString, RVec},
+    std_types::{RBox, ROption, RResult, RString, RVec},
 };
 
-use crate::{CellColorV1, CellThemeV1, StableIdV1, dispose_caught_panic_payload_v1};
+use crate::{
+    AbiErrorCodeV1, AbiErrorV1, AbiResultV1, CellColorV1, CellThemeV1, ROOT_MODULE_CONTRACT_ID_V1,
+    StableIdV1, dispose_caught_panic_payload_v1,
+};
+
+/// Maximum rectangles accepted from one Size Map renderer invocation.
+pub const MAX_SIZE_MAP_RECTANGLES_V1: usize = 4_096;
+/// Maximum UTF-8 bytes accepted for one rectangle label.
+pub const MAX_SIZE_MAP_LABEL_BYTES_V1: usize = 256;
+/// Maximum UTF-8 bytes accepted for one rectangle detail.
+pub const MAX_SIZE_MAP_DETAIL_BYTES_V1: usize = 512;
+/// Maximum UTF-8 bytes accepted for the plan status.
+pub const MAX_SIZE_MAP_STATUS_BYTES_V1: usize = 1_024;
+/// Maximum aggregate UTF-8 bytes accepted for a complete plan.
+pub const MAX_SIZE_MAP_PLAN_TEXT_BYTES_V1: usize = 2 * 1024 * 1024;
 
 /// The semantic kind of a Size Map node.
 #[repr(transparent)]
@@ -78,16 +93,23 @@ pub struct SizeMapViewportV1 {
     pub dpi_milli: u32,
 }
 
-/// Immutable, data-only input for one Size Map render/layout callback.
+/// Immutable, data-only input for one worker-safe Size Map render/layout
+/// callback. The host owns GPUI painting and invokes this synchronous ABI call
+/// only on a bounded worker; no GPUI object or render context crosses the ABI.
 #[repr(C)]
 #[derive(Clone, Debug, StableAbi)]
 pub struct SizeMapRenderContextV1 {
     /// Host location/refresh generation.  A renderer must echo this value in
     /// its plan; the host rejects plans for another generation.
     pub generation: u64,
+    /// Host-minted revision for this complete copied snapshot (nodes, status,
+    /// viewport, theme, selection, and settings). A plan must echo it exactly.
+    pub render_revision: u64,
     pub nodes: RVec<SizeMapNodeV1>,
     pub viewport: SizeMapViewportV1,
     pub theme: CellThemeV1,
+    /// Opaque selected node identities in this snapshot.
+    pub selected_node_ids: RVec<StableIdV1>,
     /// Extension-owned UTF-8 display settings selected by the host.
     pub settings: RString,
 }
@@ -123,15 +145,18 @@ impl SizeMapRectangleV1 {
 #[derive(Clone, Debug, StableAbi)]
 pub struct SizeMapRenderPlanV1 {
     pub generation: u64,
+    /// Echo of [`SizeMapRenderContextV1::render_revision`].
+    pub render_revision: u64,
     pub rectangles: RVec<SizeMapRectangleV1>,
     pub status: RString,
 }
 
 impl SizeMapRenderPlanV1 {
     #[must_use]
-    pub fn empty(generation: u64, status: impl Into<RString>) -> Self {
+    pub fn empty(generation: u64, render_revision: u64, status: impl Into<RString>) -> Self {
         Self {
             generation,
+            render_revision,
             rectangles: RVec::new(),
             status: status.into(),
         }
@@ -144,6 +169,39 @@ impl SizeMapRenderPlanV1 {
             rectangle.clamp_geometry();
         }
     }
+
+    fn validate_for_context(&self, context: &SizeMapRenderContextV1) -> bool {
+        if self.generation != context.generation
+            || self.render_revision != context.render_revision
+            || self.rectangles.len() > context.nodes.len().min(MAX_SIZE_MAP_RECTANGLES_V1)
+            || self.status.len() > MAX_SIZE_MAP_STATUS_BYTES_V1
+        {
+            return false;
+        }
+        let known = context
+            .nodes
+            .iter()
+            .map(|node| node.node_id)
+            .collect::<HashSet<_>>();
+        let mut seen = HashSet::with_capacity(self.rectangles.len());
+        let mut text_bytes = self.status.len();
+        for rectangle in &self.rectangles {
+            if !known.contains(&rectangle.node_id)
+                || !seen.insert(rectangle.node_id)
+                || rectangle.label.len() > MAX_SIZE_MAP_LABEL_BYTES_V1
+                || rectangle.detail.len() > MAX_SIZE_MAP_DETAIL_BYTES_V1
+            {
+                return false;
+            }
+            text_bytes = text_bytes
+                .saturating_add(rectangle.label.len())
+                .saturating_add(rectangle.detail.len());
+            if text_bytes > MAX_SIZE_MAP_PLAN_TEXT_BYTES_V1 {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 /// Private SDK-owned ABI vtable. Plugin authors never implement this trait.
@@ -151,7 +209,7 @@ impl SizeMapRenderPlanV1 {
 #[doc(hidden)]
 pub trait AbiSizeMapViewObjectV1: Send + Sync {
     #[sabi(last_prefix_field)]
-    fn render_size_map(&self, context: SizeMapRenderContextV1) -> SizeMapRenderPlanV1;
+    fn render_size_map(&self, context: SizeMapRenderContextV1) -> AbiResultV1<SizeMapRenderPlanV1>;
 }
 
 /// Opaque ABI-safe Size Map renderer retained by the host runtime.
@@ -196,32 +254,46 @@ impl<T: SizeMapViewImplementationV1> SizeMapViewAdapterV1<T> {
 }
 
 impl<T: SizeMapViewImplementationV1> AbiSizeMapViewObjectV1 for SizeMapViewAdapterV1<T> {
-    fn render_size_map(&self, context: SizeMapRenderContextV1) -> SizeMapRenderPlanV1 {
+    fn render_size_map(&self, context: SizeMapRenderContextV1) -> AbiResultV1<SizeMapRenderPlanV1> {
         if !self.enter() {
-            return SizeMapRenderPlanV1::empty(
-                context.generation,
-                "Size Map renderer is unavailable",
-            );
+            return RResult::RErr(AbiErrorV1::new(
+                AbiErrorCodeV1::CALLBACK_UNAVAILABLE,
+                ROOT_MODULE_CONTRACT_ID_V1,
+                1,
+            ));
         }
         let Some(implementation) = self.implementation.as_ref() else {
             self.fault();
-            return SizeMapRenderPlanV1::empty(
-                context.generation,
-                "Size Map renderer is unavailable",
-            );
+            return RResult::RErr(AbiErrorV1::new(
+                AbiErrorCodeV1::CALLBACK_UNAVAILABLE,
+                ROOT_MODULE_CONTRACT_ID_V1,
+                2,
+            ));
         };
         match catch_unwind(AssertUnwindSafe(|| {
             implementation.render_size_map(context.clone())
         })) {
-            Ok(mut plan) => {
-                self.leave();
+            Ok(mut plan) if plan.validate_for_context(&context) => {
                 plan.normalize_geometry();
-                plan
+                self.leave();
+                RResult::ROk(plan)
+            }
+            Ok(_) => {
+                self.fault();
+                RResult::RErr(AbiErrorV1::new(
+                    AbiErrorCodeV1::MALFORMED_CALLBACK_OUTPUT,
+                    ROOT_MODULE_CONTRACT_ID_V1,
+                    1,
+                ))
             }
             Err(payload) => {
                 self.fault();
                 dispose_caught_panic_payload_v1(payload);
-                SizeMapRenderPlanV1::empty(context.generation, "Size Map renderer panicked")
+                RResult::RErr(AbiErrorV1::new(
+                    AbiErrorCodeV1::CALLBACK_PANICKED,
+                    ROOT_MODULE_CONTRACT_ID_V1,
+                    1,
+                ))
             }
         }
     }
@@ -252,7 +324,10 @@ impl SizeMapViewObjectV1 {
 
     #[doc(hidden)]
     #[must_use]
-    pub fn render_size_map(&self, context: SizeMapRenderContextV1) -> SizeMapRenderPlanV1 {
+    pub fn render_size_map(
+        &self,
+        context: SizeMapRenderContextV1,
+    ) -> AbiResultV1<SizeMapRenderPlanV1> {
         self.0.render_size_map(context)
     }
 }
@@ -268,6 +343,7 @@ mod tests {
         fn render_size_map(&self, context: SizeMapRenderContextV1) -> SizeMapRenderPlanV1 {
             SizeMapRenderPlanV1 {
                 generation: context.generation,
+                render_revision: context.render_revision,
                 rectangles: RVec::from(vec![SizeMapRectangleV1 {
                     node_id: StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 1),
                     x_millionths: 1_500_000,
@@ -287,24 +363,37 @@ mod tests {
     fn sdk_owned_view_adapter_only_exposes_normalized_data_plan() {
         let color = CellColorV1::rgba(1, 2, 3, 255);
         let object = SizeMapViewObjectV1::new(Example);
-        let plan = object.render_size_map(SizeMapRenderContextV1 {
-            generation: 41,
-            nodes: RVec::new(),
-            viewport: SizeMapViewportV1 {
-                width_milli: 1_000,
-                height_milli: 1_000,
-                dpi_milli: 1_000,
-            },
-            theme: CellThemeV1 {
-                foreground: color,
-                muted_foreground: color,
-                background: color,
-                selection_background: color,
-                accent: color,
-            },
-            settings: RString::new(),
-        });
+        let plan = object
+            .render_size_map(SizeMapRenderContextV1 {
+                generation: 41,
+                render_revision: 99,
+                nodes: RVec::from(vec![SizeMapNodeV1 {
+                    node_id: StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 1),
+                    parent_id: ROption::RNone,
+                    name: RString::from("fixture"),
+                    kind: SizeMapNodeKindV1::FILE,
+                    exact_bytes: ROption::RSome(1),
+                    status: SizeMapNodeStatusV1::COMPLETE,
+                }]),
+                viewport: SizeMapViewportV1 {
+                    width_milli: 1_000,
+                    height_milli: 1_000,
+                    dpi_milli: 1_000,
+                },
+                theme: CellThemeV1 {
+                    foreground: color,
+                    muted_foreground: color,
+                    background: color,
+                    selection_background: color,
+                    accent: color,
+                },
+                selected_node_ids: RVec::new(),
+                settings: RString::new(),
+            })
+            .into_result()
+            .expect("valid bounded plan");
         assert_eq!(plan.generation, 41);
+        assert_eq!(plan.render_revision, 99);
         assert_eq!(plan.rectangles[0].x_millionths, 1_000_000);
         assert_eq!(plan.rectangles[0].width_millionths, 1_000_000);
     }
