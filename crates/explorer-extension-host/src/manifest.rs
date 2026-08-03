@@ -20,6 +20,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use explorer_extension_api::ROOT_MODULE_CONTRACT_ID_V1;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -288,7 +289,14 @@ impl PackageManifestV1 {
         validate_unique_ids("rust", self.rust.iter().map(|entry| entry.id.as_str()))?;
         for entry in &self.rust {
             validate_id("rust[].id", &entry.id)?;
-            validate_id("rust[].root_module", &entry.root_module)?;
+            if entry.root_contract_id.namespace != ROOT_MODULE_CONTRACT_ID_V1.namespace.into_raw()
+                || entry.root_contract_id.value != ROOT_MODULE_CONTRACT_ID_V1.value
+            {
+                return Err(PackageManifestErrorV1::RootContractMismatch {
+                    actual_namespace: entry.root_contract_id.namespace,
+                    actual_value: entry.root_contract_id.value,
+                });
+            }
             validate_string_length("rust[].entrypoint", &entry.entrypoint, MAX_PATH_BYTES)?;
         }
         validate_collection_length("lua", self.lua.len(), MAX_TOP_LEVEL_ENTRIES)?;
@@ -494,6 +502,14 @@ pub enum PackageManifestErrorV1 {
     /// A non-GPUI package must explicitly use `null` for its UI ABI fingerprint.
     #[error("sdk.gpui is false but sdk.ui_abi_fingerprint is non-null")]
     UnexpectedGpuiFingerprint,
+    /// A native entrypoint did not declare the one fixed SDK v1 root contract.
+    #[error(
+        "Rust entrypoint root contract namespace={actual_namespace} value={actual_value} is not the SDK v1 root contract"
+    )]
+    RootContractMismatch {
+        actual_namespace: u32,
+        actual_value: u64,
+    },
     /// A stable identifier did not use the canonical V1 spelling.
     #[error("invalid normalized identifier at {field}: {value:?}")]
     InvalidIdentifier { field: &'static str, value: String },
@@ -589,8 +605,16 @@ pub struct SdkCompatibilityV1 {
 pub struct RustEntrypointV1 {
     pub id: String,
     pub entrypoint: String,
-    pub root_module: String,
+    pub root_contract_id: RootContractIdV1,
     pub sdk_major: u16,
+}
+
+/// JSON representation of the fixed numeric ABI root-contract identifier.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RootContractIdV1 {
+    pub namespace: u32,
+    pub value: u64,
 }
 
 /// A Lua script entry point.
@@ -1016,7 +1040,7 @@ mod tests {
                     "gpui": true,
                     "ui_abi_fingerprint": "{SHA256}"
                 }},
-                "rust": [{{ "id": "native", "entrypoint": "native/plugin.dll", "root_module": "example.root", "sdk_major": 1 }}],
+                "rust": [{{ "id": "native", "entrypoint": "native/plugin.dll", "root_contract_id": {{ "namespace": 1397030913, "value": 1 }}, "sdk_major": 1 }}],
                 "lua": [{{ "id": "automation", "entrypoint": "lua/commands.lua" }}],
                 "skins": [{{ "id": "appearance", "entrypoint": "skin/skin.json" }}],
                 "locales": [{{ "locale": "en-US", "path": "locales/en-US.json", "sha256": "{SHA256}" }}],

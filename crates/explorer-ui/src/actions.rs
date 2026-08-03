@@ -358,34 +358,34 @@ pub enum ExplorerAction {
     ZoomView {
         direction: i8,
     },
-    SetSortColumn(explorer_model::SortColumn),
+    SetColumnId(explorer_model::ColumnId),
     SetSortDirection(explorer_model::SortDirection),
     SetDetailsColumnWidth {
-        column: explorer_model::SortColumn,
+        column: explorer_model::ColumnId,
         width: u16,
     },
     AutoSizeDetailsColumn {
-        column: explorer_model::SortColumn,
+        column: explorer_model::ColumnId,
     },
     OpenDetailsColumnMenu {
-        column: explorer_model::SortColumn,
+        column: explorer_model::ColumnId,
     },
     CloseDetailsColumnMenu,
     OpenDetailsFilterMenu {
-        column: explorer_model::SortColumn,
+        column: explorer_model::ColumnId,
     },
     CloseDetailsFilterMenu,
     ToggleDetailsFilter {
-        column: explorer_model::SortColumn,
+        column: explorer_model::ColumnId,
         key: String,
     },
     ClearDetailsFilter {
-        column: explorer_model::SortColumn,
+        column: explorer_model::ColumnId,
     },
-    ToggleDetailsColumn(explorer_model::SortColumn),
+    ToggleDetailsColumn(explorer_model::ColumnId),
     AutoSizeAllDetailsColumns,
     BeginDetailsColumnResize {
-        column: explorer_model::SortColumn,
+        column: explorer_model::ColumnId,
         pointer_x: f32,
     },
     UpdateDetailsColumnResize {
@@ -581,7 +581,7 @@ impl ExplorerAction {
             Self::ToggleViewShowSubmenu => "ToggleViewShowSubmenu",
             Self::SetViewMode(_) => "SetViewMode",
             Self::ZoomView { .. } => "ZoomView",
-            Self::SetSortColumn(_) => "SetSortColumn",
+            Self::SetColumnId(_) => "SetColumnId",
             Self::SetSortDirection(_) => "SetSortDirection",
             Self::SetDetailsColumnWidth { .. } => "SetDetailsColumnWidth",
             Self::AutoSizeDetailsColumn { .. } => "AutoSizeDetailsColumn",
@@ -875,7 +875,7 @@ pub fn dispatch_action(
             | ExplorerAction::CloseSortMenu
             | ExplorerAction::MoveSortMenuFocus { .. }
             | ExplorerAction::SetSortMenuFocus { .. }
-            | ExplorerAction::SetSortColumn(_)
+            | ExplorerAction::SetColumnId(_)
             | ExplorerAction::SetSortDirection(_)
             | ExplorerAction::ToggleViewMenu
             | ExplorerAction::CloseViewMenu
@@ -1172,8 +1172,8 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
             .operation_center()
             .get(*request_id)
             .is_some_and(|record| !record.phase.is_terminal()),
-        ExplorerAction::ToggleDetailsColumn(explorer_model::SortColumn::Name) => false,
-        ExplorerAction::SetSortColumn(column) => state.sort_column_supported(*column),
+        ExplorerAction::ToggleDetailsColumn(explorer_model::ColumnId::Name) => false,
+        ExplorerAction::SetColumnId(column) => state.sort_column_supported(column.clone()),
         ExplorerAction::ToggleSortMenu
         | ExplorerAction::CloseSortMenu
         | ExplorerAction::MoveSortMenuFocus { .. }
@@ -1807,7 +1807,7 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             state.zoom_view(direction);
             FocusSurface::FileView
         }
-        ExplorerAction::SetSortColumn(column) => {
+        ExplorerAction::SetColumnId(column) => {
             state.set_sort_column(column);
             FocusSurface::FileView
         }
@@ -2063,7 +2063,7 @@ mod tests {
     #[test]
     fn details_filter_selection_survives_global_pointer_terminal_then_closes_on_focus_change() {
         let mut state = writable_state();
-        state.open_details_filter_menu(explorer_model::SortColumn::Name);
+        state.open_details_filter_menu(explorer_model::ColumnId::Name);
 
         dispatch_action(
             &mut state,
@@ -2075,14 +2075,14 @@ mod tests {
         dispatch_action(
             &mut state,
             ExplorerAction::ToggleDetailsFilter {
-                column: explorer_model::SortColumn::Name,
+                column: explorer_model::ColumnId::Name,
                 key: "name:a-h".to_owned(),
             },
             ActionSource::Mouse,
         );
         assert_eq!(
             state.details_filter_menu(),
-            Some(explorer_model::SortColumn::Name)
+            Some(explorer_model::ColumnId::Name)
         );
 
         dispatch_action(

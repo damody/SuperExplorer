@@ -64,6 +64,61 @@
       ]
     },
     {
+      "id": "extension-ui-invalidation-batcher-contract",
+      "description": "Run the deterministic 1,000-result fixture and production batcher/runtime/bridge/GPUI seam tests: 16-50 ms coalescing, overflow race safety, no per-item synchronous redraw, and path-free slow-callback identity.",
+      "suites": ["quick", "full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\sdk\\tests\\ui-invalidation-batcher-contract.ps1"],
+      "timeout_seconds": 600,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "command", "name": "cargo.exe"},
+        {"kind": "path", "path": "{workspace_root}\\sdk\\fixtures\\ui-invalidation-batcher-contract\\case.json"}
+      ],
+      "covers": [
+        "build-extensible-plugin-platform/extension-jobs-values-and-dynamic-columns/incremental-result-and-ui-batching",
+        "build-extensible-plugin-platform/extension-jobs-values-and-dynamic-columns/bounded-extension-scheduler",
+        "build-extensible-plugin-platform/rust-plugin-abi-and-ui-toolchain/gpui-callback-execution-boundary"
+      ],
+      "required_artifacts": ["case.json"]
+    },
+    {
+      "id": "extension-api-docs-contract",
+      "description": "Validate bilingual public jobs/value/stream/cache API and performance diagnostics guidance, including abi_stable author API versus host-internal boundaries.",
+      "suites": ["quick", "full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\sdk\\tests\\extension-api-docs-contract.ps1"],
+      "timeout_seconds": 60,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "path", "path": "{workspace_root}\\sdk\\EXTENSION_API_GUIDE.md"}
+      ],
+      "covers": [
+        "build-extensible-plugin-platform/extension-jobs-values-and-dynamic-columns/typed-extension-values-and-outcomes",
+        "build-extensible-plugin-platform/extension-jobs-values-and-dynamic-columns/generation-safe-handles-and-cache",
+        "build-extensible-plugin-platform/extension-jobs-values-and-dynamic-columns/input-stream-for-decoders",
+        "build-extensible-plugin-platform/rust-plugin-abi-and-ui-toolchain/stable-abi-data-boundary"
+      ]
+    },
+    {
+      "id": "extension-author-jobs-v1-contract",
+      "description": "Build and run the Rust-first public author fixture offline, proving sequence-zero batches/progress, echoed generations, returned ownership, credits, and status-specific terminals.",
+      "suites": ["quick", "full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\sdk\\tests\\extension-author-jobs-v1-contract.ps1"],
+      "timeout_seconds": 600,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "command", "name": "cargo.exe"},
+        {"kind": "path", "path": "{workspace_root}\\sdk\\fixtures\\extension-author-jobs-v1\\Cargo.toml"}
+      ],
+      "covers": [
+        "build-extensible-plugin-platform/extension-jobs-values-and-dynamic-columns/incremental-result-and-ui-batching",
+        "build-extensible-plugin-platform/extension-jobs-values-and-dynamic-columns/typed-extension-values-and-outcomes",
+        "build-extensible-plugin-platform/rust-plugin-abi-and-ui-toolchain/stable-abi-data-boundary"
+      ]
+    },
+    {
       "id": "interaction-first-request-stream-order",
       "description": "Verify a reliable retained terminal cannot overtake earlier breadcrumb or search batches from the same request.",
       "suites": ["quick", "full"],
@@ -109,6 +164,31 @@
       "exclusive_resources": ["gui", "cursor", "explorer"],
       "covers": ["enforce-interaction-first-qos/interaction-first-qos/overload-degrades-optional-work-and-recovers"],
       "required_artifacts": ["report.json", "dotfile-shell-icons.png"]
+    },
+    {
+      "id": "details-marquee-hit-and-dpi-regression",
+      "description": "Verify non-name Details columns start marquee selection and marquee coordinates use actual laid-out bounds with scroll-content compensation.",
+      "suites": ["quick", "full", "visual"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-ui", "--lib", "--locked", "marquee_", "--", "--nocapture", "--test-threads=1"],
+      "timeout_seconds": 300,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}]
+    },
+    {
+      "id": "details-marquee-dpi-headful",
+      "description": "Use genuine DPI-aware pointer drag input from a non-name Details column, require multiple selected rows, and prove all four marquee edges align with the physical pointer endpoints.",
+      "suites": ["full", "visual", "interop"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_details_marquee_dpi.ps1", "-InitialPath", "D:\\UE_5.7", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
+      "timeout_seconds": 120,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "D:\\UE_5.7"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "explorer"],
+      "required_artifacts": ["report.json", "details-marquee-held.png"]
     },
     {
       "id": "interaction-first-domain-isolation",
@@ -956,8 +1036,8 @@
       "suites": ["full", "interop"],
       "program": "powershell.exe",
       "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\test_ntfs_semantics_interop.ps1", "-OutputDirectory", "{evidence_dir}"],
-      "timeout_seconds": 120,
-      "prerequisites": [{"kind": "windows"}],
+      "timeout_seconds": 300,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
       "required_artifacts": ["report.json", "fixture-manifest.json"]
     },
     {
@@ -1322,6 +1402,16 @@
       "covers": ["build-extensible-plugin-platform/rust-plugin-abi-and-ui-toolchain/offline-sdk-bundle-and-protected-dependency-closure"]
     },
     {
+      "id": "plugin-values-cross-dll-contract",
+      "description": "Build separate host/plugin DLL fixtures offline and verify typed values, stable sort keys, outcome policy, opaque schema binding, malformed-input rejection, and foreign allocation cleanup.",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\sdk\\tests\\plugin-value-v1-abi-contract.ps1"],
+      "timeout_seconds": 900,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
+      "covers": ["build-extensible-plugin-platform/extension-jobs-values-and-dynamic-columns/typed-extension-values-and-outcomes"]
+    },
+    {
       "id": "plugin-tooling-wrapper-contract",
       "description": "Exercise the shipped plugin build/validate/package wrapper contract.",
       "suites": ["full"],
@@ -1339,7 +1429,10 @@
       "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\sdk\\tests\\ui-abi-fingerprint-contract.ps1"],
       "timeout_seconds": 900,
       "prerequisites": [{"kind": "windows"}],
-      "covers": ["build-extensible-plugin-platform/rust-plugin-abi-and-ui-toolchain/gpui-ui-fingerprint"]
+      "covers": [
+        "build-extensible-plugin-platform/rust-plugin-abi-and-ui-toolchain/gpui-ui-fingerprint",
+        "build-extensible-plugin-platform/rust-plugin-abi-and-ui-toolchain/offline-sdk-bundle-and-protected-dependency-closure"
+      ]
     },
     {
       "id": "clean-readme-reproduction",
@@ -1413,6 +1506,30 @@
       "covers": ["build-extensible-plugin-platform/extension-package-and-feature-lifecycle/atomic-package-resolution"]
     },
     {
+      "id": "extension-safe-mode-headful",
+      "description": "Seed two recovered native-call markers beneath an isolated LOCALAPPDATA-shaped UITEST root, start the real feature-gated SuperExplorer binary, prove Safe Mode denies callbacks before confirmation, then verify path-free suspect identity and exact keyboard/UIA confirmations.",
+      "suites": ["full", "interop", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_extension_safe_mode_headful.ps1", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 420,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "command", "name": "cargo.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "explorer"],
+      "covers": [
+        "build-extensible-plugin-platform/extension-package-and-feature-lifecycle/contribution-call-guard-and-safe-mode",
+        "build-extensible-plugin-platform/extension-package-and-feature-lifecycle/native-plugin-load-lifecycle"
+      ],
+      "required_artifacts": [
+        "report.json",
+        "safe-mode-before-confirm.png",
+        "safe-mode-after-keyboard-confirm.png",
+        "safe-mode-after-uia-confirm.png"
+      ]
+    },
+    {
       "id": "native-call-guard-safe-mode-contract",
       "description": "Verify guarded native callback cleanup, synthetic abandoned-marker recovery and confirmation, bounded slow-call diagnostics, and drain-timeout restart behavior.",
       "suites": ["full", "interop"],
@@ -1424,6 +1541,36 @@
         "build-extensible-plugin-platform/extension-package-and-feature-lifecycle/contribution-call-guard-and-safe-mode",
         "build-extensible-plugin-platform/extension-package-and-feature-lifecycle/native-plugin-load-lifecycle"
       ]
+    },
+    {
+      "id": "extension-result-cache-v1-contract",
+      "description": "Run the production generation-aware extension result cache tests and audit watcher, TTL, manual refresh, data-version invalidation, and stale-admission rejection paths.",
+      "suites": ["quick", "full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\sdk\\tests\\extension-result-cache-v1-contract.ps1"],
+      "timeout_seconds": 900,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
+      "covers": ["build-extensible-plugin-platform/extension-jobs-values-and-dynamic-columns/generation-safe-handles-and-cache"]
+    },
+    {
+      "id": "input-stream-v1-contract",
+      "description": "Run production InputStream capability, bounded read/seek/length, cancellation/deadline, generation and retained-handle behavior tests.",
+      "suites": ["quick", "full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\sdk\\tests\\input-stream-v1-contract.ps1"],
+      "timeout_seconds": 900,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
+      "covers": ["build-extensible-plugin-platform/extension-jobs-values-and-dynamic-columns/input-stream-for-decoders"]
+    },
+    {
+      "id": "dynamic-columns-v1-contract",
+      "description": "Validate stable built-in/extension ColumnIds, descriptor registry validation, collision rejection, and ordered layout foundation (persistence migration is task 5.4).",
+      "suites": ["quick", "full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\sdk\\tests\\dynamic-columns-v1-contract.ps1"],
+      "timeout_seconds": 300,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
+      "covers": ["build-extensible-plugin-platform/extension-jobs-values-and-dynamic-columns/dynamic-column-registry"]
     }
   ]
 }

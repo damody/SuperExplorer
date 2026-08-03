@@ -13,16 +13,28 @@
     reason = "abi_stable convention generates the RootModule reference suffix"
 )]
 #![allow(
+    non_local_definitions,
+    reason = "abi_stable 0.11.3 sabi_trait expansion emits nested interface impls"
+)]
+#![allow(
+    unused_qualifications,
+    reason = "abi_stable trait-supertype expansion is intentionally explicit"
+)]
+#![allow(
+    clippy::used_underscore_binding,
+    reason = "abi_stable generated sabi_trait forwarding names are implementation detail"
+)]
+#![allow(
     clippy::expl_impl_clone_on_copy,
     reason = "abi_stable generates Clone and Copy for prefix reference types"
 )]
 #![allow(
     unsafe_code,
-    reason = "abi_stable generates guarded optional-prefix accessors for SDK 1.x tails"
+    reason = "abi_stable generates checked prefix accessors and trait-object trampolines"
 )]
 #![allow(
     clippy::cast_ptr_alignment,
-    reason = "abi_stable's generated optional-prefix accessor checks field accessibility first"
+    reason = "abi_stable's generated prefix accessor checks field accessibility first"
 )]
 //! Public, non-UI ABI contract for `SuperExplorer` extensions.
 //!
@@ -30,39 +42,51 @@
 //!
 //! A Rust plugin exports exactly one [`ExtensionRootModuleV1`] through
 //! [`abi_stable::export_root_module`]. The root carries only fixed-width values and
-//! an [`ExtensionRegistrarV1`] prefix type; it neither owns nor accepts a GPUI
+//! a checked SDK-owned registrar factory; it neither owns nor accepts a GPUI
 //! entity, a private `SuperExplorer` type, a native handle, a closure, a future, an
-//! ordinary Rust trait object, or a `std` collection. Cross-DLL owned values use
-//! `abi_stable` types such as [`abi_stable::std_types::RResult`].
+//! ordinary Rust trait object, or a `std` collection. Plugin authors implement
+//! ordinary Rust traits, while SDK-owned adapters erase them into `#[sabi_trait]`
+//! objects. Cross-DLL owned values use `abi_stable` types such as
+//! [`abi_stable::std_types::RResult`].
 //!
-//! Version 1.x freezes the root-module fields because `abi_stable 0.11.3` root
-//! reflection rejects a newer root with additional fields when loading an older
-//! DLL. Evolution therefore appends function or data fields only to the registrar
-//! after its `last_prefix_field`; hosts must treat those tail accessors as optional.
-//! Existing fields and the meanings of their numeric IDs never change during 1.x.
+//! Version 1.x freezes the complete root-module shape because `abi_stable 0.11.3`
+//! root reflection rejects a newer host layout with additional fields when loading
+//! an older DLL. Evolution therefore uses the fixed descriptor/capability data
+//! contract and approved non-exhaustive values; structural ABI changes require a
+//! new SDK major. Existing fields and numeric meanings never change during 1.x.
 //! New error/outcome codes are represented by transparent numeric newtypes so an
 //! older host can preserve and report an unknown value without guessing its meaning.
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::{
+    any::Any,
+    mem,
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::atomic::{AtomicU8, Ordering},
+};
 
 use abi_stable::{
     StableAbi,
     library::RootModule,
-    package_version_strings,
+    package_version_strings, sabi_trait,
     sabi_types::VersionStrings,
-    std_types::{ROption, RResult},
+    std_types::{RBox, ROption, RResult, RString, RVec},
 };
 
 mod jobs;
 
 pub use jobs::{
-    IncrementalResultBatchV1, IncrementalResultEntryV1, IncrementalResultSinkV1,
-    IncrementalResultSubmitV1, ItemHandleV1, JobContextV1, JobControlPollV1, JobControlStateV1,
-    JobHandleV1, JobProgressSinkV1, JobProgressStatusV1, JobProgressSubmitV1, JobProgressUpdateV1,
-    JobProviderCallbackV1, JobProviderImplementationV1, JobTerminalV1, LocationHandleV1,
-    MAX_INCREMENTAL_RESULT_BYTES_V1, MAX_INCREMENTAL_RESULT_ITEMS_V1, MAX_PLUGIN_VALUE_BYTES_V1,
-    PluginValueKindV1, PluginValueTransportErrorV1, PluginValueV1, SinkCapabilityV1,
-    SinkSubmitOutcomeV1, SinkSubmitStatusV1,
+    AbiInputStreamServicesV1, AbiJobHostServicesV1, IncrementalResultBatchV1,
+    IncrementalResultEntryV1, IncrementalResultSinkV1, InputStreamCapabilityV1,
+    InputStreamLengthOutcomeV1, InputStreamReadOutcomeV1, InputStreamReadRequestV1,
+    InputStreamSeekOriginV1, InputStreamSeekOutcomeV1, InputStreamSeekRequestV1,
+    InputStreamStatusV1, InputStreamV1, ItemHandleV1, JobContextV1, JobControlStateV1, JobHandleV1,
+    JobHostServicesV1, JobProgressSinkV1, JobProgressStatusV1, JobProgressUpdateV1,
+    JobProviderImplementationV1, JobProviderObjectV1, JobTerminalV1, LocationHandleV1,
+    MAX_INCREMENTAL_RESULT_BYTES_V1, MAX_INCREMENTAL_RESULT_ITEMS_V1,
+    MAX_INPUT_STREAM_READ_BYTES_V1, MAX_PLUGIN_VALUE_BYTES_V1, PluginItemOutcomeV1,
+    PluginItemResultTransportErrorV1, PluginItemResultV1, PluginValueKindV1,
+    PluginValueTransportErrorV1, PluginValueV1, SinkCapabilityV1, SinkSubmitOutcomeV1,
+    SinkSubmitStatusV1, StableSortValueKindV1, StableSortValueTransportErrorV1, StableSortValueV1,
 };
 
 /// The `SE` namespace revision one (`0x5345` is ASCII `SE`).
@@ -83,6 +107,8 @@ pub const ROOT_MODULE_CONTRACT_ID_V1: StableIdV1 = StableIdV1 {
 
 /// The only supported SDK major for this root-module contract.
 pub const SDK_MAJOR_VERSION_V1: u16 = 1;
+/// Required descriptor-batch semantic revision for the fixed SDK V1 root.
+pub const DESCRIPTOR_CONTRACT_REVISION_V1: u32 = 1;
 
 /// A stable semantic-ID namespace.
 ///
@@ -310,12 +336,29 @@ impl AbiErrorV1 {
 /// Result returned by an ABI callback.
 pub type AbiResultV1<T> = RResult<T, AbiErrorV1>;
 
+/// Disposes a payload caught at an SDK panic boundary without allowing its
+/// destructor to begin another unwind through the boundary.
+///
+/// A plugin controls the concrete `Any` type supplied to `panic_any`; dropping
+/// it can itself panic and would otherwise start a second unwind while an ABI
+/// trampoline is translating the first one. Drop the original payload within a
+/// second containment boundary so ordinary payload resources are reclaimed. If
+/// that destructor itself panics, the replacement opaque payload is the one
+/// intentionally quarantined; the host's per-plugin fault policy bounds such
+/// terminal faults. No quarantined payload carries a host capability or callback
+/// that can be invoked after the boundary returns.
+fn dispose_caught_panic_payload_v1(payload: Box<dyn Any + Send>) {
+    if let Err(hostile_drop_payload) = catch_unwind(AssertUnwindSafe(|| drop(payload))) {
+        mem::forget(hostile_drop_payload);
+    }
+}
+
 /// Immutable plugin metadata checked as root data before the registrar callback.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, StableAbi)]
 pub struct PluginMetadataV1 {
-    /// Stable package identity. Manifest validation supplies its human-readable
-    /// representation in a later task; only this numeric identity crosses the ABI.
+    /// Stable plugin identity. Manifest validation owns the human-readable package
+    /// identity; only this numeric SDK identity crosses the ABI record.
     pub plugin_id: StableIdV1,
     /// Stable primary interface identity for diagnostics and registration.
     pub primary_interface_id: StableIdV1,
@@ -373,6 +416,203 @@ pub struct RegistrationOutcomeV1 {
     pub registered_interface_count: u32,
 }
 
+/// Fixed contribution category declared by an extension registrar.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, StableAbi)]
+pub struct RegisteredContributionKindV1(u32);
+
+impl RegisteredContributionKindV1 {
+    pub const COLUMN: Self = Self(1);
+    pub const GPUI_RENDERER: Self = Self(2);
+    pub const COMMAND: Self = Self(3);
+    pub const FORM: Self = Self(4);
+    pub const OPERATION_PLAN: Self = Self(5);
+    pub const VIEW_MODE: Self = Self(6);
+    pub const RESOURCE: Self = Self(7);
+
+    #[must_use]
+    pub const fn into_raw(self) -> u32 {
+        self.0
+    }
+}
+
+/// Sealed opaque schema declaration supplied by a registrar.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, StableAbi)]
+pub struct OpaquePayloadContractV1 {
+    pub schema: StableIdV1,
+    pub schema_version: u32,
+}
+
+/// Complete ABI descriptor for one contribution and optional job provider.
+/// Strings are descriptive only; the host revalidates them against the sealed
+/// package manifest before retaining this object.
+#[repr(C)]
+#[derive(StableAbi)]
+pub struct RegisteredContributionV1 {
+    pub feature_id: RString,
+    pub contribution_id: RString,
+    pub kind: RegisteredContributionKindV1,
+    pub required_capabilities: RVec<RString>,
+    pub interface_id: StableIdV1,
+    pub expected_sort: ROption<StableSortValueKindV1>,
+    pub opaque_contract: ROption<OpaquePayloadContractV1>,
+    pub renderer_contribution_id: ROption<RString>,
+    pub provider: ROption<JobProviderObjectV1>,
+}
+
+/// Complete stateful registrar result; registration status cannot claim success
+/// without the actual descriptors and provider objects.
+#[repr(C)]
+#[derive(StableAbi)]
+pub struct RegistrarOutputV1 {
+    pub outcome: RegistrationOutcomeV1,
+    pub contributions: RVec<RegisteredContributionV1>,
+}
+
+pub type RegistrarOutputResultV1 = AbiResultV1<RegistrarOutputV1>;
+
+/// Private ABI vtable. Plugin authors implement
+/// [`ExtensionRegistrarImplementationV1`], never this generated trait or its
+/// `_TO` object type.
+#[sabi_trait]
+#[doc(hidden)]
+pub trait AbiRegistrarObjectV1: Send + Sync {
+    #[sabi(last_prefix_field)]
+    fn register(&self, request: RegistrarRequestV1) -> RegistrarOutputResultV1;
+}
+
+/// Opaque resident registrar object. It is created only by the SDK factory and
+/// retained by the host; its ABI vtable is deliberately not public.
+#[repr(transparent)]
+#[derive(StableAbi)]
+pub struct RegistrarObjectV1(AbiRegistrarObjectV1_TO<'static, RBox<()>>);
+
+/// SDK-facing construction trait. Plugin authors implement ordinary Rust
+/// traits; only the SDK-owned factory trampoline crosses the C ABI. A registrar
+/// adapter permanently fault-latches after its first panic and never re-enters
+/// the implementation from that object again.
+pub trait ExtensionRegistrarImplementationV1: Send + Sync {
+    fn create() -> Self
+    where
+        Self: Sized;
+    fn register(&self, request: RegistrarRequestV1) -> RegistrarOutputResultV1;
+}
+
+const REGISTRAR_IDLE_V1: u8 = 0;
+const REGISTRAR_RUNNING_V1: u8 = 1;
+const REGISTRAR_FAULTED_V1: u8 = 2;
+
+struct RegistrarAdapterV1<T> {
+    registrar: Option<T>,
+    invocation_state: AtomicU8,
+}
+
+impl<T: ExtensionRegistrarImplementationV1> AbiRegistrarObjectV1 for RegistrarAdapterV1<T> {
+    fn register(&self, request: RegistrarRequestV1) -> RegistrarOutputResultV1 {
+        if self
+            .invocation_state
+            .compare_exchange(
+                REGISTRAR_IDLE_V1,
+                REGISTRAR_RUNNING_V1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return RResult::RErr(AbiErrorV1::new(
+                AbiErrorCodeV1::CALLBACK_PANICKED,
+                ROOT_MODULE_CONTRACT_ID_V1,
+                0,
+            ));
+        }
+        let Some(registrar) = self.registrar.as_ref() else {
+            self.invocation_state
+                .store(REGISTRAR_FAULTED_V1, Ordering::Release);
+            return RResult::RErr(AbiErrorV1::new(
+                AbiErrorCodeV1::CALLBACK_PANICKED,
+                ROOT_MODULE_CONTRACT_ID_V1,
+                0,
+            ));
+        };
+        match catch_unwind(AssertUnwindSafe(|| registrar.register(request))) {
+            Ok(result) => {
+                self.invocation_state
+                    .store(REGISTRAR_IDLE_V1, Ordering::Release);
+                result
+            }
+            Err(payload) => {
+                self.invocation_state
+                    .store(REGISTRAR_FAULTED_V1, Ordering::Release);
+                dispose_caught_panic_payload_v1(payload);
+                RResult::RErr(AbiErrorV1::new(
+                    AbiErrorCodeV1::CALLBACK_PANICKED,
+                    ROOT_MODULE_CONTRACT_ID_V1,
+                    0,
+                ))
+            }
+        }
+    }
+}
+impl<T> Drop for RegistrarAdapterV1<T> {
+    fn drop(&mut self) {
+        if let Some(registrar) = self.registrar.take()
+            && let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(registrar)))
+        {
+            dispose_caught_panic_payload_v1(payload);
+        }
+    }
+}
+
+impl RegistrarObjectV1 {
+    #[doc(hidden)]
+    pub fn register(&self, request: RegistrarRequestV1) -> RegistrarOutputResultV1 {
+        self.0.register(request)
+    }
+}
+
+pub type RegistrarFactoryResultV1 = AbiResultV1<RegistrarObjectV1>;
+
+#[repr(transparent)]
+#[derive(Clone, Copy, StableAbi)]
+pub struct RegistrarFactoryV1(extern "C" fn() -> RegistrarFactoryResultV1);
+
+impl RegistrarFactoryV1 {
+    #[must_use]
+    pub fn new<T: ExtensionRegistrarImplementationV1 + 'static>() -> Self {
+        Self(registrar_factory_trampoline::<T>)
+    }
+
+    #[must_use]
+    pub fn create(self) -> RegistrarFactoryResultV1 {
+        (self.0)()
+    }
+}
+
+#[abi_stable::sabi_extern_fn]
+extern "C" fn registrar_factory_trampoline<T: ExtensionRegistrarImplementationV1 + 'static>()
+-> RegistrarFactoryResultV1 {
+    match catch_unwind(AssertUnwindSafe(|| {
+        RegistrarObjectV1(AbiRegistrarObjectV1_TO::from_value(
+            RegistrarAdapterV1 {
+                registrar: Some(T::create()),
+                invocation_state: AtomicU8::new(REGISTRAR_IDLE_V1),
+            },
+            sabi_trait::TD_Opaque,
+        ))
+    })) {
+        Ok(registrar) => RResult::ROk(registrar),
+        Err(payload) => {
+            dispose_caught_panic_payload_v1(payload);
+            RResult::RErr(AbiErrorV1::new(
+                AbiErrorCodeV1::CALLBACK_PANICKED,
+                ROOT_MODULE_CONTRACT_ID_V1,
+                0,
+            ))
+        }
+    }
+}
+
 impl RegistrationOutcomeV1 {
     /// Constructs a successful registration outcome.
     #[must_use]
@@ -390,108 +630,11 @@ impl RegistrationOutcomeV1 {
     }
 }
 
-/// Result returned by the required v1 registrar function.
-pub type RegistrarResultV1 = AbiResultV1<RegistrationOutcomeV1>;
-
-/// Data-only registrar implementation selected at compile time by an extension.
-///
-/// This trait never crosses the ABI boundary and must not be used as a trait
-/// object. The SDK turns its static [`Self::register`] method into the ABI callback
-/// through [`RegistrarCallbackV1::new`].
-pub trait RegistrarImplementationV1 {
-    /// Produces the typed terminal registrar result.
-    fn register(request: RegistrarRequestV1) -> RegistrarResultV1;
-}
-
-/// SDK-owned, panic-containing registrar callback.
-///
-/// The wrapped ABI function pointer is private. Safe extension code can construct
-/// this type only through [`Self::new`], which routes the implementation through
-/// the SDK trampoline and [`translate_registrar_panic`]. Deliberately fabricating
-/// this transparent representation through unsafe code is outside this safe API.
-#[repr(transparent)]
-#[derive(Clone, Copy, StableAbi)]
-pub struct RegistrarCallbackV1(extern "C" fn(RegistrarRequestV1) -> RegistrarResultV1);
-
-impl RegistrarCallbackV1 {
-    /// Creates a panic-containing ABI callback for `T`.
-    #[must_use]
-    pub fn new<T: RegistrarImplementationV1>() -> Self {
-        Self(registrar_trampoline::<T>)
-    }
-
-    /// Invokes the SDK-owned callback.
-    #[must_use]
-    pub fn invoke(self, request: RegistrarRequestV1) -> RegistrarResultV1 {
-        (self.0)(request)
-    }
-}
-
-extern "C" fn registrar_trampoline<T: RegistrarImplementationV1>(
-    request: RegistrarRequestV1,
-) -> RegistrarResultV1 {
-    translate_registrar_panic(|| T::register(request))
-}
-
-/// Converts a registrar implementation panic into the typed ABI terminal.
-///
-/// This is called by the SDK-owned [`RegistrarCallbackV1`] trampoline. The closure
-/// is an in-process implementation detail and never crosses the ABI; this helper
-/// exists because allowing a Rust unwind to leave an `extern "C"` callback would
-/// abort rather than produce a recoverable plugin error. Safe extension code cannot
-/// construct a raw registrar function pointer; intentionally fabricating the
-/// transparent callback representation through unsafe code is outside this API's
-/// safety guarantee.
-pub fn translate_registrar_panic(
-    callback: impl FnOnce() -> RegistrarResultV1,
-) -> RegistrarResultV1 {
-    match catch_unwind(AssertUnwindSafe(callback)) {
-        Ok(result) => result,
-        Err(_) => RResult::RErr(AbiErrorV1::new(
-            AbiErrorCodeV1::CALLBACK_PANICKED,
-            ROOT_MODULE_CONTRACT_ID_V1,
-            0,
-        )),
-    }
-}
-
-/// The prefix-type registrar for the v1 root module.
-///
-/// During SDK 1.x, new fields are appended after `register`. Optional function
-/// fields are accessed by hosts as `Option<extern "C" fn(...) -> ...>` and
-/// optional data fields through their corresponding optional accessors. Existing
-/// plugins omit those fields safely; they must never be re-ordered or given new
-/// meanings.
-#[repr(C)]
-#[derive(StableAbi)]
-#[sabi(kind(Prefix(prefix_ref = ExtensionRegistrarV1_Ref)))]
-#[sabi(missing_field(panic))]
-pub struct ExtensionRegistrarV1 {
-    /// Registers interfaces after the host validates every required root datum.
-    /// Safe plugins construct this value with [`RegistrarCallbackV1::new`].
-    #[sabi(last_prefix_field)]
-    pub register: RegistrarCallbackV1,
-    /// Optionally reports the root contract understood by this registrar.
-    ///
-    /// This first tail field models the SDK 1.x append-only rule. A host sees
-    /// `None` when it receives an older registrar prefix and must continue using
-    /// the required [`Self::register`] function without treating its absence as an
-    /// incompatibility.
-    #[sabi(missing_field(option))]
-    pub describe_contract: extern "C" fn() -> StableIdV1,
-    /// Optional binary UI ABI fingerprint for a GPUI-capable extension DLL.
-    ///
-    /// This second append-only tail remains absent on old data-only SDK 1.x
-    /// registrars. The host reads it as data before invoking [`Self::register`].
-    #[sabi(missing_field(option))]
-    pub ui_abi_fingerprint_sha256: ROption<UiAbiFingerprintV1>,
-}
-
 /// The single `abi_stable` root module exported by a Rust extension DLL.
 ///
 /// A plugin exposes this through one `#[abi_stable::export_root_module]` function.
 /// The loader validates the `RootModule` layout; the host then validates these data
-/// fields before it invokes [`ExtensionRegistrarV1::register`].
+/// fields before it constructs and invokes [`RegistrarObjectV1`].
 #[repr(C)]
 #[derive(StableAbi)]
 #[sabi(kind(Prefix(prefix_ref = ExtensionRootModuleV1_Ref)))]
@@ -507,29 +650,37 @@ pub struct ExtensionRootModuleV1 {
     pub reserved: u16,
     /// Required data-only plugin identity metadata.
     pub metadata: PluginMetadataV1,
-    /// Required prefix registrar.
-    ///
-    /// # Frozen v1 opaque-field invariant
-    ///
-    /// This field is deliberately opaque to the root-module layout checker so a
-    /// newer root can load a v1 registrar whose optional prefix tail is shorter.
-    /// This is **not** a cast: its in-memory value remains
-    /// [`ExtensionRegistrarV1_Ref`], whose prefix metadata controls whether
-    /// [`ExtensionRegistrarV1_Ref::describe_contract`] is accessible. In return,
-    /// every SDK 1.x producer and host must preserve the exact representation and
-    /// semantics of the required registrar prefix: the `PrefixRef` representation,
-    /// the [`RegistrarCallbackV1`] representation and calling convention, and the
-    /// callback's typed panic translation. Only optional fields may be appended
-    /// after [`ExtensionRegistrarV1::register`]; they must be read through their
-    /// generated optional accessors. Changing any required-prefix invariant is an
-    /// ABI-major change, not a compatible 1.x update.
-    ///
-    /// `unsafe_sabi_opaque_field` suppresses `abi_stable`'s recursive structural
-    /// comparison for this one field. The frozen invariant above is therefore part
-    /// of this public ABI's safety contract.
-    #[sabi(unsafe_sabi_opaque_field)]
+    /// Optional binary UI ABI fingerprint checked before any registrar object is
+    /// constructed or invoked.
+    pub ui_abi_fingerprint_sha256: ROption<UiAbiFingerprintV1>,
+    /// SDK-owned factory for the plugin's ordinary Rust registrar implementation.
+    pub create_registrar: RegistrarFactoryV1,
+    /// Required revision for the descriptor batch contract.
     #[sabi(last_prefix_field)]
-    pub registrar: ExtensionRegistrarV1_Ref,
+    pub descriptor_contract_revision: u32,
+}
+
+impl ExtensionRootModuleV1 {
+    /// Builds a complete root module from an ordinary Rust registrar implementation.
+    #[must_use]
+    pub fn new<T>(
+        metadata: PluginMetadataV1,
+        ui_abi_fingerprint_sha256: ROption<UiAbiFingerprintV1>,
+    ) -> Self
+    where
+        T: ExtensionRegistrarImplementationV1 + 'static,
+    {
+        Self {
+            abi_schema: ABI_SCHEMA_V1,
+            root_contract_id: ROOT_MODULE_CONTRACT_ID_V1,
+            sdk_major: SDK_MAJOR_VERSION_V1,
+            reserved: 0,
+            metadata,
+            ui_abi_fingerprint_sha256,
+            create_registrar: RegistrarFactoryV1::new::<T>(),
+            descriptor_contract_revision: DESCRIPTOR_CONTRACT_REVISION_V1,
+        }
+    }
 }
 
 impl RootModule for ExtensionRootModuleV1_Ref {
@@ -553,6 +704,12 @@ pub const fn registrar_request_v1() -> RegistrarRequestV1 {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        panic::panic_any,
+        process::Command,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
     use abi_stable::{library::RootModule, prefix_type::PrefixTypeTrait};
 
     use super::*;
@@ -617,7 +774,7 @@ mod tests {
     }
 
     #[test]
-    fn root_module_version_matches_the_v1_optional_tail_release() {
+    fn root_module_version_matches_the_first_fixed_v1_baseline() {
         assert_eq!(
             <ExtensionRootModuleV1_Ref as RootModule>::VERSION_STRINGS
                 .version
@@ -627,55 +784,46 @@ mod tests {
     }
 
     #[test]
-    fn root_and_registrar_are_prefix_types() {
+    fn root_prefix_owns_the_checked_registrar_factory() {
         struct Accepts;
 
-        impl RegistrarImplementationV1 for Accepts {
-            fn register(_: RegistrarRequestV1) -> RegistrarResultV1 {
-                RResult::ROk(RegistrationOutcomeV1::accepted(0))
+        impl ExtensionRegistrarImplementationV1 for Accepts {
+            fn create() -> Self {
+                Self
+            }
+            fn register(&self, _: RegistrarRequestV1) -> RegistrarOutputResultV1 {
+                RResult::ROk(RegistrarOutputV1 {
+                    outcome: RegistrationOutcomeV1::accepted(0),
+                    contributions: RVec::new(),
+                })
             }
         }
 
-        extern "C" fn describe_contract() -> StableIdV1 {
-            ROOT_MODULE_CONTRACT_ID_V1
-        }
-
-        let registrar = ExtensionRegistrarV1 {
-            register: RegistrarCallbackV1::new::<Accepts>(),
-            describe_contract,
-            ui_abi_fingerprint_sha256: ROption::RNone,
-        }
-        .leak_into_prefix();
-        let root = ExtensionRootModuleV1 {
-            abi_schema: ABI_SCHEMA_V1,
-            root_contract_id: ROOT_MODULE_CONTRACT_ID_V1,
-            sdk_major: SDK_MAJOR_VERSION_V1,
-            reserved: 0,
-            metadata: PluginMetadataV1 {
+        let root = ExtensionRootModuleV1::new::<Accepts>(
+            PluginMetadataV1 {
                 plugin_id: StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 10),
                 primary_interface_id: StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 11),
             },
-            registrar,
-        }
+            ROption::RNone,
+        )
         .leak_into_prefix();
 
         assert_eq!(root.abi_schema(), ABI_SCHEMA_V1);
         assert_eq!(root.root_contract_id(), ROOT_MODULE_CONTRACT_ID_V1);
         assert_eq!(root.sdk_major(), SDK_MAJOR_VERSION_V1);
+        assert_eq!(root.ui_abi_fingerprint_sha256(), ROption::RNone);
         assert_eq!(
-            root.registrar().ui_abi_fingerprint_sha256(),
-            Some(ROption::RNone)
+            root.descriptor_contract_revision(),
+            DESCRIPTOR_CONTRACT_REVISION_V1
         );
+        let registrar = root.create_registrar().create().into_result().unwrap();
         assert_eq!(
-            root.registrar().describe_contract().map(|query| query()),
-            Some(ROOT_MODULE_CONTRACT_ID_V1)
-        );
-        assert_eq!(
-            root.registrar()
-                .register()
-                .invoke(registrar_request_v1())
-                .into_result(),
-            Ok(RegistrationOutcomeV1::accepted(0))
+            registrar
+                .register(registrar_request_v1())
+                .into_result()
+                .unwrap()
+                .outcome,
+            RegistrationOutcomeV1::accepted(0)
         );
     }
 
@@ -683,21 +831,250 @@ mod tests {
     fn registrar_panic_is_a_typed_terminal_before_crossing_c_abi() {
         struct Panics;
 
-        impl RegistrarImplementationV1 for Panics {
-            fn register(_: RegistrarRequestV1) -> RegistrarResultV1 {
+        impl ExtensionRegistrarImplementationV1 for Panics {
+            fn create() -> Self {
+                Self
+            }
+            fn register(&self, _: RegistrarRequestV1) -> RegistrarOutputResultV1 {
                 panic!("synthetic registrar panic");
             }
         }
 
-        let result = RegistrarCallbackV1::new::<Panics>().invoke(registrar_request_v1());
+        let registrar = RegistrarFactoryV1::new::<Panics>()
+            .create()
+            .into_result()
+            .unwrap();
+        let result = registrar.register(registrar_request_v1());
 
-        assert_eq!(
+        assert!(matches!(
             result.into_result(),
-            Err(AbiErrorV1::new(
+            Err(AbiErrorV1 {
+                code: AbiErrorCodeV1::CALLBACK_PANICKED,
+                subject: ROOT_MODULE_CONTRACT_ID_V1,
+                detail: 0,
+            })
+        ));
+    }
+
+    static HOSTILE_PAYLOAD_DROPS: AtomicUsize = AtomicUsize::new(0);
+    static NORMAL_IMPLEMENTATION_DROPS: AtomicUsize = AtomicUsize::new(0);
+    static PANICKING_IMPLEMENTATION_DROPS: AtomicUsize = AtomicUsize::new(0);
+    static REGISTRAR_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
+    static PROVIDER_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
+
+    struct HostilePanicPayloadV1;
+    impl Drop for HostilePanicPayloadV1 {
+        fn drop(&mut self) {
+            HOSTILE_PAYLOAD_DROPS.fetch_add(1, Ordering::SeqCst);
+            panic!("hostile panic payload drop");
+        }
+    }
+
+    struct FactoryPanicsV1;
+    impl ExtensionRegistrarImplementationV1 for FactoryPanicsV1 {
+        fn create() -> Self {
+            panic_any(HostilePanicPayloadV1);
+        }
+
+        fn register(&self, _: RegistrarRequestV1) -> RegistrarOutputResultV1 {
+            RResult::RErr(AbiErrorV1::new(
                 AbiErrorCodeV1::CALLBACK_PANICKED,
                 ROOT_MODULE_CONTRACT_ID_V1,
-                0
+                0,
             ))
+        }
+    }
+
+    struct RegistrarPanicsV1;
+    impl ExtensionRegistrarImplementationV1 for RegistrarPanicsV1 {
+        fn create() -> Self {
+            Self
+        }
+
+        fn register(&self, _: RegistrarRequestV1) -> RegistrarOutputResultV1 {
+            REGISTRAR_CALLBACKS.fetch_add(1, Ordering::SeqCst);
+            panic_any(HostilePanicPayloadV1);
+        }
+    }
+
+    struct DropPanicsV1;
+    impl ExtensionRegistrarImplementationV1 for DropPanicsV1 {
+        fn create() -> Self {
+            Self
+        }
+
+        fn register(&self, _: RegistrarRequestV1) -> RegistrarOutputResultV1 {
+            RResult::RErr(AbiErrorV1::new(
+                AbiErrorCodeV1::CALLBACK_PANICKED,
+                ROOT_MODULE_CONTRACT_ID_V1,
+                0,
+            ))
+        }
+    }
+    impl Drop for DropPanicsV1 {
+        fn drop(&mut self) {
+            PANICKING_IMPLEMENTATION_DROPS.fetch_add(1, Ordering::SeqCst);
+            panic!("extension implementation drop");
+        }
+    }
+
+    struct NormalDropV1;
+    impl ExtensionRegistrarImplementationV1 for NormalDropV1 {
+        fn create() -> Self {
+            Self
+        }
+
+        fn register(&self, _: RegistrarRequestV1) -> RegistrarOutputResultV1 {
+            RResult::RErr(AbiErrorV1::new(
+                AbiErrorCodeV1::CALLBACK_PANICKED,
+                ROOT_MODULE_CONTRACT_ID_V1,
+                0,
+            ))
+        }
+    }
+    impl Drop for NormalDropV1 {
+        fn drop(&mut self) {
+            NORMAL_IMPLEMENTATION_DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    struct ProviderPanicsV1;
+    impl JobProviderImplementationV1 for ProviderPanicsV1 {
+        fn run(&self, _: JobContextV1) -> JobTerminalV1 {
+            PROVIDER_CALLBACKS.fetch_add(1, Ordering::SeqCst);
+            panic_any(HostilePanicPayloadV1);
+        }
+    }
+
+    #[derive(Clone)]
+    struct ClosedHostServicesV1;
+
+    impl AbiJobHostServicesV1 for ClosedHostServicesV1 {
+        fn poll_control(&self) -> JobControlStateV1 {
+            JobControlStateV1::ACTIVE
+        }
+
+        fn submit_results(&self, batch: IncrementalResultBatchV1) -> SinkSubmitOutcomeV1 {
+            SinkSubmitOutcomeV1 {
+                status: SinkSubmitStatusV1::CLOSED,
+                remaining_batch_credits: 0,
+                remaining_item_credits: 0,
+                remaining_byte_credits: 0,
+                rejected_batch: ROption::RSome(batch),
+            }
+        }
+
+        fn submit_progress(&self, _: JobProgressUpdateV1) -> JobProgressStatusV1 {
+            JobProgressStatusV1::CLOSED
+        }
+    }
+
+    fn hostile_panic_context_v1() -> JobContextV1 {
+        let job = JobHandleV1::from_host([1; 16], 1);
+        let capability = SinkCapabilityV1::from_host([2; 16]);
+        let services = JobHostServicesV1::from_host(ClosedHostServicesV1);
+        JobContextV1 {
+            job,
+            item: ROption::RNone,
+            location: LocationHandleV1::from_host([3; 16], 1),
+            feature_epoch: 1,
+            job_generation: 1,
+            item_generation: 0,
+            location_generation: 1,
+            source_generation: 1,
+            input: ROption::RNone,
+            sink: services.result_sink(job, capability),
+            progress: services.progress_sink(job, capability),
+        }
+    }
+
+    fn run_hostile_panic_child_v1() {
+        HOSTILE_PAYLOAD_DROPS.store(0, Ordering::SeqCst);
+        NORMAL_IMPLEMENTATION_DROPS.store(0, Ordering::SeqCst);
+        PANICKING_IMPLEMENTATION_DROPS.store(0, Ordering::SeqCst);
+        REGISTRAR_CALLBACKS.store(0, Ordering::SeqCst);
+        PROVIDER_CALLBACKS.store(0, Ordering::SeqCst);
+
+        assert!(matches!(
+            RegistrarFactoryV1::new::<FactoryPanicsV1>()
+                .create()
+                .into_result(),
+            Err(AbiErrorV1 {
+                code: AbiErrorCodeV1::CALLBACK_PANICKED,
+                ..
+            })
+        ));
+
+        let registrar = RegistrarFactoryV1::new::<RegistrarPanicsV1>()
+            .create()
+            .into_result()
+            .unwrap();
+        assert!(matches!(
+            registrar.register(registrar_request_v1()).into_result(),
+            Err(AbiErrorV1 {
+                code: AbiErrorCodeV1::CALLBACK_PANICKED,
+                ..
+            })
+        ));
+        assert!(matches!(
+            registrar.register(registrar_request_v1()).into_result(),
+            Err(AbiErrorV1 {
+                code: AbiErrorCodeV1::CALLBACK_PANICKED,
+                ..
+            })
+        ));
+        assert_eq!(REGISTRAR_CALLBACKS.load(Ordering::SeqCst), 1);
+        drop(registrar);
+
+        let provider = JobProviderObjectV1::new(ProviderPanicsV1);
+        assert_eq!(
+            provider.invoke(hostile_panic_context_v1()),
+            JobTerminalV1::PANICKED
+        );
+        assert_eq!(
+            provider.invoke(hostile_panic_context_v1()),
+            JobTerminalV1::PANICKED
+        );
+        assert_eq!(PROVIDER_CALLBACKS.load(Ordering::SeqCst), 1);
+        drop(provider);
+
+        let drop_only = RegistrarFactoryV1::new::<DropPanicsV1>()
+            .create()
+            .into_result()
+            .unwrap();
+        drop(drop_only);
+
+        let normal_drop = RegistrarFactoryV1::new::<NormalDropV1>()
+            .create()
+            .into_result()
+            .unwrap();
+        drop(normal_drop);
+
+        assert_eq!(HOSTILE_PAYLOAD_DROPS.load(Ordering::SeqCst), 3);
+        assert_eq!(PANICKING_IMPLEMENTATION_DROPS.load(Ordering::SeqCst), 1);
+        assert_eq!(NORMAL_IMPLEMENTATION_DROPS.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn hostile_panic_payloads_are_quarantined_in_a_subprocess() {
+        const CHILD_ENV: &str = "SUPEREXPLORER_API_HOSTILE_PANIC_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            run_hostile_panic_child_v1();
+            return;
+        }
+
+        let output = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("tests::hostile_panic_payloads_are_quarantined_in_a_subprocess")
+            .arg("--nocapture")
+            .env(CHILD_ENV, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "hostile panic child failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 

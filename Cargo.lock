@@ -1287,11 +1287,13 @@ dependencies = [
 name = "explorer-app"
 version = "0.1.0"
 dependencies = [
+ "abi_stable",
  "anyhow",
  "embed-resource",
  "explorer-automation",
  "explorer-automation-win",
  "explorer-common",
+ "explorer-extension-api",
  "explorer-extension-broker",
  "explorer-extension-host",
  "explorer-jobs",
@@ -1383,8 +1385,11 @@ version = "0.1.0"
 dependencies = [
  "abi_stable",
  "base64",
+ "explorer-common",
  "explorer-extension-api",
  "explorer-extension-ui-api",
+ "explorer-jobs",
+ "explorer-model",
  "libloading 0.7.4",
  "ring",
  "semver",
@@ -1393,6 +1398,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror 2.0.19",
+ "windows 0.61.3",
 ]
 
 [[package]]

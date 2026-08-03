@@ -9,17 +9,37 @@
 use std::{
     fmt, fs, io,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use thiserror::Error;
 
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
+
 use crate::package_validation::LocalDeveloperAuthorizationV1;
+use crate::sepack_import::SePackImporterV1;
 use crate::{
-    PackageValidationErrorV1, PackageValidationRequestV1, PackageValidationResultV1,
-    PackageValidatorV1,
+    PackageValidationBudgetV1, PackageValidationCancellationV1, PackageValidationErrorV1,
+    PackageValidationRequestV1, PackageValidationResultV1, PackageValidatorV1, SePackImportErrorV1,
 };
 
 const MAX_DIRECT_CHILDREN_V1: usize = 1_024;
+
+/// Path-free telemetry for private scratch cleanup. It deliberately contains no
+/// source archive, scratch, or sealed-store path suitable for accidental logs.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LocalDeveloperScratchTelemetryV1 {
+    cleanup_failure_count: u64,
+}
+
+impl LocalDeveloperScratchTelemetryV1 {
+    /// Number of cleanup failures observed after the local sealed-store commit.
+    #[must_use]
+    pub const fn cleanup_failure_count(self) -> u64 {
+        self.cleanup_failure_count
+    }
+}
 
 /// The host-controlled origin policy for an extension package.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -107,6 +127,169 @@ impl LocalDeveloperPackageSourceV1 {
     pub(crate) fn new(root: PathBuf) -> Self {
         Self { root }
     }
+}
+
+/// Resolves the one host-owned extension state root without trusting
+/// caller-controlled environment variables.
+///
+/// The production composition root derives all mutable extension state from a
+/// Windows Known Folder.  Callers can supply an archive to import, but never a
+/// destination, package-store, marker, or provenance root.
+#[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "Windows Known Folder allocation has no safe standard-library equivalent"
+)]
+pub(crate) fn extension_host_storage_root_v1() -> Result<PathBuf, SePackImportErrorV1> {
+    use windows::Win32::{
+        System::Com::CoTaskMemFree,
+        UI::Shell::{FOLDERID_LocalAppData, KF_FLAG_DEFAULT, SHGetKnownFolderPath},
+    };
+
+    // SAFETY: the known-folder API owns the returned allocation. We copy it to
+    // an OsString and release it exactly once with CoTaskMemFree.
+    let raw = unsafe {
+        SHGetKnownFolderPath(&FOLDERID_LocalAppData, KF_FLAG_DEFAULT, None).map_err(|source| {
+            SePackImportErrorV1::Io {
+                path: PathBuf::from("<windows-local-app-data>"),
+                source: io::Error::other(source),
+            }
+        })?
+    };
+    let path = unsafe { raw.to_string() }.map_err(|source| SePackImportErrorV1::Io {
+        path: PathBuf::from("<windows-local-app-data>"),
+        source: io::Error::other(source),
+    });
+    unsafe { CoTaskMemFree(Some(raw.as_ptr().cast())) };
+    Ok(PathBuf::from(path?).join("RustGpuiExplorer/extensions/v1"))
+}
+
+#[cfg(not(windows))]
+pub(crate) fn extension_host_storage_root_v1() -> Result<PathBuf, SePackImportErrorV1> {
+    Err(SePackImportErrorV1::InvalidArchive {
+        reason: "extension packages require Windows",
+    })
+}
+
+/// Resolves the host-owned local-developer portion of extension storage.
+pub(crate) fn local_developer_storage_root_v1() -> Result<PathBuf, SePackImportErrorV1> {
+    Ok(extension_host_storage_root_v1()?.join("developer"))
+}
+
+/// Production host policy for importing and validating unsigned local-developer
+/// packages. It never exposes authorization for an arbitrary filesystem path.
+#[derive(Debug)]
+pub(crate) struct LocalDeveloperPackageStoreV1 {
+    importer: SePackImporterV1,
+    cleanup_failures: AtomicU64,
+    #[cfg(test)]
+    force_next_cleanup_failure: AtomicBool,
+}
+
+impl LocalDeveloperPackageStoreV1 {
+    /// Creates a host-owned local-developer store and its private importer staging.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store root is unsafe.
+    pub(crate) fn new(root: &Path) -> Result<Self, SePackImportErrorV1> {
+        Ok(Self {
+            importer: SePackImporterV1::new(root)?,
+            cleanup_failures: AtomicU64::new(0),
+            #[cfg(test)]
+            force_next_cleanup_failure: AtomicBool::new(false),
+        })
+    }
+
+    /// Imports a strict `.sepack` then validates it with opaque local-developer
+    /// provenance. The archive is never loadable until validation succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an import failure or ordinary pre-load package validation failure.
+    #[allow(dead_code, reason = "compatibility wrapper for internal host callers")]
+    pub(crate) fn import_and_validate(
+        &self,
+        archive: &Path,
+        validator: &PackageValidatorV1,
+    ) -> Result<PackageValidationResultV1, LocalDeveloperPackageStoreErrorV1> {
+        let cancellation = PackageValidationCancellationV1::new();
+        self.import_and_validate_with_cancellation(archive, validator, &cancellation)
+    }
+
+    /// Imports and validates with a caller-owned cancellation token. A
+    /// cancellation before/during import or validation leaves no activation
+    /// candidate and always runs private scratch cleanup after an import.
+    pub(crate) fn import_and_validate_with_cancellation(
+        &self,
+        archive: &Path,
+        validator: &PackageValidatorV1,
+        cancellation: &PackageValidationCancellationV1,
+    ) -> Result<PackageValidationResultV1, LocalDeveloperPackageStoreErrorV1> {
+        let imported = self
+            .importer
+            .import_archive_with_cancellation(archive, cancellation)?;
+        let request = PackageValidationRequestV1::new(imported.root().to_path_buf())
+            .with_budget(
+                PackageValidationBudgetV1::default().with_cancellation(cancellation.clone()),
+            )
+            .with_local_developer_authorization(LocalDeveloperAuthorizationV1::issue());
+        let result = validator.validate(&request);
+        // The validator checks the shared token throughout sealing. Recheck at
+        // this boundary as well so a cancellation racing immediately after a
+        // successful seal cannot hand an activation candidate back to a caller.
+        let result = if cancellation.cancelled() {
+            Err(PackageValidationErrorV1::Cancelled)
+        } else {
+            result
+        };
+        #[cfg(test)]
+        if self
+            .force_next_cleanup_failure
+            .swap(false, Ordering::Relaxed)
+        {
+            SePackImporterV1::force_cleanup_failure_for_test(&imported);
+        }
+        let cleanup = self.importer.discard_import(&imported);
+        match (result, cleanup) {
+            (Ok(result), Ok(())) => Ok(result),
+            (Err(error), Ok(())) => Err(LocalDeveloperPackageStoreErrorV1::Validation(error)),
+            (Ok(result), Err(_)) => {
+                // Sealing is the commit point. The scratch path is not discoverable,
+                // so cleanup failure is telemetry rather than a false validation error.
+                self.cleanup_failures.fetch_add(1, Ordering::Relaxed);
+                Ok(result)
+            }
+            (Err(error), Err(_)) => {
+                // Preserve the security-relevant root cause; cleanup is secondary.
+                self.cleanup_failures.fetch_add(1, Ordering::Relaxed);
+                Err(LocalDeveloperPackageStoreErrorV1::Validation(error))
+            }
+        }
+    }
+
+    pub(crate) fn telemetry(&self) -> LocalDeveloperScratchTelemetryV1 {
+        LocalDeveloperScratchTelemetryV1 {
+            cleanup_failure_count: self.cleanup_failures.load(Ordering::Relaxed),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_next_cleanup_failure_for_test(&self) {
+        self.force_next_cleanup_failure
+            .store(true, Ordering::Relaxed);
+    }
+}
+
+/// Failure from the production local-developer package store.
+#[derive(Debug, Error)]
+pub enum LocalDeveloperPackageStoreErrorV1 {
+    /// The archive could not be safely imported.
+    #[error(transparent)]
+    Import(#[from] SePackImportErrorV1),
+    /// The imported package failed pre-load validation.
+    #[error(transparent)]
+    Validation(#[from] PackageValidationErrorV1),
 }
 
 impl fmt::Debug for LocalDeveloperPackageSourceV1 {
@@ -306,6 +489,14 @@ fn discover_direct_children(
 
     let mut packages = Vec::new();
     for candidate in paths {
+        if candidate
+            .file_name()
+            .is_some_and(|name| name == ".sepack-staging")
+        {
+            // Import scratch is host-private and never becomes an ordinary
+            // source candidate, even if a failed writer leaves a manifest there.
+            continue;
+        }
         let candidate_metadata = symlink_metadata(kind, &candidate)?;
         if is_reparse_point(&candidate_metadata) {
             return Err(PackageSourceErrorV1::ReparsePoint {

@@ -24,8 +24,12 @@ serde.workspace = true
 serde_json.workspace = true
 sha2 = "=0.11.0"
 thiserror.workspace = true
+windows.workspace = true
 
 [dev-dependencies]
+explorer-common = { path = "../explorer-common" }
+explorer-jobs = { path = "../explorer-jobs" }
+explorer-model = { path = "../explorer-model" }
 tempfile.workspace = true
 
 [lints]

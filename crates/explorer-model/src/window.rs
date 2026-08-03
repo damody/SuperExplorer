@@ -285,12 +285,12 @@ impl ExplorerWindowState {
                 tab.history
                     .current()
                     .cloned()
-                    .map(|_| (tab.history.clone(), tab.view.settings))
+                    .map(|_| (tab.history.clone(), tab.view.settings.clone()))
             })
             .unwrap_or_else(|| {
                 (
                     crate::NavigationHistory::with_initial(self.recovery_initial.clone()),
-                    self.recovery_tab.view.settings,
+                    self.recovery_tab.view.settings.clone(),
                 )
             });
         let initial = history

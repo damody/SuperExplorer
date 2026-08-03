@@ -493,7 +493,8 @@ fn advance_item_overlay_epoch(
 use explorer_model::{ExplorerService, ExplorerServiceError, WorkspaceModel};
 use gpui::{
     AnyWindowHandle, App, Bounds, ClipboardItem, Context, Focusable, IntoElement, Render,
-    RenderImage, SharedString, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
+    RenderImage, Role, SharedString, Window, WindowBounds, WindowOptions, div, prelude::*, px,
+    size,
 };
 use gpui_elements::editable_text::{EditableTextState, StringStorage, TextChanged};
 
@@ -699,6 +700,10 @@ pub struct ExplorerRoot {
     broker_retry_observer: Option<BrokerRetryObserver>,
     last_window_title: Option<String>,
     navigation_history_release_deadline: Option<Instant>,
+    safe_mode_offers: Vec<SafeModeOfferV1>,
+    safe_mode_confirm: Option<SafeModeConfirmObserverV1>,
+    safe_mode_confirmation_error: Option<String>,
+    extension_ui_pump: Option<Box<dyn ExtensionUiPumpPortV1>>,
 }
 
 /// Receives owned durable model snapshots after accepted reducer transitions.
@@ -716,6 +721,31 @@ pub type DurableStateObserver = Arc<
 pub type SessionResetObserver =
     Arc<dyn Fn(explorer_model::SessionResetScope) -> bool + Send + Sync>;
 pub type BrokerRetryObserver = Arc<dyn Fn() -> state::BrokerUiHealth + Send + Sync>;
+/// Path-free Safe Mode identity shown before a native extension can be re-enabled.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SafeModeOfferV1 {
+    /// Lifecycle-local opaque token returned unchanged to the application.
+    pub presentation_token: u64,
+    pub package_id: Option<String>,
+    pub primary_interface_namespace: Option<u32>,
+    pub primary_interface_value: Option<u64>,
+    pub operation: String,
+}
+/// Application-owned confirmation bridge. `Ok(())` is the sole condition that removes an offer.
+pub type SafeModeConfirmObserverV1 = Arc<dyn Fn(u64) -> Result<(), String> + Send + Sync>;
+
+/// App-owned extension presentation pump. The UI crate only asks whether a
+/// checked, coalesced extension invalidation is due; it never depends on the
+/// extension-host crate or projects extension job identities itself.
+pub trait ExtensionUiPumpPortV1 {
+    /// Returns true only when one current, coalesced UI invalidation should be
+    /// delivered on this GPUI thread.
+    fn poll_due(&mut self, now: Instant) -> bool;
+}
+
+fn extension_ui_pump_due(pump: Option<&mut Box<dyn ExtensionUiPumpPortV1>>, now: Instant) -> bool {
+    pump.is_some_and(|pump| pump.poll_due(now))
+}
 
 fn is_durable_action(action: &ExplorerAction) -> bool {
     matches!(
@@ -729,7 +759,7 @@ fn is_durable_action(action: &ExplorerAction) -> bool {
             | ExplorerAction::PreviousTab
             | ExplorerAction::SetViewMode(_)
             | ExplorerAction::ZoomView { .. }
-            | ExplorerAction::SetSortColumn(_)
+            | ExplorerAction::SetColumnId(_)
             | ExplorerAction::SetSortDirection(_)
             | ExplorerAction::SetDetailsColumnWidth { .. }
             | ExplorerAction::AutoSizeDetailsColumn { .. }
@@ -943,7 +973,24 @@ impl ExplorerRoot {
             broker_retry_observer: None,
             last_window_title: None,
             navigation_history_release_deadline: None,
+            safe_mode_offers: Vec::new(),
+            safe_mode_confirm: None,
+            safe_mode_confirmation_error: None,
+            extension_ui_pump: None,
         }
+    }
+
+    /// Installs the application-owned extension invalidation pump before the
+    /// normal 16 ms service loop starts. Replacing a dormant pump is safe
+    /// during composition; workers cannot reach this UI-owned object.
+    pub fn attach_extension_ui_pump(&mut self, pump: Box<dyn ExtensionUiPumpPortV1>) {
+        self.extension_ui_pump = Some(pump);
+    }
+
+    /// Shows the one explicitly loaded development plugin in the existing
+    /// Extensions menu. This is presentation-only and carries no ABI object.
+    pub fn configure_loaded_extension_summary(&mut self, summary: Option<String>) {
+        self.state.set_loaded_extension_summary(summary);
     }
 
     /// Builds a deterministic presentation-only state for screenshot regression tests.
@@ -973,6 +1020,18 @@ impl ExplorerRoot {
         mode: explorer_model::ViewMode,
     ) -> Self {
         Self::directory_fixture(tokens, entries, mode, false)
+    }
+
+    /// Read-only inspection for app-level fixture tests. Production callers
+    /// cannot mutate the view state through this seam.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn fixture_visible_entry_count(&self) -> Option<usize> {
+        self.state
+            .tabs()
+            .active_tab()
+            .visible_snapshot()
+            .map(|snapshot| snapshot.entries().len())
     }
 
     fn directory_fixture(
@@ -1358,6 +1417,10 @@ impl ExplorerRoot {
             broker_retry_observer: None,
             last_window_title: None,
             navigation_history_release_deadline: None,
+            safe_mode_offers: Vec::new(),
+            safe_mode_confirm: None,
+            safe_mode_confirmation_error: None,
+            extension_ui_pump: None,
         };
         root.submit_active_location_load();
         root.submit_navigation_icon_loads();
@@ -1428,6 +1491,10 @@ impl ExplorerRoot {
             broker_retry_observer: None,
             last_window_title: None,
             navigation_history_release_deadline: None,
+            safe_mode_offers: Vec::new(),
+            safe_mode_confirm: None,
+            safe_mode_confirmation_error: None,
+            extension_ui_pump: None,
         };
         root.submit_active_location_load();
         root.submit_navigation_icon_loads();
@@ -1474,6 +1541,42 @@ impl ExplorerRoot {
     ) {
         self.state.set_broker_health(health);
         self.broker_retry_observer = Some(retry);
+    }
+
+    /// Installs startup-recovered Safe Mode offers before the first render.
+    pub fn configure_safe_mode_offers(
+        &mut self,
+        offers: Vec<SafeModeOfferV1>,
+        confirm: SafeModeConfirmObserverV1,
+    ) {
+        self.safe_mode_offers = offers;
+        self.safe_mode_confirm = Some(confirm);
+        self.safe_mode_confirmation_error = None;
+    }
+
+    #[must_use]
+    pub fn safe_mode_offer_count(&self) -> usize {
+        self.safe_mode_offers.len()
+    }
+
+    fn confirm_safe_mode_offer(&mut self, presentation_token: u64) {
+        let Some(confirm) = self.safe_mode_confirm.as_ref() else {
+            return;
+        };
+        let Some(index) = self
+            .safe_mode_offers
+            .iter()
+            .position(|offer| offer.presentation_token == presentation_token)
+        else {
+            return;
+        };
+        match confirm(presentation_token) {
+            Ok(()) => {
+                self.safe_mode_offers.remove(index);
+                self.safe_mode_confirmation_error = None;
+            }
+            Err(error) => self.safe_mode_confirmation_error = Some(error),
+        }
     }
 
     fn notify_durable_state(&self) -> bool {
@@ -1530,6 +1633,16 @@ impl ExplorerRoot {
                 cx.background_executor()
                     .timer(Duration::from_millis(16))
                     .await;
+                if this
+                    .update(cx, |this, cx| {
+                        if extension_ui_pump_due(this.extension_ui_pump.as_mut(), Instant::now()) {
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
                 if this
                     .update(cx, |this, _| this.poll_preview_handler())
                     .is_err()
@@ -2163,7 +2276,7 @@ impl ExplorerRoot {
             .iter()
             .find(|tab| tab.id == directory_context.tab_id)
             .map_or_else(explorer_model::ViewSettings::default, |tab| {
-                tab.view.settings
+                tab.view.settings.clone()
             });
         let always_show_icons = self
             .state
@@ -2172,7 +2285,7 @@ impl ExplorerRoot {
             .iter()
             .find(|tab| tab.id == directory_context.tab_id)
             .is_some_and(|tab| tab.view.settings.always_show_icons);
-        let logical_size = navigation_pane::view_icon_logical_size_for_settings(view_settings);
+        let logical_size = navigation_pane::view_icon_logical_size_for_settings(&view_settings);
         let theme = match self.tokens.theme.mode {
             ThemeMode::Light => explorer_model::ShellIconTheme::Light,
             ThemeMode::Dark => explorer_model::ShellIconTheme::Dark,
@@ -2828,7 +2941,7 @@ impl ExplorerRoot {
             ThemeMode::Dark => explorer_model::ShellIconTheme::Dark,
         };
         let logical_size =
-            navigation_pane::view_icon_logical_size_for_settings(self.state.view_settings());
+            navigation_pane::view_icon_logical_size_for_settings(&self.state.view_settings());
         let association_epoch = self.icon_epochs.association();
         for entry in file_entries {
             let presentation_key = navigation_pane::file_icon_key_for_size(
@@ -3627,7 +3740,10 @@ impl ExplorerRoot {
             | ExplorerAction::AutoSizeDetailsColumn { .. } => {
                 self.pointer_capture.take();
             }
-            ExplorerAction::BeginDetailsColumnResize { column, pointer_x } => {
+            ExplorerAction::BeginDetailsColumnResize {
+                ref column,
+                pointer_x,
+            } => {
                 self.terminate_scrollbar_drag(interaction::ScrollbarTerminal::ViewSwitch, source);
                 self.pointer_capture = self.acquire_pointer_capture(window);
                 let scale_factor = window.scale_factor();
@@ -3640,7 +3756,8 @@ impl ExplorerRoot {
                     // GPUI events are logical pixels while Win32 ScreenToClient is physical.
                     // Normalize the captured sample once so the reducer always sees logical px.
                     if (client_x - pointer_x).abs() > f32::EPSILON {
-                        self.state.begin_details_column_resize(column, client_x);
+                        self.state
+                            .begin_details_column_resize(column.clone(), client_x);
                     }
                 }
             }
@@ -4085,7 +4202,7 @@ impl ExplorerRoot {
             return Some(ExplorerAction::ClearSelection);
         }
         let target = file_view_navigation_target(
-            self.state.view_settings(),
+            &self.state.view_settings(),
             self.tokens.layout,
             self.file_viewport_width,
             current,
@@ -4181,10 +4298,10 @@ impl ExplorerRoot {
             "end" => Some(ExplorerAction::MoveSortMenuFocus { direction: i8::MAX }),
             "escape" | "left" | "right" => Some(ExplorerAction::CloseSortMenu),
             "enter" | "space" => Some(match self.state.sort_menu_index() {
-                0 => ExplorerAction::SetSortColumn(explorer_model::SortColumn::Name),
-                1 => ExplorerAction::SetSortColumn(explorer_model::SortColumn::DateModified),
-                2 => ExplorerAction::SetSortColumn(explorer_model::SortColumn::Type),
-                3 => ExplorerAction::SetSortColumn(explorer_model::SortColumn::Size),
+                0 => ExplorerAction::SetColumnId(explorer_model::ColumnId::Name),
+                1 => ExplorerAction::SetColumnId(explorer_model::ColumnId::DateModified),
+                2 => ExplorerAction::SetColumnId(explorer_model::ColumnId::Type),
+                3 => ExplorerAction::SetColumnId(explorer_model::ColumnId::Size),
                 4 => ExplorerAction::SetSortDirection(explorer_model::SortDirection::Ascending),
                 _ => ExplorerAction::SetSortDirection(explorer_model::SortDirection::Descending),
             }),
@@ -4346,7 +4463,7 @@ impl ExplorerRoot {
 }
 
 fn file_view_navigation_target(
-    settings: explorer_model::ViewSettings,
+    settings: &explorer_model::ViewSettings,
     layout: LayoutTokens,
     viewport_width: f32,
     current: usize,
@@ -4709,7 +4826,7 @@ impl Render for ExplorerRoot {
             .as_ref()
             .map(|presentation| {
                 let metrics = chrome::spatial_grid_layout(
-                    chrome::spatial_grid_metrics(view_settings, self.tokens.layout),
+                    chrome::spatial_grid_metrics(&view_settings, self.tokens.layout),
                     self.file_viewport_width,
                     presentation.len(),
                 )
@@ -4784,6 +4901,8 @@ impl Render for ExplorerRoot {
         self.synchronize_preview_thumbnail(preview_entry.as_ref());
         self.synchronize_preview_handler(preview_entry.as_ref());
         let shell_icons = self.navigation_icon_snapshot(&realized_entries);
+        let safe_mode_offer = self.safe_mode_offers.first().cloned();
+        let safe_mode_error = self.safe_mode_confirmation_error.clone();
         let content = chrome::ExplorerWindow::new(self.tokens, self.state.clone())
             .with_shell_icons(shell_icons, self.shell_icon_dpi)
             .with_file_presentation(file_presentation)
@@ -4840,6 +4959,17 @@ impl Render for ExplorerRoot {
                 }),
             )
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if let Some(presentation_token) = this
+                    .safe_mode_offers
+                    .first()
+                    .map(|offer| offer.presentation_token)
+                {
+                    cx.stop_propagation();
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        this.confirm_safe_mode_offer(presentation_token);
+                    }
+                    return;
+                }
                 let lock_modal_action = this.state.lock_recovery().and_then(|recovery| match event
                     .keystroke
                     .key
@@ -5163,6 +5293,83 @@ impl Render for ExplorerRoot {
                 }),
             )
             .child(content)
+            .when_some(safe_mode_offer, |element, offer| {
+                let package = offer.package_id.as_deref().unwrap_or("unknown package");
+                let interface = offer
+                    .primary_interface_namespace
+                    .zip(offer.primary_interface_value)
+                    .map_or_else(
+                        || "unavailable".to_owned(),
+                        |(namespace, value)| format!("{namespace:08x}:{value}"),
+                    );
+                element.child(
+                    div()
+                        .id("safe-mode-offer-overlay")
+                        .absolute()
+                        .top_0()
+                        .right_0()
+                        .bottom_0()
+                        .left_0()
+                        .occlude()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(theme::MODAL_BACKDROP.to_gpui())
+                        .child(
+                            div()
+                                .id("safe-mode-offer-dialog")
+                                .role(Role::Dialog)
+                                .aria_label(format!(
+                                    "Safe Mode confirmation required; Suspect package: {package}"
+                                ))
+                                .w(px(480.0))
+                                .p(px(20.0))
+                                .rounded(px(8.0))
+                                .bg(self.tokens.theme.colors.surface.to_gpui())
+                                .flex()
+                                .flex_col()
+                                .gap(px(12.0))
+                                .child(
+                                    div()
+                                        .text_size(px(20.0))
+                                        .child("Safe Mode requires confirmation"),
+                                )
+                                .child(
+                                    div()
+                                        .id("safe-mode-suspect-package")
+                                        .role(Role::Label)
+                                        .aria_label(format!("Suspect package: {package}"))
+                                        .child(format!("Suspect package: {package}")),
+                                )
+                                .child(div().child(format!("Interface: {interface}")))
+                                .child(div().child(format!("Operation: {}", offer.operation)))
+                                .when_some(safe_mode_error, |dialog, error| {
+                                    dialog.child(
+                                        div()
+                                            .id("safe-mode-confirmation-error")
+                                            .text_color(self.tokens.theme.colors.danger.to_gpui())
+                                            .child(error),
+                                    )
+                                })
+                                .child(
+                                    div()
+                                        .id("safe-mode-confirm")
+                                        .role(Role::Button)
+                                        .aria_label("Confirm and re-enable")
+                                        .p(px(8.0))
+                                        .rounded(px(4.0))
+                                        .bg(self.tokens.theme.colors.accent.to_gpui())
+                                        .text_color(
+                                            self.tokens.theme.colors.selected_text.to_gpui(),
+                                        )
+                                        .child("Confirm and re-enable")
+                                        .on_click(cx.listener(move |this, _, _, _| {
+                                            this.confirm_safe_mode_offer(offer.presentation_token);
+                                        })),
+                                ),
+                        ),
+                )
+            })
     }
 }
 
@@ -5231,18 +5438,41 @@ pub fn window_options_with_placement(
 mod tests {
     use std::{
         sync::{Arc, Mutex},
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     use super::{
-        BaseIconCache, ENRICHMENT_SERVICE_EVENT_CAPACITY, ExplorerRoot, UiTokens,
-        VisibleItemIconCache, VisualFixtureState, action_for_host_context_command,
-        active_window_title, advance_item_overlay_epoch, captured_scrollbar_axis_to_logical,
-        coalesce_directory_events, file_view_global_command_action, file_view_item_command_action,
+        BaseIconCache, ENRICHMENT_SERVICE_EVENT_CAPACITY, ExplorerRoot, ExtensionUiPumpPortV1,
+        SafeModeOfferV1, UiTokens, VisibleItemIconCache, VisualFixtureState,
+        action_for_host_context_command, active_window_title, advance_item_overlay_epoch,
+        captured_scrollbar_axis_to_logical, coalesce_directory_events, extension_ui_pump_due,
+        file_view_global_command_action, file_view_item_command_action,
         file_view_navigation_target, is_passive_pointer_action, physical_client_to_logical,
         prepare_shell_texture_pixels, should_end_address_edit, should_end_inline_rename,
         synchronize_theme, thumbnail_texture, window_title_for_history_entry,
     };
+
+    struct SequenceExtensionPumpV1 {
+        due: std::collections::VecDeque<bool>,
+    }
+
+    impl ExtensionUiPumpPortV1 for SequenceExtensionPumpV1 {
+        fn poll_due(&mut self, _: Instant) -> bool {
+            self.due.pop_front().unwrap_or(false)
+        }
+    }
+
+    #[test]
+    fn extension_pump_requests_one_notification_only_on_its_due_tick() {
+        let mut pump: Box<dyn ExtensionUiPumpPortV1> = Box::new(SequenceExtensionPumpV1 {
+            due: std::collections::VecDeque::from([false, false, true, false]),
+        });
+        let now = Instant::now();
+        let decisions = (0..4)
+            .map(|_| extension_ui_pump_due(Some(&mut pump), now))
+            .collect::<Vec<_>>();
+        assert_eq!(decisions, vec![false, false, true, false]);
+    }
 
     #[test]
     fn host_context_command_routes_to_existing_explorer_actions() {
@@ -5800,10 +6030,12 @@ mod tests {
             );
 
             let mut state = AppViewState::default();
-            state.begin_details_column_resize(explorer_model::SortColumn::Name, origin);
+            state.begin_details_column_resize(explorer_model::ColumnId::Name, origin);
             state.update_details_column_resize(current);
             assert_eq!(
-                state.view_settings().details_columns.name,
+                state
+                    .view_settings()
+                    .details_column_width(&explorer_model::ColumnId::Name),
                 320,
                 "scale factor {scale_factor} must not multiply the logical delta"
             );
@@ -5998,6 +6230,33 @@ mod tests {
     }
 
     #[test]
+    fn safe_mode_offer_is_removed_only_after_confirmation_observer_succeeds() {
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let failing_attempts = Arc::clone(&attempts);
+        let mut root = ExplorerRoot::default();
+        root.configure_safe_mode_offers(
+            vec![SafeModeOfferV1 {
+                presentation_token: 1,
+                package_id: Some("example.plugin".to_owned()),
+                primary_interface_namespace: Some(0x5345_0001),
+                primary_interface_value: Some(7),
+                operation: "RegistrarInProgress".to_owned(),
+            }],
+            Arc::new(move |_| {
+                failing_attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err("confirmation failed".to_owned())
+            }),
+        );
+        root.confirm_safe_mode_offer(1);
+        assert_eq!(root.safe_mode_offer_count(), 1);
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        root.configure_safe_mode_offers(root.safe_mode_offers.clone(), Arc::new(|_| Ok(())));
+        root.confirm_safe_mode_offer(1);
+        assert_eq!(root.safe_mode_offer_count(), 0);
+    }
+
+    #[test]
     fn all_view_modes_have_clamped_spatial_keyboard_navigation() {
         for mode in explorer_model::ViewMode::ALL {
             let settings = explorer_model::ViewSettings {
@@ -6006,7 +6265,7 @@ mod tests {
             };
             assert_eq!(
                 file_view_navigation_target(
-                    settings,
+                    &settings,
                     LayoutTokens::WINDOWS_11,
                     600.0,
                     4,
@@ -6017,7 +6276,7 @@ mod tests {
             );
             assert_eq!(
                 file_view_navigation_target(
-                    settings,
+                    &settings,
                     LayoutTokens::WINDOWS_11,
                     600.0,
                     4,
@@ -6027,7 +6286,7 @@ mod tests {
                 Some(19)
             );
             let down = file_view_navigation_target(
-                settings,
+                &settings,
                 LayoutTokens::WINDOWS_11,
                 600.0,
                 4,
@@ -6038,7 +6297,7 @@ mod tests {
             assert!(down > 4 && down < 20, "mode={mode:?} down={down}");
             assert_eq!(
                 file_view_navigation_target(
-                    settings,
+                    &settings,
                     LayoutTokens::WINDOWS_11,
                     600.0,
                     19,
@@ -6050,7 +6309,7 @@ mod tests {
         }
         assert_eq!(
             file_view_navigation_target(
-                explorer_model::ViewSettings::default(),
+                &explorer_model::ViewSettings::default(),
                 LayoutTokens::WINDOWS_11,
                 600.0,
                 0,
@@ -6064,11 +6323,12 @@ mod tests {
     #[test]
     fn icon_mode_down_arrow_uses_the_rendered_column_count() {
         let target = |mode, viewport_width| {
+            let settings = explorer_model::ViewSettings {
+                mode,
+                ..explorer_model::ViewSettings::default()
+            };
             file_view_navigation_target(
-                explorer_model::ViewSettings {
-                    mode,
-                    ..explorer_model::ViewSettings::default()
-                },
+                &settings,
                 LayoutTokens::WINDOWS_11,
                 viewport_width,
                 0,

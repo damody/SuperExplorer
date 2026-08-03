@@ -5,6 +5,8 @@ use std::collections::BTreeSet;
 use thiserror::Error;
 
 use crate::{ResolvedPackageV1, package_validation::sealed_manifest_canonical_digest};
+use abi_stable::std_types::ROption;
+use explorer_extension_api::{StableIdV1, StableSortValueKindV1};
 
 pub const MAX_CONTRIBUTIONS_PER_BATCH_V1: usize = 1_024;
 pub const MAX_CAPABILITIES_PER_CONTRIBUTION_V1: usize = 64;
@@ -29,6 +31,21 @@ pub struct ContributionRegistrationV1 {
     pub contribution_id: String,
     pub kind: ContributionKindV1,
     pub required_capabilities: Vec<String>,
+    /// Optional sealed job contract. A contribution without one cannot mint a
+    /// job authority.
+    pub job_contract: Option<ContributionJobContractV1>,
+}
+
+/// Declarative job contract, validated as part of the complete contribution
+/// batch before it can become host authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContributionJobContractV1 {
+    pub interface_id: StableIdV1,
+    pub expected_sort: ROption<StableSortValueKindV1>,
+    /// Opaque data is opt-in. The schema, version, and renderer binding are
+    /// either all present for a source, or all absent.
+    pub opaque_schema: Option<(StableIdV1, u32)>,
+    pub renderer_contribution_id: Option<String>,
 }
 
 /// Immutable canonical successful validation output.
@@ -37,6 +54,7 @@ pub struct ValidatedContributionSetV1 {
     package_id: String,
     package_version: String,
     sealed_manifest_digest: String,
+    data_version: u64,
     contributions: Vec<ContributionRegistrationV1>,
 }
 
@@ -59,9 +77,133 @@ impl ValidatedContributionSetV1 {
         &self.sealed_manifest_digest
     }
 
+    /// Returns the plugin data generation from the sealed manifest that
+    /// authorized this contribution set.
+    #[must_use]
+    pub const fn data_version(&self) -> u64 {
+        self.data_version
+    }
+
     #[must_use]
     pub fn contributions(&self) -> &[ContributionRegistrationV1] {
         &self.contributions
+    }
+
+    /// Returns the only job contract admitted for this sealed contribution.
+    /// Callers cannot supply interface/schema/sort identity themselves.
+    #[must_use]
+    pub(crate) fn job_descriptor(&self, contribution_id: &str) -> Option<ValidatedJobDescriptorV1> {
+        let contribution = self
+            .contributions
+            .iter()
+            .find(|entry| entry.contribution_id == contribution_id)?;
+        let contract = contribution.job_contract.as_ref()?;
+        let (opaque_schema, opaque_schema_version) = contract
+            .opaque_schema
+            .map_or((None, None), |(schema, version)| {
+                (Some(schema), Some(version))
+            });
+        Some(ValidatedJobDescriptorV1 {
+            contribution_id: contribution.contribution_id.clone(),
+            feature_id: contribution.feature_id.clone(),
+            kind: contribution.kind,
+            interface_id: contract.interface_id,
+            expected_sort: contract.expected_sort,
+            opaque_schema,
+            opaque_schema_version,
+            renderer_contribution_id: contract.renderer_contribution_id.clone(),
+            filesystem_read_authorized: contribution
+                .required_capabilities
+                .iter()
+                .any(|capability| capability == "filesystem.read"),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ValidatedJobDescriptorV1 {
+    pub(crate) contribution_id: String,
+    pub(crate) feature_id: String,
+    pub(crate) kind: ContributionKindV1,
+    pub(crate) interface_id: StableIdV1,
+    pub(crate) expected_sort: ROption<StableSortValueKindV1>,
+    pub(crate) opaque_schema: Option<StableIdV1>,
+    pub(crate) opaque_schema_version: Option<u32>,
+    pub(crate) renderer_contribution_id: Option<String>,
+    /// Fixed host-attested bit derived from the canonical validated
+    /// contribution capability set. Stream open never accepts a plugin string.
+    pub(crate) filesystem_read_authorized: bool,
+}
+
+#[cfg(all(test, feature = "integration-test-support"))]
+#[doc(hidden)]
+#[allow(dead_code, clippy::wildcard_imports)]
+pub mod integration_test_support {
+    use super::*;
+    use crate::{PackageManifestV1, PackageResolverV1, PackageValidationResultV1};
+    use serde_json::json;
+
+    /// Builds a sealed source/renderer fixture for cross-module lifecycle tests.
+    /// This test-only helper mirrors the production gate's canonical output.
+    #[must_use]
+    pub fn validated_job_fixture(package_id: &str) -> ValidatedContributionSetV1 {
+        let manifest = PackageManifestV1::parse_json(
+            &json!({
+                "manifest_version": 1,
+                "package": { "id": package_id, "version": "1.0.0" },
+                "publisher": { "id": "example.publisher", "display_name": "Example Publisher", "contacts": [{ "kind": "email", "value": "support@example.invalid", "purposes": ["support"] }] },
+                "sdk": { "bundle_id": "dev.20260802", "target": "x86_64-pc-windows-msvc", "abi_schema": 1, "gpui": true, "ui_abi_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" },
+                "rust": [], "lua": [], "skins": [], "locales": [], "tools": [],
+                "features": [{ "id": "feature", "capabilities": ["gpui.render"], "dependencies": [] }],
+                "dependencies": [], "payloads": [], "signature": { "kind": "unsigned" }, "data_version": 1
+            })
+            .to_string(),
+        )
+        .expect("integration fixture manifest is valid");
+        let candidates = [PackageValidationResultV1::for_resolver_test(manifest)];
+        let resolution = PackageResolverV1::resolve(&candidates);
+        ContributionGateV1::validate(
+            &resolution.resolved_packages()[0],
+            &[
+                ContributionRegistrationV1 {
+                    feature_id: "feature".to_owned(),
+                    contribution_id: "column".to_owned(),
+                    kind: ContributionKindV1::Column,
+                    required_capabilities: Vec::new(),
+                    job_contract: Some(ContributionJobContractV1 {
+                        interface_id: StableIdV1::new(
+                            explorer_extension_api::IdNamespaceV1::new(7, 1),
+                            1,
+                        ),
+                        expected_sort: ROption::RSome(StableSortValueKindV1::U64),
+                        opaque_schema: Some((
+                            StableIdV1::new(explorer_extension_api::IdNamespaceV1::new(7, 2), 1),
+                            1,
+                        )),
+                        renderer_contribution_id: Some("renderer".to_owned()),
+                    }),
+                },
+                ContributionRegistrationV1 {
+                    feature_id: "feature".to_owned(),
+                    contribution_id: "renderer".to_owned(),
+                    kind: ContributionKindV1::GpuiRenderer,
+                    required_capabilities: vec!["gpui.render".to_owned()],
+                    job_contract: Some(ContributionJobContractV1 {
+                        interface_id: StableIdV1::new(
+                            explorer_extension_api::IdNamespaceV1::new(7, 1),
+                            2,
+                        ),
+                        expected_sort: ROption::RNone,
+                        opaque_schema: Some((
+                            StableIdV1::new(explorer_extension_api::IdNamespaceV1::new(7, 2), 1),
+                            1,
+                        )),
+                        renderer_contribution_id: None,
+                    }),
+                },
+            ],
+        )
+        .expect("integration fixture job contracts are valid")
     }
 }
 
@@ -168,13 +310,85 @@ impl ContributionGateV1 {
             registration.required_capabilities.sort();
             registration.required_capabilities.dedup();
         }
+        validate_job_contracts(&canonical)?;
         Ok(ValidatedContributionSetV1 {
             package_id: resolved.manifest().package.id.clone(),
             package_version: resolved.manifest().package.version.clone(),
             sealed_manifest_digest: sealed_manifest_digest(resolved)?,
+            data_version: resolved.validation_result().data_version,
             contributions: canonical,
         })
     }
+}
+
+fn validate_job_contracts(
+    registrations: &[ContributionRegistrationV1],
+) -> Result<(), ContributionGateErrorV1> {
+    for source in registrations {
+        let Some(contract) = source.job_contract.as_ref() else {
+            continue;
+        };
+        if !contract.interface_id.is_valid()
+            || matches!(contract.expected_sort, ROption::RSome(sort) if !sort.is_known())
+        {
+            return Err(ContributionGateErrorV1::InvalidJobContract {
+                contribution_id: source.contribution_id.clone(),
+            });
+        }
+        let has_schema = contract.opaque_schema.is_some();
+        let has_renderer = contract.renderer_contribution_id.is_some();
+        let source_binding_is_invalid = if source.kind == ContributionKindV1::GpuiRenderer {
+            has_renderer
+        } else {
+            has_schema != has_renderer
+        };
+        if source_binding_is_invalid
+            || contract
+                .opaque_schema
+                .is_some_and(|(schema, version)| !schema.is_valid() || version == 0)
+        {
+            return Err(ContributionGateErrorV1::InvalidJobContract {
+                contribution_id: source.contribution_id.clone(),
+            });
+        }
+        let Some((schema, version)) = contract.opaque_schema else {
+            continue;
+        };
+        let Some(renderer_id) = contract.renderer_contribution_id.as_deref() else {
+            // A renderer declares a schema but never binds to itself.
+            if source.kind == ContributionKindV1::GpuiRenderer {
+                continue;
+            }
+            return Err(ContributionGateErrorV1::InvalidJobContract {
+                contribution_id: source.contribution_id.clone(),
+            });
+        };
+        if renderer_id.len() > 64 || !identifier_is_valid(renderer_id) {
+            return Err(ContributionGateErrorV1::InvalidJobContract {
+                contribution_id: source.contribution_id.clone(),
+            });
+        }
+        let Some(renderer) = registrations.iter().find(|entry| {
+            entry.contribution_id == renderer_id
+                && entry.kind == ContributionKindV1::GpuiRenderer
+                && entry.feature_id == source.feature_id
+        }) else {
+            return Err(ContributionGateErrorV1::OpaqueRendererContract {
+                contribution_id: source.contribution_id.clone(),
+            });
+        };
+        let matches_schema = renderer
+            .job_contract
+            .as_ref()
+            .and_then(|renderer_contract| renderer_contract.opaque_schema)
+            .is_some_and(|renderer_schema| renderer_schema == (schema, version));
+        if !matches_schema {
+            return Err(ContributionGateErrorV1::OpaqueRendererContract {
+                contribution_id: source.contribution_id.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn mandatory_capability(kind: ContributionKindV1) -> Option<&'static str> {
@@ -223,6 +437,10 @@ pub enum ContributionGateErrorV1 {
         contribution_id: String,
         capability: String,
     },
+    #[error("contribution {contribution_id} has an invalid sealed job contract")]
+    InvalidJobContract { contribution_id: String },
+    #[error("contribution {contribution_id} has no matching GPUI renderer contract")]
+    OpaqueRendererContract { contribution_id: String },
     #[error("invalid {field} identifier: {value}")]
     InvalidIdentifier { field: &'static str, value: String },
     #[error("{field} identifier exceeds maximum {maximum} bytes")]
@@ -324,6 +542,7 @@ mod tests {
     use crate::{
         PackageManifestV1, PackageResolverV1, PackageValidationResultV1, ResolvedPackageV1,
     };
+    use explorer_extension_api::IdNamespaceV1;
 
     fn registration(
         feature_id: &str,
@@ -339,6 +558,7 @@ mod tests {
                 .iter()
                 .map(|value| (*value).to_owned())
                 .collect(),
+            job_contract: None,
         }
     }
 
@@ -381,6 +601,43 @@ mod tests {
         let candidates = [candidate];
         let resolution = PackageResolverV1::resolve(&candidates);
         action(&resolution.resolved_packages()[0])
+    }
+
+    #[test]
+    fn filesystem_read_is_authorized_only_when_the_validated_contribution_requires_it() {
+        let contract = || ContributionJobContractV1 {
+            interface_id: StableIdV1::new(IdNamespaceV1::new(1, 1), 9),
+            expected_sort: ROption::RNone,
+            opaque_schema: None,
+            renderer_contribution_id: None,
+        };
+        with_resolved(&[feature("decode", &["filesystem.read"])], |resolved| {
+            let mut metadata_only =
+                registration("decode", "metadata", ContributionKindV1::Column, &[]);
+            metadata_only.job_contract = Some(contract());
+            let accepted = ContributionGateV1::validate(resolved, &[metadata_only]).unwrap();
+            assert!(
+                !accepted
+                    .job_descriptor("metadata")
+                    .unwrap()
+                    .filesystem_read_authorized
+            );
+
+            let mut decoder = registration(
+                "decode",
+                "decoder",
+                ContributionKindV1::Column,
+                &["filesystem.read"],
+            );
+            decoder.job_contract = Some(contract());
+            let accepted = ContributionGateV1::validate(resolved, &[decoder]).unwrap();
+            assert!(
+                accepted
+                    .job_descriptor("decoder")
+                    .unwrap()
+                    .filesystem_read_authorized
+            );
+        });
     }
 
     #[test]
@@ -682,6 +939,7 @@ mod tests {
                 contribution_id: "size".to_owned(),
                 kind: ContributionKindV1::Column,
                 required_capabilities: capabilities,
+                job_contract: None,
             };
             assert!(matches!(
                 ContributionGateV1::validate(resolved, &[over]),
@@ -701,6 +959,7 @@ mod tests {
             contribution_id: "size".to_owned(),
             kind: ContributionKindV1::Column,
             required_capabilities: Vec::new(),
+            job_contract: None,
         };
         assert!(matches!(
             preflight_batch(&[oversized]),
@@ -721,12 +980,14 @@ mod tests {
                 contribution_id: "size".to_owned(),
                 kind: ContributionKindV1::Column,
                 required_capabilities: Vec::new(),
+                job_contract: None,
             },
             ContributionRegistrationV1 {
                 feature_id: "columns".to_owned(),
                 contribution_id: "y".repeat(65),
                 kind: ContributionKindV1::Column,
                 required_capabilities: Vec::new(),
+                job_contract: None,
             },
         ];
         let reversed_long_fields = different_long_fields
@@ -738,5 +999,56 @@ mod tests {
             preflight_batch(&different_long_fields),
             preflight_batch(&reversed_long_fields)
         );
+    }
+
+    #[test]
+    fn sealed_job_contract_admits_sortable_columns_and_bound_opaque_renderers() {
+        with_resolved_gpui(&[feature("feature", &["gpui.render"])], |resolved| {
+            let schema = StableIdV1::new(IdNamespaceV1::new(9, 2), 7);
+            let mut column = registration("feature", "column", ContributionKindV1::Column, &[]);
+            column.job_contract = Some(ContributionJobContractV1 {
+                interface_id: StableIdV1::new(IdNamespaceV1::new(9, 1), 1),
+                expected_sort: ROption::RSome(StableSortValueKindV1::U64),
+                opaque_schema: Some((schema, 3)),
+                renderer_contribution_id: Some("renderer".to_owned()),
+            });
+            let mut renderer = registration(
+                "feature",
+                "renderer",
+                ContributionKindV1::GpuiRenderer,
+                &["gpui.render"],
+            );
+            renderer.job_contract = Some(ContributionJobContractV1 {
+                interface_id: StableIdV1::new(IdNamespaceV1::new(9, 1), 2),
+                expected_sort: ROption::RNone,
+                opaque_schema: Some((schema, 3)),
+                renderer_contribution_id: None,
+            });
+            let validated = ContributionGateV1::validate(resolved, &[renderer, column]).unwrap();
+            let descriptor = validated.job_descriptor("column").unwrap();
+            assert_eq!(
+                descriptor.expected_sort,
+                ROption::RSome(StableSortValueKindV1::U64)
+            );
+            assert_eq!(descriptor.opaque_schema, Some(schema));
+            assert_eq!(descriptor.opaque_schema_version, Some(3));
+            assert_eq!(
+                descriptor.renderer_contribution_id.as_deref(),
+                Some("renderer")
+            );
+
+            let mut missing_renderer =
+                registration("feature", "broken", ContributionKindV1::Column, &[]);
+            missing_renderer.job_contract = Some(ContributionJobContractV1 {
+                interface_id: StableIdV1::new(IdNamespaceV1::new(9, 1), 3),
+                expected_sort: ROption::RSome(StableSortValueKindV1::U64),
+                opaque_schema: Some((schema, 3)),
+                renderer_contribution_id: Some("missing".to_owned()),
+            });
+            assert!(matches!(
+                ContributionGateV1::validate(resolved, &[missing_renderer]),
+                Err(ContributionGateErrorV1::OpaqueRendererContract { .. })
+            ));
+        });
     }
 }

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "sdk_bundle_id": "sdk-c469f647d79d0534511b532c",
+  "keys": [
+    {
+      "key_id": "superexplorer.release.v1",
+      "publisher_id": "superexplorer",
+      "ed25519_public_key_base64": "rBG2WDfhQL3UABa7cfhHdriZhndqff5jgzP+PZgfs4w="
+    }
+  ]
+}

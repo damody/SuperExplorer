@@ -8,21 +8,29 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
     path::PathBuf,
-    sync::{Arc, Condvar, Mutex, OnceLock},
+    sync::{Arc, Condvar, Mutex, OnceLock, Weak},
     time::{Duration, Instant},
 };
 
 use thiserror::Error;
 
 use crate::{
-    FeatureKeyV1, FeatureRuntimeFactV1, HostRegistrationErrorV1, ResolvedPackageV1,
+    ContributionGateV1, ContributionJobContractV1, ContributionKindV1, ContributionRegistrationV1,
+    ExtensionJobAuthorityV1, ExtensionJobFinishOutcomeV1, ExtensionJobRuntimeErrorV1,
+    ExtensionJobRuntimeRequestV1, ExtensionJobRuntimeV1, FeatureKeyV1, FeatureRuntimeFactV1,
+    HostInputStreamSourceV1, HostRegistrationErrorV1, ResolvedPackageV1,
+    ValidatedContributionSetV1,
     dll_loader::{
         ExtensionDllLoaderV1, LoadedExtensionRootV1, LoadedPackageRootsV1, invoke_guarded_registrar,
     },
+    extension_job_runtime::{PreparedProviderDispatchTicketV1, ProviderDispatchControlV1},
     plugin_call_guard::{
-        self, GuardErrorV1, NativeCallTerminalV1, NativeCallTimingV1, NativeSafeModeIncidentV1,
-        PluginCallGuardStoreV1,
+        self, GuardErrorV1, MarkerV1, NativeCallOperationV1, NativeCallTerminalV1,
+        NativeCallTimingV1, NativeSafeModeIncidentV1, PluginCallGuardStoreV1, PluginCallGuardV1,
     },
+};
+use explorer_extension_api::{
+    JobHandleV1, JobProviderObjectV1, JobTerminalV1, RegisteredContributionV1,
 };
 
 /// Resolver candidates (128) times Rust entrypoints per manifest (128).
@@ -31,6 +39,204 @@ pub const MAX_NATIVE_LEDGER_ENTRIES_V1: usize = 128 * 128;
 pub const MAX_NATIVE_FEATURE_GATES_V1: usize = MAX_NATIVE_LEDGER_ENTRIES_V1;
 pub const MAX_NATIVE_RESTART_REASONS_PER_FEATURE_V1: usize = 8;
 const DEFAULT_NATIVE_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Host-owned native provider dispatch transaction.  Preparation happens
+/// before ABI entry so the scheduler can obtain its handle/control surface;
+/// terminal publication remains impossible until the durable call marker has
+/// cleared successfully.
+pub struct PreparedNativeJobV1 {
+    runtime: Arc<ExtensionJobRuntimeV1>,
+    ticket: PreparedProviderDispatchTicketV1,
+    provider: Arc<JobProviderObjectV1>,
+    markers: Arc<PluginCallGuardStoreV1>,
+    marker: MarkerV1,
+    permit: Option<PluginCallGuardV1>,
+    callback_started: bool,
+    callback_elapsed: Option<Duration>,
+}
+
+impl PreparedNativeJobV1 {
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn handle(&self) -> JobHandleV1 {
+        self.ticket.control().job()
+    }
+
+    /// Cloneable host control surface.  It cannot keep the native dispatch
+    /// lease alive after this prepared transaction fail-closes.
+    #[allow(dead_code)]
+    #[must_use]
+    pub(crate) fn control(&self) -> ProviderDispatchControlV1 {
+        self.ticket.control()
+    }
+
+    #[allow(clippy::missing_errors_doc)]
+    pub fn request_control(
+        &self,
+        control: explorer_extension_api::JobControlStateV1,
+    ) -> Result<(), ExtensionJobRuntimeErrorV1> {
+        self.ticket.control().request_control(control)
+    }
+
+    #[allow(clippy::missing_errors_doc)]
+    pub fn update_current_generations(
+        &self,
+        item_generation: u64,
+        location_generation: u64,
+        source_generation: u64,
+    ) -> Result<(), ExtensionJobRuntimeErrorV1> {
+        self.runtime.update_current_generations(
+            self.handle(),
+            item_generation,
+            location_generation,
+            source_generation,
+        )
+    }
+
+    #[must_use]
+    pub fn drain(
+        &self,
+        current_item_generation: u64,
+        current_location_generation: u64,
+        current_source_generation: u64,
+        maximum_batches: usize,
+    ) -> Vec<crate::AcceptedIncrementalResultBatchV1> {
+        self.runtime.drain(
+            self.handle(),
+            current_item_generation,
+            current_location_generation,
+            current_source_generation,
+            maximum_batches,
+        )
+    }
+
+    /// Final host apply transaction. Host identity data is projected before
+    /// the final locked generation check, then rows commit atomically with it.
+    pub fn apply(
+        &self,
+        batch: &crate::AcceptedIncrementalResultBatchV1,
+        host_identity: impl FnMut(usize) -> (String, u128),
+    ) -> Option<Vec<crate::ExtensionValueRowV1>> {
+        self.runtime.apply_accepted_batch(batch, host_identity)
+    }
+
+    /// Controlled snapshot of host-owned rows for this exact still-current
+    /// batch generation.
+    #[must_use]
+    pub fn applied_rows_snapshot(
+        &self,
+        batch: &crate::AcceptedIncrementalResultBatchV1,
+    ) -> Option<Vec<crate::ExtensionValueRowV1>> {
+        self.runtime.applied_rows_snapshot(batch)
+    }
+
+    #[allow(clippy::missing_errors_doc)]
+    pub fn retire(&self) -> Result<(), ExtensionJobRuntimeErrorV1> {
+        self.ticket.control().retire()
+    }
+
+    /// Invokes the provider exactly once without publishing a terminal yet.
+    #[allow(clippy::missing_errors_doc)]
+    pub fn call_provider(&mut self) -> Result<JobTerminalV1, ExtensionJobRuntimeErrorV1> {
+        if self.callback_started {
+            return Err(ExtensionJobRuntimeErrorV1::ProviderAlreadyInvoked);
+        }
+        let permit = self
+            .markers
+            .begin(&self.marker)
+            .map_err(|_| ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        self.callback_started = true;
+        self.permit = Some(permit);
+        let started = Instant::now();
+        match self.ticket.invoke_once(self.provider.as_ref()) {
+            Ok(terminal) => {
+                self.callback_elapsed = Some(started.elapsed());
+                Ok(terminal)
+            }
+            Err(error) => {
+                let elapsed = started.elapsed();
+                self.callback_elapsed = Some(elapsed);
+                let terminal = if let Some(permit) = self.permit.take() {
+                    if permit.clear().is_err() {
+                        self.ticket.fail_marker_clear();
+                        NativeCallTerminalV1::MarkerFailure
+                    } else {
+                        NativeCallTerminalV1::Incompatible
+                    }
+                } else {
+                    NativeCallTerminalV1::Incompatible
+                };
+                self.ticket.fail_marker_clear();
+                self.markers.record_timing(&self.marker, elapsed, terminal);
+                Err(error)
+            }
+        }
+    }
+
+    /// Clears the durable marker, then and only then commits the callback
+    /// terminal.  Marker-clear failure revokes/purges/retires this generation.
+    #[allow(clippy::missing_errors_doc)]
+    pub fn publish_terminal_after_marker_clear(
+        &mut self,
+        terminal: JobTerminalV1,
+    ) -> Result<ExtensionJobFinishOutcomeV1, ExtensionJobRuntimeErrorV1> {
+        let elapsed = self.callback_elapsed.unwrap_or(Duration::ZERO);
+        let Some(permit) = self.permit.take() else {
+            return Err(ExtensionJobRuntimeErrorV1::TerminalPublicationDenied);
+        };
+        if permit.clear().is_err() {
+            self.ticket.fail_marker_clear();
+            self.markers
+                .record_timing(&self.marker, elapsed, NativeCallTerminalV1::MarkerFailure);
+            return Err(ExtensionJobRuntimeErrorV1::MarkerClearFailed);
+        }
+        let finish = self.ticket.publish_terminal_after_marker_clear(terminal)?;
+        self.markers.record_timing(
+            &self.marker,
+            elapsed,
+            timing_terminal_for_job_terminal(terminal),
+        );
+        Ok(finish)
+    }
+}
+
+fn timing_terminal_for_job_terminal(terminal: JobTerminalV1) -> NativeCallTerminalV1 {
+    match terminal.into_raw() {
+        value if value == JobTerminalV1::PANICKED.into_raw() => NativeCallTerminalV1::Panicked,
+        value if value == JobTerminalV1::PLUGIN_ERROR.into_raw() => {
+            NativeCallTerminalV1::PluginError
+        }
+        value if value == JobTerminalV1::INCOMPATIBLE.into_raw() => {
+            NativeCallTerminalV1::Incompatible
+        }
+        _ => NativeCallTerminalV1::Accepted,
+    }
+}
+
+impl Drop for PreparedNativeJobV1 {
+    fn drop(&mut self) {
+        // A callback that returned but was never marker-cleared/committed must
+        // fail closed, yet it is not a process crash: remove the marker when
+        // possible and let the ticket revoke/purge/retire its generation.
+        if let Some(permit) = self.permit.take() {
+            let elapsed = self.callback_elapsed.unwrap_or(Duration::ZERO);
+            if permit.clear().is_err() {
+                self.ticket.fail_marker_clear();
+                self.markers.record_timing(
+                    &self.marker,
+                    elapsed,
+                    NativeCallTerminalV1::MarkerFailure,
+                );
+            } else {
+                self.markers.record_timing(
+                    &self.marker,
+                    elapsed,
+                    NativeCallTerminalV1::Incompatible,
+                );
+            }
+        }
+    }
+}
 
 /// Explicit application-owned state required for production native activation.
 #[derive(Clone)]
@@ -91,6 +297,45 @@ pub struct NativeFeatureIdentityV1 {
     package_id: String,
     sealed_manifest_digest: String,
     feature: FeatureKeyV1,
+}
+
+impl NativeFeatureIdentityV1 {
+    #[must_use]
+    pub fn package_id(&self) -> &str {
+        &self.package_id
+    }
+    #[must_use]
+    pub fn sealed_manifest_digest(&self) -> &str {
+        &self.sealed_manifest_digest
+    }
+    #[must_use]
+    pub fn feature_id(&self) -> &str {
+        &self.feature.feature_id
+    }
+}
+
+/// Exact native feature generation being drained. Runtime cancellation must
+/// never spill into sibling features or into a re-enabled epoch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct NativeFeatureDrainScopeV1 {
+    identity: NativeFeatureIdentityV1,
+    epoch: u64,
+}
+
+impl NativeFeatureDrainScopeV1 {
+    fn new(identity: NativeFeatureIdentityV1, epoch: u64) -> Self {
+        Self { identity, epoch }
+    }
+
+    #[must_use]
+    pub(crate) fn identity(&self) -> &NativeFeatureIdentityV1 {
+        &self.identity
+    }
+
+    #[must_use]
+    pub(crate) const fn epoch(&self) -> u64 {
+        self.epoch
+    }
 }
 
 /// Backward-compatible name for the feature-scoped runtime authority.
@@ -170,7 +415,7 @@ impl NativeLoaderDiagnosticCodeV1 {
             LoaderError::ManifestAbiSchemaMismatch { .. }
             | LoaderError::EntrypointSdkMajorMismatch { .. }
             | LoaderError::DuplicateRustEntrypointPath { .. }
-            | LoaderError::DuplicateRustRootModule { .. }
+            | LoaderError::RootContractMismatch { .. }
             | LoaderError::ManifestGpuiFingerprintMissing { .. } => Self::ManifestSdk,
             LoaderError::ResidentStatePoisoned
             | LoaderError::AlreadyAttempted { .. }
@@ -208,7 +453,6 @@ enum EntryStateV1 {
     Deferred,
     Activated,
     Rejected,
-    Faulted,
 }
 
 #[derive(Clone, Debug)]
@@ -235,6 +479,8 @@ struct RuntimeStateV1 {
     entries: BTreeMap<EntryKeyV1, EntryStateV1>,
     /// Retains the task-3.3 token for task 3.5's sole guarded registrar claim.
     validated_roots: BTreeMap<EntryKeyV1, LoadedExtensionRootV1>,
+    sealed_contributions: BTreeMap<(String, String), ValidatedContributionSetV1>,
+    providers: BTreeMap<(String, String, String), Arc<JobProviderObjectV1>>,
     gates: BTreeMap<NativeFeatureIdentityV1, FeatureGateV1>,
     rejected_generations: BTreeSet<(String, String)>,
     restart_reasons: BTreeMap<NativeFeatureIdentityV1, BTreeSet<NativeRestartReasonV1>>,
@@ -276,6 +522,7 @@ pub(crate) struct NativeActivationContextV1<'root> {
 }
 
 #[allow(dead_code, reason = "task 3.5 installs the guarded Activated claim")]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum NativeActivationClaimV1 {
     Deferred,
     Activated(NativeActivationBlueprintV1),
@@ -287,6 +534,8 @@ pub(crate) struct NativeActivationBlueprintV1 {
     package_version: String,
     sealed_manifest_digest: String,
     features: Vec<FeatureKeyV1>,
+    registrations: Option<Vec<ContributionRegistrationV1>>,
+    providers: BTreeMap<String, JobProviderObjectV1>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -295,6 +544,7 @@ pub(crate) struct NativeActivationBlueprintV1 {
     reason = "task 3.5 executor will produce both typed failures"
 )]
 pub(crate) enum NativeActivationFailureV1 {
+    SafeModeDenied,
     Rejected,
     Faulted,
 }
@@ -306,6 +556,12 @@ trait NativeDrainPortV1: Send + Sync {
         true
     }
     fn restore(&self, _: &NativeRootIdentityV1) {}
+    fn cancel_scope(&self, scope: &NativeFeatureDrainScopeV1) {
+        self.cancel(scope.identity());
+    }
+    fn wait_for_drain_scope(&self, scope: &NativeFeatureDrainScopeV1, timeout: Duration) -> bool {
+        self.wait_for_drain(scope.identity(), timeout)
+    }
 }
 
 struct GuardedNativeActivationExecutorV1 {
@@ -318,6 +574,21 @@ impl GuardedNativeActivationExecutorV1 {
     }
 }
 
+fn marker_for_loaded_root(
+    context: &NativeActivationContextV1<'_>,
+    root: &LoadedExtensionRootV1,
+) -> MarkerV1 {
+    let metadata = root.metadata();
+    plugin_call_guard::marker(
+        context.package_id,
+        context.sealed_manifest_digest,
+        context.entrypoint_id,
+        root.root_contract_id(),
+        metadata.primary_interface_id.namespace.into_raw(),
+        metadata.primary_interface_id.value,
+    )
+}
+
 impl NativeActivationExecutor for GuardedNativeActivationExecutorV1 {
     fn claim(
         &self,
@@ -326,15 +597,7 @@ impl NativeActivationExecutor for GuardedNativeActivationExecutorV1 {
         let Some(root) = context.root else {
             return Err(NativeActivationFailureV1::Faulted);
         };
-        let metadata = root.metadata();
-        let marker = plugin_call_guard::marker(
-            context.package_id,
-            context.sealed_manifest_digest,
-            context.entrypoint_id,
-            root.root_module(),
-            metadata.primary_interface_id.namespace.into_raw(),
-            metadata.primary_interface_id.value,
-        );
+        let marker = marker_for_loaded_root(&context, root);
         let permit = match self.markers.begin(&marker) {
             Ok(permit) => permit,
             Err(GuardErrorV1::Denied) => {
@@ -343,7 +606,7 @@ impl NativeActivationExecutor for GuardedNativeActivationExecutorV1 {
                     Duration::ZERO,
                     NativeCallTerminalV1::SafeModeDenied,
                 );
-                return Err(NativeActivationFailureV1::Rejected);
+                return Err(NativeActivationFailureV1::SafeModeDenied);
             }
             Err(GuardErrorV1::Fault) => {
                 self.markers.record_timing(
@@ -355,13 +618,21 @@ impl NativeActivationExecutor for GuardedNativeActivationExecutorV1 {
             }
         };
         let started = Instant::now();
-        let result = invoke_guarded_registrar(root, &permit);
+        // Keep the durable marker active through descriptor preflight,
+        // host-native projection, and every rejected foreign-object drop.
+        let claim = match invoke_guarded_registrar(root, &permit) {
+            Ok(output) => guarded_blueprint_from_output(&context, output)
+                .map(NativeActivationClaimV1::Activated)
+                .map_err(|()| NativeActivationFailureV1::Rejected),
+            Err(HostRegistrationErrorV1::Panicked(_)) => Err(NativeActivationFailureV1::Faulted),
+            Err(_) => Err(NativeActivationFailureV1::Rejected),
+        };
         let elapsed = started.elapsed();
-        let terminal = match &result {
+        let terminal = match &claim {
             Ok(_) => NativeCallTerminalV1::Accepted,
-            Err(HostRegistrationErrorV1::Incompatible(_)) => NativeCallTerminalV1::Incompatible,
-            Err(HostRegistrationErrorV1::Plugin(_)) => NativeCallTerminalV1::PluginError,
-            Err(HostRegistrationErrorV1::Panicked(_)) => NativeCallTerminalV1::Panicked,
+            Err(NativeActivationFailureV1::SafeModeDenied) => NativeCallTerminalV1::SafeModeDenied,
+            Err(NativeActivationFailureV1::Faulted) => NativeCallTerminalV1::Panicked,
+            Err(NativeActivationFailureV1::Rejected) => NativeCallTerminalV1::PluginError,
         };
         if permit.clear().is_err() {
             self.markers
@@ -369,23 +640,180 @@ impl NativeActivationExecutor for GuardedNativeActivationExecutorV1 {
             return Err(NativeActivationFailureV1::Faulted);
         }
         self.markers.record_timing(&marker, elapsed, terminal);
-        match result {
-            Ok(_) => Ok(NativeActivationClaimV1::Activated(
-                NativeActivationBlueprintV1 {
-                    package_id: context.package_id.to_owned(),
-                    package_version: context.package_version.to_owned(),
-                    sealed_manifest_digest: context.sealed_manifest_digest.to_owned(),
-                    features: Vec::new(),
-                },
-            )),
-            Err(HostRegistrationErrorV1::Panicked(_)) => Err(NativeActivationFailureV1::Faulted),
-            Err(_) => Err(NativeActivationFailureV1::Rejected),
-        }
+        claim
     }
 }
 
+fn guarded_blueprint_from_output(
+    context: &NativeActivationContextV1<'_>,
+    output: explorer_extension_api::RegistrarOutputV1,
+) -> Result<NativeActivationBlueprintV1, ()> {
+    if output.outcome.registered_interface_count as usize != output.contributions.len()
+        || output.contributions.is_empty()
+        || output.contributions.len() > crate::MAX_CONTRIBUTIONS_PER_BATCH_V1
+    {
+        return Err(());
+    }
+    let mut aggregate_bytes = 0_usize;
+    for descriptor in &output.contributions {
+        let nested_renderer_bytes = descriptor
+            .renderer_contribution_id
+            .as_ref()
+            .map_or(0, abi_stable::std_types::RString::len);
+        let descriptor_bytes = descriptor
+            .feature_id
+            .len()
+            .checked_add(descriptor.contribution_id.len())
+            .and_then(|bytes| bytes.checked_add(nested_renderer_bytes))
+            .and_then(|bytes| {
+                descriptor
+                    .required_capabilities
+                    .iter()
+                    .try_fold(bytes, |total, capability| {
+                        total.checked_add(capability.len())
+                    })
+            })
+            .ok_or(())?;
+        aggregate_bytes = aggregate_bytes.checked_add(descriptor_bytes).ok_or(())?;
+        if descriptor.feature_id.len() > 64
+            || descriptor.contribution_id.len() > 64
+            || nested_renderer_bytes > 64
+            || descriptor.required_capabilities.len() > crate::MAX_CAPABILITIES_PER_CONTRIBUTION_V1
+            || descriptor
+                .required_capabilities
+                .iter()
+                .any(|capability| capability.len() > 64)
+            || aggregate_bytes > 64 * crate::MAX_CONTRIBUTIONS_PER_BATCH_V1
+        {
+            return Err(());
+        }
+    }
+    let mut registrations = Vec::with_capacity(output.contributions.len());
+    let mut providers = BTreeMap::new();
+    for descriptor in output.contributions {
+        let (registration, provider) = contribution_from_abi(descriptor)?;
+        if let Some(provider) = provider
+            && providers
+                .insert(registration.contribution_id.clone(), provider)
+                .is_some()
+        {
+            return Err(());
+        }
+        registrations.push(registration);
+    }
+    let features: Vec<_> = registrations
+        .iter()
+        .map(|registration| FeatureKeyV1::new(context.package_id, &registration.feature_id))
+        .collect::<Result<BTreeSet<_>, _>>()
+        .map_err(|_| ())?
+        .into_iter()
+        .collect();
+    if features.is_empty() {
+        return Err(());
+    }
+    Ok(NativeActivationBlueprintV1 {
+        package_id: context.package_id.to_owned(),
+        package_version: context.package_version.to_owned(),
+        sealed_manifest_digest: context.sealed_manifest_digest.to_owned(),
+        features,
+        registrations: Some(registrations),
+        providers,
+    })
+}
+
+fn contribution_from_abi(
+    descriptor: RegisteredContributionV1,
+) -> Result<(ContributionRegistrationV1, Option<JobProviderObjectV1>), ()> {
+    let kind = match descriptor.kind.into_raw() {
+        1 => ContributionKindV1::Column,
+        2 => ContributionKindV1::GpuiRenderer,
+        3 => ContributionKindV1::Command,
+        4 => ContributionKindV1::Form,
+        5 => ContributionKindV1::OperationPlan,
+        6 => ContributionKindV1::ViewMode,
+        7 => ContributionKindV1::Resource,
+        _ => return Err(()),
+    };
+    let opaque_schema = descriptor
+        .opaque_contract
+        .into_option()
+        .map(|contract| (contract.schema, contract.schema_version));
+    let registration = ContributionRegistrationV1 {
+        feature_id: descriptor.feature_id.to_string(),
+        contribution_id: descriptor.contribution_id.to_string(),
+        kind,
+        required_capabilities: descriptor
+            .required_capabilities
+            .into_iter()
+            .map(|capability| capability.to_string())
+            .collect(),
+        job_contract: Some(ContributionJobContractV1 {
+            interface_id: descriptor.interface_id,
+            expected_sort: descriptor.expected_sort,
+            opaque_schema,
+            renderer_contribution_id: descriptor
+                .renderer_contribution_id
+                .into_option()
+                .map(|renderer| renderer.to_string()),
+        }),
+    };
+    Ok((registration, descriptor.provider.into_option()))
+}
+
+#[cfg(test)]
 struct NoopDrainPortV1;
+#[cfg(test)]
 impl NativeDrainPortV1 for NoopDrainPortV1 {}
+
+/// Production bridge from lifecycle shutdown to the host-owned job registry.
+/// It never enters plugin code and only waits for an already-running callback
+/// scope after the generation has been synchronously revoked.
+struct RuntimeDrainPortV1 {
+    runtimes: Arc<Mutex<Vec<Weak<ExtensionJobRuntimeV1>>>>,
+}
+
+impl RuntimeDrainPortV1 {
+    fn runtimes(&self) -> Vec<Arc<ExtensionJobRuntimeV1>> {
+        let Ok(mut runtimes) = self.runtimes.lock() else {
+            return Vec::new();
+        };
+        runtimes.retain(|runtime| runtime.strong_count() != 0);
+        runtimes.iter().filter_map(Weak::upgrade).collect()
+    }
+}
+
+impl NativeDrainPortV1 for RuntimeDrainPortV1 {
+    fn cancel_scope(&self, scope: &NativeFeatureDrainScopeV1) {
+        for runtime in self.runtimes() {
+            runtime.revoke_feature_generation(
+                scope.identity().package_id(),
+                scope.identity().sealed_manifest_digest(),
+                scope.identity().feature_id(),
+                scope.epoch(),
+            );
+        }
+    }
+
+    fn wait_for_drain_scope(&self, scope: &NativeFeatureDrainScopeV1, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.runtimes().iter().all(|runtime| {
+                runtime.feature_callbacks_drained(
+                    scope.identity().package_id(),
+                    scope.identity().sealed_manifest_digest(),
+                    scope.identity().feature_id(),
+                    scope.epoch(),
+                )
+            }) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
 
 /// The sole native-DLL startup/load authority for one application process.
 ///
@@ -397,6 +825,7 @@ pub struct NativeExtensionLifecycleV1 {
     drain_port: Arc<dyn NativeDrainPortV1>,
     drain_timeout: Duration,
     markers: Option<Arc<PluginCallGuardStoreV1>>,
+    job_runtimes: Arc<Mutex<Vec<Weak<ExtensionJobRuntimeV1>>>>,
 }
 
 impl fmt::Debug for NativeExtensionLifecycleV1 {
@@ -427,9 +856,12 @@ impl NativeExtensionLifecycleV1 {
             slow_callback_threshold,
         )?;
         *acquired = true;
+        let job_runtimes = Arc::new(Mutex::new(Vec::new()));
         Ok(Self::with_ports_and_markers(
             Arc::new(GuardedNativeActivationExecutorV1::new(Arc::clone(&markers))),
-            Arc::new(NoopDrainPortV1),
+            Arc::new(RuntimeDrainPortV1 {
+                runtimes: Arc::clone(&job_runtimes),
+            }),
             {
                 #[cfg(feature = "integration-test-support")]
                 {
@@ -441,16 +873,8 @@ impl NativeExtensionLifecycleV1 {
                 }
             },
             Some(markers),
+            job_runtimes,
         ))
-    }
-
-    #[cfg(test)]
-    fn with_ports(
-        executor: Arc<dyn NativeActivationExecutor>,
-        drain_port: Arc<dyn NativeDrainPortV1>,
-        drain_timeout: Duration,
-    ) -> Self {
-        Self::with_ports_and_markers(executor, drain_port, drain_timeout, None)
     }
 
     fn with_ports_and_markers(
@@ -458,6 +882,7 @@ impl NativeExtensionLifecycleV1 {
         drain_port: Arc<dyn NativeDrainPortV1>,
         drain_timeout: Duration,
         markers: Option<Arc<PluginCallGuardStoreV1>>,
+        job_runtimes: Arc<Mutex<Vec<Weak<ExtensionJobRuntimeV1>>>>,
     ) -> Self {
         Self {
             shared: Arc::new(SharedRuntimeV1 {
@@ -471,7 +896,34 @@ impl NativeExtensionLifecycleV1 {
             drain_port,
             drain_timeout,
             markers,
+            job_runtimes,
         }
+    }
+
+    /// Binds the host's canonical job runtime to this lifecycle. The weak
+    /// registry is owned by this lifecycle instance, never process-global.
+    pub(crate) fn bind_job_runtime(&self, runtime: &Arc<ExtensionJobRuntimeV1>) {
+        let Ok(mut runtimes) = self.job_runtimes.lock() else {
+            return;
+        };
+        runtimes.retain(|candidate| candidate.strong_count() != 0);
+        if runtimes
+            .iter()
+            .any(|candidate| candidate.ptr_eq(&Arc::downgrade(runtime)))
+        {
+            return;
+        }
+        runtimes.push(Arc::downgrade(runtime));
+    }
+
+    fn has_job_runtime(&self, runtime: &Arc<ExtensionJobRuntimeV1>) -> bool {
+        self.job_runtimes.lock().is_ok_and(|runtimes| {
+            runtimes.iter().any(|candidate| {
+                candidate
+                    .upgrade()
+                    .is_some_and(|candidate| Arc::ptr_eq(&candidate, runtime))
+            })
+        })
     }
 
     /// Returns recovered path-free Safe Mode incidents.
@@ -490,6 +942,38 @@ impl NativeExtensionLifecycleV1 {
             .is_some_and(|markers| markers.is_global())
     }
 
+    /// Exercises the same exact-marker deny branch that native registrar
+    /// dispatch uses, without loading a test DLL. This is compiled only for
+    /// the isolated Windows integration harness.
+    #[cfg(feature = "integration-test-support")]
+    #[must_use]
+    pub fn integration_test_recovered_callback_is_denied(&self) -> bool {
+        let Some(markers) = self.markers.as_ref() else {
+            return false;
+        };
+        self.safe_mode_incidents()
+            .into_iter()
+            .any(|incident| match incident {
+                NativeSafeModeIncidentV1::RegistrarInProgress {
+                    package_id,
+                    sealed_manifest_digest,
+                    entrypoint_id,
+                    root_module_id,
+                    primary_interface_namespace,
+                    primary_interface_value,
+                    ..
+                } => markers.denies(&plugin_call_guard::marker(
+                    &package_id,
+                    &sealed_manifest_digest,
+                    &entrypoint_id,
+                    &root_module_id,
+                    primary_interface_namespace,
+                    primary_interface_value,
+                )),
+                NativeSafeModeIncidentV1::UnsafeMarkerState { .. } => markers.is_global(),
+            })
+    }
+
     /// Confirms exactly one recovered incident and removes its denial residue.
     pub fn confirm_safe_mode_incident(
         &self,
@@ -501,7 +985,7 @@ impl NativeExtensionLifecycleV1 {
             .confirm(incident_id)
     }
 
-    /// Returns bounded path-free native registrar timing diagnostics.
+    /// Returns bounded path-free native callback timing diagnostics.
     #[must_use]
     pub fn native_call_timings(&self) -> Vec<NativeCallTimingV1> {
         self.markers
@@ -554,6 +1038,155 @@ impl NativeExtensionLifecycleV1 {
             identity: identity.clone(),
             epoch,
         }))
+    }
+
+    /// Mints job authority solely from a contribution recorded by guarded
+    /// activation. Callers cannot provide a descriptor, package digest, or kind.
+    pub fn mint_job_authority(
+        &self,
+        identity: &NativeRootIdentityV1,
+        contribution_id: &str,
+    ) -> Result<ExtensionJobAuthorityV1, ExtensionJobRuntimeErrorV1> {
+        let lease = self
+            .try_enter(identity)
+            .map_err(|_| ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?
+            .ok_or(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        let generation = (
+            identity.package_id().to_owned(),
+            identity.sealed_manifest_digest().to_owned(),
+        );
+        let validated = self
+            .lock()
+            .map_err(|_| ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?
+            .sealed_contributions
+            .get(&generation)
+            .cloned()
+            .ok_or(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        ExtensionJobAuthorityV1::mint_sealed(&validated, contribution_id, lease)
+    }
+
+    /// Prepares one production provider route before any ABI callback enters.
+    /// The returned transaction exposes only host control/result operations and
+    /// retains the linear lease until it publishes or fail-closes.
+    pub fn prepare_registered_provider(
+        &self,
+        identity: &NativeRootIdentityV1,
+        contribution_id: &str,
+        runtime: Arc<ExtensionJobRuntimeV1>,
+        job_generation: u64,
+        item_generation: u64,
+        location_generation: u64,
+        source_generation: u64,
+        has_item: bool,
+    ) -> Result<PreparedNativeJobV1, ExtensionJobRuntimeErrorV1> {
+        self.prepare_registered_provider_with_input(
+            identity,
+            contribution_id,
+            runtime,
+            job_generation,
+            item_generation,
+            location_generation,
+            source_generation,
+            has_item,
+            None,
+        )
+    }
+
+    /// Production stream-aware route. The source has already been opened and
+    /// identity-attested by host code; sealed contribution authorization is
+    /// checked again by the runtime before any ABI callback receives it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_registered_provider_with_input(
+        &self,
+        identity: &NativeRootIdentityV1,
+        contribution_id: &str,
+        runtime: Arc<ExtensionJobRuntimeV1>,
+        job_generation: u64,
+        item_generation: u64,
+        location_generation: u64,
+        source_generation: u64,
+        has_item: bool,
+        input_stream: Option<HostInputStreamSourceV1>,
+    ) -> Result<PreparedNativeJobV1, ExtensionJobRuntimeErrorV1> {
+        // Test seams can construct a lifecycle directly. Bind once here as
+        // well, then verify the transaction uses a lifecycle-local runtime.
+        self.bind_job_runtime(&runtime);
+        if !self.has_job_runtime(&runtime) {
+            return Err(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority);
+        }
+        let authority = self.mint_job_authority(identity, contribution_id)?;
+        let provider_key = (
+            identity.package_id().to_owned(),
+            identity.sealed_manifest_digest().to_owned(),
+            contribution_id.to_owned(),
+        );
+        let provider = self
+            .lock()
+            .map_err(|_| ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?
+            .providers
+            .get(&provider_key)
+            .cloned()
+            .ok_or(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        let producer = authority.producer().clone();
+        let Some(markers) = self.markers.as_ref() else {
+            return Err(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority);
+        };
+        let marker = plugin_call_guard::marker_with_operation(
+            producer.package_id(),
+            producer.sealed_manifest_digest(),
+            contribution_id,
+            "provider",
+            producer.interface_id().namespace.into_raw(),
+            producer.interface_id().value,
+            NativeCallOperationV1::JobProvider,
+        );
+        let ticket = runtime.prepare_provider_dispatch(ExtensionJobRuntimeRequestV1 {
+            authority,
+            job_generation,
+            item_generation,
+            location_generation,
+            source_generation,
+            has_item,
+            input_stream,
+        })?;
+        Ok(PreparedNativeJobV1 {
+            runtime,
+            ticket,
+            provider,
+            markers: Arc::clone(markers),
+            marker,
+            permit: None,
+            callback_started: false,
+            callback_elapsed: None,
+        })
+    }
+
+    /// Convenience synchronous route for callers that do not need to observe
+    /// the prepared handle/control surface. Schedulers should prefer
+    /// [`Self::prepare_registered_provider`].
+    pub fn dispatch_registered_provider(
+        &self,
+        identity: &NativeRootIdentityV1,
+        contribution_id: &str,
+        runtime: Arc<ExtensionJobRuntimeV1>,
+        job_generation: u64,
+        item_generation: u64,
+        location_generation: u64,
+        source_generation: u64,
+        has_item: bool,
+    ) -> Result<ExtensionJobFinishOutcomeV1, ExtensionJobRuntimeErrorV1> {
+        let mut prepared = self.prepare_registered_provider(
+            identity,
+            contribution_id,
+            runtime,
+            job_generation,
+            item_generation,
+            location_generation,
+            source_generation,
+            has_item,
+        )?;
+        let terminal = prepared.call_provider()?;
+        prepared.publish_terminal_after_marker_clear(terminal)
     }
 
     /// Closes a feature gate, performs ordered drain hooks, then waits boundedly.
@@ -949,6 +1582,7 @@ impl NativeExtensionLifecycleV1 {
             &digest,
             &roots,
             &resolved.manifest().features,
+            Some(resolved),
         )?;
         Ok(NativeStartupAdmissionV1 {
             package_id,
@@ -967,6 +1601,7 @@ impl NativeExtensionLifecycleV1 {
         digest: &str,
         roots: &[(&str, Option<&LoadedExtensionRootV1>)],
         declared_features: &[crate::PackageFeatureV1],
+        resolved: Option<&ResolvedPackageV1<'_>>,
     ) -> Result<Vec<NativeRootIdentityV1>, NativeLifecycleErrorV1> {
         if roots.len() > MAX_NATIVE_LEDGER_ENTRIES_V1 {
             return Err(NativeLifecycleErrorV1::LedgerLimitExceeded);
@@ -979,6 +1614,28 @@ impl NativeExtensionLifecycleV1 {
                 entrypoint_id: (*entrypoint_id).to_owned(),
             })
             .collect::<Vec<_>>();
+        if let Some(markers) = self.markers.as_ref() {
+            for (entrypoint_id, root) in roots {
+                if let Some(root) = root {
+                    let context = NativeActivationContextV1 {
+                        package_id,
+                        package_version,
+                        sealed_manifest_digest: digest,
+                        entrypoint_id,
+                        root: Some(*root),
+                    };
+                    let marker = marker_for_loaded_root(&context, root);
+                    if markers.denies(&marker) {
+                        markers.record_timing(
+                            &marker,
+                            Duration::ZERO,
+                            NativeCallTerminalV1::SafeModeDenied,
+                        );
+                        return Err(NativeLifecycleErrorV1::SafeModeDenied);
+                    }
+                }
+            }
+        }
         {
             let mut state = self.lock()?;
             ensure_admission_active(&state, permit)?;
@@ -1001,9 +1658,9 @@ impl NativeExtensionLifecycleV1 {
             }
         }
 
-        let mut activated = Vec::new();
-        let mut staged_gates = Vec::new();
-        for (key, (_, root)) in entry_keys.into_iter().zip(roots) {
+        let mut activated_blueprints = Vec::new();
+        let mut deferred_entries = Vec::new();
+        for (key, (_, root)) in entry_keys.iter().cloned().zip(roots) {
             {
                 let mut state = self.lock()?;
                 ensure_admission_active(&state, permit)?;
@@ -1025,12 +1682,7 @@ impl NativeExtensionLifecycleV1 {
             });
             match claimed {
                 Ok(NativeActivationClaimV1::Deferred) => {
-                    let mut state = self.lock()?;
-                    ensure_admission_active(&state, permit)?;
-                    *state
-                        .entries
-                        .get_mut(&key)
-                        .ok_or(NativeLifecycleErrorV1::AlreadyClaimed)? = EntryStateV1::Deferred;
+                    deferred_entries.push(key);
                 }
                 Ok(NativeActivationClaimV1::Activated(blueprint)) => {
                     let identities = match validate_blueprint(
@@ -1041,95 +1693,190 @@ impl NativeExtensionLifecycleV1 {
                     ) {
                         Ok(identities) => identities,
                         Err(error) => {
-                            let mut state = self.lock()?;
-                            ensure_admission_active(&state, permit)?;
-                            *state
-                                .entries
-                                .get_mut(&key)
-                                .ok_or(NativeLifecycleErrorV1::AlreadyClaimed)? =
-                                EntryStateV1::Rejected;
-                            state.rejected_generations.insert((
-                                key.package_id.clone(),
-                                key.sealed_manifest_digest.clone(),
-                            ));
+                            self.fail_or_rollback_admission(
+                                &entry_keys,
+                                activated_blueprints.is_empty(),
+                            );
                             return Err(error);
                         }
                     };
-                    let mut state = self.lock()?;
-                    ensure_admission_active(&state, permit)?;
-                    *state
-                        .entries
-                        .get_mut(&key)
-                        .ok_or(NativeLifecycleErrorV1::AlreadyClaimed)? = EntryStateV1::Activated;
-                    drop(state);
-                    for identity in identities {
-                        staged_gates.push((identity.clone(), key.clone()));
-                        activated.push(identity);
-                    }
+                    activated_blueprints.push((key, blueprint, identities));
+                }
+                Err(NativeActivationFailureV1::SafeModeDenied) => {
+                    self.fail_or_rollback_admission(&entry_keys, activated_blueprints.is_empty());
+                    return Err(NativeLifecycleErrorV1::SafeModeDenied);
                 }
                 Err(NativeActivationFailureV1::Rejected) => {
-                    let mut state = self.lock()?;
-                    ensure_admission_active(&state, permit)?;
-                    *state
-                        .entries
-                        .get_mut(&key)
-                        .ok_or(NativeLifecycleErrorV1::AlreadyClaimed)? = EntryStateV1::Rejected;
-                    state
-                        .rejected_generations
-                        .insert((key.package_id.clone(), key.sealed_manifest_digest.clone()));
+                    self.fail_or_rollback_admission(&entry_keys, activated_blueprints.is_empty());
                     return Err(NativeLifecycleErrorV1::ActivationRejected);
                 }
                 Err(NativeActivationFailureV1::Faulted) => {
-                    let mut state = self.lock()?;
-                    ensure_admission_active(&state, permit)?;
-                    *state
-                        .entries
-                        .get_mut(&key)
-                        .ok_or(NativeLifecycleErrorV1::AlreadyClaimed)? = EntryStateV1::Faulted;
-                    state
-                        .rejected_generations
-                        .insert((key.package_id.clone(), key.sealed_manifest_digest.clone()));
+                    self.fail_or_rollback_admission(&entry_keys, activated_blueprints.is_empty());
                     return Err(NativeLifecycleErrorV1::ActivationFaulted);
                 }
             }
         }
-        let mut state = self.lock()?;
-        ensure_admission_active(&state, permit)?;
-        let new_gate_count = staged_gates
-            .iter()
-            .map(|(identity, _)| identity.clone())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .filter(|identity| !state.gates.contains_key(identity))
-            .count();
-        if state
-            .gates
-            .len()
-            .checked_add(new_gate_count)
-            .is_none_or(|count| count > MAX_NATIVE_FEATURE_GATES_V1)
-        {
-            state
-                .rejected_generations
-                .insert((package_id.to_owned(), digest.to_owned()));
-            return Err(NativeLifecycleErrorV1::FeatureGateLimitExceeded);
+        let mut registrations = Vec::new();
+        let mut providers = BTreeMap::new();
+        let mut staged_gates = Vec::new();
+        let mut activated = Vec::new();
+        let mut activated_entries = Vec::new();
+        for (key, blueprint, identities) in activated_blueprints {
+            if let Some(mut root_registrations) = blueprint.registrations {
+                if registrations
+                    .len()
+                    .checked_add(root_registrations.len())
+                    .is_none_or(|count| count > crate::MAX_CONTRIBUTIONS_PER_BATCH_V1)
+                {
+                    self.rollback_admission_entries(&entry_keys);
+                    return Err(NativeLifecycleErrorV1::ActivationRejected);
+                }
+                registrations.append(&mut root_registrations);
+            }
+            for (contribution_id, provider) in blueprint.providers {
+                if providers.insert(contribution_id, provider).is_some() {
+                    self.rollback_admission_entries(&entry_keys);
+                    return Err(NativeLifecycleErrorV1::ActivationRejected);
+                }
+            }
+            for identity in identities {
+                staged_gates.push((identity.clone(), key.clone()));
+                activated.push(identity);
+            }
+            activated_entries.push(key);
         }
-        for (identity, member) in staged_gates {
-            state
+        let validated = if registrations.is_empty() {
+            None
+        } else {
+            let Some(resolved) = resolved else {
+                self.rollback_admission_entries(&entry_keys);
+                return Err(NativeLifecycleErrorV1::ActivationRejected);
+            };
+            if let Ok(validated) = ContributionGateV1::validate(resolved, &registrations) {
+                Some(validated)
+            } else {
+                self.rollback_admission_entries(&entry_keys);
+                return Err(NativeLifecycleErrorV1::ActivationRejected);
+            }
+        };
+        let generation = (package_id.to_owned(), digest.to_owned());
+        let commit = (|| {
+            let mut state = self.lock()?;
+            ensure_admission_active(&state, permit)?;
+            if validated.is_some()
+                && (state.sealed_contributions.contains_key(&generation)
+                    || providers.keys().any(|contribution_id| {
+                        state.providers.contains_key(&(
+                            generation.0.clone(),
+                            generation.1.clone(),
+                            contribution_id.clone(),
+                        ))
+                    }))
+            {
+                return Err(NativeLifecycleErrorV1::ActivationRejected);
+            }
+            let new_gate_count = staged_gates
+                .iter()
+                .map(|(identity, _)| identity.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .filter(|identity| !state.gates.contains_key(identity))
+                .count();
+            if state
                 .gates
-                .entry(identity)
-                .and_modify(|gate| {
-                    gate.members.insert(member.clone());
-                })
-                .or_insert_with(|| FeatureGateV1 {
-                    state: NativeFeatureStateV1::DisabledResident,
-                    accepting: false,
-                    in_flight: 0,
-                    epoch: 0,
-                    operation: GateOperationV1::Idle,
-                    members: BTreeSet::from([member]),
-                });
+                .len()
+                .checked_add(new_gate_count)
+                .is_none_or(|count| count > MAX_NATIVE_FEATURE_GATES_V1)
+            {
+                return Err(NativeLifecycleErrorV1::FeatureGateLimitExceeded);
+            }
+            if deferred_entries
+                .iter()
+                .chain(activated_entries.iter())
+                .any(|key| !state.entries.contains_key(key))
+            {
+                return Err(NativeLifecycleErrorV1::AlreadyClaimed);
+            }
+            for key in &deferred_entries {
+                *state
+                    .entries
+                    .get_mut(key)
+                    .ok_or(NativeLifecycleErrorV1::AlreadyClaimed)? = EntryStateV1::Deferred;
+            }
+            for key in &activated_entries {
+                *state
+                    .entries
+                    .get_mut(key)
+                    .ok_or(NativeLifecycleErrorV1::AlreadyClaimed)? = EntryStateV1::Activated;
+            }
+            for (identity, member) in &staged_gates {
+                state
+                    .gates
+                    .entry(identity.clone())
+                    .and_modify(|gate| {
+                        gate.members.insert(member.clone());
+                    })
+                    .or_insert_with(|| FeatureGateV1 {
+                        state: NativeFeatureStateV1::DisabledResident,
+                        accepting: false,
+                        in_flight: 0,
+                        epoch: 0,
+                        operation: GateOperationV1::Idle,
+                        members: BTreeSet::from([member.clone()]),
+                    });
+            }
+            for (contribution_id, provider) in providers {
+                let provider_key = (generation.0.clone(), generation.1.clone(), contribution_id);
+                debug_assert!(
+                    state
+                        .providers
+                        .insert(provider_key, Arc::new(provider))
+                        .is_none()
+                );
+            }
+            if let Some(validated) = validated {
+                state.sealed_contributions.insert(generation, validated);
+            }
+            Ok(())
+        })();
+        if let Err(error) = commit {
+            self.rollback_admission_entries(&entry_keys);
+            return Err(error);
         }
         Ok(activated)
+    }
+
+    /// Reverts a package-generation admission before its single atomic commit.
+    /// Retained ABI roots are released after the lifecycle mutex so their
+    /// destruction can never re-enter host state while it is locked.
+    fn rollback_admission_entries(&self, entry_keys: &[EntryKeyV1]) {
+        let roots = self.shared.state.lock().map_or_else(
+            |_| Vec::new(),
+            |mut state| {
+                for key in entry_keys {
+                    state.entries.remove(key);
+                }
+                entry_keys
+                    .iter()
+                    .filter_map(|key| state.validated_roots.remove(key))
+                    .collect::<Vec<_>>()
+            },
+        );
+        drop(roots);
+    }
+
+    fn fail_or_rollback_admission(&self, entry_keys: &[EntryKeyV1], first_root_failed: bool) {
+        if !first_root_failed {
+            self.rollback_admission_entries(entry_keys);
+            return;
+        }
+        if let Ok(mut state) = self.shared.state.lock() {
+            for key in entry_keys {
+                if let Some(entry) = state.entries.get_mut(key) {
+                    *entry = EntryStateV1::Rejected;
+                }
+            }
+        }
     }
 
     fn seal_startup(&self) -> Result<(), NativeLifecycleErrorV1> {
@@ -1165,9 +1912,13 @@ impl NativeExtensionLifecycleV1 {
     }
 
     fn abort_startup(&self) {
-        if let Ok(mut state) = self.shared.state.lock()
-            && state.phase == Some(LifecyclePhaseV1::Admitting)
-        {
+        let providers = (|| {
+            let Ok(mut state) = self.shared.state.lock() else {
+                return None;
+            };
+            if state.phase != Some(LifecyclePhaseV1::Admitting) {
+                return None;
+            }
             let identities = state.gates.keys().cloned().collect::<Vec<_>>();
             for gate in state.gates.values_mut() {
                 gate.accepting = false;
@@ -1178,8 +1929,14 @@ impl NativeExtensionLifecycleV1 {
             for identity in identities {
                 insert_restart_reason(&mut state, &identity, NativeRestartReasonV1::StartupAborted);
             }
+            state.sealed_contributions.clear();
+            let providers = std::mem::take(&mut state.providers);
             state.phase = Some(LifecyclePhaseV1::Closed);
-        }
+            Some(providers)
+        })();
+        // ABI-owned provider objects can run arbitrary plugin `Drop`; release
+        // them only after the lifecycle mutex is no longer held.
+        drop(providers);
     }
 
     fn wait_for_local_leases_until(
@@ -1213,14 +1970,22 @@ impl NativeExtensionLifecycleV1 {
         identity: &NativeRootIdentityV1,
         deadline: Instant,
     ) -> Result<bool, NativeLifecycleErrorV1> {
+        let scope = {
+            let state = self.lock()?;
+            let gate = state
+                .gates
+                .get(identity)
+                .ok_or_else(|| NativeLifecycleErrorV1::UnknownRoot(identity.clone()))?;
+            NativeFeatureDrainScopeV1::new(identity.clone(), gate.epoch)
+        };
         // Foreign hooks and bounded waiting intentionally run without the
         // lifecycle state lock so reentrant hooks cannot deadlock the manager.
         self.drain_port.detach(identity);
-        self.drain_port.cancel(identity);
+        self.drain_port.cancel_scope(&scope);
         let local_drained = self.wait_for_local_leases_until(identity, deadline)?;
         let port_drained = self
             .drain_port
-            .wait_for_drain(identity, remaining_until(deadline));
+            .wait_for_drain_scope(&scope, remaining_until(deadline));
         Ok(local_drained && port_drained)
     }
 
@@ -1237,7 +2002,13 @@ impl NativeExtensionLifecycleV1 {
         drain_port: Arc<dyn NativeDrainPortV1>,
         timeout: Duration,
     ) -> Self {
-        Self::with_ports(executor, drain_port, timeout)
+        Self::with_ports_and_markers(
+            executor,
+            drain_port,
+            timeout,
+            None,
+            Arc::new(Mutex::new(Vec::new())),
+        )
     }
 
     #[cfg(test)]
@@ -1267,6 +2038,7 @@ impl NativeExtensionLifecycleV1 {
                 .map(|entry| (*entry, None))
                 .collect::<Vec<_>>(),
             &declared,
+            None,
         )
     }
 }
@@ -1326,6 +2098,83 @@ impl StartupSession<'_> {
     }
 }
 
+#[cfg(all(test, feature = "integration-test-support"))]
+#[doc(hidden)]
+#[allow(dead_code, clippy::wildcard_imports)]
+pub mod integration_test_support {
+    use super::*;
+    use std::sync::Arc;
+
+    struct Executor;
+    impl NativeActivationExecutor for Executor {
+        fn claim(
+            &self,
+            context: NativeActivationContextV1<'_>,
+        ) -> Result<NativeActivationClaimV1, NativeActivationFailureV1> {
+            Ok(NativeActivationClaimV1::Activated(
+                NativeActivationBlueprintV1 {
+                    package_id: context.package_id.to_owned(),
+                    package_version: context.package_version.to_owned(),
+                    sealed_manifest_digest: context.sealed_manifest_digest.to_owned(),
+                    features: vec![
+                        FeatureKeyV1::new(context.package_id, "feature")
+                            .map_err(|_| NativeActivationFailureV1::Rejected)?,
+                    ],
+                    registrations: None,
+                    providers: BTreeMap::new(),
+                },
+            ))
+        }
+    }
+    pub struct LiveDispatchFixtureV1 {
+        lifecycle: NativeExtensionLifecycleV1,
+        identity: NativeFeatureIdentityV1,
+    }
+    impl LiveDispatchFixtureV1 {
+        pub fn enter(&self) -> Result<NativeDispatchLeaseV1, NativeLifecycleErrorV1> {
+            self.lifecycle
+                .try_enter(&self.identity)?
+                .ok_or(NativeLifecycleErrorV1::InvalidFeatureAuthority)
+        }
+        #[must_use]
+        pub fn package_id(&self) -> &str {
+            self.identity.package_id()
+        }
+        #[must_use]
+        pub fn digest(&self) -> &str {
+            self.identity.sealed_manifest_digest()
+        }
+        pub fn disable(&self) -> Result<NativeFeatureStateV1, NativeLifecycleErrorV1> {
+            self.lifecycle.disable(&self.identity)
+        }
+    }
+    pub fn live_dispatch_fixture(
+        package_id: &str,
+        sealed_manifest_digest: &str,
+    ) -> Result<LiveDispatchFixtureV1, NativeLifecycleErrorV1> {
+        let mut lifecycle = NativeExtensionLifecycleV1::with_test_ports(
+            Arc::new(Executor),
+            Arc::new(NoopDrainPortV1),
+            Duration::from_millis(1),
+        );
+        let mut session = lifecycle.begin_startup()?;
+        let identities = session.admit_synthetic(
+            package_id,
+            sealed_manifest_digest,
+            &["native"],
+            &["feature"],
+        )?;
+        session.seal()?;
+        Ok(LiveDispatchFixtureV1 {
+            lifecycle,
+            identity: identities
+                .into_iter()
+                .next()
+                .ok_or(NativeLifecycleErrorV1::InvalidFeatureAuthority)?,
+        })
+    }
+}
+
 impl Drop for StartupSession<'_> {
     fn drop(&mut self) {
         if !self.sealed {
@@ -1345,6 +2194,12 @@ impl NativeDispatchLeaseV1 {
     #[must_use]
     pub const fn epoch(&self) -> u64 {
         self.epoch
+    }
+
+    /// Identity bound to this still-live dispatch lease.
+    #[must_use]
+    pub fn feature_identity(&self) -> &NativeFeatureIdentityV1 {
+        &self.identity
     }
 }
 
@@ -1383,6 +2238,8 @@ pub enum NativeLifecycleErrorV1 {
     AlreadyClaimed,
     #[error("native activation was rejected")]
     ActivationRejected,
+    #[error("Safe Mode denied native activation before any callback")]
+    SafeModeDenied,
     #[error("native activation faulted")]
     ActivationFaulted,
     #[error("native loader rejected the sealed package")]
@@ -1515,6 +2372,11 @@ mod tests {
         thread,
     };
 
+    use explorer_extension_api::{
+        IdNamespaceV1, InputStreamStatusV1, JobProviderImplementationV1, StableIdV1,
+    };
+    use serde_json::json;
+
     use super::*;
 
     struct FakeExecutor {
@@ -1536,6 +2398,8 @@ mod tests {
                             package_version: context.package_version.to_owned(),
                             sealed_manifest_digest: context.sealed_manifest_digest.to_owned(),
                             features: self.features.clone(),
+                            registrations: None,
+                            providers: BTreeMap::new(),
                         },
                     ))
                 },
@@ -1633,6 +2497,8 @@ mod tests {
                     package_version: context.package_version.to_owned(),
                     sealed_manifest_digest: context.sealed_manifest_digest.to_owned(),
                     features: vec![feature()],
+                    registrations: None,
+                    providers: BTreeMap::new(),
                 },
             ))
         }
@@ -1689,6 +2555,329 @@ mod tests {
                 ..FakeDrain::default()
             }),
         )
+    }
+
+    struct DelayedProvider;
+
+    impl JobProviderImplementationV1 for DelayedProvider {
+        fn run(&self, _: explorer_extension_api::JobContextV1) -> JobTerminalV1 {
+            thread::sleep(Duration::from_millis(2));
+            JobTerminalV1::COMPLETED
+        }
+    }
+
+    struct InputCapturingProvider {
+        observed_status: Arc<Mutex<Option<InputStreamStatusV1>>>,
+    }
+
+    impl JobProviderImplementationV1 for InputCapturingProvider {
+        fn run(&self, context: explorer_extension_api::JobContextV1) -> JobTerminalV1 {
+            let status = context
+                .input
+                .into_option()
+                .map_or(InputStreamStatusV1::CLOSED, |stream| stream.length().status);
+            *self.observed_status.lock().expect("observed input status") = Some(status);
+            JobTerminalV1::COMPLETED
+        }
+    }
+
+    struct RegisteredInputExecutor {
+        required_capabilities: Vec<String>,
+        observed_status: Arc<Mutex<Option<InputStreamStatusV1>>>,
+    }
+
+    impl NativeActivationExecutor for RegisteredInputExecutor {
+        fn claim(
+            &self,
+            context: NativeActivationContextV1<'_>,
+        ) -> Result<NativeActivationClaimV1, NativeActivationFailureV1> {
+            let contribution_id = "input-provider".to_owned();
+            let provider = JobProviderObjectV1::new(InputCapturingProvider {
+                observed_status: Arc::clone(&self.observed_status),
+            });
+            Ok(NativeActivationClaimV1::Activated(
+                NativeActivationBlueprintV1 {
+                    package_id: context.package_id.to_owned(),
+                    package_version: context.package_version.to_owned(),
+                    sealed_manifest_digest: context.sealed_manifest_digest.to_owned(),
+                    features: vec![
+                        FeatureKeyV1::new(context.package_id, "feature")
+                            .map_err(|_| NativeActivationFailureV1::Rejected)?,
+                    ],
+                    registrations: Some(vec![ContributionRegistrationV1 {
+                        feature_id: "feature".to_owned(),
+                        contribution_id: contribution_id.clone(),
+                        kind: ContributionKindV1::Column,
+                        required_capabilities: self.required_capabilities.clone(),
+                        job_contract: Some(ContributionJobContractV1 {
+                            interface_id: StableIdV1::new(IdNamespaceV1::new(1, 1), 1),
+                            expected_sort: abi_stable::std_types::ROption::RNone,
+                            opaque_schema: None,
+                            renderer_contribution_id: None,
+                        }),
+                    }]),
+                    providers: BTreeMap::from([(contribution_id, provider)]),
+                },
+            ))
+        }
+    }
+
+    fn with_registered_input_lifecycle(
+        required_capabilities: Vec<String>,
+        action: impl FnOnce(
+            &NativeExtensionLifecycleV1,
+            &NativeRootIdentityV1,
+            Arc<ExtensionJobRuntimeV1>,
+            Arc<Mutex<Option<InputStreamStatusV1>>>,
+        ),
+    ) {
+        let manifest = crate::PackageManifestV1::parse_json(
+            &json!({
+                "manifest_version": 1,
+                "package": { "id": "pkg", "version": "1.0.0" },
+                "publisher": {
+                    "id": "example.publisher",
+                    "display_name": "Example Publisher",
+                    "contacts": [{ "kind": "email", "value": "support@example.invalid", "purposes": ["support"] }]
+                },
+                "sdk": { "bundle_id": "dev.20260802", "target": "x86_64-pc-windows-msvc", "abi_schema": 1, "gpui": false },
+                "rust": [], "lua": [], "skins": [], "locales": [], "tools": [],
+                "features": [{ "id": "feature", "capabilities": ["filesystem.read"], "dependencies": [] }],
+                "dependencies": [], "payloads": [], "signature": { "kind": "unsigned" }, "data_version": 1
+            })
+            .to_string(),
+        )
+        .expect("valid package manifest");
+        let candidates = [crate::PackageValidationResultV1::for_resolver_test(
+            manifest,
+        )];
+        let resolution = crate::PackageResolverV1::resolve(&candidates);
+        let resolved = &resolution.resolved_packages()[0];
+        let digest =
+            crate::package_validation::sealed_manifest_canonical_digest(resolved.manifest())
+                .expect("canonical sealed manifest digest");
+        let observed_status = Arc::new(Mutex::new(None));
+        let marker_directory = tempfile::tempdir().expect("marker directory");
+        let markers = PluginCallGuardStoreV1::open(
+            marker_directory.path().join("markers"),
+            Duration::from_millis(10),
+        )
+        .expect("markers");
+        let mut lifecycle = NativeExtensionLifecycleV1::with_ports_and_markers(
+            Arc::new(RegisteredInputExecutor {
+                required_capabilities,
+                observed_status: Arc::clone(&observed_status),
+            }),
+            Arc::new(FakeDrain {
+                allow: true,
+                ..FakeDrain::default()
+            }),
+            Duration::from_millis(10),
+            Some(markers),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let startup = lifecycle.begin_startup().expect("startup session");
+        let permit = startup
+            .lifecycle
+            .reserve_admission()
+            .expect("admission permit");
+        let identities = startup
+            .lifecycle
+            .admit_entries(
+                permit,
+                "pkg",
+                "1.0.0",
+                &digest,
+                &[("native", None)],
+                &resolved.manifest().features,
+                Some(resolved),
+            )
+            .expect("sealed input contribution admission");
+        startup.seal().expect("seal lifecycle");
+        let runtime = Arc::new(ExtensionJobRuntimeV1::new(
+            crate::extension_job_runtime::ExtensionResultBufferConfigV1::try_new(
+                4, 4, 8, 8, 8, 64, 64, 64, 4096, 4096, 4096,
+            )
+            .expect("runtime config"),
+        ));
+        action(
+            &lifecycle,
+            &identities[0],
+            runtime,
+            Arc::clone(&observed_status),
+        );
+    }
+
+    #[test]
+    fn sealed_lifecycle_route_delivers_input_only_to_filesystem_read_contributions() {
+        with_registered_input_lifecycle(
+            vec!["filesystem.read".to_owned()],
+            |lifecycle, identity, runtime, observed_status| {
+                let source =
+                    HostInputStreamSourceV1::from_host_snapshot(vec![1, 2, 3], 1, true).unwrap();
+                let mut prepared = lifecycle
+                    .prepare_registered_provider_with_input(
+                        identity,
+                        "input-provider",
+                        runtime,
+                        1,
+                        1,
+                        1,
+                        1,
+                        true,
+                        Some(source),
+                    )
+                    .expect("sealed filesystem.read provider accepts input");
+                let terminal = prepared.call_provider().expect("provider invoked");
+                assert_eq!(terminal, JobTerminalV1::COMPLETED);
+                assert_eq!(
+                    *observed_status.lock().expect("observed input status"),
+                    Some(InputStreamStatusV1::OK)
+                );
+                assert!(matches!(
+                    prepared.publish_terminal_after_marker_clear(terminal),
+                    Ok(ExtensionJobFinishOutcomeV1::Published(_))
+                ));
+            },
+        );
+
+        with_registered_input_lifecycle(
+            Vec::new(),
+            |lifecycle, identity, runtime, observed_status| {
+                let source = HostInputStreamSourceV1::from_host_snapshot(vec![1], 1, true).unwrap();
+                assert!(matches!(
+                    lifecycle.prepare_registered_provider_with_input(
+                        identity,
+                        "input-provider",
+                        runtime,
+                        1,
+                        1,
+                        1,
+                        1,
+                        true,
+                        Some(source),
+                    ),
+                    Err(ExtensionJobRuntimeErrorV1::UnauthorizedInputStream)
+                ));
+                assert_eq!(
+                    *observed_status.lock().expect("observed input status"),
+                    None
+                );
+            },
+        );
+    }
+
+    fn prepared_provider_for_timing(
+        state: &std::path::Path,
+        threshold: Duration,
+    ) -> (PreparedNativeJobV1, Arc<PluginCallGuardStoreV1>) {
+        let markers =
+            PluginCallGuardStoreV1::open(state.to_path_buf(), threshold).expect("markers");
+        let runtime = Arc::new(ExtensionJobRuntimeV1::new(
+            crate::extension_job_runtime::ExtensionResultBufferConfigV1::try_new(
+                1, 1, 1, 1, 1, 1, 1, 1, 1024, 1024, 1024,
+            )
+            .expect("runtime config"),
+        ));
+        let ticket = runtime
+            .prepare_provider_dispatch(ExtensionJobRuntimeRequestV1 {
+                authority: ExtensionJobAuthorityV1::for_test("provider-package"),
+                job_generation: 1,
+                item_generation: 1,
+                location_generation: 1,
+                source_generation: 1,
+                has_item: true,
+                input_stream: None,
+            })
+            .expect("dispatch ticket");
+        let marker = plugin_call_guard::marker_with_operation(
+            "provider-package",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "provider-contribution",
+            "provider",
+            0x0001_0001,
+            1,
+            NativeCallOperationV1::JobProvider,
+        );
+        (
+            PreparedNativeJobV1 {
+                runtime,
+                ticket,
+                provider: Arc::new(JobProviderObjectV1::new(DelayedProvider)),
+                markers: Arc::clone(&markers),
+                marker,
+                permit: None,
+                callback_started: false,
+                callback_elapsed: None,
+            },
+            markers,
+        )
+    }
+
+    #[test]
+    fn provider_timing_measures_only_the_callback_not_publish_delay() {
+        const POST_CALLBACK_DELAY: Duration = Duration::from_millis(40);
+        let directory = tempfile::tempdir().expect("state directory");
+        let (mut prepared, markers) =
+            prepared_provider_for_timing(directory.path(), Duration::ZERO);
+        let terminal = prepared.call_provider().expect("provider terminal");
+        let callback_elapsed = prepared.callback_elapsed.expect("callback elapsed");
+        thread::sleep(POST_CALLBACK_DELAY);
+        assert!(matches!(
+            prepared.publish_terminal_after_marker_clear(terminal),
+            Ok(ExtensionJobFinishOutcomeV1::Published(_))
+        ));
+
+        let timing = markers.timings().pop().expect("provider timing");
+        assert_eq!(timing.package_id, "provider-package");
+        assert_eq!(timing.callback_id, "provider-contribution");
+        assert_eq!(timing.primary_interface_namespace, 0x0001_0001);
+        assert_eq!(timing.primary_interface_value, 1);
+        assert_eq!(timing.operation, NativeCallOperationV1::JobProvider);
+        assert_eq!(timing.terminal, NativeCallTerminalV1::Accepted);
+        assert!(
+            timing.slow,
+            "zero threshold classifies the delayed provider as slow"
+        );
+        assert_eq!(timing.elapsed, callback_elapsed);
+    }
+
+    #[test]
+    fn provider_dispatch_failure_records_a_bounded_timing_terminal() {
+        let directory = tempfile::tempdir().expect("state directory");
+        let (mut prepared, markers) =
+            prepared_provider_for_timing(directory.path(), Duration::ZERO);
+        prepared
+            .request_control(explorer_extension_api::JobControlStateV1::CANCELLED)
+            .expect("cancel before callback");
+        assert_eq!(
+            prepared.call_provider(),
+            Err(ExtensionJobRuntimeErrorV1::InactiveProviderCall)
+        );
+        let timing = markers.timings().pop().expect("failure timing");
+        assert_eq!(timing.operation, NativeCallOperationV1::JobProvider);
+        assert_eq!(timing.terminal, NativeCallTerminalV1::Incompatible);
+        assert!(timing.slow);
+    }
+
+    #[test]
+    fn provider_terminal_diagnostics_preserve_error_classes() {
+        let cases = [
+            (JobTerminalV1::COMPLETED, NativeCallTerminalV1::Accepted),
+            (JobTerminalV1::CANCELLED, NativeCallTerminalV1::Accepted),
+            (
+                JobTerminalV1::PLUGIN_ERROR,
+                NativeCallTerminalV1::PluginError,
+            ),
+            (
+                JobTerminalV1::INCOMPATIBLE,
+                NativeCallTerminalV1::Incompatible,
+            ),
+            (JobTerminalV1::PANICKED, NativeCallTerminalV1::Panicked),
+        ];
+        for (terminal, expected) in cases {
+            assert_eq!(timing_terminal_for_job_terminal(terminal), expected);
+        }
     }
 
     #[test]
@@ -2070,6 +3259,54 @@ mod tests {
     }
 
     #[test]
+    fn second_root_failure_rolls_back_the_entire_package_generation_transaction() {
+        struct FailsSecondRoot {
+            calls: AtomicUsize,
+        }
+        impl NativeActivationExecutor for FailsSecondRoot {
+            fn claim(
+                &self,
+                context: NativeActivationContextV1<'_>,
+            ) -> Result<NativeActivationClaimV1, NativeActivationFailureV1> {
+                if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+                    return Err(NativeActivationFailureV1::Rejected);
+                }
+                Ok(NativeActivationClaimV1::Activated(
+                    NativeActivationBlueprintV1 {
+                        package_id: context.package_id.to_owned(),
+                        package_version: context.package_version.to_owned(),
+                        sealed_manifest_digest: context.sealed_manifest_digest.to_owned(),
+                        features: vec![feature()],
+                        registrations: None,
+                        providers: BTreeMap::new(),
+                    },
+                ))
+            }
+        }
+        let executor: Arc<dyn NativeActivationExecutor> = Arc::new(FailsSecondRoot {
+            calls: AtomicUsize::new(0),
+        });
+        let drain: Arc<dyn NativeDrainPortV1> = Arc::new(FakeDrain {
+            allow: true,
+            ..FakeDrain::default()
+        });
+        let mut lifecycle =
+            NativeExtensionLifecycleV1::with_test_ports(executor, drain, Duration::from_millis(10));
+        let mut session = lifecycle.begin_startup().expect("session");
+        assert!(matches!(
+            session.admit_synthetic("pkg", "digest", &["one", "two"], &["feature"]),
+            Err(NativeLifecycleErrorV1::ActivationRejected)
+        ));
+        drop(session);
+        let state = lifecycle.lock().expect("state");
+        assert!(state.entries.is_empty());
+        assert!(state.validated_roots.is_empty());
+        assert!(state.sealed_contributions.is_empty());
+        assert!(state.providers.is_empty());
+        assert!(state.gates.is_empty());
+    }
+
+    #[test]
     fn restart_reasons_are_orthogonal_and_timeout_cannot_overwrite_them() {
         let executor = Arc::new(FakeExecutor {
             calls: AtomicUsize::new(0),
@@ -2343,6 +3580,26 @@ mod tests {
             Err(NativeLifecycleErrorV1::StartupClosed)
         ));
         assert_eq!(executor.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn safe_mode_denial_is_not_reclassified_as_a_plugin_rejection() {
+        let executor = Arc::new(FakeExecutor {
+            calls: AtomicUsize::new(0),
+            features: vec![feature()],
+            failure: Some(NativeActivationFailureV1::SafeModeDenied),
+        });
+        let drain = Arc::new(FakeDrain {
+            allow: true,
+            ..FakeDrain::default()
+        });
+        let mut lifecycle = lifecycle(Arc::clone(&executor), drain);
+        let mut session = lifecycle.begin_startup().expect("session");
+        assert!(matches!(
+            session.admit_synthetic("pkg", "digest", &["native"], &["feature"]),
+            Err(NativeLifecycleErrorV1::SafeModeDenied)
+        ));
+        assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
