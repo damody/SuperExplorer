@@ -1,7 +1,8 @@
 # SuperExplorer SDK toolchain
 
 The SDK is pinned to Rust `1.97.1` for `x86_64-pc-windows-msvc`; the exact
-compiler and Cargo commit hashes are part of the toolchain contract. Run the
+compiler and Cargo commit hashes plus the SHA-256 of the actual `rustc.exe` and
+`cargo.exe` are signed fixed inputs in `sdk-lock.json`. Run the
 contract test from the repository root:
 
 ```powershell
@@ -32,7 +33,10 @@ the protected SDK snapshot.
 
 A materialized consumer project can be validated, built, and packaged only from
 the SDK contract and offline vendor tree. The checked-in P0 fixture is a
-placeholder template exercised by `sdk/tests/plugin-tooling-self-test.ps1`.
+minimal Rust-first author example exercised by
+`sdk/tests/plugin-tooling-self-test.ps1`; it implements
+`ExtensionRegistrarImplementationV1` and lets the SDK create the ABI-safe
+registrar factory and panic trampoline.
 
 The automated `clean-readme-reproduction` gate runs this exact documented
 reproduction command against a fresh materialized fixture:
@@ -46,6 +50,24 @@ powershell -NoProfile -ExecutionPolicy Bypass -File sdk/scripts/validate-plugin.
 powershell -NoProfile -ExecutionPolicy Bypass -File sdk/scripts/build-plugin.ps1 -PluginRoot C:\path\to\plugin
 powershell -NoProfile -ExecutionPolicy Bypass -File sdk/scripts/package-plugin.ps1 -PluginRoot C:\path\to\plugin
 ```
+
+These wrappers are fail-closed: they use an isolated `CARGO_HOME`, hash-bound
+absolute Cargo and rustc executables directly resolved from the SDK-owned
+installed toolchain (never caller `PATH` or rustup shims), offline vendor configuration, a no-reparse consumer
+snapshot, canonical SDK bundle identity, and
+atomic `.sepack` publication. Do not place consumer `.cargo` configuration, linker
+overrides (including `RUSTC_BOOTSTRAP` or `CARGO_INCREMENTAL`), junctions, or symlinks in the plugin tree. Typed, path-redacted failure
+diagnostics and the trusted requirement-to-UITEST/CI map are documented in
+[PLUGIN_DIAGNOSTICS.md](PLUGIN_DIAGNOSTICS.md).
+
+The author-facing jobs, values, streams, cache and performance contract is in
+[EXTENSION_API_GUIDE.md](EXTENSION_API_GUIDE.md); it distinguishes
+`abi_stable` plugin APIs from host-internal composition.
+
+`build.rs`, proc macros, the MSVC linker, and Windows SDK tools execute as part
+of a native Windows build. They are trusted prerequisites for this fixed
+toolchain, not a plugin sandbox; use an isolated offline build guest with no
+secrets when evaluating untrusted plugin sources.
 
 Release freeze metadata is deliberately fail-closed. A production freeze
 requires a protected annotated tag, a trusted Git signing keyring, detached
@@ -62,14 +84,21 @@ protected values before verifying the annotated tag and detached bundle.
 
 ## Extension API ABI contract
 
-The extension root uses schema namespace/version `0x5345_0001`. SDK major
-version 1.0 remains binary-compatible with 1.1: the latter adds only the
-optional `describe_contract` registrar tail, which old plugins omit.
+The extension root uses schema namespace/version `0x5345_0001`. The Rust-first
+layout in this bundle is the first public V1 baseline. Earlier handwritten
+raw-callback fixtures were unpublished and are retained only to prove that an
+incompatible layout is rejected before any generated accessor, registrar factory,
+or registrar callback runs. After publication the complete V1 root shape is fixed;
+compatible evolution uses descriptor/capability data and approved non-exhaustive
+values, while structural ABI changes require a new SDK major.
 
-Plugins must construct registration callbacks with
-`RegistrarCallbackV1::new`, the only safe trampoline. Fabricating the ABI
-function pointer is raw unsafe and may abort the process; callback panics are
-translated to the typed `Panicked` error.
+Plugin authors implement the ordinary Rust
+`ExtensionRegistrarImplementationV1` trait and return their typed
+`RegistrarOutputResultV1`. The SDK owns the ABI adapter: use
+`ExtensionRootModuleV1::new::<YourRegistrar>(metadata, fingerprint)` from the exported root and do not
+write `extern "C"` callbacks, function-pointer layouts, or trampolines in a
+plugin. The adapter translates panics into the typed `Panicked` error and
+keeps the `abi_stable` prefix layout at the dynamic-library boundary.
 
 Run the isolated, offline contract driver from the repository root:
 

@@ -23,8 +23,16 @@ try {
     Copy-Item -LiteralPath (Join-Path $repo 'sdk\ui-abi-fingerprint.json') -Destination (Join-Path $workspace 'sdk\ui-abi-fingerprint.json')
     New-Item -ItemType Directory -Path (Join-Path $workspace 'crates') -Force | Out-Null
     foreach ($crate in @('explorer-extension-api', 'explorer-extension-ui-api', 'explorer-extension-host')) { Copy-Item -LiteralPath (Join-Path $repo "crates\$crate") -Destination (Join-Path $workspace "crates\$crate") -Recurse }
-    Copy-Item -LiteralPath (Join-Path $repo 'sdk\fixtures\extension-api-contract\old-v1-api') -Destination (Join-Path $temp 'old-v1-api') -Recurse
-    Copy-Item -LiteralPath (Join-Path $repo 'sdk\fixtures\extension-api-contract\old-v1-plugin') -Destination (Join-Path $temp 'old-v1-plugin') -Recurse
+    # The isolated runner builds explorer-extension-host only as a normal
+    # dependency. Remove repository test-only path dependencies from the copied
+    # manifest so Cargo does not resolve unrelated workspace crates/vendor data.
+    $copiedHostManifest = Join-Path $workspace 'crates\explorer-extension-host\Cargo.toml'
+    $copiedHostText = Get-Content -LiteralPath $copiedHostManifest -Raw -Encoding UTF8
+    $copiedHostText = [regex]::Replace($copiedHostText, '(?ms)^\[dev-dependencies\]\r?\n.*?(?=^\[lints\])', '')
+    [IO.File]::WriteAllText($copiedHostManifest, $copiedHostText, [Text.UTF8Encoding]::new($false))
+    # ABI v1 is still unpublished. This fixture intentionally exercises only
+    # the current stateful registrar object; legacy raw-callback roots are not
+    # a compatibility promise during this migration.
     $vendor = (Join-Path $repo 'sdk\vendor\cargo-sources').Replace('\', '/')
     [IO.File]::WriteAllText((Join-Path $cargoHome 'config.toml'), "[build]`ntarget = 'x86_64-pc-windows-msvc'`n`n[net]`noffline = true`n`n[source.crates-io]`nreplace-with = 'cargo-sources'`n`n[source.cargo-sources]`ndirectory = '$vendor'`n", [Text.UTF8Encoding]::new($false))
     $env:CARGO_HOME = $cargoHome; $env:CARGO_TARGET_DIR = $target
@@ -44,16 +52,8 @@ try {
     }
     & cargo.exe build --manifest-path (Join-Path $workspace 'Cargo.toml') --locked --offline -p extension-dll-loader-contract-runner
     if ($LASTEXITCODE -ne 0) { throw 'runner build failed' }
-    & cargo.exe build --manifest-path (Join-Path $workspace 'Cargo.toml') --locked --offline -p extension-dll-loader-contract-old-runner
-    if ($LASTEXITCODE -ne 0) { throw 'old v1 runner build failed' }
-    $env:EXTENSION_API_CONTRACT_MODE = 'compatible'
-    & cargo.exe build --manifest-path (Join-Path $temp 'old-v1-plugin\Cargo.toml') --locked --offline
-    if ($LASTEXITCODE -ne 0) { throw 'old v1 plugin build failed' }
     $runner = Join-Path $target 'x86_64-pc-windows-msvc\debug\extension-dll-loader-contract-runner.exe'
-    $oldRunner = Join-Path $target 'x86_64-pc-windows-msvc\debug\extension-dll-loader-contract-old-runner.exe'
-    $oldPlugin = Join-Path $target 'x86_64-pc-windows-msvc\debug\extension_api_contract_old_v1_plugin.dll'
-    Copy-Item -LiteralPath $oldPlugin -Destination (Join-Path $runtime 'old-data.dll') -Force
-    function Invoke-RunnerScenario([string] $Name, [string[]] $ScenarioArguments, [string] $OldPluginMode = 'compatible') {
+    function Invoke-RunnerScenario([string] $Name, [string[]] $ScenarioArguments) {
         $callbackMarker = Join-Path $runtime ($Name + '.callback')
         $stateDirectory = Join-Path $runtime ($Name + '.state')
         Remove-Item -LiteralPath $callbackMarker, $stateDirectory -Recurse -Force -ErrorAction SilentlyContinue
@@ -61,7 +61,6 @@ try {
         $env:EXTENSION_DLL_LOADER_CONTRACT_MARKER = $callbackMarker
         $env:EXTENSION_API_CONTRACT_MARKER = $callbackMarker
         $env:EXTENSION_DLL_LOADER_CONTRACT_STATE_DIR = $stateDirectory
-        $env:EXTENSION_API_CONTRACT_MODE = $OldPluginMode
         & $runner @ScenarioArguments
         if ($LASTEXITCODE -ne 0) { throw "contract scenario failed: $Name" }
         Assert-EmptyCallMarkerDirectory $stateDirectory
@@ -73,11 +72,6 @@ try {
     Invoke-RunnerScenario 'gpui-wrong-manifest' @('gpui-wrong-manifest',(Join-Path $runtime 'gpui.dll'))
     Invoke-RunnerScenario 'two-roots' @('two-roots',(Join-Path $runtime 'data.dll'),(Join-Path $runtime 'alternate.dll'))
     Invoke-RunnerScenario 'batch-invalid' @('batch-invalid',(Join-Path $runtime 'data.dll'),(Join-Path $runtime 'foreign.dll'))
-    Invoke-RunnerScenario 'old-data' @('old-data',(Join-Path $runtime 'old-data.dll'))
-    Invoke-RunnerScenario 'old-panic' @('old-panic',(Join-Path $runtime 'old-data.dll')) 'panic'
-    Invoke-RunnerScenario 'old-schema-mismatch' @('old-schema-mismatch',(Join-Path $runtime 'old-data.dll')) 'schema-mismatch'
-    Invoke-RunnerScenario 'old-root-contract-mismatch' @('old-root-contract-mismatch',(Join-Path $runtime 'old-data.dll')) 'root-contract-mismatch'
-    Invoke-RunnerScenario 'old-sdk-major-mismatch' @('old-sdk-major-mismatch',(Join-Path $runtime 'old-data.dll')) 'sdk-major-mismatch'
     $rawAbortCallback = Join-Path $runtime 'raw-abort.callback'
     $rawAbortState = Join-Path $runtime 'raw-abort.state'
     Remove-Item -LiteralPath $rawAbortCallback, $rawAbortState -Recurse -Force -ErrorAction SilentlyContinue
@@ -109,13 +103,6 @@ try {
     Remove-Item Env:EXTENSION_DLL_LOADER_CONTRACT_SLOW_MS -ErrorAction SilentlyContinue
     Assert-EmptyCallMarkerDirectory $slowState
     Invoke-RunnerScenario 'drain-timeout' @('drain-timeout',(Join-Path $runtime 'data.dll'))
-    foreach ($oldPlugin in @('data.dll', 'gpui.dll')) {
-        $oldMarker = Join-Path $runtime ("old-host-" + $oldPlugin + '.marker')
-        Remove-Item -LiteralPath $oldMarker -Force -ErrorAction SilentlyContinue
-        $env:EXTENSION_DLL_LOADER_CONTRACT_MARKER = $oldMarker
-        & $oldRunner (Join-Path $runtime $oldPlugin) $oldMarker
-        if ($LASTEXITCODE -ne 0) { throw "old v1 host compatibility failed: $oldPlugin" }
-    }
     Write-Output 'extension DLL loader contract: PASS'
 } finally {
     Remove-Item Env:EXTENSION_DLL_LOADER_CONTRACT_RAW_ABORT -ErrorAction SilentlyContinue

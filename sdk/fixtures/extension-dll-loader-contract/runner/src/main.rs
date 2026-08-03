@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use explorer_extension_host::{
     FeatureRuntimeFactV1, NativeCallOperationV1, NativeCallTerminalV1, NativeExtensionLifecycleV1,
     NativeFeatureStateV1, NativeLifecycleConfigV1, NativeLifecycleErrorV1,
@@ -19,14 +19,14 @@ use ring::{
     rand::SystemRandom,
     signature::{Ed25519KeyPair, KeyPair},
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 const CALLBACK_MARKER_ENV: &str = "EXTENSION_DLL_LOADER_CONTRACT_MARKER";
 const STATE_DIR_ENV: &str = "EXTENSION_DLL_LOADER_CONTRACT_STATE_DIR";
 const FIXTURE_PACKAGE_ID: &str = "fixture.loader";
 const FIXTURE_ENTRYPOINT_ID: &str = "data";
-const FIXTURE_ROOT_MODULE_ID: &str = "fixture.data";
+const FIXTURE_ROOT_MODULE_ID: &str = "root-contract-v1";
 const FIXTURE_INTERFACE_NAMESPACE: u32 = 0x5345_0001;
 const FIXTURE_PRIMARY_INTERFACE_VALUE: u64 = 201;
 const DEFAULT_NATIVE_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -96,20 +96,6 @@ fn run() -> Result<(), String> {
                 &state_dir,
             )
         }
-        [scenario, first] if scenario == "old-data" => expect_load(
-            &fingerprint,
-            false,
-            None,
-            &[("old", Path::new(first))],
-            &state_dir,
-            &["old-v1 registrar invoked"],
-        ),
-        [scenario, first] if scenario == "old-panic" => expect_activation_fault(
-            &fingerprint,
-            &[("old", Path::new(first))],
-            &state_dir,
-            "old-v1 registrar entered before translated panic",
-        ),
         [scenario, first] if scenario == "raw-abort" => {
             // The fixture DLL aborts the process after its registrar marker is
             // durable. Reaching this return is itself a contract failure.
@@ -139,20 +125,6 @@ fn run() -> Result<(), String> {
         [scenario, first] if scenario == "drain-timeout" => {
             expect_drain_timeout_is_sticky(&fingerprint, Path::new(first), &state_dir)
         }
-        [scenario, first] if matches!(
-            scenario.to_str(),
-            Some("old-schema-mismatch" | "old-root-contract-mismatch" | "old-sdk-major-mismatch")
-        ) =>
-        {
-            expect_reject(
-                &fingerprint,
-                false,
-                None,
-                &[("old", Path::new(first))],
-                NativeLoaderDiagnosticCodeV1::RootContract,
-                &state_dir,
-            )
-        }
         [scenario, first, second] if scenario == "two-roots" => {
             let admission = load(
                 &fingerprint,
@@ -176,7 +148,7 @@ fn run() -> Result<(), String> {
             NativeLoaderDiagnosticCodeV1::InvalidAbiRoot,
             &state_dir,
         ),
-        _ => Err("usage: runner <data|gpui-exact|gpui-missing-binary|gpui-wrong-binary|gpui-wrong-manifest|old-data|old-panic|raw-abort|safe-mode-blocked|safe-mode-confirm|slow|drain-timeout|old-schema-mismatch|old-root-contract-mismatch|old-sdk-major-mismatch> <dll> | <two-roots|batch-invalid> <dll> <dll>".to_owned()),
+        _ => Err("usage: runner <data|gpui-exact|gpui-missing-binary|gpui-wrong-binary|gpui-wrong-manifest|raw-abort|safe-mode-blocked|safe-mode-confirm|slow|drain-timeout> <dll> | <two-roots|batch-invalid> <dll> <dll>".to_owned()),
     }
 }
 
@@ -229,30 +201,6 @@ fn expect_reject(
     assert_call_markers_empty(state_dir)
 }
 
-fn expect_activation_fault(
-    fingerprint: &str,
-    dlls: &[(&str, &Path)],
-    state_dir: &Path,
-    expected_callback: &str,
-) -> Result<(), String> {
-    match load(fingerprint, false, None, dlls, state_dir) {
-        Err(LoadFailure::Lifecycle(NativeLifecycleErrorV1::ActivationFaulted)) => {}
-        Err(LoadFailure::Lifecycle(error)) => {
-            return Err(format!(
-                "expected translated panic activation fault, got lifecycle error: {error}"
-            ));
-        }
-        Err(LoadFailure::Setup(error)) => {
-            return Err(format!(
-                "fixture setup failed before translated panic admission: {error}"
-            ));
-        }
-        Ok(_) => return Err("translated panic unexpectedly admitted the package".to_owned()),
-    }
-    assert_callback_marker(&[expected_callback])?;
-    assert_call_markers_empty(state_dir)
-}
-
 fn expect_safe_mode_blocked(fingerprint: &str, dll: &Path, state_dir: &Path) -> Result<(), String> {
     match load_with_lifecycle(
         fingerprint,
@@ -264,7 +212,7 @@ fn expect_safe_mode_blocked(fingerprint: &str, dll: &Path, state_dir: &Path) -> 
         |lifecycle| assert_fixture_registrar_incident(lifecycle, state_dir).map(|_| ()),
         |_| Ok(()),
     ) {
-        Err(LoadFailure::Lifecycle(NativeLifecycleErrorV1::ActivationRejected)) => {}
+        Err(LoadFailure::Lifecycle(NativeLifecycleErrorV1::SafeModeDenied)) => {}
         Err(error) => {
             return Err(format!(
                 "expected recovered Safe Mode denial before callback, got {error}"
@@ -702,9 +650,9 @@ fn prepare_package(
         payloads.push(
             json!({"path":path,"size":bytes.len(),"sha256":sha256_hex(&bytes),"kind":"rust_dll"}),
         );
-        rust.push(json!({"id":id,"entrypoint":format!("native/{id}.dll"),"root_module":format!("fixture.{id}"),"sdk_major":1}));
+        rust.push(json!({"id":id,"entrypoint":format!("native/{id}.dll"),"root_contract_id":{"namespace":1_397_030_913_u64,"value":1_u64},"sdk_major":1}));
     }
-    let mut value = json!({"manifest_version":1,"package":{"id":"fixture.loader","version":"1.0.0"},"publisher":{"id":"fixture.publisher","display_name":"Fixture Publisher","contacts":[{"kind":"email","value":"support@example.invalid","purposes":["support"]}]},"sdk":{"bundle_id":"fixture", "target":"x86_64-pc-windows-msvc","abi_schema":1,"gpui":gpui,"ui_abi_fingerprint":manifest_fingerprint},"rust":rust,"lua":[],"skins":[],"locales":[],"tools":[],"features":[],"dependencies":[],"payloads":payloads,"signature":{"kind":"ed25519","key_id":"fixture.signing","signature":""},"data_version":1});
+    let mut value = json!({"manifest_version":1,"package":{"id":"fixture.loader","version":"1.0.0"},"publisher":{"id":"fixture.publisher","display_name":"Fixture Publisher","contacts":[{"kind":"email","value":"support@example.invalid","purposes":["support"]}]},"sdk":{"bundle_id":"fixture", "target":"x86_64-pc-windows-msvc","abi_schema":1,"gpui":gpui,"ui_abi_fingerprint":manifest_fingerprint},"rust":rust,"lua":[],"skins":[],"locales":[],"tools":[],"features":[{"id":"fixture","capabilities":[],"dependencies":[]}],"dependencies":[],"payloads":payloads,"signature":{"kind":"ed25519","key_id":"fixture.signing","signature":""},"data_version":1});
     let parsed = explorer_extension_host::PackageManifestV1::parse_json(&value.to_string())
         .map_err(|error| LoadFailure::Setup(error.to_string()))?;
     value["signature"]["signature"] = Value::String(

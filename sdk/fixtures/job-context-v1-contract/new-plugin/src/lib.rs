@@ -11,6 +11,7 @@
 
 use std::{
     alloc::{GlobalAlloc, Layout, System},
+    env, fs,
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -20,12 +21,15 @@ use abi_stable::{
     std_types::{ROption, RResult, RString, RVec},
 };
 use explorer_extension_api::{
-    ABI_SCHEMA_V1, EXTENSION_ID_NAMESPACE_V1, ExtensionRegistrarV1, ExtensionRootModuleV1,
-    ExtensionRootModuleV1_Ref, IncrementalResultBatchV1, IncrementalResultEntryV1, JobContextV1,
-    JobControlStateV1, JobProgressStatusV1, JobProgressUpdateV1, JobProviderCallbackV1,
-    JobProviderImplementationV1, JobTerminalV1, PluginMetadataV1, PluginValueKindV1, PluginValueV1,
-    ROOT_MODULE_CONTRACT_ID_V1, RegistrarCallbackV1, RegistrarImplementationV1, RegistrarRequestV1,
-    RegistrarResultV1, RegistrationOutcomeV1, SDK_MAJOR_VERSION_V1, SinkSubmitStatusV1, StableIdV1,
+    EXTENSION_ID_NAMESPACE_V1, ExtensionRegistrarImplementationV1,
+    ExtensionRootModuleV1, ExtensionRootModuleV1_Ref, IncrementalResultBatchV1,
+    IncrementalResultEntryV1, JobContextV1, JobControlStateV1, JobProgressStatusV1,
+    JobProgressUpdateV1, JobProviderImplementationV1, JobProviderObjectV1, JobTerminalV1,
+    PluginItemResultV1, PluginMetadataV1, PluginValueKindV1, PluginValueV1,
+    RegisteredContributionKindV1, RegisteredContributionV1,
+    RegistrarOutputResultV1, RegistrarOutputV1,
+    RegistrarRequestV1, RegistrationOutcomeV1, SinkSubmitStatusV1,
+    StableIdV1,
 };
 
 struct CountingAllocator;
@@ -93,25 +97,69 @@ pub extern "C" fn superexplorer_job_context_v1_allocator_snapshot() -> FixtureAl
 }
 
 struct FixtureRegistrar;
-
-impl RegistrarImplementationV1 for FixtureRegistrar {
-    fn register(_: RegistrarRequestV1) -> RegistrarResultV1 {
-        RResult::ROk(RegistrationOutcomeV1::accepted(1))
+fn mode() -> String {
+    env::var("JOB_CONTEXT_V1_MODE").unwrap_or_default()
+}
+fn marker(value: &str) {
+    if let Ok(path) = env::var("JOB_CONTEXT_V1_MARKER") {
+        let _ = fs::write(path, value);
+    }
+}
+impl Drop for FixtureRegistrar {
+    fn drop(&mut self) {
+        if mode() == "registrar-drop-panic" {
+            marker("registrar-drop");
+            panic!("fixture registrar drop panic");
+        }
     }
 }
 
-extern "C" fn describe_contract() -> StableIdV1 {
-    ROOT_MODULE_CONTRACT_ID_V1
+impl ExtensionRegistrarImplementationV1 for FixtureRegistrar {
+    fn create() -> Self {
+        if mode() == "factory-panic" {
+            marker("factory");
+            panic!("fixture factory panic");
+        }
+        Self
+    }
+    fn register(&self, _: RegistrarRequestV1) -> RegistrarOutputResultV1 {
+        if mode() == "register-panic" {
+            marker("register");
+            panic!("fixture register panic");
+        }
+        RResult::ROk(RegistrarOutputV1 {
+            outcome: RegistrationOutcomeV1::accepted(1),
+            contributions: RVec::from(vec![RegisteredContributionV1 {
+                feature_id: RString::from("fixture"),
+                contribution_id: RString::from("job"),
+                kind: RegisteredContributionKindV1::COLUMN,
+                required_capabilities: RVec::new(),
+                interface_id: StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 421),
+                expected_sort: ROption::RNone,
+                opaque_contract: ROption::RNone,
+                renderer_contribution_id: ROption::RNone,
+                provider: ROption::RSome(JobProviderObjectV1::new(TransportProvider)),
+            }]),
+        })
+    }
 }
 
 struct TransportProvider;
+impl Drop for TransportProvider {
+    fn drop(&mut self) {
+        if mode() == "provider-drop-panic" {
+            marker("provider-drop");
+            panic!("fixture provider drop panic");
+        }
+    }
+}
 
 impl JobProviderImplementationV1 for TransportProvider {
-    fn run(context: JobContextV1) -> JobTerminalV1 {
+    fn run(&self, context: JobContextV1) -> JobTerminalV1 {
         if context.feature_epoch == u64::MAX {
             panic!("fixture provider panic");
         }
-        match context.control_poll.poll(context.job) {
+        match context.poll_control() {
             state if state == JobControlStateV1::ACTIVE => {}
             state
                 if state == JobControlStateV1::CANCELLED || state == JobControlStateV1::CLOSED =>
@@ -169,17 +217,20 @@ impl JobProviderImplementationV1 for TransportProvider {
                 item,
                 item_generation: context.item_generation,
                 source_generation: context.source_generation,
-                value: PluginValueV1 {
-                    kind: PluginValueKindV1::TEXT,
-                    reserved: 0,
-                    integer: 0,
-                    float: 0.0,
-                    text: RString::from("fixture"),
-                    payload: RVec::new(),
-                    opaque_schema: StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 0),
-                    opaque_schema_version: 0,
-                    reserved_tail: 0,
-                },
+                result: PluginItemResultV1::value(
+                    PluginValueV1 {
+                        kind: PluginValueKindV1::TEXT,
+                        reserved: 0,
+                        integer: 0,
+                        float: 0.0,
+                        text: RString::from("fixture"),
+                        payload: RVec::new(),
+                        opaque_schema: StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 0),
+                        opaque_schema_version: 0,
+                        reserved_tail: 0,
+                    },
+                    ROption::RNone,
+                ),
             }]),
         });
         if outcome.status == SinkSubmitStatusV1::ACCEPTED {
@@ -207,35 +258,14 @@ impl JobProviderImplementationV1 for TransportProvider {
     }
 }
 
-/// Contract-fixture-only entry point exercised by the host through `libloading`.
-///
-/// The root registrar remains the ordinary extension ABI; this proves that the
-/// synchronous job context remains sound when it crosses the plugin DLL boundary.
-#[unsafe(no_mangle)]
-pub extern "C" fn superexplorer_job_context_v1_contract_run(
-    context: JobContextV1,
-) -> JobTerminalV1 {
-    JobProviderCallbackV1::new::<TransportProvider>().invoke(context)
-}
-
 #[export_root_module]
 pub fn get_library() -> ExtensionRootModuleV1_Ref {
-    let registrar = ExtensionRegistrarV1 {
-        register: RegistrarCallbackV1::new::<FixtureRegistrar>(),
-        describe_contract,
-        ui_abi_fingerprint_sha256: ROption::RNone,
-    }
-    .leak_into_prefix();
-    ExtensionRootModuleV1 {
-        abi_schema: ABI_SCHEMA_V1,
-        root_contract_id: ROOT_MODULE_CONTRACT_ID_V1,
-        sdk_major: SDK_MAJOR_VERSION_V1,
-        reserved: 0,
-        metadata: PluginMetadataV1 {
+    ExtensionRootModuleV1::new::<FixtureRegistrar>(
+        PluginMetadataV1 {
             plugin_id: StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 420),
             primary_interface_id: StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 421),
         },
-        registrar,
-    }
+        ROption::RNone,
+    )
     .leak_into_prefix()
 }

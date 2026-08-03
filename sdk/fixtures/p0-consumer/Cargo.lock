@@ -97,6 +97,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "533d38ecd2709b7608fb8e18e4504deb99e9a72879e6aa66373a76d8dc4259ea"
 
 [[package]]
+name = "exif-lite"
+version = "0.1.0"
+
+[[package]]
+name = "explorer-extension-api"
+version = "1.2.0"
+dependencies = [
+ "abi_stable",
+]
+
+[[package]]
 name = "generational-arena"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -135,6 +146,8 @@ name = "p0-consumer"
 version = "0.1.0"
 dependencies = [
  "abi_stable",
+ "exif-lite",
+ "explorer-extension-api",
 ]
 
 [[package]]

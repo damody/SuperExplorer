@@ -10,7 +10,7 @@
     "evidence_mode": { "enum": ["production", "fixture"] },
     "protected_tag": { "$ref": "#/$defs/protected_tag" },
     "source": { "$ref": "#/$defs/source" },
-    "rc_id": { "type": "string", "minLength": 1 },
+    "rc_id": { "type": "string", "pattern": "^(?!\\.{1,2}$)[A-Za-z0-9][A-Za-z0-9._-]*$" },
     "bundle_id": { "type": "string", "minLength": 1 },
     "release_input_digest": { "$ref": "#/$defs/sha256" },
     "artifacts": {
@@ -51,12 +51,14 @@
       "properties": { "revision": { "$ref": "#/$defs/git_oid" }, "tree": { "$ref": "#/$defs/git_oid" } }
     },
     "protected_tag": {
-      "type": "object", "additionalProperties": false, "required": ["name", "tag_object", "object_revision", "tree"],
+      "type": "object", "additionalProperties": false, "required": ["name", "repository", "tag_object", "object_revision", "tree", "signer_primary_fingerprint"],
       "properties": {
-        "name": { "type": "string", "pattern": "^gpui-sdk-v" },
+        "name": { "type": "string", "pattern": "^gpui-sdk-v[0-9A-Za-z._-]+$" },
+        "repository": { "const": "https://github.com/damody/gpui-ce-explorer.git" },
         "tag_object": { "$ref": "#/$defs/git_oid" },
         "object_revision": { "$ref": "#/$defs/git_oid" },
-        "tree": { "$ref": "#/$defs/git_oid" }
+        "tree": { "$ref": "#/$defs/git_oid" },
+        "signer_primary_fingerprint": { "$ref": "#/$defs/openpgp_fingerprint" }
       }
     },
     "protection": {
@@ -64,12 +66,13 @@
       "properties": { "provider": { "type": "string", "minLength": 1 }, "policy_id": { "type": "string", "minLength": 1 }, "record": { "$ref": "#/$defs/artifact" } }
     },
     "signature": {
-      "type": "object", "additionalProperties": false, "required": ["verification", "signer", "artifact"],
-      "properties": { "verification": { "enum": ["detached_gpg", "fixture_unsigned"] }, "signer": { "type": "string", "minLength": 1 }, "artifact": { "$ref": "#/$defs/artifact" } }
+      "type": "object", "additionalProperties": false, "required": ["verification", "signer", "primary_fingerprint", "artifact"],
+      "properties": { "verification": { "enum": ["detached_gpg", "fixture_unsigned"] }, "signer": { "type": "string", "minLength": 1 }, "primary_fingerprint": { "$ref": "#/$defs/openpgp_fingerprint" }, "artifact": { "$ref": "#/$defs/artifact" } }
     },
     "provenance": {
       "type": "object", "additionalProperties": false, "required": ["builder", "predicate_type", "artifact"],
       "properties": { "builder": { "type": "string", "minLength": 1 }, "predicate_type": { "type": "string", "minLength": 1 }, "artifact": { "$ref": "#/$defs/artifact" } }
-    }
+    },
+    "openpgp_fingerprint": { "type": "string", "pattern": "^[0-9A-F]{40}$" }
   }
 }

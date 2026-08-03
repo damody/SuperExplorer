@@ -1,69 +1,89 @@
-#![allow(
-    non_camel_case_types,
-    reason = "abi_stable convention generates the RootModule reference suffix"
-)]
-
-//! Standalone P0 consumer root module.
+//! Standalone P0 consumer using the public Rust-first extension author API.
 //!
-//! This fixture proves the SDK loading boundary only.  It deliberately does
-//! not construct or render a GPUI element: the public GPUI contribution API is
-//! introduced by Task 2.  The immutable fingerprint callback lets a host make
-//! its pre-callback compatibility decision now without pretending a renderer
-//! exists.
+//! The fixture intentionally has no GPUI contribution. It proves that a clean,
+//! offline consumer can export the SDK root and implement an ordinary Rust
+//! registrar trait without declaring its own FFI callbacks or root layout.
 
-use std::{
-    env, fs,
-    panic::{catch_unwind, AssertUnwindSafe},
-    path::PathBuf,
-};
+use std::{env, fs, path::PathBuf};
 
 use abi_stable::{
     export_root_module,
-    library::RootModule,
-    package_version_strings,
     prefix_type::PrefixTypeTrait,
-    sabi_types::VersionStrings,
-    std_types::{RResult, RStr, RString},
-    StableAbi,
+    std_types::{ROption, RResult, RString, RVec},
+};
+use explorer_extension_api::{
+    ABI_SCHEMA_V1, AbiErrorCodeV1, AbiErrorV1, EXTENSION_ID_NAMESPACE_V1,
+    ExtensionRegistrarImplementationV1, ExtensionRootModuleV1, ExtensionRootModuleV1_Ref,
+    PluginMetadataV1, ROOT_MODULE_CONTRACT_ID_V1, RegisteredContributionKindV1,
+    RegisteredContributionV1, RegistrarOutputResultV1,
+    RegistrarOutputV1, RegistrarRequestV1, RegistrationOutcomeV1, SDK_MAJOR_VERSION_V1, StableIdV1,
 };
 
-/// The P0 root layout version.  Task 2 replaces this fixture-only layout with
-/// the versioned public extension API.
-pub const ABI_SCHEMA_VERSION: u32 = 1;
-
-/// A snapshot-bound immutable compatibility value, copied from the canonical
-/// SDK artifact when this template was produced.
-pub const UI_ABI_FINGERPRINT: &str =
-    "92a05fdb333b30307a6ee3ec0da73f6fa2a44f92c6ac7735d24d662fcc089f59";
-
 const MARKER_ENVIRONMENT_VARIABLE: &str = "P0_CONSUMER_REGISTRAR_MARKER";
+const PLUGIN_ID: StableIdV1 = StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 1_001);
+const PRIMARY_INTERFACE_ID: StableIdV1 = StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 1_002);
 
-pub type RegistrarResult = RResult<u32, RString>;
+struct P0ConsumerRegistrar;
 
-/// Minimal, prefix-compatible root.  Both compatibility fields are exposed
-/// before the callback; the registrar itself repeats validation defensively
-/// before it can write its invocation marker.
-#[repr(C)]
-#[derive(StableAbi)]
-#[sabi(kind(Prefix(prefix_ref = P0ConsumerRoot_Ref)))]
-#[sabi(missing_field(panic))]
-pub struct P0ConsumerRoot {
-    pub abi_schema: u32,
-    pub ui_abi_fingerprint: extern "C" fn() -> RString,
-    #[sabi(last_prefix_field)]
-    pub registrar: extern "C" fn(u32, RStr<'static>) -> RegistrarResult,
-}
+impl ExtensionRegistrarImplementationV1 for P0ConsumerRegistrar {
+    fn create() -> Self {
+        Self
+    }
 
-impl RootModule for P0ConsumerRoot_Ref {
-    abi_stable::declare_root_module_statics! {P0ConsumerRoot_Ref}
+    fn register(&self, request: RegistrarRequestV1) -> RegistrarOutputResultV1 {
+        if request.abi_schema != ABI_SCHEMA_V1 {
+            return RResult::RErr(AbiErrorV1::new(
+                AbiErrorCodeV1::SCHEMA_MISMATCH,
+                ROOT_MODULE_CONTRACT_ID_V1,
+                request.abi_schema.into_raw(),
+            ));
+        }
+        if request.root_contract_id != ROOT_MODULE_CONTRACT_ID_V1 {
+            return RResult::RErr(AbiErrorV1::new(
+                AbiErrorCodeV1::UNSUPPORTED_ID,
+                request.root_contract_id,
+                0,
+            ));
+        }
+        if request.sdk_major != SDK_MAJOR_VERSION_V1 {
+            return RResult::RErr(AbiErrorV1::new(
+                AbiErrorCodeV1::SDK_MAJOR_MISMATCH,
+                ROOT_MODULE_CONTRACT_ID_V1,
+                u32::from(request.sdk_major),
+            ));
+        }
 
-    const BASE_NAME: &'static str = "p0_consumer";
-    const NAME: &'static str = "p0_consumer";
-    const VERSION_STRINGS: VersionStrings = package_version_strings!();
-}
+        // Exercise the exact direct registry dependency patched to the private
+        // vendor tree. This proves the source snapshot keeps its private,
+        // provenance-bound dependency available to Cargo offline.
+        let _ = exif_lite::parser_name();
+        if let Err(error) = mark_callback_invocation() {
+            return RResult::RErr(AbiErrorV1::new(
+                AbiErrorCodeV1::REGISTRATION_REJECTED,
+                ROOT_MODULE_CONTRACT_ID_V1,
+                error.len() as u32,
+            ));
+        }
 
-extern "C" fn immutable_ui_abi_fingerprint() -> RString {
-    RString::from(UI_ABI_FINGERPRINT)
+        RResult::ROk(RegistrarOutputV1 {
+            outcome: RegistrationOutcomeV1::accepted(1),
+            // NativeExtensionLifecycleV1 admits only non-empty output whose
+            // accepted count matches the contribution batch exactly. This is
+            // deliberately bound to the fixture manifest's `main` feature
+            // and its declared `abi` capability.
+            contributions: RVec::from(vec![RegisteredContributionV1 {
+                feature_id: RString::from("main"),
+                contribution_id: RString::from("abi-root"),
+                kind: RegisteredContributionKindV1::COLUMN,
+                required_capabilities: RVec::from(vec![RString::from("abi")]),
+                interface_id: PRIMARY_INTERFACE_ID,
+                expected_sort: ROption::RNone,
+                opaque_contract: ROption::RNone,
+                renderer_contribution_id: ROption::RNone,
+                provider: ROption::RNone,
+            }]),
+        })
+    }
 }
 
 fn marker_path() -> Option<PathBuf> {
@@ -82,72 +102,89 @@ fn mark_callback_invocation() -> Result<(), RString> {
     })
 }
 
-fn registrar_inner(expected_schema: u32, expected_fingerprint: RStr<'static>) -> RegistrarResult {
-    if expected_schema != ABI_SCHEMA_VERSION {
-        return RResult::RErr(RString::from("ABI schema mismatch"));
-    }
-    if expected_fingerprint.as_str() != UI_ABI_FINGERPRINT {
-        return RResult::RErr(RString::from("UI ABI fingerprint mismatch"));
-    }
-    // This must remain after all compatibility checks.  Host tests use it to
-    // prove a mismatched fingerprint never crosses the callback boundary.
-    match mark_callback_invocation() {
-        Ok(()) => RResult::ROk(7),
-        Err(error) => RResult::RErr(error),
-    }
-}
-
-extern "C" fn registrar(
-    expected_schema: u32,
-    expected_fingerprint: RStr<'static>,
-) -> RegistrarResult {
-    match catch_unwind(AssertUnwindSafe(|| {
-        registrar_inner(expected_schema, expected_fingerprint)
-    })) {
-        Ok(terminal) => terminal,
-        Err(_) => RResult::RErr(RString::from("P0 consumer registrar panicked")),
-    }
-}
-
-/// `plugin_root` is the manifest-declared `abi_stable` root-module export.
+/// The sole ABI root module. `abi_stable` exports its fixed loader symbol;
+/// semantic identity is data in [`ExtensionRootModuleV1`], never an
+/// author-configurable manifest string.
 #[export_root_module]
-pub fn plugin_root() -> P0ConsumerRoot_Ref {
-    P0ConsumerRoot {
-        abi_schema: ABI_SCHEMA_VERSION,
-        ui_abi_fingerprint: immutable_ui_abi_fingerprint,
-        registrar,
-    }
+pub fn plugin_root() -> ExtensionRootModuleV1_Ref {
+    ExtensionRootModuleV1::new::<P0ConsumerRegistrar>(
+        PluginMetadataV1 {
+            plugin_id: PLUGIN_ID,
+            primary_interface_id: PRIMARY_INTERFACE_ID,
+        },
+        ROption::RNone,
+    )
     .leak_into_prefix()
 }
 
 #[cfg(test)]
 mod tests {
+    use explorer_extension_api::{AbiSchemaIdV1, IdNamespaceV1, registrar_request_v1};
+
     use super::*;
 
     #[test]
-    fn root_declares_immutable_pre_callback_compatibility_data() {
+    fn root_is_the_fixed_public_v1_contract() {
         let root = plugin_root();
-        assert_eq!(root.abi_schema(), ABI_SCHEMA_VERSION);
-        assert_eq!((root.ui_abi_fingerprint())().as_str(), UI_ABI_FINGERPRINT);
+
+        assert_eq!(root.abi_schema(), ABI_SCHEMA_V1);
+        assert_eq!(root.root_contract_id(), ROOT_MODULE_CONTRACT_ID_V1);
+        assert_eq!(root.sdk_major(), SDK_MAJOR_VERSION_V1);
+        assert_eq!(root.metadata().plugin_id, PLUGIN_ID);
+        assert_eq!(root.ui_abi_fingerprint_sha256(), ROption::RNone);
     }
 
     #[test]
-    fn mismatched_fingerprint_is_rejected_before_marker_write() {
-        assert_eq!(
-            registrar(
-                ABI_SCHEMA_VERSION,
-                RStr::from_str("not-the-sdk-fingerprint")
-            )
-            .into_result(),
-            Err(RString::from("UI ABI fingerprint mismatch"))
-        );
+    fn mismatched_root_contract_is_rejected_before_marker_write() {
+        let root = plugin_root();
+        let registrar = root.create_registrar().create().into_result().unwrap();
+        let request = RegistrarRequestV1 {
+            root_contract_id: StableIdV1::new(IdNamespaceV1::new(0x1234, 1), 1),
+            ..registrar_request_v1()
+        };
+
+        assert!(matches!(
+            registrar.register(request).into_result(),
+            Err(AbiErrorV1 {
+                code: AbiErrorCodeV1::UNSUPPORTED_ID,
+                ..
+            })
+        ));
     }
 
     #[test]
-    fn matching_compatibility_data_calls_the_registrar() {
-        assert_eq!(
-            registrar(ABI_SCHEMA_VERSION, RStr::from_str(UI_ABI_FINGERPRINT)).into_result(),
-            Ok(7)
-        );
+    fn matching_public_contract_calls_the_registrar() {
+        let root = plugin_root();
+        let registrar = root.create_registrar().create().into_result().unwrap();
+        let result = registrar
+            .register(registrar_request_v1())
+            .into_result()
+            .unwrap();
+
+        assert_eq!(result.outcome, RegistrationOutcomeV1::accepted(1));
+        assert_eq!(result.contributions.len(), 1);
+        let contribution = &result.contributions[0];
+        assert_eq!(contribution.feature_id, "main");
+        assert_eq!(contribution.contribution_id, "abi-root");
+        assert_eq!(contribution.kind, RegisteredContributionKindV1::COLUMN);
+        assert_eq!(contribution.required_capabilities.as_slice(), ["abi"]);
+    }
+
+    #[test]
+    fn schema_mismatch_is_typed() {
+        let root = plugin_root();
+        let registrar = root.create_registrar().create().into_result().unwrap();
+        let request = RegistrarRequestV1 {
+            abi_schema: AbiSchemaIdV1::new(0x5345, 2),
+            ..registrar_request_v1()
+        };
+
+        assert!(matches!(
+            registrar.register(request).into_result(),
+            Err(AbiErrorV1 {
+                code: AbiErrorCodeV1::SCHEMA_MISMATCH,
+                ..
+            })
+        ));
     }
 }

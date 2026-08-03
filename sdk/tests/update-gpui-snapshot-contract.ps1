@@ -54,7 +54,10 @@ try {
     Invoke-Git $sub @('config', 'user.email', 'contract@example.invalid') | Out-Null
     Invoke-Git $sub @('config', 'user.name', 'contract') | Out-Null
     Set-Content -LiteralPath (Join-Path $sub 'sub.txt') -Value 'sub-one' -NoNewline
-    Invoke-Git $sub @('add', 'sub.txt') | Out-Null
+    $gpuiPackage = Join-Path $sub 'crates\gpui'
+    New-Item -ItemType Directory -Path $gpuiPackage -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $gpuiPackage 'Cargo.toml'), "[package]`nname = `"gpui`"`nversion = `"0.2.2`"`n", [Text.UTF8Encoding]::new($false))
+    Invoke-Git $sub @('add', 'sub.txt', 'crates/gpui/Cargo.toml') | Out-Null
     Invoke-Git $sub @('commit', '-m', 'sub one') | Out-Null
     Invoke-Git $sub @('remote', 'add', 'origin', $subRemote) | Out-Null
     Invoke-Git $sub @('push', '-u', 'origin', 'HEAD:main') | Out-Null
@@ -91,6 +94,7 @@ try {
     $subPath = Join-Path $work 'modules\fixture'
     New-Item -ItemType Directory -Path $subPath -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $sub 'sub.txt') -Destination (Join-Path $subPath 'sub.txt')
+    Copy-Item -LiteralPath (Join-Path $sub 'crates') -Destination (Join-Path $subPath 'crates') -Recurse
     [IO.File]::WriteAllText((Join-Path $subPath '.git'), "gitdir: $($sub -replace '\\', '/')/.git`n")
     Invoke-Git $work @('update-index', '--add', '--cacheinfo', "160000,$subCommit,modules/fixture") | Out-Null
     Invoke-Git $work @('commit', '-m', 'add submodule') | Out-Null
@@ -121,6 +125,55 @@ try {
     $missing = $approval.PSObject.Copy(); $missing.reason = ''
     Assert-Throws { Assert-GpuiUpdateApproval $missing $old $new $tree $digest $run $nonce $false $now } 'missing approval field'
 
+    # A real two-commit local GPUI remote exercises the candidate path without
+    # relying on the parent repository's gitlink.  The successful transaction
+    # leaves the candidate checked out; a later failed transaction restores both
+    # the generated files and the pre-update GPUI checkout state.
+    $beforeCandidateState = Get-GpuiCheckoutState $sub
+    Set-Content -LiteralPath (Join-Path $sub 'candidate.txt') -Value 'candidate-two' -NoNewline
+    Invoke-Git $sub @('add', 'candidate.txt') | Out-Null
+    Invoke-Git $sub @('commit', '-m', 'candidate two') | Out-Null
+    Invoke-Git $sub @('push', 'origin', 'HEAD:main') | Out-Null
+    Invoke-Git $sub @('fetch', 'origin', 'main') | Out-Null
+    $candidateRevision = Git-Text $sub @('rev-parse', 'refs/remotes/origin/main')
+    $candidateTree = Git-Text $sub @('rev-parse', "$candidateRevision`^{tree}")
+    $candidateSnapshot = Join-Path $temp 'candidate-snapshot.json'
+    $candidateAttestation = Join-Path $temp 'candidate-attestation.json'
+    $candidateBytes = [Text.Encoding]::UTF8.GetBytes('{"candidate":"two"}')
+    Invoke-GpuiCandidateTransaction @($candidateSnapshot, $candidateAttestation) @('modules/fixture') $work $sub $subRemote $candidateRevision $candidateTree '0.2.2' 'modules/fixture' {
+        Write-Bytes $candidateSnapshot $candidateBytes
+        Write-Bytes $candidateAttestation $candidateBytes
+    } {
+        Assert-GpuiCandidateCheckout $sub $subRemote $candidateRevision $candidateTree '0.2.2'
+    } {
+        Invoke-Git $sub @('fetch', 'origin', 'main') | Out-Null
+        if ((Git-Text $sub @('rev-parse', 'refs/remotes/origin/main')) -ne $candidateRevision) { throw 'candidate remote unexpectedly changed' }
+    }
+    if ((Git-Text $sub @('rev-parse', 'HEAD')) -ne $candidateRevision) { throw 'successful candidate transaction did not leave the resolved candidate checked out' }
+    if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($candidateSnapshot)) -ne [Convert]::ToBase64String($candidateBytes)) { throw 'successful candidate transaction did not write the candidate snapshot' }
+
+    Restore-GpuiCheckoutState $sub $beforeCandidateState
+    Invoke-Git $work @('restore', '--source=HEAD', '--staged', '--worktree', '--', 'modules/fixture') | Out-Null
+    $rollbackExisting = Join-Path $temp 'candidate-rollback-existing.bin'
+    $rollbackCreated = Join-Path $temp 'candidate-rollback-created.bin'
+    $rollbackBefore = [byte[]](0, 1, 2, 127, 128, 255)
+    Write-Bytes $rollbackExisting $rollbackBefore
+    Assert-Throws {
+        Invoke-GpuiCandidateTransaction @($rollbackExisting, $rollbackCreated) @('modules/fixture') $work $sub $subRemote $candidateRevision $candidateTree '0.2.2' 'modules/fixture' {
+            Write-Bytes $rollbackExisting ([byte[]](9, 8, 7))
+            Write-Bytes $rollbackCreated ([byte[]](6))
+        } {
+            throw 'injected candidate gate failure'
+        } {
+            throw 'candidate remote verification must not run after a failed gate'
+        }
+    } 'candidate transaction failure'
+    Restore-GpuiCheckoutState $sub $beforeCandidateState
+    if ((Git-Text $sub @('rev-parse', 'HEAD')) -ne $beforeCandidateState.head) { throw 'failed candidate transaction did not restore the original GPUI checkout' }
+    if (@(Invoke-Git $work @('status', '--porcelain')).Count -ne 0) { throw 'failed candidate transaction did not restore the parent git index/worktree' }
+    if ([Convert]::ToBase64String($rollbackBefore) -ne [Convert]::ToBase64String([IO.File]::ReadAllBytes($rollbackExisting))) { throw 'candidate rollback was not byte-identical' }
+    if (Test-Path -LiteralPath $rollbackCreated) { throw 'candidate rollback retained a created file' }
+
     # Remote-head race: a candidate is rejected when origin/main changes after resolution.
     $candidate = Git-Text $work @('rev-parse', 'refs/remotes/origin/main')
     Set-Content -LiteralPath (Join-Path $work 'race.txt') -Value 'race' -NoNewline
@@ -145,8 +198,18 @@ try {
 
 # Keep this contract coupled to the production race guard rather than a test-only imitation.
 $production = Get-Content -LiteralPath (Join-Path $repo 'sdk\scripts\update-gpui-snapshot.ps1') -Raw
-foreach ($required in @("'fetch','--no-tags','origin','main'", 'remote main advanced during update', 'Invoke-WithFileTransaction', 'Assert-GpuiRepositoryComplete', 'Restore-GpuiCheckoutState')) {
+foreach ($required in @("'fetch','--no-tags','origin','main'", 'remote main advanced during update', 'Invoke-GpuiCandidateTransaction', 'approval=$candidateApproval', "state='candidate'", 'sdk/vendor/cargo-sources', 'refresh-gpui-dependency-snapshot.ps1', 'invoke-gpui-update-gates.ps1', 'Restore-GpuiCheckoutState')) {
     if ($production -notlike "*$required*") { throw "production update script lost required guard: $required" }
 }
+$supportSource = Get-Content -LiteralPath $support -Raw
+foreach ($required in @('Assert-GpuiCandidateCheckout', 'Assert-GpuiCandidateStagedGitlink', 'Assert-GpuiCandidatePromotionSurface', "'clean','-fd','--'", 'staged GPUI gitlink does not match the resolved candidate revision', 'sdk/fixtures/p0-consumer/Cargo.lock')) {
+    if ($supportSource -notlike "*$required*") { throw "candidate transaction support lost required guard: $required" }
+}
+$gateManifest = Get-Content -LiteralPath (Join-Path $repo 'sdk\ci\gpui-update-gates.json') -Raw | ConvertFrom-Json
+if($gateManifest.schema_version -ne 1 -or $gateManifest.required_gate_count -ne 8 -or @($gateManifest.gates|Where-Object{$_.required -eq $true}).Count -ne 8){throw 'canonical GPUI aggregate gate manifest is incomplete'}
+$refresh = Get-Content -LiteralPath (Join-Path $repo 'sdk\scripts\refresh-gpui-dependency-snapshot.ps1') -Raw
+foreach($required in @('worktree add --detach', 'cargo.exe vendor', '--versioned-dirs', 'Get-DependencyEdgeDigest', 'Assert-ProtectedDependencyMetadata', 'normalized-package-edges-v2', 'worktree remove --force', 'add -A', 'offline-cargo-home', 'online-cargo-home', '--locked --offline')){if($refresh -notlike "*$required*"){throw "isolated dependency refresh lost required control: $required"}}
+$candidateWorkflow=Get-Content -LiteralPath (Join-Path $repo '.github\workflows\update-gpui-snapshot.yml') -Raw
+if($candidateWorkflow -notlike '*diff --cached --binary*'){throw 'candidate artifact no longer binds the staged vendor/index diff'}
 
 Write-Output 'gpui snapshot update contract passed'

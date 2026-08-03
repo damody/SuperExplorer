@@ -6,10 +6,13 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $promotion = Get-Content -LiteralPath (Join-Path $repo 'sdk\scripts\promote-gpui-snapshot.ps1') -Raw
 $candidate = Get-Content -LiteralPath (Join-Path $repo '.github\workflows\update-gpui-snapshot.yml') -Raw
 $workflow = Get-Content -LiteralPath (Join-Path $repo '.github\workflows\promote-gpui-snapshot.yml') -Raw
-foreach ($required in @('SUPEREXPLORER_GPUI_APPROVAL_HMAC_KEY', 'candidate approval/digest identity mismatch', 'promotion-proof.json', 'repository baseline changed; compare-and-swap promotion refused', 'GPUI remote head changed; compare-and-swap promotion refused', "'apply','--index'", "'commit'", "'push'", 'promotion failed:')) {
+foreach ($required in @('SUPEREXPLORER_GPUI_APPROVAL_HMAC_KEY', 'candidate approval/digest identity mismatch', 'candidate metadata does not retain the development candidate channel/state/proof schema', 'promoted GPUI metadata did not preserve approved channel/state/proof', 'staged GPUI gitlink does not match the promoted candidate revision', 'Invoke-GpuiSnapshotPromotionCore', 'Invoke-GpuiPromotionFinalizeV1', 'Invoke-CanonicalBundleGeneration', 'invoke-gpui-update-gates.ps1', "'add','--','sdk/sdk-lock.json','sdk/bundle-manifest.json','sdk/ui-abi-fingerprint.json'", 'promotion did not stage the regenerated approved SDK outputs', 'promotion-proof.json', 'repository baseline changed; compare-and-swap promotion refused', 'GPUI remote head changed; compare-and-swap promotion refused', 'GPUI remote head advanced during promotion; compare-and-swap refused', 'Restore-GpuiPromotionBaselineV1', "'commit'", "'push'", 'promotion failed:')) {
     if ($promotion -notlike "*$required*") { throw "promotion script lost required safety boundary: $required" }
 }
-foreach ($required in @('promotion manifest payload set mismatch', '$manifestNames.Count -ne $payloadFiles.Count', 'Select-Object -Unique', "'candidate.patch'", 'promotion artifact schema mismatch')) {
+$core = Get-Content -LiteralPath (Join-Path $repo 'sdk\scripts\gpui-snapshot-transaction.psm1') -Raw
+foreach ($required in @('Invoke-GpuiSnapshotPromotionCore', 'apply --index', 'promotion core staged gitlink mismatch', 'reset --hard', 'checkout --detach $CandidateRevision', 'requires complete GPUI history', 'candidate tree mismatch', 'GPUI rollback failed')) { if ($core -notlike "*$required*") { throw "promotion transaction core lost required behavior: $required" } }
+if($core -notlike '*Export-ModuleMember*Restore-GpuiPromotionBaselineV1*'){throw 'promotion transaction module does not export the shared GPUI rollback helper'}
+foreach ($required in @('promotion manifest payload set mismatch', '$manifestNames.Count -ne $payloadFiles.Count', 'Select-Object -Unique', "'candidate.patch'", "'sdk/Cargo.lock'", "'sdk/vendor/cargo-sources'", "'sdk/fixtures/p0-consumer/Cargo.lock'", 'promotion artifact schema mismatch')) {
     if ($promotion -notlike "*$required*") { throw "promotion script does not reject omitted/duplicate payloads: $required" }
 }
 foreach ($required in @('GPUI_SNAPSHOT_APPROVAL_HMAC_KEY', 'promotion-manifest.json', 'promotion-proof.json', 'HMACSHA256', 'Candidate outputs only; publication requires a separate protected compare-and-swap promotion.')) {
@@ -30,6 +33,8 @@ function Assert-RejectsPayloadSet([string[]]$Names, [string]$Label) {
         if($exit -eq 0){throw "$Label payload set was accepted"}
     } finally {Remove-Item -LiteralPath $temp -Recurse -Force}
 }
+$source=Get-Content -LiteralPath (Join-Path $repo 'sdk\scripts\promote-gpui-snapshot.ps1') -Raw
+foreach($requiredControl in @('Invoke-AttestedFullGate', 'full-gate-attestation.json', 'approval.gates', 'Invoke-AttestedFullGate $CandidateDirectory $approval $promotedPath', 'Invoke-CanonicalBundleGeneration; Invoke-Contract')) { if(-not $source.Contains($requiredControl)){throw "promotion does not construct and persist full gate attestation: $requiredControl"} }
 $exact=@('approval.json','candidate-attestation.json','approved-gpui.json','sdk-lock.json','bundle-manifest.json','ui-abi-fingerprint.json','gpui-revision.txt','candidate.patch')
 Assert-RejectsPayloadSet @($exact|Where-Object{$_ -ne 'candidate.patch'}) 'omitted candidate.patch'
 Assert-RejectsPayloadSet @($exact + 'candidate.patch') 'duplicate candidate.patch'

@@ -19,7 +19,7 @@ foreach ($requiredText in @(
     'not a security boundary',
     'no hot load, hot update',
     'Windows x64 MSVC',
-    'operation currently attributable',
+    'guards both `Registrar` and `JobProvider` operations',
     'startup only',
     'resident until the process exits',
     'hot-unload',
@@ -61,7 +61,7 @@ $requiredTraditionalText = @(
     '5YWx55So5L2N5Z2A56m66ZaT';
     'Y2FwYWJpbGl0eSDlj6rpmZDliLYgaG9zdCDmj5DkvpvnmoQgQVBJ';
     '5LiN5piv5a6J5YWo6IOM5pu4';
-    '55uu5YmNIGR1cmFibGUgbWFya2VyIOWPquS/neittyByZWdpc3RyYXI=';
+    'ZHVyYWJsZSBtYXJrZXIg5pyD5L+d6K23IGBSZWdpc3RyYXJgIOiIhyBgSm9iUHJvdmlkZXJg';
     'RExMIOS4gOaXpiBtYXA=';
     'c3RhcnR1cCDnmoTlm7rlrprpoIbluo8=';
     'Y2xvc2UgZ2F0ZQ==';
@@ -92,7 +92,9 @@ foreach ($forbiddenText in @(
     'force-unload the DLL',
     'delete marker files to bypass',
     'all native failures produce a Safe Mode incident',
-    'confirmation proves the plugin is safe'
+    'confirmation proves the plugin is safe',
+    '目前 durable marker 只保護 registrar',
+    '每個受 guard 保護的 registrar callback'
 )) {
     if ($document.Contains($forbiddenText)) {
         throw "native plugin security document makes an unsafe promise: $forbiddenText"

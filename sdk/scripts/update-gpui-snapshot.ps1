@@ -3,6 +3,8 @@ $ErrorActionPreference='Stop'
 $repo=(Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $gpui=Join-Path $repo 'vendor\gpui-ce';$snap=Join-Path $repo 'sdk\snapshot\approved-gpui.json'
 Import-Module (Join-Path $repo 'sdk\scripts\update-gpui-snapshot-support.psm1') -Force
+Import-Module (Join-Path $repo 'sdk\scripts\gpui-snapshot-transaction.psm1') -Force
+$authority=New-GpuiSnapshotAuthorityV1 -RepositoryRoot $repo -ExpectedOrigin 'https://github.com/damody/gpui-ce-explorer.git' -GpuiRepository $gpui -GateManifestPath (Join-Path $repo 'sdk\ci\gpui-update-gates.json') -CommandRunner { param($kind,$arguments) throw "unexpected production authority command: $kind" }
 function Invoke-Step([string]$Path,[string[]]$Arguments){& powershell.exe -NoProfile -File $Path @Arguments; if($LASTEXITCODE -ne 0){throw "gate failed: $Path ($LASTEXITCODE)"}}
 function Invoke-CommandStep([string]$File,[string[]]$Arguments){& $File @Arguments; if($LASTEXITCODE -ne 0){throw "command failed: $File ($LASTEXITCODE)"}}
 Push-Location $repo
@@ -19,15 +21,18 @@ try {
  $plan="$old`n$new`n$tree`n$runId`n$nonce";$sha=[Security.Cryptography.SHA256]::Create();try{$digest=([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($plan)))).Replace('-','').ToLowerInvariant()}finally{$sha.Dispose()}
  $approval=$null;if($env:SUPEREXPLORER_GPUI_UPDATE_APPROVAL){$approval=$env:SUPEREXPLORER_GPUI_UPDATE_APPROVAL|ConvertFrom-Json};Assert-GpuiUpdateApproval $approval $old $new $tree $digest $runId $nonce $ff ([DateTime]::UtcNow)|Out-Null
  if($new -eq $old){throw 'candidate revision must change bundle ID'}
- $approvalFields=if($null -eq $approval){$null}else{$approval}
- $meta=[pscustomobject]@{schema_version=1;source=[pscustomobject]@{repository=$origin;update_branch='main';resolved_ref='refs/remotes/origin/main';revision=$new;tree=$tree;parent=$parent;commit_time=$time;package='gpui';package_version='0.2.2'};approval=$approvalFields;candidate_plan_digest=$digest;workflow_run_id=$runId;nonce=$nonce;production=[pscustomobject]@{default_features=$false;features=@()};release_frozen=$false}
+ $approvalProof=if($null -eq $approval){[pscustomobject]@{schema_version=1;kind='fast-forward';baseline_revision=$old;old_revision=$old;new_revision=$new;new_tree=$tree;candidate_plan_digest=$digest;workflow_run_id=$runId;nonce=$nonce;reason='automatic-fast-forward';approver='automation';issued_utc=[DateTime]::UtcNow.ToString('o');expires_utc=[DateTime]::UtcNow.AddHours(1).ToString('o')}}else{$approval}
+ $candidateApproval=[pscustomobject]@{channel='development';state='candidate';proof=$approvalProof}
+ $meta=[pscustomobject]@{schema_version=1;source=[pscustomobject]@{repository=$origin;update_branch='main';resolved_ref='refs/remotes/origin/main';revision=$new;tree=$tree;parent=$parent;commit_time=$time;package='gpui';package_version='0.2.2'};approval=$candidateApproval;candidate_plan_digest=$digest;workflow_run_id=$runId;nonce=$nonce;production=[pscustomobject]@{default_features=$false;features=@()};release_frozen=$false}
  $json=$meta|ConvertTo-Json -Depth 8;$runTemp=if($env:RUNNER_TEMP){$env:RUNNER_TEMP}else{[IO.Path]::GetTempPath()};$runDir=Join-Path $runTemp 'superexplorer-gpui-update';New-Item -ItemType Directory -Force -Path $runDir|Out-Null;$candidate=Join-Path $runDir 'candidate-attestation.json'
- $paths=@($snap,$candidate,(Join-Path $repo 'sdk\sdk-lock.json'),(Join-Path $repo 'sdk\bundle-manifest.json'),(Join-Path $repo 'sdk\ui-abi-fingerprint.json'))
- Invoke-WithFileTransaction $paths {
-   Invoke-CommandStep 'git' @('-C',$gpui,'checkout','--detach',$new)
+ $paths=@($snap,$candidate,(Join-Path $repo 'Cargo.lock'),(Join-Path $repo 'sdk\Cargo.lock'),(Join-Path $repo 'sdk\sdk-lock.json'),(Join-Path $repo 'sdk\bundle-manifest.json'),(Join-Path $repo 'sdk\ui-abi-fingerprint.json'),(Join-Path $repo 'sdk\snapshot\protected-dependency-closure.json'),(Join-Path $repo 'sdk\fixtures\p0-consumer\Cargo.lock'))
+ $rollbackGitPaths=@('sdk/snapshot/approved-gpui.json','Cargo.lock','sdk/Cargo.lock','sdk/sdk-lock.json','sdk/bundle-manifest.json','sdk/ui-abi-fingerprint.json','sdk/snapshot/protected-dependency-closure.json','sdk/vendor/cargo-sources','sdk/fixtures/p0-consumer/Cargo.lock','vendor/gpui-ce')
+ Invoke-GpuiCandidateTransaction $paths $rollbackGitPaths $repo $gpui $origin $new $tree '0.2.2' 'vendor/gpui-ce' {
    [IO.File]::WriteAllText($candidate,$json,[Text.UTF8Encoding]::new($false));[IO.File]::WriteAllText($snap,$json,[Text.UTF8Encoding]::new($false))
-   Invoke-Step (Join-Path $repo 'sdk\tests\toolchain-contract.ps1') @();Invoke-Step (Join-Path $repo 'sdk\tests\abi-layout-contract.ps1') @();Invoke-Step (Join-Path $repo 'sdk\tests\gpui-baseline-contract.ps1') @();Invoke-Step (Join-Path $repo 'sdk\tests\protected-dependency-contract.ps1') @();Invoke-Step (Join-Path $repo 'sdk\tests\bundle-generator-contract.ps1') @();Invoke-Step (Join-Path $repo 'sdk\tests\ui-abi-fingerprint-contract.ps1') @();Invoke-Step (Join-Path $repo 'sdk\tests\offline-host-plugin-contract.ps1') @()
+ } {
+   Invoke-GpuiSnapshotCandidatePipelineCore -Authority $authority -Update {} -Refresh { Invoke-Step (Join-Path $repo 'sdk\scripts\refresh-gpui-dependency-snapshot.ps1') @('-RepositoryRoot',$repo,'-GpuiRevision',$new) } -Aggregate { Invoke-Step (Join-Path $repo 'sdk\scripts\invoke-gpui-update-gates.ps1') @('-RepositoryRoot',$repo) } -Artifact {}
    $bundle=(Get-Content (Join-Path $repo 'sdk\sdk-lock.json') -Raw|ConvertFrom-Json).bundle_id;if($bundle -eq $oldBundle){throw 'bundle ID did not change'}
+ } {
    Invoke-CommandStep 'git' @('-C',$gpui,'fetch','--no-tags','origin','main','--quiet');$check=((Invoke-GpuiGit $gpui @('rev-parse','origin/main'))-join "`n").Trim();if($check -ne $new){throw 'remote main advanced during update; refusing publish'}
  }
  Write-Output 'GPUI snapshot candidate transaction succeeded; outputs remain candidate-only pending separate protected promotion'
