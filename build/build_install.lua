@@ -192,6 +192,7 @@ local function main()
                 "--manifest-path", plugin_manifest,
                 "--release",
                 "--target", "x86_64-pc-windows-msvc",
+                "--locked",
                 "--offline",
             },
             cwd = root,
