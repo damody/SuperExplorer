@@ -100,7 +100,9 @@ pub struct FolderSizeColumnVisuals {
 
 impl FolderSizeColumnVisuals {
     pub fn begin_context(&mut self, context: &explorer_model::RequestContext) -> bool {
-        if self.context.as_ref() == Some(context) {
+        if self.context.as_ref().is_some_and(|current| {
+            current.tab_id == context.tab_id && current.generation == context.generation
+        }) {
             return false;
         }
         self.context = Some(context.clone());

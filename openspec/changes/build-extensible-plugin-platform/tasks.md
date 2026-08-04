@@ -1526,6 +1526,7 @@ documentation, and local Cargo completion.
 - [x] 17.1.3 Persist only stable exact folder totals in the plugin-owned bounded cache, keyed by canonical folder identity, directory modification time, schema, and relevant settings; use atomic replacement and treat corrupt/partial/stale records as misses.
 - [x] 17.1.4 Prove cold background completion, same-mtime process-restart cache hit, changed-mtime invalidation, corrupt-cache recovery, and stale UI generation rejection with minimal Cargo tests.
 - [x] 17.1.5 Wire the completed folder-size package into production and the installer without changing the standard no-plugin fallback; only then run its single headful UITEST case.
+- [x] 17.1.6 Track queued and in-flight folder-size identities so repeated UI submissions cannot restart an active recursive measurement; allow stale scans to finish caching while rejecting stale UI publication, then rebuild/package the DLL and rerun its headful UITEST.
 - [x] 17.2.1 Complete `rust-folder-size-map-view` as an independent packaged example, including recursive incremental totals, navigation, selection, refresh/stale rejection, docs, then one UITEST.
 - [x] 17.3.1 Complete `rust-tokei-code-lines-column` as an independent packaged example, including integer sorting/settings, docs, then one UITEST.
 - [x] 17.4.1 Add the discover-only `LockOwnerQueryServiceV1` and complete `rust-lock-owner-column` without exposing process-control authority; package, then one UITEST.
