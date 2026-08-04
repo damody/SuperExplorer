@@ -40,6 +40,7 @@ fn public_extension_crates_have_one_way_dependencies_and_a_host_composition_root
             "explorer-extension-api",
             "explorer-extension-ui-api",
             "libloading",
+            "mlua",
             "ring",
             "semver",
             "serde",
