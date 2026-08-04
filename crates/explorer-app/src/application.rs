@@ -868,7 +868,7 @@ impl ApplicationCodeLinesRuntimeV1 {
                         }
                         let bytes = match mode {
                             BatchDetailsColumnModeV1::CodeLines => {
-                                read_code_lines_file_bounded(&request.path)
+                                read_code_lines_path_bounded(&request.path)
                             }
                             BatchDetailsColumnModeV1::LockOwner => Ok(Some(Vec::new())),
                         };
@@ -1126,6 +1126,72 @@ fn read_code_lines_file_bounded(path: &Path) -> Result<Option<Vec<u8>>, String> 
         return Ok(None);
     }
     Ok(Some(bytes))
+}
+
+const CODE_LINES_DIRECTORY_MAGIC_V1: &[u8; 8] = b"SECLDIR1";
+
+fn read_code_lines_path_bounded(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| "Source unavailable".to_owned())?;
+    if metadata.file_type().is_symlink() {
+        return Ok(None);
+    }
+    if metadata.is_file() {
+        return read_code_lines_file_bounded(path);
+    }
+    if !metadata.is_dir() {
+        return Ok(None);
+    }
+    let maximum = explorer_extension_host::MAX_BATCH_COLUMN_INPUT_BYTES_V1;
+    let mut packed = Vec::with_capacity(64 * 1024);
+    packed.extend_from_slice(CODE_LINES_DIRECTORY_MAGIC_V1);
+    let mut stack = vec![path.to_path_buf()];
+    let mut files = 0_usize;
+    while let Some(directory) = stack.pop() {
+        let entries = fs::read_dir(directory).map_err(|_| "Source unavailable".to_owned())?;
+        for entry in entries.flatten() {
+            let child = entry.path();
+            let Ok(metadata) = fs::symlink_metadata(&child) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_dir() {
+                stack.push(child);
+                continue;
+            }
+            if !metadata.is_file() {
+                continue;
+            }
+            files = files.saturating_add(1);
+            if files > 100_000 {
+                return Ok(None);
+            }
+            let Some(bytes) = read_code_lines_file_bounded(&child)? else {
+                continue;
+            };
+            let name = child.strip_prefix(path).unwrap_or(&child).to_string_lossy();
+            let name_bytes = name.as_bytes();
+            let record_size = 4_usize
+                .saturating_add(8)
+                .saturating_add(name_bytes.len())
+                .saturating_add(bytes.len());
+            if packed.len().saturating_add(record_size) > maximum {
+                return Ok(None);
+            }
+            let Ok(name_len) = u32::try_from(name_bytes.len()) else {
+                return Ok(None);
+            };
+            let Ok(data_len) = u64::try_from(bytes.len()) else {
+                return Ok(None);
+            };
+            packed.extend_from_slice(&name_len.to_le_bytes());
+            packed.extend_from_slice(&data_len.to_le_bytes());
+            packed.extend_from_slice(name_bytes);
+            packed.extend_from_slice(&bytes);
+        }
+    }
+    Ok(Some(packed))
 }
 
 fn lock_owner_query_service() -> explorer_extension_host::HostLockOwnerQueryServiceV1 {
@@ -2024,7 +2090,13 @@ impl ApplicationLifecycle {
         diagnostics: DiagnosticsSession,
         plugin_dll: Option<&Path>,
     ) -> Result<Self, Error> {
-        Self::start_with_plugins(diagnostics, &plugin_dll.into_iter().map(Path::to_path_buf).collect::<Vec<_>>())
+        Self::start_with_plugins(
+            diagnostics,
+            &plugin_dll
+                .into_iter()
+                .map(Path::to_path_buf)
+                .collect::<Vec<_>>(),
+        )
     }
 
     /// Starts the application with every explicitly supplied official or development plugin DLL.
@@ -2063,59 +2135,64 @@ impl ApplicationLifecycle {
                     None
                 }
                 Err(error) => return Err(error.into()),
-            }.map(|loaded| direct_loaded.push(loaded));
+            }
+            .map(|loaded| direct_loaded.push(loaded));
         }
         let mut summaries = Vec::new();
         let mut visual_column_runtime = None;
         let mut code_lines_runtime = None;
         let mut size_map_runtime = None;
         for (path, loaded) in direct_loaded {
-                let (summary, measure, renderer, size_map_renderer, batch_columns) =
-                    loaded.into_parts_with_batch_columns();
-                let supports_folder_size =
-                    summary.contributions().iter().any(|contribution| {
-                        contribution.contribution_id() == FOLDER_SIZE_CONTRIBUTION_ID_V1
-                    }) && summary.contributions().iter().any(|contribution| {
-                        contribution.contribution_id() == FOLDER_SIZE_RENDERER_CONTRIBUTION_ID_V1
-                    });
-                let supports_code_lines = batch_columns.contains(CODE_LINES_CONTRIBUTION_ID_V1);
-                let supports_lock_owner = batch_columns.contains(LOCK_OWNER_CONTRIBUTION_ID_V1);
-                let (visual_runtime, code_runtime) =
-                    if supports_code_lines || supports_lock_owner {
-                        (
-                            None,
-                            Some(ApplicationCodeLinesRuntimeV1::start(
-                                batch_columns,
-                                renderer,
-                                if supports_lock_owner {
-                                    BatchDetailsColumnModeV1::LockOwner
-                                } else {
-                                    BatchDetailsColumnModeV1::CodeLines
-                                },
-                            )?),
-                        )
-                    } else if supports_folder_size {
-                        (
-                            Some(ApplicationVisualColumnRuntimeV1::start(measure, renderer)?),
-                            None,
-                        )
-                    } else {
-                        (None, None)
-                    };
-                // The host retains a Size Map renderer only after validating
-                // that its descriptor is a VIEW_MODE contribution, so this
-                // single check rejects descriptor-only and wrong-kind entries.
-                let supports_size_map =
-                    size_map_renderer.has_view_contribution(SIZE_MAP_VIEW_CONTRIBUTION_ID_V1);
-                let map_runtime = if supports_size_map {
-                    Some(ApplicationSizeMapRuntimeV1::start(size_map_renderer)?)
-                } else {
-                    None
-                };
-                summaries.push(format_single_plugin_summary(path, &summary));
-                if visual_column_runtime.is_none() { visual_column_runtime = visual_runtime; }
-                if code_lines_runtime.is_none() { code_lines_runtime = code_runtime; }
-                if size_map_runtime.is_none() { size_map_runtime = map_runtime; }
+            let (summary, measure, renderer, size_map_renderer, batch_columns) =
+                loaded.into_parts_with_batch_columns();
+            let supports_folder_size = summary.contributions().iter().any(|contribution| {
+                contribution.contribution_id() == FOLDER_SIZE_CONTRIBUTION_ID_V1
+            }) && summary.contributions().iter().any(|contribution| {
+                contribution.contribution_id() == FOLDER_SIZE_RENDERER_CONTRIBUTION_ID_V1
+            });
+            let supports_code_lines = batch_columns.contains(CODE_LINES_CONTRIBUTION_ID_V1);
+            let supports_lock_owner = batch_columns.contains(LOCK_OWNER_CONTRIBUTION_ID_V1);
+            let (visual_runtime, code_runtime) = if supports_code_lines || supports_lock_owner {
+                (
+                    None,
+                    Some(ApplicationCodeLinesRuntimeV1::start(
+                        batch_columns,
+                        renderer,
+                        if supports_lock_owner {
+                            BatchDetailsColumnModeV1::LockOwner
+                        } else {
+                            BatchDetailsColumnModeV1::CodeLines
+                        },
+                    )?),
+                )
+            } else if supports_folder_size {
+                (
+                    Some(ApplicationVisualColumnRuntimeV1::start(measure, renderer)?),
+                    None,
+                )
+            } else {
+                (None, None)
+            };
+            // The host retains a Size Map renderer only after validating
+            // that its descriptor is a VIEW_MODE contribution, so this
+            // single check rejects descriptor-only and wrong-kind entries.
+            let supports_size_map =
+                size_map_renderer.has_view_contribution(SIZE_MAP_VIEW_CONTRIBUTION_ID_V1);
+            let map_runtime = if supports_size_map {
+                Some(ApplicationSizeMapRuntimeV1::start(size_map_renderer)?)
+            } else {
+                None
+            };
+            summaries.push(format_single_plugin_summary(path, &summary));
+            if visual_column_runtime.is_none() {
+                visual_column_runtime = visual_runtime;
+            }
+            if code_lines_runtime.is_none() {
+                code_lines_runtime = code_runtime;
+            }
+            if size_map_runtime.is_none() {
+                size_map_runtime = map_runtime;
+            }
         }
         let loaded_extension_summary = (!summaries.is_empty()).then(|| summaries.join(" | "));
         if let Some(summary) = loaded_extension_summary.as_deref() {
@@ -2769,6 +2846,13 @@ fn create_focused_explorer_root(
         root.configure_safe_mode_offers(safe_mode_offers, safe_mode_confirm);
     }
     root.configure_loaded_extension_summary(loaded_extension_summary);
+    let build = explorer_common::AppBuildInfo::current();
+    root.configure_about_info(explorer_ui::state::AboutInfoV1 {
+        version: build.package_version.to_owned(),
+        build_date: build.build_date.to_owned(),
+        git_hash: build.git_revision.to_owned(),
+        author: build.author.to_owned(),
+    });
     root
 }
 
@@ -3196,8 +3280,8 @@ mod tests {
         confirm_offered_safe_mode_incident_v1, confirm_presented_safe_mode_incident_v1,
         emit_post_commit_safe_mode_telemetry_v1, enqueue_folder_size_requests,
         enqueue_size_map_requests, measure_size_map_path, read_code_lines_file_bounded,
-        should_restore_saved_tabs, size_map_node_id, size_map_render_key,
-        take_folder_size_requests,
+        read_code_lines_path_bounded, should_restore_saved_tabs, size_map_node_id,
+        size_map_render_key, take_folder_size_requests,
     };
 
     struct FakeSafeModePortV1 {
@@ -3270,6 +3354,34 @@ mod tests {
         .unwrap();
         assert!(matches!(read_code_lines_file_bounded(&path), Ok(None)));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn code_lines_directory_source_is_bounded_and_contains_recursive_file_names() {
+        let root = std::env::temp_dir().join(format!(
+            "superexplorer-code-lines-directory-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/main.rs"), b"fn main() {}\n").unwrap();
+        fs::write(root.join("script.py"), b"print('ok')\n").unwrap();
+        let packed = read_code_lines_path_bounded(&root).unwrap().unwrap();
+        assert!(packed.starts_with(b"SECLDIR1"));
+        assert!(
+            packed
+                .windows("main.rs".len())
+                .any(|bytes| bytes == b"main.rs")
+        );
+        assert!(
+            packed
+                .windows("script.py".len())
+                .any(|bytes| bytes == b"script.py")
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

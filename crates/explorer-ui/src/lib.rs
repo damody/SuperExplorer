@@ -1179,7 +1179,6 @@ impl ExplorerRoot {
             .expect("Size Map context was initialized above");
         let requests = entries
             .iter()
-            .filter(|entry| entry.is_container)
             .filter_map(|entry| match &entry.location {
                 explorer_model::LocationDescriptor::FileSystem(path)
                     if self
@@ -1411,7 +1410,6 @@ impl ExplorerRoot {
         self.begin_code_lines_context(request_context.clone());
         let requests = entries
             .iter()
-            .filter(|entry| !entry.is_container)
             .filter_map(|entry| match &entry.location {
                 explorer_model::LocationDescriptor::FileSystem(path)
                     if self
@@ -1537,6 +1535,10 @@ impl ExplorerRoot {
     /// Extensions menu. This is presentation-only and carries no ABI object.
     pub fn configure_loaded_extension_summary(&mut self, summary: Option<String>) {
         self.state.set_loaded_extension_summary(summary);
+    }
+
+    pub fn configure_about_info(&mut self, info: state::AboutInfoV1) {
+        self.state.set_about_info(info);
     }
 
     /// Builds a deterministic presentation-only state for screenshot regression tests.
@@ -4888,7 +4890,8 @@ impl ExplorerRoot {
                 7 => ExplorerAction::ShowPropertiesSelected,
                 8 => ExplorerAction::RestoreSelected,
                 9 => ExplorerAction::EmptyRecycleBin,
-                _ => ExplorerAction::OpenFolderOptions,
+                10 => ExplorerAction::OpenFolderOptions,
+                _ => ExplorerAction::OpenAboutDialog,
             }),
             _ => None,
         }
@@ -5620,6 +5623,18 @@ impl Render for ExplorerRoot {
                 }),
             )
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if this.state.about_dialog().is_some() {
+                    cx.stop_propagation();
+                    if event.keystroke.key == "escape" {
+                        this.handle_action(
+                            ExplorerAction::CloseAboutDialog,
+                            ActionSource::Keyboard,
+                            window,
+                            cx,
+                        );
+                    }
+                    return;
+                }
                 if let Some(presentation_token) = this
                     .safe_mode_offers
                     .first()

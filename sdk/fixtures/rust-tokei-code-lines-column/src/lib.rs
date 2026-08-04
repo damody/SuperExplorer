@@ -30,6 +30,8 @@ const PRIMARY_INTERFACE_ID: StableIdV1 = StableIdV1::new(EXTENSION_ID_NAMESPACE_
 const FEATURE_ID: &str = "rust-tokei";
 const CONTRIBUTION_ID: &str = "rust-tokei:code-lines";
 const MAX_FILE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_DIRECTORY_PACK_BYTES: usize = 64 * 1024 * 1024;
+const DIRECTORY_MAGIC_V1: &[u8; 8] = b"SECLDIR1";
 
 struct TokeiRegistrar;
 struct TokeiCodeLinesProvider;
@@ -45,7 +47,8 @@ struct CodeLinesPayload {
 
 fn read_stream(input: &explorer_extension_api::InputStreamV1) -> Option<Vec<u8>> {
     let length = input.length();
-    if length.status != InputStreamStatusV1::OK || length.length as usize > MAX_FILE_BYTES {
+    if length.status != InputStreamStatusV1::OK || length.length as usize > MAX_DIRECTORY_PACK_BYTES
+    {
         return None;
     }
     let mut bytes = Vec::with_capacity(length.length as usize);
@@ -61,7 +64,7 @@ fn read_stream(input: &explorer_extension_api::InputStreamV1) -> Option<Vec<u8>>
             return None;
         }
         bytes.extend_from_slice(&chunk.data);
-        if bytes.len() > MAX_FILE_BYTES {
+        if bytes.len() > MAX_DIRECTORY_PACK_BYTES {
             return None;
         }
     }
@@ -69,6 +72,12 @@ fn read_stream(input: &explorer_extension_api::InputStreamV1) -> Option<Vec<u8>>
 }
 
 fn classify(file_name: &str, bytes: &[u8]) -> Option<(String, tokei::CodeStats)> {
+    if bytes.starts_with(DIRECTORY_MAGIC_V1) {
+        return classify_directory_pack(bytes);
+    }
+    if bytes.len() > MAX_FILE_BYTES {
+        return None;
+    }
     // UTF-8 alone does not make a stream source code: an arbitrary binary can
     // contain a NUL while still being valid UTF-8. Keep the public outcome
     // truthful by returning Unsupported rather than a misleading zero count.
@@ -79,6 +88,37 @@ fn classify(file_name: &str, bytes: &[u8]) -> Option<(String, tokei::CodeStats)>
     let language = tokei::LanguageType::from_path(Path::new(file_name), &config)?;
     let stats = language.parse_from_slice(bytes, &config).summarise();
     Some((language.name().to_owned(), stats))
+}
+
+fn classify_directory_pack(bytes: &[u8]) -> Option<(String, tokei::CodeStats)> {
+    let mut cursor = DIRECTORY_MAGIC_V1.len();
+    let mut aggregate = tokei::CodeStats::new();
+    let mut supported = 0_usize;
+    while cursor < bytes.len() {
+        let name_end = cursor.checked_add(4)?;
+        let name_len = usize::try_from(u32::from_le_bytes(
+            bytes.get(cursor..name_end)?.try_into().ok()?,
+        ))
+        .ok()?;
+        cursor = name_end;
+        let length_end = cursor.checked_add(8)?;
+        let data_len = usize::try_from(u64::from_le_bytes(
+            bytes.get(cursor..length_end)?.try_into().ok()?,
+        ))
+        .ok()?;
+        cursor = length_end;
+        let name_end = cursor.checked_add(name_len)?;
+        let name = std::str::from_utf8(bytes.get(cursor..name_end)?).ok()?;
+        cursor = name_end;
+        let data_end = cursor.checked_add(data_len)?;
+        let data = bytes.get(cursor..data_end)?;
+        cursor = data_end;
+        if let Some((_, stats)) = classify(name, data) {
+            aggregate += stats;
+            supported = supported.saturating_add(1);
+        }
+    }
+    (supported > 0).then(|| ("Mixed folder".to_owned(), aggregate))
 }
 
 fn json_value(language: &str, stats: &tokei::CodeStats) -> Option<PluginValueV1> {
@@ -392,6 +432,25 @@ mod tests {
             output.contributions[1].visual_column,
             ROption::RSome(_)
         ));
+    }
+
+    #[test]
+    fn directory_pack_aggregates_supported_source_files() {
+        let mut packed = DIRECTORY_MAGIC_V1.to_vec();
+        for (name, source) in [
+            ("src/main.rs", b"fn main() {}\n// comment\n".as_slice()),
+            ("script.py", b"print('ok')\n\n".as_slice()),
+        ] {
+            packed.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            packed.extend_from_slice(&(source.len() as u64).to_le_bytes());
+            packed.extend_from_slice(name.as_bytes());
+            packed.extend_from_slice(source);
+        }
+        let (language, stats) = classify("folder", &packed).expect("folder aggregate");
+        assert_eq!(language, "Mixed folder");
+        assert_eq!(stats.code, 2);
+        assert_eq!(stats.comments, 1);
+        assert_eq!(stats.blanks, 1);
     }
 
     #[test]

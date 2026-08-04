@@ -692,11 +692,7 @@ impl PluginCallGuardV1 {
         let _io = self.store.io.lock().map_err(|_| GuardErrorV1::Fault)?;
         self.marker.operation = operation;
         let bytes = serde_json::to_vec(&self.marker).map_err(|_| GuardErrorV1::Fault)?;
-        let file = self
-            .marker_file
-            .file
-            .as_mut()
-            .ok_or(GuardErrorV1::Fault)?;
+        let file = self.marker_file.file.as_mut().ok_or(GuardErrorV1::Fault)?;
         file.seek(io::SeekFrom::Start(0))
             .and_then(|_| file.set_len(0))
             .and_then(|_| file.write_all(&bytes))
@@ -1663,7 +1659,9 @@ mod tests {
         let root = temporary.path().join("markers");
         fs::create_dir(&root).expect("marker root");
         let status = std::process::Command::new(std::env::current_exe().expect("test exe"))
-            .arg("plugin_call_guard::tests::abnormal_load_attempt_is_resuppressed_on_the_next_start")
+            .arg(
+                "plugin_call_guard::tests::abnormal_load_attempt_is_resuppressed_on_the_next_start",
+            )
             .arg("--exact")
             .env(CHILD, "1")
             .env(ROOT, &root)

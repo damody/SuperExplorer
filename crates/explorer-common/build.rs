@@ -10,12 +10,19 @@ fn main() {
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(git_revision);
     println!("cargo:rustc-env=EXPLORER_GIT_REVISION={revision}");
+    println!(
+        "cargo:rustc-env=EXPLORER_BUILD_DATE={}",
+        chrono::Utc::now().format("%Y-%m-%d")
+    );
+    println!("cargo:rerun-if-env-changed=EXPLORER_BUILD_AUTHOR");
+    let author = env::var("EXPLORER_BUILD_AUTHOR").unwrap_or_else(|_| "Damody".to_owned());
+    println!("cargo:rustc-env=EXPLORER_BUILD_AUTHOR={author}");
 }
 
 fn git_revision() -> String {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let output = Command::new("git")
-        .args(["rev-parse", "--short=12", "HEAD"])
+        .args(["rev-parse", "HEAD"])
         .current_dir(&workspace_root)
         .output();
     let Ok(output) = output else {

@@ -15,6 +15,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 
+[build-dependencies]
+chrono.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
 

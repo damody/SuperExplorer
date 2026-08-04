@@ -45,16 +45,64 @@ pub struct ExtensionOptionV1 {
     pub enabled: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AboutInfoV1 {
+    pub version: String,
+    pub build_date: String,
+    pub git_hash: String,
+    pub author: String,
+}
+
 fn official_extensions_v1() -> Vec<ExtensionOptionV1> {
     vec![
-        ExtensionOptionV1 { package_id: "rust-folder-size-visual-column", display_name: "Folder size column", command_contribution: None, enabled: true },
-        ExtensionOptionV1 { package_id: "rust-folder-size-map-view", display_name: "Size Map", command_contribution: None, enabled: true },
-        ExtensionOptionV1 { package_id: "rust-tokei-code-lines-column", display_name: "Code lines (Rust)", command_contribution: None, enabled: true },
-        ExtensionOptionV1 { package_id: "lua-tokei-code-lines-column", display_name: "Code lines (Lua)", command_contribution: None, enabled: true },
-        ExtensionOptionV1 { package_id: "rust-lock-owner-column", display_name: "Lock owner", command_contribution: None, enabled: true },
-        ExtensionOptionV1 { package_id: "rust-exif-rename-command", display_name: "Rename from EXIF", command_contribution: Some("rust-exif-rename:button"), enabled: true },
-        ExtensionOptionV1 { package_id: "rust-7z-virtual-folder", display_name: "7-Zip virtual folder", command_contribution: None, enabled: true },
-        ExtensionOptionV1 { package_id: "lua-bulk-folder-generator", display_name: "Bulk folder generator", command_contribution: Some("lua-bulk-folder:button"), enabled: true },
+        ExtensionOptionV1 {
+            package_id: "rust-folder-size-visual-column",
+            display_name: "Folder size column",
+            command_contribution: None,
+            enabled: true,
+        },
+        ExtensionOptionV1 {
+            package_id: "rust-folder-size-map-view",
+            display_name: "Size Map",
+            command_contribution: None,
+            enabled: true,
+        },
+        ExtensionOptionV1 {
+            package_id: "rust-tokei-code-lines-column",
+            display_name: "Code lines (Rust)",
+            command_contribution: None,
+            enabled: true,
+        },
+        ExtensionOptionV1 {
+            package_id: "lua-tokei-code-lines-column",
+            display_name: "Code lines (Lua)",
+            command_contribution: None,
+            enabled: true,
+        },
+        ExtensionOptionV1 {
+            package_id: "rust-lock-owner-column",
+            display_name: "Lock owner",
+            command_contribution: None,
+            enabled: true,
+        },
+        ExtensionOptionV1 {
+            package_id: "rust-exif-rename-command",
+            display_name: "Rename from EXIF",
+            command_contribution: Some("rust-exif-rename:button"),
+            enabled: true,
+        },
+        ExtensionOptionV1 {
+            package_id: "rust-7z-virtual-folder",
+            display_name: "7-Zip virtual folder",
+            command_contribution: None,
+            enabled: true,
+        },
+        ExtensionOptionV1 {
+            package_id: "lua-bulk-folder-generator",
+            display_name: "Bulk folder generator",
+            command_contribution: Some("lua-bulk-folder:button"),
+            enabled: true,
+        },
     ]
 }
 
@@ -353,6 +401,8 @@ pub struct AppViewState {
     view_menu_index: usize,
     more_menu_open: bool,
     more_menu_index: usize,
+    about_dialog_open: bool,
+    about_info: AboutInfoV1,
     extensions_menu_open: bool,
     tortoise_git_available: bool,
     loaded_extension_summary: Option<String>,
@@ -507,6 +557,13 @@ impl AppViewState {
             view_menu_index: 0,
             more_menu_open: false,
             more_menu_index: 0,
+            about_dialog_open: false,
+            about_info: AboutInfoV1 {
+                version: "unknown".to_owned(),
+                build_date: "unknown".to_owned(),
+                git_hash: "unknown".to_owned(),
+                author: "unknown".to_owned(),
+            },
             extensions_menu_open: false,
             tortoise_git_available: false,
             loaded_extension_summary: None,
@@ -1476,18 +1533,35 @@ impl AppViewState {
         self.more_menu_index = match direction {
             i8::MIN..=-2 => 0,
             -1 => self.more_menu_index.saturating_sub(1),
-            1 => self.more_menu_index.saturating_add(1).min(10),
-            2..=i8::MAX => 10,
+            1 => self.more_menu_index.saturating_add(1).min(11),
+            2..=i8::MAX => 11,
             _ => self.more_menu_index,
         };
     }
 
     pub(crate) fn set_more_menu_focus(&mut self, index: usize) -> bool {
-        if !self.more_menu_open || index > 10 || self.more_menu_index == index {
+        if !self.more_menu_open || index > 11 || self.more_menu_index == index {
             return false;
         }
         self.more_menu_index = index;
         true
+    }
+
+    pub fn about_dialog(&self) -> Option<&AboutInfoV1> {
+        self.about_dialog_open.then_some(&self.about_info)
+    }
+
+    pub fn set_about_info(&mut self, info: AboutInfoV1) {
+        self.about_info = info;
+    }
+
+    pub(crate) fn open_about_dialog(&mut self) {
+        self.more_menu_open = false;
+        self.about_dialog_open = true;
+    }
+
+    pub(crate) fn close_about_dialog(&mut self) {
+        self.about_dialog_open = false;
     }
 
     pub fn folder_options(&self) -> Option<FolderOptionsDraft> {
@@ -1500,7 +1574,11 @@ impl AppViewState {
             page: FolderOptionsPage::General,
             settings: self.view_settings(),
             restore_previous_session: self.restore_previous_session,
-            extension_enabled: self.extensions.iter().map(|extension| extension.enabled).collect(),
+            extension_enabled: self
+                .extensions
+                .iter()
+                .map(|extension| extension.enabled)
+                .collect(),
         });
     }
 
@@ -1509,7 +1587,11 @@ impl AppViewState {
     }
 
     pub(crate) fn toggle_folder_option_extension(&mut self, index: usize) {
-        if let Some(enabled) = self.folder_options.as_mut().and_then(|draft| draft.extension_enabled.get_mut(index)) {
+        if let Some(enabled) = self
+            .folder_options
+            .as_mut()
+            .and_then(|draft| draft.extension_enabled.get_mut(index))
+        {
             *enabled = !*enabled;
         }
     }
@@ -1560,7 +1642,9 @@ impl AppViewState {
             for (extension, enabled) in self.extensions.iter_mut().zip(draft.extension_enabled) {
                 extension.enabled = enabled;
             }
-            if !self.extensions.iter().any(|extension| extension.package_id == "rust-folder-size-map-view" && extension.enabled) {
+            if !self.extensions.iter().any(|extension| {
+                extension.package_id == "rust-folder-size-map-view" && extension.enabled
+            }) {
                 self.tabs.active_tab_mut().view.settings.extension_view_id = None;
             }
         }
@@ -6996,7 +7080,10 @@ mod tests {
         state.toggle_folder_option_extension(1);
         assert!(state.extensions()[1].enabled);
         state.close_folder_options();
-        assert!(state.extensions()[1].enabled, "Cancel must discard the draft");
+        assert!(
+            state.extensions()[1].enabled,
+            "Cancel must discard the draft"
+        );
 
         state.tabs.active_tab_mut().view.settings.extension_view_id =
             Some("rust-folder-size-map:view".to_owned());
@@ -7005,6 +7092,25 @@ mod tests {
         state.apply_folder_options();
         assert!(!state.extensions()[1].enabled);
         assert_eq!(state.view_settings().extension_view_id, None);
+    }
+
+    #[test]
+    fn about_dialog_uses_configured_build_metadata_and_closes_without_mutating_tabs() {
+        let mut state = AppViewState::default();
+        let tab = state.tabs().active_tab_id();
+        state.set_about_info(super::AboutInfoV1 {
+            version: "1.2.3".to_owned(),
+            build_date: "2026-08-04".to_owned(),
+            git_hash: "0123456789abcdef".to_owned(),
+            author: "Damody".to_owned(),
+        });
+        state.open_about_dialog();
+        let info = state.about_dialog().expect("about dialog");
+        assert_eq!(info.version, "1.2.3");
+        assert_eq!(info.git_hash, "0123456789abcdef");
+        state.close_about_dialog();
+        assert!(state.about_dialog().is_none());
+        assert_eq!(state.tabs().active_tab_id(), tab);
     }
 
     #[test]
@@ -7065,13 +7171,13 @@ mod tests {
     }
 
     #[test]
-    fn more_menu_keyboard_focus_covers_all_eleven_commands() {
+    fn more_menu_keyboard_focus_covers_all_twelve_commands() {
         let mut state = AppViewState::default();
         state.toggle_more_menu();
         state.move_more_menu_focus(i8::MAX);
-        assert_eq!(state.more_menu_index(), 10);
+        assert_eq!(state.more_menu_index(), 11);
         state.move_more_menu_focus(-1);
-        assert_eq!(state.more_menu_index(), 9);
+        assert_eq!(state.more_menu_index(), 10);
         state.move_more_menu_focus(i8::MIN);
         assert_eq!(state.more_menu_index(), 0);
     }
@@ -7092,11 +7198,11 @@ mod tests {
         assert!(!state.set_view_menu_focus(12));
 
         state.toggle_more_menu();
-        assert!(state.set_more_menu_focus(10));
-        assert_eq!(state.more_menu_index(), 10);
+        assert!(state.set_more_menu_focus(11));
+        assert_eq!(state.more_menu_index(), 11);
         assert!(state.set_more_menu_focus(2));
         assert_eq!(state.more_menu_index(), 2);
-        assert!(!state.set_more_menu_focus(11));
+        assert!(!state.set_more_menu_focus(12));
     }
 
     #[test]

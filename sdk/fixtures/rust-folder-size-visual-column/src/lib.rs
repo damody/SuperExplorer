@@ -484,9 +484,9 @@ fn measure_folder_size_with_cache(
     for _ in 0..CACHE_STABILITY_ATTEMPTS {
         let Some(key) = FolderSizeCacheKey::from_request(request) else {
             let (exact_bytes, partial_error) = measure_path_bytes(request);
-            return FolderSizeMeasureResultV1::partial(
-                exact_bytes,
-                partial_error.unwrap_or_else(|| RString::from("folder metadata is unavailable")),
+            return partial_error.map_or_else(
+                || FolderSizeMeasureResultV1::complete(exact_bytes),
+                |error| FolderSizeMeasureResultV1::partial(exact_bytes, error),
             );
         };
         if let Some(exact_bytes) = read_cached_exact(cache_directory, &key) {
@@ -886,6 +886,17 @@ mod tests {
 
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(cache).unwrap();
+    }
+
+    #[test]
+    fn ordinary_file_measurement_returns_its_exact_size() {
+        let root = temporary_directory("file-measurement");
+        let file = root.join("ordinary.bin");
+        fs::write(&file, [7_u8; 37]).unwrap();
+        assert_eq!(
+            measure_folder_size_with_cache(&measurement_request(&file, 100), None),
+            FolderSizeMeasureResultV1::complete(37)
+        );
     }
 
     #[test]
