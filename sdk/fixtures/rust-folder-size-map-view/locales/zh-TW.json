@@ -1,0 +1,5 @@
+{
+  "plugin": "rust-folder-size-map-view",
+  "display_name": "資料夾大小圖",
+  "description": "使用公開 Rust SDK 實作的資料夾大小圖檢視範例。"
+}

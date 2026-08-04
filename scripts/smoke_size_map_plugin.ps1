@@ -18,6 +18,11 @@ $Executable = (Resolve-Path -LiteralPath $Executable).Path
 $PluginDll = (Resolve-Path -LiteralPath $PluginDll).Path
 $InitialPath = (Resolve-Path -LiteralPath $InitialPath).Path
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
+$profileRoot = Join-Path $OutputDirectory 'profile'
+$localAppData = Join-Path $profileRoot 'LocalAppData'
+$roamingAppData = Join-Path $profileRoot 'AppData'
+$extensionState = Join-Path $profileRoot 'ExtensionState'
+New-Item -ItemType Directory -Force -Path $localAppData,$roamingAppData,$extensionState | Out-Null
 
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName UIAutomationClient
@@ -76,6 +81,13 @@ function Find-NamedElement($Root, [string]$Name) {
     $Root.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
 }
 
+function Find-AutomationId($Root, [string]$Id) {
+    $condition = [Windows.Automation.PropertyCondition]::new(
+        [Windows.Automation.AutomationElement]::AutomationIdProperty,
+        $Id)
+    $Root.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
+}
+
 function Invoke-NamedElement($Root, [string]$Name, [switch]$PointerOnly) {
     $element = Find-NamedElement $Root $Name
     if ($null -eq $element) { throw "UI element '$Name' was not found" }
@@ -109,6 +121,27 @@ function Invoke-NamedElement($Root, [string]$Name, [switch]$PointerOnly) {
     }
 }
 
+function Invoke-NamedElementDoubleClick($Root, [string]$Name) {
+    $element = Find-NamedElement $Root $Name
+    if ($null -eq $element) { throw "UI element '$Name' was not found for double-click" }
+    $bounds = $element.Current.BoundingRectangle
+    $rootBounds = $Root.Current.BoundingRectangle
+    $windowRect = [SizeMapSmoke.Native+Rect]::new()
+    if (-not [SizeMapSmoke.Native]::GetWindowRect($window, [ref]$windowRect)) {
+        throw 'GetWindowRect failed while double-clicking Size Map node'
+    }
+    $scaleX = ($windowRect.Right - $windowRect.Left) / $rootBounds.Width
+    $scaleY = ($windowRect.Bottom - $windowRect.Top) / $rootBounds.Height
+    $screenX = [int]($windowRect.Left + (($bounds.Left + $bounds.Width / 2) - $rootBounds.Left) * $scaleX)
+    $screenY = [int]($windowRect.Top + (($bounds.Top + $bounds.Height / 2) - $rootBounds.Top) * $scaleY)
+    [void][SizeMapSmoke.Native]::SetCursorPos($screenX, $screenY)
+    foreach ($click in 1..2) {
+        [SizeMapSmoke.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        [SizeMapSmoke.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 70
+    }
+}
+
 function Send-Key([byte]$VirtualKey) {
     # GPUI consumes real keyboard input; posted WM_KEYDOWN messages bypass its
     # raw-input path and are not equivalent to a user keystroke.
@@ -139,6 +172,9 @@ $start.EnvironmentVariables['EXPLORER_VISUAL_STATE'] = 'populated'
 $start.EnvironmentVariables['EXPLORER_VISUAL_DIAGNOSTICS'] = $diagnostics
 $start.EnvironmentVariables['EXPLORER_INITIAL_PATH'] = $InitialPath
 $start.EnvironmentVariables['EXPLORER_LOG_DIR'] = $OutputDirectory
+$start.EnvironmentVariables['LOCALAPPDATA'] = $localAppData
+$start.EnvironmentVariables['APPDATA'] = $roamingAppData
+$start.EnvironmentVariables['EXPLORER_UITEST_EXTENSION_STATE_ROOT'] = $extensionState
 $process = [Diagnostics.Process]::Start($start)
 $stdoutTask = $process.StandardOutput.ReadToEndAsync()
 $stderrTask = $process.StandardError.ReadToEndAsync()
@@ -159,7 +195,7 @@ try {
         [Windows.Automation.TreeScope]::Descendants,
         [Windows.Automation.PropertyCondition]::new(
             [Windows.Automation.AutomationElement]::ControlTypeProperty,
-            [Windows.Automation.ControlType]::DataItem))
+            [Windows.Automation.ControlType]::ListItem))
     if ($rows.Count -eq 0) { throw 'Real folder contents did not load in Details view' }
     Capture-Window $window $beforePath
 
@@ -201,13 +237,95 @@ try {
             Select-Object -Unique
         throw "Size Map did not expose a rendered percentage node; visible markers: $($visibleNames -join ', ')"
     }
+    $nodeNames = 0..($buttons.Count - 1) |
+        ForEach-Object { $buttons.Item($_).Current.Name }
+    $expectedNodes = Get-ChildItem -LiteralPath $InitialPath -Force | ForEach-Object {
+        $bytes = if ($_.PSIsContainer) {
+            $sum = Get-ChildItem -LiteralPath $_.FullName -Force -Recurse -File |
+                Measure-Object -Property Length -Sum
+            if ($null -eq $sum.Sum) { 0L } else { [long]$sum.Sum }
+        } else {
+            [long]$_.Length
+        }
+        [pscustomobject]@{ Name = $_.Name; Bytes = $bytes }
+    }
+    foreach ($expected in $expectedNodes) {
+        $prefix = '^' + [regex]::Escape("$($expected.Name): $($expected.Bytes) bytes")
+        if (-not ($nodeNames | Where-Object { $_ -match $prefix -and $_ -match 'Complete$' })) {
+            throw "Size Map did not expose the exact recursive total for $($expected.Name): $($expected.Bytes) bytes"
+        }
+    }
+    $nodeName = $node.Current.Name
     Capture-Window $window $sizeMapPath
-    Invoke-NamedElement $root $node.Current.Name -PointerOnly
+    Invoke-NamedElement $root $nodeName -PointerOnly
     Start-Sleep -Milliseconds 200
     Capture-Window $window $selectedPath
     if ((Get-FileHash -LiteralPath $sizeMapPath).Hash -eq (Get-FileHash -LiteralPath $selectedPath).Hash) {
         throw 'Selecting a Size Map node did not update its host-owned GPUI surface'
     }
+
+    $selectedLabel = ($nodeName -split ':', 2)[0]
+    Invoke-NamedElement $root 'View'
+    Start-Sleep -Milliseconds 150
+    Send-Key 0x24 # Home: first built-in view mode.
+    foreach ($step in 1..5) { Send-Key 0x28 } # Details is the sixth built-in mode.
+    Send-Key 0x0D
+    Start-Sleep -Milliseconds 250
+    $detailsRows = $root.FindAll(
+        [Windows.Automation.TreeScope]::Descendants,
+        [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::ControlTypeProperty,
+            [Windows.Automation.ControlType]::ListItem))
+    @($detailsRows | ForEach-Object {
+        [pscustomobject]@{
+            name = $_.Current.Name
+            selected = $_.GetCurrentPropertyValue([Windows.Automation.SelectionItemPattern]::IsSelectedProperty, $true)
+            automation_id = $_.Current.AutomationId
+        }
+    }) | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'details-selection.json') -Encoding utf8
+    $sharedSelection = 0..($detailsRows.Count - 1) |
+        ForEach-Object { $detailsRows.Item($_) } |
+        Where-Object {
+            $_.Current.Name -match [regex]::Escape($selectedLabel) -and
+            $_.GetCurrentPropertyValue([Windows.Automation.SelectionItemPattern]::IsSelectedProperty, $true) -eq $true
+        } |
+        Select-Object -First 1
+    if ($null -eq $sharedSelection) {
+        throw "Size Map selection for '$selectedLabel' was not shared with Details"
+    }
+    Invoke-NamedElement $root 'View'
+    Start-Sleep -Milliseconds 150
+    Invoke-NamedElement $root 'Size Map'
+    Start-Sleep -Milliseconds 250
+
+    $largeNode = $root.FindAll(
+        [Windows.Automation.TreeScope]::Descendants,
+        [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::ControlTypeProperty,
+            [Windows.Automation.ControlType]::Button)) |
+        ForEach-Object { $_ } |
+        Where-Object { $_.Current.Name -match '^large: .*Complete$' } |
+        Select-Object -First 1
+    if ($null -eq $largeNode) { throw 'Deterministic large folder node was not available for navigation' }
+    Invoke-NamedElementDoubleClick $root $largeNode.Current.Name
+    $navigationDeadline = [DateTime]::UtcNow.AddSeconds(8)
+    do {
+        Start-Sleep -Milliseconds 100
+        $nestedNode = $root.FindAll(
+            [Windows.Automation.TreeScope]::Descendants,
+            [Windows.Automation.PropertyCondition]::new(
+                [Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [Windows.Automation.ControlType]::Button)) |
+            ForEach-Object { $_ } |
+            Where-Object { $_.Current.Name -match '^nested: .*Complete$' } |
+            Select-Object -First 1
+    } while ($null -eq $nestedNode -and [DateTime]::UtcNow -lt $navigationDeadline)
+    if ($null -eq $nestedNode) { throw 'Double-clicking a Size Map folder did not navigate through the formal host path' }
+    $back = Find-AutomationId $root 'navigation-back'
+    if ($null -eq $back) { $back = Find-NamedElement $root 'Back' }
+    if ($null -eq $back) { throw 'Formal Back navigation was unavailable after entering the Size Map folder' }
+    Invoke-NamedElement $root $back.Current.Name
+    Start-Sleep -Milliseconds 400
 
     Send-Key 0x74
     Start-Sleep -Seconds 2
@@ -227,7 +345,10 @@ try {
         status = 'passed'
         initial_path = $InitialPath
         details_rows = $rows.Count
-        size_map_node = $node.Current.Name
+        size_map_node = $nodeName
+        exact_nodes = @($expectedNodes)
+        selection_shared_with_details = $true
+        folder_navigation_and_back = $true
         screenshots = @($beforePath, $sizeMapPath, $selectedPath, $afterRefreshPath)
     }
     $json = $report | ConvertTo-Json -Depth 3

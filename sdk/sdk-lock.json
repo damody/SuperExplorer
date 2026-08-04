@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "bundle_id": "sdk-8da6ceee32c6f1b805a399fb",
-  "inventory_root_sha256": "25a23a33ff6c4d3c2573d6a58d2e8aa224e5e97081a99c5521e6a092593c2dce",
+  "bundle_id": "sdk-34a3ea9f04322a9e56c2ad8a",
+  "inventory_root_sha256": "097b0f96ec3f7933c76bbaa7f0a4de0079a117e41c9a20dbac8ec44b0a963241",
   "toolchain": {
     "rustc_release": "1.97.1",
     "rustc_commit_hash": "8bab26f4f68e0e26f0bb7960be334d5b520ea452",
@@ -15422,12 +15422,76 @@
       "sha256": "2de5c9cf90b2016a37fcc01fce3d0613c51b0d0812017b1dc493eba026cfe6ac"
     },
     {
+      "path": "sdk/fixtures/rust-folder-size-map-view/LICENSE",
+      "sha256": "76e1eb2f08f4959eacd0ac7f6a3ef92d67230ad5af4977cbd851b47b854cd8ee"
+    },
+    {
+      "path": "sdk/fixtures/rust-folder-size-map-view/NOTICE",
+      "sha256": "94f43983793e3df71ec111f495c5e2796186c75cbd4c8cabbc5092b38a9cd288"
+    },
+    {
       "path": "sdk/fixtures/rust-folder-size-map-view/README.md",
-      "sha256": "cdd486d9e97e6d7d8f23f513d5d7b699c6230f80b182aa42a17ea3b8a9e878c0"
+      "sha256": "612aa6299604564ec17beae12128b510f27dd999388318c1bd543144942b3f2a"
+    },
+    {
+      "path": "sdk/fixtures/rust-folder-size-map-view/README.zh-TW.md",
+      "sha256": "332e55daa9338d38cc7f46b2080630279a400609be57b53b9b7ab221e9fdb797"
+    },
+    {
+      "path": "sdk/fixtures/rust-folder-size-map-view/fixtures/sample/large/a.txt",
+      "sha256": "5148d9174a05661e7dc65b0b7bf7d1eb511baf27fff3d0e0aec7964344c1301f"
+    },
+    {
+      "path": "sdk/fixtures/rust-folder-size-map-view/fixtures/sample/large/nested/b.txt",
+      "sha256": "c388183d02dd7ffc730d65a3dbcaeedc9a1a5947aeb108d834f2dbd6445fc1f0"
+    },
+    {
+      "path": "sdk/fixtures/rust-folder-size-map-view/fixtures/sample/readme.txt",
+      "sha256": "e3bca76b542ce9b177350e425ad8d9bbe28153d98464c478a0837fa09c29a33a"
+    },
+    {
+      "path": "sdk/fixtures/rust-folder-size-map-view/fixtures/sample/small/a.txt",
+      "sha256": "4c47b3e816fbe7d40cef9f665ba8f0be1ae68b5e8e7ed70f5b6bab7f70528e8f"
+    },
+    {
+      "path": "sdk/fixtures/rust-folder-size-map-view/locales/en-US.json",
+      "sha256": "59c4b933617e98e62079ce3f7389213fe0a7fad0025244ff1bba946008e8752b"
+    },
+    {
+      "path": "sdk/fixtures/rust-folder-size-map-view/locales/zh-TW.json",
+      "sha256": "e10eaeedd0bae895493155f13d1dc493d6b7580e3195edaa9a926879015db013"
+    },
+    {
+      "path": "sdk/fixtures/rust-folder-size-map-view/plugin-project.json",
+      "sha256": "4db233ee636fdaaec7fe0b6c7697439c3146ec5fc2a2fc8cca659b25a9d6c7ad"
+    },
+    {
+      "path": "sdk/fixtures/rust-folder-size-map-view/screenshots/details-before.png",
+      "sha256": "ecfa587b2509988dfef605146996cd5ba3d56e2bf2efaa164fdcd2d4871c5b1f"
+    },
+    {
+      "path": "sdk/fixtures/rust-folder-size-map-view/screenshots/report.json",
+      "sha256": "e88a2f7e1e6d00b64f6e1266f4ddc548fb8d702fa82cd11b04bfa1945f3e2a88"
+    },
+    {
+      "path": "sdk/fixtures/rust-folder-size-map-view/screenshots/size-map-after-f5.png",
+      "sha256": "7bfda8260539c7f786bcdc9cb04e4e26ee4d3b7db13215126072c70ebc25b4c6"
+    },
+    {
+      "path": "sdk/fixtures/rust-folder-size-map-view/screenshots/size-map-selected.png",
+      "sha256": "7d7908607ab6e079de586d44e95e11fb4c6884afceab34cecfc819db4197a8e6"
+    },
+    {
+      "path": "sdk/fixtures/rust-folder-size-map-view/screenshots/size-map.png",
+      "sha256": "bd2826f8afd6dc5fc0d02b3f31673e2db6f8b6bee6a0793bf954261cd19ca927"
+    },
+    {
+      "path": "sdk/fixtures/rust-folder-size-map-view/screenshots/view-menu.png",
+      "sha256": "b8722f9f83e2856c07dcc773fed7b73a9eeb569101f073162395bedc5a915506"
     },
     {
       "path": "sdk/fixtures/rust-folder-size-map-view/src/lib.rs",
-      "sha256": "05bedab2c50ec1715f1ac9c44a993b8975a8be83ce9a1b8dc0ebfa216d7ba81b"
+      "sha256": "73e918512621e1f450649322bf8ecec873e61c9ccb24bc9fef12f0cc5edffeee"
     },
     {
       "path": "sdk/fixtures/rust-folder-size-visual-column/Cargo.lock",
@@ -15595,7 +15659,7 @@
     },
     {
       "path": "sdk/schemas/p0-manifest.schema.json",
-      "sha256": "cc16e80096216a855a18967f9097f7caef50132559022ab787adc1d41314596e"
+      "sha256": "c976172c716ddf99cac1d68dc28774119a361aeb9007e91b734aa8f9337299ff"
     },
     {
       "path": "sdk/schemas/release-freeze.schema.json",
@@ -15887,7 +15951,7 @@
     },
     {
       "path": "sdk/tools/plugin-tooling/src/lib.rs",
-      "sha256": "bca2054ef3adee5d3570501a80f774d55e58fe6dc73878ba7a6904d4ab6f97f2"
+      "sha256": "5730a54d89e5dab883f366ed7c5cab969feedc87097c95a0e0a6581c49c5ca08"
     },
     {
       "path": "sdk/tools/plugin-tooling/src/main.rs",

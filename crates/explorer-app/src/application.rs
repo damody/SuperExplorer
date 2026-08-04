@@ -36,7 +36,6 @@ const SHELL_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 const FOLDER_SIZE_CONTRIBUTION_ID_V1: &str = "folder-size";
 const FOLDER_SIZE_RENDERER_CONTRIBUTION_ID_V1: &str = "folder-size-renderer";
 const SIZE_MAP_VIEW_CONTRIBUTION_ID_V1: &str = "size-map";
-const SIZE_MAP_BATCH_DEADLINE_V1: Duration = Duration::from_secs(2);
 const SIZE_MAP_REQUEST_QUEUE_CAP_V1: usize = 1_024;
 const CODE_LINES_CONTRIBUTION_ID_V1: &str = "rust-tokei:code-lines";
 const CODE_LINES_RENDERER_CONTRIBUTION_ID_V1: &str = "rust-tokei:code-lines-renderer";
@@ -181,12 +180,51 @@ fn size_map_snapshot_bytes(context: &explorer_extension_ui_api::SizeMapRenderCon
     bytes
 }
 
+fn size_map_node_id(
+    item_id: &explorer_model::ShellItemId,
+) -> explorer_extension_ui_api::StableIdV1 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    b"superexplorer:size-map-node:v1".hash(&mut hasher);
+    item_id.provider_bytes().hash(&mut hasher);
+    explorer_extension_ui_api::StableIdV1::new(
+        explorer_extension_ui_api::EXTENSION_ID_NAMESPACE_V1,
+        hasher.finish().max(1),
+    )
+}
+
+fn append_size_map_host_scope(
+    target: &mut Vec<u8>,
+    request_context: &explorer_model::RequestContext,
+    item_ids: &[explorer_model::ShellItemId],
+) {
+    // This scope remains host-local. The plugin only receives its opaque
+    // revision, never a tab ID, request ID, filesystem location, or raw Shell
+    // item identity. It nevertheless makes a result valid for exactly one
+    // navigation/refresh context and one ordered set of real Shell items.
+    let mut scope = std::collections::hash_map::DefaultHasher::new();
+    b"superexplorer:size-map-render-scope:v1".hash(&mut scope);
+    request_context.request_id.hash(&mut scope);
+    request_context.tab_id.hash(&mut scope);
+    request_context.generation.hash(&mut scope);
+    for item_id in item_ids {
+        item_id.provider_bytes().hash(&mut scope);
+    }
+    target.extend_from_slice(&scope.finish().to_le_bytes());
+}
+
 fn size_map_render_key(
     context: &mut explorer_extension_ui_api::SizeMapRenderContextV1,
+    request_context: &explorer_model::RequestContext,
+    item_ids: &[explorer_model::ShellItemId],
 ) -> SizeMapRenderKeyV1 {
     context.render_revision = 0;
-    context.render_revision = revision_for(&size_map_snapshot_bytes(context));
-    SizeMapRenderKeyV1(size_map_snapshot_bytes(context))
+    let mut revision_input = size_map_snapshot_bytes(context);
+    append_size_map_host_scope(&mut revision_input, request_context, item_ids);
+    context.render_revision = revision_for(&revision_input);
+
+    let mut key = size_map_snapshot_bytes(context);
+    append_size_map_host_scope(&mut key, request_context, item_ids);
+    SizeMapRenderKeyV1(key)
 }
 
 /// Bounded bridge between GPUI and one retained direct-DLL renderer. The GPUI
@@ -1164,33 +1202,30 @@ impl ApplicationSizeMapRuntimeV1 {
                     if worker_epoch.load(Ordering::Acquire) != batch_epoch {
                         continue;
                     }
-                    let batch_started = Instant::now();
-                    for (index, request) in requests.iter().cloned().enumerate() {
+                    // Publish an initial state for every direct child before
+                    // walking any subtree. This keeps the map interactive and
+                    // lets the renderer show all known siblings while exact
+                    // recursive totals arrive one at a time.
+                    for request in requests.iter().cloned() {
                         if worker_epoch.load(Ordering::Acquire) != batch_epoch {
                             break;
                         }
-                        let Some(remaining) =
-                            SIZE_MAP_BATCH_DEADLINE_V1.checked_sub(batch_started.elapsed())
-                        else {
-                            for request in requests.iter().skip(index).cloned() {
-                                if worker_epoch.load(Ordering::Acquire) != batch_epoch {
-                                    break;
-                                }
-                                if worker_result_tx
-                                    .send(size_map_terminal_result(
-                                        request,
-                                        "Size Map scan deadline reached; refresh to retry",
-                                    ))
-                                    .is_err()
-                                {
-                                    return;
-                                }
-                            }
-                            break;
-                        };
-                        let (bytes, partial, error) =
-                            measure_size_map_path(&request.path, remaining, 100_000, 128);
+                        if worker_result_tx
+                            .send(size_map_scanning_result(request))
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                    for request in requests {
                         if worker_epoch.load(Ordering::Acquire) != batch_epoch {
+                            break;
+                        }
+                        let (bytes, partial, error, cancelled) =
+                            measure_size_map_path(&request.path, 100_000, 128, || {
+                                worker_epoch.load(Ordering::Acquire) != batch_epoch
+                            });
+                        if cancelled || worker_epoch.load(Ordering::Acquire) != batch_epoch {
                             break;
                         }
                         if worker_result_tx
@@ -1216,6 +1251,18 @@ impl ApplicationSizeMapRuntimeV1 {
             result_tx,
             renderer: AsyncSizeMapRendererV1::start(renderer)?,
         }))
+    }
+}
+
+fn size_map_scanning_result(
+    request: explorer_ui::size_map_view::SizeMapMeasureRequestV1,
+) -> explorer_ui::size_map_view::SizeMapMeasureResultV1 {
+    explorer_ui::size_map_view::SizeMapMeasureResultV1 {
+        context: request.context,
+        item_id: request.item_id,
+        exact_bytes: None,
+        partial: true,
+        error: Some("Scanning recursively".to_owned()),
     }
 }
 
@@ -1281,17 +1328,19 @@ fn enqueue_size_map_requests(
 
 fn measure_size_map_path(
     root: &Path,
-    deadline: Duration,
     max_entries: u32,
     max_depth: u16,
-) -> (u64, bool, Option<String>) {
-    let started = Instant::now();
+    mut cancelled: impl FnMut() -> bool,
+) -> (u64, bool, Option<String>, bool) {
     let mut pending = vec![(root.to_path_buf(), 0_u16)];
     let mut visited = 0_u32;
     let mut bytes = 0_u64;
     let mut error = None;
     while let Some((path, depth)) = pending.pop() {
-        if visited >= max_entries || started.elapsed() >= deadline {
+        if cancelled() {
+            return (bytes, true, None, true);
+        }
+        if visited >= max_entries {
             error.get_or_insert_with(|| "Size Map scan resource limit reached".to_owned());
             break;
         }
@@ -1320,10 +1369,11 @@ fn measure_size_map_path(
         match fs::read_dir(path) {
             Ok(entries) => {
                 for entry in entries {
+                    if cancelled() {
+                        return (bytes, true, None, true);
+                    }
                     let queued = u32::try_from(pending.len()).unwrap_or(u32::MAX);
-                    if visited.saturating_add(queued) >= max_entries
-                        || started.elapsed() >= deadline
-                    {
+                    if visited.saturating_add(queued) >= max_entries {
                         error.get_or_insert_with(|| {
                             "Size Map scan resource limit reached".to_owned()
                         });
@@ -1342,7 +1392,7 @@ fn measure_size_map_path(
             }
         }
     }
-    (bytes, error.is_some(), error)
+    (bytes, error.is_some(), error, false)
 }
 
 impl explorer_ui::size_map_view::ExtensionSizeMapRuntimePortV1 for ApplicationSizeMapRuntimeV1 {
@@ -1392,11 +1442,24 @@ impl explorer_ui::size_map_view::ExtensionSizeMapRuntimePortV1 for ApplicationSi
             CellColorV1, CellThemeV1, SizeMapNodeKindV1, SizeMapNodeStatusV1,
         };
         let generation = context.request_context.generation.value();
+        let item_ids = context
+            .nodes
+            .iter()
+            .map(|node| node.item_id.clone())
+            .collect::<Vec<_>>();
+        let node_ids = item_ids.iter().map(size_map_node_id).collect::<Vec<_>>();
+        // The public ABI represents an item with one u64-backed StableId. A
+        // collision must fail closed instead of projecting a returned
+        // rectangle onto a different Shell item. Ordinary row position is
+        // deliberately not used as an identity source.
+        if node_ids.iter().collect::<HashSet<_>>().len() != node_ids.len() {
+            return size_map_render_fallback("Size Map item identity collision");
+        }
         let mappings = context
             .nodes
             .iter()
-            .enumerate()
-            .map(|(index, node)| {
+            .zip(&node_ids)
+            .map(|(node, node_id)| {
                 let status = if node.partial {
                     "Partial"
                 } else if node.error.is_some() {
@@ -1406,24 +1469,15 @@ impl explorer_ui::size_map_view::ExtensionSizeMapRuntimePortV1 for ApplicationSi
                 } else {
                     "Unavailable"
                 };
-                (
-                    explorer_extension_ui_api::StableIdV1::new(
-                        explorer_extension_ui_api::EXTENSION_ID_NAMESPACE_V1,
-                        u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1),
-                    ),
-                    (node.item_id.clone(), status.to_owned()),
-                )
+                (*node_id, (node.item_id.clone(), status.to_owned()))
             })
             .collect::<HashMap<_, _>>();
         let public_nodes = context
             .nodes
             .iter()
-            .enumerate()
-            .map(|(index, node)| explorer_extension_ui_api::SizeMapNodeV1 {
-                node_id: explorer_extension_ui_api::StableIdV1::new(
-                    explorer_extension_ui_api::EXTENSION_ID_NAMESPACE_V1,
-                    u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1),
-                ),
+            .zip(&node_ids)
+            .map(|(node, node_id)| explorer_extension_ui_api::SizeMapNodeV1 {
+                node_id: *node_id,
                 parent_id: None.into(),
                 name: node.display_name.clone().into(),
                 kind: if node.is_container {
@@ -1454,15 +1508,13 @@ impl explorer_ui::size_map_view::ExtensionSizeMapRuntimePortV1 for ApplicationSi
             CellColorV1::rgba(250, 250, 250, 255)
         };
         let selected_node_ids = context
-            .nodes
+            .selected
             .iter()
-            .enumerate()
-            .filter(|(_, node)| context.selected.contains(&node.item_id))
-            .map(|(index, _)| {
-                explorer_extension_ui_api::StableIdV1::new(
-                    explorer_extension_ui_api::EXTENSION_ID_NAMESPACE_V1,
-                    u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1),
-                )
+            .filter_map(|selected| {
+                item_ids
+                    .iter()
+                    .position(|item_id| item_id == selected)
+                    .map(|index| node_ids[index])
             })
             .collect();
         let mut public_context = explorer_extension_ui_api::SizeMapRenderContextV1 {
@@ -1484,7 +1536,7 @@ impl explorer_ui::size_map_view::ExtensionSizeMapRuntimePortV1 for ApplicationSi
             selected_node_ids,
             settings: "default".into(),
         };
-        let key = size_map_render_key(&mut public_context);
+        let key = size_map_render_key(&mut public_context, &context.request_context, &item_ids);
         let width = context.viewport_width_milli as f32 / 1_000.0;
         let height = context.viewport_height_milli as f32 / 1_000.0;
         self.renderer.render_or_enqueue(SizeMapRenderRequestV1 {
@@ -2955,9 +3007,11 @@ impl Drop for ApplicationLifecycle {
 #[cfg(test)]
 mod tests {
     use std::{
+        fs,
+        path::PathBuf,
         sync::atomic::{AtomicU64, AtomicUsize, Ordering},
         sync::{Arc, Mutex},
-        time::Instant,
+        time::{Instant, SystemTime, UNIX_EPOCH},
     };
 
     use abi_stable::std_types::{ROption, RVec};
@@ -2981,7 +3035,8 @@ mod tests {
         SafeModeIncidentOfferV1, SafeModeIncidentPortV1, cell_render_key,
         confirm_offered_safe_mode_incident_v1, confirm_presented_safe_mode_incident_v1,
         emit_post_commit_safe_mode_telemetry_v1, enqueue_folder_size_requests,
-        enqueue_size_map_requests, should_restore_saved_tabs, size_map_render_key,
+        enqueue_size_map_requests, measure_size_map_path, should_restore_saved_tabs,
+        size_map_node_id, size_map_render_key,
     };
 
     struct FakeSafeModePortV1 {
@@ -3069,7 +3124,9 @@ mod tests {
             selected_node_ids: RVec::new(),
             settings: "default".into(),
         };
-        let baseline = size_map_render_key(&mut context);
+        let request_context = RequestContext::new(TabId::new(), Generation::new(1));
+        let item_ids = vec![ShellItemId::from_provider_bytes([1_u8]).unwrap()];
+        let baseline = size_map_render_key(&mut context, &request_context, &item_ids);
         let mut changed_viewport = context.clone();
         changed_viewport.viewport.width_milli = 1_001;
         let mut changed_selection = context.clone();
@@ -3080,9 +3137,65 @@ mod tests {
             )]);
         let mut changed_measurement = context;
         changed_measurement.nodes[0].exact_bytes = ROption::RSome(11);
-        assert_ne!(baseline, size_map_render_key(&mut changed_viewport));
-        assert_ne!(baseline, size_map_render_key(&mut changed_selection));
-        assert_ne!(baseline, size_map_render_key(&mut changed_measurement));
+        assert_ne!(
+            baseline,
+            size_map_render_key(&mut changed_viewport, &request_context, &item_ids)
+        );
+        assert_ne!(
+            baseline,
+            size_map_render_key(&mut changed_selection, &request_context, &item_ids)
+        );
+        assert_ne!(
+            baseline,
+            size_map_render_key(&mut changed_measurement, &request_context, &item_ids)
+        );
+    }
+
+    #[test]
+    fn size_map_render_key_rejects_cross_tab_cache_reuse_and_row_identity_reminting() {
+        let color = explorer_extension_ui_api::CellColorV1::rgba(1, 2, 3, 255);
+        let item_ids = vec![ShellItemId::from_provider_bytes([7_u8]).unwrap()];
+        let mut first = explorer_extension_ui_api::SizeMapRenderContextV1 {
+            generation: 1,
+            render_revision: 0,
+            nodes: RVec::from(vec![explorer_extension_ui_api::SizeMapNodeV1 {
+                node_id: size_map_node_id(&item_ids[0]),
+                parent_id: ROption::RNone,
+                name: "same-row".into(),
+                kind: explorer_extension_ui_api::SizeMapNodeKindV1::FILE,
+                exact_bytes: ROption::RSome(10),
+                status: explorer_extension_ui_api::SizeMapNodeStatusV1::COMPLETE,
+            }]),
+            viewport: explorer_extension_ui_api::SizeMapViewportV1 {
+                width_milli: 1_000,
+                height_milli: 1_000,
+                dpi_milli: 1_000,
+            },
+            theme: explorer_extension_ui_api::CellThemeV1 {
+                foreground: color,
+                muted_foreground: color,
+                background: color,
+                selection_background: color,
+                accent: color,
+            },
+            selected_node_ids: RVec::new(),
+            settings: "default".into(),
+        };
+        let second_tab = TabId::new();
+        let first_context = RequestContext::new(TabId::new(), Generation::new(1));
+        let second_context = RequestContext::new(second_tab, Generation::new(1));
+        let first_key = size_map_render_key(&mut first, &first_context, &item_ids);
+        let first_revision = first.render_revision;
+        let mut second = first.clone();
+        let second_key = size_map_render_key(&mut second, &second_context, &item_ids);
+
+        assert_ne!(first_key, second_key);
+        assert_ne!(first_revision, second.render_revision);
+        assert_ne!(
+            size_map_node_id(&item_ids[0]),
+            size_map_node_id(&ShellItemId::from_provider_bytes([8_u8]).unwrap()),
+            "public node identities must derive from the actual Shell item, not row 0"
+        );
     }
 
     impl SafeModeIncidentPortV1 for FakeSafeModePortV1 {
@@ -3484,5 +3597,25 @@ mod tests {
                 .as_deref()
                 .is_some_and(|message| message.contains("queue limit"))
         );
+    }
+
+    #[test]
+    fn size_map_scan_publishes_complete_recursive_total_after_initial_progress() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root: PathBuf = std::env::temp_dir().join(format!(
+            "superexplorer-size-map-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(root.join("nested")).unwrap();
+        fs::write(root.join("root.bin"), [0_u8; 7]).unwrap();
+        fs::write(root.join("nested").join("child.bin"), [0_u8; 11]).unwrap();
+
+        let result = measure_size_map_path(&root, 100, 16, || false);
+        fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(result, (18, false, None, false));
     }
 }

@@ -54,7 +54,7 @@
       "type": "object", "additionalProperties": false, "required": ["id", "feature_id", "kind", "capabilities", "payload"],
       "properties": {
         "id": { "type": "string" }, "feature_id": { "type": "string" },
-        "kind": { "enum": ["abi-root", "gpui"] },
+        "kind": { "enum": ["abi-root", "gpui", "column", "renderer", "recalculate", "settings", "view-mode"] },
         "capabilities": { "type": "array", "items": { "type": "string" } },
         "payload": { "type": "string" }
       }

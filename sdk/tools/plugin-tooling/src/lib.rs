@@ -376,13 +376,15 @@ pub fn materialize_folder_size_template(
             materialized: false,
         });
     }
-    if !template.contains("\"id\": \"rust-folder-size-visual-column\"")
+    let is_visual_column = template.contains("\"id\": \"rust-folder-size-visual-column\"");
+    let is_size_map = template.contains("\"id\": \"rust-folder-size-map-view\"");
+    if is_visual_column == is_size_map
         || TOKENS
             .iter()
             .any(|token| template.matches(token).count() != 1)
     {
         return Err(
-            "only the exact rust-folder-size-visual-column template may contain placeholders"
+            "only an exact supported folder-size example template may contain placeholders"
                 .into(),
         );
     }
@@ -409,13 +411,19 @@ pub fn materialize_folder_size_template(
     }
     let manifest: Manifest = serde_json::from_str(&resolved)
         .map_err(|error| format!("resolved folder-size manifest is invalid: {error}"))?;
-    if manifest.package.id != "rust-folder-size-visual-column"
+    let declarations_are_exact = match manifest.package.id.as_str() {
+        "rust-folder-size-visual-column" => {
+            is_visual_column && is_exact_folder_size_declarations(&manifest)
+        }
+        "rust-folder-size-map-view" => is_size_map && is_exact_size_map_declarations(&manifest),
+        _ => false,
+    };
+    if !declarations_are_exact
         || manifest.sdk.bundle_id != bundle_id
         || manifest.sdk.abi_schema != abi_schema
-        || !is_exact_folder_size_declarations(&manifest)
     {
         return Err(
-            "resolved folder-size template declarations are not the approved 0→1 set".into(),
+            "resolved folder-size example declarations are not the approved 0→1 set".into(),
         );
     }
     ensure_regular_project_path(&canonical_root, &manifest_path)?;
@@ -462,6 +470,23 @@ fn is_exact_folder_size_declarations(manifest: &Manifest) -> bool {
                     && actual.capabilities == capabilities
                     && actual.payload == "src/lib.rs"
             })
+}
+
+fn is_exact_size_map_declarations(manifest: &Manifest) -> bool {
+    manifest.features.len() == 1
+        && manifest.features[0].id == "view"
+        && manifest.features[0].capabilities == ["abi", "filesystem.read"]
+        && manifest.contributions.len() == 2
+        && manifest.contributions[0].id == "abi-root"
+        && manifest.contributions[0].kind == "abi-root"
+        && manifest.contributions[0].feature_id == "view"
+        && manifest.contributions[0].capabilities == ["abi"]
+        && manifest.contributions[0].payload == "src/lib.rs"
+        && manifest.contributions[1].id == "size-map"
+        && manifest.contributions[1].kind == "view-mode"
+        && manifest.contributions[1].feature_id == "view"
+        && manifest.contributions[1].capabilities == ["abi"]
+        && manifest.contributions[1].payload == "src/lib.rs"
 }
 
 /// Synthesizes the canonical host `manifest.json` for a P0 local-developer
@@ -1613,8 +1638,10 @@ fn validate_manifest(manifest: &Manifest, root: &Path, expected: &ExpectedSdk) -
             contribution.kind.as_str(),
             "abi-root" | "column" | "renderer" | "recalculate" | "settings"
         );
+        let size_map_kind = matches!(contribution.kind.as_str(), "abi-root" | "view-mode");
         if !(matches!(contribution.kind.as_str(), "abi-root" | "gpui")
-            || (manifest.package.id == "rust-folder-size-visual-column" && folder_size_kind))
+            || (manifest.package.id == "rust-folder-size-visual-column" && folder_size_kind)
+            || (manifest.package.id == "rust-folder-size-map-view" && size_map_kind))
         {
             diagnostics.push(diagnostic(
                 "SESDK-CONTRIBUTION-001",
@@ -1653,6 +1680,16 @@ fn validate_manifest(manifest: &Manifest, root: &Path, expected: &ExpectedSdk) -
             "manifest",
             "contributions",
             "folder-size must declare its three features and exactly the ABI root, column, and renderer entries implemented by the registrar",
+        ));
+    }
+    if manifest.package.id == "rust-folder-size-map-view"
+        && !is_exact_size_map_declarations(manifest)
+    {
+        diagnostics.push(diagnostic(
+            "SESDK-CONTRIBUTION-004",
+            "manifest",
+            "contributions",
+            "size-map must declare its view feature and exactly the ABI root and view-mode entries implemented by the registrar",
         ));
     }
     if manifest
@@ -3734,6 +3771,39 @@ mod tests {
         assert!(!resolved.contains("@SOURCE_SIZE@"));
         assert!(!resolved.contains("@SOURCE_SHA256@"));
         assert!(serde_json::from_str::<Manifest>(&resolved).is_ok());
+    }
+
+    #[test]
+    fn size_map_template_materializes_with_its_exact_manifest_declarations() {
+        let temporary = TestDirectory::new();
+        fs::create_dir_all(temporary.0.join("src")).expect("create source directory");
+        fs::write(temporary.0.join("src/lib.rs"), b"size-map source").expect("write source");
+        let template = r#"{
+  "schema_version": 1,
+  "package": { "id": "rust-folder-size-map-view", "version": "0.1.0" },
+  "publisher": { "id": "example-publisher", "display_name": "Example", "contacts": [{ "kind": "support", "value": "support@example.invalid" }] },
+  "sdk": { "bundle_id": "@SDK_BUNDLE_ID@", "target": "x86_64-pc-windows-msvc", "abi_schema": @ABI_SCHEMA@, "gpui": false, "ui_abi_fingerprint": null },
+  "rust": { "crate_name": "rust-folder-size-map-view", "entrypoint": "plugin.dll" },
+  "features": [{ "id": "view", "capabilities": ["abi", "filesystem.read"] }],
+  "contributions": [
+    { "id": "abi-root", "feature_id": "view", "kind": "abi-root", "capabilities": ["abi"], "payload": "src/lib.rs" },
+    { "id": "size-map", "feature_id": "view", "kind": "view-mode", "capabilities": ["abi"], "payload": "src/lib.rs" }
+  ],
+  "payloads": [{ "path": "src/lib.rs", "size": @SOURCE_SIZE@, "sha256": "@SOURCE_SHA256@", "kind": "rust-source" }],
+  "private_dependencies": [],
+  "verification": { "requirements": [] }
+}"#;
+        let manifest_path = temporary.0.join("plugin-project.json");
+        fs::write(&manifest_path, template).expect("write template");
+
+        let report = materialize_folder_size_template(&temporary.0, "sdk-test", 1)
+            .expect("materialize size-map template");
+        let resolved = fs::read_to_string(&manifest_path).expect("read resolved template");
+        let manifest = serde_json::from_str::<Manifest>(&resolved).expect("resolved manifest");
+
+        assert!(report.materialized);
+        assert_eq!(manifest.package.id, "rust-folder-size-map-view");
+        assert!(is_exact_size_map_declarations(&manifest));
     }
 
     #[test]

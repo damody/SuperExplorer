@@ -1,0 +1,5 @@
+{
+  "plugin": "rust-folder-size-map-view",
+  "display_name": "Folder Size Map",
+  "description": "Folder Size Map view example implemented with the public Rust SDK."
+}

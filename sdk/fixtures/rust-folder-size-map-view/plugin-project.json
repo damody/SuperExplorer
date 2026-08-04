@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "package": { "id": "rust-folder-size-map-view", "version": "0.1.0" },
+  "publisher": {
+    "id": "example-publisher",
+    "display_name": "Example Publisher",
+    "contacts": [{ "kind": "support", "value": "support@example.invalid" }]
+  },
+  "sdk": {
+    "bundle_id": "@SDK_BUNDLE_ID@",
+    "target": "x86_64-pc-windows-msvc",
+    "abi_schema": @ABI_SCHEMA@,
+    "gpui": false,
+    "ui_abi_fingerprint": null
+  },
+  "rust": {
+    "crate_name": "rust-folder-size-map-view",
+    "entrypoint": "plugin.dll"
+  },
+  "features": [
+    { "id": "view", "capabilities": ["abi", "filesystem.read"] }
+  ],
+  "contributions": [
+    {
+      "id": "abi-root",
+      "feature_id": "view",
+      "kind": "abi-root",
+      "capabilities": ["abi"],
+      "payload": "src/lib.rs"
+    },
+    {
+      "id": "size-map",
+      "feature_id": "view",
+      "kind": "view-mode",
+      "capabilities": ["abi"],
+      "payload": "src/lib.rs"
+    }
+  ],
+  "payloads": [
+    {
+      "path": "src/lib.rs",
+      "size": @SOURCE_SIZE@,
+      "sha256": "@SOURCE_SHA256@",
+      "kind": "rust-source"
+    }
+  ],
+  "private_dependencies": [],
+  "verification": { "requirements": [] }
+}

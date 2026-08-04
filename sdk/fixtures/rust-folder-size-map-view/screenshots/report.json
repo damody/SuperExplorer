@@ -1,0 +1,28 @@
+﻿{
+    "status":  "passed",
+    "initial_path":  "D:\\SuperExplorer\\sdk\\fixtures\\rust-folder-size-map-view\\fixtures\\sample",
+    "details_rows":  3,
+    "size_map_node":  "large: 216 bytes · 216 B · 75.0% · folder · complete. Complete",
+    "exact_nodes":  [
+                        {
+                            "Name":  "large",
+                            "Bytes":  216
+                        },
+                        {
+                            "Name":  "small",
+                            "Bytes":  6
+                        },
+                        {
+                            "Name":  "readme.txt",
+                            "Bytes":  66
+                        }
+                    ],
+    "selection_shared_with_details":  true,
+    "folder_navigation_and_back":  true,
+    "screenshots":  [
+                        "D:\\SuperExplorer\\target\\uitest-runs\\size-map-20260804-final\\evidence\\size-map-plugin-headful\\details-before.png",
+                        "D:\\SuperExplorer\\target\\uitest-runs\\size-map-20260804-final\\evidence\\size-map-plugin-headful\\size-map.png",
+                        "D:\\SuperExplorer\\target\\uitest-runs\\size-map-20260804-final\\evidence\\size-map-plugin-headful\\size-map-selected.png",
+                        "D:\\SuperExplorer\\target\\uitest-runs\\size-map-20260804-final\\evidence\\size-map-plugin-headful\\size-map-after-f5.png"
+                    ]
+}
