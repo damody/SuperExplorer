@@ -1589,7 +1589,7 @@
         "-PluginDll",
         "{workspace_root}\\sdk\\fixtures\\rust-folder-size-map-view\\target\\x86_64-pc-windows-msvc\\debug\\rust_folder_size_map_view.dll",
         "-InitialPath",
-        "{workspace_root}\\crates",
+        "{workspace_root}\\sdk\\fixtures\\rust-folder-size-map-view\\fixtures\\sample",
         "-OutputDirectory",
         "{evidence_dir}"
       ],

@@ -1117,6 +1117,41 @@ impl ExplorerRoot {
                 .is_some()
     }
 
+    /// Ends the transient session for the single Size Map view. The stable
+    /// directory generation is not enough on its own: returning to the same
+    /// tab after another tab or built-in view must submit a fresh request ID so
+    /// the app runtime cancels (and the UI rejects) the earlier work.
+    fn invalidate_size_map_session(&mut self) {
+        self.size_map_visual_context = None;
+        self.size_map_requested.clear();
+        if let Some(visuals) = self.size_map_visuals.as_mut() {
+            visuals.values.clear();
+        }
+    }
+
+    fn invalidate_size_map_after_action(&mut self, action: &ExplorerAction) {
+        if matches!(
+            action,
+            ExplorerAction::NewTab
+                | ExplorerAction::CloseActiveTab
+                | ExplorerAction::CloseTab { .. }
+                | ExplorerAction::ActivateTab { .. }
+                | ExplorerAction::NextTab
+                | ExplorerAction::PreviousTab
+                | ExplorerAction::SetViewMode(_)
+                | ExplorerAction::SetExtensionView { .. }
+        ) {
+            self.invalidate_size_map_session();
+        }
+    }
+
+    fn size_map_result_is_current(
+        result: &size_map_view::SizeMapMeasureResultV1,
+        context: &explorer_model::RequestContext,
+    ) -> bool {
+        result.context == *context
+    }
+
     fn submit_size_map_requests(&mut self) {
         if !self.size_map_is_active() {
             return;
@@ -1136,10 +1171,7 @@ impl ExplorerRoot {
             .as_ref()
             .is_some_and(|context| context.tab_id == tab_id && context.generation == generation);
         if !context_is_current {
-            self.size_map_visuals
-                .get_or_insert_with(Default::default)
-                .values
-                .clear();
+            self.invalidate_size_map_session();
             self.size_map_visual_context =
                 Some(explorer_model::RequestContext::new(tab_id, generation));
         }
@@ -1171,26 +1203,41 @@ impl ExplorerRoot {
     }
 
     fn pump_size_map_runtime(&mut self) -> bool {
-        let Some(runtime) = self.size_map_runtime.as_ref() else {
+        let Some(runtime) = self.size_map_runtime.clone() else {
             return false;
         };
         let render_ready = runtime.drain_render_results();
         if !size_map_view::is_supported_size_map_config(&runtime.config()) {
             return false;
         }
+        let results = runtime.drain_measure_results();
+        if !self.size_map_is_active() {
+            // Result delivery is intentionally consumed while Details (or a
+            // different tab view) is active. A later Size Map activation gets
+            // a fresh request ID, so no hidden result can become visible.
+            let had_session = self.size_map_visual_context.is_some()
+                || self
+                    .size_map_visuals
+                    .as_ref()
+                    .is_some_and(|visuals| !visuals.values.is_empty())
+                || !self.size_map_requested.is_empty();
+            self.invalidate_size_map_session();
+            return render_ready || had_session || !results.is_empty();
+        }
         let active_tab = self.state.tabs().active_tab();
-        let context_is_current = self
+        let context = self
             .size_map_visual_context
             .as_ref()
-            .is_some_and(|context| {
+            .filter(|context| {
                 context.tab_id == active_tab.id && context.generation == active_tab.generation
-            });
-        let context = if context_is_current {
-            self.size_map_visual_context
-                .clone()
-                .expect("current Size Map context exists")
-        } else {
-            explorer_model::RequestContext::new(active_tab.id, active_tab.generation)
+            })
+            .cloned();
+        let Some(context) = context else {
+            // Rendering submits the fresh session first. Until then, discard
+            // completions from the previous tab/view context instead of
+            // recreating that context from the pump.
+            self.invalidate_size_map_session();
+            return render_ready || !results.is_empty();
         };
         let visible_ids = active_tab
             .visible_snapshot()
@@ -1203,21 +1250,12 @@ impl ExplorerRoot {
             })
             .unwrap_or_default();
         let visuals = self.size_map_visuals.get_or_insert_with(Default::default);
-        let stale_context = !context_is_current;
-        if stale_context {
-            visuals.values.clear();
-            self.size_map_visual_context = Some(context.clone());
-        }
         let previous_count = visuals.values.len();
         visuals.values.retain(|id, _| visible_ids.contains(id));
-        let mut changed = render_ready || stale_context || visuals.values.len() != previous_count;
-        for result in runtime
-            .drain_measure_results()
+        let mut changed = render_ready || visuals.values.len() != previous_count;
+        for result in results
             .into_iter()
-            .filter(|result| {
-                result.context.tab_id == context.tab_id
-                    && result.context.generation == context.generation
-            })
+            .filter(|result| Self::size_map_result_is_current(result, &context))
         {
             let value = size_map_view::SizeMapMeasuredValueV1 {
                 exact_bytes: result.exact_bytes,
@@ -4026,6 +4064,7 @@ impl ExplorerRoot {
         let ((), measurement) = measure_callback(action.name(), || {
             dispatch_action(&mut self.state, action.clone(), source);
         });
+        self.invalidate_size_map_after_action(&action);
         if matches!(
             &action,
             ExplorerAction::NewTab
@@ -6054,6 +6093,64 @@ mod tests {
         fn poll_due(&mut self, _: Instant) -> bool {
             self.due.pop_front().unwrap_or(false)
         }
+    }
+
+    #[test]
+    fn size_map_view_or_tab_switch_clears_requests_and_rejects_the_previous_session() {
+        use crate::actions::ExplorerAction;
+
+        let mut root = ExplorerRoot::new(UiTokens::default());
+        let (tab_id, generation) = {
+            let tab = root.state.tabs().active_tab();
+            (tab.id, tab.generation)
+        };
+        let prior = explorer_model::RequestContext::new(tab_id, generation);
+        let resumed = explorer_model::RequestContext::new(tab_id, generation);
+        let item_id =
+            explorer_model::ShellItemId::from_provider_bytes([0x51]).expect("fixture identity");
+        root.size_map_visual_context = Some(prior.clone());
+        root.size_map_visuals = Some(super::size_map_view::SizeMapVisualsV1 {
+            values: std::collections::HashMap::from([(
+                item_id.clone(),
+                super::size_map_view::SizeMapMeasuredValueV1 {
+                    exact_bytes: Some(1),
+                    partial: false,
+                    error: None,
+                },
+            )]),
+        });
+        root.size_map_requested
+            .insert((tab_id, generation, item_id.clone()));
+
+        root.invalidate_size_map_after_action(&ExplorerAction::SetViewMode(
+            explorer_model::ViewMode::Details,
+        ));
+        assert!(root.size_map_visual_context.is_none());
+        assert!(root.size_map_requested.is_empty());
+        assert!(
+            root.size_map_visuals
+                .as_ref()
+                .expect("Size Map visuals")
+                .values
+                .is_empty()
+        );
+
+        root.size_map_visual_context = Some(prior.clone());
+        root.size_map_requested
+            .insert((tab_id, generation, item_id.clone()));
+        root.invalidate_size_map_after_action(&ExplorerAction::ActivateTab { tab_id });
+        assert!(root.size_map_visual_context.is_none());
+        assert!(root.size_map_requested.is_empty());
+
+        let result = super::size_map_view::SizeMapMeasureResultV1 {
+            context: prior,
+            item_id,
+            exact_bytes: Some(1),
+            partial: false,
+            error: None,
+        };
+        assert_ne!(result.context, resumed);
+        assert!(!ExplorerRoot::size_map_result_is_current(&result, &resumed));
     }
 
     #[test]

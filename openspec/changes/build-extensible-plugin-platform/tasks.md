@@ -1532,7 +1532,7 @@ documentation, and local Cargo/smoke verification.
 - [x] 17.1.3 Persist only stable exact folder totals in the plugin-owned bounded cache, keyed by canonical folder identity, directory modification time, schema, and relevant settings; use atomic replacement and treat corrupt/partial/stale records as misses.
 - [x] 17.1.4 Prove cold background completion, same-mtime process-restart cache hit, changed-mtime invalidation, corrupt-cache recovery, and stale UI generation rejection with minimal Cargo tests and a local smoke.
 - [x] 17.1.5 Wire the completed folder-size package into production and the installer without changing the standard no-plugin fallback; only then run its single headful UITEST case.
-- [ ] 17.2.1 Complete `rust-folder-size-map-view` as an independent packaged example, including recursive incremental totals, navigation, selection, refresh/stale rejection, docs, local smoke, then one UITEST.
+- [x] 17.2.1 Complete `rust-folder-size-map-view` as an independent packaged example, including recursive incremental totals, navigation, selection, refresh/stale rejection, docs, local smoke, then one UITEST.
 - [ ] 17.3.1 Complete `rust-tokei-code-lines-column` as an independent packaged example, including integer sorting/settings, docs, local smoke, then one UITEST.
 - [ ] 17.4.1 Add the discover-only `LockOwnerQueryServiceV1` and complete `rust-lock-owner-column` without exposing process-control authority; package, smoke, then one UITEST.
 - [ ] 17.5.1 Add the minimum host-owned command/form/preview/operation-plan path required by the examples, with commit-time identity recheck, cancellation, truthful partial terminal state, and conservative undo.

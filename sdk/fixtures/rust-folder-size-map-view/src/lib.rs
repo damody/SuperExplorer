@@ -84,7 +84,7 @@ impl SizeMapViewImplementationV1 for FolderSizeMapView {
                         (bytes as f64 * 100.0) / exact_total as f64
                     };
                     format!(
-                        "{} · {percentage:.1}% · {} · complete",
+                        "{bytes} bytes · {} · {percentage:.1}% · {} · complete",
                         compact_bytes(bytes),
                         kind_label(node.kind)
                     )
@@ -110,11 +110,19 @@ impl SizeMapViewImplementationV1 for FolderSizeMapView {
             })
             .collect::<Vec<_>>();
 
+        let all_exact = context
+            .nodes
+            .iter()
+            .all(|node| node.status == SizeMapNodeStatusV1::COMPLETE);
         SizeMapRenderPlanV1 {
             generation: context.generation,
             render_revision: context.render_revision,
             rectangles: RVec::from(rectangles),
-            status: RString::from("Exact sizes"),
+            status: RString::from(if all_exact {
+                "Exact sizes"
+            } else {
+                "Calculating sizes"
+            }),
         }
     }
 }
@@ -292,6 +300,8 @@ mod tests {
         assert_eq!(plan.rectangles.len(), 2);
         assert_eq!(plan.rectangles[0].width_millionths, 750_000);
         assert_eq!(plan.rectangles[1].width_millionths, 250_000);
+        assert!(plan.rectangles[0].detail.contains("30 bytes"));
+        assert_eq!(plan.status.as_str(), "Exact sizes");
     }
 
     #[test]
@@ -326,6 +336,7 @@ mod tests {
         assert_eq!(plan.rectangles.len(), 1);
         assert!(plan.rectangles[0].detail.contains("failed"));
         assert!(plan.rectangles[0].detail.contains("size unavailable"));
+        assert_eq!(plan.status.as_str(), "Calculating sizes");
     }
 
     #[test]
