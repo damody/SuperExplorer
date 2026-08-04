@@ -78,7 +78,7 @@
       "covers": [
         "build-extensible-plugin-platform/extension-jobs-values-and-dynamic-columns/incremental-result-and-ui-batching",
         "build-extensible-plugin-platform/extension-jobs-values-and-dynamic-columns/bounded-extension-scheduler",
-        "build-extensible-plugin-platform/rust-plugin-abi-and-ui-toolchain/gpui-callback-execution-boundary"
+        "build-extensible-plugin-platform/rust-plugin-abi-and-ui-toolchain/true-gpui-callback-execution-boundary"
       ],
       "required_artifacts": ["case.json"]
     },

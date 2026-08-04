@@ -39,6 +39,10 @@ local function read_file(file_path)
     return contents
 end
 
+local function powershell_literal(value)
+    return "'" .. tostring(value):gsub("'", "''") .. "'"
+end
+
 local function commit_version()
     local metadata = sdk_version.resolve(root)
     local year, month, day = metadata.iso_date:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)$")
@@ -151,6 +155,11 @@ local function main()
         path(root, "sdk", "fixtures", "rust-folder-size-visual-column", "Cargo.toml"),
         "rust-folder-size-visual-column manifest"
     )
+    local plugin_root = path(root, "sdk", "fixtures", "rust-folder-size-visual-column")
+    local prepare_plugin_source = require_file(
+        path(root, "sdk", "scripts", "prepare-local-cargo-source.ps1"),
+        "local exact-version Cargo source bootstrap"
+    )
     local release_executable = path(root, "target", "release", "SuperExplorer.exe")
     local broker_executable = path(root, "target", "release", "explorer-extension-broker.exe")
     local worker_executable = path(root, "target", "release", "explorer-extension-worker.exe")
@@ -186,14 +195,16 @@ local function main()
         })
         process.run({
             stage = "建置內附 rust-folder-size-visual-column Plugin",
-            exe = "cargo.exe",
+            exe = "powershell.exe",
             args = {
-                "build",
-                "--manifest-path", plugin_manifest,
-                "--release",
-                "--target", "x86_64-pc-windows-msvc",
-                "--locked",
-                "--offline",
+                "-NoLogo", "-NoProfile", "-NonInteractive",
+                "-ExecutionPolicy", "Bypass", "-Command",
+                "$ErrorActionPreference='Stop'; $config = & "
+                    .. powershell_literal(prepare_plugin_source)
+                    .. " -PluginRoot " .. powershell_literal(plugin_root)
+                    .. "; if (-not $config) { throw 'local Cargo source bootstrap returned no config' }; "
+                    .. "& cargo.exe build --manifest-path " .. powershell_literal(plugin_manifest)
+                    .. " --release --target x86_64-pc-windows-msvc --locked --offline --config $config; exit $LASTEXITCODE",
             },
             cwd = root,
             log_path = path(logs, "installer-plugin-release.log"),
