@@ -191,6 +191,30 @@
       "required_artifacts": ["report.json", "details-marquee-held.png"]
     },
     {
+      "id": "file-view-typeahead-regression",
+      "description": "Verify Explorer-style hidden file-view type-ahead accumulates prefixes, cycles repeated matches, expires after one second, and clears across focus/navigation/tab boundaries.",
+      "suites": ["quick", "full", "interop"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-ui", "--lib", "--locked", "file_view_typeahead_", "--", "--nocapture", "--test-threads=1"],
+      "timeout_seconds": 300,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}]
+    },
+    {
+      "id": "file-view-typeahead-headful",
+      "description": "Use genuine keyboard input in a focused Details file view to prove hidden da prefix selection, Escape clearing, repeated-prefix cycling, timeout reset, and scroll-to-selection behavior.",
+      "suites": ["full", "visual", "interop"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_file_view_typeahead.ps1", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
+      "timeout_seconds": 120,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "explorer"],
+      "required_artifacts": ["report.json", "typeahead-data-selected.png", "typeahead-timeout-reset.png"]
+    },
+    {
       "id": "interaction-first-domain-isolation",
       "description": "Use deterministic start/release gates to prove stalled file-operation and breadcrumb enrichment workers cannot delay navigation.",
       "suites": ["quick", "full", "interop"],
