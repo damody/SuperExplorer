@@ -5,7 +5,6 @@ $fixtureRoot = Join-Path $sdkRoot 'fixtures\extension-api-contract'
 $oldPluginRoot = Join-Path $fixtureRoot 'old-v1-plugin'
 $baselinePluginRoot = Join-Path $fixtureRoot 'rust-first-baseline-plugin'
 $hostRoot = Join-Path $fixtureRoot 'current-host'
-$vendor = Join-Path $sdkRoot 'vendor\cargo-sources'
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('superexplorer-extension-api-' + [Guid]::NewGuid().ToString('N'))
 $cargoHome = Join-Path $tempRoot 'cargo-home'; $pluginTarget = Join-Path $tempRoot 'target-old-v1-plugin'; $baselineTarget = Join-Path $tempRoot 'target-rust-first-baseline'; $hostTarget = Join-Path $tempRoot 'target-current-host'; $markerRoot = Join-Path $tempRoot 'markers'
 $savedCargoHome = $env:CARGO_HOME; $savedCargoTargetDir = $env:CARGO_TARGET_DIR
@@ -36,8 +35,8 @@ function Invoke-Host([string] $Mode, [string] $Plugin, [bool] $ExpectProcessSucc
 }
 try {
     New-Item -ItemType Directory -Path $cargoHome, $pluginTarget, $baselineTarget, $hostTarget, $markerRoot -Force | Out-Null
-    $cargoConfig = @('[source.crates-io]','replace-with = "cargo-sources"','[source.cargo-sources]',('directory = "' + ($vendor -replace '\\','/') + '"')) -join [Environment]::NewLine
-    [IO.File]::WriteAllText((Join-Path $cargoHome 'config.toml'), $cargoConfig, [Text.UTF8Encoding]::new($false))
+    $configPath = & powershell.exe -NoProfile -File (Join-Path $sdkRoot 'scripts\prepare-local-cargo-source.ps1') -PluginRoot $fixtureRoot
+    Copy-Item -LiteralPath $configPath -Destination (Join-Path $cargoHome 'config.toml') -Force
     Invoke-CargoBuild $oldPluginRoot $pluginTarget; Invoke-CargoBuild $baselinePluginRoot $baselineTarget; Invoke-CargoBuild $hostRoot $hostTarget
     $pluginDll = Find-Artifact $pluginTarget 'extension_api_contract_old_v1_plugin.dll'; $hostExe = Find-Artifact $hostTarget 'extension-api-contract-host.exe'
     $baselineDll = Find-Artifact $baselineTarget 'extension_api_contract_rust_first_baseline_plugin.dll'

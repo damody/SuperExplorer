@@ -28,6 +28,8 @@ const ROOT_MODULE_CONTRACT_NAMESPACE_V1: u32 = 0x5345_0001;
 const ROOT_MODULE_CONTRACT_VALUE_V1: u64 = 1;
 const PUBLIC_SDK_CONTRACT_DEPENDENCY: &str = "explorer-extension-api";
 const PUBLIC_SDK_CONTRACT_VERSION: &str = "=1.2.0";
+const PUBLIC_UI_SDK_CONTRACT_DEPENDENCY: &str = "explorer-extension-ui-api";
+const PUBLIC_UI_SDK_CONTRACT_VERSION: &str = "=1.2.0";
 const TRUSTED_CARGO_PATH_ENV: &str = "SUPEREXPLORER_TRUSTED_CARGO";
 const TRUSTED_CARGO_SHA256_ENV: &str = "SUPEREXPLORER_TRUSTED_CARGO_SHA256";
 const TRUSTED_RUSTC_PATH_ENV: &str = "SUPEREXPLORER_TRUSTED_RUSTC";
@@ -295,11 +297,13 @@ struct StagedPayload {
     bytes: Vec<u8>,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TrustedGates {
-    schema_version: u32,
-    requirements: Vec<RequirementEvidence>,
+/// Hashes emitted when the folder-size example template is materialized inside
+/// an SDK-owned private snapshot. The template itself is never rewritten.
+#[derive(Serialize)]
+pub struct TemplateMaterializationReport {
+    pub template_manifest_sha256: String,
+    pub resolved_manifest_sha256: String,
+    pub materialized: bool,
 }
 
 /// Validates the canonical P0 Rust consumer manifest and all declared payloads.
@@ -327,6 +331,137 @@ pub fn validate(root: &Path) -> Report {
             )],
         },
     }
+}
+
+/// Resolves the *only* author-template placeholders currently supported by the
+/// 0→1 SDK: the folder-size visual-column example. Callers must pass a private
+/// no-reparse snapshot, never the author's live project directory.
+///
+/// A static manifest is left untouched and reports identical input/output
+/// hashes. Any template other than the exact folder-size template is rejected;
+/// this intentionally is not a general templating language.
+///
+/// # Errors
+///
+/// Returns an error if the snapshot or its template/source inputs are unsafe,
+/// the template is not the canonical folder-size one, or resolution would
+/// leave a placeholder behind.
+pub fn materialize_folder_size_template(
+    root: &Path,
+    bundle_id: &str,
+    abi_schema: u32,
+) -> Result<TemplateMaterializationReport, String> {
+    if !valid_id(bundle_id) || abi_schema == 0 {
+        return Err("SDK bundle ID or ABI schema is invalid".into());
+    }
+    let canonical_root = canonical_plugin_root(root)?;
+    let manifest_path = canonical_root.join("plugin-project.json");
+    let template = read_regular_utf8_file(
+        &canonical_root,
+        &manifest_path,
+        MAX_MANIFEST_BYTES,
+        "plugin-project.json",
+    )?;
+    const TOKENS: [&str; 4] = [
+        "@SDK_BUNDLE_ID@",
+        "@ABI_SCHEMA@",
+        "@SOURCE_SIZE@",
+        "@SOURCE_SHA256@",
+    ];
+    let template_manifest_sha256 = sha256_hex(template.as_bytes());
+    if !TOKENS.iter().any(|token| template.contains(token)) {
+        return Ok(TemplateMaterializationReport {
+            template_manifest_sha256: template_manifest_sha256.clone(),
+            resolved_manifest_sha256: template_manifest_sha256,
+            materialized: false,
+        });
+    }
+    if !template.contains("\"id\": \"rust-folder-size-visual-column\"")
+        || TOKENS
+            .iter()
+            .any(|token| template.matches(token).count() != 1)
+    {
+        return Err(
+            "only the exact rust-folder-size-visual-column template may contain placeholders"
+                .into(),
+        );
+    }
+    let template_without_tokens = TOKENS
+        .iter()
+        .fold(template.clone(), |text, token| text.replace(token, ""));
+    if !template_without_tokens.contains("\"value\": \"support@example.invalid\"")
+        || template_without_tokens.matches('@').count() != 1
+    {
+        return Err("folder-size template contains an unsupported placeholder".into());
+    }
+    let source = read_regular_bytes(
+        &canonical_root,
+        &canonical_root.join("src/lib.rs"),
+        MAX_PAYLOAD_BYTES,
+    )?;
+    let resolved = template
+        .replace("@SDK_BUNDLE_ID@", bundle_id)
+        .replace("@ABI_SCHEMA@", &abi_schema.to_string())
+        .replace("@SOURCE_SIZE@", &source.len().to_string())
+        .replace("@SOURCE_SHA256@", &sha256_hex(&source));
+    if TOKENS.iter().any(|token| resolved.contains(token)) {
+        return Err("folder-size template contains an unsupported placeholder".into());
+    }
+    let manifest: Manifest = serde_json::from_str(&resolved)
+        .map_err(|error| format!("resolved folder-size manifest is invalid: {error}"))?;
+    if manifest.package.id != "rust-folder-size-visual-column"
+        || manifest.sdk.bundle_id != bundle_id
+        || manifest.sdk.abi_schema != abi_schema
+        || !is_exact_folder_size_declarations(&manifest)
+    {
+        return Err(
+            "resolved folder-size template declarations are not the approved 0→1 set".into(),
+        );
+    }
+    ensure_regular_project_path(&canonical_root, &manifest_path)?;
+    fs::write(&manifest_path, resolved.as_bytes())
+        .map_err(|error| format!("could not write resolved private manifest: {error}"))?;
+    let resolved_manifest_sha256 = sha256_hex(resolved.as_bytes());
+    Ok(TemplateMaterializationReport {
+        template_manifest_sha256,
+        resolved_manifest_sha256,
+        materialized: true,
+    })
+}
+
+fn is_exact_folder_size_declarations(manifest: &Manifest) -> bool {
+    let expected = [
+        ("abi-root", "abi-root", &["abi"][..]),
+        ("folder-size", "column", &["abi", "filesystem.read"][..]),
+        ("folder-size-renderer", "renderer", &["abi"][..]),
+    ];
+    let expected_features = ["column", "recalculate", "settings"];
+    manifest.features.len() == expected_features.len()
+        && manifest
+            .features
+            .iter()
+            .zip(expected_features)
+            .all(|(actual, id)| {
+                actual.id == id
+                    && actual.capabilities
+                        == if id == "column" {
+                            &["abi", "filesystem.read"][..]
+                        } else {
+                            &["abi"][..]
+                        }
+            })
+        && manifest.contributions.len() == expected.len()
+        && manifest
+            .contributions
+            .iter()
+            .zip(expected)
+            .all(|(actual, (id, kind, capabilities))| {
+                actual.id == id
+                    && actual.kind == kind
+                    && actual.feature_id == "column"
+                    && actual.capabilities == capabilities
+                    && actual.payload == "src/lib.rs"
+            })
 }
 
 /// Synthesizes the canonical host `manifest.json` for a P0 local-developer
@@ -1182,25 +1317,10 @@ fn expected_sdk() -> Result<ExpectedSdk, String> {
         .ancestors()
         .nth(3)
         .ok_or("repository root unavailable")?;
+    superexplorer_bundle_generator::verify_inventory()
+        .map_err(|error| format!("SDK bundle inventory verification failed: {error}"))?;
     let lock: Value = read_json(&repository.join("sdk/sdk-lock.json"))?;
     let fingerprint: Value = read_json(&repository.join("sdk/ui-abi-fingerprint.json"))?;
-    let gates: TrustedGates = serde_json::from_str(
-        &fs::read_to_string(repository.join("sdk/ci/plugin-gates.json"))
-            .map_err(|error| format!("plugin-gates.json: {error}"))?,
-    )
-    .map_err(|error| format!("plugin-gates.json: {error}"))?;
-    if gates.schema_version != 1 {
-        return Err("plugin-gates schema is unsupported".into());
-    }
-    let mut gate_map = BTreeMap::new();
-    for requirement in gates.requirements {
-        if gate_map
-            .insert(requirement.requirement_id, requirement.evidence)
-            .is_some()
-        {
-            return Err("plugin-gates contains a duplicate requirement".into());
-        }
-    }
     validate_protected_contract(
         lock.pointer("/protected_dependency_contract")
             .ok_or("sdk-lock protected dependency contract is missing")?,
@@ -1228,7 +1348,9 @@ fn expected_sdk() -> Result<ExpectedSdk, String> {
         gpui_packages,
         protected_graph,
         release_profile: release_profile_policy(&lock)?,
-        gates: gate_map,
+        // Product validation is local-only. Do not read CI configuration or
+        // turn an external automation mapping into a package prerequisite.
+        gates: BTreeMap::new(),
     })
 }
 
@@ -1487,12 +1609,18 @@ fn validate_manifest(manifest: &Manifest, root: &Path, expected: &ExpectedSdk) -
             ));
             continue;
         };
-        if !matches!(contribution.kind.as_str(), "abi-root" | "gpui") {
+        let folder_size_kind = matches!(
+            contribution.kind.as_str(),
+            "abi-root" | "column" | "renderer" | "recalculate" | "settings"
+        );
+        if !(matches!(contribution.kind.as_str(), "abi-root" | "gpui")
+            || (manifest.package.id == "rust-folder-size-visual-column" && folder_size_kind))
+        {
             diagnostics.push(diagnostic(
                 "SESDK-CONTRIBUTION-001",
                 "manifest",
                 &path,
-                "P0 contribution kind is unsupported",
+                "contribution kind is unsupported for this 0→1 package",
             ));
         }
         if contribution.capabilities.is_empty()
@@ -1516,6 +1644,16 @@ fn validate_manifest(manifest: &Manifest, root: &Path, expected: &ExpectedSdk) -
                 "contribution references an undeclared payload",
             ));
         }
+    }
+    if manifest.package.id == "rust-folder-size-visual-column"
+        && !is_exact_folder_size_declarations(manifest)
+    {
+        diagnostics.push(diagnostic(
+            "SESDK-CONTRIBUTION-003",
+            "manifest",
+            "contributions",
+            "folder-size must declare its three features and exactly the ABI root, column, and renderer entries implemented by the registrar",
+        ));
     }
     if manifest
         .contributions
@@ -2989,9 +3127,12 @@ fn validate_direct_dependency(
         ));
         return;
     }
-    if is_private_workspace_crate(&dependency.package)
-        && dependency.package != PUBLIC_SDK_CONTRACT_DEPENDENCY
-    {
+    let public_sdk_contract = match dependency.package.as_str() {
+        PUBLIC_SDK_CONTRACT_DEPENDENCY => Some(PUBLIC_SDK_CONTRACT_VERSION),
+        PUBLIC_UI_SDK_CONTRACT_DEPENDENCY => Some(PUBLIC_UI_SDK_CONTRACT_VERSION),
+        _ => None,
+    };
+    if is_private_workspace_crate(&dependency.package) && public_sdk_contract.is_none() {
         diagnostics.push(diagnostic(
             "SESDK-CARGO-005",
             "cargo",
@@ -2999,17 +3140,17 @@ fn validate_direct_dependency(
             "direct dependency references a SuperExplorer private workspace crate",
         ));
     }
-    if dependency.package == PUBLIC_SDK_CONTRACT_DEPENDENCY
-        && (dependency.path
+    if public_sdk_contract.is_some_and(|required_version| {
+        dependency.path
             || dependency.workspace
             || dependency.git.is_some()
-            || dependency.version.as_deref() != Some(PUBLIC_SDK_CONTRACT_VERSION))
-    {
+            || dependency.version.as_deref() != Some(required_version)
+    }) {
         diagnostics.push(diagnostic(
             "SESDK-CARGO-014",
             "cargo",
             location,
-            "the public SDK ABI contract must be the exact registry-pinned explorer-extension-api = 1.2.0 dependency",
+            "public SDK contracts must use their exact registry-pinned 1.2.0 dependencies",
         ));
     }
     if (dependency.path || dependency.workspace)
@@ -3549,6 +3690,50 @@ mod tests {
                 requirements: vec![],
             },
         }
+    }
+
+    #[test]
+    fn folder_size_template_materializes_only_inside_the_snapshot() {
+        let temporary = TestDirectory::new();
+        fs::create_dir_all(temporary.0.join("src")).expect("create source directory");
+        fs::write(temporary.0.join("src/lib.rs"), b"folder-size source").expect("write source");
+        let template = r#"{
+  "schema_version": 1,
+  "package": { "id": "rust-folder-size-visual-column", "version": "0.1.0" },
+  "publisher": { "id": "example-publisher", "display_name": "Example", "contacts": [{ "kind": "support", "value": "support@example.invalid" }] },
+  "sdk": { "bundle_id": "@SDK_BUNDLE_ID@", "target": "x86_64-pc-windows-msvc", "abi_schema": @ABI_SCHEMA@, "gpui": false, "ui_abi_fingerprint": null },
+  "rust": { "crate_name": "rust-folder-size-visual-column", "entrypoint": "plugin.dll" },
+  "features": [
+    { "id": "column", "capabilities": ["abi", "filesystem.read"] },
+    { "id": "recalculate", "capabilities": ["abi"] },
+    { "id": "settings", "capabilities": ["abi"] }
+  ],
+  "contributions": [
+    { "id": "abi-root", "feature_id": "column", "kind": "abi-root", "capabilities": ["abi"], "payload": "src/lib.rs" },
+    { "id": "folder-size", "feature_id": "column", "kind": "column", "capabilities": ["abi", "filesystem.read"], "payload": "src/lib.rs" },
+    { "id": "folder-size-renderer", "feature_id": "column", "kind": "renderer", "capabilities": ["abi"], "payload": "src/lib.rs" }
+  ],
+  "payloads": [{ "path": "src/lib.rs", "size": @SOURCE_SIZE@, "sha256": "@SOURCE_SHA256@", "kind": "rust-source" }],
+  "private_dependencies": [],
+  "verification": { "requirements": [] }
+}"#;
+        let manifest_path = temporary.0.join("plugin-project.json");
+        fs::write(&manifest_path, template).expect("write template");
+
+        let report = materialize_folder_size_template(&temporary.0, "sdk-test", 1)
+            .expect("materialize template");
+        let resolved = fs::read_to_string(&manifest_path).expect("read resolved template");
+        assert!(report.materialized);
+        assert_ne!(
+            report.template_manifest_sha256,
+            report.resolved_manifest_sha256
+        );
+        assert!(resolved.contains("\"bundle_id\": \"sdk-test\""));
+        assert!(!resolved.contains("@SDK_BUNDLE_ID@"));
+        assert!(!resolved.contains("@ABI_SCHEMA@"));
+        assert!(!resolved.contains("@SOURCE_SIZE@"));
+        assert!(!resolved.contains("@SOURCE_SHA256@"));
+        assert!(serde_json::from_str::<Manifest>(&resolved).is_ok());
     }
 
     #[test]
@@ -4504,26 +4689,6 @@ mod tests {
             "[[package]]\nname='explorer-ui'\nversion='1.2.0'\nsource='registry+https://github.com/rust-lang/crates.io-index'\n",
         );
         assert!(has_code(&private_explorer, "SESDK-CARGO-005"));
-    }
-
-    #[test]
-    fn vendored_public_sdk_contract_matches_the_author_api_source() {
-        let repository_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-        let author_api = repository_root.join("crates/explorer-extension-api");
-        let vendored_api =
-            repository_root.join("sdk/vendor/cargo-sources/explorer-extension-api-1.2.0");
-
-        for (author_path, vendored_path) in [
-            ("Cargo.toml", "Cargo.toml.orig"),
-            ("src/lib.rs", "src/lib.rs"),
-            ("src/jobs.rs", "src/jobs.rs"),
-        ] {
-            assert_eq!(
-                fs::read(author_api.join(author_path)).expect("read public author API source"),
-                fs::read(vendored_api.join(vendored_path)).expect("read SDK vendored API source"),
-                "SDK vendored source drifted from {author_path}; refresh the sealed SDK package"
-            );
-        }
     }
 
     #[test]

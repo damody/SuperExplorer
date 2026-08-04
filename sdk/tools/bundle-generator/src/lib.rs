@@ -19,7 +19,7 @@ use std::{
 #[cfg(windows)]
 use std::{ffi::OsString, os::windows::ffi::OsStringExt, ptr};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use superexplorer_ui_abi_fingerprint::{artifact_bytes, production_fingerprint_from_lock};
 
@@ -45,7 +45,7 @@ const PINNED_TOOLCHAIN_DIRECTORY: &str = "1.97.1-x86_64-pc-windows-msvc";
 type LockPackageKey = (String, String, Option<String>);
 type LockChecksumMap = BTreeMap<LockPackageKey, Option<String>>;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 struct FileHash {
     path: String,
     sha256: String,
@@ -126,7 +126,7 @@ struct SdkLock {
     inventory: Vec<FileHash>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct BundleManifest {
     schema_version: u32,
     bundle_id: String,
@@ -151,6 +151,64 @@ pub fn run(arguments: impl IntoIterator<Item = String>) -> Result<(), String> {
         [command] if command == "verify" => verify_generated(&root),
         _ => Err("usage: superexplorer-bundle-generator <generate|verify>".to_owned()),
     }
+}
+
+/// Verifies the published bundle identity and content inventory without
+/// invoking Cargo, rustc, git, or any external automation. This is the
+/// runtime-safe preflight used by local plugin tooling after it has sealed its
+/// own toolchain environment.
+///
+/// # Errors
+///
+/// Returns an error when generated bundle records disagree with each other or
+/// when any inventoried SDK/public-author file has drifted.
+pub fn verify_inventory() -> Result<(), String> {
+    let root = repository_root()?;
+    let lock_path = root.join("sdk/sdk-lock.json");
+    let manifest_path = root.join("sdk/bundle-manifest.json");
+    let fingerprint_path = root.join("sdk/ui-abi-fingerprint.json");
+    let lock_bytes = fs::read(&lock_path)
+        .map_err(|error| format!("could not read {}: {error}", lock_path.display()))?;
+    let lock: Value = serde_json::from_slice(&lock_bytes)
+        .map_err(|error| format!("could not parse {}: {error}", lock_path.display()))?;
+    let manifest: BundleManifest = serde_json::from_slice(
+        &fs::read(&manifest_path)
+            .map_err(|error| format!("could not read {}: {error}", manifest_path.display()))?,
+    )
+    .map_err(|error| format!("could not parse {}: {error}", manifest_path.display()))?;
+    let fingerprint: Value = read_json(&fingerprint_path)?;
+    let bundle_id = lock
+        .get("bundle_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "sdk-lock has no bundle_id".to_owned())?;
+    if manifest.schema_version != SCHEMA_VERSION
+        || manifest.bundle_id != bundle_id
+        || fingerprint.get("bundle_id").and_then(Value::as_str) != Some(bundle_id)
+    {
+        return Err("SDK lock, bundle manifest, and UI fingerprint identities differ".to_owned());
+    }
+    let inventory = collect_inventory(&root)?;
+    let inventory_root = inventory_hash(&inventory);
+    if manifest.files != inventory
+        || manifest.inventory_root_sha256 != inventory_root
+        || lock.get("inventory_root_sha256").and_then(Value::as_str)
+            != Some(inventory_root.as_str())
+    {
+        return Err("published SDK inventory differs from the current SDK files".to_owned());
+    }
+    if manifest.sdk_lock_sha256 != sha256_hex(&lock_bytes) {
+        return Err("bundle manifest does not authenticate sdk-lock.json".to_owned());
+    }
+    let fingerprint_hash = hash_file(&fingerprint_path)?;
+    if manifest.generated_artifacts
+        != vec![FileHash {
+            path: "sdk/ui-abi-fingerprint.json".to_owned(),
+            sha256: fingerprint_hash,
+        }]
+    {
+        return Err("bundle manifest does not authenticate the UI fingerprint".to_owned());
+    }
+    Ok(())
 }
 
 fn repository_root() -> Result<PathBuf, String> {
@@ -673,8 +731,13 @@ fn excluded_build_directory(root: &Path, path: &Path) -> Result<bool, String> {
     let nested_sdk_build_output = components.len() >= 4
         && components.first() == Some(&"sdk")
         && matches!(components.get(1), Some(&"fixtures" | &"tools"))
-        && components.last() == Some(&"target");
+        && matches!(components.last(), Some(&"target" | &"dist"));
+    let tracked_third_party_sources = components.len() >= 3
+        && components[0] == "sdk"
+        && components[1] == "vendor"
+        && components[2] == "cargo-sources";
     Ok(nested_sdk_build_output
+        || tracked_third_party_sources
         || matches!(
             components.as_slice(),
             ["sdk", "target" | "registry"]
@@ -1324,14 +1387,18 @@ mod tests {
             .unwrap()
         );
         assert!(
+            excluded_build_directory(root, Path::new("D:/repo/sdk/fixtures/example/dist")).unwrap()
+        );
+        assert!(
             excluded_build_directory(root, Path::new("D:/repo/vendor/gpui-ce/target")).unwrap()
         );
         assert!(excluded_build_directory(root, Path::new("D:/repo/sdk/registry")).unwrap());
+        assert!(excluded_build_directory(root, Path::new("D:/repo/sdk/.cargo/registry")).unwrap());
         assert!(
-            excluded_build_directory(root, Path::new("D:/repo/sdk/.cargo/registry")).unwrap()
+            excluded_build_directory(root, Path::new("D:/repo/sdk/vendor/cargo-sources")).unwrap()
         );
         assert!(
-            !excluded_build_directory(
+            excluded_build_directory(
                 root,
                 Path::new("D:/repo/sdk/vendor/cargo-sources/cc/src/target")
             )
@@ -1355,9 +1422,6 @@ mod tests {
         assert!(is_git_metadata(Path::new("D:/repo/vendor/gpui-ce/.git")));
         assert!(is_cargo_runtime_marker(Path::new(
             "D:/repo/sdk/.package-cache"
-        )));
-        assert!(is_cargo_runtime_marker(Path::new(
-            "D:/repo/sdk/vendor/cargo-sources/.package-cache"
         )));
         assert!(is_cargo_runtime_marker(Path::new(
             "D:/repo/sdk/.cargo/.global-cache"

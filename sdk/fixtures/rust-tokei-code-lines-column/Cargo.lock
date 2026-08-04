@@ -368,13 +368,17 @@ dependencies = [
 [[package]]
 name = "explorer-extension-api"
 version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = ""
 dependencies = [
  "abi_stable",
 ]
 
 [[package]]
 name = "explorer-extension-ui-api"
-version = "0.1.0"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = ""
 dependencies = [
  "explorer-extension-api",
 ]

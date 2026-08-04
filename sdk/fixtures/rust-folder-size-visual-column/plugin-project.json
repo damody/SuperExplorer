@@ -17,12 +17,30 @@
     "crate_name": "rust-folder-size-visual-column",
     "entrypoint": "plugin.dll"
   },
-  "features": [{ "id": "main", "capabilities": ["abi"] }],
+  "features": [
+    { "id": "column", "capabilities": ["abi", "filesystem.read"] },
+    { "id": "recalculate", "capabilities": ["abi"] },
+    { "id": "settings", "capabilities": ["abi"] }
+  ],
   "contributions": [
     {
       "id": "abi-root",
-      "feature_id": "main",
+      "feature_id": "column",
       "kind": "abi-root",
+      "capabilities": ["abi"],
+      "payload": "src/lib.rs"
+    },
+    {
+      "id": "folder-size",
+      "feature_id": "column",
+      "kind": "column",
+      "capabilities": ["abi", "filesystem.read"],
+      "payload": "src/lib.rs"
+    },
+    {
+      "id": "folder-size-renderer",
+      "feature_id": "column",
+      "kind": "renderer",
       "capabilities": ["abi"],
       "payload": "src/lib.rs"
     }
@@ -35,51 +53,6 @@
       "kind": "rust-source"
     }
   ],
-  "private_dependencies": [
-    {
-      "name": "exif-lite",
-      "version": "0.1.0",
-      "path": "vendor/private/exif-lite-0.1.0",
-      "tree_sha256": "1cda6f7ea4875874894dddd139065d9e9efab4dbac73041de3832275860e905d",
-      "provenance": {
-        "source": "registry+https://github.com/rust-lang/crates.io-index",
-        "crate_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-        "license_expression": "MIT OR Apache-2.0",
-        "license_hashes": {
-          "LICENSE-APACHE": "62127bfe3b52eb1cde27ddcd6765b1e6fb5a17629e3df797e43b4786c99231f3",
-          "LICENSE-MIT": "d91083b0f30e9c451b22eeb23f926d0fd2f35a930560358233f50b0253ada96f"
-        }
-      }
-    }
-  ],
-  "verification": {
-    "requirements": [
-      {
-        "requirement_id": "build-extensible-plugin-platform/rust-plugin-abi-and-ui-toolchain/offline-sdk-bundle-and-protected-dependency-closure",
-        "evidence": {
-          "unit": ["plugin-root-unit"],
-          "integration": ["plugin-load-compatible"],
-          "uitest": ["plugin-tooling-wrapper-contract"],
-          "security": ["ui-fingerprint-mismatch-rejected"],
-          "docs": ["clean-readme-reproduction"]
-        }
-      },
-      {
-        "requirement_id": "build-extensible-plugin-platform/extension-package-and-feature-lifecycle/unified-package-manifest",
-        "evidence": {"unit": ["package-manifest-contract"], "integration": ["package-validation-contract"], "uitest": ["package-manifest-contract"], "security": ["package-validation-contract"], "docs": ["package-lifecycle-docs-contract"]}
-      },
-      {
-        "requirement_id": "build-extensible-plugin-platform/extension-package-and-feature-lifecycle/structured-publisher-contacts",
-        "evidence": {"unit": ["package-manifest-contract"], "integration": ["package-validation-contract"], "uitest": ["package-manifest-contract"], "security": ["package-validation-contract"], "docs": ["package-lifecycle-docs-contract"]}
-      },
-      {
-        "requirement_id": "build-extensible-plugin-platform/extension-package-and-feature-lifecycle/atomic-package-resolution",
-        "evidence": {"unit": ["package-resolution-contract"], "integration": ["package-resolution-contract"], "uitest": ["package-resolution-contract"], "security": ["package-resolution-contract"], "docs": ["package-lifecycle-docs-contract"]}
-      },
-      {
-        "requirement_id": "build-extensible-plugin-platform/extension-package-and-feature-lifecycle/package-source-abstraction",
-        "evidence": {"unit": ["package-source-contract"], "integration": ["package-source-contract"], "uitest": ["package-source-contract"], "security": ["package-source-contract"], "docs": ["package-lifecycle-docs-contract"]}
-      }
-    ]
-  }
+  "private_dependencies": [],
+  "verification": { "requirements": [] }
 }

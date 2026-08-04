@@ -9,7 +9,6 @@ $hostRoot = Join-Path $fixtureRoot 'current-host'
 # object supersedes the former raw callback root, so this transport fixture
 # verifies only the current root/provider shape; legacy-root coverage belongs
 # to the separate pre-publication migration fixture.
-$vendor = Join-Path $sdkRoot 'vendor\cargo-sources'
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('superexplorer-job-context-v1-' + [Guid]::NewGuid().ToString('N'))
 $cargoHome = Join-Path $tempRoot 'cargo-home'
 $newPluginTarget = Join-Path $tempRoot 'target-new-plugin'
@@ -63,9 +62,7 @@ try {
     New-Item -ItemType Directory -Path $cargoHome, $newPluginTarget, $hostTarget -Force | Out-Null
     $cargoConfig = @(
         '[source.crates-io]',
-        'replace-with = "cargo-sources"',
-        '[source.cargo-sources]',
-        ('directory = "' + ($vendor -replace '\\', '/') + '"')
+        'offline = true'
     ) -join [Environment]::NewLine
     [IO.File]::WriteAllText((Join-Path $cargoHome 'config.toml'), $cargoConfig, [Text.UTF8Encoding]::new($false))
 

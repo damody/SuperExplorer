@@ -21,7 +21,7 @@ SuperExplorer 目前缺少第三方作者可穩定建置、載入及整合的擴
 - 建立統一 `.sepack` 套件、manifest、作者聯絡資料、capability 權限、套件解析、feature desired/effective state、runtime gate、診斷及 Safe Mode。
 - 建立 Rust Plugin SDK：以單一 `abi_stable` root module 註冊多個功能，並為直接使用 GPUI 的 UI 外掛提供精確 toolchain／dependency fingerprint。
 - **PRE-RELEASE ABI RESET**：在第一個公開 V1 前淘汰 experimental handwritten-callback/custom-root layout，以 Rust-first traits、SDK-owned `abi_stable` factory/panic trampoline 建立首次發布 baseline；本 change 完成後不得再次重定義 V1 required layout 或 numeric semantics。
-- 建立 P0-0 SDK snapshot 與本機驗證流程：固定 Rust `1.97.1` 與 `abi_stable 0.11.3`；只有 primary agent 明確執行 upstream update 時才可從 `damody/gpui-ce-explorer/main` 解析精確 commit，之後的 candidate 建置、fixture、promotion、rollback 與 Release freeze 一律在本機進行。正式 Release 凍結 commit、Cargo.lock、vendor tree、bundle ID 與已簽署的本機 evidence bundle。
+- 建立 P0-0 SDK snapshot 與本機驗證流程：固定 Rust `1.97.1` 與 `abi_stable 0.11.3`；只有 primary agent 明確執行 upstream update 時才可從 `damody/gpui-ce-explorer/main` 解析精確 commit，之後的 candidate 建置、fixture、promotion、rollback 與 Release freeze 一律在本機進行。正式 Release 凍結 commit、Cargo.lock、bundle ID 與已簽署的本機 evidence bundle；第三方來源不提交、不追蹤 vendor，建置只使用預先填好的本機 Cargo registry cache 與 `--locked --offline`。
 - **BREAKING**：將固定的詳細資料欄位、檢視模式與相關 session persistence 改造成動態 registry，使外掛欄位與 GPUI view mode 可排序、選取、保存與安全 fallback。
 - 建立有界背景工作、typed value、增量結果、取消、快取、refresh generation、UI batching 與慢 callback 診斷。
 - 建立 Rust／Lua 共用的命令、擴充按鈕、參數表單、operation preview、衝突處理、取消與 undoable operation plan。
@@ -67,5 +67,5 @@ SuperExplorer 目前缺少第三方作者可穩定建置、載入及整合的擴
 - 修改 `explorer-ui` 的詳細資料欄位、檢視模式、資料夾選項、session persistence、navigation 與 GPUI composition root。
 - 擴充 `explorer-jobs`、`explorer-automation`、`explorer-model`、`explorer-shell-win` 及檔案操作／undo pipeline。
 - 將宿主與 SDK 統一到 Rust `1.97.1`、`abi_stable 0.11.3` 及同一個 `damody/gpui-ce-explorer` snapshot fingerprint。
-- 新增 UI Plugin SDK bundle、offline vendor、canonical lock、build／validate／package scripts、local gate matrix、evidence ledger／trust policy／已簽署 evidence bundle與八個官方範例 workspace。
+- 新增 UI Plugin SDK bundle、canonical lock、build／validate／package scripts、local gate matrix、evidence ledger／trust policy／已簽署 evidence bundle與八個官方範例 workspace。第三方 crates 不提交或追蹤 vendor；本機 cache 缺少鎖定來源時必須先完成 bootstrap，不能讓離線命令自行連網。
 - 增加原生 DLL 的程序內風險面，因此必須加入載入前驗證、callback guard、runtime gate、資源配額與 Safe Mode；Rust DLL 不支援執行期熱卸載。

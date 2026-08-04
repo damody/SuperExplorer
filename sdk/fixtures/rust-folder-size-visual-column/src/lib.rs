@@ -121,6 +121,9 @@ struct FolderSizeCacheKey {
 impl FolderSizeCacheKey {
     fn from_request(request: &FolderSizeMeasureRequestV1) -> Option<Self> {
         let path = Path::new(request.filesystem_path.as_str());
+        if root_is_reparse_point(path) {
+            return None;
+        }
         let canonical = fs::canonicalize(path).ok()?;
         let metadata = fs::metadata(&canonical).ok()?;
         if !metadata.is_dir() {
@@ -155,6 +158,22 @@ impl FolderSizeCacheKey {
         // hash collision cannot return another directory's exact result.
         hex_encode(self.path_key.as_bytes())
     }
+}
+
+#[cfg(windows)]
+fn root_is_reparse_point(path: &Path) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    fs::symlink_metadata(path).is_ok_and(|metadata| {
+        metadata.file_type().is_symlink()
+            || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    })
+}
+
+#[cfg(not(windows))]
+fn root_is_reparse_point(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink())
 }
 
 #[cfg(windows)]
@@ -225,8 +244,8 @@ fn directory_identity(canonical: &Path, _: &fs::Metadata) -> String {
         let _ = unsafe { CloseHandle(handle) };
         if succeeded != 0 {
             let information = unsafe { information.assume_init() };
-            let file_index =
-                (u64::from(information.file_index_high) << 32) | u64::from(information.file_index_low);
+            let file_index = (u64::from(information.file_index_high) << 32)
+                | u64::from(information.file_index_low);
             return format!(
                 "win-file:{:08x}:{file_index:016x}",
                 information.volume_serial_number
@@ -456,6 +475,12 @@ fn measure_folder_size_with_cache(
     request: &FolderSizeMeasureRequestV1,
     cache_directory: Option<&Path>,
 ) -> FolderSizeMeasureResultV1 {
+    if root_is_reparse_point(Path::new(request.filesystem_path.as_str())) {
+        return FolderSizeMeasureResultV1::partial(
+            0,
+            "folder root symlinks and reparse points are not followed",
+        );
+    }
     for _ in 0..CACHE_STABILITY_ATTEMPTS {
         let Some(key) = FolderSizeCacheKey::from_request(request) else {
             let (exact_bytes, partial_error) = measure_path_bytes(request);
@@ -487,6 +512,10 @@ fn measure_folder_size_with_cache(
 }
 
 fn measure_path_bytes(request: &FolderSizeMeasureRequestV1) -> (u64, Option<RString>) {
+    #[cfg(test)]
+    if let Some(marker) = env::var_os("RUST_FOLDER_SIZE_SCAN_MARKER") {
+        let _ = fs::write(marker, b"recursive scan entered");
+    }
     let max_entries = request.max_entries.max(1);
     let mut visited = 0_u32;
     let mut total = 0_u64;
@@ -596,10 +625,6 @@ impl ExtensionRegistrarImplementationV1 for P0ConsumerRegistrar {
             ));
         }
 
-        // Exercise the exact direct registry dependency patched to the private
-        // vendor tree. This proves the source snapshot keeps its private,
-        // provenance-bound dependency available to Cargo offline.
-        let _ = exif_lite::parser_name();
         if let Err(error) = mark_callback_invocation() {
             return RResult::RErr(AbiErrorV1::new(
                 AbiErrorCodeV1::REGISTRATION_REJECTED,
@@ -612,14 +637,17 @@ impl ExtensionRegistrarImplementationV1 for P0ConsumerRegistrar {
             outcome: RegistrationOutcomeV1::accepted(2),
             // NativeExtensionLifecycleV1 admits only non-empty output whose
             // accepted count matches the contribution batch exactly. This is
-            // deliberately bound to the fixture manifest's `main` feature
+            // deliberately bound to the fixture manifest's `column` feature
             // and its declared `abi` capability.
             contributions: RVec::from(vec![
                 RegisteredContributionV1 {
-                    feature_id: RString::from("main"),
+                    feature_id: RString::from("column"),
                     contribution_id: RString::from("folder-size"),
                     kind: RegisteredContributionKindV1::COLUMN,
-                    required_capabilities: RVec::from(vec![RString::from("abi")]),
+                    required_capabilities: RVec::from(vec![
+                        RString::from("abi"),
+                        RString::from("filesystem.read"),
+                    ]),
                     interface_id: PRIMARY_INTERFACE_ID,
                     expected_sort: ROption::RSome(StableSortValueKindV1::U64),
                     opaque_contract: ROption::RNone,
@@ -632,7 +660,7 @@ impl ExtensionRegistrarImplementationV1 for P0ConsumerRegistrar {
                     batch_column_provider: ROption::RNone,
                 },
                 RegisteredContributionV1 {
-                    feature_id: RString::from("main"),
+                    feature_id: RString::from("column"),
                     contribution_id: RString::from("folder-size-renderer"),
                     kind: RegisteredContributionKindV1::GPUI_RENDERER,
                     required_capabilities: RVec::from(vec![RString::from("abi")]),
@@ -683,7 +711,10 @@ pub fn plugin_root() -> ExtensionRootModuleV1_Ref {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::{
+        process::Command,
+        sync::atomic::{AtomicU64, Ordering},
+    };
 
     use explorer_extension_api::{registrar_request_v1, AbiSchemaIdV1, IdNamespaceV1};
 
@@ -730,10 +761,13 @@ mod tests {
         assert_eq!(result.outcome, RegistrationOutcomeV1::accepted(2));
         assert_eq!(result.contributions.len(), 2);
         let contribution = &result.contributions[0];
-        assert_eq!(contribution.feature_id, "main");
+        assert_eq!(contribution.feature_id, "column");
         assert_eq!(contribution.contribution_id, "folder-size");
         assert_eq!(contribution.kind, RegisteredContributionKindV1::COLUMN);
-        assert_eq!(contribution.required_capabilities.as_slice(), ["abi"]);
+        assert_eq!(
+            contribution.required_capabilities.as_slice(),
+            ["abi", "filesystem.read"]
+        );
         assert!(matches!(contribution.visual_column, ROption::RSome(_)));
         assert_eq!(
             result.contributions[1].contribution_id,
@@ -855,6 +889,55 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "spawned only by the process-restart cache test"]
+    fn cache_process_probe() {
+        let root = PathBuf::from(std::env::var_os("RUST_FOLDER_SIZE_TEST_ROOT").unwrap());
+        let cache = PathBuf::from(std::env::var_os("RUST_FOLDER_SIZE_TEST_CACHE").unwrap());
+        let result = measure_folder_size_with_cache(&measurement_request(&root, 100), Some(&cache));
+        assert_eq!(result, FolderSizeMeasureResultV1::complete(18));
+    }
+
+    #[test]
+    fn exact_cache_is_reused_by_a_fresh_process_when_directory_mtime_is_unchanged() {
+        let root = temporary_directory("restart-measurement");
+        let cache = temporary_directory("restart-cache");
+        let marker = cache.join("scan.marker");
+        let nested = root.join("nested");
+        fs::create_dir(&nested).unwrap();
+        fs::write(root.join("first.bin"), [1_u8; 7]).unwrap();
+        fs::write(nested.join("second.bin"), [2_u8; 11]).unwrap();
+
+        let run_probe = || {
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "tests::cache_process_probe",
+                    "--nocapture",
+                ])
+                .env("RUST_FOLDER_SIZE_TEST_ROOT", &root)
+                .env("RUST_FOLDER_SIZE_TEST_CACHE", &cache)
+                .env("RUST_FOLDER_SIZE_SCAN_MARKER", &marker)
+                .status()
+                .unwrap()
+        };
+        assert!(run_probe().success());
+        assert!(
+            marker.is_file(),
+            "cold process must enter the recursive scan"
+        );
+        fs::remove_file(&marker).unwrap();
+        assert!(run_probe().success());
+        assert!(
+            !marker.exists(),
+            "fresh process must return the same-mtime exact cache before scanning"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(cache).unwrap();
+    }
+
+    #[test]
     fn cache_key_rejects_different_measurement_settings() {
         let root = temporary_directory("settings");
         let cache = temporary_directory("settings-cache");
@@ -940,6 +1023,35 @@ mod tests {
             .file_name()
             .to_string_lossy()
             .ends_with(".folder-size-cache")));
+        fs::remove_dir_all(cache).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn directory_symlink_root_is_partial_and_never_cached() {
+        use std::os::windows::fs::symlink_dir;
+
+        let target = temporary_directory("symlink-target");
+        let parent = temporary_directory("symlink-parent");
+        let cache = temporary_directory("symlink-cache");
+        fs::write(target.join("payload.bin"), [3_u8; 9]).unwrap();
+        let link = parent.join("linked-root");
+        if symlink_dir(&target, &link).is_err() {
+            fs::remove_dir_all(target).unwrap();
+            fs::remove_dir_all(parent).unwrap();
+            fs::remove_dir_all(cache).unwrap();
+            return;
+        }
+
+        let result = measure_folder_size_with_cache(&measurement_request(&link, 100), Some(&cache));
+        assert!(result.partial);
+        assert!(fs::read_dir(&cache).unwrap().flatten().all(|entry| !entry
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".folder-size-cache")));
+
+        fs::remove_dir_all(parent).unwrap();
+        fs::remove_dir_all(target).unwrap();
         fs::remove_dir_all(cache).unwrap();
     }
 }

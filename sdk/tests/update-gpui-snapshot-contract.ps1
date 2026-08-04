@@ -198,7 +198,7 @@ try {
 
 # Keep this contract coupled to the production race guard rather than a test-only imitation.
 $production = Get-Content -LiteralPath (Join-Path $repo 'sdk\scripts\update-gpui-snapshot.ps1') -Raw
-foreach ($required in @("'fetch','--no-tags','origin','main'", 'remote main advanced during update', 'Invoke-GpuiCandidateTransaction', 'approval=$candidateApproval', "state='candidate'", 'sdk/vendor/cargo-sources', 'refresh-gpui-dependency-snapshot.ps1', 'invoke-gpui-update-gates.ps1', 'Restore-GpuiCheckoutState')) {
+foreach ($required in @("'fetch','--no-tags','origin','main'", 'remote main advanced during update', 'Invoke-GpuiCandidateTransaction', 'approval=$candidateApproval', "state='candidate'", 'refresh-gpui-dependency-snapshot.ps1', 'invoke-gpui-update-gates.ps1', 'Restore-GpuiCheckoutState')) {
     if ($production -notlike "*$required*") { throw "production update script lost required guard: $required" }
 }
 $supportSource = Get-Content -LiteralPath $support -Raw

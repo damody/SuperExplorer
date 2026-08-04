@@ -12,7 +12,7 @@ foreach ($required in @('SUPEREXPLORER_GPUI_APPROVAL_HMAC_KEY', 'candidate appro
 $core = Get-Content -LiteralPath (Join-Path $repo 'sdk\scripts\gpui-snapshot-transaction.psm1') -Raw
 foreach ($required in @('Invoke-GpuiSnapshotPromotionCore', 'apply --index', 'promotion core staged gitlink mismatch', 'reset --hard', 'checkout --detach $CandidateRevision', 'requires complete GPUI history', 'candidate tree mismatch', 'GPUI rollback failed')) { if ($core -notlike "*$required*") { throw "promotion transaction core lost required behavior: $required" } }
 if($core -notlike '*Export-ModuleMember*Restore-GpuiPromotionBaselineV1*'){throw 'promotion transaction module does not export the shared GPUI rollback helper'}
-foreach ($required in @('promotion manifest payload set mismatch', '$manifestNames.Count -ne $payloadFiles.Count', 'Select-Object -Unique', "'candidate.patch'", "'sdk/Cargo.lock'", "'sdk/vendor/cargo-sources'", "'sdk/fixtures/rust-folder-size-visual-column/Cargo.lock'", 'promotion artifact schema mismatch')) {
+foreach ($required in @('promotion manifest payload set mismatch', '$manifestNames.Count -ne $payloadFiles.Count', 'Select-Object -Unique', "'candidate.patch'", "'sdk/Cargo.lock'", "'sdk/fixtures/rust-folder-size-visual-column/Cargo.lock'", 'promotion artifact schema mismatch')) {
     if ($promotion -notlike "*$required*") { throw "promotion script does not reject omitted/duplicate payloads: $required" }
 }
 foreach ($required in @('GPUI_SNAPSHOT_APPROVAL_HMAC_KEY', 'promotion-manifest.json', 'promotion-proof.json', 'HMACSHA256', 'Candidate outputs only; publication requires a separate protected compare-and-swap promotion.')) {

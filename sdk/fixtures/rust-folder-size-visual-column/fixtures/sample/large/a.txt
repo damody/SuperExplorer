@@ -1,0 +1,1 @@
+This deterministic fixture makes the large folder sort after the small folder by exact byte count.

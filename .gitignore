@@ -6,9 +6,5 @@
 *.pdb
 /.cache/
 /.github/workflows/*
-!/.github/workflows/sdk-offline-windows.yml
-!/.github/workflows/update-gpui-snapshot.yml
-!/.github/workflows/freeze-gpui-release.yml
-!/.github/workflows/promote-gpui-snapshot.yml
 __pycache__/
 *.py[cod]

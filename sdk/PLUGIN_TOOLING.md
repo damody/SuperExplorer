@@ -27,7 +27,7 @@ dependencies patched through `[patch.crates-io]` to an exact
 `vendor/private/<crate-version>` path. Declare the matching
 `private_dependencies` record in `plugin-project.json`, including its vendor
 tree SHA-256, crates.io checksum, SPDX license expression, and hashes for each
-declared license file. The wrapper snapshots this vendor tree before Cargo or
+declared license file. The wrapper snapshots this ignored local source cache before Cargo or
 package synthesis; undeclared, changed, reparse-point, oversized, or
 non-canonical private trees are rejected offline.
 

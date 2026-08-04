@@ -2,14 +2,14 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 $sdkRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $fixtureRoot = Join-Path $sdkRoot 'fixtures\package-validation-v1'
-$vendor = Join-Path $sdkRoot 'vendor\cargo-sources'
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('superexplorer-validation-v1-' + [Guid]::NewGuid().ToString('N'))
 $cargoHome = Join-Path $tempRoot 'cargo-home'; $targetDir = Join-Path $tempRoot 'target'; $runtimeRoot = Join-Path $tempRoot 'runtime'
 $savedCargoHome = $env:CARGO_HOME; $savedTarget = $env:CARGO_TARGET_DIR
 try {
     New-Item -ItemType Directory -Path $cargoHome, $targetDir, $runtimeRoot -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $fixtureRoot 'manifests') -Destination $runtimeRoot -Recurse -Force
-    $config = @('[source.crates-io]','replace-with = "cargo-sources"','[source.cargo-sources]',('directory = "' + ($vendor -replace '\\','/') + '"')) -join [Environment]::NewLine
+    $configPath = & powershell.exe -NoProfile -File (Join-Path $sdkRoot 'scripts\prepare-local-cargo-source.ps1') -PluginRoot $fixtureRoot
+    Copy-Item -LiteralPath $configPath -Destination (Join-Path $cargoHome 'config.toml') -Force
     [IO.File]::WriteAllText((Join-Path $cargoHome 'config.toml'), $config, [Text.UTF8Encoding]::new($false))
     $env:CARGO_HOME = $cargoHome; $env:CARGO_TARGET_DIR = $targetDir; $env:PACKAGE_VALIDATION_FIXTURE_ROOT = $runtimeRoot
     Push-Location $fixtureRoot
