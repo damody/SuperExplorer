@@ -3,6 +3,7 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use explorer_model::{
@@ -44,6 +45,9 @@ pub struct ExtensionOptionV1 {
     pub author_name: &'static str,
     pub author_bio: &'static str,
     pub author_website: &'static str,
+    pub purpose: &'static str,
+    pub community_website: &'static str,
+    pub release_date: &'static str,
     pub command_contribution: Option<&'static str>,
     pub enabled: bool,
 }
@@ -64,6 +68,9 @@ fn official_extensions_v1() -> Vec<ExtensionOptionV1> {
             author_name: "Damody",
             author_bio: "SuperExplorer 與官方範例擴充功能作者",
             author_website: "https://github.com/damody/SuperExplorer",
+            purpose: "顯示檔案大小並在背景遞迴計算資料夾總大小。",
+            community_website: "https://github.com/damody/SuperExplorer/discussions",
+            release_date: "2026-08-04",
             command_contribution: None,
             enabled: true,
         },
@@ -73,6 +80,9 @@ fn official_extensions_v1() -> Vec<ExtensionOptionV1> {
             author_name: "Damody",
             author_bio: "SuperExplorer 與官方範例擴充功能作者",
             author_website: "https://github.com/damody/SuperExplorer",
+            purpose: "以面積圖呈現目前資料夾內各項目的空間占用。",
+            community_website: "https://github.com/damody/SuperExplorer/discussions",
+            release_date: "2026-08-04",
             command_contribution: None,
             enabled: true,
         },
@@ -82,6 +92,9 @@ fn official_extensions_v1() -> Vec<ExtensionOptionV1> {
             author_name: "Damody",
             author_bio: "SuperExplorer 與官方範例擴充功能作者",
             author_website: "https://github.com/damody/SuperExplorer",
+            purpose: "使用 Rust 與 tokei 統計檔案或資料夾中的程式碼行數。",
+            community_website: "https://github.com/damody/SuperExplorer/discussions",
+            release_date: "2026-08-04",
             command_contribution: None,
             enabled: true,
         },
@@ -91,6 +104,9 @@ fn official_extensions_v1() -> Vec<ExtensionOptionV1> {
             author_name: "Damody",
             author_bio: "SuperExplorer 與官方範例擴充功能作者",
             author_website: "https://github.com/damody/SuperExplorer",
+            purpose: "示範以 Lua 擴充功能統計程式碼行數。",
+            community_website: "https://github.com/damody/SuperExplorer/discussions",
+            release_date: "2026-08-04",
             command_contribution: None,
             enabled: true,
         },
@@ -100,6 +116,9 @@ fn official_extensions_v1() -> Vec<ExtensionOptionV1> {
             author_name: "Damody",
             author_bio: "SuperExplorer 與官方範例擴充功能作者",
             author_website: "https://github.com/damody/SuperExplorer",
+            purpose: "顯示目前鎖定檔案的程式或服務擁有者。",
+            community_website: "https://github.com/damody/SuperExplorer/discussions",
+            release_date: "2026-08-04",
             command_contribution: None,
             enabled: true,
         },
@@ -109,6 +128,9 @@ fn official_extensions_v1() -> Vec<ExtensionOptionV1> {
             author_name: "Damody",
             author_bio: "SuperExplorer 與官方範例擴充功能作者",
             author_website: "https://github.com/damody/SuperExplorer",
+            purpose: "依相片 EXIF 拍攝資訊批次產生重新命名建議。",
+            community_website: "https://github.com/damody/SuperExplorer/discussions",
+            release_date: "2026-08-04",
             command_contribution: Some("rust-exif-rename:button"),
             enabled: true,
         },
@@ -118,6 +140,9 @@ fn official_extensions_v1() -> Vec<ExtensionOptionV1> {
             author_name: "Damody",
             author_bio: "SuperExplorer 與官方範例擴充功能作者",
             author_website: "https://github.com/damody/SuperExplorer",
+            purpose: "將 7-Zip 壓縮檔以可瀏覽的虛擬資料夾呈現。",
+            community_website: "https://github.com/damody/SuperExplorer/discussions",
+            release_date: "2026-08-04",
             command_contribution: None,
             enabled: true,
         },
@@ -127,6 +152,9 @@ fn official_extensions_v1() -> Vec<ExtensionOptionV1> {
             author_name: "Damody",
             author_bio: "SuperExplorer 與官方範例擴充功能作者",
             author_website: "https://github.com/damody/SuperExplorer",
+            purpose: "依使用者指定的樣板一次建立多個資料夾。",
+            community_website: "https://github.com/damody/SuperExplorer/discussions",
+            release_date: "2026-08-04",
             command_contribution: Some("lua-bulk-folder:button"),
             enabled: true,
         },
@@ -447,11 +475,22 @@ pub struct AppViewState {
     side_pane_resize: Option<SidePaneResizeSession>,
     scrollbar_drag: Option<ScrollbarDragSession>,
     marquee: Option<MarqueeSelectionSession>,
+    file_view_typeahead: Option<FileViewTypeAhead>,
     /// Exact values for the one P0 runtime column. Keeping these in view state
     /// makes its sorted presentation authoritative for every row action.
     folder_size_sort_values: HashMap<ShellItemId, Option<u64>>,
     code_lines_sort_values: HashMap<ShellItemId, Option<u64>>,
     presentation_cache: Arc<Mutex<crate::file_view::DirectoryPresentationCache>>,
+}
+
+const FILE_VIEW_TYPEAHEAD_TIMEOUT: Duration = Duration::from_secs(1);
+
+#[derive(Clone, Debug)]
+struct FileViewTypeAhead {
+    tab_id: TabId,
+    generation: explorer_model::Generation,
+    prefix: String,
+    last_input: Instant,
 }
 
 #[derive(Clone, Debug)]
@@ -609,6 +648,7 @@ impl AppViewState {
             side_pane_resize: None,
             scrollbar_drag: None,
             marquee: None,
+            file_view_typeahead: None,
             folder_size_sort_values: HashMap::new(),
             code_lines_sort_values: HashMap::new(),
             presentation_cache: Arc::new(Mutex::new(
@@ -2359,6 +2399,7 @@ impl AppViewState {
         location: LocationDescriptor,
         refresh: bool,
     ) -> Option<ExplorerCommand> {
+        self.clear_file_view_typeahead();
         self.cancel_permanent_delete_confirmation();
         self.cancel_lock_recovery();
         self.clear_external_drag();
@@ -3397,6 +3438,84 @@ impl AppViewState {
         true
     }
 
+    pub(crate) fn typeahead_file_view(&mut self, text: &str, now: Instant) -> Option<usize> {
+        if self.focused_surface() != FocusSurface::FileView
+            || self.rename_editor.is_some()
+            || text.is_empty()
+        {
+            return None;
+        }
+        let normalized = text.to_lowercase();
+        if normalized.chars().all(char::is_whitespace) {
+            return None;
+        }
+        let tab = self.tabs.active_tab();
+        let tab_id = tab.id;
+        let generation = tab.generation;
+        let continuation = self.file_view_typeahead.as_ref().is_some_and(|session| {
+            session.tab_id == tab_id
+                && session.generation == generation
+                && now
+                    .checked_duration_since(session.last_input)
+                    .is_some_and(|elapsed| elapsed <= FILE_VIEW_TYPEAHEAD_TIMEOUT)
+        });
+        let mut prefix = if continuation {
+            let mut prefix = self
+                .file_view_typeahead
+                .as_ref()
+                .map(|session| session.prefix.clone())
+                .unwrap_or_default();
+            prefix.push_str(&normalized);
+            prefix
+        } else {
+            normalized.clone()
+        };
+        let presentation = self.directory_presentation()?;
+        let row_count = presentation.len();
+        let find_from = |prefix: &str, start: usize| {
+            (0..row_count)
+                .map(|offset| (start + offset) % row_count.max(1))
+                .find(|row_index| {
+                    presentation.entry(*row_index).is_some_and(|(_, entry)| {
+                        entry.display_name.to_lowercase().starts_with(prefix)
+                    })
+                })
+        };
+        let mut target = find_from(&prefix, 0);
+        if target.is_none() && continuation {
+            prefix = normalized;
+            let start = self
+                .focused_row_index()
+                .map_or(0, |current| current.saturating_add(1) % row_count.max(1));
+            target = find_from(&prefix, start);
+        }
+        self.file_view_typeahead = Some(FileViewTypeAhead {
+            tab_id,
+            generation,
+            prefix,
+            last_input: now,
+        });
+        if let Some(row_index) = target {
+            let _ = self.select_row(row_index);
+        }
+        target
+    }
+
+    pub(crate) fn clear_file_view_typeahead(&mut self) -> bool {
+        self.file_view_typeahead.take().is_some()
+    }
+
+    pub(crate) const fn file_view_typeahead_active(&self) -> bool {
+        self.file_view_typeahead.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn file_view_typeahead_prefix(&self) -> Option<&str> {
+        self.file_view_typeahead
+            .as_ref()
+            .map(|session| session.prefix.as_str())
+    }
+
     pub(crate) fn toggle_row(&mut self, row_index: usize) -> bool {
         let Some(id) = self.presentation_entry(row_index).map(|entry| entry.id) else {
             return false;
@@ -4379,12 +4498,19 @@ impl AppViewState {
     }
 
     pub(crate) fn focus(&mut self, surface: FocusSurface) {
+        if surface != FocusSurface::FileView {
+            self.clear_file_view_typeahead();
+        }
         self.focus.focus(surface);
         self.tab_focus.insert(self.tabs.active_tab_id(), surface);
     }
 
     pub(crate) fn restore_previous_focus(&mut self) -> bool {
-        self.focus.restore_previous()
+        let restored = self.focus.restore_previous();
+        if restored && self.focus.current() != FocusSurface::FileView {
+            self.clear_file_view_typeahead();
+        }
+        restored
     }
 
     pub(crate) fn traverse_focus(&mut self, direction: FocusDirection) -> bool {
@@ -4393,6 +4519,9 @@ impl AppViewState {
             surface != FocusSurface::PreviewPane || preview_pane
         });
         if moved {
+            if self.focus.current() != FocusSurface::FileView {
+                self.clear_file_view_typeahead();
+            }
             self.tab_focus
                 .insert(self.tabs.active_tab_id(), self.focus.current());
         }
@@ -4411,6 +4540,7 @@ impl AppViewState {
     }
 
     pub(crate) fn new_tab(&mut self) -> TabId {
+        self.clear_file_view_typeahead();
         self.cancel_permanent_delete_confirmation();
         self.cancel_lock_recovery();
         let _ = self.end_scrollbar_drag(ScrollbarTerminal::TabSwitch);
@@ -4437,6 +4567,7 @@ impl AppViewState {
     }
 
     pub(crate) fn activate_tab(&mut self, id: TabId) -> bool {
+        self.clear_file_view_typeahead();
         self.cancel_permanent_delete_confirmation();
         self.cancel_lock_recovery();
         let _ = self.end_scrollbar_drag(ScrollbarTerminal::TabSwitch);
@@ -4679,6 +4810,7 @@ fn navigation_locations_for_operation(request: &FileOperationRequest) -> Vec<Loc
 mod tests {
     use super::{AppViewState, CommandKind};
     use crate::{focus::FocusSurface, layout::LayoutTokens, theme::ThemeMode};
+    use std::time::{Duration, Instant};
 
     fn state_with_rows() -> AppViewState {
         let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
@@ -4779,6 +4911,61 @@ mod tests {
                 .command_availability()
                 .is_enabled(CommandKind::NextTab)
         );
+    }
+
+    #[test]
+    fn file_view_typeahead_accumulates_prefix_cycles_matches_and_expires() {
+        let mut state = state_with_rows();
+        let now = Instant::now();
+
+        assert_eq!(state.typeahead_file_view("F", now), Some(0));
+        assert_eq!(state.file_view_typeahead_prefix(), Some("f"));
+        assert_eq!(
+            state.typeahead_file_view("i", now + Duration::from_millis(100)),
+            Some(1)
+        );
+        assert_eq!(state.file_view_typeahead_prefix(), Some("fi"));
+        assert_eq!(state.focused_row_index(), Some(1));
+
+        assert!(state.clear_file_view_typeahead());
+        assert_eq!(state.file_view_typeahead_prefix(), None);
+        assert_eq!(
+            state.typeahead_file_view("f", now + Duration::from_millis(200)),
+            Some(0)
+        );
+        assert_eq!(
+            state.typeahead_file_view("f", now + Duration::from_millis(300)),
+            Some(1),
+            "a repeated prefix cycles from the current item"
+        );
+
+        assert_eq!(
+            state.typeahead_file_view("f", now + Duration::from_millis(1_500)),
+            Some(0),
+            "input after the Explorer-style timeout starts a new prefix"
+        );
+        assert_eq!(state.file_view_typeahead_prefix(), Some("f"));
+    }
+
+    #[test]
+    fn file_view_typeahead_clears_on_focus_navigation_and_tab_changes() {
+        let mut state = state_with_rows();
+        let now = Instant::now();
+        assert_eq!(state.typeahead_file_view("fi", now), Some(1));
+        state.focus(FocusSurface::Search);
+        assert!(!state.file_view_typeahead_active());
+
+        state.focus(FocusSurface::FileView);
+        assert_eq!(state.typeahead_file_view("f", now), Some(0));
+        let _ = state.begin_active_navigation(
+            explorer_model::LocationDescriptor::file_system(r"C:\replacement"),
+            false,
+        );
+        assert!(!state.file_view_typeahead_active());
+
+        assert_eq!(state.typeahead_file_view("f", now), None);
+        state.new_tab();
+        assert!(!state.file_view_typeahead_active());
     }
 
     #[test]
@@ -7106,6 +7293,9 @@ mod tests {
             !extension.author_name.is_empty()
                 && !extension.author_bio.is_empty()
                 && extension.author_website.starts_with("https://")
+                && !extension.purpose.is_empty()
+                && extension.community_website.starts_with("https://")
+                && extension.release_date.len() == 10
         }));
         state.open_folder_options();
         state.set_folder_options_page(crate::actions::FolderOptionsPage::Extensions);
