@@ -109,7 +109,7 @@ function Assert-GpuiCandidatePromotionSurface {
   'Cargo.lock',
   'sdk/Cargo.lock',
   'sdk/snapshot/protected-dependency-closure.json',
-  'sdk/fixtures/p0-consumer/Cargo.lock',
+  'sdk/fixtures/rust-folder-size-visual-column/Cargo.lock',
   $GitlinkPath
  )
  $changed=@(@(Invoke-GpuiGit $RepositoryRoot @('diff','--name-only','HEAD','--'))|ForEach-Object{$_.Trim()}|Where-Object{$_})

@@ -1,4 +1,5 @@
-//! Standalone P0 consumer using the public Rust-first extension author API.
+//! Standalone Rust folder-size visual-column example using the public
+//! Rust-first extension author API.
 //!
 //! The fixture is a minimal folder-size visual-column example. It proves that a
 //! clean consumer can export the SDK root and implement ordinary Rust measure
@@ -29,7 +30,7 @@ use explorer_extension_ui_api::{
     FolderSizeMeasureResultV1, VisualColumnImplementationV1, VisualColumnObjectV1,
 };
 
-const MARKER_ENVIRONMENT_VARIABLE: &str = "P0_CONSUMER_REGISTRAR_MARKER";
+const MARKER_ENVIRONMENT_VARIABLE: &str = "RUST_FOLDER_SIZE_REGISTRAR_MARKER";
 const CACHE_SCHEMA_VERSION: u32 = 1;
 const CACHE_MAX_FILES: usize = 256;
 const CACHE_MAX_RECORD_BYTES: u64 = 4 * 1024;
@@ -237,7 +238,7 @@ fn plugin_cache_directory() -> Option<PathBuf> {
             PathBuf::from(root)
                 .join("RustGpuiExplorer")
                 .join("plugins")
-                .join("p0-consumer")
+                .join("rust-folder-size-visual-column")
                 .join("folder-size")
                 .join("v1")
         })
@@ -571,9 +572,9 @@ fn mark_callback_invocation() -> Result<(), RString> {
     let Some(path) = marker_path() else {
         return Ok(());
     };
-    fs::write(&path, b"p0 consumer registrar invoked").map_err(|error| {
+    fs::write(&path, b"rust folder-size visual column registrar invoked").map_err(|error| {
         RString::from(format!(
-            "could not write P0 consumer registrar marker {}: {error}",
+            "could not write Rust folder-size registrar marker {}: {error}",
             path.display()
         ))
     })
@@ -725,7 +726,7 @@ mod tests {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let suffix = NEXT.fetch_add(1, Ordering::Relaxed);
         let directory = std::env::temp_dir().join(format!(
-            "p0-consumer-{label}-{}-{suffix}",
+            "rust-folder-size-visual-column-{label}-{}-{suffix}",
             std::process::id()
         ));
         fs::create_dir_all(&directory).unwrap();

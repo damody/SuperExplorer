@@ -202,7 +202,7 @@ foreach ($required in @("'fetch','--no-tags','origin','main'", 'remote main adva
     if ($production -notlike "*$required*") { throw "production update script lost required guard: $required" }
 }
 $supportSource = Get-Content -LiteralPath $support -Raw
-foreach ($required in @('Assert-GpuiCandidateCheckout', 'Assert-GpuiCandidateStagedGitlink', 'Assert-GpuiCandidatePromotionSurface', "'clean','-fd','--'", 'staged GPUI gitlink does not match the resolved candidate revision', 'sdk/fixtures/p0-consumer/Cargo.lock')) {
+foreach ($required in @('Assert-GpuiCandidateCheckout', 'Assert-GpuiCandidateStagedGitlink', 'Assert-GpuiCandidatePromotionSurface', "'clean','-fd','--'", 'staged GPUI gitlink does not match the resolved candidate revision', 'sdk/fixtures/rust-folder-size-visual-column/Cargo.lock')) {
     if ($supportSource -notlike "*$required*") { throw "candidate transaction support lost required guard: $required" }
 }
 $gateManifest = Get-Content -LiteralPath (Join-Path $repo 'sdk\ci\gpui-update-gates.json') -Raw | ConvertFrom-Json

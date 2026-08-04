@@ -8,7 +8,7 @@ function Write-Utf8NoBom([string]$Path, [string]$Text) {
 }
 
 $repository = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$fixture = Join-Path $repository 'sdk\fixtures\p0-consumer'
+$fixture = Join-Path $repository 'sdk\fixtures\rust-folder-size-visual-column'
 $sdk = Join-Path $repository 'sdk'
 $artifact = Get-Content -LiteralPath (Join-Path $sdk 'ui-abi-fingerprint.json') -Raw | ConvertFrom-Json
 $lock = Get-Content -LiteralPath (Join-Path $sdk 'sdk-lock.json') -Raw | ConvertFrom-Json
@@ -17,7 +17,7 @@ if ($artifact.bundle_id -ne $lock.bundle_id -or [string]$artifact.fingerprint -n
     throw 'canonical SDK bundle or UI ABI fingerprint is malformed'
 }
 
-$scratch = Join-Path ([IO.Path]::GetTempPath()) ('superexplorer-p0-consumer-' + [guid]::NewGuid().ToString('N'))
+$scratch = Join-Path ([IO.Path]::GetTempPath()) ('superexplorer-rust-folder-size-visual-column-' + [guid]::NewGuid().ToString('N'))
 $consumer = Join-Path $scratch 'consumer'
 $contractHost = Join-Path $scratch 'host'
 $cargoHome = Join-Path $scratch 'empty-cargo-home'
@@ -91,7 +91,7 @@ directory = "$vendor"
     Write-Utf8NoBom (Join-Path $cargoHome 'config.toml') $isolatedCargoConfig
     Write-Utf8NoBom (Join-Path $contractHost 'Cargo.toml') @"
 [package]
-name = "p0-consumer-contract-host"
+name = "rust-folder-size-visual-column-contract-host"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.97.1"
@@ -117,7 +117,7 @@ use explorer_extension_api::{
 
 fn run(path: &Path, marker: &Path) -> Result<(), String> {
     let root = ExtensionRootModuleV1_Ref::load_from_file(path)
-        .map_err(|error| format!("P0 consumer root export could not load: {error}"))?;
+        .map_err(|error| format!("folder-size visual column root export could not load: {error}"))?;
     if root.abi_schema() != ABI_SCHEMA_V1
         || root.root_contract_id() != ROOT_MODULE_CONTRACT_ID_V1
         || root.sdk_major() != SDK_MAJOR_VERSION_V1
@@ -125,7 +125,7 @@ fn run(path: &Path, marker: &Path) -> Result<(), String> {
         || root.descriptor_contract_revision() != DESCRIPTOR_CONTRACT_REVISION_V1
         || root.ui_abi_fingerprint_sha256() != ROption::RNone
     {
-        return Err("P0 consumer root data is not the fixed data-only V1 contract".into());
+        return Err("folder-size visual column root data is not the fixed data-only V1 contract".into());
     }
     let registrar = root.create_registrar().create().into_result()
         .map_err(|error| format!("P0 registrar factory failed: {error:?}"))?;
@@ -153,8 +153,8 @@ fn run(path: &Path, marker: &Path) -> Result<(), String> {
 fn main() -> Result<(), String> {
     let mut arguments = env::args_os();
     let _program = arguments.next();
-    let plugin = arguments.next().ok_or("usage: p0-consumer-contract-host <plugin.dll> <marker>")?;
-    let marker = arguments.next().ok_or("usage: p0-consumer-contract-host <plugin.dll> <marker>")?;
+    let plugin = arguments.next().ok_or("usage: rust-folder-size-visual-column-contract-host <plugin.dll> <marker>")?;
+    let marker = arguments.next().ok_or("usage: rust-folder-size-visual-column-contract-host <plugin.dll> <marker>")?;
     if arguments.next().is_some() {
         return Err("too many arguments".into());
     }
@@ -169,30 +169,30 @@ fn main() -> Result<(), String> {
     Push-Location $consumer
     try {
         & cargo.exe build --release --locked --offline --target ([string]$lock.toolchain.target)
-        if ($LASTEXITCODE -ne 0) { throw 'materialized P0 consumer did not build locked and offline' }
+        if ($LASTEXITCODE -ne 0) { throw 'materialized folder-size visual column did not build locked and offline' }
     } finally { Pop-Location }
 
     Push-Location $contractHost
     try {
         & cargo.exe generate-lockfile --offline
-        if ($LASTEXITCODE -ne 0) { throw 'P0 ABI contract host lock generation failed offline' }
+        if ($LASTEXITCODE -ne 0) { throw 'folder-size visual column ABI contract host lock generation failed offline' }
         & cargo.exe build --locked --offline
-        if ($LASTEXITCODE -ne 0) { throw 'P0 ABI contract host did not build locked and offline' }
+        if ($LASTEXITCODE -ne 0) { throw 'folder-size visual column ABI contract host did not build locked and offline' }
     } finally { Pop-Location }
 
-    $pluginDll = Join-Path $consumer 'target\x86_64-pc-windows-msvc\release\p0_consumer.dll'
-    $hostExe = Join-Path $contractHost 'target\debug\p0-consumer-contract-host.exe'
-    if (-not (Test-Path -LiteralPath $pluginDll)) { throw 'consumer did not export the expected p0_consumer cdylib' }
+    $pluginDll = Join-Path $consumer 'target\x86_64-pc-windows-msvc\release\rust_folder_size_visual_column.dll'
+    $hostExe = Join-Path $contractHost 'target\debug\rust-folder-size-visual-column-contract-host.exe'
+    if (-not (Test-Path -LiteralPath $pluginDll)) { throw 'folder-size visual column did not export the expected cdylib' }
     if (-not (Test-Path -LiteralPath $hostExe)) { throw 'contract host executable was not produced' }
-    $env:P0_CONSUMER_REGISTRAR_MARKER = $marker
+    $env:RUST_FOLDER_SIZE_REGISTRAR_MARKER = $marker
     & $hostExe $pluginDll $marker
-    if ($LASTEXITCODE -ne 0) { throw 'P0 consumer ABI root/data pre-callback contract failed' }
-    if ((Get-Content -LiteralPath $marker -Raw).Trim() -ne 'p0 consumer registrar invoked') {
-        throw 'P0 consumer registrar marker had unexpected content'
+    if ($LASTEXITCODE -ne 0) { throw 'folder-size visual column ABI root/data pre-callback contract failed' }
+    if ((Get-Content -LiteralPath $marker -Raw).Trim() -ne 'rust folder-size visual column registrar invoked') {
+        throw 'folder-size visual column registrar marker had unexpected content'
     }
-    Write-Host 'P0 consumer standalone Rust-first abi_stable root contract passed.'
+    Write-Host 'Rust folder-size visual column standalone Rust-first abi_stable root contract passed.'
 } finally {
     [Environment]::SetEnvironmentVariable('CARGO_HOME', $savedCargoHome, 'Process')
-    [Environment]::SetEnvironmentVariable('P0_CONSUMER_REGISTRAR_MARKER', $null, 'Process')
+    [Environment]::SetEnvironmentVariable('RUST_FOLDER_SIZE_REGISTRAR_MARKER', $null, 'Process')
     if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force }
 }

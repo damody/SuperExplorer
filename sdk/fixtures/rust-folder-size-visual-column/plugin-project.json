@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "package": { "id": "p0-consumer", "version": "0.1.0" },
+  "package": { "id": "rust-folder-size-visual-column", "version": "0.1.0" },
   "publisher": {
     "id": "example-publisher",
     "display_name": "Example Publisher",
@@ -14,7 +14,7 @@
     "ui_abi_fingerprint": null
   },
   "rust": {
-    "crate_name": "p0-consumer",
+    "crate_name": "rust-folder-size-visual-column",
     "entrypoint": "plugin.dll"
   },
   "features": [{ "id": "main", "capabilities": ["abi"] }],
