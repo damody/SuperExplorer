@@ -1,10 +1,10 @@
 ## ADDED Requirements
 
 ### Requirement: 0→1 single-plugin product validation
-Before general platform implementation, the active milestone SHALL support exactly one explicitly selected local Rust plugin, `p0-consumer`. SuperExplorer SHALL load it only when launched with one absolute `--plugin-dll` path, SHALL reuse the real `abi_stable` root and registrar path, and SHALL show an owned read-only plugin/contribution summary in the existing Extensions menu. Absence of the flag SHALL preserve current behavior and SHALL NOT scan for unsigned local plugins. Multi-plugin discovery, dynamic column values/rendering, package-source, scheduler, evidence, snapshot and release frameworks SHALL remain deferred until the user records product-validation GO.
+Before general platform implementation, the active milestone SHALL support exactly one explicitly selected local Rust plugin, `rust-folder-size-visual-column`. SuperExplorer SHALL load it only when launched with one absolute `--plugin-dll` path, SHALL reuse the real `abi_stable` root and registrar path, and SHALL show an owned read-only plugin/contribution summary in the existing Extensions menu. Absence of the flag SHALL preserve current behavior and SHALL NOT scan for unsigned local plugins. Multi-plugin discovery, package-source and the remaining examples SHALL not block this first canonical vertical slice.
 
 #### Scenario: The single demo plugin is explicitly loaded
-- **WHEN** SuperExplorer starts with a compatible absolute `p0_consumer.dll` path
+- **WHEN** SuperExplorer starts with a compatible absolute `rust_folder_size_visual_column.dll` path
 - **THEN** the real host loads and registers it and the Extensions menu visibly identifies its plugin ID, contribution ID and contribution kind
 
 #### Scenario: SuperExplorer starts without the demo flag
@@ -16,15 +16,15 @@ Before general platform implementation, the active milestone SHALL support exact
 - **THEN** an artificial contract, integration, evidence, snapshot, mock or fake framework is not required to declare product-validation GO; a manual demo or minimal smoke is sufficient
 
 ### Requirement: Installer bundles the single validation plugin
-The `build_install.bat` release path SHALL build and validate the single `p0-consumer` release DLL offline and SHALL package it as `$INSTDIR\plugins\p0_consumer.dll`. Installer-created shortcuts and the finish-page launch SHALL pass that absolute installed path through the existing `--plugin-dll` argument. Direct execution without that argument SHALL continue to load no unsigned local plugin.
+The `build_install.bat` release path SHALL build and validate the single `rust-folder-size-visual-column` release DLL locked and offline and SHALL package it as `$INSTDIR\plugins\rust_folder_size_visual_column.dll`. Installer-created shortcuts and the finish-page launch SHALL pass that absolute installed path through the existing `--plugin-dll` argument. Direct execution without that argument SHALL continue to load no unsigned local plugin.
 
 #### Scenario: Installer build includes the plugin
-- **WHEN** the application, broker, worker and `p0-consumer` release builds succeed
-- **THEN** NSIS receives the exact validated DLL path and the generated installer contains `plugins\p0_consumer.dll`
+- **WHEN** the application, broker, worker and `rust-folder-size-visual-column` release builds succeed
+- **THEN** NSIS receives the exact validated DLL path and the generated installer contains `plugins\rust_folder_size_visual_column.dll`
 
 #### Scenario: Installed shortcut launches the plugin
 - **WHEN** the user launches SuperExplorer from an installer-created shortcut or the finish page
-- **THEN** the process receives `--plugin-dll` with `$INSTDIR\plugins\p0_consumer.dll` and loads the bundled plugin through the existing explicit loader
+- **THEN** the process receives `--plugin-dll` with `$INSTDIR\plugins\rust_folder_size_visual_column.dll` and loads the bundled plugin through the existing explicit loader
 
 #### Scenario: Plugin build or validation fails
 - **WHEN** the fixture build fails or its expected release DLL is missing or invalid
@@ -32,7 +32,7 @@ The `build_install.bat` release path SHALL build and validate the single `p0-con
 
 #### Scenario: Bundled plugin is uninstalled
 - **WHEN** the user runs the uninstaller
-- **THEN** it deletes the known `p0_consumer.dll` and removes the plugin directory only when empty, without recursively deleting unknown files
+- **THEN** it deletes the known `rust_folder_size_visual_column.dll` and removes the plugin directory only when empty, without recursively deleting unknown files
 
 ### Requirement: Complete independent example projects
 The SDK SHALL ship eight installable `.sepack` example projects in an independent consumer workspace. Each SHALL include complete source, manifest, zh-TW/en README, locales, license/NOTICE/provenance, fixtures, unit/integration tests, screenshots and package command, and SHALL explain how an author can modify it.
