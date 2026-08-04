@@ -133,10 +133,7 @@ impl FolderSizeCacheKey {
             .ok()?
             .as_nanos();
         Some(Self {
-            // Windows directory identities are case-insensitive. Normalizing
-            // here avoids keeping duplicate persistent records for the same
-            // container while keeping the path itself out of cache contents.
-            path_key: canonical.to_string_lossy().to_lowercase(),
+            path_key: directory_identity(&canonical, &metadata),
             directory_modified_nanos,
             max_entries: request.max_entries.max(1),
             max_depth: request.max_depth,
@@ -158,6 +155,95 @@ impl FolderSizeCacheKey {
         // hash collision cannot return another directory's exact result.
         hex_encode(self.path_key.as_bytes())
     }
+}
+
+#[cfg(windows)]
+fn directory_identity(canonical: &Path, _: &fs::Metadata) -> String {
+    use std::{iter, os::windows::ffi::OsStrExt as _};
+
+    #[repr(C)]
+    struct FileTime {
+        low: u32,
+        high: u32,
+    }
+    #[repr(C)]
+    struct ByHandleFileInformation {
+        file_attributes: u32,
+        creation_time: FileTime,
+        last_access_time: FileTime,
+        last_write_time: FileTime,
+        volume_serial_number: u32,
+        file_size_high: u32,
+        file_size_low: u32,
+        number_of_links: u32,
+        file_index_high: u32,
+        file_index_low: u32,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CreateFileW(
+            name: *const u16,
+            access: u32,
+            share: u32,
+            security: *mut std::ffi::c_void,
+            creation: u32,
+            flags: u32,
+            template: isize,
+        ) -> isize;
+        fn GetFileInformationByHandle(
+            handle: isize,
+            information: *mut ByHandleFileInformation,
+        ) -> i32;
+        fn CloseHandle(handle: isize) -> i32;
+    }
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_SHARE_WRITE: u32 = 0x2;
+    const FILE_SHARE_DELETE: u32 = 0x4;
+    const OPEN_EXISTING: u32 = 3;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const INVALID_HANDLE_VALUE: isize = -1;
+
+    let path = canonical
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect::<Vec<_>>();
+    let handle = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null_mut(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            0,
+        )
+    };
+    if handle != INVALID_HANDLE_VALUE {
+        let mut information = std::mem::MaybeUninit::<ByHandleFileInformation>::uninit();
+        let succeeded = unsafe { GetFileInformationByHandle(handle, information.as_mut_ptr()) };
+        let _ = unsafe { CloseHandle(handle) };
+        if succeeded != 0 {
+            let information = unsafe { information.assume_init() };
+            let file_index =
+                (u64::from(information.file_index_high) << 32) | u64::from(information.file_index_low);
+            return format!(
+                "win-file:{:08x}:{file_index:016x}",
+                information.volume_serial_number
+            );
+        }
+    }
+    let bytes = canonical
+        .as_os_str()
+        .encode_wide()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    format!("win-path:{}", hex_encode(&bytes))
+}
+
+#[cfg(not(windows))]
+fn directory_identity(canonical: &Path, _: &fs::Metadata) -> String {
+    canonical.to_string_lossy().into_owned()
 }
 
 fn stable_path_hash(path_key: &str) -> u64 {
@@ -805,6 +891,21 @@ mod tests {
 
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(cache).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cache_identity_rejects_a_directory_recreated_at_the_same_path() {
+        let root = temporary_directory("recreated");
+        let request = measurement_request(&root, 100);
+        let original = FolderSizeCacheKey::from_request(&request).unwrap();
+
+        fs::remove_dir(&root).unwrap();
+        fs::create_dir(&root).unwrap();
+        let recreated = FolderSizeCacheKey::from_request(&request).unwrap();
+        assert_ne!(recreated.path_key, original.path_key);
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
