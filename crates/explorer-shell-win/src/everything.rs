@@ -186,7 +186,7 @@ fn query_provider(
 ) -> Result<(), String> {
     const PAGE: u32 = 256;
     let search = format!(
-        "ancestor:\"{}\" ({})",
+        "path:\"{}\" <{}>",
         escape(&root.to_string_lossy()),
         render_expression(expression)
     );
@@ -282,7 +282,7 @@ fn render_expression(expression: &Expr) -> String {
     match expression {
         Expr::Text {
             value, glob: true, ..
-        } => format!("name:\"{}\"", escape(value)),
+        } => render_filename_glob(value),
         Expr::Text { value, .. } => format!("\"{}\"", escape(value)),
         Expr::Filter {
             key,
@@ -311,17 +311,49 @@ fn render_expression(expression: &Expr) -> String {
             };
             format!("{property}:{operator}{value}")
         }
-        Expr::Not(inner) => format!("!({})", render_expression(inner)),
+        Expr::Not(inner) => format!("!<{}>", render_expression(inner)),
         Expr::And(left, right) => format!(
-            "({}) ({})",
+            "<{}> <{}>",
             render_expression(left),
             render_expression(right)
         ),
         Expr::Or(left, right) => format!(
-            "({}) | ({})",
+            "<{}> | <{}>",
             render_expression(left),
             render_expression(right)
         ),
+    }
+}
+
+fn render_filename_glob(pattern: &str) -> String {
+    let mut output = String::with_capacity(pattern.len());
+    let mut characters = pattern.chars();
+    while let Some(character) = characters.next() {
+        if character == '\\' {
+            match characters.next() {
+                Some(escaped @ ('*' | '?' | '\\')) => push_everything_literal(&mut output, escaped),
+                Some(other) => {
+                    push_everything_literal(&mut output, '\\');
+                    push_everything_literal(&mut output, other);
+                }
+                None => push_everything_literal(&mut output, '\\'),
+            }
+        } else if matches!(character, '*' | '?') {
+            output.push(character);
+        } else {
+            push_everything_literal(&mut output, character);
+        }
+    }
+    output
+}
+
+fn push_everything_literal(output: &mut String, character: char) {
+    if character.is_alphanumeric() || !character.is_ascii() || matches!(character, '.' | '_' | '-')
+    {
+        output.push(character);
+    } else {
+        use std::fmt::Write as _;
+        let _ = write!(output, "#x{:x}:", u32::from(character));
     }
 }
 
@@ -387,16 +419,21 @@ mod tests {
         assert!(rendered.contains("name:\"a|b\""));
         assert!(rendered.contains("ext:\"txt\""));
         assert!(rendered.contains("size:>1024"));
+        assert!(!rendered.contains(['(', ')']));
+        assert!(rendered.contains('<'));
     }
 
     #[test]
     fn filename_globs_preserve_wildcards_inside_a_name_candidate() {
         let expression = explorer_search::parse(r"foo*.rs").unwrap();
-        assert_eq!(render_expression(&expression), r#"name:"foo*.rs""#);
+        assert_eq!(render_expression(&expression), "foo*.rs");
 
         let expression = explorer_search::parse(r"*a|b?.rs").unwrap();
         let rendered = render_expression(&expression);
-        assert_eq!(rendered, r#"name:"*a|b?.rs""#);
+        assert_eq!(rendered, "*a#x7c:b?.rs");
+
+        let expression = explorer_search::parse(r"literal\*star?.rs").unwrap();
+        assert_eq!(render_expression(&expression), "literal#x2a:star?.rs");
     }
     #[test]
     fn provider_results_are_rechecked_against_exact_scope_boundaries() {
@@ -434,6 +471,7 @@ mod tests {
         .unwrap();
         assert_eq!(batches, vec![256, 44]);
         assert_eq!(provider.queries, 2);
+        assert!(provider.search.starts_with(r#"path:"C:\private-root""#));
         assert!(provider.search.contains(r#"name:"a|\"b""#));
 
         let mut provider = FakeApi {
