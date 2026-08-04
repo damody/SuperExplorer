@@ -5,7 +5,7 @@ Import-Module (Join-Path $PSScriptRoot 'protected-dependency-test-support.psm1')
 $sdkRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $repoRoot = (Resolve-Path (Join-Path $sdkRoot '..')).Path
 $oldCargoHome = $env:CARGO_HOME; $oldTarget = $env:CARGO_TARGET_DIR
-$cargoHome = Join-Path ([IO.Path]::GetTempPath()) ('superexplorer-sdk-cargo-' + [guid]::NewGuid().ToString('N'))
+$cargoHome = if ([string]::IsNullOrWhiteSpace($oldCargoHome)) { Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) '.cargo' } else { $oldCargoHome }
 $targetDir = Join-Path ([IO.Path]::GetTempPath()) ('superexplorer-sdk-target-' + [guid]::NewGuid().ToString('N'))
 $locationPushed = $false; $createdTemp = @()
 function Remove-VerifiedTempDirectory([string]$Path, [string]$Label) {
@@ -17,8 +17,9 @@ function Remove-VerifiedTempDirectory([string]$Path, [string]$Label) {
 }
 try {
     Push-Location $sdkRoot; $locationPushed = $true
-    New-Item -ItemType Directory -Path $cargoHome | Out-Null; $createdTemp += $cargoHome
     New-Item -ItemType Directory -Path $targetDir | Out-Null; $createdTemp += $targetDir
+    $sourceRegistry = Join-Path $cargoHome 'registry'
+    if (-not (Test-Path -LiteralPath $sourceRegistry -PathType Container)) { throw 'Prefilled local Cargo registry cache is unavailable; bootstrap it before offline validation.' }
     $env:CARGO_HOME = $cargoHome; $env:CARGO_TARGET_DIR = $targetDir
     $metadataText = (& cargo metadata --locked --offline --format-version 1 | Out-String)
     if ($LASTEXITCODE) { throw "cargo metadata --locked --offline failed with exit code $LASTEXITCODE" }
@@ -42,7 +43,7 @@ try {
     if ($null -eq $oldTarget) { Remove-Item Env:CARGO_TARGET_DIR -ErrorAction SilentlyContinue } else { $env:CARGO_TARGET_DIR=$oldTarget }
     if ($locationPushed) { Pop-Location }
     $cleanupErrors = @()
-    foreach ($entry in @(@($cargoHome,'CARGO_HOME'),@($targetDir,'target'))) {
+    foreach ($entry in @(@($targetDir,'target'))) {
         if ($entry[0] -notin $createdTemp) { continue }
         try { Remove-VerifiedTempDirectory $entry[0] $entry[1] } catch { $cleanupErrors += $_.Exception.Message }
     }

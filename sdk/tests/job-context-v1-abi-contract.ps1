@@ -10,7 +10,11 @@ $hostRoot = Join-Path $fixtureRoot 'current-host'
 # verifies only the current root/provider shape; legacy-root coverage belongs
 # to the separate pre-publication migration fixture.
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('superexplorer-job-context-v1-' + [Guid]::NewGuid().ToString('N'))
-$cargoHome = Join-Path $tempRoot 'cargo-home'
+$cargoHome = if ([string]::IsNullOrWhiteSpace($env:CARGO_HOME)) {
+    Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) '.cargo'
+} else {
+    $env:CARGO_HOME
+}
 $newPluginTarget = Join-Path $tempRoot 'target-new-plugin'
 $hostTarget = Join-Path $tempRoot 'target-host'
 $savedCargoHome = $env:CARGO_HOME
@@ -59,12 +63,10 @@ function Invoke-PanicLifecycle([string] $Case, [string] $ExpectedMarker) {
 }
 
 try {
-    New-Item -ItemType Directory -Path $cargoHome, $newPluginTarget, $hostTarget -Force | Out-Null
-    $cargoConfig = @(
-        '[source.crates-io]',
-        'offline = true'
-    ) -join [Environment]::NewLine
-    [IO.File]::WriteAllText((Join-Path $cargoHome 'config.toml'), $cargoConfig, [Text.UTF8Encoding]::new($false))
+    New-Item -ItemType Directory -Path $newPluginTarget, $hostTarget -Force | Out-Null
+    if (-not (Test-Path -LiteralPath (Join-Path $cargoHome 'registry') -PathType Container)) {
+        Fail 'Prefilled local Cargo registry cache is unavailable; bootstrap it before offline validation.'
+    }
 
     Invoke-CargoBuild $newPluginRoot $newPluginTarget
     Invoke-CargoBuild $hostRoot $hostTarget

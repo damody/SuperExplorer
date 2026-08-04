@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "bundle_id": "sdk-4a6c846750aa954a1a2d9883",
-  "inventory_root_sha256": "a15bb998d00cafcd33845ade1cf29da1880e3c368030fc4bb8480e7131541793",
+  "bundle_id": "sdk-8107e581f0e1ba61c128dc64",
+  "inventory_root_sha256": "3440736e594c17a0da42450d3e3f09264c9f4dc195b59f545626b104aa155733",
   "toolchain": {
     "rustc_release": "1.97.1",
     "rustc_commit_hash": "8bab26f4f68e0e26f0bb7960be334d5b520ea452",
@@ -17166,7 +17166,7 @@
       "version": "0.11.3"
     },
     "algorithm": "normalized-package-edges-v2",
-    "edge_digest": "3787240d05be01881b9d7e953ad3322ac13dc6211372caec76fc4b110432264d",
+    "edge_digest": "c8f7bc6527e6ae9b52f3474f6e23342c2b6f554c71c3e8919831b66c50ad2143",
     "gpui": {
       "default_features": false,
       "features": [],
@@ -17841,7 +17841,7 @@
     },
     {
       "path": "sdk/fixtures/extension-api-contract/current-host/Cargo.lock",
-      "sha256": "94f00ddf467898bfa8836910d0fb7d3560ec53bc898b03c403cef79e87be331b"
+      "sha256": "19f8f6945f1609be2b5d104a56f8e8c24b91bcbaeab1ad665e1a504db5faf849"
     },
     {
       "path": "sdk/fixtures/extension-api-contract/current-host/Cargo.toml",
@@ -17893,7 +17893,7 @@
     },
     {
       "path": "sdk/fixtures/extension-api-contract/rust-first-baseline-plugin/Cargo.toml",
-      "sha256": "0127bd639f03febf7bf0d4ca0a99e0921be2958d62702c1bd517a21084fb7876"
+      "sha256": "754c742b2c4fbf64a8fff00c38f607678df27fb61c812e397eafe2d32667b536"
     },
     {
       "path": "sdk/fixtures/extension-api-contract/rust-first-baseline-plugin/src/lib.rs",
@@ -18109,7 +18109,7 @@
     },
     {
       "path": "sdk/fixtures/package-manifest-v1/Cargo.lock",
-      "sha256": "cd224353f5e853d931ea825d7511700cb611949e9a97b97541be2b93b24739cc"
+      "sha256": "8c15d902e91feab46ce4f0af4d5cdf92d101144ad14c13794b8e9183fa9def64"
     },
     {
       "path": "sdk/fixtures/package-manifest-v1/Cargo.toml",
@@ -18233,7 +18233,7 @@
     },
     {
       "path": "sdk/fixtures/package-manifest-v1/manifests/valid-multi-content.json",
-      "sha256": "769eea1b326ba3fbd6c9b597bc4e22078c0b8284485fa33abc8b15c16d1f64c1"
+      "sha256": "95bd822f00280c4ca07070367af42dd17694428f8ed034902cee5faf0f39b203"
     },
     {
       "path": "sdk/fixtures/package-manifest-v1/src/main.rs",
@@ -18261,7 +18261,7 @@
     },
     {
       "path": "sdk/fixtures/package-validation-v1/Cargo.lock",
-      "sha256": "d1b1dccc66fe784b502438efc2f0bedc61f79e783642a0fac67bc690162cbf19"
+      "sha256": "059e72d34c37e26456245fc15492d30d7a1e850dd16ee9df559ba154819bf184"
     },
     {
       "path": "sdk/fixtures/package-validation-v1/Cargo.toml",
@@ -18849,7 +18849,7 @@
     },
     {
       "path": "sdk/snapshot/protected-dependency-closure.json",
-      "sha256": "6111e4a4f120128be8fc3c32de71c169beaa54b4f3adb3c402c1d120af03fc96"
+      "sha256": "08616c408d5fedf863e0fb76a48892ad3f069d6ce0d51d738ab21fbf2d229511"
     },
     {
       "path": "sdk/src/lib.rs",
@@ -18873,7 +18873,7 @@
     },
     {
       "path": "sdk/tests/extension-api-abi-contract.ps1",
-      "sha256": "db384fdfc94ae426d7d047e2d08b450f290e0ca53bafaf9f6dd0e98f86ccafe2"
+      "sha256": "53ee2cafc476e59f4553bb5925d98dcf6deaa5b445a61c7dfcf5ae4f6c7998a1"
     },
     {
       "path": "sdk/tests/extension-api-docs-contract.ps1",
@@ -18913,7 +18913,7 @@
     },
     {
       "path": "sdk/tests/job-context-v1-abi-contract.ps1",
-      "sha256": "a4695b88b67baacbf4d04834e71cbf5417097869295b9b251becc6721dabaa7b"
+      "sha256": "711988c1eb290785d4fca0d3d96f00aa37d33ea806cc0a1d49b15ece6e5ba025"
     },
     {
       "path": "sdk/tests/native-call-guard-contract.ps1",
@@ -18937,7 +18937,7 @@
     },
     {
       "path": "sdk/tests/offline-host-plugin-contract.ps1",
-      "sha256": "90efe7224007fdad0feb5c56a876e4ffe6db772e99b552dc06238f09db90b8a9"
+      "sha256": "167cda34a4d2d8a1144e39fda5bf8ae5d2011dc086937005d2dd760ad36846e0"
     },
     {
       "path": "sdk/tests/package-lifecycle-docs-contract.ps1",
@@ -18969,7 +18969,7 @@
     },
     {
       "path": "sdk/tests/protected-dependency-contract.ps1",
-      "sha256": "eb4366f45889d71928edff9194f5930455a0af8f088446a49c76c97b616658ba"
+      "sha256": "7c08c0a06ec112e8c34e510e5e486e5610d26fac6ade5d95b9c06f912e349664"
     },
     {
       "path": "sdk/tests/protected-dependency-test-support.psm1",
