@@ -103,6 +103,7 @@ pub struct SizeMapRenderPlanV1 {
 pub trait ExtensionSizeMapRuntimePortV1: Send + Sync {
     fn config(&self) -> SizeMapViewConfigV1;
     fn submit_measure_requests(&self, requests: Vec<SizeMapMeasureRequestV1>);
+    fn cancel_measure_context(&self, context: &RequestContext);
     fn drain_measure_results(&self) -> Vec<SizeMapMeasureResultV1>;
     /// Moves completed asynchronous render plans into the host cache. Returns
     /// true only when GPUI needs another frame to consume a newly-ready plan.

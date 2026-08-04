@@ -30,8 +30,9 @@ use abi_stable::std_types::{ROption, RString};
 use explorer_model::{DirectoryState, TabId, TabSearchState};
 use gpui::{
     AccessibleAction, Anchor, AnchoredPositionMode, App, DispatchPhase, Focusable, IntoElement,
-    MouseButton, MouseMoveEvent, MouseUpEvent, ObjectFit, RenderImage, RenderOnce, Role, Window,
-    WindowControlArea, anchored, canvas, deferred, div, img, point, prelude::*, px,
+    MouseButton, MouseMoveEvent, MouseUpEvent, ObjectFit, RenderImage, RenderOnce, Role,
+    SharedString, Window, WindowControlArea, anchored, canvas, deferred, div, img, point,
+    prelude::*, px,
 };
 use gpui_elements::editable_text::{EditableTextState, text_input};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -409,6 +410,7 @@ impl RenderOnce for ExplorerWindow {
         let marquee = self.state.marquee_session().cloned();
         let marquee_active = marquee.is_some();
         let folder_options = self.state.folder_options();
+        let folder_option_extensions = self.state.extensions().to_vec();
         let about_dialog_info = self.state.about_dialog().cloned();
         let session_reset_confirmation = self.state.session_reset_confirmation();
         let permanent_delete_count = self.state.permanent_delete_confirmation_count();
@@ -613,6 +615,7 @@ impl RenderOnce for ExplorerWindow {
                 element.child(folder_options_dialog(
                     self.tokens,
                     draft,
+                    folder_option_extensions,
                     self.on_action.clone(),
                 ))
             })
@@ -1029,6 +1032,7 @@ fn lock_dialog_button(
 fn folder_options_dialog(
     tokens: UiTokens,
     draft: crate::state::FolderOptionsDraft,
+    extensions: Vec<crate::state::ExtensionOptionV1>,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     use crate::actions::FolderOptionsPage;
@@ -1129,6 +1133,7 @@ fn folder_options_dialog(
                         .when(page == FolderOptionsPage::Extensions, |body| {
                             body.child(folder_options_extensions_page(
                                 tokens,
+                                &extensions,
                                 &draft.extension_enabled,
                                 on_action.clone(),
                             ))
@@ -1234,62 +1239,68 @@ fn about_dialog(
 
 fn folder_options_extensions_page(
     tokens: UiTokens,
+    extensions: &[crate::state::ExtensionOptionV1],
     enabled: &[bool],
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
-    const EXTENSIONS: [(&str, &str); 8] = [
-        (
-            "folder-option-extension-rust-folder-size-visual-column",
-            "Folder size column",
-        ),
-        (
-            "folder-option-extension-rust-folder-size-map-view",
-            "Size Map",
-        ),
-        (
-            "folder-option-extension-rust-tokei-code-lines-column",
-            "Code lines (Rust)",
-        ),
-        (
-            "folder-option-extension-lua-tokei-code-lines-column",
-            "Code lines (Lua)",
-        ),
-        (
-            "folder-option-extension-rust-lock-owner-column",
-            "Lock owner",
-        ),
-        (
-            "folder-option-extension-rust-exif-rename-command",
-            "Rename from EXIF",
-        ),
-        (
-            "folder-option-extension-rust-7z-virtual-folder",
-            "7-Zip virtual folder",
-        ),
-        (
-            "folder-option-extension-lua-bulk-folder-generator",
-            "Bulk folder generator",
-        ),
-    ];
     div()
         .id("folder-options-extensions-page")
         .flex()
         .flex_col()
-        .children(
-            EXTENSIONS
-                .into_iter()
-                .enumerate()
-                .map(|(index, (id, label))| {
-                    folder_option_checkbox(
-                        id,
-                        label,
-                        enabled.get(index).copied().unwrap_or(false),
-                        ExplorerAction::ToggleFolderOptionExtension { index },
-                        tokens,
-                        on_action.clone(),
-                    )
-                }),
-        )
+        .overflow_y_scroll()
+        .gap(px(tokens.layout.maximum_visible_glyph.value()))
+        .children(extensions.iter().enumerate().map(|(index, extension)| {
+            let website_action = ExplorerAction::OpenExtensionAuthorWebsite { index };
+            div()
+                .id(SharedString::from(format!(
+                    "folder-option-extension-{}",
+                    extension.package_id
+                )))
+                .flex()
+                .flex_col()
+                .p(px(tokens.layout.control_padding_horizontal.value()))
+                .border(px(1.0))
+                .border_color(tokens.theme.colors.divider.to_gpui())
+                .rounded(px(tokens.layout.corner_radius.value()))
+                .child(folder_option_checkbox(
+                    SharedString::from(format!(
+                        "folder-option-extension-toggle-{}",
+                        extension.package_id
+                    )),
+                    extension.display_name,
+                    enabled.get(index).copied().unwrap_or(false),
+                    ExplorerAction::ToggleFolderOptionExtension { index },
+                    tokens,
+                    on_action.clone(),
+                ))
+                .child(
+                    div()
+                        .ml(px(tokens.layout.minimum_hit_target.value()))
+                        .text_size(px(tokens.typography.tooltip.size.value()))
+                        .text_color(tokens.theme.colors.text_secondary.to_gpui())
+                        .child(extension.author_bio),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "extension-author-{}",
+                            extension.package_id
+                        )))
+                        .ml(px(tokens.layout.minimum_hit_target.value()))
+                        .cursor_pointer()
+                        .text_size(px(tokens.typography.tooltip.size.value()))
+                        .text_color(tokens.theme.colors.accent.to_gpui())
+                        .child(format!(
+                            "作者：{} · {}",
+                            extension.author_name, extension.author_website
+                        ))
+                        .when_some(on_action.clone(), |author, callback| {
+                            author.on_click(move |_, window, cx| {
+                                callback(&website_action, window, cx)
+                            })
+                        }),
+                )
+        }))
 }
 
 fn folder_options_general_page(
@@ -1475,7 +1486,7 @@ fn folder_options_view_page(
 }
 
 fn folder_option_checkbox(
-    id: &'static str,
+    id: impl Into<gpui::ElementId>,
     label: &'static str,
     checked: bool,
     action: ExplorerAction,
@@ -6706,9 +6717,6 @@ impl RenderOnce for FileViewHost {
                                                     .flex()
                                                     .items_center()
                                                     .justify_end()
-                                                    .border_l(px(1.0))
-                                                    .border_r(px(1.0))
-                                                    .border_color(colors.divider.to_gpui())
                                                     .gap(px(layout.content_spacing.value() / 2.0))
                                                     .px(px(layout.content_spacing.value() / 2.0))
                                                     .when(
@@ -6726,8 +6734,10 @@ impl RenderOnce for FileViewHost {
                                                                         "folder-size-bar-track-{visible_index}"
                                                                     ))
                                                                     .w(px((width * 0.42).max(16.0)))
-                                                                    .h(px(4.0))
-                                                                    .rounded(px(2.0))
+                                                                    .h(px(6.0))
+                                                                    .rounded(px(3.0))
+                                                                    .border(px(1.0))
+                                                                    .border_color(colors.divider.to_gpui())
                                                                     .bg(colors.control_fill.to_gpui())
                                                                     .child(
                                                                         div()
@@ -6867,9 +6877,6 @@ impl RenderOnce for FileViewHost {
                                                         .flex()
                                                         .items_center()
                                                         .justify_end()
-                                                        .border_l(px(1.0))
-                                                        .border_r(px(1.0))
-                                                        .border_color(colors.divider.to_gpui())
                                                         .gap(px(layout.content_spacing.value() / 2.0))
                                                         .px(px(layout.content_spacing.value() / 2.0))
                                                         .when(
@@ -6883,9 +6890,12 @@ impl RenderOnce for FileViewHost {
                                                                 };
                                                                 cell.child(
                                                                     div()
+                                                                        .id(format!("code-lines-bar-track-{visible_index}"))
                                                                         .w(px((width * 0.30).max(12.0)))
-                                                                        .h(px(4.0))
-                                                                        .rounded(px(2.0))
+                                                                        .h(px(6.0))
+                                                                        .rounded(px(3.0))
+                                                                        .border(px(1.0))
+                                                                        .border_color(colors.divider.to_gpui())
                                                                         .bg(colors.control_fill.to_gpui())
                                                                         .child(
                                                                             div()
@@ -11097,13 +11107,14 @@ mod tests {
         let production = source.split("#[cfg(test)]").next().unwrap();
         assert!(production.contains("folder-options-extensions-tab"));
         assert!(production.contains("folder-options-extensions-page"));
-        assert_eq!(production.matches("folder-option-extension-").count(), 8);
+        assert!(production.contains("extension-author-"));
+        assert!(production.contains("OpenExtensionAuthorWebsite"));
         assert!(production.contains("extension-command-lua-bulk-folder-button"));
         assert!(production.contains("view-extension-size-map"));
     }
 
     #[test]
-    fn dynamic_numeric_columns_have_full_height_frames_and_aligned_values() {
+    fn dynamic_numeric_columns_have_framed_progress_bars_and_aligned_values() {
         let source = include_str!("chrome.rs");
         let production = source.split("#[cfg(test)]").next().unwrap();
         for selector in ["folder-size-column-", "code-lines-column-"] {
@@ -11111,18 +11122,28 @@ mod tests {
             let local = &production[start..production.len().min(start + 4_500)];
             assert!(local.contains(".h_full()"), "{selector} height");
             assert!(
-                local.contains(".border_l(px(1.0))"),
-                "{selector} left frame"
-            );
-            assert!(
-                local.contains(".border_r(px(1.0))"),
-                "{selector} right frame"
-            );
-            assert!(
                 local.contains(".text_right()"),
                 "{selector} numeric alignment"
             );
         }
+        for selector in ["folder-size-bar-track-", "code-lines-bar-track-"] {
+            let start = production.find(selector).expect("progress bar track");
+            let local = &production[start..production.len().min(start + 1_500)];
+            assert!(local.contains(".border(px(1.0))"), "{selector} frame");
+            assert!(
+                local.contains(".border_color(colors.divider.to_gpui())"),
+                "{selector} visible frame color"
+            );
+        }
+    }
+
+    #[test]
+    fn code_lines_column_applies_to_folders_and_files() {
+        let descriptor = crate::code_lines_column::code_lines_column_descriptor();
+        assert_eq!(
+            descriptor.applicability,
+            explorer_model::ColumnApplicability::AllEntries
+        );
     }
 
     #[test]

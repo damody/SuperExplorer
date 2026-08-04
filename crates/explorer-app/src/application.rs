@@ -590,7 +590,8 @@ struct ApplicationVisualColumnRuntimeV1 {
 #[derive(Default)]
 struct PendingFolderSizeWorkV1 {
     requests: Option<Vec<explorer_ui::folder_size_column::FolderSizeRequestV1>>,
-    in_flight: HashSet<FolderSizeWorkIdentityV1>,
+    in_flight: HashMap<FolderSizeWorkIdentityV1, explorer_model::RequestId>,
+    cancelled: HashSet<explorer_model::RequestId>,
     stopped: bool,
 }
 
@@ -620,7 +621,7 @@ fn enqueue_folder_size_requests(
     let pending = state.requests.get_or_insert_with(Vec::new);
     for request in requests {
         let identity = FolderSizeWorkIdentityV1::from(&request);
-        if !state.in_flight.contains(&identity)
+        if !state.in_flight.contains_key(&identity)
             && !pending
                 .iter()
                 .any(|queued| FolderSizeWorkIdentityV1::from(queued) == identity)
@@ -634,9 +635,12 @@ fn take_folder_size_requests(
     state: &mut PendingFolderSizeWorkV1,
 ) -> Vec<explorer_ui::folder_size_column::FolderSizeRequestV1> {
     let requests = state.requests.take().unwrap_or_default();
-    state
-        .in_flight
-        .extend(requests.iter().map(FolderSizeWorkIdentityV1::from));
+    state.in_flight.extend(requests.iter().map(|request| {
+        (
+            FolderSizeWorkIdentityV1::from(request),
+            request.context.request_id,
+        )
+    }));
     requests
 }
 
@@ -645,10 +649,41 @@ fn finish_folder_size_request(
     request: &explorer_ui::folder_size_column::FolderSizeRequestV1,
 ) {
     let (lock, _) = pending;
-    lock.lock()
+    let mut state = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let identity = FolderSizeWorkIdentityV1::from(request);
+    if state.in_flight.get(&identity) == Some(&request.context.request_id) {
+        state.in_flight.remove(&identity);
+    }
+}
+
+fn folder_size_request_cancelled(
+    pending: &(Mutex<PendingFolderSizeWorkV1>, Condvar),
+    request: &explorer_ui::folder_size_column::FolderSizeRequestV1,
+) -> bool {
+    pending
+        .0
+        .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .cancelled
+        .contains(&request.context.request_id)
+}
+
+fn cancel_folder_size_context(
+    state: &mut PendingFolderSizeWorkV1,
+    context: &explorer_model::RequestContext,
+) {
+    state.cancelled.insert(context.request_id);
+    if let Some(requests) = state.requests.as_mut() {
+        requests.retain(|request| request.context.request_id != context.request_id);
+        if requests.is_empty() {
+            state.requests = None;
+        }
+    }
+    state
         .in_flight
-        .remove(&FolderSizeWorkIdentityV1::from(request));
+        .retain(|_, request_id| *request_id != context.request_id);
 }
 
 impl ApplicationVisualColumnRuntimeV1 {
@@ -683,6 +718,10 @@ impl ApplicationVisualColumnRuntimeV1 {
                         take_folder_size_requests(&mut state)
                     };
                     for request in requests {
+                        if folder_size_request_cancelled(&worker_pending, &request) {
+                            finish_folder_size_request(&worker_pending, &request);
+                            continue;
+                        }
                         let measured = measure.measure_folder_size(
                             FOLDER_SIZE_CONTRIBUTION_ID_V1,
                             explorer_extension_ui_api::FolderSizeMeasureRequestV1 {
@@ -697,6 +736,9 @@ impl ApplicationVisualColumnRuntimeV1 {
                             },
                         );
                         finish_folder_size_request(&worker_pending, &request);
+                        if folder_size_request_cancelled(&worker_pending, &request) {
+                            continue;
+                        }
                         let (exact_bytes, partial, error) = match measured {
                             Ok(result) => (
                                 (!result.partial).then_some(result.exact_bytes),
@@ -748,6 +790,15 @@ impl explorer_ui::folder_size_column::VisualColumnRuntimePortV1
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         enqueue_folder_size_requests(&mut state, requests);
+        ready.notify_one();
+    }
+
+    fn cancel_folder_size_context(&self, context: &explorer_model::RequestContext) {
+        let (lock, ready) = &*self.pending;
+        let mut state = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cancel_folder_size_context(&mut state, context);
         ready.notify_one();
     }
 
@@ -1323,6 +1374,19 @@ impl explorer_ui::code_lines_column::CodeLinesRuntimePortV1 for ApplicationCodeL
         ready.notify_one();
     }
 
+    fn cancel_code_lines_context(&self, context: &explorer_model::RequestContext) {
+        let (lock, ready) = &*self.pending;
+        let mut state = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.active == Some((context.tab_id, context.generation)) {
+            self.request_epoch.fetch_add(1, Ordering::AcqRel);
+            state.active = None;
+            state.requests = None;
+            ready.notify_one();
+        }
+    }
+
     fn drain_code_lines_results(&self) -> Vec<explorer_ui::code_lines_column::CodeLinesResultV1> {
         self.results
             .lock()
@@ -1630,6 +1694,23 @@ impl explorer_ui::size_map_view::ExtensionSizeMapRuntimePortV1 for ApplicationSi
             }
         }
         if has_pending {
+            ready.notify_one();
+        }
+    }
+
+    fn cancel_measure_context(&self, context: &explorer_model::RequestContext) {
+        let (lock, ready) = &*self.pending;
+        let mut state = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.context.as_ref() == Some(context) {
+            let epoch = self
+                .request_epoch
+                .fetch_add(1, Ordering::AcqRel)
+                .saturating_add(1);
+            state.context = None;
+            state.epoch = epoch;
+            state.requests.clear();
             ready.notify_one();
         }
     }
@@ -3276,12 +3357,12 @@ mod tests {
     use super::{
         ApplicationExtensionReadyProjectorV1, ApplicationExtensionUiPumpV1,
         PendingFolderSizeWorkV1, PendingSizeMapWorkV1, SIZE_MAP_REQUEST_QUEUE_CAP_V1,
-        SafeModeIncidentOfferV1, SafeModeIncidentPortV1, cell_render_key,
-        confirm_offered_safe_mode_incident_v1, confirm_presented_safe_mode_incident_v1,
-        emit_post_commit_safe_mode_telemetry_v1, enqueue_folder_size_requests,
-        enqueue_size_map_requests, measure_size_map_path, read_code_lines_file_bounded,
-        read_code_lines_path_bounded, should_restore_saved_tabs, size_map_node_id,
-        size_map_render_key, take_folder_size_requests,
+        SafeModeIncidentOfferV1, SafeModeIncidentPortV1, cancel_folder_size_context,
+        cell_render_key, confirm_offered_safe_mode_incident_v1,
+        confirm_presented_safe_mode_incident_v1, emit_post_commit_safe_mode_telemetry_v1,
+        enqueue_folder_size_requests, enqueue_size_map_requests, measure_size_map_path,
+        read_code_lines_file_bounded, read_code_lines_path_bounded, should_restore_saved_tabs,
+        size_map_node_id, size_map_render_key, take_folder_size_requests,
     };
 
     struct FakeSafeModePortV1 {
@@ -3874,7 +3955,7 @@ mod tests {
     }
 
     #[test]
-    fn generation_change_keeps_active_scan_and_queues_new_generation_independently() {
+    fn cancelled_folder_size_context_releases_old_work_and_accepts_new_generation() {
         let tab = TabId::new();
         let old_request = explorer_ui::folder_size_column::FolderSizeRequestV1 {
             context: RequestContext::new(tab, Generation::new(1)),
@@ -3893,14 +3974,16 @@ mod tests {
             take_folder_size_requests(&mut pending),
             vec![old_request.clone()]
         );
+        cancel_folder_size_context(&mut pending, &old_request.context);
         enqueue_folder_size_requests(&mut pending, vec![new_request.clone()]);
 
         assert!(
-            pending
+            !pending
                 .in_flight
-                .contains(&super::FolderSizeWorkIdentityV1::from(&old_request)),
-            "navigation must not cancel the scan that is already populating the exact cache"
+                .contains_key(&super::FolderSizeWorkIdentityV1::from(&old_request)),
+            "the inactive context must release its logical in-flight identity"
         );
+        assert!(pending.cancelled.contains(&old_request.context.request_id));
         assert_eq!(pending.requests.as_deref(), Some([new_request].as_slice()));
     }
 

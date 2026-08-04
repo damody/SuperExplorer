@@ -722,6 +722,7 @@ pub struct ExplorerRoot {
         explorer_model::Generation,
         explorer_model::ShellItemId,
     )>,
+    folder_size_context: Option<explorer_model::RequestContext>,
     folder_size_display_override: Option<folder_size_column::FolderSizeDisplayMode>,
     code_lines_runtime: Option<code_lines_column::CodeLinesRuntimeHandleV1>,
     code_lines_visuals: Option<code_lines_column::CodeLinesColumnVisuals>,
@@ -1016,6 +1017,7 @@ impl ExplorerRoot {
             visual_column_runtime: None,
             folder_size_visuals: None,
             folder_size_requested: HashSet::new(),
+            folder_size_context: None,
             folder_size_display_override: None,
             code_lines_runtime: None,
             code_lines_visuals: None,
@@ -1058,6 +1060,7 @@ impl ExplorerRoot {
         }
         self.folder_size_visuals = Some(folder_size_column::FolderSizeColumnVisuals::new(config));
         self.folder_size_requested.clear();
+        self.folder_size_context = None;
     }
 
     /// Connects the one Rust tokei batch-column example to production Details.
@@ -1120,6 +1123,11 @@ impl ExplorerRoot {
     /// tab after another tab or built-in view must submit a fresh request ID so
     /// the app runtime cancels (and the UI rejects) the earlier work.
     fn invalidate_size_map_session(&mut self) {
+        if let Some(context) = self.size_map_visual_context.as_ref()
+            && let Some(runtime) = self.size_map_runtime.as_ref()
+        {
+            runtime.cancel_measure_context(context);
+        }
         self.size_map_visual_context = None;
         self.size_map_requested.clear();
         if let Some(visuals) = self.size_map_visuals.as_mut() {
@@ -1267,7 +1275,7 @@ impl ExplorerRoot {
     }
 
     fn submit_folder_size_requests(&mut self) {
-        let Some(runtime) = self.visual_column_runtime.as_mut() else {
+        let Some(runtime) = self.visual_column_runtime.clone() else {
             return;
         };
         let (tab_id, generation, entries) = {
@@ -1277,10 +1285,44 @@ impl ExplorerRoot {
             };
             (tab.id, tab.generation, snapshot.entries().to_vec())
         };
-        let request_context = explorer_model::RequestContext::new(tab_id, generation);
+        let context_is_current = self
+            .folder_size_context
+            .as_ref()
+            .is_some_and(|context| context.tab_id == tab_id && context.generation == generation);
+        if !context_is_current {
+            self.cancel_active_folder_size_context();
+            self.folder_size_context =
+                Some(explorer_model::RequestContext::new(tab_id, generation));
+        }
+        let request_context = self
+            .folder_size_context
+            .clone()
+            .expect("folder-size context initialized above");
+        if let Some(visuals) = self.folder_size_visuals.as_mut() {
+            visuals.begin_context(&request_context);
+            for entry in entries.iter().filter(|entry| !entry.is_container) {
+                let _ = visuals.insert_result(folder_size_column::FolderSizeResultV1 {
+                    context: request_context.clone(),
+                    item_id: entry.id.clone(),
+                    exact_bytes: entry.metadata.size_bytes,
+                    partial: false,
+                    error: entry
+                        .metadata
+                        .size_bytes
+                        .is_none()
+                        .then(|| "File size unavailable".to_owned()),
+                });
+            }
+        }
+        let visuals = self.folder_size_visuals.as_ref();
         let requests = entries
             .iter()
             .filter(|entry| entry.is_container)
+            .filter(|entry| {
+                visuals.is_none_or(|visuals| {
+                    !visuals.has_value_for_context(&request_context, &entry.id)
+                })
+            })
             .filter_map(|entry| match &entry.location {
                 explorer_model::LocationDescriptor::FileSystem(path)
                     if self.folder_size_requested.insert((
@@ -1302,6 +1344,35 @@ impl ExplorerRoot {
         if !requests.is_empty() {
             runtime.submit_folder_size_requests(requests);
         }
+    }
+
+    fn cancel_active_folder_size_context(&mut self) {
+        let Some(context) = self.folder_size_context.take() else {
+            return;
+        };
+        if let Some(runtime) = self.visual_column_runtime.as_ref() {
+            runtime.cancel_folder_size_context(&context);
+        }
+        self.folder_size_requested
+            .retain(|(tab_id, generation, _)| {
+                *tab_id != context.tab_id || *generation != context.generation
+            });
+    }
+
+    fn cancel_active_code_lines_context(&mut self) {
+        let context = self
+            .code_lines_visuals
+            .as_ref()
+            .and_then(|visuals| visuals.context.clone());
+        let Some(context) = context else {
+            return;
+        };
+        if let Some(runtime) = self.code_lines_runtime.as_ref() {
+            runtime.cancel_code_lines_context(&context);
+        }
+        self.code_lines_requested.retain(|(tab_id, generation, _)| {
+            *tab_id != context.tab_id || *generation != context.generation
+        });
     }
 
     fn pump_visual_column_runtime(&mut self) -> bool {
@@ -1972,6 +2043,7 @@ impl ExplorerRoot {
             visual_column_runtime: None,
             folder_size_visuals: None,
             folder_size_requested: HashSet::new(),
+            folder_size_context: None,
             folder_size_display_override: None,
             code_lines_runtime: None,
             code_lines_visuals: None,
@@ -2058,6 +2130,7 @@ impl ExplorerRoot {
             visual_column_runtime: None,
             folder_size_visuals: None,
             folder_size_requested: HashSet::new(),
+            folder_size_context: None,
             folder_size_display_override: None,
             code_lines_runtime: None,
             code_lines_visuals: None,
@@ -3976,6 +4049,14 @@ impl ExplorerRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let ExplorerAction::OpenExtensionAuthorWebsite { index } = action {
+            if let Some(extension) = self.state.extensions().get(index)
+                && extension.author_website.starts_with("https://")
+            {
+                cx.open_url(extension.author_website);
+            }
+            return;
+        }
         if action == ExplorerAction::ToggleFolderSizeProportionalBar {
             if self.code_lines_runtime.is_some() {
                 let current = self.code_lines_visuals.as_ref().map_or(
@@ -4015,6 +4096,18 @@ impl ExplorerRoot {
             }
             cx.notify();
             return;
+        }
+        if matches!(
+            action,
+            ExplorerAction::NewTab
+                | ExplorerAction::CloseActiveTab
+                | ExplorerAction::CloseTab { .. }
+                | ExplorerAction::ActivateTab { .. }
+                | ExplorerAction::NextTab
+                | ExplorerAction::PreviousTab
+        ) {
+            self.cancel_active_folder_size_context();
+            self.cancel_active_code_lines_context();
         }
         self.capture_durable_window_placement(window, cx);
         if matches!(
