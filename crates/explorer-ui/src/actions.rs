@@ -92,6 +92,7 @@ pub fn gpui_text_input_bindings() -> Vec<gpui::KeyBinding> {
 pub enum FolderOptionsPage {
     General,
     View,
+    Extensions,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -261,6 +262,8 @@ pub enum ExplorerAction {
     OpenFolderOptions,
     CloseFolderOptions,
     SetFolderOptionsPage(FolderOptionsPage),
+    ToggleFolderOptionExtension { index: usize },
+    InvokeExtensionCommand { contribution_id: String },
     ToggleFolderOptionItemCheckBoxes,
     ToggleFolderOptionFileNameExtensions,
     ToggleFolderOptionHiddenItems,
@@ -538,6 +541,8 @@ impl ExplorerAction {
             Self::OpenFolderOptions => "OpenFolderOptions",
             Self::CloseFolderOptions => "CloseFolderOptions",
             Self::SetFolderOptionsPage(_) => "SetFolderOptionsPage",
+            Self::ToggleFolderOptionExtension { .. } => "ToggleFolderOptionExtension",
+            Self::InvokeExtensionCommand { .. } => "InvokeExtensionCommand",
             Self::ToggleFolderOptionItemCheckBoxes => "ToggleFolderOptionItemCheckBoxes",
             Self::ToggleFolderOptionFileNameExtensions => "ToggleFolderOptionFileNameExtensions",
             Self::ToggleFolderOptionHiddenItems => "ToggleFolderOptionHiddenItems",
@@ -1218,6 +1223,8 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::OpenFolderOptions
         | ExplorerAction::CloseFolderOptions
         | ExplorerAction::SetFolderOptionsPage(_)
+        | ExplorerAction::ToggleFolderOptionExtension { .. }
+        | ExplorerAction::InvokeExtensionCommand { .. }
         | ExplorerAction::ToggleFolderOptionItemCheckBoxes
         | ExplorerAction::ToggleFolderOptionFileNameExtensions
         | ExplorerAction::ToggleFolderOptionHiddenItems
@@ -1695,6 +1702,14 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         }
         ExplorerAction::SetFolderOptionsPage(page) => {
             state.set_folder_options_page(page);
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::ToggleFolderOptionExtension { index } => {
+            state.toggle_folder_option_extension(index);
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::InvokeExtensionCommand { .. } => {
+            state.close_extensions_menu();
             FocusSurface::CommandBar
         }
         ExplorerAction::ToggleFolderOptionItemCheckBoxes => {

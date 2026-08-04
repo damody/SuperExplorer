@@ -347,11 +347,11 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 - [x] 3.5.5 驗證 callback drain timeout/fault 轉 pending-restart 且不強制中止或 unload。
 - [x] 3.5.6 驗證安裝、替換、移除與啟用本次 startup 未載入 DLL 均只設定 restart semantics。
 - [x] 3.5.7 將package/hash/signature/target/PE-policy pre-load validation獨立成gate，失敗時不得呼叫`LoadLibrary`。
-- [deferred] 3.5.8 在`LoadLibrary`前durably寫入package/incarnation-scoped load-attempt marker，寫入失敗時拒絕load。
-- [deferred] 3.5.9 以child-process DLLMain/TLS abort fixture證明next-start Safe Mode抑制嫌疑package。
-- [deferred] 3.5.10 驗證成功registration後matching load-attempt原子clear/registered且不與callback records混用。
-- [deferred] 3.5.11 驗證typed post-load rejection後marker=`rejected-resident`、DLL resident且non-dispatchable。
-- [deferred] 3.5.12 驗證abnormal load termination留下incomplete attempt供next-start Safe Mode。
+- [x] 3.5.8 在`LoadLibrary`前durably寫入package/incarnation-scoped load-attempt marker，寫入失敗時拒絕load。
+- [x] 3.5.9 以child-process DLLMain/TLS abort fixture證明next-start Safe Mode抑制嫌疑package。
+- [x] 3.5.10 驗證成功registration後matching load-attempt原子clear/registered且不與callback records混用。
+- [x] 3.5.11 驗證typed post-load rejection後marker=`rejected-resident`、DLL resident且non-dispatchable。
+- [x] 3.5.12 驗證abnormal load termination留下incomplete attempt供next-start Safe Mode。
 
 ### 3.6 Call guard、panic translation 與 Safe Mode
 
@@ -363,15 +363,15 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** panic/uncleared-marker/slow/drain integration fixtures；records `3.6.*`。
 **完成門檻：** marker 在 callback 前 durable、正常 return 後 clear；recoverable panic typed；uncleared marker 只禁用嫌疑 contribution；重新啟用需 explicit confirmation；文件清楚無 sandbox/熱卸載。
 
-- [deferred] 3.6.1 驗證 marker 寫入包含 package/interface/operation/generation，且在 callback 前可觀察。
-- [deferred] 3.6.2 驗證正常 return、typed error 與 recoverable panic 的 marker 清理/translation。
-- [deferred] 3.6.3 模擬 abnormal termination，驗證 next-start Safe Mode 識別並預先禁用嫌疑 contribution。
-- [deferred] 3.6.4 驗證 Safe Mode confirm failure 不會清除 offer 或重新 dispatch callback。
-- [deferred] 3.6.5 驗證 timing/slow callback diagnostics bounded、privacy-safe 且不 unsafe-interrupt native code。
-- [deferred] 3.6.6 更新無 sandbox、無 hot unload、restart、diagnostic recovery 文件並由 security reviewer 簽核。
-- [deferred] 3.6.7 驗證explicit package/interface-scoped confirmation成功後只重新啟用matching contribution。
-- [deferred] 3.6.8 驗證successful confirmation清除matching Safe Mode offer/marker且不啟用unrelated faulted contributions。
-- [deferred] 3.6.9 驗證re-enabled contribution再次crash會重新留下marker並在next-start re-suppress。
+- [x] 3.6.1 驗證 marker 寫入包含 package/interface/operation/generation，且在 callback 前可觀察。
+- [x] 3.6.2 驗證正常 return、typed error 與 recoverable panic 的 marker 清理/translation。
+- [x] 3.6.3 模擬 abnormal termination，驗證 next-start Safe Mode 識別並預先禁用嫌疑 contribution。
+- [x] 3.6.4 驗證 Safe Mode confirm failure 不會清除 offer 或重新 dispatch callback。
+- [x] 3.6.5 驗證 timing/slow callback diagnostics bounded、privacy-safe 且不 unsafe-interrupt native code。
+- [x] 3.6.6 更新無 sandbox、無 hot unload、restart、diagnostic recovery 文件並由 security reviewer 簽核。
+- [x] 3.6.7 驗證explicit package/interface-scoped confirmation成功後只重新啟用matching contribution。
+- [x] 3.6.8 驗證successful confirmation清除matching Safe Mode offer/marker且不啟用unrelated faulted contributions。
+- [x] 3.6.9 驗證re-enabled contribution再次crash會重新留下marker並在next-start re-suppress。
 
 ### 3.7 Unified runtime authority envelope
 

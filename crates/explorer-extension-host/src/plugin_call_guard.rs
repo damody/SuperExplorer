@@ -4,7 +4,7 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     fs::{self, File, OpenOptions},
-    io::{self, Read, Write},
+    io::{self, Read, Seek, Write},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -35,6 +35,10 @@ static REOPEN_DEAD_NAMESPACE_HOOK: Mutex<Option<ReopenDeadNamespaceHookV1>> = Mu
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NativeCallOperationV1 {
+    /// A package/incarnation-scoped attempt written before `LoadLibrary`.
+    LoadLibrary,
+    /// `LoadLibrary` completed, but a typed post-map validation/admission gate rejected it.
+    LoadRejectedResident,
     Registrar,
     JobProvider,
     BatchColumnProvider,
@@ -304,6 +308,7 @@ impl PluginCallGuardStoreV1 {
         Ok(PluginCallGuardV1 {
             store: Arc::clone(self),
             marker_file,
+            marker: marker.clone(),
         })
     }
 
@@ -677,8 +682,32 @@ impl Drop for PluginCallGuardStoreV1 {
 pub(crate) struct PluginCallGuardV1 {
     store: Arc<PluginCallGuardStoreV1>,
     marker_file: MarkerFileV1,
+    marker: MarkerV1,
 }
 impl PluginCallGuardV1 {
+    pub(crate) fn transition_operation(
+        &mut self,
+        operation: NativeCallOperationV1,
+    ) -> Result<(), GuardErrorV1> {
+        let _io = self.store.io.lock().map_err(|_| GuardErrorV1::Fault)?;
+        self.marker.operation = operation;
+        let bytes = serde_json::to_vec(&self.marker).map_err(|_| GuardErrorV1::Fault)?;
+        let file = self
+            .marker_file
+            .file
+            .as_mut()
+            .ok_or(GuardErrorV1::Fault)?;
+        file.seek(io::SeekFrom::Start(0))
+            .and_then(|_| file.set_len(0))
+            .and_then(|_| file.write_all(&bytes))
+            .and_then(|_| file.sync_all())
+            .and_then(|_| self.store.launch_directory_lease.sync())
+            .map_err(|_| {
+                self.store.set_global();
+                GuardErrorV1::Fault
+            })
+    }
+
     pub(crate) fn clear(mut self) -> Result<(), GuardErrorV1> {
         let _io = self.store.io.lock().map_err(|_| GuardErrorV1::Fault)?;
         if delete_marker_file(&self.marker_file).is_err() {
@@ -1565,6 +1594,100 @@ mod tests {
         assert_eq!(fs::read_dir(&store.launch).expect("entries").count(), 2);
         permit.clear().expect("clear");
         assert_eq!(fs::read_dir(&store.launch).expect("entries").count(), 1);
+    }
+
+    #[test]
+    fn load_attempt_is_durable_before_mapping_and_registered_clear_is_atomic() {
+        let temporary = tempfile::tempdir().expect("temporary state");
+        let root = temporary.path().join("markers");
+        fs::create_dir(&root).expect("marker root");
+        let store = store(&root);
+        let marker = marker_with_operation(
+            "example.package",
+            &"a".repeat(64),
+            "native",
+            "root-contract-v1",
+            0x5345_0001,
+            1,
+            NativeCallOperationV1::LoadLibrary,
+        );
+        let mut guard = store.begin(&marker).expect("durable load attempt");
+        let marker_files = fs::read_dir(&store.launch)
+            .expect("launch directory")
+            .filter_map(Result::ok)
+            .filter(|entry| parse_marker_name(&entry.file_name().to_string_lossy()).is_some())
+            .count();
+        assert_eq!(marker_files, 1, "attempt must exist before mapping");
+        guard
+            .transition_operation(NativeCallOperationV1::LoadRejectedResident)
+            .expect("typed rejection transition");
+        let terminal = fs::read_dir(&store.launch)
+            .expect("launch directory")
+            .filter_map(Result::ok)
+            .find(|entry| parse_marker_name(&entry.file_name().to_string_lossy()).is_some())
+            .map(|entry| fs::read_to_string(entry.path()).expect("marker bytes"))
+            .expect("terminal marker");
+        assert!(terminal.contains("load_rejected_resident"));
+        guard.clear().expect("registered clear");
+        assert!(store.incidents().is_empty());
+        assert_eq!(
+            fs::read_dir(&store.launch)
+                .expect("launch directory")
+                .filter_map(Result::ok)
+                .filter(|entry| parse_marker_name(&entry.file_name().to_string_lossy()).is_some())
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn abnormal_load_attempt_is_resuppressed_on_the_next_start() {
+        const CHILD: &str = "SUPEREXPLORER_ABORT_DURING_LOAD_ATTEMPT";
+        const ROOT: &str = "SUPEREXPLORER_LOAD_ATTEMPT_ROOT";
+        if std::env::var_os(CHILD).is_some() {
+            let root = PathBuf::from(std::env::var_os(ROOT).expect("child root"));
+            let store = store(&root);
+            let marker = marker_with_operation(
+                "example.package",
+                &"b".repeat(64),
+                "native",
+                "root-contract-v1",
+                0x5345_0001,
+                1,
+                NativeCallOperationV1::LoadLibrary,
+            );
+            let _attempt = store.begin(&marker).expect("durable child attempt");
+            std::process::abort();
+        }
+        let temporary = tempfile::tempdir().expect("temporary state");
+        let root = temporary.path().join("markers");
+        fs::create_dir(&root).expect("marker root");
+        let status = std::process::Command::new(std::env::current_exe().expect("test exe"))
+            .arg("plugin_call_guard::tests::abnormal_load_attempt_is_resuppressed_on_the_next_start")
+            .arg("--exact")
+            .env(CHILD, "1")
+            .env(ROOT, &root)
+            .status()
+            .expect("child process");
+        assert!(!status.success(), "child must terminate abnormally");
+        let restarted = store(&root);
+        let marker = marker_with_operation(
+            "example.package",
+            &"b".repeat(64),
+            "native",
+            "root-contract-v1",
+            0x5345_0001,
+            1,
+            NativeCallOperationV1::LoadLibrary,
+        );
+        assert!(restarted.denies(&marker));
+        assert!(restarted.incidents().iter().any(|incident| matches!(
+            incident,
+            NativeSafeModeIncidentV1::RegistrarInProgress {
+                operation: NativeCallOperationV1::LoadLibrary,
+                ..
+            }
+        )));
     }
 
     #[test]

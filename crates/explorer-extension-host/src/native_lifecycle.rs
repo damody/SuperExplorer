@@ -30,7 +30,8 @@ use crate::{
     },
 };
 use explorer_extension_api::{
-    JobHandleV1, JobProviderObjectV1, JobTerminalV1, RegisteredContributionV1,
+    JobHandleV1, JobProviderObjectV1, JobTerminalV1, ROOT_MODULE_CONTRACT_ID_V1,
+    RegisteredContributionV1,
 };
 
 /// Resolver candidates (128) times Rust entrypoints per manifest (128).
@@ -2077,12 +2078,59 @@ impl StartupSession<'_> {
     ) -> Result<NativeStartupAdmissionV1, NativeLifecycleErrorV1> {
         // Reserve while still in admission before any private loader side effect.
         let permit = self.lifecycle.reserve_admission()?;
-        let loaded = ExtensionDllLoaderV1
-            .load_package(resolved)
-            .map_err(|error| NativeLifecycleErrorV1::LoaderRejected {
-                diagnostic: NativeLoaderDiagnosticCodeV1::from_loader(&error),
-            })?;
-        self.lifecycle.admit_loaded(permit, resolved, &loaded)
+        let mut load_marker = if resolved.manifest().rust.is_empty() {
+            None
+        } else if let Some(markers) = self.lifecycle.markers.as_ref() {
+            let digest = crate::package_validation::sealed_manifest_canonical_digest(
+                resolved.manifest(),
+            )
+            .map_err(|_| NativeLifecycleErrorV1::MarkerStateUnavailable)?;
+            let entrypoint = resolved
+                .manifest()
+                .rust
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .min()
+                .ok_or(NativeLifecycleErrorV1::MarkerStateUnavailable)?;
+            let marker = plugin_call_guard::marker_with_operation(
+                &resolved.manifest().package.id,
+                &digest,
+                entrypoint,
+                "root-contract-v1",
+                ROOT_MODULE_CONTRACT_ID_V1.namespace.into_raw(),
+                ROOT_MODULE_CONTRACT_ID_V1.value,
+                NativeCallOperationV1::LoadLibrary,
+            );
+            Some(match markers.begin(&marker) {
+                Ok(guard) => guard,
+                Err(GuardErrorV1::Denied) => return Err(NativeLifecycleErrorV1::SafeModeDenied),
+                Err(GuardErrorV1::Fault) => {
+                    return Err(NativeLifecycleErrorV1::MarkerStateUnavailable);
+                }
+            })
+        } else {
+            None
+        };
+        let loaded = match ExtensionDllLoaderV1.load_package(resolved) {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                if let Some(marker) = load_marker.as_mut() {
+                    marker
+                        .transition_operation(NativeCallOperationV1::LoadRejectedResident)
+                        .map_err(|_| NativeLifecycleErrorV1::MarkerStateUnavailable)?;
+                }
+                return Err(NativeLifecycleErrorV1::LoaderRejected {
+                    diagnostic: NativeLoaderDiagnosticCodeV1::from_loader(&error),
+                });
+            }
+        };
+        let admission = self.lifecycle.admit_loaded(permit, resolved, &loaded)?;
+        if let Some(marker) = load_marker {
+            marker
+                .clear()
+                .map_err(|_| NativeLifecycleErrorV1::MarkerStateUnavailable)?;
+        }
+        Ok(admission)
     }
 
     /// Permanently closes startup admission and enables successfully prepared gates.
