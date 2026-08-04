@@ -41,7 +41,7 @@ use crate::{
     plugin_call_guard::{self, NativeCallOperationV1, PluginCallGuardStoreV1, PluginCallGuardV1},
 };
 
-const MANIFEST_ABI_SCHEMA_V1: u32 = 1;
+const MANIFEST_ABI_SCHEMA_V1: u32 = 2;
 const ROOT_MODULE_CONTRACT_LABEL_V1: &str = "root-contract-v1";
 const HOST_UI_ABI_FINGERPRINT_ARTIFACT: &str = include_str!("../../../sdk/ui-abi-fingerprint.json");
 static HOST_UI_ABI_FINGERPRINT: OnceLock<Result<HostUiAbiFingerprintV1, ()>> = OnceLock::new();
@@ -641,6 +641,32 @@ impl SinglePluginBatchColumnRuntimeV1 {
         source_generation: u64,
         items: Vec<HostBatchColumnItemV1>,
     ) -> Result<PreparedBatchColumnDispatchTicketV1, SinglePluginBatchColumnCallErrorV1> {
+        self.prepare_dispatch_with_lock_owner_query(
+            runtime,
+            contribution_id,
+            job_generation,
+            item_generation,
+            location_generation,
+            source_generation,
+            items,
+            None,
+        )
+    }
+
+    /// Prepares a batch with the discover-only lock-owner capability granted by
+    /// the sealed host composition root.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_dispatch_with_lock_owner_query(
+        &self,
+        runtime: &ExtensionJobRuntimeV1,
+        contribution_id: &str,
+        job_generation: u64,
+        item_generation: u64,
+        location_generation: u64,
+        source_generation: u64,
+        items: Vec<HostBatchColumnItemV1>,
+        lock_owner_query: Option<crate::HostLockOwnerQueryServiceV1>,
+    ) -> Result<PreparedBatchColumnDispatchTicketV1, SinglePluginBatchColumnCallErrorV1> {
         if !self.providers.contains_key(contribution_id) {
             return Err(SinglePluginBatchColumnCallErrorV1::MissingContribution {
                 contribution_id: contribution_id.to_owned(),
@@ -659,6 +685,7 @@ impl SinglePluginBatchColumnRuntimeV1 {
                 location_generation,
                 source_generation,
                 items,
+                lock_owner_query,
             })
             .map_err(SinglePluginBatchColumnCallErrorV1::Runtime)
     }
@@ -1520,7 +1547,7 @@ mod tests {
                 "manifest_version": 1,
                 "package": { "id": "example.loader", "version": "1.0.0" },
                 "publisher": { "id": "example.publisher", "display_name": "Example Publisher", "contacts": [{ "kind": "email", "value": "support@example.invalid", "purposes": ["support"] }] },
-                "sdk": { "bundle_id": "dev.20260802", "target": "x86_64-pc-windows-msvc", "abi_schema": 1, "gpui": gpui, "ui_abi_fingerprint": fingerprint },
+                "sdk": { "bundle_id": "dev.20260802", "target": "x86_64-pc-windows-msvc", "abi_schema": explorer_extension_api::ABI_SCHEMA_V1.revision(), "gpui": gpui, "ui_abi_fingerprint": fingerprint },
                 "rust": [{ "id": "native", "entrypoint": "native/plugin.dll", "root_contract_id": { "namespace": 1_397_030_913, "value": 1 }, "sdk_major": entry_sdk_major }],
                 "lua": [], "skins": [], "locales": [], "tools": [], "features": [], "dependencies": [],
                 "payloads": [{ "path": "native/plugin.dll", "size": 1, "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "kind": "rust_dll" }],
@@ -1605,7 +1632,7 @@ mod tests {
     fn root_schema_failure_never_invokes_the_registrar() {
         CALLBACK_CALLED.store(false, Ordering::SeqCst);
         let result = ExtensionHost::new().validate_root(root(
-            explorer_extension_api::AbiSchemaIdV1::new(0x5345, 2),
+            explorer_extension_api::AbiSchemaIdV1::new(0x5345, 3),
             ROption::RNone,
         ));
         assert!(matches!(

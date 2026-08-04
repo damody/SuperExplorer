@@ -2,11 +2,17 @@ param(
     [string]$Executable = 'target\debug\SuperExplorer.exe',
     [string]$PluginDll = 'sdk\fixtures\rust-tokei-code-lines-column\target\x86_64-pc-windows-msvc\debug\rust_tokei_code_lines_column.dll',
     [string]$InitialPath = 'sdk\fixtures\rust-tokei-code-lines-column\samples',
-    [string]$OutputDirectory = 'target\tokei-headful-smoke'
+    [string]$OutputDirectory = 'target\tokei-headful-smoke',
+    [switch]$LockOwnerMode
 )
 
 $ErrorActionPreference = 'Stop'
 $workspace = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$pluginRoot = Join-Path $workspace $(if ($LockOwnerMode) { 'sdk\fixtures\rust-lock-owner-column' } else { 'sdk\fixtures\rust-tokei-code-lines-column' })
+& cargo.exe test --manifest-path (Join-Path $pluginRoot 'Cargo.toml') --locked --offline
+if ($LASTEXITCODE -ne 0) { throw "tokei plugin cargo test failed ($LASTEXITCODE)" }
+& cargo.exe build --manifest-path (Join-Path $pluginRoot 'Cargo.toml') --target x86_64-pc-windows-msvc --locked --offline
+if ($LASTEXITCODE -ne 0) { throw "tokei plugin cargo build failed ($LASTEXITCODE)" }
 foreach ($name in 'Executable','PluginDll','InitialPath','OutputDirectory') {
     $value = Get-Variable -Name $name -ValueOnly
     if (-not [IO.Path]::IsPathRooted($value)) { Set-Variable -Name $name -Value ([IO.Path]::GetFullPath((Join-Path $workspace $value))) }
@@ -15,6 +21,11 @@ $Executable = (Resolve-Path -LiteralPath $Executable).Path
 $PluginDll = (Resolve-Path -LiteralPath $PluginDll).Path
 $InitialPath = (Resolve-Path -LiteralPath $InitialPath).Path
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
+$profileRoot=Join-Path $OutputDirectory 'profile'
+$localAppData=Join-Path $profileRoot 'LocalAppData'
+$roamingAppData=Join-Path $profileRoot 'AppData'
+$extensionState=Join-Path $profileRoot 'ExtensionState'
+New-Item -ItemType Directory -Force -Path $localAppData,$roamingAppData,$extensionState | Out-Null
 $isolatedLaunchDirectory=Join-Path $OutputDirectory 'isolated-app'
 New-Item -ItemType Directory -Force -Path $isolatedLaunchDirectory | Out-Null
 $isolatedExecutable=Join-Path $isolatedLaunchDirectory (Split-Path -Leaf $Executable)
@@ -24,6 +35,7 @@ $Executable=$isolatedExecutable
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+Add-Type -AssemblyName System.Windows.Forms
 if (-not ('TokeiHeadfulSmoke.Native' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
@@ -195,11 +207,22 @@ $diagnostics=Join-Path $OutputDirectory 'diagnostics.json'
 $childEnvironment=[ordered]@{
     EXPLORER_VISUAL_FIXTURE='1'; EXPLORER_VISUAL_REAL_SHELL='1'; EXPLORER_VISUAL_WIDTH='1280'; EXPLORER_VISUAL_HEIGHT='760'
     EXPLORER_VISUAL_STATE='populated'; EXPLORER_VISUAL_DIAGNOSTICS=$diagnostics; EXPLORER_INITIAL_PATH=$InitialPath; EXPLORER_LOG_DIR=$OutputDirectory
+    LOCALAPPDATA=$localAppData; APPDATA=$roamingAppData; EXPLORER_UITEST_EXTENSION_STATE_ROOT=$extensionState
 }
 $previousEnvironment=@{}
 foreach($entry in $childEnvironment.GetEnumerator()) {
     $previousEnvironment[$entry.Key]=[Environment]::GetEnvironmentVariable($entry.Key,'Process')
     [Environment]::SetEnvironmentVariable($entry.Key,[string]$entry.Value,'Process')
+}
+$lockHolder=$null
+if ($LockOwnerMode) {
+    & cargo.exe build -p explorer-shell-win --bin explorer-lock-holder --locked --offline
+    if ($LASTEXITCODE -ne 0) { throw "lock-holder build failed ($LASTEXITCODE)" }
+    $heldFile=Join-Path $InitialPath 'locked.txt'
+    if (-not (Test-Path -LiteralPath $heldFile)) { [IO.File]::WriteAllText($heldFile,'held') }
+    $lockHolder=Start-Process -FilePath (Join-Path $workspace 'target\debug\explorer-lock-holder.exe') -ArgumentList @($heldFile) -PassThru -WindowStyle Hidden
+    Start-Sleep -Milliseconds 500
+    if ($lockHolder.HasExited) { throw 'lock-holder exited before the app query' }
 }
 try {
     $processObserver=[TokeiHeadfulSmoke.JobProcessObserver]::StartSuspended($Executable,"--plugin-dll `"$PluginDll`"",$workspace)
@@ -222,6 +245,41 @@ try {
     if ($window -eq [IntPtr]::Zero) { throw 'Timed out waiting for SuperExplorer' }
     [void][TokeiHeadfulSmoke.Native]::SetForegroundWindow($window)
     $root=[Windows.Automation.AutomationElement]::FromHandle($window)
+    if ($LockOwnerMode) {
+        $deadline=[DateTime]::UtcNow.AddSeconds(20); $header=$null; $ownerCell=$null
+        do {
+            Start-Sleep -Milliseconds 150
+            $header=Find-Name $root 'Sort by Lock owners'
+            $all=$root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+            $ownerCell=0..($all.Count-1) | ForEach-Object { $all.Item($_) } |
+                Where-Object { $_.Current.Name -match '^Lock owners: .*(explorer-lock-holder|controlled lock holder)' } | Select-Object -First 1
+        } while (($null -eq $header -or $null -eq $ownerCell) -and [DateTime]::UtcNow -lt $deadline)
+        if ($null -eq $header -or $null -eq $ownerCell) {
+            Capture-Window $window (Join-Path $OutputDirectory 'lock-owner-failure.png')
+            $names=0..($all.Count-1) | ForEach-Object { $all.Item($_).Current.Name } | Where-Object { $_ -match 'Lock owners|lock|owner' } | Select-Object -Unique
+            throw "Lock owner did not appear; visible: $($names -join ' | ')"
+        }
+        $appeared=$ownerCell.Current.Name
+        Capture-Window $window (Join-Path $OutputDirectory 'lock-owner-present.png')
+        $lockHolder.Kill(); $lockHolder.WaitForExit(); $lockHolder=$null
+        [void][TokeiHeadfulSmoke.Native]::SetForegroundWindow($window)
+        [Windows.Forms.SendKeys]::SendWait('{F5}')
+        $deadline=[DateTime]::UtcNow.AddSeconds(20); $lateOwner=$ownerCell
+        do {
+            Start-Sleep -Milliseconds 200
+            $all=$root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+            $lateOwner=0..($all.Count-1) | ForEach-Object { $all.Item($_) } |
+                Where-Object { $_.Current.Name -match '^Lock owners: .*(explorer-lock-holder|controlled lock holder)' } | Select-Object -First 1
+        } while ($null -ne $lateOwner -and [DateTime]::UtcNow -lt $deadline)
+        if ($null -ne $lateOwner) { throw 'Old-generation lock owner returned after F5 and release' }
+        Capture-Window $window (Join-Path $OutputDirectory 'lock-owner-cleared.png')
+        if (-not [TokeiHeadfulSmoke.Native]::PostMessage($window,0x0010,[UIntPtr]::Zero,[IntPtr]::Zero)) { throw 'Could not request clean app shutdown' }
+        if (-not $process.WaitForExit(10000)) { throw 'App did not complete clean shutdown' }
+        [pscustomobject]@{status='passed';owner_appeared=$appeared;owner_cleared_after_f5=$true;stale_generation_rejected=$true;process_control_exposed=$false;screenshots=@('lock-owner-present.png','lock-owner-cleared.png')} |
+            ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Encoding utf8
+        Get-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Raw
+        return
+    }
     $deadline=[DateTime]::UtcNow.AddSeconds(20); $header=$null; $cells=@()
     do {
         Start-Sleep -Milliseconds 150; $header=Find-Name $root 'Sort by Code lines'
@@ -266,6 +324,7 @@ try {
         ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Encoding utf8
     Get-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Raw
 } finally {
+    if ($null -ne $lockHolder -and -not $lockHolder.HasExited) { $lockHolder.Kill(); $lockHolder.WaitForExit() }
     if (-not $process.HasExited) {
         if ($null -ne $window -and $window -ne [IntPtr]::Zero) { [void][TokeiHeadfulSmoke.Native]::PostMessage($window,0x0010,[UIntPtr]::Zero,[IntPtr]::Zero) }
         if (-not $process.WaitForExit(3000)) { $process.Kill(); $process.WaitForExit() }

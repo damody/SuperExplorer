@@ -552,12 +552,12 @@ impl AppViewState {
         if !crate::code_lines_column::is_supported_code_lines_descriptor(&descriptor) {
             return false;
         }
+        let explorer_model::ColumnId::Extension { package_id, .. } = &descriptor.id else {
+            return false;
+        };
         if self
             .column_registry
-            .replace_package(
-                crate::code_lines_column::CODE_LINES_COLUMN_PACKAGE_ID,
-                [descriptor.clone()],
-            )
+            .replace_package(package_id, [descriptor.clone()])
             .is_err()
         {
             return false;

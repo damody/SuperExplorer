@@ -73,30 +73,44 @@ use abi_stable::{
 };
 
 mod jobs;
+mod operation_plan;
 mod size_map_view;
+mod tools;
 mod visual_column;
 
 pub use jobs::{
-    AbiInputStreamServicesV1, AbiJobHostServicesV1, BatchColumnContextV1, BatchColumnItemV1,
-    BatchColumnProviderImplementationV1, BatchColumnProviderObjectV1, IncrementalResultBatchV1,
-    IncrementalResultEntryV1, IncrementalResultSinkV1, InputStreamCapabilityV1,
-    InputStreamLengthOutcomeV1, InputStreamReadOutcomeV1, InputStreamReadRequestV1,
-    InputStreamSeekOriginV1, InputStreamSeekOutcomeV1, InputStreamSeekRequestV1,
-    InputStreamStatusV1, InputStreamV1, ItemHandleV1, JobContextV1, JobControlStateV1, JobHandleV1,
-    JobHostServicesV1, JobProgressSinkV1, JobProgressStatusV1, JobProgressUpdateV1,
-    JobProviderImplementationV1, JobProviderObjectV1, JobTerminalV1, LocationHandleV1,
-    MAX_BATCH_COLUMN_FILE_NAME_BYTES_V1, MAX_BATCH_COLUMN_ITEMS_V1,
-    MAX_INCREMENTAL_RESULT_BYTES_V1, MAX_INCREMENTAL_RESULT_ITEMS_V1,
-    MAX_INPUT_STREAM_READ_BYTES_V1, MAX_PLUGIN_VALUE_BYTES_V1, PluginItemOutcomeV1,
-    PluginItemResultTransportErrorV1, PluginItemResultV1, PluginValueKindV1,
+    AbiInputStreamServicesV1, AbiJobHostServicesV1, AbiLockOwnerQueryServiceV1,
+    BatchColumnContextV1, BatchColumnItemV1, BatchColumnProviderImplementationV1,
+    BatchColumnProviderObjectV1, IncrementalResultBatchV1, IncrementalResultEntryV1,
+    IncrementalResultSinkV1, InputStreamCapabilityV1, InputStreamLengthOutcomeV1,
+    InputStreamReadOutcomeV1, InputStreamReadRequestV1, InputStreamSeekOriginV1,
+    InputStreamSeekOutcomeV1, InputStreamSeekRequestV1, InputStreamStatusV1, InputStreamV1,
+    ItemHandleV1, JobContextV1, JobControlStateV1, JobHandleV1, JobHostServicesV1,
+    JobProgressSinkV1, JobProgressStatusV1, JobProgressUpdateV1, JobProviderImplementationV1,
+    JobProviderObjectV1, JobTerminalV1, LocationHandleV1, LockOwnerApplicationTypeV1,
+    LockOwnerQueryOutcomeV1, LockOwnerQueryRequestV1, LockOwnerQueryServiceV1,
+    LockOwnerQueryStatusV1, LockOwnerRecordV1, MAX_BATCH_COLUMN_FILE_NAME_BYTES_V1,
+    MAX_BATCH_COLUMN_ITEMS_V1, MAX_INCREMENTAL_RESULT_BYTES_V1, MAX_INCREMENTAL_RESULT_ITEMS_V1,
+    MAX_INPUT_STREAM_READ_BYTES_V1, MAX_LOCK_OWNER_DISPLAY_NAME_BYTES_V1,
+    MAX_LOCK_OWNER_QUERY_ITEMS_V1, MAX_LOCK_OWNER_QUERY_RESULTS_V1, MAX_PLUGIN_VALUE_BYTES_V1,
+    PluginItemOutcomeV1, PluginItemResultTransportErrorV1, PluginItemResultV1, PluginValueKindV1,
     PluginValueTransportErrorV1, PluginValueV1, SinkCapabilityV1, SinkSubmitOutcomeV1,
     SinkSubmitStatusV1, StableSortValueKindV1, StableSortValueTransportErrorV1, StableSortValueV1,
+};
+pub use operation_plan::{
+    CommandFormV1, FileIdentityV1, FormFieldV1, MAX_FORM_FIELDS_V1, MAX_OPERATION_STEPS_V1,
+    OperationKindV1, OperationOutcomeV1, OperationPlanV1, OperationPreviewV1, OperationStepV1,
+    OperationTerminalV1,
 };
 pub use size_map_view::{
     MAX_SIZE_MAP_DETAIL_BYTES_V1, MAX_SIZE_MAP_LABEL_BYTES_V1, MAX_SIZE_MAP_PLAN_TEXT_BYTES_V1,
     MAX_SIZE_MAP_RECTANGLES_V1, MAX_SIZE_MAP_STATUS_BYTES_V1, SizeMapNodeKindV1,
     SizeMapNodeStatusV1, SizeMapNodeV1, SizeMapRectangleV1, SizeMapRenderContextV1,
     SizeMapRenderPlanV1, SizeMapViewImplementationV1, SizeMapViewObjectV1, SizeMapViewportV1,
+};
+pub use tools::{
+    AbiToolExecutorV1, MAX_TOOL_ARGUMENT_BYTES_V1, MAX_TOOL_ARGUMENTS_V1, MAX_TOOL_OUTPUT_BYTES_V1,
+    ToolExecuteOutcomeV1, ToolExecuteRequestV1, ToolExecuteStatusV1, ToolHandleV1,
 };
 pub use visual_column::{
     CellAggregateV1, CellColorV1, CellRenderContextV1, CellRenderPlanV1, CellThemeV1,
@@ -112,7 +126,7 @@ pub use visual_column::{
 pub const EXTENSION_ID_NAMESPACE_V1: IdNamespaceV1 = IdNamespaceV1(0x5345_0001);
 
 /// The ABI layout and semantic-contract schema used by this root module.
-pub const ABI_SCHEMA_V1: AbiSchemaIdV1 = AbiSchemaIdV1(0x5345_0001);
+pub const ABI_SCHEMA_V1: AbiSchemaIdV1 = AbiSchemaIdV1(0x5345_0002);
 
 /// The required semantic identifier for the single v1 root module.
 pub const ROOT_MODULE_CONTRACT_ID_V1: StableIdV1 = StableIdV1 {

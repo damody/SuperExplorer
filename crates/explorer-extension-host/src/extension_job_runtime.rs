@@ -6,6 +6,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fmt,
+    path::PathBuf,
     sync::{
         Arc, Mutex, Weak,
         atomic::{AtomicBool, Ordering},
@@ -15,12 +16,14 @@ use std::{
 
 use abi_stable::std_types::{ROption, RString, RVec};
 use explorer_extension_api::{
-    AbiInputStreamServicesV1, AbiJobHostServicesV1, BatchColumnContextV1, BatchColumnItemV1,
-    BatchColumnProviderObjectV1, IncrementalResultBatchV1, InputStreamCapabilityV1,
-    InputStreamLengthOutcomeV1, InputStreamReadOutcomeV1, InputStreamReadRequestV1,
-    InputStreamSeekOriginV1, InputStreamSeekOutcomeV1, InputStreamSeekRequestV1,
-    InputStreamStatusV1, InputStreamV1, ItemHandleV1, JobContextV1, JobControlStateV1, JobHandleV1,
-    JobHostServicesV1, JobProgressStatusV1, JobProgressUpdateV1, JobTerminalV1, LocationHandleV1,
+    AbiInputStreamServicesV1, AbiJobHostServicesV1, AbiLockOwnerQueryServiceV1,
+    BatchColumnContextV1, BatchColumnItemV1, BatchColumnProviderObjectV1, IncrementalResultBatchV1,
+    InputStreamCapabilityV1, InputStreamLengthOutcomeV1, InputStreamReadOutcomeV1,
+    InputStreamReadRequestV1, InputStreamSeekOriginV1, InputStreamSeekOutcomeV1,
+    InputStreamSeekRequestV1, InputStreamStatusV1, InputStreamV1, ItemHandleV1, JobContextV1,
+    JobControlStateV1, JobHandleV1, JobHostServicesV1, JobProgressStatusV1, JobProgressUpdateV1,
+    JobTerminalV1, LocationHandleV1, LockOwnerQueryOutcomeV1, LockOwnerQueryRequestV1,
+    LockOwnerQueryServiceV1, LockOwnerQueryStatusV1, LockOwnerRecordV1,
     MAX_BATCH_COLUMN_FILE_NAME_BYTES_V1, MAX_BATCH_COLUMN_ITEMS_V1,
     MAX_INCREMENTAL_RESULT_BYTES_V1, MAX_INCREMENTAL_RESULT_ITEMS_V1,
     MAX_INPUT_STREAM_READ_BYTES_V1, SinkCapabilityV1, SinkSubmitOutcomeV1, SinkSubmitStatusV1,
@@ -471,6 +474,40 @@ pub struct HostBatchColumnItemV1 {
     /// Host-attested basename only; never a path.
     pub file_name: RString,
     pub source: HostInputStreamSourceV1,
+    /// Optional host-only filesystem identity for discover-only lock queries.
+    /// It is mapped to the opaque item handle and never copied across the ABI.
+    pub lock_owner_resource: Option<PathBuf>,
+}
+
+/// Host composition seam for discover-only lock-owner queries.
+#[derive(Clone)]
+pub struct HostLockOwnerQueryServiceV1 {
+    query: Arc<HostLockOwnerQueryFnV1>,
+}
+
+type HostLockOwnerQueryFnV1 =
+    dyn Fn(&PathBuf, u32) -> (LockOwnerQueryStatusV1, Vec<LockOwnerRecordV1>) + Send + Sync;
+
+impl fmt::Debug for HostLockOwnerQueryServiceV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HostLockOwnerQueryServiceV1")
+            .finish_non_exhaustive()
+    }
+}
+
+impl HostLockOwnerQueryServiceV1 {
+    #[must_use]
+    pub fn new(
+        query: impl Fn(&PathBuf, u32) -> (LockOwnerQueryStatusV1, Vec<LockOwnerRecordV1>)
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        Self {
+            query: Arc::new(query),
+        }
+    }
 }
 
 /// Host-owned request for one Rust batch-column provider invocation.
@@ -482,6 +519,7 @@ pub struct BatchColumnRuntimeRequestV1 {
     pub location_generation: u64,
     pub source_generation: u64,
     pub items: Vec<HostBatchColumnItemV1>,
+    pub lock_owner_query: Option<HostLockOwnerQueryServiceV1>,
 }
 
 /// Deep-copied host result. Producer identity never originates from plugin bytes.
@@ -744,6 +782,88 @@ struct RuntimeBatchInputV1 {
     item: ItemHandleV1,
     file_name: RString,
     source: HostInputStreamSourceV1,
+    lock_owner_resource: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug)]
+struct HostLockOwnerQueryAdapterV1 {
+    state: Weak<Mutex<RuntimeStateV1>>,
+    job: JobHandleV1,
+    item_generation: u64,
+    location_generation: u64,
+    resources: Arc<Vec<(ItemHandleV1, PathBuf)>>,
+    service: HostLockOwnerQueryServiceV1,
+}
+
+impl AbiLockOwnerQueryServiceV1 for HostLockOwnerQueryAdapterV1 {
+    fn query(&self, request: LockOwnerQueryRequestV1) -> LockOwnerQueryOutcomeV1 {
+        let empty = |status| LockOwnerQueryOutcomeV1 {
+            status,
+            reserved: 0,
+            item_generation: request.item_generation,
+            location_generation: request.location_generation,
+            owners: RVec::new(),
+        };
+        if request.items.is_empty()
+            || request.items.len() > explorer_extension_api::MAX_LOCK_OWNER_QUERY_ITEMS_V1
+            || request.item_generation != self.item_generation
+            || request.location_generation != self.location_generation
+        {
+            return empty(LockOwnerQueryStatusV1::UNAVAILABLE);
+        }
+        let Some(state) = self.state.upgrade() else {
+            return empty(LockOwnerQueryStatusV1::CANCELLED);
+        };
+        let Ok(state) = state.lock() else {
+            return empty(LockOwnerQueryStatusV1::HOST_ERROR);
+        };
+        let Some(job) = state.jobs.get(&self.job) else {
+            return empty(LockOwnerQueryStatusV1::CANCELLED);
+        };
+        if job.terminal.is_some() || job.control != JobControlStateV1::ACTIVE {
+            return empty(LockOwnerQueryStatusV1::CANCELLED);
+        }
+        drop(state);
+        let mut resolved = Vec::with_capacity(request.items.len());
+        for handle in &request.items {
+            let Some((_, path)) = self.resources.iter().find(|(item, _)| item == handle) else {
+                return empty(LockOwnerQueryStatusV1::UNAVAILABLE);
+            };
+            resolved.push((*handle, path.clone()));
+        }
+        let started = std::time::Instant::now();
+        let mut status = LockOwnerQueryStatusV1::EMPTY;
+        let mut owners = Vec::new();
+        for (item, path) in resolved {
+            let (item_status, mut item_owners) =
+                (self.service.query)(&path, request.deadline_millis);
+            if item_status == LockOwnerQueryStatusV1::READY {
+                status = LockOwnerQueryStatusV1::READY;
+            } else if item_status != LockOwnerQueryStatusV1::EMPTY
+                && status != LockOwnerQueryStatusV1::READY
+            {
+                status = item_status;
+            }
+            for owner in &mut item_owners {
+                owner.item = item;
+            }
+            owners.extend(item_owners);
+        }
+        if request.deadline_millis != 0
+            && started.elapsed()
+                > std::time::Duration::from_millis(u64::from(request.deadline_millis))
+        {
+            return empty(LockOwnerQueryStatusV1::DEADLINE_ELAPSED);
+        }
+        owners.truncate(explorer_extension_api::MAX_LOCK_OWNER_QUERY_RESULTS_V1);
+        LockOwnerQueryOutcomeV1 {
+            status,
+            reserved: 0,
+            item_generation: request.item_generation,
+            location_generation: request.location_generation,
+            owners: owners.into(),
+        }
+    }
 }
 
 /// Per-invocation gate retained by the Rust-ABI host-services object. Clones
@@ -1651,6 +1771,7 @@ impl ExtensionJobRuntimeV1 {
         if total_bytes.is_none_or(|bytes| bytes > MAX_BATCH_COLUMN_INPUT_BYTES_V1) {
             return Err(ExtensionJobRuntimeErrorV1::InputStreamCapacityExceeded);
         }
+        let lock_owner_query = request.lock_owner_query.clone();
         let sources = request
             .items
             .into_iter()
@@ -1659,6 +1780,7 @@ impl ExtensionJobRuntimeV1 {
                     item: handle,
                     file_name: item.file_name,
                     source: item.source,
+                    lock_owner_resource: item.lock_owner_resource,
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -1671,7 +1793,7 @@ impl ExtensionJobRuntimeV1 {
             has_item: false,
             input_stream: None,
         })?;
-        let batch_items = (|| -> Result<RVec<BatchColumnItemV1>, ExtensionJobRuntimeErrorV1> {
+        let batch_items = (|| -> Result<_, ExtensionJobRuntimeErrorV1> {
             let mut state = self
                 .state
                 .lock()
@@ -1711,7 +1833,15 @@ impl ExtensionJobRuntimeV1 {
             state
                 .input_stream_bytes_per_package
                 .insert(package_id, next_package);
-            batch_sources
+            let resources = batch_sources
+                .iter()
+                .filter_map(|item| {
+                    item.lock_owner_resource
+                        .as_ref()
+                        .map(|path| (item.item, path.clone()))
+                })
+                .collect::<Vec<_>>();
+            let items = batch_sources
                 .iter()
                 .map(|item| {
                     Ok(BatchColumnItemV1 {
@@ -1731,9 +1861,10 @@ impl ExtensionJobRuntimeV1 {
                         ),
                     })
                 })
-                .collect::<Result<RVec<_>, ExtensionJobRuntimeErrorV1>>()
+                .collect::<Result<RVec<_>, ExtensionJobRuntimeErrorV1>>()?;
+            Ok((items, resources))
         })();
-        let batch_items = match batch_items {
+        let (batch_items, lock_owner_resources) = match batch_items {
             Ok(items) => items,
             Err(error) => {
                 fail_close_ticket(
@@ -1744,6 +1875,16 @@ impl ExtensionJobRuntimeV1 {
                 return Err(error);
             }
         };
+        let lock_owner_query = lock_owner_query.map(|service| {
+            LockOwnerQueryServiceV1::from_host(HostLockOwnerQueryAdapterV1 {
+                state: Arc::downgrade(&self.state),
+                job: context.job,
+                item_generation: context.item_generation,
+                location_generation: context.location_generation,
+                resources: Arc::new(lock_owner_resources),
+                service,
+            })
+        });
         Ok(PreparedBatchColumnDispatchTicketV1 {
             state: Arc::clone(&self.state),
             context: BatchColumnContextV1 {
@@ -1755,6 +1896,7 @@ impl ExtensionJobRuntimeV1 {
                 location_generation: context.location_generation,
                 source_generation: context.source_generation,
                 items: batch_items,
+                lock_owner_query: lock_owner_query.into(),
                 sink: context.sink,
                 progress: context.progress,
             },
@@ -4694,12 +4836,15 @@ mod tests {
                     HostBatchColumnItemV1 {
                         file_name: RString::from("one.rs"),
                         source: source_one,
+                        lock_owner_resource: None,
                     },
                     HostBatchColumnItemV1 {
                         file_name: RString::from("two.py"),
                         source: source_two,
+                        lock_owner_resource: None,
                     },
                 ],
+                lock_owner_query: None,
             })
             .unwrap();
         assert_eq!(
@@ -4718,6 +4863,7 @@ mod tests {
             .map(|_| HostBatchColumnItemV1 {
                 file_name: RString::from("limit.rs"),
                 source: HostInputStreamSourceV1::from_host_snapshot(vec![], 1, true).unwrap(),
+                lock_owner_resource: None,
             })
             .collect();
         assert!(matches!(
@@ -4729,6 +4875,7 @@ mod tests {
                 location_generation: 1,
                 source_generation: 1,
                 items: over_limit,
+                lock_owner_query: None,
             }),
             Err(ExtensionJobRuntimeErrorV1::InvalidRequest)
         ));
@@ -4753,12 +4900,15 @@ mod tests {
                     HostBatchColumnItemV1 {
                         file_name: RString::from("one.rs"),
                         source: source(),
+                        lock_owner_resource: None,
                     },
                     HostBatchColumnItemV1 {
                         file_name: RString::from("two.rs"),
                         source: source(),
+                        lock_owner_resource: None,
                     },
                 ],
+                lock_owner_query: None,
             })
             .unwrap();
         assert_eq!(ticket.invoke_once(&provider), Ok(JobTerminalV1::COMPLETED));

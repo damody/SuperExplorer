@@ -1083,6 +1083,7 @@ impl ExplorerRoot {
         self.code_lines_runtime = Some(runtime);
         self.code_lines_visuals = Some(code_lines_column::CodeLinesColumnVisuals {
             config,
+            context: None,
             values: HashMap::new(),
             errors: HashMap::new(),
         });
@@ -1391,9 +1392,9 @@ impl ExplorerRoot {
     }
 
     fn submit_code_lines_requests(&mut self) {
-        let Some(runtime) = self.code_lines_runtime.as_mut() else {
+        if self.code_lines_runtime.is_none() {
             return;
-        };
+        }
         let (tab_id, generation, entries) = {
             let tab = self.state.tabs().active_tab();
             let Some(snapshot) = tab.visible_snapshot() else {
@@ -1402,6 +1403,10 @@ impl ExplorerRoot {
             (tab.id, tab.generation, snapshot.entries().to_vec())
         };
         let request_context = explorer_model::RequestContext::new(tab_id, generation);
+        // This runs in the render path before we clone visuals into the GPUI
+        // tree, so a Shell item ID reused by F5/navigation cannot leak an old
+        // value for even one frame while the 16 ms pump is idle.
+        self.begin_code_lines_context(request_context.clone());
         let requests = entries
             .iter()
             .filter(|entry| !entry.is_container)
@@ -1421,12 +1426,31 @@ impl ExplorerRoot {
             })
             .collect::<Vec<_>>();
         if !requests.is_empty() {
-            runtime.submit_code_lines_requests(requests);
+            if let Some(runtime) = self.code_lines_runtime.as_ref() {
+                runtime.submit_code_lines_requests(requests);
+            }
         }
     }
 
+    /// Starts the current Code lines presentation synchronously. The worker
+    /// still enforces the same context on accepted results; this only removes
+    /// already-painted values before the next render snapshot is built.
+    fn begin_code_lines_context(&mut self, context: explorer_model::RequestContext) -> bool {
+        let Some(visuals) = self.code_lines_visuals.as_mut() else {
+            return false;
+        };
+        if !visuals.begin_context(context.clone()) {
+            return false;
+        }
+        self.code_lines_requested.retain(|(tab, generation, _)| {
+            *tab == context.tab_id && *generation == context.generation
+        });
+        self.state.set_code_lines_sort_values(HashMap::new());
+        true
+    }
+
     fn pump_code_lines_runtime(&mut self) -> bool {
-        let Some(runtime) = self.code_lines_runtime.as_mut() else {
+        let Some(runtime) = self.code_lines_runtime.as_ref() else {
             return false;
         };
         let render_ready = runtime.drain_render_results();
@@ -1447,9 +1471,14 @@ impl ExplorerRoot {
                 && self
                     .state
                     .install_code_lines_column_descriptor(config.descriptor.clone()));
+        let active_tab = self.state.tabs().active_tab();
+        let current_context =
+            explorer_model::RequestContext::new(active_tab.id, active_tab.generation);
+        let context_changed = self.begin_code_lines_context(current_context.clone());
         let visuals = self.code_lines_visuals.get_or_insert_with(|| {
             code_lines_column::CodeLinesColumnVisuals {
                 config: config.clone(),
+                context: Some(current_context.clone()),
                 values: HashMap::new(),
                 errors: HashMap::new(),
             }
@@ -1476,9 +1505,7 @@ impl ExplorerRoot {
             visuals.config = config;
             changed = true;
         }
-        let active_tab = self.state.tabs().active_tab();
-        let current_context =
-            explorer_model::RequestContext::new(active_tab.id, active_tab.generation);
+        changed |= context_changed;
         for result in results.into_iter().filter(|result| {
             result.context.tab_id == current_context.tab_id
                 && result.context.generation == current_context.generation
@@ -6151,6 +6178,46 @@ mod tests {
         };
         assert_ne!(result.context, resumed);
         assert!(!ExplorerRoot::size_map_result_is_current(&result, &resumed));
+    }
+
+    #[test]
+    fn code_lines_context_is_cleared_before_the_next_render_snapshot() {
+        let mut root = ExplorerRoot::new(UiTokens::default());
+        let tab = root.state.tabs().active_tab();
+        let previous = explorer_model::RequestContext::new(tab.id, tab.generation);
+        let current = explorer_model::RequestContext::new(
+            tab.id,
+            explorer_model::Generation::new(tab.generation.value().saturating_add(1)),
+        );
+        let item =
+            explorer_model::ShellItemId::from_provider_bytes([0x63]).expect("fixture identity");
+        root.code_lines_visuals = Some(super::code_lines_column::CodeLinesColumnVisuals {
+            config: super::code_lines_column::CodeLinesColumnConfigV1::default(),
+            context: Some(previous.clone()),
+            values: std::collections::HashMap::from([(
+                item.clone(),
+                super::code_lines_column::CodeLinesValueV1 {
+                    language: "Rust".to_owned(),
+                    code: 12,
+                    comments: 1,
+                    blanks: 1,
+                    total: 14,
+                },
+            )]),
+            errors: std::collections::HashMap::from([(item.clone(), "old error".to_owned())]),
+        });
+        root.code_lines_requested
+            .insert((previous.tab_id, previous.generation, item));
+
+        assert!(root.begin_code_lines_context(current.clone()));
+        let visuals = root
+            .code_lines_visuals
+            .as_ref()
+            .expect("Code lines visuals");
+        assert_eq!(visuals.context.as_ref(), Some(&current));
+        assert!(visuals.values.is_empty());
+        assert!(visuals.errors.is_empty());
+        assert!(root.code_lines_requested.is_empty());
     }
 
     #[test]

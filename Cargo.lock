@@ -1392,6 +1392,7 @@ dependencies = [
  "explorer-jobs",
  "explorer-model",
  "libloading 0.7.4",
+ "mlua",
  "ring",
  "semver",
  "serde",
