@@ -1296,6 +1296,125 @@ pub struct BatchColumnItemV1 {
     pub input: InputStreamV1,
 }
 
+/// Maximum item capabilities accepted by one discover-only lock-owner query.
+pub const MAX_LOCK_OWNER_QUERY_ITEMS_V1: usize = 128;
+/// Maximum owned process records returned by one query.
+pub const MAX_LOCK_OWNER_QUERY_RESULTS_V1: usize = 256;
+/// Maximum UTF-8 bytes retained for a safe process or service display name.
+pub const MAX_LOCK_OWNER_DISPLAY_NAME_BYTES_V1: usize = 512;
+
+/// Non-exhaustive Restart Manager application classification.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, StableAbi)]
+pub struct LockOwnerApplicationTypeV1(u32);
+
+impl LockOwnerApplicationTypeV1 {
+    pub const UNKNOWN: Self = Self(0);
+    pub const MAIN_WINDOW: Self = Self(1);
+    pub const OTHER_WINDOW: Self = Self(2);
+    pub const SERVICE: Self = Self(3);
+    pub const EXPLORER: Self = Self(4);
+    pub const CONSOLE: Self = Self(5);
+    pub const CRITICAL: Self = Self(6);
+
+    #[must_use]
+    pub const fn from_raw(value: u32) -> Self {
+        Self(value)
+    }
+    #[must_use]
+    pub const fn into_raw(self) -> u32 {
+        self.0
+    }
+}
+
+/// Safe, owned discovery record. It deliberately carries no process handle or
+/// process-control operation.
+#[repr(C)]
+#[derive(Clone, Debug, StableAbi)]
+pub struct LockOwnerRecordV1 {
+    pub item: ItemHandleV1,
+    pub process_id: u32,
+    pub application_type: LockOwnerApplicationTypeV1,
+    pub display_name: RString,
+    pub service_name: RString,
+}
+
+/// Non-exhaustive terminal for a bounded read-only query.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, StableAbi)]
+pub struct LockOwnerQueryStatusV1(u32);
+
+impl LockOwnerQueryStatusV1 {
+    pub const READY: Self = Self(1);
+    pub const EMPTY: Self = Self(2);
+    pub const UNAVAILABLE: Self = Self(3);
+    pub const CANCELLED: Self = Self(4);
+    pub const DEADLINE_ELAPSED: Self = Self(5);
+    pub const HOST_ERROR: Self = Self(6);
+
+    #[must_use]
+    pub const fn from_raw(value: u32) -> Self {
+        Self(value)
+    }
+    #[must_use]
+    pub const fn into_raw(self) -> u32 {
+        self.0
+    }
+}
+
+/// Generation-bound request containing only opaque item capabilities.
+#[repr(C)]
+#[derive(Clone, Debug, StableAbi)]
+pub struct LockOwnerQueryRequestV1 {
+    pub items: RVec<ItemHandleV1>,
+    pub item_generation: u64,
+    pub location_generation: u64,
+    pub deadline_millis: u32,
+    pub reserved: u32,
+}
+
+/// Owned bounded result returned to a plugin callback.
+#[repr(C)]
+#[derive(Clone, Debug, StableAbi)]
+pub struct LockOwnerQueryOutcomeV1 {
+    pub status: LockOwnerQueryStatusV1,
+    pub reserved: u32,
+    pub item_generation: u64,
+    pub location_generation: u64,
+    pub owners: RVec<LockOwnerRecordV1>,
+}
+
+#[sabi_trait]
+#[doc(hidden)]
+pub trait AbiLockOwnerQueryServiceV1: Send + Sync + Clone {
+    #[sabi(last_prefix_field)]
+    fn query(&self, request: LockOwnerQueryRequestV1) -> LockOwnerQueryOutcomeV1;
+}
+
+/// Discover-only host service. Its public surface intentionally has no
+/// shutdown, terminate, close-handle, or native Restart Manager operation.
+#[repr(transparent)]
+#[derive(Clone, StableAbi)]
+pub struct LockOwnerQueryServiceV1(AbiLockOwnerQueryServiceV1_TO<'static, RArc<()>>);
+
+impl LockOwnerQueryServiceV1 {
+    #[doc(hidden)]
+    pub fn from_host<T>(service: T) -> Self
+    where
+        T: AbiLockOwnerQueryServiceV1 + 'static,
+    {
+        Self(AbiLockOwnerQueryServiceV1_TO::from_ptr(
+            RArc::new(service),
+            sabi_trait::TD_Opaque,
+        ))
+    }
+
+    #[must_use]
+    pub fn query(&self, request: LockOwnerQueryRequestV1) -> LockOwnerQueryOutcomeV1 {
+        self.0.query(request)
+    }
+}
+
 /// Immutable context for one bounded batch-column callback.
 ///
 /// Results are submitted through the existing [`IncrementalResultSinkV1`], so
@@ -1312,6 +1431,8 @@ pub struct BatchColumnContextV1 {
     pub location_generation: u64,
     pub source_generation: u64,
     pub items: RVec<BatchColumnItemV1>,
+    /// Present only for a sealed contribution granted `lock-owner.query`.
+    pub lock_owner_query: ROption<LockOwnerQueryServiceV1>,
     pub sink: IncrementalResultSinkV1,
     pub progress: JobProgressSinkV1,
 }

@@ -81,11 +81,29 @@ pub trait CodeLinesRuntimePortV1: Send + Sync {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CodeLinesColumnVisuals {
     pub config: CodeLinesColumnConfigV1,
+    /// Values are valid only for this host request context. Shell item IDs can
+    /// be reused after refresh/navigation, so they cannot be the cache key by
+    /// themselves.
+    pub context: Option<RequestContext>,
     pub values: HashMap<ShellItemId, CodeLinesValueV1>,
     pub errors: HashMap<ShellItemId, String>,
 }
 
 impl CodeLinesColumnVisuals {
+    /// Starts a new host-owned request context. A Shell item identity alone is
+    /// not sufficient because it can recur after F5 or navigation.
+    pub fn begin_context(&mut self, context: RequestContext) -> bool {
+        if self.context.as_ref().is_some_and(|current| {
+            current.tab_id == context.tab_id && current.generation == context.generation
+        }) {
+            return false;
+        }
+        self.context = Some(context);
+        self.values.clear();
+        self.errors.clear();
+        true
+    }
+
     pub fn exact_sort_values(&self) -> HashMap<ShellItemId, Option<u64>> {
         self.values
             .iter()
@@ -122,8 +140,27 @@ pub fn code_lines_column_descriptor() -> ColumnDescriptor {
     }
 }
 
+pub fn lock_owner_column_descriptor() -> ColumnDescriptor {
+    ColumnDescriptor {
+        id: ColumnId::Extension {
+            package_id: "rust-lock-owner".to_owned(),
+            column_id: "owners".to_owned(),
+        },
+        display_name: "Lock owners".to_owned(),
+        value_type: ColumnValueType::Integer,
+        default_width: 220,
+        minimum_width: 120,
+        maximum_width: 480,
+        alignment: ColumnAlignment::Start,
+        applicability: ColumnApplicability::Files,
+        sort_semantics: ColumnSortSemantics::Integer,
+        cost: ColumnCost::BackgroundBatch,
+    }
+}
+
 pub fn is_supported_code_lines_descriptor(descriptor: &ColumnDescriptor) -> bool {
-    descriptor.id == code_lines_column_descriptor().id
+    (descriptor.id == code_lines_column_descriptor().id
+        || descriptor.id == lock_owner_column_descriptor().id)
         && descriptor.value_type == ColumnValueType::Integer
         && descriptor.sort_semantics == ColumnSortSemantics::Integer
         && descriptor.validate().is_ok()
@@ -132,11 +169,62 @@ pub fn is_supported_code_lines_descriptor(descriptor: &ColumnDescriptor) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
+    use explorer_model::{Generation, TabId};
 
     #[test]
     fn descriptor_uses_exact_integer_background_batch_semantics() {
         let descriptor = code_lines_column_descriptor();
         assert!(is_supported_code_lines_descriptor(&descriptor));
         assert_eq!(descriptor.cost, ColumnCost::BackgroundBatch);
+    }
+
+    #[test]
+    fn same_shell_item_is_not_reused_after_a_new_generation() {
+        let item = ShellItemId::from_provider_bytes([7]).unwrap();
+        let first = RequestContext::new(TabId::new(), Generation::new(1));
+        let mut visuals = CodeLinesColumnVisuals {
+            config: CodeLinesColumnConfigV1::default(),
+            context: Some(first.clone()),
+            values: HashMap::from([(
+                item.clone(),
+                CodeLinesValueV1 {
+                    language: "Rust".to_owned(),
+                    code: 12,
+                    comments: 1,
+                    blanks: 1,
+                    total: 14,
+                },
+            )]),
+            errors: HashMap::new(),
+        };
+
+        assert!(visuals.begin_context(RequestContext::new(first.tab_id, Generation::new(2))));
+        assert!(visuals.values.is_empty());
+        assert!(visuals.errors.is_empty());
+        assert_eq!(visuals.exact_sort_values().get(&item), None);
+    }
+
+    #[test]
+    fn a_new_request_id_in_the_same_generation_preserves_values() {
+        let item = ShellItemId::from_provider_bytes([8]).unwrap();
+        let first = RequestContext::new(TabId::new(), Generation::new(3));
+        let mut visuals = CodeLinesColumnVisuals {
+            config: CodeLinesColumnConfigV1::default(),
+            context: Some(first.clone()),
+            values: HashMap::from([(
+                item.clone(),
+                CodeLinesValueV1 {
+                    language: "Rust".to_owned(),
+                    code: 4,
+                    comments: 0,
+                    blanks: 0,
+                    total: 4,
+                },
+            )]),
+            errors: HashMap::new(),
+        };
+
+        assert!(!visuals.begin_context(RequestContext::new(first.tab_id, first.generation)));
+        assert_eq!(visuals.values.get(&item).map(|value| value.code), Some(4));
     }
 }

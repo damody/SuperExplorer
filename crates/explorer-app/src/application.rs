@@ -39,6 +39,8 @@ const SIZE_MAP_VIEW_CONTRIBUTION_ID_V1: &str = "size-map";
 const SIZE_MAP_REQUEST_QUEUE_CAP_V1: usize = 1_024;
 const CODE_LINES_CONTRIBUTION_ID_V1: &str = "rust-tokei:code-lines";
 const CODE_LINES_RENDERER_CONTRIBUTION_ID_V1: &str = "rust-tokei:code-lines-renderer";
+const LOCK_OWNER_CONTRIBUTION_ID_V1: &str = "rust-lock-owner:owners";
+const LOCK_OWNER_RENDERER_CONTRIBUTION_ID_V1: &str = "rust-lock-owner:owners-renderer";
 const CODE_LINES_BATCH_ITEMS_V1: usize = 128;
 const DIRECT_RENDER_QUEUE_CAP_V1: usize = 256;
 const DIRECT_RENDER_CACHE_CAP_V1: usize = 512;
@@ -774,6 +776,13 @@ struct ApplicationCodeLinesRuntimeV1 {
     request_epoch: Arc<AtomicU64>,
     results: Mutex<mpsc::Receiver<explorer_ui::code_lines_column::CodeLinesResultV1>>,
     renderer: AsyncCellRendererV1,
+    mode: BatchDetailsColumnModeV1,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BatchDetailsColumnModeV1 {
+    CodeLines,
+    LockOwner,
 }
 
 #[derive(Default)]
@@ -790,6 +799,7 @@ impl ApplicationCodeLinesRuntimeV1 {
     fn start(
         provider: explorer_extension_host::SinglePluginBatchColumnRuntimeV1,
         renderer: explorer_extension_host::SinglePluginVisualRenderRuntimeV1,
+        mode: BatchDetailsColumnModeV1,
     ) -> Result<explorer_ui::code_lines_column::CodeLinesRuntimeHandleV1, Error> {
         let pending = Arc::new((
             Mutex::new(PendingCodeLinesWorkV1::default()),
@@ -842,8 +852,30 @@ impl ApplicationCodeLinesRuntimeV1 {
                         if worker_epoch.load(Ordering::Acquire) != epoch {
                             break;
                         }
-                        let bytes = match read_code_lines_file_bounded(&request.path) {
-                            Ok(bytes) => bytes,
+                        let bytes = match mode {
+                            BatchDetailsColumnModeV1::CodeLines => {
+                                read_code_lines_file_bounded(&request.path)
+                            }
+                            BatchDetailsColumnModeV1::LockOwner => Ok(Some(Vec::new())),
+                        };
+                        let bytes = match bytes {
+                            Ok(Some(bytes)) => bytes,
+                            Ok(None) => {
+                                if current_code_lines_epoch(&worker_epoch, epoch)
+                                    && !publish_code_lines_result(
+                                        &result_tx,
+                                        explorer_ui::code_lines_column::CodeLinesResultV1 {
+                                            context: request.context,
+                                            item_id: request.item_id,
+                                            value: None,
+                                            error: Some("Unsupported source".to_owned()),
+                                        },
+                                    )
+                                {
+                                    return;
+                                }
+                                continue;
+                            }
                             Err(error) => {
                                 if current_code_lines_epoch(&worker_epoch, epoch)
                                     && !publish_code_lines_result(
@@ -876,6 +908,7 @@ impl ApplicationCodeLinesRuntimeV1 {
                                 epoch,
                                 &worker_epoch,
                                 &result_tx,
+                                mode,
                             );
                             prepared_bytes = 0;
                         }
@@ -890,6 +923,7 @@ impl ApplicationCodeLinesRuntimeV1 {
                             epoch,
                             &worker_epoch,
                             &result_tx,
+                            mode,
                         );
                     }
                 }
@@ -899,7 +933,14 @@ impl ApplicationCodeLinesRuntimeV1 {
             pending,
             request_epoch,
             results: Mutex::new(result_rx),
-            renderer: AsyncCellRendererV1::start(renderer, CODE_LINES_RENDERER_CONTRIBUTION_ID_V1)?,
+            renderer: AsyncCellRendererV1::start(
+                renderer,
+                match mode {
+                    BatchDetailsColumnModeV1::CodeLines => CODE_LINES_RENDERER_CONTRIBUTION_ID_V1,
+                    BatchDetailsColumnModeV1::LockOwner => LOCK_OWNER_RENDERER_CONTRIBUTION_ID_V1,
+                },
+            )?,
+            mode,
         }))
     }
 }
@@ -911,6 +952,7 @@ fn process_code_lines_batch(
     epoch: u64,
     current_epoch: &AtomicU64,
     results: &mpsc::SyncSender<explorer_ui::code_lines_column::CodeLinesResultV1>,
+    mode: BatchDetailsColumnModeV1,
 ) {
     let Some(first) = requests.first() else {
         return;
@@ -931,6 +973,8 @@ fn process_code_lines_batch(
                     generation,
                     true,
                 )?,
+                lock_owner_resource: (mode == BatchDetailsColumnModeV1::LockOwner)
+                    .then(|| request.path.clone()),
             })
         })
         .collect::<Vec<_>>();
@@ -941,19 +985,26 @@ fn process_code_lines_batch(
         emit_code_lines_batch_error(requests, "Code lines input could not be prepared", results);
         return;
     }
-    let Ok(mut ticket) = provider.prepare_dispatch(
+    let contribution_id = match mode {
+        BatchDetailsColumnModeV1::CodeLines => CODE_LINES_CONTRIBUTION_ID_V1,
+        BatchDetailsColumnModeV1::LockOwner => LOCK_OWNER_CONTRIBUTION_ID_V1,
+    };
+    let lock_owner_query =
+        (mode == BatchDetailsColumnModeV1::LockOwner).then(lock_owner_query_service);
+    let Ok(mut ticket) = provider.prepare_dispatch_with_lock_owner_query(
         runtime,
-        CODE_LINES_CONTRIBUTION_ID_V1,
+        contribution_id,
         generation,
         generation,
         generation,
         generation,
         inputs,
+        lock_owner_query,
     ) else {
         emit_code_lines_batch_error(requests, "Code lines provider is unavailable", results);
         return;
     };
-    let terminal = match provider.invoke_prepared(CODE_LINES_CONTRIBUTION_ID_V1, &mut ticket) {
+    let terminal = match provider.invoke_prepared(contribution_id, &mut ticket) {
         Ok(terminal) => terminal,
         Err(_) => {
             ticket.fail_marker_clear();
@@ -980,7 +1031,7 @@ fn process_code_lines_batch(
             let value = match row.value() {
                 Some(explorer_extension_host::ExtensionValueViewV1::StructuredCanonicalJson(
                     bytes,
-                )) => parse_code_lines_value(bytes),
+                )) => parse_batch_details_value(bytes, mode),
                 _ => None,
             };
             let error = (value.is_none()).then(|| match row.outcome().into_raw() {
@@ -1048,7 +1099,9 @@ fn publish_code_lines_result(
     results.send(result).is_ok()
 }
 
-fn read_code_lines_file_bounded(path: &Path) -> Result<Vec<u8>, String> {
+/// Returns `Ok(None)` for a source exceeding the provider's supported input
+/// limit. It is an Unsupported value, not a provider failure or a valid zero.
+fn read_code_lines_file_bounded(path: &Path) -> Result<Option<Vec<u8>>, String> {
     let file = fs::File::open(path).map_err(|_| "Source unavailable".to_owned())?;
     let maximum = explorer_extension_host::MAX_HOST_INPUT_STREAM_SOURCE_BYTES_V1;
     let mut bytes = Vec::new();
@@ -1056,9 +1109,83 @@ fn read_code_lines_file_bounded(path: &Path) -> Result<Vec<u8>, String> {
         .read_to_end(&mut bytes)
         .map_err(|_| "Source unavailable".to_owned())?;
     if bytes.len() > maximum {
-        return Err("Source is larger than 8 MiB".to_owned());
+        return Ok(None);
     }
-    Ok(bytes)
+    Ok(Some(bytes))
+}
+
+fn lock_owner_query_service() -> explorer_extension_host::HostLockOwnerQueryServiceV1 {
+    explorer_extension_host::HostLockOwnerQueryServiceV1::new(|path, _deadline_millis| {
+        let request = explorer_model::LockOwnerDiscoveryRequest {
+            resources: vec![explorer_model::LocationDescriptor::file_system(
+                path.clone(),
+            )],
+        };
+        let outcome = explorer_shell_win::discover_lock_owners_read_only(
+            &request,
+            &explorer_model::CancellationToken::new(),
+        );
+        match outcome {
+            explorer_model::LockOwnerDiscoveryTerminal::Ready(owners) => (
+                explorer_extension_api::LockOwnerQueryStatusV1::READY,
+                owners
+                    .into_iter()
+                    .map(|owner| explorer_extension_api::LockOwnerRecordV1 {
+                        item: explorer_extension_api::ItemHandleV1::from_host([0; 16], 0),
+                        process_id: owner.identity.process_id,
+                        application_type:
+                            explorer_extension_api::LockOwnerApplicationTypeV1::from_raw(
+                                match owner.application_type {
+                                    explorer_model::LockOwnerApplicationType::Unknown => 0,
+                                    explorer_model::LockOwnerApplicationType::MainWindow => 1,
+                                    explorer_model::LockOwnerApplicationType::OtherWindow => 2,
+                                    explorer_model::LockOwnerApplicationType::Service => 3,
+                                    explorer_model::LockOwnerApplicationType::Explorer => 4,
+                                    explorer_model::LockOwnerApplicationType::Console => 5,
+                                    explorer_model::LockOwnerApplicationType::Critical => 6,
+                                },
+                            ),
+                        display_name: owner.display_name.into(),
+                        service_name: "".into(),
+                    })
+                    .collect(),
+            ),
+            explorer_model::LockOwnerDiscoveryTerminal::Empty => (
+                explorer_extension_api::LockOwnerQueryStatusV1::EMPTY,
+                Vec::new(),
+            ),
+            explorer_model::LockOwnerDiscoveryTerminal::Cancelled => (
+                explorer_extension_api::LockOwnerQueryStatusV1::CANCELLED,
+                Vec::new(),
+            ),
+            explorer_model::LockOwnerDiscoveryTerminal::Unavailable(_) => (
+                explorer_extension_api::LockOwnerQueryStatusV1::UNAVAILABLE,
+                Vec::new(),
+            ),
+            explorer_model::LockOwnerDiscoveryTerminal::Failed(_) => (
+                explorer_extension_api::LockOwnerQueryStatusV1::HOST_ERROR,
+                Vec::new(),
+            ),
+        }
+    })
+}
+
+fn parse_batch_details_value(
+    bytes: &[u8],
+    mode: BatchDetailsColumnModeV1,
+) -> Option<explorer_ui::code_lines_column::CodeLinesValueV1> {
+    if mode == BatchDetailsColumnModeV1::CodeLines {
+        return parse_code_lines_value(bytes);
+    }
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let count = value.get("count")?.as_u64()?;
+    Some(explorer_ui::code_lines_column::CodeLinesValueV1 {
+        language: value.get("names")?.as_str()?.to_owned(),
+        code: count,
+        comments: 0,
+        blanks: 0,
+        total: count,
+    })
 }
 
 fn parse_code_lines_value(
@@ -1076,7 +1203,11 @@ fn parse_code_lines_value(
 
 impl explorer_ui::code_lines_column::CodeLinesRuntimePortV1 for ApplicationCodeLinesRuntimeV1 {
     fn config(&self) -> explorer_ui::code_lines_column::CodeLinesColumnConfigV1 {
-        explorer_ui::code_lines_column::CodeLinesColumnConfigV1::default()
+        let mut config = explorer_ui::code_lines_column::CodeLinesColumnConfigV1::default();
+        if self.mode == BatchDetailsColumnModeV1::LockOwner {
+            config.descriptor = explorer_ui::code_lines_column::lock_owner_column_descriptor();
+        }
+        config
     }
 
     fn submit_code_lines_requests(
@@ -1923,22 +2054,29 @@ impl ApplicationLifecycle {
                         contribution.contribution_id() == FOLDER_SIZE_RENDERER_CONTRIBUTION_ID_V1
                     });
                 let supports_code_lines = batch_columns.contains(CODE_LINES_CONTRIBUTION_ID_V1);
-                let (visual_runtime, code_lines_runtime) = if supports_code_lines {
-                    (
-                        None,
-                        Some(ApplicationCodeLinesRuntimeV1::start(
-                            batch_columns,
-                            renderer,
-                        )?),
-                    )
-                } else if supports_folder_size {
-                    (
-                        Some(ApplicationVisualColumnRuntimeV1::start(measure, renderer)?),
-                        None,
-                    )
-                } else {
-                    (None, None)
-                };
+                let supports_lock_owner = batch_columns.contains(LOCK_OWNER_CONTRIBUTION_ID_V1);
+                let (visual_runtime, code_lines_runtime) =
+                    if supports_code_lines || supports_lock_owner {
+                        (
+                            None,
+                            Some(ApplicationCodeLinesRuntimeV1::start(
+                                batch_columns,
+                                renderer,
+                                if supports_lock_owner {
+                                    BatchDetailsColumnModeV1::LockOwner
+                                } else {
+                                    BatchDetailsColumnModeV1::CodeLines
+                                },
+                            )?),
+                        )
+                    } else if supports_folder_size {
+                        (
+                            Some(ApplicationVisualColumnRuntimeV1::start(measure, renderer)?),
+                            None,
+                        )
+                    } else {
+                        (None, None)
+                    };
                 // The host retains a Size Map renderer only after validating
                 // that its descriptor is a VIEW_MODE contribution, so this
                 // single check rejects descriptor-only and wrong-kind entries.
@@ -3035,8 +3173,8 @@ mod tests {
         SafeModeIncidentOfferV1, SafeModeIncidentPortV1, cell_render_key,
         confirm_offered_safe_mode_incident_v1, confirm_presented_safe_mode_incident_v1,
         emit_post_commit_safe_mode_telemetry_v1, enqueue_folder_size_requests,
-        enqueue_size_map_requests, measure_size_map_path, should_restore_saved_tabs,
-        size_map_node_id, size_map_render_key,
+        enqueue_size_map_requests, measure_size_map_path, read_code_lines_file_bounded,
+        should_restore_saved_tabs, size_map_node_id, size_map_render_key,
     };
 
     struct FakeSafeModePortV1 {
@@ -3090,6 +3228,25 @@ mod tests {
         assert_ne!(baseline, cell_render_key(&changed_request));
         assert_ne!(baseline, cell_render_key(&changed_theme));
         assert_ne!(baseline, cell_render_key(&changed_value));
+    }
+
+    #[test]
+    fn oversized_code_lines_source_is_unsupported_not_an_error_or_zero() {
+        let path = std::env::temp_dir().join(format!(
+            "superexplorer-code-lines-oversized-{}-{}.txt",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(
+            &path,
+            vec![b'x'; explorer_extension_host::MAX_HOST_INPUT_STREAM_SOURCE_BYTES_V1 + 1],
+        )
+        .unwrap();
+        assert!(matches!(read_code_lines_file_bounded(&path), Ok(None)));
+        let _ = fs::remove_file(path);
     }
 
     #[test]

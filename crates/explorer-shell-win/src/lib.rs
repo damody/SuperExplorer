@@ -54,6 +54,7 @@ pub use navigation::{DIRECTORY_BATCH_BYTE_CAP, DIRECTORY_BATCH_ITEM_CAP};
 pub use preview::{
     AttachedPreviewSession, PreviewHandlerHost, PreviewLookup, render_preview_in_worker,
 };
+pub use restart_manager::discover_lock_owners_read_only;
 pub use shell_new::{registered_shell_new_items, registered_shell_new_items_in_worker};
 pub use sta::{
     ShellDomainDiagnostics, ShellStaEndpointError, ShellStaError, ShellStaHandle, ShellStaState,

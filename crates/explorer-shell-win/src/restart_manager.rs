@@ -227,6 +227,16 @@ pub(crate) fn discover(
     }
 }
 
+/// Synchronous, discover-only Restart Manager query used by the extension
+/// composition root. No shutdown or process-control operation is reachable
+/// through this function.
+pub fn discover_lock_owners_read_only(
+    request: &LockOwnerDiscoveryRequest,
+    cancellation: &CancellationToken,
+) -> LockOwnerDiscoveryTerminal {
+    discover(request, cancellation)
+}
+
 /// Gracefully closes only explicitly selected, revalidated eligible owners.
 pub(crate) fn close(
     request: &LockOwnerCloseRequest,

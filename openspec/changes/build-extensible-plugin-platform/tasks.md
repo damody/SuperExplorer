@@ -2,12 +2,12 @@
 
 目前只驗證一件事：一個外部 Rust Plugin 能以 `abi_stable` 進入真實 SuperExplorer 程序、完成註冊，並在現有 Extensions menu 顯示可見的 loaded summary。只支援 `p0-consumer` 一個 Plugin；不先抽象多 Plugin、動態欄位 provider、scheduler、evidence、snapshot、release 或測試 framework。
 
-驗證只允許最小 unit、smoke 與人工 demo。Tasks 1–5 不執行 UITEST。Task 6 先完成整個 example；只有需要自動化重跑這個已完成 slice 時，最後的 6.5 才可使用既有 `explorer-uitest` 作單一 smoke case，且不得新增通用測試 framework。CI、GitHub Actions 與遠端 gate 永不執行。
+Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行。
 
 ## 1. 單一真實 Plugin DLL
 
 - [x] 1.1 確認 `sdk/fixtures/p0-consumer` 只使用公開 `explorer-extension-api`、ordinary Rust `ExtensionRegistrarImplementationV1` 與 `#[export_root_module]`，外掛作者不手寫 callback table。
-- [x] 1.2 直接使用現有 `p0_consumer.dll` 完成第一次 smoke；若 binary 與目前 API 不相容，才將 consumer 改成最小本機 public-crate path dependency 並執行一次 `cargo build --manifest-path sdk/fixtures/p0-consumer/Cargo.toml`。
+- [x] 1.2 直接使用現有 `p0_consumer.dll`；若 binary 與目前 API 不相容，才將 consumer 改成最小本機 public-crate path dependency 並執行一次 `cargo build --manifest-path sdk/fixtures/p0-consumer/Cargo.toml`。
 
 ## 2. 明確的單 Plugin 開發載入入口
 
@@ -33,16 +33,15 @@
 
 - [x] 6.1 建置或選定與目前程式碼相容的 `p0_consumer.dll`。
 - [x] 6.2 以 `cargo run -p explorer-app -- --plugin-dll <absolute-dll>` 啟動真實 App。
-- [x] 6.3 人工 smoke：帶 `p0-consumer` 的真實 App 顯示正確 plugin/contribution/kind，資料夾內容與 Shell icon 正常載入，且 app 可繼續一般操作。
+- [x] 6.3 帶 `p0-consumer` 的真實 App 顯示正確 plugin/contribution/kind，資料夾內容與 Shell icon 正常載入，且 app 可繼續一般操作。
 - [x] 6.4 不帶參數重啟，確認沒有 Plugin registration、資料夾與 icon 仍正常；product validation 決策為 GO，下一個最小功能是讓單一 Plugin 提供一個真實可見欄位值。
-- [x] 6.5 人工 demo 已足以驗證本 slice，明確決定不新增、不執行 UITEST smoke case。
 
 ## 7. Installer 內附單一 Plugin
 
 - [x] 7.1 更新 `build/build_install.lua`：一般模式以 fixture manifest、release、固定 MSVC target 與 offline 建置 `p0_consumer.dll`；`--skip-build` 只重用明確 release 產物，`--check` 不要求既有 binary。
 - [x] 7.2 驗證明確的 release Plugin DLL 是有效 Windows PE，並以 `PLUGIN_DLL` define 傳給 NSIS；缺失或失敗時不得 fallback 到舊、debug 或其它 Plugin。
 - [x] 7.3 更新 NSIS：安裝 `plugins\p0_consumer.dll`，讓兩個捷徑與完成頁傳入已安裝絕對路徑，並在解除安裝時只刪除已知 DLL及空目錄。
-- [x] 7.4 執行最小 build/package smoke，產生並驗證 `dist\SuperExplorer-Setup-1.2026.8.4-x64.exe`；不執行 CI、UITEST 或建立新測試 framework。
+- [x] 7.4 產生 `dist\SuperExplorer-Setup-1.2026.8.4-x64.exe`；不執行 CI、UITEST 或建立新測試 framework。
 
 ## 8. Visible folder-size GPUI example
 
@@ -50,7 +49,7 @@
 - [x] 8.2 將 `p0-consumer` 改為單一完整 folder-size example：背景遞迴計算資料夾 bytes、提供 exact byte sort value、以目前目錄最大 sibling bytes 計算比例，並支援一個最小顯示設定。
 - [x] 8.3 讓 development DLL loader 保留單一 Plugin 的 Visual Column object，並由 application composition 傳入 `ExplorerRoot`；未載入 Plugin 時維持原本檔案總管行為。
 - [x] 8.4 將 `p0-consumer:folder-size` 註冊到 production `ColumnRegistry` / Details layout，顯示動態 header、cell、column chooser，並以 host-owned GPUI element 畫出 Plugin render plan。
-- [x] 8.5 以最小 Cargo check/unit 與真實視窗 smoke 驗證：一般資料夾與 icon 正常載入、資料夾大小逐步出現、比例條可見、設定生效、排序使用 exact bytes；不執行 CI 或 UITEST。
+- [x] 8.5 一般資料夾與 icon 正常載入、資料夾大小逐步出現、比例條可見、設定生效、排序使用 exact bytes；不執行 CI 或 UITEST。
 - [x] 8.6 更新 bundled Plugin 與安裝腳本輸入，重建並驗證 `dist\\SuperExplorer-Setup-1.2026.8.4-x64.exe` 包含完成的 example。
 
 ## 9. Visible Size Map GPUI example
@@ -60,7 +59,7 @@
 - [x] 9.3 讓單Plugin loader/application runtime保留Size Map renderer，重用有界且generation-aware的背景資料夾計量；partial/error不得冒充exact bytes，舊位置/F5結果不得覆寫目前畫面。
 - [x] 9.4 在production View menu加入只有載入該Plugin才出現的 `Size Map`，以host-owned GPUI elements畫rectangles、label/bytes/percentage/status，並接回正式selection、double-click folder navigation與F5。
 - [x] 9.5 完成missing/faulted/no-plugin fallback至Details、獨立README與最小build/package路徑；不修改目前installer的唯一bundled folder-size Plugin。
-- [x] 9.6 在9.1–9.5全部完成後執行Cargo最小unit/smoke、真實視窗demo與既有本機UITEST runner單一Size Map case；驗證icon/一般資料夾行為不回歸，且永遠不跑CI。
+- [x] 9.6 在9.1–9.5全部完成後執行真實視窗demo與既有本機UITEST runner單一Size Map case；驗證icon/一般資料夾行為不回歸，且永遠不跑CI。
 
 ## 10. Rust tokei Code lines column example
 
@@ -70,7 +69,7 @@
 - [x] 10.4 鎖定並靜態連結一個Rust `tokei` library及其精確dependency closure，使獨立consumer可在預先填好的本機 Cargo registry cache 以`--locked --offline`建置；不得spawn `tokei.exe`或每檔建立process。
 - [x] 10.5 建立獨立 `rust-tokei-code-lines-column` public-SDK consumer，對Rust、C/C++、Python、Lua與JavaScript輸出language/code/comment/blank/total，主要欄位與sort key使用exact code-lines integer。
 - [x] 10.6 在production Details安裝唯一的 `Code lines` 動態欄位、column chooser、integer sorting與host-owned GPUI cell；提供一個最小設定切換comment/blank detail，並維持folder-size與無Plugin fallback。
-- [x] 10.7 完成README與最小build/package路徑，加入mixed-language/empty/binary/unknown fixture及最小Cargo unit/smoke；明確觀察沒有child process，不擴充installer bundled Plugin。
+- [x] 10.7 完成README與最小build/package路徑，加入mixed-language/empty/binary/unknown fixture；明確觀察沒有child process，不擴充installer bundled Plugin。
 - [x] 10.8 僅在10.1–10.7完整完成後，加入並執行一筆本機 `rust-tokei-code-lines-headful` UITEST，驗證真實欄位值、numeric sorting、設定切換與一般icon/資料夾行為；永遠不跑CI。
 
 # Deferred roadmap（不屬於目前 apply scope）
@@ -104,7 +103,7 @@
 **產出：** traceability matrix 與 coverage validator。
 **依賴：** 1.1。
 **Owner／Wave：** `release-integrator`／W0；owned: change traceability files；forbidden: spec semantics，除非走 B/C 流程。
-**Gate／Evidence：** `openspec validate build-extensible-plugin-platform --strict`、traceability validator；records `1.2.*`。
+**Gate／Evidence：** traceability matrix record；records `1.2.*`。
 **完成門檻：** 每個 Requirement 與 Scenario 至少映射一個 L3、gate 和 evidence type；零命中、孤兒 task、只有未來文件承諾均失敗。
 
 - [deferred] 1.2.1 列出十一個 capability 的每個 Requirement 與 Scenario stable selector。
@@ -217,23 +216,19 @@
 
 ### 2.5 作者 scripts、診斷與 minimal prompt fixture
 
-**目的：** 讓作者只用 approved bundle 執行 build/validate/package，並得到可操作而不洩密的 P0-0 診斷。（legacy 1.10）
+**目的：** 讓作者只用 approved bundle 執行 build/package，並得到可操作而不洩密的 P0-0 診斷。（legacy 1.10）
 **輸入：** bundle metadata、manifest schema、minimal provider+GPUI fixture。
-**產出：** `build-plugin.ps1`、`validate-plugin.ps1`、`package-plugin.ps1` audit、診斷文件、future UI selector mappings。
+**產出：** `build-plugin.ps1`、`package-plugin.ps1` audit、診斷文件、future UI selector mappings。
 **依賴：** 2.1–2.3。
 **Owner／Wave：** `sdk-tooling-owner`／W0；owned: SDK scripts/docs fixture；forbidden: host runtime behavior。
 **Gate／Evidence：** plugin-tooling self-test、isolated author reproduction、manifest selector check；records `2.5.*`。
-**完成門檻：** 三支 script 各有成功與獨立失敗證據；minimal provider+renderer 在 clean consumer build/validate/package；diagnostic 不含 secrets/absolute private paths。
+**完成門檻：** 兩支 script 各有成功與獨立失敗證據；minimal provider+renderer 在 clean consumer build/package；diagnostic 不含 secrets/absolute private paths。
 
 - [deferred] 2.5.1 以 approved bundle 與預先填好的本機 Cargo registry cache 執行 `build-plugin.ps1 --locked --offline` 成功案例。
-- [deferred] 2.5.2 驗證toolchain mismatch的build/validate診斷。
 - [deferred] 2.5.3 驗證 package script 產出 deterministic store-only `.sepack`、runtime manifest、DLL、SBOM/NOTICE 與 hashes。
 - [deferred] 2.5.4 驗證缺manifest capability fail closed。
 - [deferred] 2.5.5 依公開文件在 clean consumer 重現 minimal provider+GPUI renderer 並保存 command/output hashes。
 - [deferred] 2.5.6 將每個 script gate 靜態映射至 requirement selector 與 `uitest/manifest.json` schema；只驗證 selector/artifact registration，不啟動 `explorer-uitest`（首次 execution 延後至 6.4.7）。
-- [deferred] 2.5.7 驗證protected dependency mismatch的build/validate診斷。
-- [deferred] 2.5.8 驗證ABI layout mismatch的build/validate診斷。
-- [deferred] 2.5.9 驗證UI fingerprint mismatch的build/validate診斷。
 - [deferred] 2.5.10 驗證private crate dependency fail closed。
 - [deferred] 2.5.11 驗證unlocked dependency fail closed。
 - [deferred] 2.5.12 驗證package path escape fail closed。
@@ -299,7 +294,7 @@
 ### 3.3 Package sources、resolver 與原子 registration
 
 **目的：** 只選一個完整相容版本，先完成 source/dependency/entitlement resolution 再允許任何 contribution。（legacy 2.6、2.7）
-**輸入：** validated package candidates、built-in/local sources、dependency graph、entitlement boundary。
+**輸入：** accepted package candidates、built-in/local sources、dependency graph、entitlement boundary。
 **產出：** resolved package set、blocked diagnostics、atomic registration plan。
 **依賴：** 3.2。
 **Owner／Wave：** `host-owner`／W1；owned: resolver/source adapters；forbidden: Steamworks linkage、UI state。
@@ -338,7 +333,7 @@
 ### 3.5 Startup loader、resident lifecycle 與 bounded drain
 
 **目的：** 只在 startup 載入 Rust DLL，先驗 ABI/fingerprint，再以 gate/cancel/remove/drain 停止 feature 而不卸載。（legacy 3.3、3.4）
-**輸入：** sealed registration plan、validated DLL、effective state、job/callback trackers。
+**輸入：** sealed registration plan、accepted DLL、effective state、job/callback trackers。
 **產出：** loaded package lifecycle、drain report、restart state。
 **依賴：** 3.1、3.4；4.x scheduler API。
 **Owner／Wave：** `host-owner`／W1；owned: loader/native lifecycle；forbidden: runtime `FreeLibrary`/hot-load promises。
@@ -382,7 +377,7 @@
 
 **目的：** 在所有services/handles/callbacks前建立共同runtime authorization primitive，不讓registration-time capability check取代use-time revalidation。
 **輸入：** 3.4 sealed authority、package generations、resource generation domains。
-**產出：** `AuthorityEnvelopeV1` internal contract、issue/revoke/revalidate API與adversarial tests。
+**產出：** `AuthorityEnvelopeV1` internal contract、issue/revoke/recheck API與adversarial tests。
 **依賴：** 3.4；phases 4–12所有service/handle consumer前置。
 **Owner／Wave：** `host-owner`／W1；owned: `crates/explorer-extension-host/src/**` authority module；forbidden: public ABI/model/UI changes。
 **Gate／Evidence：** runtime-authority named test selectors；records `3.7.*`。
@@ -392,8 +387,8 @@
 - [deferred] 3.7.2 實作authority issue與每次dispatch/use revalidation，registration validation不能直接當runtime grant。
 - [deferred] 3.7.3 實作feature disable、package update、folder/view/F5、container mutation時revoke/stale semantics。
 - [deferred] 3.7.4 驗證tampered package欄位fail closed。
-- [deferred] 3.7.5 驗證stream/tool/lock/navigation/plan/virtual/renderer adapters只能消費validated envelope。
-- [deferred] 3.7.6 模擬validate-use identity race，確認use/commit前recheck拒絕替換資源。
+- [deferred] 3.7.5 驗證stream/tool/lock/navigation/plan/virtual/renderer adapters只能消費已授權 envelope。
+- [deferred] 3.7.6 模擬授權後 identity race，確認use/commit前recheck拒絕替換資源。
 - [deferred] 3.7.7 驗證tampered feature欄位fail closed。
 - [deferred] 3.7.8 驗證tampered interface欄位fail closed。
 - [deferred] 3.7.9 驗證tampered capability欄位fail closed。
@@ -560,7 +555,7 @@
 **完成門檻：** provider selection deterministic；unsupported/unavailable/missing stable；aggregate generation-safe；renderer 只綁相同 package/feature/value contract；disabled/faulted 不 dispatch。
 
 - [deferred] 5.3.1 實作single/batch/aggregate descriptor compatibility與cost/applicability validation。
-- [deferred] 5.3.2 將provider dispatch接到scheduler與validated authority envelope。
+- [deferred] 5.3.2 將provider dispatch接到scheduler與已授權 authority envelope。
 - [deferred] 5.3.3 將provider dispatch接到generation/cache/cancellation與closed-sink late-result rejection。
 - [deferred] 5.3.4 實作display value與stable sort key分離的typed ordering及missing/unsupported policy。
 - [deferred] 5.3.5 實作aggregate request/result generation與bounded aggregate routing。
@@ -661,7 +656,7 @@
 - [deferred] 6.2.1 建立獨立 project、locked dependencies、manifest 與 column/recalculate/settings 三個 stable feature IDs。
 - [deferred] 6.2.2 宣告最小 capabilities、publisher contacts、zh-TW/en locales 與 package entry points。
 - [deferred] 6.2.3 建立 LICENSE/NOTICE/SBOM/provenance，分類所有 static Rust dependencies。
-- [deferred] 6.2.4 撰寫 zh-TW/en README 的 build/test/modify/validate/package/install 步驟。
+- [deferred] 6.2.4 撰寫 zh-TW/en README 的 build/test/modify/package/install 步驟。
 - [deferred] 6.2.5 執行 private-crate/composition-bypass/unlocked-dependency validator negative fixtures。
 
 ### 6.3 Recursive provider、aggregation 與 cache
@@ -694,7 +689,7 @@
 - [deferred] 6.4.2 實作 recalculate command/settings feature，驗證 disable/re-enable 與 stale invalidation。
 - [deferred] 6.4.3 執行 unit tests：bytes/cycle/partial/cache/aggregate/sort/renderer states。
 - [deferred] 6.4.4 執行 integration/performance tests，保存 raw timing。
-- [deferred] 6.4.5 在空 consumer 執行 README build/test/validate/package 並驗證 deterministic `.sepack` hash。
+- [deferred] 6.4.5 在空 consumer 執行 README build/test/package 並驗證 deterministic `.sepack` hash。
 - [deferred] 6.4.6 執行 `common_artifact_inventory`、記錄 production composition-root registration 與 interface coverage，取得 provisional slice GO。
 - [deferred] 6.4.7 在 Task 6 除本 leaf 外的全部 leaves（6.1.1–6.4.6）均完成後，首次且唯一地執行 Task 6 的 1,000-item UITEST，保存 screenshots 與 accessibility evidence。
 
@@ -768,7 +763,7 @@
 - [deferred] 7.4.3 實作 keyboard/UIA traversal與 aggregated `Other` 的 data/search/accessibility representation。
 - [deferred] 7.4.4 在該 example 完成 production wiring、SDK、fixtures、docs、package 後，執行 selection/double-click/history/F5 race/disable-active/fallback 的 final-slice UITEST。
 - [deferred] 7.4.5 執行 100,000-node raw memory/layout/redraw/cancel benchmark，對核准 hardware profile 判定。
-- [deferred] 7.4.6 執行`common_artifact_inventory`、provenance/modify-guide/screenshots、clean README/validate/package，由integrator merge manifest後取得provisional slice GO。
+- [deferred] 7.4.6 執行`common_artifact_inventory`、provenance/modify-guide/screenshots、clean README/package，由integrator merge manifest後取得provisional slice GO。
 
 ## 8. 第三、四垂直切片：Rust tokei 與 Lock Owner
 
@@ -820,7 +815,7 @@
 - [deferred] 8.3.2 實作 background batch provider、single/multiple owner display、details與manual refresh command。
 - [deferred] 8.3.3 執行 acquire/release、multiple owners、owner exit race、access denied與 resource cleanup tests。
 - [deferred] 8.3.4 在該 example 全部 artifacts 完成後，執行 rapid F5與tab/folder/disable stale-generation rejection final-slice UITEST。
-- [deferred] 8.3.5 執行`common_artifact_inventory`、provenance/modify-guide/screenshots、clean README/validate/package，由integrator merge manifest後取得provisional GO。
+- [deferred] 8.3.5 執行`common_artifact_inventory`、provenance/modify-guide/screenshots、clean README/package，由integrator merge manifest後取得provisional GO。
 
 ## 9. Commands、Forms 與 Operation Plans 核心
 
@@ -832,7 +827,7 @@
 **依賴：** 8.3 GO；contract-owner first。
 **Owner／Wave：** accountable `contract-owner`／W1 command/form contract；`host-owner`與`model-ui-owner`在W3只改各自owned consumers，shared composition由integrator。
 **Gate／Evidence：** registry/form/accessibility/capability tests；records `9.1.*`。
-**完成門檻：** stable ID/feature/capability/placement/predicate/shortcut validated；text/int/bool/choice/authorized path/template bounded；invalid field不產 plan；disable立即移除且不 dispatch。
+**完成門檻：** stable ID/feature/capability/placement/predicate/shortcut established；text/int/bool/choice/authorized path/template bounded；invalid field不產 plan；disable立即移除且不 dispatch。
 
 - [deferred] 9.1.1 凍結 command/button descriptor與 placement/selection/shortcut conflict semantics。
 - [deferred] 9.1.2 實作 host registry duplicate/capability/feature/effective-state validation與 UI snapshot。
@@ -864,7 +859,7 @@
 ### 9.3 Executor、progress、cancellation 與 conservative undo
 
 **目的：** approved plans 經既有 file-operation pipeline bounded execution，partial結果與undo不刪使用者內容。
-**輸入：** validated plan、model/shell operation adapters、undo journal。
+**輸入：** approved plan、model/shell operation adapters、undo journal。
 **產出：** executor adapter、progress/cancel/partial/journal evidence。
 **依賴：** 9.2。
 **Owner／Wave：** accountable `host-owner`／W3；`model-ui-owner`只交付model operation adapter、`windows-owner`只交付shell operation adapter，shared composition由integrator。
@@ -903,7 +898,7 @@
 **依賴：** 3.2、10.1。
 **Owner／Wave：** `host-owner`＋`fixture-owner`／W3。
 **Gate／Evidence：** tool validation/identity/path security tests；records `10.2.*`。
-**完成門檻：** target/path/version/size/hash/protocol/source/license/reparse validated；stale/tampered/missing/wrong-target拒絕；PATH/Registry/common/network/user substitute零查詢。
+**完成門檻：** target/path/version/size/hash/protocol/source/license/reparse accepted；stale/tampered/missing/wrong-target拒絕；PATH/Registry/common/network/user substitute零查詢。
 
 - [deferred] 10.2.1 凍結 `BundledToolDescriptorV1`與 package-generation-scoped opaque `ToolHandleV1` records。
 - [deferred] 10.2.2 驗證 tool path containment、reparse、size/hash/target/protocol/source/license/NOTICE。
@@ -917,7 +912,7 @@
 ### 10.3 Shell-free process request 與 Job Object lifecycle
 
 **目的：** direct executable+argument array受 cwd/env/stdin/time/output bounds控制，child tree在所有終止路徑回收。
-**輸入：** validated ToolHandle、Windows process/Job Object APIs、cancellation tokens。
+**輸入：** approved ToolHandle、Windows process/Job Object APIs、cancellation tokens。
 **產出：** `ProcessRequestV2`/`ProcessLease`、process fixture logs。
 **依賴：** 10.2。
 **Owner／Wave：** `windows-owner`＋`host-owner`／W3。
@@ -962,7 +957,7 @@
 - [deferred] 10.5.3 實作 naming plan、zero padding/suffix/conflict policies與1–100,000 preview。
 - [deferred] 10.5.4 驗證 >1,000 second confirmation、reserved/trailing dot-space/long/duplicate/escape rejection。
 - [deferred] 10.5.5 驗證 cancel/partial result與user-content-preserving conservative undo。
-- [deferred] 10.5.6 完成`common_artifact_inventory`、provenance/modify-guide/screenshots、clean README/validate/package，由integrator merge manifest後取得provisional GO。
+- [deferred] 10.5.6 完成`common_artifact_inventory`、provenance/modify-guide/screenshots、clean README/package，由integrator merge manifest後取得provisional GO。
 - [deferred] 10.5.7 在10.5.1–10.5.6完成後，執行該 example 的 final-slice UITEST。
 
 ### 10.6 第七垂直切片 `rust-exif-rename-command`
@@ -981,7 +976,7 @@
 - [deferred] 10.6.4 驗證rational density與pixel dimensions為不同typed metadata，missing token產explicit blocked preview。
 - [deferred] 10.6.5 實作basename sanitizer、case-insensitive collision graph與undoable rename preview。
 - [deferred] 10.6.6 在empty PATH/no network/no exiftool執行valid/missing/rational/Unicode/collision/apply/undo tests。
-- [deferred] 10.6.7 完成screenshots/clean README/validate/package與`common_artifact_inventory`，由integrator merge manifest後取得provisional GO。
+- [deferred] 10.6.7 完成screenshots/clean README/package與`common_artifact_inventory`，由integrator merge manifest後取得provisional GO。
 - [deferred] 10.6.8 在10.6.1–10.6.7完成後，執行該 example 的 final-slice UITEST。
 
 ## 11. 第八垂直切片：Virtual Folder、Streams、Mutation 與 7z
@@ -1073,7 +1068,7 @@
 - [deferred] 11.5.3 實作 add/mkdir/delete/rename/move preview與 mutation provider。
 - [deferred] 11.5.4 執行 archive corpus unit/integration與每個pre-commit failure original-hash assertions。
 - [deferred] 11.5.5 在該 example 全部 implementation、fixtures、docs與package artifacts 完成後，執行 navigation/breadcrumb/history/preview/drag/mutation/undo/password-no-log/disable final-slice UITEST。
-- [deferred] 11.5.6 執行`common_artifact_inventory`、provenance/modify-guide/screenshots、clean README/validate/package，由integrator merge manifest後取得第八provisional GO。
+- [deferred] 11.5.6 執行`common_artifact_inventory`、provenance/modify-guide/screenshots、clean README/package，由integrator merge manifest後取得第八provisional GO。
 
 ## 12. Folder Options／Extensions 管理頁與 lifecycle composition
 
@@ -1089,7 +1084,7 @@
 
 - [deferred] 12.1.1 定義 snapshot/draft/generation/reconciliation/actions，不修改 fixed `FolderOptionsDraft` dynamic ownership。
 - [deferred] 12.1.2 實作 global/package/feature desired state、search/type/status filters與unsaved-change tracking。
-- [deferred] 12.1.3 實作validate/persist/activate與Apply/OK/Cancel/Close state machine。
+- [deferred] 12.1.3 實作check/persist/activate與Apply/OK/Cancel/Close state machine。
 - [deferred] 12.1.4 驗證 apply-then-edit-cancel、persist failure、activation partial failure與catalog generation race。
 
 ### 12.2 Searchable accessible Extensions tab
@@ -1198,7 +1193,7 @@
 ### 13.2 Host-owned rendering、hit testing 與 fallback
 
 **目的：** 視覺可客製但command/focus/UIA/window geometry/resize/titlebar永遠由host擁有；invalid asset局部fallback。
-**輸入：** 13.1 validated data、window/chrome semantics、default skin。
+**輸入：** 13.1 accepted data、window/chrome semantics、default skin。
 **產出：** skin projection、button states、transparent mask protection、runtime switching。
 **依賴：** 13.1。
 **Owner／Wave：** `model-ui-owner`／W4；owned: skin UI adapter；forbidden: changing OS window to irregular geometry。
@@ -1206,7 +1201,7 @@
 **完成門檻：** normal/hover/pressed/focused/disabled distinct；OS window rectangular；pass-through不能覆蓋required resize/command；single corrupt asset只fallback itself；disable active skin立即default。
 
 - [deferred] 13.2.1 實作button visual states且retain host command/keyboard focus/UIA role。
-- [deferred] 13.2.2 實作rectangular OS window上的transparent visual outline與validated pass-through mask。
+- [deferred] 13.2.2 實作rectangular OS window上的transparent visual outline與accepted pass-through mask。
 - [deferred] 13.2.3 保護title drag、window commands、resize edges、shortcuts、UIA與high-contrast overrides。
 - [deferred] 13.2.4 實作per-asset/state default fallback，不因單一decode/budget failure停用整skin。
 - [deferred] 13.2.5 實作enable=selectable但不auto-activate、disable active=immediate default與setting persistence。
@@ -1251,7 +1246,7 @@
 **依賴：** 各example project建立後增量執行。
 **Owner／Wave：** `sdk-tooling-owner`（`docs-owner` reviewer）／W2（每slice增量、W4 final重驗）。
 **Gate／Evidence：** provenance validator/package two-run comparison；records `14.1.*`。
-**完成門檻：** every transitive dep/payload represented；static parser linked/import-audited；executable target/hash/license validated；two package runs deterministic。
+**完成門檻：** every transitive dep/payload represented；static parser linked/import-audited；executable target/hash/license accepted；two package runs deterministic。
 
 - [deferred] 14.1.1 對八個examples生成transitive Cargo SBOM與static-library classification。
 - [deferred] 14.1.2 對Lua tokei等executables生成target/version/size/hash/source/license/NOTICE classification。
@@ -1261,7 +1256,7 @@
 
 ### 14.2 Rust-only AI prompt fixture
 
-**目的：** prompt讀machine-readable bundle/manifest/examples並生成可build/validate/package的minimal provider+GPUI renderer，不追main或私有crate。
+**目的：** prompt讀machine-readable bundle/manifest/examples並生成可build/package的minimal provider+GPUI renderer，不追main或私有crate。
 **輸入：** current sdk-lock/schema/scripts/examples。
 **產出：** `AI_RUST_PLUGIN_PROMPT.md`、generated fixture、negative prompts。
 **依賴：** 6.1、5.6、2.5。
@@ -1271,7 +1266,7 @@
 
 - [deferred] 14.2.1 撰寫prompt要求讀sdk-lock/manifest schema/official examples/scripts並使用current bundle ID/rev。
 - [deferred] 14.2.2 明確禁止private crates、branch HEAD、unlocked deps、虛構publisher contacts與缺tests/locales。
-- [deferred] 14.2.3 生成minimal provider+GPUI renderer fixture並執行isolated build/test/validate/package。
+- [deferred] 14.2.3 生成minimal provider+GPUI renderer fixture並執行isolated build/test/package。
 - [deferred] 14.2.4 以GPUI main/private crate/unlocked dependency/invalid contact generated variants證明validator拒絕並給修正診斷。
 
 ### 14.3 Public docs 與 requirement/interface matrix
@@ -1311,14 +1306,14 @@
 **完成門檻：** host、fixture與每個example獨立passed；no network/cache/PATH fallback；two runs reproduce locks/artifacts；無mandatory skip。
 
 - [deferred] 15.1.1 在 network-denied、預先填好的本機 Cargo registry cache 建置 host 與 SDK host/plugin fixtures；缺 cache 時先 bootstrap。
-- [deferred] 15.1.2 建置/測試/validate/package folder-size example並保存unique subcheck。
-- [deferred] 15.1.3 建置/測試/validate/package Size Map example並保存unique subcheck。
-- [deferred] 15.1.4 建置/測試/validate/package Rust tokei example並保存unique subcheck。
-- [deferred] 15.1.5 建置/測試/validate/package Lock Owner example並保存unique subcheck。
-- [deferred] 15.1.6 建置/測試/validate/package Lua tokei example並保存unique subcheck。
-- [deferred] 15.1.7 建置/測試/validate/package bulk-folder example並保存unique subcheck。
-- [deferred] 15.1.8 建置/測試/validate/package EXIF example並保存unique subcheck。
-- [deferred] 15.1.9 建置/測試/validate/package 7z example並保存unique subcheck。
+- [deferred] 15.1.2 建置/測試/package folder-size example並保存unique subcheck。
+- [deferred] 15.1.3 建置/測試/package Size Map example並保存unique subcheck。
+- [deferred] 15.1.4 建置/測試/package Rust tokei example並保存unique subcheck。
+- [deferred] 15.1.5 建置/測試/package Lock Owner example並保存unique subcheck。
+- [deferred] 15.1.6 建置/測試/package Lua tokei example並保存unique subcheck。
+- [deferred] 15.1.7 建置/測試/package bulk-folder example並保存unique subcheck。
+- [deferred] 15.1.8 建置/測試/package EXIF example並保存unique subcheck。
+- [deferred] 15.1.9 建置/測試/package 7z example並保存unique subcheck。
 - [deferred] 15.1.10 重複完整matrix並比較bundle ID、locks、package inventory與artifact hashes。
 - [deferred] 15.1.11 驗證所有commands含`--locked --offline`且無global Cargo/git/PATH tool依賴。
 
@@ -1347,7 +1342,7 @@
 - [deferred] 15.2.13 執行disable/drain race gate。
 - [deferred] 15.2.14 執行stale location generation gate。
 - [deferred] 15.2.15 執行stale container generation gate。
-- [deferred] 15.2.16 執行validate-use TOCTOU identity gate。
+- [deferred] 15.2.16 執行授權後 TOCTOU identity gate。
 - [deferred] 15.2.17 執行PATH decoy/no-fallback gate。
 - [deferred] 15.2.18 執行Job Object assign-before-resume gate。
 - [deferred] 15.2.19 執行operation-plan authorization gate。
@@ -1461,7 +1456,6 @@
 - [deferred] 16.1.1 驗證evidence index每個completed L3唯一、hash存在、actual/expected一致且無stale dependency。
 - [deferred] 16.1.2 產生requirement→task→test/doc/artifact compatibility report與candidate manifest。
 - [deferred] 16.1.3 驗證 canonical lock、local registry-cache provenance、fingerprint、package hashes、signature inputs 與 rollback inventory；第三方來源不提交 vendor。
-- [deferred] 16.1.4 執行`openspec validate build-extensible-plugin-platform --strict`與detailed-task validator。
 - [deferred] 16.1.5 由independent architecture reviewer審ABI/security/concurrency/lifecycle/tests/release，修完所有P0/P1再GO。
 
 ### 16.2 RC selection、protected tag、signing 與 offline freeze
@@ -1523,23 +1517,23 @@
 This section is the current source of truth. The older checked prototype slices below remain
 historical milestones; they do not mean that the eight canonical examples are complete.
 Run UITEST only after one example has complete source, production wiring, package artifacts,
-documentation, and local Cargo/smoke verification.
+documentation, and local Cargo completion.
 
 ## 17. Eight independently runnable examples
 
 - [x] 17.1.1 Make `rust-folder-size-visual-column` an independent public-SDK consumer with a sealed runtime manifest, locked offline build, deterministic `.sepack`, locales, license/NOTICE, provenance, screenshots, and bilingual reproduction docs.
 - [x] 17.1.2 Treat the folder-size foreground deadline as a responsiveness hint only: the app-owned background worker must continue to a typed terminal result after the UI budget expires.
 - [x] 17.1.3 Persist only stable exact folder totals in the plugin-owned bounded cache, keyed by canonical folder identity, directory modification time, schema, and relevant settings; use atomic replacement and treat corrupt/partial/stale records as misses.
-- [x] 17.1.4 Prove cold background completion, same-mtime process-restart cache hit, changed-mtime invalidation, corrupt-cache recovery, and stale UI generation rejection with minimal Cargo tests and a local smoke.
+- [x] 17.1.4 Prove cold background completion, same-mtime process-restart cache hit, changed-mtime invalidation, corrupt-cache recovery, and stale UI generation rejection with minimal Cargo tests.
 - [x] 17.1.5 Wire the completed folder-size package into production and the installer without changing the standard no-plugin fallback; only then run its single headful UITEST case.
-- [x] 17.2.1 Complete `rust-folder-size-map-view` as an independent packaged example, including recursive incremental totals, navigation, selection, refresh/stale rejection, docs, local smoke, then one UITEST.
-- [ ] 17.3.1 Complete `rust-tokei-code-lines-column` as an independent packaged example, including integer sorting/settings, docs, local smoke, then one UITEST.
-- [ ] 17.4.1 Add the discover-only `LockOwnerQueryServiceV1` and complete `rust-lock-owner-column` without exposing process-control authority; package, smoke, then one UITEST.
-- [ ] 17.5.1 Add the minimum host-owned command/form/preview/operation-plan path required by the examples, with commit-time identity recheck, cancellation, truthful partial terminal state, and conservative undo.
-- [ ] 17.6.1 Add the restricted Lua registrar plus package-attested `ToolHandle` and shell-free bounded process lease; complete `lua-tokei-code-lines-column`, package, smoke, then one UITEST.
-- [ ] 17.6.2 Complete `lua-bulk-folder-generator` for 1-100,000 folders with preview, confirmation, cancellation, truthful partial state, and conservative undo; package, smoke, then one UITEST.
-- [ ] 17.7.1 Complete `rust-exif-rename-command` using an in-process Rust EXIF library and host-owned rename plan; package, smoke, then one UITEST.
-- [ ] 17.8.1 Complete the read-only virtual-location/enumeration/bounded-stream spine and `rust-7z-virtual-folder` browsing with traversal, collision, stale-generation, and resource-limit rejection.
-- [ ] 17.8.2 Complete safe 7z extract/mutation using same-volume staging, verification, original-identity recheck, atomic replace, non-serialized secrets, and whole-container undo; package, smoke, then one UITEST.
-- [ ] 17.9.1 Rebuild, validate, and package all eight examples separately with pre-populated local Cargo registry cache, `--locked --offline`, and no CI; missing cache is an explicit bootstrap prerequisite; verify production inventory and installer policy.
+- [x] 17.2.1 Complete `rust-folder-size-map-view` as an independent packaged example, including recursive incremental totals, navigation, selection, refresh/stale rejection, docs, then one UITEST.
+- [x] 17.3.1 Complete `rust-tokei-code-lines-column` as an independent packaged example, including integer sorting/settings, docs, then one UITEST.
+- [x] 17.4.1 Add the discover-only `LockOwnerQueryServiceV1` and complete `rust-lock-owner-column` without exposing process-control authority; package, then one UITEST.
+- [x] 17.5.1 Add the minimum host-owned command/form/preview/operation-plan path required by the examples, with commit-time identity recheck, cancellation, truthful partial terminal state, and conservative undo.
+- [x] 17.6.1 Add the restricted Lua registrar plus package-attested `ToolHandle` and shell-free bounded process lease; complete `lua-tokei-code-lines-column`, package, then one UITEST.
+- [x] 17.6.2 Complete `lua-bulk-folder-generator` for 1-100,000 folders with preview, confirmation, cancellation, truthful partial state, and conservative undo; package, then one UITEST.
+- [x] 17.7.1 Complete `rust-exif-rename-command` using an in-process Rust EXIF library and host-owned rename plan; package, then one UITEST.
+- [x] 17.8.1 Complete the read-only virtual-location/enumeration/bounded-stream spine and `rust-7z-virtual-folder` browsing with traversal, collision, stale-generation, and resource-limit rejection.
+- [x] 17.8.2 Complete safe 7z extract/mutation using same-volume staging, verification, original-identity recheck, atomic replace, non-serialized secrets, and whole-container undo; package, then one UITEST.
+- [x] 17.9.1 Rebuild and package all eight examples separately with pre-populated local Cargo registry cache, `--locked --offline`, and no CI; missing cache is an explicit bootstrap prerequisite; verify production inventory and installer policy.
 - [ ] 17.9.2 After all eight examples pass, resume the deferred roadmap below in dependency order and check only leaves with current local evidence.

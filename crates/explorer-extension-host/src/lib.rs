@@ -14,6 +14,7 @@
 //! dispatches registrar and provider callbacks, and owns feature lifecycle,
 //! bounded result transport, cache, and UI-ingress composition.
 
+mod bundled_tool;
 mod contribution_gate;
 mod dll_loader;
 mod extension_job_runtime;
@@ -21,8 +22,10 @@ mod extension_job_ui_bridge;
 mod extension_result_cache;
 mod extension_value_router;
 mod feature_state;
+mod lua_registrar;
 mod manifest;
 mod native_lifecycle;
+mod operation_plan;
 mod package_resolver;
 mod package_source;
 mod package_validation;
@@ -36,6 +39,7 @@ pub use dll_loader::{
     SinglePluginVisualRenderRuntimeV1,
 };
 
+pub use bundled_tool::mint_attested_tool_handle_v1;
 pub use contribution_gate::{
     ContributionGateErrorV1, ContributionGateV1, ContributionJobContractV1, ContributionKindV1,
     ContributionRegistrationV1, MAX_CAPABILITIES_PER_CONTRIBUTION_V1,
@@ -46,7 +50,7 @@ pub use extension_job_runtime::{
     ExtensionJobCacheLookupV1, ExtensionJobFinishOutcomeV1, ExtensionJobProducerV1,
     ExtensionJobQuarantineEventV1, ExtensionJobRuntimeErrorV1, ExtensionJobRuntimeRequestV1,
     ExtensionJobRuntimeV1, ExtensionResultBufferConfigV1, HostBatchColumnItemV1,
-    HostInputStreamSourceV1, MAX_BATCH_COLUMN_INPUT_BYTES_V1,
+    HostInputStreamSourceV1, HostLockOwnerQueryServiceV1, MAX_BATCH_COLUMN_INPUT_BYTES_V1,
     MAX_HOST_INPUT_STREAM_SOURCE_BYTES_V1, PreparedBatchColumnDispatchTicketV1,
 };
 pub use extension_job_ui_bridge::{
@@ -73,6 +77,10 @@ pub use feature_state::{
     FeatureDiagnosticFactV1, FeatureKeyV1, FeatureResolutionFactV1, FeatureRuntimeFactV1,
     FeatureStateStoreErrorV1, FeatureStateStoreV1,
 };
+pub use lua_registrar::{
+    LuaContributionV1, LuaRegistrarErrorV1, MAX_LUA_CONTRIBUTIONS_V1,
+    run_restricted_lua_registrar_v1,
+};
 pub use manifest::{
     BundledToolV1, ContactPurposeV1, LocaleResourceV1, LuaEntrypointV1,
     PACKAGE_MANIFEST_VERSION_V1, PackageDependencyV1, PackageFeatureV1, PackageIdentityV1,
@@ -85,6 +93,10 @@ pub use native_lifecycle::{
     MAX_NATIVE_RESTART_REASONS_PER_FEATURE_V1, NativeDispatchLeaseV1, NativeExtensionLifecycleV1,
     NativeFeatureIdentityV1, NativeFeatureStateV1, NativeLifecycleConfigV1, NativeLifecycleErrorV1,
     NativeLoaderDiagnosticCodeV1, NativeRestartReasonV1, NativeStartupAdmissionV1, StartupSession,
+};
+pub use operation_plan::{
+    HostOperationPlanEngineV1, OperationCancellationV1, OperationPlanErrorV1,
+    identity as operation_file_identity_v1,
 };
 pub use package_resolver::{
     BlockedPackageV1, PackageResolutionDiagnosticCodeV1, PackageResolutionDiagnosticV1,
@@ -2049,7 +2061,7 @@ mod tests {
     fn incompatible_schema_is_rejected_before_registrar_callback() {
         SCHEMA_CALLBACK_CALLED.store(false, Ordering::SeqCst);
         let host = ExtensionHost::new();
-        let invalid_schema = explorer_extension_api::AbiSchemaIdV1::new(0x5345, 2);
+        let invalid_schema = explorer_extension_api::AbiSchemaIdV1::new(0x5345, 3);
         let result = host.register_root_for_test(root::<MarksSchemaCallback>(
             invalid_schema,
             ROOT_MODULE_CONTRACT_ID_V1,

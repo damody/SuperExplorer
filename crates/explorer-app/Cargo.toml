@@ -21,6 +21,7 @@ uitest-support = ["explorer-extension-host/integration-test-support"]
 anyhow.workspace = true
 explorer-common = { path = "../explorer-common" }
 explorer-extension-broker = { path = "../explorer-extension-broker" }
+explorer-extension-api = { path = "../explorer-extension-api" }
 explorer-extension-host = { path = "../explorer-extension-host" }
 explorer-extension-ui-api = { path = "../explorer-extension-ui-api" }
 explorer-automation = { path = "../explorer-automation" }
@@ -41,7 +42,6 @@ thiserror.workspace = true
 
 [dev-dependencies]
 abi_stable.workspace = true
-explorer-extension-api = { path = "../explorer-extension-api" }
 explorer-extension-host = { path = "../explorer-extension-host", features = ["integration-test-support"] }
 explorer-test-support = { path = "../explorer-test-support" }
 tempfile.workspace = true

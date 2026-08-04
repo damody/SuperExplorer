@@ -59,6 +59,8 @@ Manifest 的每個 contribution 必須對應穩定 `feature_id`，並宣告實�
 
 首次發布後，完整 root layout、required factory與 numeric semantics 不得在 SDK 1.x 重定義或追加。`abi_stable 0.11.3` 的 prefix 檢查不支援 newer host 以較長 layout 載入 shorter older plugin，因此 1.x 演進只使用 baseline 已具備的 descriptor/capability data contract與已核准的 non-exhaustive values；任何結構性 factory/trait/root 變更必須升 SDK major。FFI-safe metadata、typed value、provider 與 host service 使用固定寬度 primitive 和 `abi_stable` collection/result。
 
+在 SDK 尚未正式發布期間，Lock Owner example 揭露既有 `BatchColumnContextV1` 未預留 capability-scoped host service。依 2026-08-04 apply 決策，允許最後一次 pre-release context reset：將 discover-only `LockOwnerQueryServiceV1` 直接納入 `BatchColumnContextV1`，同步提高 ABI schema、淘汰所有舊 DLL／`.sepack`，並重建 ABI fixtures 與已完成 examples。此 reset 不提供 process-control authority；完成後的新 context layout 即成為首次公開 V1 baseline，後續不得再以 pre-release 名義修改。
+
 GPUI 型別不宣稱具有 stable Rust ABI。只要 DLL 註冊任何 GPUI contribution，整個 DLL 必須與 host 的 UI fingerprint 完全一致；只註冊 stable data interface 的 DLL 才使用 SDK 同一大版本與 layout compatibility。
 
 替代方案是只鎖 GPUI semver。Rust/GPUI callback 還受 compiler、features、dependency graph、panic/profile 影響，單一版本號不足，因此不採用。
