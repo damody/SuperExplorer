@@ -59,6 +59,7 @@ fn prelayout_icon_range(item_count: usize, layout_ready: bool) -> Option<std::op
     (!layout_ready).then_some(0..item_count.min(FILE_VIEWPORT_ICON_REQUEST_CAP))
 }
 
+#[cfg(test)]
 fn folder_size_result_is_current(
     result: &folder_size_column::FolderSizeResultV1,
     current: &explorer_model::RequestContext,
@@ -1055,11 +1056,7 @@ impl ExplorerRoot {
         if let Some(display) = self.folder_size_display_override {
             config.folder_size_display = display;
         }
-        self.folder_size_visuals = Some(folder_size_column::FolderSizeColumnVisuals {
-            config,
-            context: None,
-            values: HashMap::new(),
-        });
+        self.folder_size_visuals = Some(folder_size_column::FolderSizeColumnVisuals::new(config));
         self.folder_size_requested.clear();
     }
 
@@ -1334,19 +1331,32 @@ impl ExplorerRoot {
             changed = true;
         }
         let visuals = self.folder_size_visuals.get_or_insert_with(|| {
-            folder_size_column::FolderSizeColumnVisuals {
-                config: config.clone(),
-                context: None,
-                values: HashMap::new(),
-            }
+            folder_size_column::FolderSizeColumnVisuals::new(config.clone())
         });
         let active_tab = self.state.tabs().active_tab();
         let current_context =
             explorer_model::RequestContext::new(active_tab.id, active_tab.generation);
+        let live_snapshots = self
+            .state
+            .tabs()
+            .tabs()
+            .iter()
+            .map(|tab| folder_size_column::FolderSizeSnapshotKeyV1 {
+                tab_id: tab.id,
+                generation: tab.generation,
+            })
+            .collect::<HashSet<_>>();
+        self.folder_size_requested
+            .retain(|(tab_id, generation, _)| {
+                live_snapshots.contains(&folder_size_column::FolderSizeSnapshotKeyV1 {
+                    tab_id: *tab_id,
+                    generation: *generation,
+                })
+            });
         if visuals.begin_context(&current_context) {
-            self.folder_size_requested.clear();
             changed = true;
         }
+        visuals.retain_snapshots(&live_snapshots);
         let visible_ids = self
             .state
             .tabs()
@@ -1371,16 +1381,8 @@ impl ExplorerRoot {
             visuals.config = config;
             changed = true;
         }
-        for result in results
-            .into_iter()
-            .filter(|result| folder_size_result_is_current(result, &current_context))
-        {
-            let value = folder_size_column::FolderSizeValueV1 {
-                exact_bytes: result.exact_bytes,
-                partial: result.partial,
-                error: result.error,
-            };
-            if visuals.values.insert(result.item_id, value.clone()) != Some(value) {
+        for result in results {
+            if visuals.insert_result(result) {
                 changed = true;
             }
         }
@@ -6255,18 +6257,18 @@ mod tests {
         };
         assert!(folder_size_result_is_current(&current_result, &current));
 
-        let mut visuals = super::folder_size_column::FolderSizeColumnVisuals {
-            config: super::folder_size_column::VisualColumnConfigV1::default(),
-            context: Some(result.context.clone()),
-            values: std::collections::HashMap::from([(
-                result.item_id,
-                super::folder_size_column::FolderSizeValueV1 {
-                    exact_bytes: Some(42),
-                    partial: false,
-                    error: None,
-                },
-            )]),
-        };
+        let mut visuals = super::folder_size_column::FolderSizeColumnVisuals::new(
+            super::folder_size_column::VisualColumnConfigV1::default(),
+        );
+        visuals.context = Some(result.context.clone());
+        visuals.values.insert(
+            result.item_id,
+            super::folder_size_column::FolderSizeValueV1 {
+                exact_bytes: Some(42),
+                partial: false,
+                error: None,
+            },
+        );
         assert!(visuals.begin_context(&current));
         assert!(visuals.values.is_empty());
         assert!(!visuals.begin_context(&current));
