@@ -337,7 +337,7 @@ def _task_ids_from_plan(path: Path) -> set[str]:
         source = path.read_text(encoding="utf-8-sig")
     except OSError as error:
         raise ValueError(f"cannot read task plan {path}: {error}") from error
-    return set(re.findall(r"(?m)^\s*- \[[ xX]\]\s+([0-9]+\.[0-9]+\.[0-9]+)\b", source))
+    return set(re.findall(r"(?m)^\s*- \[(?: |x|X|deferred)\]\s+([0-9]+\.[0-9]+\.[0-9]+)\b", source))
 
 
 def _lineage_mapping_issues(path: Path, known_task_ids: set[str]) -> list[ValidationIssue]:
