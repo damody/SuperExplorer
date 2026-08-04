@@ -24,7 +24,9 @@ pub use engine::{
     BackendDiagnostic, DedupeStore, FallbackConfig, SearchBatch, SearchHit, SearchMetrics,
     SearchOutcome, SearchRequest, SearchSource, SearchSourceState, search_filesystem,
 };
-pub use local_index::{LazyIndex, LazyIndexConfig, default_index_path, matches_entry};
+pub use local_index::{
+    LazyIndex, LazyIndexConfig, default_index_path, matches_entry, matches_text,
+};
 pub use parser::{
     BoundQuery, Comparison, DateValue, Expr, ParseError, PropertyKey, QueryParameter, SizeValue,
     Span, Token, TokenKind, Value, bind_query, parse,

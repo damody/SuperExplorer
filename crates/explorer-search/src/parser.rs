@@ -107,6 +107,7 @@ pub enum Expr {
     Text {
         value: String,
         phrase: bool,
+        glob: bool,
     },
     Filter {
         key: PropertyKey,
@@ -390,6 +391,7 @@ impl Parser<'_> {
             TokenKind::Phrase(value) => Ok(Expr::Text {
                 value,
                 phrase: true,
+                glob: false,
             }),
             TokenKind::Word(value) => {
                 if self
@@ -398,9 +400,11 @@ impl Parser<'_> {
                 {
                     self.parse_filter(&value, token.span)
                 } else {
+                    let glob = has_unescaped_wildcard(&value);
                     Ok(Expr::Text {
                         value,
                         phrase: false,
+                        glob,
                     })
                 }
             }
@@ -529,6 +533,20 @@ impl Parser<'_> {
             "在運算子後加入查詢條件",
         )
     }
+}
+
+fn has_unescaped_wildcard(value: &str) -> bool {
+    let mut escaped = false;
+    for character in value.chars() {
+        if escaped {
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else if matches!(character, '*' | '?') {
+            return true;
+        }
+    }
+    false
 }
 
 fn starts_expression(kind: &TokenKind) -> bool {
@@ -719,5 +737,29 @@ mod tests {
     fn lexical_failure_does_not_poison_the_next_query() {
         assert!(parse(r#"name:"unterminated"#).is_err());
         assert!(parse("name:report type:txt").is_ok());
+    }
+
+    #[test]
+    fn unqualified_text_records_only_unescaped_wildcards() {
+        assert!(matches!(
+            parse("*.rs").unwrap(),
+            Expr::Text { glob: true, .. }
+        ));
+        assert!(matches!(
+            parse(r"literal\*star").unwrap(),
+            Expr::Text { glob: false, .. }
+        ));
+        assert!(matches!(
+            parse(r"literal\*star?.rs").unwrap(),
+            Expr::Text { glob: true, .. }
+        ));
+        assert!(matches!(
+            parse(r#""*.rs""#).unwrap(),
+            Expr::Text {
+                phrase: true,
+                glob: false,
+                ..
+            }
+        ));
     }
 }

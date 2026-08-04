@@ -293,9 +293,19 @@ impl LazyIndex {
                 config.max_index_rows,
                 config.max_path_bytes,
             ) {
-                Ok(true) => return partial(started, metrics, "local index storage bound reached"),
+                Ok(true) => {
+                    if !flush(&mut batch, &mut metrics, &mut deliver) {
+                        return failed("local index result channel closed");
+                    }
+                    return partial(started, metrics, "local index storage bound reached");
+                }
                 Ok(false) => {}
-                Err(_) => return partial(started, metrics, "local index write failed"),
+                Err(_) => {
+                    if !flush(&mut batch, &mut metrics, &mut deliver) {
+                        return failed("local index result channel closed");
+                    }
+                    return partial(started, metrics, "local index write failed");
+                }
             }
         }
         if !flush(&mut batch, &mut metrics, &mut deliver) {
@@ -329,7 +339,11 @@ fn canonical_text(path: &Path) -> String {
 /// broaden the visible result set.
 pub fn matches_entry(expression: &Expr, entry: &FileEntry) -> bool {
     match expression {
-        Expr::Text { value, .. } => contains(&entry.display_name, value),
+        Expr::Text {
+            value,
+            phrase,
+            glob,
+        } => matches_text(&entry.display_name, value, *phrase, *glob),
         Expr::Filter {
             key,
             comparison,
@@ -356,6 +370,102 @@ pub fn matches_entry(expression: &Expr, entry: &FileEntry) -> bool {
 }
 fn contains(a: &str, b: &str) -> bool {
     a.to_lowercase().contains(&b.to_lowercase())
+}
+
+/// Matches unqualified search text against one complete filename.
+///
+/// Plain text retains substring behavior. Glob text is matched against the complete filename;
+/// backslash escapes `*`, `?`, and backslash itself.
+pub fn matches_text(filename: &str, pattern: &str, phrase: bool, glob: bool) -> bool {
+    if phrase {
+        return contains(filename, pattern);
+    }
+    let tokens = glob_tokens(pattern);
+    if !glob {
+        let literal: String = tokens
+            .into_iter()
+            .map(|token| match token {
+                GlobToken::Literal(character) => character,
+                GlobToken::AnyMany => '*',
+                GlobToken::AnyOne => '?',
+            })
+            .collect();
+        return contains(filename, &literal);
+    }
+    glob_matches(filename, &tokens)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GlobToken {
+    Literal(char),
+    AnyMany,
+    AnyOne,
+}
+
+fn glob_tokens(pattern: &str) -> Vec<GlobToken> {
+    let mut tokens = Vec::with_capacity(pattern.chars().count());
+    let mut characters = pattern.chars();
+    while let Some(character) = characters.next() {
+        if character == '\\' {
+            match characters.next() {
+                Some(escaped @ ('*' | '?' | '\\')) => tokens.push(GlobToken::Literal(escaped)),
+                Some(other) => {
+                    tokens.push(GlobToken::Literal('\\'));
+                    tokens.push(GlobToken::Literal(other));
+                }
+                None => tokens.push(GlobToken::Literal('\\')),
+            }
+        } else {
+            tokens.push(match character {
+                '*' => GlobToken::AnyMany,
+                '?' => GlobToken::AnyOne,
+                literal => GlobToken::Literal(literal),
+            });
+        }
+    }
+    tokens
+}
+
+fn glob_matches(filename: &str, tokens: &[GlobToken]) -> bool {
+    let filename: Vec<char> = filename.chars().flat_map(char::to_lowercase).collect();
+    let tokens: Vec<GlobToken> = tokens
+        .iter()
+        .flat_map(|token| match token {
+            GlobToken::Literal(character) => character
+                .to_lowercase()
+                .map(GlobToken::Literal)
+                .collect::<Vec<_>>(),
+            other => vec![*other],
+        })
+        .collect();
+    let (mut name_index, mut pattern_index) = (0, 0);
+    let (mut star_index, mut star_match) = (None, 0);
+    while name_index < filename.len() {
+        match tokens.get(pattern_index) {
+            Some(GlobToken::Literal(expected)) if *expected == filename[name_index] => {
+                name_index += 1;
+                pattern_index += 1;
+            }
+            Some(GlobToken::AnyOne) => {
+                name_index += 1;
+                pattern_index += 1;
+            }
+            Some(GlobToken::AnyMany) => {
+                star_index = Some(pattern_index);
+                pattern_index += 1;
+                star_match = name_index;
+            }
+            _ => {
+                let Some(star) = star_index else { return false };
+                star_match += 1;
+                name_index = star_match;
+                pattern_index = star + 1;
+            }
+        }
+    }
+    tokens[pattern_index..]
+        .iter()
+        .all(|token| *token == GlobToken::AnyMany)
 }
 fn compare<T: Ord>(a: &T, b: &T, c: Comparison) -> bool {
     match c {
@@ -412,6 +522,26 @@ fn failed(detail: impl Into<String>) -> SearchOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filename_globs_and_plain_text_share_one_matcher() {
+        assert!(matches_text("src.rs", "*.rs", false, true));
+        assert!(matches_text("SRC.RS", "*.rs", false, true));
+        assert!(matches_text("foo-test.rs", "foo*.rs", false, true));
+        assert!(matches_text("unit-test-data", "*test*", false, true));
+        assert!(matches_text("file1.rs", "file?.rs", false, true));
+        assert!(!matches_text("file10.rs", "file?.rs", false, true));
+        assert!(matches_text("測試.rs", "測?.rs", false, true));
+        assert!(matches_text("quarter-report.txt", "report", false, false));
+        assert!(matches_text("literal*star", r"literal\*star", false, false));
+        assert!(matches_text(
+            "literal*star1.rs",
+            r"literal\*star?.rs",
+            false,
+            true
+        ));
+        assert!(!matches_text("other.rs", r"*.rs", true, false));
+    }
     use crate::parse;
     use tempfile::tempdir;
 
@@ -560,6 +690,23 @@ mod tests {
             .unwrap();
         assert!(bounded);
         assert!(index.cached_entries(&parent, 10).unwrap().is_empty());
+
+        let mut delivered = Vec::new();
+        let outcome = index.search(
+            &parent,
+            &parse("first").unwrap(),
+            &CancellationToken::new(),
+            LazyIndexConfig {
+                max_index_rows: 0,
+                ..LazyIndexConfig::default()
+            },
+            |batch| {
+                delivered.extend(batch.hits.into_iter().map(|hit| hit.entry.display_name));
+                Ok(())
+            },
+        );
+        assert!(matches!(outcome, SearchOutcome::Partial { .. }));
+        assert_eq!(delivered, ["first.txt"]);
     }
 
     #[cfg(windows)]

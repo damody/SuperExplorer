@@ -5893,9 +5893,13 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
 
     #[test]
     fn real_search_uses_typed_query_fallback_and_rejects_fast_replacement() {
+        let _test_guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _guard = crate::clipboard::CLIPBOARD_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _everything = crate::everything::force_unavailable_for_test();
         let fixture = OwnedTempFixture::new().expect("fixture");
         fs::write(
             fixture.root().join("專案 quarter four.txt"),
@@ -5967,6 +5971,7 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
         let _test_guard = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _everything = crate::everything::force_unavailable_for_test();
         let fixture = OwnedTempFixture::new().expect("search E2E fixture");
         let folder_a = fixture.create_dir("search-a").expect("search A");
         let folder_b = fixture.create_dir("search-b").expect("search B");

@@ -11,6 +11,10 @@ use explorer_model::{
 use explorer_search::{Comparison, Expr, PropertyKey, Value};
 use libloading::Library;
 
+#[cfg(test)]
+static FORCE_UNAVAILABLE_FOR_TEST: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 type SetSearch = unsafe extern "system" fn(*const u16);
 type SetDword = unsafe extern "system" fn(u32);
 type Query = unsafe extern "system" fn(i32) -> i32;
@@ -37,6 +41,10 @@ pub(crate) struct EverythingProvider {
 
 impl EverythingProvider {
     pub(crate) fn open_adjacent() -> Result<Self, String> {
+        #[cfg(test)]
+        if FORCE_UNAVAILABLE_FOR_TEST.load(std::sync::atomic::Ordering::Acquire) {
+            return Err("Everything disabled by deterministic fallback test".to_owned());
+        }
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
         let parent = executable
             .parent()
@@ -95,6 +103,25 @@ impl EverythingProvider {
     ) -> Result<(), String> {
         query_provider(self, root, expression, cancellation, deliver)
     }
+}
+
+#[cfg(test)]
+pub(crate) struct ForcedUnavailableGuard;
+
+#[cfg(test)]
+impl Drop for ForcedUnavailableGuard {
+    fn drop(&mut self) {
+        FORCE_UNAVAILABLE_FOR_TEST.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn force_unavailable_for_test() -> ForcedUnavailableGuard {
+    assert!(
+        !FORCE_UNAVAILABLE_FOR_TEST.swap(true, std::sync::atomic::Ordering::AcqRel),
+        "Everything fallback test override must be serialized"
+    );
+    ForcedUnavailableGuard
 }
 
 trait EverythingApi {
@@ -253,6 +280,9 @@ fn path_within_scope(path: &Path, root: &Path) -> bool {
 
 fn render_expression(expression: &Expr) -> String {
     match expression {
+        Expr::Text {
+            value, glob: true, ..
+        } => format!("name:\"{}\"", escape(value)),
         Expr::Text { value, .. } => format!("\"{}\"", escape(value)),
         Expr::Filter {
             key,
@@ -358,6 +388,16 @@ mod tests {
         assert!(rendered.contains("ext:\"txt\""));
         assert!(rendered.contains("size:>1024"));
     }
+
+    #[test]
+    fn filename_globs_preserve_wildcards_inside_a_name_candidate() {
+        let expression = explorer_search::parse(r"foo*.rs").unwrap();
+        assert_eq!(render_expression(&expression), r#"name:"foo*.rs""#);
+
+        let expression = explorer_search::parse(r"*a|b?.rs").unwrap();
+        let rendered = render_expression(&expression);
+        assert_eq!(rendered, r#"name:"*a|b?.rs""#);
+    }
     #[test]
     fn provider_results_are_rechecked_against_exact_scope_boundaries() {
         assert!(path_within_scope(
@@ -428,5 +468,52 @@ mod tests {
         assert!(error.contains("55"));
         assert!(!error.contains("private-root"));
         assert!(!error.contains("a|"));
+    }
+
+    #[test]
+    fn successful_zero_result_provider_is_not_an_error() {
+        let root = std::path::Path::new(r"C:\private-root");
+        let mut provider = FakeApi::default();
+        let expression = explorer_search::parse("*.rs").unwrap();
+        let mut deliveries = 0;
+        let result = query_provider(
+            &mut provider,
+            root,
+            &expression,
+            &explorer_model::CancellationToken::new(),
+            |_| {
+                deliveries += 1;
+                Ok(())
+            },
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(provider.queries, 1);
+        assert_eq!(deliveries, 0);
+    }
+
+    #[test]
+    fn everything_candidates_use_the_shared_glob_post_filter() {
+        let root = std::path::Path::new(r"C:\fixture");
+        let mut provider = FakeApi {
+            results: ["lib.rs", "MAIN.RS", "notes.txt", "nested.rs.bak"]
+                .map(|name| root.join(name))
+                .into(),
+            ..FakeApi::default()
+        };
+        let expression = explorer_search::parse("*.rs").unwrap();
+        let mut names = Vec::new();
+        query_provider(
+            &mut provider,
+            root,
+            &expression,
+            &explorer_model::CancellationToken::new(),
+            |entries| {
+                names.extend(entries.into_iter().map(|entry| entry.display_name));
+                Ok(())
+            },
+        )
+        .unwrap();
+        names.sort();
+        assert_eq!(names, ["MAIN.RS", "lib.rs"]);
     }
 }

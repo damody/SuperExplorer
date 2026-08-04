@@ -20,7 +20,6 @@ use explorer_common::{
 };
 use explorer_jobs::JobSchedulerConfig;
 use explorer_model::WorkspaceModel;
-use explorer_search::SearchSource;
 use explorer_shell_win::ShellPlatform;
 use explorer_ui::ExplorerUiState;
 
@@ -64,8 +63,6 @@ fn run(build: AppBuildInfo, diagnostics: &DiagnosticsSession) -> anyhow::Result<
     let ui = ExplorerUiState::default();
     let jobs = JobSchedulerConfig::default();
     let shell = ShellPlatform::windows();
-    let search_source = SearchSource::WindowsIndex;
-
     tracing::info!(
         version = build.package_version,
         revision = build.git_revision,
@@ -73,7 +70,6 @@ fn run(build: AppBuildInfo, diagnostics: &DiagnosticsSession) -> anyhow::Result<
         ui_lifecycle = ?ui.model().lifecycle(),
         maximum_queued_jobs = jobs.maximum_queued_jobs,
         requires_sta = shell.requires_sta,
-        ?search_source,
         "Explorer bootstrap composition is ready"
     );
     diagnostics.record_event("composition_ready", &[])?;
