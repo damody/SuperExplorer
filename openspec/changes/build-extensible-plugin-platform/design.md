@@ -33,11 +33,11 @@ SuperExplorer 是 Windows x64 MSVC 的 Rust／GPUI 檔案總管。目前詳細�
 
 ### 0. 0→1 階段先完成單一可見 vertical slice
 
-目前只驗證 `p0-consumer`。App 接受一個明確的 `--plugin-dll <absolute-path>` 開發參數，Extension Host 重用既有 Windows DLL loader、`abi_stable` root layout validation、SDK-owned registrar factory 與 registration，再把 plugin ID、contribution ID、kind 複製成最小 owned summary，交給既有 Extensions menu 顯示。沒有參數時不掃描或載入 unsigned local DLL。
+目前只驗證 canonical `rust-folder-size-visual-column`（由早期 `p0-consumer` prototype 直接遷移，不保留第二份重複實作）。App 接受一個明確的 `--plugin-dll <absolute-path>` 開發參數，Extension Host 重用既有 Windows DLL loader、`abi_stable` root layout validation、SDK-owned registrar factory 與 registration，再把 plugin ID、contribution ID、kind 複製成最小 owned summary，交給既有 Extensions menu 顯示。沒有參數時不掃描或載入 unsigned local DLL。
 
 此階段不建立多 Plugin abstraction、package-source framework、dynamic-column provider/renderer、scheduler、evidence ledger、snapshot/release framework、contract/integration/mock/fake framework。驗證只用最小 unit、smoke 與人工 demo；UITEST 只可能在完整 example 可見後作單一既有-runner smoke。其餘 decisions 是 validation GO 後的 roadmap，不得成為本 milestone 的前置 gate。
 
-`build_install.bat` 的同一條 release 流程必須使用 fixture manifest 以 `--release --target x86_64-pc-windows-msvc --offline` 建置唯一的 `p0_consumer.dll`，驗證明確產物後交給 NSIS。NSIS 固定安裝為 `$INSTDIR\plugins\p0_consumer.dll`，並讓桌面捷徑、開始選單捷徑及完成頁傳入 `--plugin-dll "$INSTDIR\plugins\p0_consumer.dll"`。不採用 app 目錄掃描或額外 launcher；uninstaller 只刪除該已知 DLL 與空目錄，不遞迴刪除未知檔案。
+`build_install.bat` 的同一條 release 流程必須使用 fixture manifest 以 `--release --target x86_64-pc-windows-msvc --locked --offline` 建置唯一的 `rust_folder_size_visual_column.dll`，驗證明確產物後交給 NSIS。NSIS 固定安裝為 `$INSTDIR\plugins\rust_folder_size_visual_column.dll`，並讓桌面捷徑、開始選單捷徑及完成頁傳入 `--plugin-dll "$INSTDIR\plugins\rust_folder_size_visual_column.dll"`。不採用 app 目錄掃描或額外 launcher；uninstaller 只刪除該已知 DLL 與空目錄，不遞迴刪除未知檔案。
 
 folder-size slice 完成後，下一個 active consumer 是獨立 `rust-folder-size-map-view`。它仍單獨透過 `--plugin-dll` 載入，不改變 installer 的唯一 bundled Plugin。SDK-owned `abi_stable` renderer 只接收完整 host-minted revision 的 owned node snapshot、viewport/theme/selection/settings並回傳data-only treemap rectangles；同步 ABI callback 只在有界 host worker 內執行並以每次呼叫的 durable marker 保護。實際 GPUI element只畫已返回且revision相符的 plan，並保有正式 selection/navigation/F5 action；GPUI thread、entity、handle與I/O均不跨 ABI。P0先呈現目前位置第一層節點，使用有界且generation-aware的背景計量逐步補值；通用100,000-node scan framework保留在deferred roadmap，不阻擋這個產品驗證slice。
 
