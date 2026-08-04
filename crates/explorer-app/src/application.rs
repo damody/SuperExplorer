@@ -550,6 +550,7 @@ struct ApplicationVisualColumnRuntimeV1 {
 
 #[derive(Default)]
 struct PendingFolderSizeWorkV1 {
+    context: Option<explorer_model::RequestContext>,
     requests: Option<Vec<explorer_ui::folder_size_column::FolderSizeRequestV1>>,
     stopped: bool,
 }
@@ -588,25 +589,21 @@ impl ApplicationVisualColumnRuntimeV1 {
                         state.requests.take().unwrap_or_default()
                     };
                     let batch_epoch = worker_epoch.load(Ordering::Acquire);
-                    let batch_started = Instant::now();
                     for request in requests {
                         if worker_epoch.load(Ordering::Acquire) != batch_epoch {
                             break;
                         }
-                        let Some(remaining) =
-                            Duration::from_secs(2).checked_sub(batch_started.elapsed())
-                        else {
-                            break;
-                        };
                         let measured = measure.measure_folder_size(
                             FOLDER_SIZE_CONTRIBUTION_ID_V1,
                             explorer_extension_ui_api::FolderSizeMeasureRequestV1 {
                                 filesystem_path: request.path.to_string_lossy().into_owned().into(),
                                 max_entries: 100_000,
                                 max_depth: 128,
-                                deadline_millis: u32::try_from(remaining.as_millis())
-                                    .unwrap_or(u32::MAX)
-                                    .max(1),
+                                // This callback already runs off the GPUI thread. A
+                                // foreground budget must never terminate the scan:
+                                // let it finish and populate the plugin cache even
+                                // when navigation makes its UI result stale.
+                                deadline_millis: 0,
                             },
                         );
                         if worker_epoch.load(Ordering::Acquire) != batch_epoch {
@@ -621,7 +618,7 @@ impl ApplicationVisualColumnRuntimeV1 {
                             Err(error) => (None, true, Some(error.to_string())),
                         };
                         if result_tx
-                            .try_send(explorer_ui::folder_size_column::FolderSizeResultV1 {
+                            .send(explorer_ui::folder_size_column::FolderSizeResultV1 {
                                 context: request.context,
                                 item_id: request.item_id,
                                 exact_bytes,
@@ -659,12 +656,28 @@ impl explorer_ui::folder_size_column::VisualColumnRuntimePortV1
         &self,
         requests: Vec<explorer_ui::folder_size_column::FolderSizeRequestV1>,
     ) {
-        self.request_epoch.fetch_add(1, Ordering::AcqRel);
+        let Some(context) = requests.first().map(|request| request.context.clone()) else {
+            return;
+        };
         let (lock, ready) = &*self.pending;
         let mut state = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.requests = Some(requests);
+        if state.context.as_ref() == Some(&context) {
+            let pending = state.requests.get_or_insert_with(Vec::new);
+            for request in requests {
+                if !pending
+                    .iter()
+                    .any(|queued| queued.item_id == request.item_id)
+                {
+                    pending.push(request);
+                }
+            }
+        } else {
+            self.request_epoch.fetch_add(1, Ordering::AcqRel);
+            state.context = Some(context);
+            state.requests = Some(requests);
+        }
         ready.notify_one();
     }
 
@@ -698,6 +711,7 @@ impl Drop for ApplicationVisualColumnRuntimeV1 {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.stopped = true;
+        state.context = None;
         state.requests = None;
         ready.notify_one();
     }

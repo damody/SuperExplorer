@@ -31,6 +31,44 @@ try {
     Copy-Item -LiteralPath (Join-Path $fixture 'src\lib.rs') -Destination (Join-Path $consumer 'src\lib.rs')
     Copy-Item -LiteralPath (Join-Path $fixture 'vendor') -Destination $consumer -Recurse
 
+    # Materialize the two public SDK crates beside the isolated consumer. The
+    # fixture intentionally references these crates by path, but the clean
+    # scratch tree has no repository workspace to provide inherited metadata.
+    # Keep the materialized manifests standalone and patch the fixture paths so
+    # Cargo never resolves a dependency outside this temporary tree.
+    $materializedCrates = Join-Path $scratch 'crates'
+    New-Item -ItemType Directory -Path $materializedCrates -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $repository 'crates\explorer-extension-api') -Destination $materializedCrates -Recurse
+    Copy-Item -LiteralPath (Join-Path $repository 'crates\explorer-extension-ui-api') -Destination $materializedCrates -Recurse
+    $consumerManifest = Get-Content -LiteralPath (Join-Path $consumer 'Cargo.toml') -Raw
+    $consumerManifest = $consumerManifest.Replace('../../../crates/explorer-extension-api', '../crates/explorer-extension-api').Replace('../../../crates/explorer-extension-ui-api', '../crates/explorer-extension-ui-api')
+    Write-Utf8NoBom (Join-Path $consumer 'Cargo.toml') $consumerManifest
+
+    $apiManifest = @'
+[package]
+name = "explorer-extension-api"
+version = "1.2.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+
+[dependencies]
+abi_stable = { version = "=0.11.3", default-features = false }
+'@
+    Write-Utf8NoBom (Join-Path $materializedCrates 'explorer-extension-api\Cargo.toml') $apiManifest
+    $uiManifest = @'
+[package]
+name = "explorer-extension-ui-api"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+
+[dependencies]
+explorer-extension-api = { path = "../explorer-extension-api" }
+'@
+    Write-Utf8NoBom (Join-Path $materializedCrates 'explorer-extension-ui-api\Cargo.toml') $uiManifest
+
     $sourcePath = Join-Path $consumer 'src\lib.rs'
     $sourceBytes = [IO.File]::ReadAllBytes($sourcePath)
     $sourceHash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -61,7 +99,7 @@ publish = false
 
 [dependencies]
 abi_stable = { version = "=0.11.3", default-features = false }
-explorer-extension-api = "=1.2.0"
+explorer-extension-api = { path = "../crates/explorer-extension-api" }
 
 [workspace]
 "@
@@ -103,7 +141,7 @@ fn run(path: &Path, marker: &Path) -> Result<(), String> {
     }
     let output = registrar.register(registrar_request_v1()).into_result()
         .map_err(|error| format!("matching registrar failed: {error:?}"))?;
-    if output.outcome != RegistrationOutcomeV1::accepted(1) || output.contributions.len() != 1 {
+    if output.outcome != RegistrationOutcomeV1::accepted(2) || output.contributions.len() != 2 {
         return Err("matching registrar returned the wrong descriptor batch".into());
     }
     if !marker.exists() {
