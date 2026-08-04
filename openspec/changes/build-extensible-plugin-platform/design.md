@@ -89,6 +89,8 @@ DLL 只在啟動階段載入並保持 resident。已載入 feature 可停止新 
 
 ### 7. 動態欄位與 GPUI contribution 不暴露私有狀態
 
+Folder-size 的 application-owned runtime 對每個 request context 維護 queued 與 in-flight work identity；identity 由 context、item ID 與 filesystem path 組成。UI 重複提交 unresolved row 時，不得重新排入已 queued 或正在執行的 scan。Foreground hint 只限制 UI 等待，不取消或重啟背景遞迴。導航或 refresh 造成 generation 改變時，舊 scan 可完成並寫入 exact cache，但舊 generation 結果不得發布到目前 UI。
+
 固定 `SortColumn`／bitmask 遷移為 dynamic registry、ordered layout 與 stable `ColumnId`。Header、row virtualization、selection、sorting、width/order persistence、UIA 與 session restore 都使用 registry。
 
 Data-only render-plan context 只提供 immutable public data、theme facade、settings 與 host-minted full-snapshot revision，不提供 action sink、invalidation handle 或任何 GPUI type。每次同步 ABI callback 只在有界 host worker 執行，並各自建立與清除 durable call marker；不得做 I/O、網路或長時間解析。GPUI thread 只布局並繪製 revision 仍相符的 returned plan。

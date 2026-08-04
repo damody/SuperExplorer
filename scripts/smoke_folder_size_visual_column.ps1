@@ -14,6 +14,8 @@ foreach ($name in 'Executable','PluginDll','OutputDirectory') {
 $Executable = (Resolve-Path $Executable).Path
 $PluginDll = (Resolve-Path $PluginDll).Path
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
+$extensionState = Join-Path $OutputDirectory 'extension-state'
+New-Item -ItemType Directory -Force -Path $extensionState | Out-Null
 
 # Keep the fixture deterministic and outside the repository.  The values are
 # deliberately different so the Details header's numeric sort is observable.
@@ -58,7 +60,7 @@ function Click($root,$element,[switch]$Right) {
 }
 function Key([byte]$key) { [FolderSizeHeadful.Native]::keybd_event($key,0,0,[UIntPtr]::Zero); [FolderSizeHeadful.Native]::keybd_event($key,0,2,[UIntPtr]::Zero) }
 
-$diag=Join-Path $OutputDirectory 'diagnostics.json'; $psi=[Diagnostics.ProcessStartInfo]::new(); $psi.FileName=$Executable; $psi.Arguments="--plugin-dll `"$PluginDll`""; $psi.WorkingDirectory=$workspace; $psi.UseShellExecute=$false; $psi.EnvironmentVariables['EXPLORER_VISUAL_FIXTURE']='1'; $psi.EnvironmentVariables['EXPLORER_VISUAL_REAL_SHELL']='1'; $psi.EnvironmentVariables['EXPLORER_VISUAL_STATE']='populated'; $psi.EnvironmentVariables['EXPLORER_VISUAL_DIAGNOSTICS']=$diag; $psi.EnvironmentVariables['EXPLORER_INITIAL_PATH']=$InitialPath; $psi.EnvironmentVariables['EXPLORER_LOG_DIR']=$OutputDirectory
+$diag=Join-Path $OutputDirectory 'diagnostics.json'; $psi=[Diagnostics.ProcessStartInfo]::new(); $psi.FileName=$Executable; $psi.Arguments="--plugin-dll `"$PluginDll`""; $psi.WorkingDirectory=$workspace; $psi.UseShellExecute=$false; $psi.EnvironmentVariables['EXPLORER_VISUAL_FIXTURE']='1'; $psi.EnvironmentVariables['EXPLORER_VISUAL_REAL_SHELL']='1'; $psi.EnvironmentVariables['EXPLORER_VISUAL_STATE']='populated'; $psi.EnvironmentVariables['EXPLORER_VISUAL_DIAGNOSTICS']=$diag; $psi.EnvironmentVariables['EXPLORER_INITIAL_PATH']=$InitialPath; $psi.EnvironmentVariables['EXPLORER_LOG_DIR']=$OutputDirectory; $psi.EnvironmentVariables['EXPLORER_UITEST_EXTENSION_STATE_ROOT']=$extensionState
 $process=[Diagnostics.Process]::Start($psi); try {
     $until=[DateTime]::UtcNow.AddSeconds(35); do { Start-Sleep -Milliseconds 150; $process.Refresh(); $window=$process.MainWindowHandle } while (($window -eq [IntPtr]::Zero -or -not (Test-Path $diag)) -and [DateTime]::UtcNow -lt $until)
     if ($window -eq [IntPtr]::Zero) { throw 'Timed out waiting for SuperExplorer' }; [FolderSizeHeadful.Native]::SetForegroundWindow($window) | Out-Null; $root=[Windows.Automation.AutomationElement]::FromHandle($window)

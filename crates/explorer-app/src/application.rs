@@ -592,7 +592,34 @@ struct ApplicationVisualColumnRuntimeV1 {
 struct PendingFolderSizeWorkV1 {
     context: Option<explorer_model::RequestContext>,
     requests: Option<Vec<explorer_ui::folder_size_column::FolderSizeRequestV1>>,
+    in_flight: HashSet<FolderSizeWorkIdentityV1>,
     stopped: bool,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct FolderSizeWorkIdentityV1 {
+    tab_id: explorer_model::TabId,
+    generation: explorer_model::Generation,
+    item_id: explorer_model::ShellItemId,
+    path: PathBuf,
+}
+
+impl From<&explorer_ui::folder_size_column::FolderSizeRequestV1> for FolderSizeWorkIdentityV1 {
+    fn from(request: &explorer_ui::folder_size_column::FolderSizeRequestV1) -> Self {
+        Self {
+            tab_id: request.context.tab_id,
+            generation: request.context.generation,
+            item_id: request.item_id.clone(),
+            path: request.path.clone(),
+        }
+    }
+}
+
+fn same_folder_size_generation(
+    left: &explorer_model::RequestContext,
+    right: &explorer_model::RequestContext,
+) -> bool {
+    left.tab_id == right.tab_id && left.generation == right.generation
 }
 
 fn enqueue_folder_size_requests(
@@ -603,10 +630,16 @@ fn enqueue_folder_size_requests(
     let Some(context) = requests.first().map(|request| request.context.clone()) else {
         return;
     };
-    if state.context.as_ref() == Some(&context) {
+    if state
+        .context
+        .as_ref()
+        .is_some_and(|current| same_folder_size_generation(current, &context))
+    {
         let pending = state.requests.get_or_insert_with(Vec::new);
         for request in requests {
-            if request.context == context
+            let identity = FolderSizeWorkIdentityV1::from(&request);
+            if same_folder_size_generation(&request.context, &context)
+                && !state.in_flight.contains(&identity)
                 && !pending
                     .iter()
                     .any(|queued| queued.item_id == request.item_id && queued.path == request.path)
@@ -620,10 +653,31 @@ fn enqueue_folder_size_requests(
         state.requests = Some(
             requests
                 .into_iter()
-                .filter(|request| request.context == context)
+                .filter(|request| same_folder_size_generation(&request.context, &context))
                 .collect(),
         );
     }
+}
+
+fn take_folder_size_requests(
+    state: &mut PendingFolderSizeWorkV1,
+) -> Vec<explorer_ui::folder_size_column::FolderSizeRequestV1> {
+    let requests = state.requests.take().unwrap_or_default();
+    state
+        .in_flight
+        .extend(requests.iter().map(FolderSizeWorkIdentityV1::from));
+    requests
+}
+
+fn finish_folder_size_request(
+    pending: &(Mutex<PendingFolderSizeWorkV1>, Condvar),
+    request: &explorer_ui::folder_size_column::FolderSizeRequestV1,
+) {
+    let (lock, _) = pending;
+    lock.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .in_flight
+        .remove(&FolderSizeWorkIdentityV1::from(request));
 }
 
 impl ApplicationVisualColumnRuntimeV1 {
@@ -657,11 +711,16 @@ impl ApplicationVisualColumnRuntimeV1 {
                         if state.stopped {
                             return;
                         }
-                        state.requests.take().unwrap_or_default()
+                        take_folder_size_requests(&mut state)
                     };
                     let batch_epoch = worker_epoch.load(Ordering::Acquire);
-                    for request in requests {
+                    let mut requests = requests.into_iter();
+                    while let Some(request) = requests.next() {
                         if worker_epoch.load(Ordering::Acquire) != batch_epoch {
+                            finish_folder_size_request(&worker_pending, &request);
+                            for skipped in requests {
+                                finish_folder_size_request(&worker_pending, &skipped);
+                            }
                             break;
                         }
                         let measured = measure.measure_folder_size(
@@ -677,7 +736,11 @@ impl ApplicationVisualColumnRuntimeV1 {
                                 deadline_millis: 0,
                             },
                         );
+                        finish_folder_size_request(&worker_pending, &request);
                         if worker_epoch.load(Ordering::Acquire) != batch_epoch {
+                            for skipped in requests {
+                                finish_folder_size_request(&worker_pending, &skipped);
+                            }
                             break;
                         }
                         let (exact_bytes, partial, error) = match measured {
@@ -3175,6 +3238,7 @@ mod tests {
         emit_post_commit_safe_mode_telemetry_v1, enqueue_folder_size_requests,
         enqueue_size_map_requests, measure_size_map_path, read_code_lines_file_bounded,
         should_restore_saved_tabs, size_map_node_id, size_map_render_key,
+        take_folder_size_requests,
     };
 
     struct FakeSafeModePortV1 {
@@ -3692,6 +3756,95 @@ mod tests {
             pending.requests.as_ref().unwrap()[0].item_id,
             ShellItemId::from_provider_bytes(3_u64.to_le_bytes()).unwrap()
         );
+    }
+
+    #[test]
+    fn active_folder_size_request_is_not_queued_again_by_repeated_ui_submissions() {
+        let context = RequestContext::new(TabId::new(), Generation::new(1));
+        let request = explorer_ui::folder_size_column::FolderSizeRequestV1 {
+            context,
+            item_id: ShellItemId::from_provider_bytes(1_u64.to_le_bytes()).unwrap(),
+            path: PathBuf::from(r"C:\fixture\slow"),
+        };
+        let epoch = AtomicU64::new(0);
+        let mut pending = PendingFolderSizeWorkV1::default();
+
+        enqueue_folder_size_requests(&mut pending, &epoch, vec![request.clone()]);
+        assert_eq!(
+            take_folder_size_requests(&mut pending),
+            vec![request.clone()]
+        );
+        assert!(pending.requests.is_none());
+        assert_eq!(pending.in_flight.len(), 1);
+
+        for _ in 0..10 {
+            enqueue_folder_size_requests(&mut pending, &epoch, vec![request.clone()]);
+        }
+
+        assert!(
+            pending.requests.as_ref().is_none_or(Vec::is_empty),
+            "an in-flight recursive scan must not be queued from its root again"
+        );
+        assert_eq!(pending.in_flight.len(), 1);
+        assert_eq!(epoch.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn new_request_id_in_same_generation_does_not_restart_folder_size_work() {
+        let tab = TabId::new();
+        let first_context = RequestContext::new(tab, Generation::new(1));
+        let next_frame_context = RequestContext::new(tab, Generation::new(1));
+        assert_ne!(first_context.request_id, next_frame_context.request_id);
+        let request =
+            |context: RequestContext| explorer_ui::folder_size_column::FolderSizeRequestV1 {
+                context,
+                item_id: ShellItemId::from_provider_bytes(1_u64.to_le_bytes()).unwrap(),
+                path: PathBuf::from(r"C:\fixture\slow"),
+            };
+        let epoch = AtomicU64::new(0);
+        let mut pending = PendingFolderSizeWorkV1::default();
+
+        enqueue_folder_size_requests(&mut pending, &epoch, vec![request(first_context)]);
+        let active = take_folder_size_requests(&mut pending);
+        enqueue_folder_size_requests(&mut pending, &epoch, vec![request(next_frame_context)]);
+
+        assert_eq!(active.len(), 1);
+        assert_eq!(epoch.load(Ordering::Acquire), 1);
+        assert!(pending.requests.as_ref().is_none_or(Vec::is_empty));
+        assert_eq!(pending.in_flight.len(), 1);
+    }
+
+    #[test]
+    fn generation_change_keeps_active_scan_until_terminal_but_replaces_queued_work() {
+        let tab = TabId::new();
+        let old_request = explorer_ui::folder_size_column::FolderSizeRequestV1 {
+            context: RequestContext::new(tab, Generation::new(1)),
+            item_id: ShellItemId::from_provider_bytes(1_u64.to_le_bytes()).unwrap(),
+            path: PathBuf::from(r"C:\fixture\old-slow"),
+        };
+        let new_request = explorer_ui::folder_size_column::FolderSizeRequestV1 {
+            context: RequestContext::new(tab, Generation::new(2)),
+            item_id: ShellItemId::from_provider_bytes(2_u64.to_le_bytes()).unwrap(),
+            path: PathBuf::from(r"C:\fixture\new"),
+        };
+        let epoch = AtomicU64::new(0);
+        let mut pending = PendingFolderSizeWorkV1::default();
+
+        enqueue_folder_size_requests(&mut pending, &epoch, vec![old_request.clone()]);
+        assert_eq!(
+            take_folder_size_requests(&mut pending),
+            vec![old_request.clone()]
+        );
+        enqueue_folder_size_requests(&mut pending, &epoch, vec![new_request.clone()]);
+
+        assert_eq!(epoch.load(Ordering::Acquire), 2);
+        assert!(
+            pending
+                .in_flight
+                .contains(&super::FolderSizeWorkIdentityV1::from(&old_request)),
+            "navigation must not cancel the scan that is already populating the exact cache"
+        );
+        assert_eq!(pending.requests.as_deref(), Some([new_request].as_slice()));
     }
 
     #[test]

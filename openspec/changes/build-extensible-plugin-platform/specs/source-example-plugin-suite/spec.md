@@ -55,6 +55,14 @@ Examples SHALL depend only on public SDK crates, their precisely locked private 
 - **WHEN** the example scans a 1,000-item fixture containing inaccessible paths and a symlink cycle
 - **THEN** the list remains interactive, valid rows sort by exact bytes, errors remain partial/typed and the GPUI renderer draws only from background results
 
+#### Scenario: An unresolved visible folder is submitted repeatedly
+- **WHEN** UI rendering submits the same context, item and path while its recursive measurement is already queued or in flight
+- **THEN** the host invokes that measurement once, preserves the active traversal until a terminal result, and does not restart it from the folder root
+
+#### Scenario: Navigation changes while a folder scan is active
+- **WHEN** the active request generation changes before an existing folder measurement finishes
+- **THEN** the existing measurement may finish and populate its exact cache, its stale UI result is rejected, and work for the new generation is scheduled independently
+
 ### Requirement: Rust tokei column example
 `rust-tokei-code-lines-column` SHALL use a locked Rust tokei library in its DLL to return language, code, comment, blank and total counts in bounded batches, with a numeric selected sort metric and no OS process per file.
 
