@@ -203,7 +203,8 @@ pub fn run_from_env() -> Result<()> {
     // An explicitly selected case is a local/example run, not a repository
     // release gate. Validate its selectors without requiring unrelated OpenSpec
     // requirements to have UITEST coverage before the case can even start.
-    let coverage = build_coverage_with_gate(&manifest, &requirements, cli.cases.is_empty())?;
+    let require_complete_coverage = !cli.list && cli.cases.is_empty();
+    let coverage = build_coverage_with_gate(&manifest, &requirements, require_complete_coverage)?;
     let selected = select_cases(&manifest, &cli)?;
 
     if cli.list || cli.validate_only {

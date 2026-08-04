@@ -69,6 +69,7 @@ pub struct CodeLinesResultV1 {
 pub trait CodeLinesRuntimePortV1: Send + Sync {
     fn config(&self) -> CodeLinesColumnConfigV1;
     fn submit_code_lines_requests(&self, requests: Vec<CodeLinesRequestV1>);
+    fn cancel_code_lines_context(&self, context: &RequestContext);
     fn drain_code_lines_results(&self) -> Vec<CodeLinesResultV1>;
     /// Moves completed asynchronous render plans into the host cache. Returns
     /// true only when GPUI needs another frame to consume a newly-ready plan.
@@ -134,7 +135,7 @@ pub fn code_lines_column_descriptor() -> ColumnDescriptor {
         minimum_width: 104,
         maximum_width: 360,
         alignment: ColumnAlignment::End,
-        applicability: ColumnApplicability::Files,
+        applicability: ColumnApplicability::AllEntries,
         sort_semantics: ColumnSortSemantics::Integer,
         cost: ColumnCost::BackgroundBatch,
     }
@@ -176,6 +177,7 @@ mod tests {
         let descriptor = code_lines_column_descriptor();
         assert!(is_supported_code_lines_descriptor(&descriptor));
         assert_eq!(descriptor.cost, ColumnCost::BackgroundBatch);
+        assert_eq!(descriptor.applicability, ColumnApplicability::AllEntries);
     }
 
     #[test]

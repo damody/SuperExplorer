@@ -94,6 +94,7 @@ pub struct FolderSizeValueV1 {
 pub trait VisualColumnRuntimePortV1: Send + Sync {
     fn config(&self) -> VisualColumnConfigV1;
     fn submit_folder_size_requests(&self, requests: Vec<FolderSizeRequestV1>);
+    fn cancel_folder_size_context(&self, context: &explorer_model::RequestContext);
     fn drain_folder_size_results(&self) -> Vec<FolderSizeResultV1>;
     /// Moves completed asynchronous render plans into the host cache. Returns
     /// true only when GPUI needs another frame to consume a newly-ready plan.
@@ -173,6 +174,25 @@ impl FolderSizeColumnVisuals {
             .and_then(|value| value.exact_bytes)
     }
 
+    pub fn has_value_for_context(
+        &self,
+        context: &explorer_model::RequestContext,
+        item_id: &ShellItemId,
+    ) -> bool {
+        let key = FolderSizeSnapshotKeyV1::from(context);
+        if self
+            .context
+            .as_ref()
+            .is_some_and(|current| FolderSizeSnapshotKeyV1::from(current) == key)
+        {
+            self.values.contains_key(item_id)
+        } else {
+            self.snapshots
+                .get(&key)
+                .is_some_and(|values| values.contains_key(item_id))
+        }
+    }
+
     pub fn error_for(&self, item_id: &ShellItemId) -> Option<&str> {
         self.values
             .get(item_id)
@@ -216,7 +236,7 @@ pub fn folder_size_column_descriptor() -> ColumnDescriptor {
         minimum_width: 112,
         maximum_width: 360,
         alignment: ColumnAlignment::End,
-        applicability: ColumnApplicability::Containers,
+        applicability: ColumnApplicability::AllEntries,
         sort_semantics: ColumnSortSemantics::Bytes,
         cost: ColumnCost::BackgroundAggregate,
     }
@@ -282,5 +302,13 @@ mod tests {
 
         assert!(visuals.begin_context(&context(tab_b, 2)));
         assert!(visuals.values.is_empty());
+    }
+
+    #[test]
+    fn descriptor_applies_to_files_and_folders() {
+        assert_eq!(
+            folder_size_column_descriptor().applicability,
+            ColumnApplicability::AllEntries
+        );
     }
 }

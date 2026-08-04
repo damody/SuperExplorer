@@ -267,6 +267,9 @@ pub enum ExplorerAction {
     ToggleFolderOptionExtension {
         index: usize,
     },
+    OpenExtensionAuthorWebsite {
+        index: usize,
+    },
     InvokeExtensionCommand {
         contribution_id: String,
     },
@@ -550,6 +553,7 @@ impl ExplorerAction {
             Self::CloseFolderOptions => "CloseFolderOptions",
             Self::SetFolderOptionsPage(_) => "SetFolderOptionsPage",
             Self::ToggleFolderOptionExtension { .. } => "ToggleFolderOptionExtension",
+            Self::OpenExtensionAuthorWebsite { .. } => "OpenExtensionAuthorWebsite",
             Self::InvokeExtensionCommand { .. } => "InvokeExtensionCommand",
             Self::ToggleFolderOptionItemCheckBoxes => "ToggleFolderOptionItemCheckBoxes",
             Self::ToggleFolderOptionFileNameExtensions => "ToggleFolderOptionFileNameExtensions",
@@ -1234,6 +1238,7 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::CloseFolderOptions
         | ExplorerAction::SetFolderOptionsPage(_)
         | ExplorerAction::ToggleFolderOptionExtension { .. }
+        | ExplorerAction::OpenExtensionAuthorWebsite { .. }
         | ExplorerAction::InvokeExtensionCommand { .. }
         | ExplorerAction::ToggleFolderOptionItemCheckBoxes
         | ExplorerAction::ToggleFolderOptionFileNameExtensions
@@ -1726,6 +1731,7 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             state.toggle_folder_option_extension(index);
             FocusSurface::CommandBar
         }
+        ExplorerAction::OpenExtensionAuthorWebsite { .. } => FocusSurface::CommandBar,
         ExplorerAction::InvokeExtensionCommand { .. } => {
             state.close_extensions_menu();
             FocusSurface::CommandBar

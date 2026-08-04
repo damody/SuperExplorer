@@ -41,6 +41,9 @@ pub struct FolderOptionsDraft {
 pub struct ExtensionOptionV1 {
     pub package_id: &'static str,
     pub display_name: &'static str,
+    pub author_name: &'static str,
+    pub author_bio: &'static str,
+    pub author_website: &'static str,
     pub command_contribution: Option<&'static str>,
     pub enabled: bool,
 }
@@ -58,48 +61,72 @@ fn official_extensions_v1() -> Vec<ExtensionOptionV1> {
         ExtensionOptionV1 {
             package_id: "rust-folder-size-visual-column",
             display_name: "Folder size column",
+            author_name: "Damody",
+            author_bio: "SuperExplorer 與官方範例擴充功能作者",
+            author_website: "https://github.com/damody/SuperExplorer",
             command_contribution: None,
             enabled: true,
         },
         ExtensionOptionV1 {
             package_id: "rust-folder-size-map-view",
             display_name: "Size Map",
+            author_name: "Damody",
+            author_bio: "SuperExplorer 與官方範例擴充功能作者",
+            author_website: "https://github.com/damody/SuperExplorer",
             command_contribution: None,
             enabled: true,
         },
         ExtensionOptionV1 {
             package_id: "rust-tokei-code-lines-column",
             display_name: "Code lines (Rust)",
+            author_name: "Damody",
+            author_bio: "SuperExplorer 與官方範例擴充功能作者",
+            author_website: "https://github.com/damody/SuperExplorer",
             command_contribution: None,
             enabled: true,
         },
         ExtensionOptionV1 {
             package_id: "lua-tokei-code-lines-column",
             display_name: "Code lines (Lua)",
+            author_name: "Damody",
+            author_bio: "SuperExplorer 與官方範例擴充功能作者",
+            author_website: "https://github.com/damody/SuperExplorer",
             command_contribution: None,
             enabled: true,
         },
         ExtensionOptionV1 {
             package_id: "rust-lock-owner-column",
             display_name: "Lock owner",
+            author_name: "Damody",
+            author_bio: "SuperExplorer 與官方範例擴充功能作者",
+            author_website: "https://github.com/damody/SuperExplorer",
             command_contribution: None,
             enabled: true,
         },
         ExtensionOptionV1 {
             package_id: "rust-exif-rename-command",
             display_name: "Rename from EXIF",
+            author_name: "Damody",
+            author_bio: "SuperExplorer 與官方範例擴充功能作者",
+            author_website: "https://github.com/damody/SuperExplorer",
             command_contribution: Some("rust-exif-rename:button"),
             enabled: true,
         },
         ExtensionOptionV1 {
             package_id: "rust-7z-virtual-folder",
             display_name: "7-Zip virtual folder",
+            author_name: "Damody",
+            author_bio: "SuperExplorer 與官方範例擴充功能作者",
+            author_website: "https://github.com/damody/SuperExplorer",
             command_contribution: None,
             enabled: true,
         },
         ExtensionOptionV1 {
             package_id: "lua-bulk-folder-generator",
             display_name: "Bulk folder generator",
+            author_name: "Damody",
+            author_bio: "SuperExplorer 與官方範例擴充功能作者",
+            author_website: "https://github.com/damody/SuperExplorer",
             command_contribution: Some("lua-bulk-folder:button"),
             enabled: true,
         },
@@ -7075,6 +7102,11 @@ mod tests {
     fn folder_options_manage_all_eight_extensions_with_cancel_apply_and_view_fallback() {
         let mut state = AppViewState::default();
         assert_eq!(state.extensions().len(), 8);
+        assert!(state.extensions().iter().all(|extension| {
+            !extension.author_name.is_empty()
+                && !extension.author_bio.is_empty()
+                && extension.author_website.starts_with("https://")
+        }));
         state.open_folder_options();
         state.set_folder_options_page(crate::actions::FolderOptionsPage::Extensions);
         state.toggle_folder_option_extension(1);
