@@ -67,7 +67,7 @@
 - [x] 10.1 定義最小 public `BatchColumnProviderV1`：ordinary Rust author trait、SDK-owned `abi_stable` adapter、每批最多128個host-attested item/`InputStreamV1`，結果重用既有typed outcome/value/stable-sort types；不傳路徑、native handle、future或runtime。
 - [x] 10.2 讓尚未發布的V1 registration與單Plugin DLL loader保留一個batch provider及其Visual Column renderer；只支援 `rust-tokei:code-lines`，不建立多Plugin registry或通用framework。
 - [x] 10.3 建立app-owned bounded batch runtime：只讀目前資料夾普通檔案、單檔上限8 MiB、每批128、generation-aware cancellation/stale rejection；unsupported/binary/unknown/oversized不得顯示為有效0。
-- [x] 10.4 鎖定並靜態連結一個Rust `tokei` library及其精確dependency closure，使獨立consumer可在clean `CARGO_HOME`以`--locked --offline`建置；不得spawn `tokei.exe`或每檔建立process。
+- [x] 10.4 鎖定並靜態連結一個Rust `tokei` library及其精確dependency closure，使獨立consumer可在預先填好的本機 Cargo registry cache 以`--locked --offline`建置；不得spawn `tokei.exe`或每檔建立process。
 - [x] 10.5 建立獨立 `rust-tokei-code-lines-column` public-SDK consumer，對Rust、C/C++、Python、Lua與JavaScript輸出language/code/comment/blank/total，主要欄位與sort key使用exact code-lines integer。
 - [x] 10.6 在production Details安裝唯一的 `Code lines` 動態欄位、column chooser、integer sorting與host-owned GPUI cell；提供一個最小設定切換comment/blank detail，並維持folder-size與無Plugin fallback。
 - [x] 10.7 完成README與最小build/package路徑，加入mixed-language/empty/binary/unknown fixture及最小Cargo unit/smoke；明確觀察沒有child process，不擴充installer bundled Plugin。
@@ -135,19 +135,19 @@
 ### 2.1 Toolchain 與 protected dependency closure audit
 
 **目的：** 以可重播證據確認 Rust 1.97.1、Cargo commit、MSVC target、`abi_stable 0.11.3` 與 protected closure。（legacy 1.1、1.2、1.5）
-**輸入：** root/SDK toolchain files、Cargo locks、vendor metadata、protected graph validator。
+**輸入：** root/SDK toolchain files、Cargo locks、local registry-cache metadata、protected graph validator。
 **產出：** baseline audit report、positive/negative fixture logs、canonical graph hash。
 **依賴：** 1.1–1.3。
 **Owner／Wave：** `sdk-tooling-owner`／W0；owned: SDK locks/tooling；forbidden: ABI Rust source、release orchestration。
 **Gate／Evidence：** isolated `cargo metadata --locked --offline`、toolchain commit validator、closure drift fixtures；records `2.1.*`。
-**完成門檻：** host/SDK/fixture 使用相同 exact baseline；display-version spoof、feature drift、second GPUI/SDK edge 與 missing vendor source 分別 fail closed。
+**完成門檻：** host/SDK/fixture 使用相同 exact baseline；display-version spoof、feature drift、second GPUI/SDK edge 與 missing local registry-cache source 分別 fail closed；第三方來源不得提交或追蹤 vendor。
 
 - [deferred] 2.1.1 核對 root、SDK、host fixture 與 plugin fixture 的 rustc/Cargo commit、target 和 toolchain file 完全一致。
 - [deferred] 2.1.2 核對 `abi_stable = 0.11.3`、空 top-level features 與 protected dependency closure 的 canonical hash。
-- [deferred] 2.1.3 在空 `CARGO_HOME` 執行 root 與 SDK `cargo metadata --locked --offline` 並保存 resolved graph。
+- [deferred] 2.1.3 在預先填好的本機 Cargo registry cache 執行 root 與 SDK `cargo metadata --locked --offline` 並保存 resolved graph；缺 cache 時先 bootstrap，不提交 vendor。
 - [deferred] 2.1.4 以相同顯示版本但不同 compiler commit fixture 證明 validator 拒絕。
 - [deferred] 2.1.5 以protected feature drift fixture證明拒絕。
-- [deferred] 2.1.6 稽核所有 vendored crate provenance/license 與 lock checksum 一致，缺一項即失敗。
+- [deferred] 2.1.6 稽核所有 locked crate 的 registry-cache provenance/license 與 lock checksum 一致，缺一項即失敗；不建立或追蹤 vendor 目錄。
 - [deferred] 2.1.7 以第二份GPUI/SDK dependency edge fixture證明拒絕。
 
 ### 2.2 Canonical bundle 與 UI fingerprint
@@ -184,16 +184,16 @@
 **產出：** 分離 build/load logs、ABI layout report、native marker assertions。
 **依賴：** 2.1、2.2；contract changes 先由 contract-owner 完成。
 **Owner／Wave：** `fixture-owner`／W0；owned: SDK ABI fixtures/tests；forbidden: public ABI definitions。
-**Gate／Evidence：** `--locked --offline` builds with distinct empty `CARGO_HOME`、loader contract；records `2.3.*`。
+**Gate／Evidence：** `--locked --offline` builds with distinct pre-populated local Cargo registry caches、loader contract；records `2.3.*`。
 **完成門檻：** current plugin loads and registers through SDK-owned factory；legacy/raw/layout/major/fingerprint mismatch all reject before accessor/factory/callback/marker。
 
-- [deferred] 2.3.1 以獨立空`CARGO_HOME`、禁止網路建置host fixture。
+- [deferred] 2.3.1 以獨立預先填好的本機 Cargo registry cache、禁止網路建置 host fixture；缺 cache 時明確阻擋。
 - [deferred] 2.3.2 載入 current plugin 並證明 ordinary Rust trait 經 `RootModule`／`#[sabi_trait]` registrar 完成 registration。
 - [deferred] 2.3.3 掃描 author-facing API/fixtures，拒絕手寫 `extern "C"` callback、layout 或 panic trampoline。
 - [deferred] 2.3.4 載入 pre-callback legacy raw root，證明 layout reject 發生在所有 accessor/factory/callback/native marker 之前。
 - [deferred] 2.3.5 驗證SDK major mismatch診斷與pre-callback拒絕。
 - [deferred] 2.3.6 驗證 panic translation 使用 SDK-owned trampoline 且 ABI boundary 不跨 `String`/`Vec`/Future/private types。
-- [deferred] 2.3.7 以另一個獨立空`CARGO_HOME`、禁止網路建置current plugin fixture。
+- [deferred] 2.3.7 以另一個獨立預先填好的本機 Cargo registry cache、禁止網路建置 current plugin fixture；不追蹤 vendor。
 - [deferred] 2.3.8 驗證root fingerprint mismatch診斷與pre-callback拒絕。
 - [deferred] 2.3.9 驗證required numeric semantics mismatch診斷與pre-callback拒絕。
 - [deferred] 2.3.10 驗證GPUI fingerprint mismatch診斷與pre-callback拒絕。
@@ -225,7 +225,7 @@
 **Gate／Evidence：** plugin-tooling self-test、isolated author reproduction、manifest selector check；records `2.5.*`。
 **完成門檻：** 三支 script 各有成功與獨立失敗證據；minimal provider+renderer 在 clean consumer build/validate/package；diagnostic 不含 secrets/absolute private paths。
 
-- [deferred] 2.5.1 以 approved bundle 與空 `CARGO_HOME` 執行 `build-plugin.ps1 --locked --offline` 成功案例。
+- [deferred] 2.5.1 以 approved bundle 與預先填好的本機 Cargo registry cache 執行 `build-plugin.ps1 --locked --offline` 成功案例。
 - [deferred] 2.5.2 驗證toolchain mismatch的build/validate診斷。
 - [deferred] 2.5.3 驗證 package script 產出 deterministic store-only `.sepack`、runtime manifest、DLL、SBOM/NOTICE 與 hashes。
 - [deferred] 2.5.4 驗證缺manifest capability fail closed。
@@ -1139,13 +1139,13 @@
 **Gate／Evidence：** P0-pre-skin exact matrix selectors；records `12.4.*`。
 **完成門檻：** host/SDK/八packages offline build；ABI/capability/Safe Mode/security；1k/100k performance；八unit/integration/UITEST/docs/screenshots/common inventory/provenance全pass；P0 candidate零未解P0/P1 review findings，但尚未開始的phase-13 planned Skin leaves明確排除於此判定。
 
-- [deferred] 12.4.1 在empty Cargo home/network-denied環境建host。
+- [deferred] 12.4.1 在預先填好的本機 Cargo registry cache、network-denied 環境建 host；cache 缺失時明確阻擋並要求 bootstrap。
 - [deferred] 12.4.2 重跑folder-size `common_artifact_inventory`驗證。
 - [deferred] 12.4.3 執行P0 ABI compatibility gate。
 - [deferred] 12.4.4 執行1,000-item list-readiness performance threshold gate。
 - [deferred] 12.4.5 實際執行folder-size mandatory UITEST。
 - [deferred] 12.4.6 由independent architecture reviewer確認P0 candidate零未解P0/P1 findings（不含未開始phase13）並簽發Skin-start GO。
-- [deferred] 12.4.7 在另一empty Cargo home/network-denied環境建SDK host fixture。
+- [deferred] 12.4.7 在另一預先填好的本機 Cargo registry cache、network-denied 環境建 SDK host fixture；不追蹤 vendor。
 - [deferred] 12.4.8 重跑Size Map `common_artifact_inventory`與immutable provenance/package hash驗證。
 - [deferred] 12.4.9 重跑Rust tokei `common_artifact_inventory`與immutable provenance/package hash驗證。
 - [deferred] 12.4.10 重跑Lock Owner `common_artifact_inventory`與immutable provenance/package hash驗證。
@@ -1166,7 +1166,7 @@
 - [deferred] 12.4.25 實際執行7z mandatory UITEST。
 - [deferred] 12.4.26 實際執行Options mandatory UITEST，不以mapping或provisional GO取代。
 - [deferred] 12.4.27 驗證folder-size immutable provenance/package hash。
-- [deferred] 12.4.28 在另一empty Cargo home/network-denied環境建SDK plugin fixture。
+- [deferred] 12.4.28 在另一預先填好的本機 Cargo registry cache、network-denied 環境建 SDK plugin fixture；不追蹤 vendor。
 - [deferred] 12.4.29 執行P0 ABI boundary security gate。
 - [deferred] 12.4.30 執行1,000-item cancel threshold gate。
 - [deferred] 12.4.31 執行1,000-item redraw/invalidation threshold gate。
@@ -1310,7 +1310,7 @@
 **Gate／Evidence：** distinct subchecks `15.1.*`。
 **完成門檻：** host、fixture與每個example獨立passed；no network/cache/PATH fallback；two runs reproduce locks/artifacts；無mandatory skip。
 
-- [deferred] 15.1.1 在network-denied/empty `CARGO_HOME`建置host與SDK host/plugin fixtures。
+- [deferred] 15.1.1 在 network-denied、預先填好的本機 Cargo registry cache 建置 host 與 SDK host/plugin fixtures；缺 cache 時先 bootstrap。
 - [deferred] 15.1.2 建置/測試/validate/package folder-size example並保存unique subcheck。
 - [deferred] 15.1.3 建置/測試/validate/package Size Map example並保存unique subcheck。
 - [deferred] 15.1.4 建置/測試/validate/package Rust tokei example並保存unique subcheck。
@@ -1460,7 +1460,7 @@
 
 - [deferred] 16.1.1 驗證evidence index每個completed L3唯一、hash存在、actual/expected一致且無stale dependency。
 - [deferred] 16.1.2 產生requirement→task→test/doc/artifact compatibility report與candidate manifest。
-- [deferred] 16.1.3 驗證canonical lock/vendor/fingerprint/package hashes/signature inputs與rollback inventory。
+- [deferred] 16.1.3 驗證 canonical lock、local registry-cache provenance、fingerprint、package hashes、signature inputs 與 rollback inventory；第三方來源不提交 vendor。
 - [deferred] 16.1.4 執行`openspec validate build-extensible-plugin-platform --strict`與detailed-task validator。
 - [deferred] 16.1.5 由independent architecture reviewer審ABI/security/concurrency/lifecycle/tests/release，修完所有P0/P1再GO。
 
@@ -1481,7 +1481,7 @@
 - [deferred] 16.2.5 在remote main advance fixture下offline rebuild host。
 - [deferred] 16.2.6 模擬post-freeze rev change，確認拒絕覆寫舊release並要求new RC/bundle全gate重跑。
 - [deferred] 16.2.7 由primary執行signing action並保存exact inputs/outputs/result。
-- [deferred] 16.2.8 驗證signed manifest綁定frozen bundle ID、tag、locks、vendor與artifact hashes。
+- [deferred] 16.2.8 驗證 signed manifest 綁定 frozen bundle ID、tag、locks、registry-cache provenance 與 artifact hashes。
 - [deferred] 16.2.9 在remote main unavailable fixture下offline rebuild SDK host fixture。
 - [deferred] 16.2.10 在remote main unavailable fixture下offline rebuild folder-size example。
 - [deferred] 16.2.11 在remote main unavailable fixture下offline rebuild Size Map example。
@@ -1527,10 +1527,10 @@ documentation, and local Cargo/smoke verification.
 
 ## 17. Eight independently runnable examples
 
-- [ ] 17.1.1 Make `rust-folder-size-visual-column` an independent public-SDK consumer with a sealed runtime manifest, locked offline build, deterministic `.sepack`, locales, license/NOTICE, provenance, screenshots, and bilingual reproduction docs.
-- [ ] 17.1.2 Treat the folder-size foreground deadline as a responsiveness hint only: the app-owned background worker must continue to a typed terminal result after the UI budget expires.
-- [ ] 17.1.3 Persist only stable exact folder totals in the plugin-owned bounded cache, keyed by canonical folder identity, directory modification time, schema, and relevant settings; use atomic replacement and treat corrupt/partial/stale records as misses.
-- [ ] 17.1.4 Prove cold background completion, same-mtime process-restart cache hit, changed-mtime invalidation, corrupt-cache recovery, and stale UI generation rejection with minimal Cargo tests and a local smoke.
+- [x] 17.1.1 Make `rust-folder-size-visual-column` an independent public-SDK consumer with a sealed runtime manifest, locked offline build, deterministic `.sepack`, locales, license/NOTICE, provenance, screenshots, and bilingual reproduction docs.
+- [x] 17.1.2 Treat the folder-size foreground deadline as a responsiveness hint only: the app-owned background worker must continue to a typed terminal result after the UI budget expires.
+- [x] 17.1.3 Persist only stable exact folder totals in the plugin-owned bounded cache, keyed by canonical folder identity, directory modification time, schema, and relevant settings; use atomic replacement and treat corrupt/partial/stale records as misses.
+- [x] 17.1.4 Prove cold background completion, same-mtime process-restart cache hit, changed-mtime invalidation, corrupt-cache recovery, and stale UI generation rejection with minimal Cargo tests and a local smoke.
 - [ ] 17.1.5 Wire the completed folder-size package into production and the installer without changing the standard no-plugin fallback; only then run its single headful UITEST case.
 - [ ] 17.2.1 Complete `rust-folder-size-map-view` as an independent packaged example, including recursive incremental totals, navigation, selection, refresh/stale rejection, docs, local smoke, then one UITEST.
 - [ ] 17.3.1 Complete `rust-tokei-code-lines-column` as an independent packaged example, including integer sorting/settings, docs, local smoke, then one UITEST.
@@ -1541,5 +1541,5 @@ documentation, and local Cargo/smoke verification.
 - [ ] 17.7.1 Complete `rust-exif-rename-command` using an in-process Rust EXIF library and host-owned rename plan; package, smoke, then one UITEST.
 - [ ] 17.8.1 Complete the read-only virtual-location/enumeration/bounded-stream spine and `rust-7z-virtual-folder` browsing with traversal, collision, stale-generation, and resource-limit rejection.
 - [ ] 17.8.2 Complete safe 7z extract/mutation using same-volume staging, verification, original-identity recheck, atomic replace, non-serialized secrets, and whole-container undo; package, smoke, then one UITEST.
-- [ ] 17.9.1 Rebuild, validate, and package all eight examples separately with empty `CARGO_HOME`, `--locked --offline`, and no CI; verify production inventory and installer policy.
+- [ ] 17.9.1 Rebuild, validate, and package all eight examples separately with pre-populated local Cargo registry cache, `--locked --offline`, and no CI; missing cache is an explicit bootstrap prerequisite; verify production inventory and installer policy.
 - [ ] 17.9.2 After all eight examples pass, resume the deferred roadmap below in dependency order and check only leaves with current local evidence.

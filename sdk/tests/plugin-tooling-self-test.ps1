@@ -513,8 +513,8 @@ try {
         $env:SUPEREXPLORER_TEST_SEPACK_PATH = [IO.Path]::GetFullPath($package)
         $hostTestAuthority = New-SealedCargoAuthority $lock.toolchain
         New-Item -ItemType Directory -Path $hostCargoHome -Force | Out-Null
-        $vendor = (Join-Path $sdk 'vendor\cargo-sources').Replace('\','/')
-        [IO.File]::WriteAllText((Join-Path $hostCargoHome 'config.toml'), "[net]`noffline = true`n`n[source.crates-io]`nreplace-with = 'cargo-sources'`n`n[source.cargo-sources]`ndirectory = '$vendor'`n", [Text.UTF8Encoding]::new($false))
+        $configPath = & powershell.exe -NoProfile -File (Join-Path $repo 'sdk\scripts\prepare-local-cargo-source.ps1') -PluginRoot (Join-Path $sdk 'fixtures\host-gate')
+        Copy-Item -LiteralPath $configPath -Destination (Join-Path $hostCargoHome 'config.toml') -Force
         $env:CARGO_HOME = $hostCargoHome
         $env:RUSTC = $hostTestAuthority.RustcPath
         # Run through a standalone fixture workspace.  Invoking the root

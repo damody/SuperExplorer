@@ -115,7 +115,7 @@ function Assert-GpuiCandidatePromotionSurface {
  $changed=@(@(Invoke-GpuiGit $RepositoryRoot @('diff','--name-only','HEAD','--'))|ForEach-Object{$_.Trim()}|Where-Object{$_})
  if($GitlinkPath -notin $changed){throw 'candidate transaction did not include the staged GPUI gitlink in its promotion surface'}
  foreach($path in $changed){
-  if($path -notin $allowed -and -not $path.StartsWith('sdk/vendor/cargo-sources/',[StringComparison]::Ordinal)){throw "candidate transaction changed an unauthorized promotion path: $path"}
+  if($path -notin $allowed){throw "candidate transaction changed an unauthorized promotion path: $path"}
  }
  $untracked=@(@(Invoke-GpuiGit $RepositoryRoot @('ls-files','--others','--exclude-standard'))|ForEach-Object{$_.Trim()}|Where-Object{$_})
  if(@($untracked).Count){throw "candidate transaction left untracked outputs: $($untracked -join ', ')"}

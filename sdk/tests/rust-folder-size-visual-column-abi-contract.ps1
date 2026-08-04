@@ -77,18 +77,8 @@ explorer-extension-api = { path = "../explorer-extension-api" }
     if ($manifest -match '@[A-Z0-9_]+@') { throw 'consumer template placeholder was not materialized' }
     Write-Utf8NoBom (Join-Path $consumer 'plugin-project.json') $manifest
 
-    $vendor = (Resolve-Path (Join-Path $sdk 'vendor\cargo-sources')).Path.Replace('\', '/')
-    $isolatedCargoConfig = @"
-[net]
-offline = true
-
-[source.crates-io]
-replace-with = "cargo-sources"
-
-[source.cargo-sources]
-directory = "$vendor"
-"@
-    Write-Utf8NoBom (Join-Path $cargoHome 'config.toml') $isolatedCargoConfig
+    $isolatedCargoConfig = & powershell.exe -NoProfile -File (Join-Path $sdk 'scripts\prepare-local-cargo-source.ps1') -PluginRoot $fixture
+    Copy-Item -LiteralPath $isolatedCargoConfig -Destination (Join-Path $cargoHome 'config.toml') -Force
     Write-Utf8NoBom (Join-Path $contractHost 'Cargo.toml') @"
 [package]
 name = "rust-folder-size-visual-column-contract-host"

@@ -4,7 +4,6 @@ Set-StrictMode -Version Latest
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $sdkRoot = Join-Path $repo 'sdk'
 $fixtureRoot = Join-Path $sdkRoot 'fixtures\package-resolution-v1'
-$vendor = (Join-Path $sdkRoot 'vendor\cargo-sources').Replace('\', '/')
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('superexplorer-resolution-v1-' + [Guid]::NewGuid().ToString('N'))
 $savedHome = $env:CARGO_HOME; $savedTarget = $env:CARGO_TARGET_DIR
 try {
@@ -23,7 +22,8 @@ try {
     $workspaceSdk = Join-Path $workspace 'sdk'
     New-Item -ItemType Directory -Path $workspaceSdk -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $sdkRoot 'ui-abi-fingerprint.json') -Destination (Join-Path $workspaceSdk 'ui-abi-fingerprint.json')
-    [IO.File]::WriteAllText((Join-Path $cargoHome 'config.toml'), "[build]`ntarget = 'x86_64-pc-windows-msvc'`n`n[net]`noffline = true`n`n[source.crates-io]`nreplace-with = 'cargo-sources'`n`n[source.cargo-sources]`ndirectory = '$vendor'`n", [Text.UTF8Encoding]::new($false))
+    $configPath = & powershell.exe -NoProfile -File (Join-Path $sdkRoot 'scripts\prepare-local-cargo-source.ps1') -PluginRoot $workspace
+    Copy-Item -LiteralPath $configPath -Destination (Join-Path $cargoHome 'config.toml') -Force
     $env:CARGO_HOME = $cargoHome; $env:CARGO_TARGET_DIR = $target
     & cargo.exe test --manifest-path (Join-Path $workspace 'Cargo.toml') -p explorer-extension-host --locked --offline --test package_lifecycle -- --nocapture --test-threads=1
     if ($LASTEXITCODE -ne 0) { throw 'package resolver integration contract failed' }

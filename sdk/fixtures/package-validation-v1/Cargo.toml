@@ -6,7 +6,7 @@ rust-version = "1.97.1"
 publish = false
 [dependencies]
 explorer-extension-host = { path = "../../../crates/explorer-extension-host" }
-serde_json = { path = "../../vendor/cargo-sources/serde_json" }
-base64 = { path = "../../vendor/cargo-sources/base64" }
+serde_json = "=1.0.151"
+base64 = "=0.22.1"
 ring = "=0.17.14"
 [workspace]

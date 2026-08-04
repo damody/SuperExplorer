@@ -92,10 +92,22 @@ pub trait VisualColumnRuntimePortV1: Send + Sync {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FolderSizeColumnVisuals {
     pub config: VisualColumnConfigV1,
+    /// Values are valid only for this tab generation.  Shell item IDs may be
+    /// stable across F5, so the generation must be tracked independently.
+    pub context: Option<explorer_model::RequestContext>,
     pub values: HashMap<ShellItemId, FolderSizeValueV1>,
 }
 
 impl FolderSizeColumnVisuals {
+    pub fn begin_context(&mut self, context: &explorer_model::RequestContext) -> bool {
+        if self.context.as_ref() == Some(context) {
+            return false;
+        }
+        self.context = Some(context.clone());
+        self.values.clear();
+        true
+    }
+
     pub fn value_for(&self, item_id: &ShellItemId) -> Option<u64> {
         self.values
             .get(item_id)

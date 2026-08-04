@@ -34,7 +34,7 @@ The SDK SHALL fix Rust `1.97.1` for `x86_64-pc-windows-msvc`, Cargo from the sam
 - **THEN** the UI fingerprint differs and GPUI contribution loading is rejected
 
 ### Requirement: Authorized GPUI source and immutable snapshots
-The only authorized GPUI source SHALL be `https://github.com/damody/gpui-ce-explorer.git`. Development `main` SHALL be read only during an explicit primary-agent update operation, which is the sole network operation permitted by this change and resolves a complete commit; every actual host/plugin build, fixture, test, promotion, rollback and release validation SHALL run locally from the checked-out repository against an immutable snapshot bundle ID, canonical lock and vendored tree for that commit.
+The only authorized GPUI source SHALL be `https://github.com/damody/gpui-ce-explorer.git`. Development `main` SHALL be read only during an explicit primary-agent update operation, which is the sole network operation permitted by this change and resolves a complete commit; every actual host/plugin build, fixture, test, promotion, rollback and release validation SHALL run locally from the checked-out repository against an immutable snapshot bundle ID and canonical lock. Third-party sources SHALL NOT be committed or vendor-tracked; builds require a pre-populated local Cargo registry cache and `--locked --offline`.
 
 #### Scenario: GPUI main advances
 - **WHEN** the explicit primary-agent update operation resolves a newer `main` commit and every required local offline host, SDK, contract, UITEST and eight-example gate passes
@@ -45,7 +45,7 @@ The only authorized GPUI source SHALL be `https://github.com/damody/gpui-ce-expl
 - **THEN** the previous approved snapshot remains active and no half-updated host/SDK state is published
 
 ### Requirement: Non-fast-forward update protection
-The explicit primary-agent GPUI update operation SHALL detect non-fast-forward history and SHALL require explicit approval before switching. Recorded snapshots SHALL remain offline-rebuildable from their own vendor source even if the remote commit becomes unreachable.
+The explicit primary-agent GPUI update operation SHALL detect non-fast-forward history and SHALL require explicit approval before switching. Recorded snapshots SHALL remain offline-rebuildable from their checked-out source, lock, and pre-populated local Cargo registry cache even if the remote commit becomes unreachable.
 
 #### Scenario: Main is force-pushed
 - **WHEN** the remote branch no longer descends from the current approved snapshot
@@ -67,21 +67,21 @@ At RC cut, the system SHALL select a fully validated local development snapshot,
 
 #### Scenario: GPUI main changes after release
 - **WHEN** the remote `main` advances after the release bundle is published
-- **THEN** rebuilding that release continues to use its frozen commit, lock and vendor tree
+- **THEN** rebuilding that release continues to use its frozen commit and lock with the pre-populated local Cargo registry cache
 
 ### Requirement: Offline SDK bundle and protected dependency closure
-The SDK SHALL ship `rust-toolchain.toml`, `Cargo.toml`, canonical `Cargo.lock`, `.cargo/config.toml`, `sdk-lock.json`, bundle manifest, offline vendor, SDK crates, fixtures, templates, AI prompt and build/validate/package scripts. Official builds SHALL use `cargo build --locked --offline` in an isolated empty Cargo home.
+The SDK SHALL ship `rust-toolchain.toml`, `Cargo.toml`, canonical `Cargo.lock`, `.cargo/config.toml`, `sdk-lock.json`, bundle manifest, SDK crates, fixtures, templates, AI prompt and build/validate/package scripts. Third-party sources SHALL NOT be committed or vendor-tracked. Official builds SHALL use `cargo build --locked --offline` with a pre-populated local Cargo registry cache; a missing cache entry is an explicit bootstrap prerequisite.
 
 #### Scenario: Network and global cache are unavailable
-- **WHEN** host and plugin fixtures build with an isolated empty Cargo home and network disabled
+- **WHEN** host and plugin fixtures build with network disabled and the pre-populated local Cargo registry cache
 - **THEN** both build from bundle sources and the plugin loads into the fixture host
 
 ### Requirement: Plugin-private Rust dependencies
-An author MAY add precisely locked private dependencies, but SHALL preserve the protected dependency closure and provide their own vendor, provenance and licenses. Validation SHALL follow actual metadata edges and SHALL reject a second GPUI/SDK type entering callback boundaries.
+An author MAY add precisely locked private dependencies, but SHALL preserve the protected dependency closure and provide provenance and licenses. Validation SHALL follow actual metadata edges and SHALL reject a second GPUI/SDK type entering callback boundaries; the author must document the local registry-cache bootstrap prerequisite rather than committing a vendor tree.
 
 #### Scenario: EXIF parser is added privately
 - **WHEN** an external author adds a static Rust EXIF parser without changing the protected closure
-- **THEN** the plugin can build after its private dependency is locked, vendored and documented
+- **THEN** the plugin can build after its private dependency is locked, available in the local registry cache, and documented
 
 ### Requirement: True GPUI callback execution boundary
 Any feature explicitly declared as a true GPUI callback SHALL run only on the GPUI thread with public immutable snapshots, a theme facade, action sink and scoped invalidation handle. It SHALL NOT perform file/network I/O or retain private host entities. Data-only column and view render-plan callbacks are not GPUI callbacks: they SHALL follow their worker-safe bounded-dispatch contracts, and GPUI SHALL only paint their returned current-revision plans.

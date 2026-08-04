@@ -59,6 +59,13 @@ fn prelayout_icon_range(item_count: usize, layout_ready: bool) -> Option<std::op
     (!layout_ready).then_some(0..item_count.min(FILE_VIEWPORT_ICON_REQUEST_CAP))
 }
 
+fn folder_size_result_is_current(
+    result: &folder_size_column::FolderSizeResultV1,
+    current: &explorer_model::RequestContext,
+) -> bool {
+    result.context.tab_id == current.tab_id && result.context.generation == current.generation
+}
+
 fn prime_top_icon_range(
     item_count: usize,
     scroll_offset: f32,
@@ -1050,6 +1057,7 @@ impl ExplorerRoot {
         }
         self.folder_size_visuals = Some(folder_size_column::FolderSizeColumnVisuals {
             config,
+            context: None,
             values: HashMap::new(),
         });
         self.folder_size_requested.clear();
@@ -1289,9 +1297,17 @@ impl ExplorerRoot {
         let visuals = self.folder_size_visuals.get_or_insert_with(|| {
             folder_size_column::FolderSizeColumnVisuals {
                 config: config.clone(),
+                context: None,
                 values: HashMap::new(),
             }
         });
+        let active_tab = self.state.tabs().active_tab();
+        let current_context =
+            explorer_model::RequestContext::new(active_tab.id, active_tab.generation);
+        if visuals.begin_context(&current_context) {
+            self.folder_size_requested.clear();
+            changed = true;
+        }
         let visible_ids = self
             .state
             .tabs()
@@ -1316,13 +1332,10 @@ impl ExplorerRoot {
             visuals.config = config;
             changed = true;
         }
-        let active_tab = self.state.tabs().active_tab();
-        let current_context =
-            explorer_model::RequestContext::new(active_tab.id, active_tab.generation);
-        for result in results.into_iter().filter(|result| {
-            result.context.tab_id == current_context.tab_id
-                && result.context.generation == current_context.generation
-        }) {
+        for result in results
+            .into_iter()
+            .filter(|result| folder_size_result_is_current(result, &current_context))
+        {
             let value = folder_size_column::FolderSizeValueV1 {
                 exact_bytes: result.exact_bytes,
                 partial: result.partial,
@@ -6027,9 +6040,10 @@ mod tests {
         action_for_host_context_command, active_window_title, advance_item_overlay_epoch,
         captured_scrollbar_axis_to_logical, coalesce_directory_events, extension_ui_pump_due,
         file_view_global_command_action, file_view_item_command_action,
-        file_view_navigation_target, is_passive_pointer_action, physical_client_to_logical,
-        prepare_shell_texture_pixels, should_end_address_edit, should_end_inline_rename,
-        synchronize_theme, thumbnail_texture, window_title_for_history_entry,
+        file_view_navigation_target, folder_size_result_is_current, is_passive_pointer_action,
+        physical_client_to_logical, prepare_shell_texture_pixels, should_end_address_edit,
+        should_end_inline_rename, synchronize_theme, thumbnail_texture,
+        window_title_for_history_entry,
     };
 
     struct SequenceExtensionPumpV1 {
@@ -6052,6 +6066,46 @@ mod tests {
             .map(|_| extension_ui_pump_due(Some(&mut pump), now))
             .collect::<Vec<_>>();
         assert_eq!(decisions, vec![false, false, true, false]);
+    }
+
+    #[test]
+    fn folder_size_result_rejects_a_superseded_ui_generation() {
+        let tab = explorer_model::TabId::new();
+        let current = explorer_model::RequestContext::new(tab, explorer_model::Generation::new(2));
+        let item_id = explorer_model::ShellItemId::from_provider_bytes(1_u64.to_le_bytes())
+            .expect("stable item ID");
+        let result = super::folder_size_column::FolderSizeResultV1 {
+            context: explorer_model::RequestContext::new(
+                current.tab_id,
+                explorer_model::Generation::new(1),
+            ),
+            item_id,
+            exact_bytes: Some(42),
+            partial: false,
+            error: None,
+        };
+        assert!(!folder_size_result_is_current(&result, &current));
+        let current_result = super::folder_size_column::FolderSizeResultV1 {
+            context: current.clone(),
+            ..result.clone()
+        };
+        assert!(folder_size_result_is_current(&current_result, &current));
+
+        let mut visuals = super::folder_size_column::FolderSizeColumnVisuals {
+            config: super::folder_size_column::VisualColumnConfigV1::default(),
+            context: Some(result.context.clone()),
+            values: std::collections::HashMap::from([(
+                result.item_id,
+                super::folder_size_column::FolderSizeValueV1 {
+                    exact_bytes: Some(42),
+                    partial: false,
+                    error: None,
+                },
+            )]),
+        };
+        assert!(visuals.begin_context(&current));
+        assert!(visuals.values.is_empty());
+        assert!(!visuals.begin_context(&current));
     }
 
     #[test]

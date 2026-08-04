@@ -31,6 +31,23 @@ fn main() {
             }
         }
     }
+    if let [_, command, root, bundle_id, abi_schema] = a.as_slice()
+        && command == "materialize-folder-size-template"
+    {
+        let abi_schema = abi_schema.parse::<u32>().unwrap_or(0);
+        match superexplorer_plugin_tooling::materialize_folder_size_template(
+            Path::new(root),
+            bundle_id,
+            abi_schema,
+        ) {
+            Ok(report) => println!("{}", serde_json::to_string(&report).unwrap()),
+            Err(error) => {
+                eprintln!("folder-size template materialization failed: {error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     let r = match a.as_slice() {
         [_, command, path] if command == "validate" => {
             superexplorer_plugin_tooling::validate(Path::new(path))

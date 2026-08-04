@@ -7,6 +7,9 @@ $root = (Resolve-Path -LiteralPath $PluginRoot).Path
 $manifestPath = Join-Path $root 'plugin-project.json'
 if (-not (Test-Path -LiteralPath $manifestPath)) { throw 'plugin-project.json required' }
 $sdkLock = Get-Content -LiteralPath (Join-Path $sdk 'sdk-lock.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$localCargoConfig = (& (Join-Path $PSHOME 'powershell.exe') -NoProfile -File (Join-Path $PSScriptRoot 'prepare-local-cargo-source.ps1') -PluginRoot $root | Select-Object -Last 1)
+if (-not $localCargoConfig -or -not (Test-Path -LiteralPath $localCargoConfig -PathType Leaf)) { throw 'local exact-version Cargo source bootstrap failed' }
+$localCargoHome = Split-Path -Parent $localCargoConfig
 Import-Module (Join-Path $PSScriptRoot 'sealed-cargo-authority.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'canonical-store-zip.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'consumer-snapshot.psm1') -Force
@@ -16,6 +19,9 @@ $cargoHash = $null
 $cargoDirectory = $null
 $privateSnapshotRoot = $null
 $stageRoot = $null
+$templateTarget = $null
+$savedTemplateEnvironment = @{}
+$templateMaterialization = $null
 try {
     # Start the outer cleanup boundary before sealed authority or private
     # inputs exist. No pre-publication error may leave either behind.
@@ -23,26 +29,41 @@ try {
     $cargoPath = $cargoAuthority.Path
     $cargoHash = $cargoAuthority.Sha256
     $cargoDirectory = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($cargoPath))
-$forbiddenOverrides = @([Environment]::GetEnvironmentVariables('Process').GetEnumerator() | Where-Object { $_.Value -and ([string]$_.Key -match '^(RUSTC|RUSTC_BOOTSTRAP|RUSTFLAGS|RUSTDOCFLAGS|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|CARGO_ENCODED_RUSTFLAGS|CARGO_INCREMENTAL|CARGO_BUILD_RUST(FLAGS|C|C_WRAPPER|C_WORKSPACE_WRAPPER)?|CARGO_PROFILE_|CARGO_TARGET_.*_(RUSTFLAGS|LINKER|RUNNER)|RUSTUP_(TOOLCHAIN|HOME|DIST_SERVER|UPDATE_ROOT)|SUPEREXPLORER_TRUSTED_(CARGO|RUSTC)(_SHA256)?|CC|CXX|AR|LINKER|[A-Z0-9_]+_(CC|CXX|AR|LINKER))$') })
+    $rustcDirectory = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($cargoAuthority.RustcPath))
+$forbiddenOverrides = @([Environment]::GetEnvironmentVariables('Process').GetEnumerator() | Where-Object { $_.Value -and ([string]$_.Key -match '^(RUSTC|RUSTC_BOOTSTRAP|RUSTFLAGS|RUSTDOCFLAGS|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|CARGO_ENCODED_RUSTFLAGS|CARGO_INCREMENTAL|CARGO_HOME|CARGO_BUILD_RUST(FLAGS|C|C_WRAPPER|C_WORKSPACE_WRAPPER)?|CARGO_PROFILE_|CARGO_TARGET_.*_(RUSTFLAGS|LINKER|RUNNER)|RUSTUP_(TOOLCHAIN|HOME|DIST_SERVER|UPDATE_ROOT)|SUPEREXPLORER_TRUSTED_(CARGO|RUSTC)(_SHA256)?|CC|CXX|AR|LINKER|[A-Z0-9_]+_(CC|CXX|AR|LINKER))$') })
 if ($forbiddenOverrides.Count -gt 0) { throw "fingerprint-affecting package environment override is forbidden: $($forbiddenOverrides[0].Key)" }
-
-& (Join-Path $PSHOME 'powershell.exe') -NoProfile -File (Join-Path $PSScriptRoot 'validate-plugin.ps1') -PluginRoot $root | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'plugin validation failed before packaging' }
+$localCargoRegistry = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) '.cargo\registry'
+if (-not (Test-Path -LiteralPath (Join-Path $localCargoRegistry 'cache') -PathType Container) -or -not (Test-Path -LiteralPath (Join-Path $localCargoRegistry 'index') -PathType Container)) {
+    throw 'the local Cargo registry cache is unavailable; install the locked crates before running this offline package build'
+}
+$templateTarget = Join-Path ([IO.Path]::GetTempPath()) ('superexplorer-package-template-target-' + [guid]::NewGuid().ToString('N'))
+foreach ($name in @('CARGO_HOME','CARGO_TARGET_DIR','RUSTC','PATH','SUPEREXPLORER_TRUSTED_CARGO','SUPEREXPLORER_TRUSTED_CARGO_SHA256','SUPEREXPLORER_TRUSTED_RUSTC','SUPEREXPLORER_TRUSTED_RUSTC_SHA256')) { $savedTemplateEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
+New-Item -ItemType Directory -Path $templateTarget -Force | Out-Null
+$env:CARGO_HOME = $localCargoHome
+$env:CARGO_TARGET_DIR = $templateTarget
+$env:RUSTC = $cargoAuthority.RustcPath
+$env:PATH = "$cargoDirectory;$rustcDirectory;$($savedTemplateEnvironment['PATH'])"
+$env:SUPEREXPLORER_TRUSTED_CARGO = $cargoPath
+$env:SUPEREXPLORER_TRUSTED_CARGO_SHA256 = $cargoHash
+$env:SUPEREXPLORER_TRUSTED_RUSTC = $cargoAuthority.RustcPath
+$env:SUPEREXPLORER_TRUSTED_RUSTC_SHA256 = $cargoAuthority.RustcSha256
 $buildRoot = Join-Path $root ("target\superexplorer\$($sdkLock.bundle_id)")
 $buildReportPath = Join-Path $buildRoot 'reports\build.json'
 $buildCompletePath = Join-Path $buildRoot 'reports\build.complete.json'
+$validationReportPath = Join-Path $buildRoot 'reports\validation.json'
 $dllPath = Join-Path $buildRoot 'build\plugin.dll'
-if (-not (Test-Path -LiteralPath $buildReportPath) -or -not (Test-Path -LiteralPath $buildCompletePath) -or -not (Test-Path -LiteralPath $dllPath)) {
-    throw 'a complete marked build report and plugin DLL are required; packaging never rebuilds automatically'
+if (-not (Test-Path -LiteralPath $buildReportPath) -or -not (Test-Path -LiteralPath $buildCompletePath) -or -not (Test-Path -LiteralPath $validationReportPath) -or -not (Test-Path -LiteralPath $dllPath)) {
+    throw 'a complete marked build, sealed validation report, and plugin DLL are required; packaging never rebuilds automatically'
 }
-foreach ($path in @($manifestPath, (Join-Path $root 'Cargo.lock'), $buildReportPath, $buildCompletePath, $dllPath)) {
+foreach ($path in @($manifestPath, (Join-Path $root 'Cargo.lock'), $buildReportPath, $buildCompletePath, $validationReportPath, $dllPath)) {
     if ((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'package input is a symlink or reparse point' }
 }
 $privateSnapshotRoot = Join-Path ([IO.Path]::GetTempPath()) ('superexplorer-package-inputs-' + [guid]::NewGuid().ToString('N'))
-$liveInputs = [ordered]@{ 'plugin-project.json' = $manifestPath; 'Cargo.lock' = (Join-Path $root 'Cargo.lock'); 'reports/build.json' = $buildReportPath; 'reports/build.complete.json' = $buildCompletePath; 'plugin/plugin.dll' = $dllPath }
+$liveInputs = [ordered]@{ 'plugin-project.json' = $manifestPath; 'Cargo.lock' = (Join-Path $root 'Cargo.lock'); 'reports/build.json' = $buildReportPath; 'reports/build.complete.json' = $buildCompletePath; 'reports/validation.json' = $validationReportPath; 'plugin/plugin.dll' = $dllPath }
 $liveInputHashes = @{}
 $consumerTreeDigest = Get-BoundedConsumerTreeDigest $root
 Copy-BoundedConsumerSnapshot $root $privateSnapshotRoot | Out-Null
+if ((Get-BoundedConsumerTreeDigest $privateSnapshotRoot) -ne $consumerTreeDigest) { throw 'private package source snapshot is not one complete consumer generation' }
 foreach ($name in $liveInputs.Keys) {
     $live = $liveInputs[$name]
     $metadata = Get-Item -LiteralPath $live -Force
@@ -57,15 +78,20 @@ $privateManifestPath = Join-Path $privateSnapshotRoot 'plugin-project.json'
 $privateLockPath = Join-Path $privateSnapshotRoot 'Cargo.lock'
 $privateBuildReportPath = Join-Path $privateSnapshotRoot 'reports\build.json'
 $privateBuildCompletePath = Join-Path $privateSnapshotRoot 'reports\build.complete.json'
+$privateValidationReportPath = Join-Path $privateSnapshotRoot 'reports\validation.json'
 $privateDllPath = Join-Path $privateSnapshotRoot 'plugin\plugin.dll'
+$templateJson = & $cargoPath run --release --locked --offline --config $localCargoConfig --manifest-path (Join-Path $sdk 'tools\plugin-tooling\Cargo.toml') -- materialize-folder-size-template $privateSnapshotRoot ([string]$sdkLock.bundle_id) ([string]$sdkLock.build_policy.abi_schema_version)
+if ($LASTEXITCODE -ne 0) { throw 'private plugin template materialization failed before packaging' }
+$templateMaterialization = ($templateJson -join "`n") | ConvertFrom-Json
+if ($templateMaterialization.template_manifest_sha256 -notmatch '^[0-9a-f]{64}$' -or $templateMaterialization.resolved_manifest_sha256 -notmatch '^[0-9a-f]{64}$') { throw 'template materialization emitted invalid digests' }
 $manifest = Get-Content -LiteralPath $privateManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $buildReport = Get-Content -LiteralPath $privateBuildReportPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $buildComplete = Get-Content -LiteralPath $privateBuildCompletePath -Raw -Encoding UTF8 | ConvertFrom-Json
 $manifestHash = (Get-FileHash -LiteralPath $privateManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $lockHash = (Get-FileHash -LiteralPath $privateLockPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $dllHash = (Get-FileHash -LiteralPath $privateDllPath -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($buildReport.bundle_id -ne $manifest.sdk.bundle_id -or $buildReport.inputs.manifest_sha256 -ne $manifestHash -or $buildReport.inputs.cargo_lock_sha256 -ne $lockHash -or $buildReport.plugin_dll.sha256 -ne $dllHash) { throw 'private package snapshot does not match the validated build' }
-if ($buildComplete.schema_version -ne 1 -or $buildComplete.bundle_id -ne $manifest.sdk.bundle_id -or $buildComplete.build_report_sha256 -ne (Get-FileHash -LiteralPath $privateBuildReportPath -Algorithm SHA256).Hash.ToLowerInvariant() -or $buildComplete.consumer_tree_sha256 -ne $buildReport.inputs.consumer_tree_sha256) { throw 'build generation completion marker does not authenticate the immutable build report' }
+if ($buildReport.bundle_id -ne $manifest.sdk.bundle_id -or $buildReport.inputs.manifest_sha256 -ne $manifestHash -or $buildReport.inputs.resolved_manifest_sha256 -ne $manifestHash -or $buildReport.inputs.template_manifest_sha256 -ne [string]$templateMaterialization.template_manifest_sha256 -or $buildReport.inputs.cargo_lock_sha256 -ne $lockHash -or $buildReport.plugin_dll.sha256 -ne $dllHash) { throw 'private package snapshot does not match the validated build' }
+if ($buildComplete.schema_version -ne 1 -or $buildComplete.bundle_id -ne $manifest.sdk.bundle_id -or $buildComplete.build_report_sha256 -ne (Get-FileHash -LiteralPath $privateBuildReportPath -Algorithm SHA256).Hash.ToLowerInvariant() -or $buildComplete.validation_report_sha256 -ne (Get-FileHash -LiteralPath $privateValidationReportPath -Algorithm SHA256).Hash.ToLowerInvariant() -or $buildComplete.consumer_tree_sha256 -ne $buildReport.inputs.consumer_tree_sha256) { throw 'build generation completion marker does not authenticate the immutable build and validation reports' }
 if ([string]$buildReport.inputs.consumer_tree_sha256 -notmatch '^[0-9a-f]{64}$' -or $buildReport.inputs.consumer_tree_sha256 -ne $consumerTreeDigest) { throw 'live bounded consumer tree does not match the build snapshot; rebuild before packaging' }
 
 Add-Type -AssemblyName System.IO.Compression
@@ -130,31 +156,26 @@ try {
     $coreStageDirectory = Join-Path $stageRoot 'core-stage'
     $archiveInputRoot = Join-Path $stageRoot 'archive-inputs'
     if (Test-Path -LiteralPath $coreStageDirectory) { throw 'private core package stage already exists' }
-    $temporaryCargo = Join-Path ([IO.Path]::GetTempPath()) ('superexplorer-package-synthesis-cargo-' + [guid]::NewGuid().ToString('N'))
     $temporaryTarget = Join-Path ([IO.Path]::GetTempPath()) ('superexplorer-package-synthesis-target-' + [guid]::NewGuid().ToString('N'))
     $savedEnvironment = @{}
     foreach ($name in @('CARGO_HOME','CARGO_TARGET_DIR','RUSTC','RUSTUP_TOOLCHAIN','PATH','SUPEREXPLORER_TRUSTED_CARGO','SUPEREXPLORER_TRUSTED_CARGO_SHA256','SUPEREXPLORER_TRUSTED_RUSTC','SUPEREXPLORER_TRUSTED_RUSTC_SHA256')) { $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
     try {
-        New-Item -ItemType Directory -Path $temporaryCargo,$temporaryTarget -Force | Out-Null
-        $vendor = (Join-Path $sdk 'vendor\cargo-sources').Replace('\','/')
-        $cargoConfig = "[net]`noffline = true`n`n[source.crates-io]`nreplace-with = 'cargo-sources'`n`n[source.cargo-sources]`ndirectory = '$vendor'`n"
-        [IO.File]::WriteAllText((Join-Path $temporaryCargo 'config.toml'), $cargoConfig, [Text.UTF8Encoding]::new($false))
-        $env:CARGO_HOME = $temporaryCargo
+        New-Item -ItemType Directory -Path $temporaryTarget -Force | Out-Null
         $env:CARGO_TARGET_DIR = $temporaryTarget
         $env:RUSTC = $cargoAuthority.RustcPath
-        $env:PATH = "$cargoDirectory;$($savedEnvironment['PATH'])"
+        $env:PATH = "$cargoDirectory;$rustcDirectory;$($savedEnvironment['PATH'])"
         $env:SUPEREXPLORER_TRUSTED_CARGO = $cargoPath
         $env:SUPEREXPLORER_TRUSTED_CARGO_SHA256 = $cargoHash
         $env:SUPEREXPLORER_TRUSTED_RUSTC = $cargoAuthority.RustcPath
         $env:SUPEREXPLORER_TRUSTED_RUSTC_SHA256 = $cargoAuthority.RustcSha256
         Push-Location $sdk
         try {
-            & $cargoPath run --release --locked --offline --manifest-path (Join-Path $sdk 'tools\plugin-tooling\Cargo.toml') -- stage-package $privateSnapshotRoot $privateDllPath ([IO.Path]::GetFullPath($coreStageDirectory))
+            & $cargoPath run --release --locked --offline --config $localCargoConfig --manifest-path (Join-Path $sdk 'tools\plugin-tooling\Cargo.toml') -- stage-package $privateSnapshotRoot $privateDllPath ([IO.Path]::GetFullPath($coreStageDirectory))
         } finally { Pop-Location }
         if ($LASTEXITCODE -ne 0) { throw 'production PackageManifestV1 staging failed' }
     } finally {
         foreach ($name in $savedEnvironment.Keys) { [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process') }
-        foreach ($temporary in @($temporaryCargo,$temporaryTarget)) { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Recurse -Force } }
+        foreach ($temporary in @($temporaryTarget)) { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Recurse -Force } }
     }
     if (-not (Test-Path -LiteralPath $coreStageDirectory -PathType Container)) { throw 'core package staging did not create its requested private output directory' }
     # Bounded no-reparse traversal converts the core output to an immutable
@@ -223,6 +244,8 @@ try {
     $report = [ordered]@{
         schema_version = 1; package_id = [string]$manifest.package.id; version = [string]$manifest.package.version
         bundle_id = [string]$manifest.sdk.bundle_id; package = "$baseName.sepack"; sha256 = $packageHash
+        template_manifest_sha256 = [string]$templateMaterialization.template_manifest_sha256
+        resolved_manifest_sha256 = [string]$templateMaterialization.resolved_manifest_sha256
         entries = @($orderedNames | ForEach-Object { [ordered]@{ path = $_; size = (Get-Item -LiteralPath $entries[$_]).Length; sha256 = (Get-FileHash -LiteralPath $entries[$_] -Algorithm SHA256).Hash.ToLowerInvariant() } })
     }
     [IO.File]::WriteAllText($stageHash, "$packageHash  $baseName.sepack`n", [Text.UTF8Encoding]::new($false))
@@ -269,5 +292,7 @@ try {
 }
 } finally {
     if ($privateSnapshotRoot -and (Test-Path -LiteralPath $privateSnapshotRoot)) { Remove-Item -LiteralPath $privateSnapshotRoot -Recurse -Force }
+    foreach ($name in $savedTemplateEnvironment.Keys) { [Environment]::SetEnvironmentVariable($name, $savedTemplateEnvironment[$name], 'Process') }
+    foreach ($temporary in @($templateTarget)) { if ($temporary -and (Test-Path -LiteralPath $temporary)) { Remove-Item -LiteralPath $temporary -Recurse -Force } }
     Remove-SealedCargoAuthority $cargoAuthority
 }

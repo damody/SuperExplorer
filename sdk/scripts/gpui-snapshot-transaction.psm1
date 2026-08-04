@@ -72,7 +72,7 @@ function Invoke-GpuiSnapshotPromotionCore {
   $changed=@(& git -C $RepositoryRoot diff --cached --name-only);if($LASTEXITCODE){throw 'promotion core could not inspect index'};if(@($RequiredChanged|Where-Object{$_ -notin $changed}).Count){throw 'promotion core omitted required staged output'}
   return $baseline
  }catch{
-  $failure=$_;& git -C $RepositoryRoot reset --hard $baseline|Out-Null;& git -C $RepositoryRoot clean -fd -- sdk/vendor/cargo-sources|Out-Null;if($LASTEXITCODE){throw "promotion core failed: $($failure.Exception.Message); rollback failed"};if($null -eq $gpuiBranch){& git -C $gpui checkout --detach $gpuiHead|Out-Null}else{& git -C $gpui checkout $gpuiBranch|Out-Null;& git -C $gpui reset --hard $gpuiHead|Out-Null};if($LASTEXITCODE){throw "promotion core failed: $($failure.Exception.Message); GPUI rollback failed"};throw $failure
+  $failure=$_;& git -C $RepositoryRoot reset --hard $baseline|Out-Null;if($LASTEXITCODE){throw "promotion core failed: $($failure.Exception.Message); rollback failed"};if($null -eq $gpuiBranch){& git -C $gpui checkout --detach $gpuiHead|Out-Null}else{& git -C $gpui checkout $gpuiBranch|Out-Null;& git -C $gpui reset --hard $gpuiHead|Out-Null};if($LASTEXITCODE){throw "promotion core failed: $($failure.Exception.Message); GPUI rollback failed"};throw $failure
  }
 }
 function Invoke-GpuiPromotionFinalizeV1 {

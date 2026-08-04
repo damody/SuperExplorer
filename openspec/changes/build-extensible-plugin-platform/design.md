@@ -65,13 +65,13 @@ GPUI 型別不宣稱具有 stable Rust ABI。只要 DLL 註冊任何 GPUI contri
 
 ### 4. P0-0 使用「明確 upstream update、不可變 build snapshot 與本機 offline gate」
 
-Rust 固定為 `1.97.1`，`abi_stable` 固定為 `0.11.3`。GPUI 的唯一 source authority 是 `https://github.com/damody/gpui-ce-explorer.git`；只有 primary agent 明確執行的 upstream update operation 可使用網路從 `main` 尋找候選。該 operation 將 HEAD 解析為完整 commit，產生 canonical Cargo.lock、offline vendor、sdk-lock、fingerprint、host/plugin fixtures 與新 development bundle ID；其後 candidate generation、host/plugin build、fixture、promotion、rollback、release freeze 與 evidence verification 都是本機操作。
+Rust 固定為 `1.97.1`，`abi_stable` 固定為 `0.11.3`。GPUI 的唯一 source authority 是 `https://github.com/damody/gpui-ce-explorer.git`；只有 primary agent 明確執行的 upstream update operation 可使用網路從 `main` 尋找候選。該 operation 將 HEAD 解析為完整 commit，產生 canonical Cargo.lock、sdk-lock、fingerprint、host/plugin fixtures 與新 development bundle ID；其後 candidate generation、host/plugin build、fixture、promotion、rollback、release freeze 與 evidence verification 都是本機操作。第三方來源不提交或追蹤 vendor；實際建置要求預先填好的本機 Cargo registry cache，並固定使用 `--locked --offline`，缺 cache 時明確阻擋並要求 bootstrap。
 
 每個 gate matrix entry 只宣告一個在 release integrator Windows workstation 執行的 command 或 manual review procedure、working directory/environment、expected exit status 與 required artifacts。Rust unit/integration/ABI gate 使用精確的 `cargo test --locked --offline` command；PowerShell contract gate 使用 `powershell -NoProfile -ExecutionPolicy Bypass -File <script>` 並輸出 deterministic report；schema 與 architecture gate 也在本機執行。Phases 1–5 只執行這些 local checks，零 UITEST；Task 6 在除 final gate 外的全部 leaves 完成前也零 UITEST。headful/UI gate 使用 repository 的 `cargo run -p explorer-uitest --bin explorer-uitest --locked --offline -- --case <case-id>` 與 `uitest/manifest.json`，但 6.4.7 是第一個 case，且只有 Task 6 的 framework、consumer contract、implementation、production wiring、public SDK、fixture、docs、package 與 inventory/composition 全部完成才可執行。此後每個範例也必須先完成相同 prerequisites 才可執行其 UITEST。UITEST 不得取代上述任何 check，且不得驗證 incomplete、mock、trait-only 或 source-shape-only example。
 
 Host、SDK 與八個範例只有在每個必要且在該 phase eligible 的本機 Rust、PowerShell contract、schema、architecture 及（僅在完整 Phase 6 後）UITEST gate 成功、並產生已簽署的本機 release evidence bundle 後才原子切換 snapshot。Bundle 必須為 deterministic、store-only、content-addressed，並包含 evidence manifest、exact command/manual procedure、結果、artifact hash、task/subcheck 與 source-revision binding、RC identity、retention metadata 與 timestamp；它只在明確的本機 retained-bundle root 解析，且由獨立於 plugin publisher key 的 release-integrator trust policy 驗證。驗證拒絕 unsigned/untrusted bundle、hash mismatch、path traversal、duplicate normalized path、reparse-point escape、oversized archive、invalid retention metadata 與不符當前 task/subcheck 或 source revision 的 bundle。失敗或未核准的 non-fast-forward 保留上一 snapshot。RC cut 後設定 `release_frozen = true`、建立受保護 tag、離線重建並簽署 bundle；日後修正使用新的 RC 與 bundle ID，不改寫舊 Release。
 
-外掛可加入自己的私有 Rust dependencies，但不得改動 protected dependency closure；其 lock、vendor、provenance 與授權由外掛包負責。
+外掛可加入自己的私有 Rust dependencies，但不得改動 protected dependency closure；其 lock、provenance 與授權由外掛包負責。第三方來源不提交或追蹤 vendor，建置前必須由本機 registry cache 提供鎖定來源。
 
 ### 5. Rust DLL 啟動載入、功能執行期 gate、程序結束才卸載
 
@@ -171,7 +171,7 @@ The consumer statically links one exact locked Rust `tokei` dependency closure a
 
 - **[程序內 Rust 可使整個應用程式崩潰或死鎖]** → 載入前驗證、panic boundary、call marker、慢 callback 診斷、Safe Mode；文件明示其不是 sandbox。
 - **[開發期 GPUI 更新造成大量外掛重建]** → immutable snapshot、原子 migration、精確 loader 診斷；Release freeze 後不再漂移。
-- **[固定 toolchain 增加 SDK 發布成本]** → 自動產生 lock/vendor/fingerprint、離線 fixture、local Rust／PowerShell／UITEST gate 與已簽署 evidence bundle，換取可重現性。
+- **[固定 toolchain 增加 SDK 發布成本]** → 固定 lock/fingerprint、離線 fixture、本機預填 Cargo cache、local Rust／PowerShell／UITEST gate 與已簽署 evidence bundle，換取可重現性。
 - **[動態欄位與 view registry 觸及既有 session/UI 路徑]** → 先遷移 built-in 行為到同一 registry，保留未知 ID 並提供 fallback/rollback fixture。
 - **[1,000 項目欄位與 100,000 節點 Size Map 造成 UI 更新風暴]** → background delta、backpressure、visible priority、layout/invalidation batching 與 memory quota。
 - **[Virtual archive 修改可能毀損資料]** → staging、space preflight、verify、identity recheck、atomic replace、backup/undo；任何失敗不改原檔。
@@ -187,7 +187,7 @@ The consumer statically links one exact locked Rust `tokei` dependency closure a
 4. 完成 scheduler/value/GPUI contribution，再以資料夾大小範例驗證第一條端到端路徑。
 5. 依 P0 順序加入 view scan、batch columns、Lock Owner、Lua tools、operation plans、EXIF stream 與 Virtual Folder；每步均需相應官方範例通過才進下一步。
 6. Task 6 完成除 final gate 外的全部 leaves，包括 framework、consumer contract、implementation、production wiring、public SDK、fixture、docs、`.sepack` 與 inventory/composition；此前不執行 UITEST。6.4.7 是第一個 UITEST mapping/gate；此後每個後續範例均遵守相同 complete-vertical-slice eligibility。
-7. 在空 `CARGO_HOME`、禁止網路的環境建置 SDK 與八個範例，執行 local Rust、PowerShell contract、`explorer-uitest` 相容、安全、效能與封裝 gate，產生及驗證已簽署 release evidence bundle。
+7. 在預先填好的本機 Cargo registry cache、禁止網路的環境建置 SDK 與八個範例，執行 local Rust、PowerShell contract、`explorer-uitest` 相容、安全、效能與封裝 gate，產生及驗證已簽署 release evidence bundle；缺少 cache 時先 bootstrap，不建立或追蹤 vendor。
 8. P0 通過後完成純資料 Skin schema、asset loader、透明/hit-test 與 accessibility/fallback gate。
 9. RC cut 凍結 GPUI commit/tag、設 `release_frozen = true`，離線重建、產生並驗證已簽署的 local release evidence bundle。若 gate 失敗、evidence 缺失或 bundle 無法驗證，保留上一 host/SDK，或停用尚未完成的 feature；不遷移使用者資料到不可回復格式。
 

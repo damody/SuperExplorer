@@ -111,8 +111,8 @@ try {
     [Environment]::SetEnvironmentVariable('RUSTUP_HOME', $savedRustupHome, 'Process')
     if (Test-Path -LiteralPath $fakeToolchainPath) { Remove-Item -LiteralPath $fakeToolchainPath -Recurse -Force }
 }
-if ($manifest.files.path -notcontains 'sdk/vendor/cargo-sources/cc/src/target/apple.rs') {
-    throw 'inventory omitted vendored cc/src/target/apple.rs source'
+if ($manifest.files.path | Where-Object { $_ -like 'sdk/vendor/cargo-sources/*' }) {
+    throw 'inventory contains retired tracked Cargo source files'
 }
 if ($manifest.files.path | Where-Object { $_ -match '(^|/)\.git($|/)' }) {
     throw 'inventory contains Git metadata'

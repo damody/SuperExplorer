@@ -107,11 +107,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "superexplorer-bundle-generator"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "superexplorer-ui-abi-fingerprint",
+ "toml",
+]
+
+[[package]]
 name = "superexplorer-plugin-tooling"
 version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "superexplorer-bundle-generator",
  "superexplorer-ui-abi-fingerprint",
  "toml",
 ]

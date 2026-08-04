@@ -10,13 +10,15 @@ if (-not (Test-Path -LiteralPath (Join-Path $root 'Cargo.toml')) -or -not (Test-
 }
 
 $sdkLock = Get-Content -LiteralPath (Join-Path $sdk 'sdk-lock.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$localCargoConfig = (& (Join-Path $PSHOME 'powershell.exe') -NoProfile -File (Join-Path $PSScriptRoot 'prepare-local-cargo-source.ps1') -PluginRoot $root | Select-Object -Last 1)
+if (-not $localCargoConfig -or -not (Test-Path -LiteralPath $localCargoConfig -PathType Leaf)) { throw 'local exact-version Cargo source bootstrap failed' }
+$localCargoHome = Split-Path -Parent $localCargoConfig
 Import-Module (Join-Path $PSScriptRoot 'sealed-cargo-authority.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'consumer-snapshot.psm1') -Force
 $targetTriple = 'x86_64-pc-windows-msvc'
 $manifest = $null
 $crateFile = $null
 $temporaryTarget = Join-Path ([IO.Path]::GetTempPath()) ('superexplorer-plugin-target-' + [guid]::NewGuid().ToString('N'))
-$temporaryCargo = Join-Path ([IO.Path]::GetTempPath()) ('superexplorer-plugin-cargo-' + [guid]::NewGuid().ToString('N'))
 $outputRoot = Join-Path $root ('target\superexplorer\' + [string]$sdkLock.bundle_id)
 $stage = $null
 $dangerous = @('RUSTC','RUSTC_BOOTSTRAP','RUSTC_WRAPPER','RUSTC_WORKSPACE_WRAPPER','RUSTFLAGS','RUSTDOCFLAGS','CARGO_BUILD_RUSTFLAGS','CARGO_BUILD_RUSTC','CARGO_BUILD_RUSTC_WRAPPER','CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER','CARGO_ENCODED_RUSTFLAGS','CARGO_INCREMENTAL','CARGO_TARGET_DIR','CARGO_HOME','RUSTUP_TOOLCHAIN','RUSTUP_HOME','CC','CXX','AR','LINKER','SUPEREXPLORER_TRUSTED_CARGO','SUPEREXPLORER_TRUSTED_CARGO_SHA256','SUPEREXPLORER_TRUSTED_RUSTC','SUPEREXPLORER_TRUSTED_RUSTC_SHA256')
@@ -24,6 +26,10 @@ $forbiddenOverrides = @([Environment]::GetEnvironmentVariables('Process').GetEnu
     $_.Value -and ([string]$_.Key -match '^(RUSTC|RUSTC_BOOTSTRAP|RUSTFLAGS|RUSTDOCFLAGS|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|CARGO_ENCODED_RUSTFLAGS|CARGO_INCREMENTAL|CARGO_BUILD_RUST(FLAGS|C|C_WRAPPER|C_WORKSPACE_WRAPPER)?|CARGO_PROFILE_|CARGO_TARGET_.*_(RUSTFLAGS|LINKER|RUNNER)|RUSTUP_(TOOLCHAIN|HOME|DIST_SERVER|UPDATE_ROOT)|SUPEREXPLORER_TRUSTED_(CARGO|RUSTC)(_SHA256)?|CC|CXX|AR|LINKER|[A-Z0-9_]+_(CC|CXX|AR|LINKER))$')
 })
 if ($forbiddenOverrides.Count -gt 0) { throw "fingerprint-affecting build environment override is forbidden: $($forbiddenOverrides[0].Key)" }
+$localCargoRegistry = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) '.cargo\registry'
+if (-not (Test-Path -LiteralPath (Join-Path $localCargoRegistry 'cache') -PathType Container) -or -not (Test-Path -LiteralPath (Join-Path $localCargoRegistry 'index') -PathType Container)) {
+    throw 'the local Cargo registry cache is unavailable; install the locked crates before running this offline build'
+}
 foreach ($configName in @('.cargo\config.toml','.cargo\config','rust-toolchain.toml','rust-toolchain')) {
     if (Test-Path -LiteralPath (Join-Path $root $configName)) { throw 'consumer Cargo config overrides are forbidden' }
 }
@@ -90,6 +96,7 @@ $cargoPath = $null
 $cargoHash = $null
 $cargoDirectory = $null
 $pushed = $false
+$templateMaterialization = $null
 try {
     # Once authority exists, every later operation is covered by this outer
     # cleanup boundary, including snapshot and publication failures.
@@ -97,11 +104,18 @@ try {
     $cargoPath = $cargoAuthority.Path
     $cargoHash = $cargoAuthority.Sha256
     $cargoDirectory = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($cargoPath))
+    $rustcDirectory = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($cargoAuthority.RustcPath))
     foreach ($name in $dangerous) { [Environment]::SetEnvironmentVariable($name, $null, 'Process') }
-    $env:PATH = "$cargoDirectory;$savedPath"
+    $env:CARGO_HOME = $localCargoHome
+    $env:RUSTC = $cargoAuthority.RustcPath
+    $env:SUPEREXPLORER_TRUSTED_CARGO = $cargoPath
+    $env:SUPEREXPLORER_TRUSTED_CARGO_SHA256 = $cargoHash
+    $env:SUPEREXPLORER_TRUSTED_RUSTC = $cargoAuthority.RustcPath
+    $env:SUPEREXPLORER_TRUSTED_RUSTC_SHA256 = $cargoAuthority.RustcSha256
+    $env:PATH = "$cargoDirectory;$rustcDirectory;$savedPath"
     $expectedOutputParent = Join-Path $root 'target\superexplorer'
     Assert-NoReparseAncestors $expectedOutputParent 'plugin build output parent'
-    New-Item -ItemType Directory -Path $temporaryCargo,$temporaryTarget,$expectedOutputParent -Force | Out-Null
+    New-Item -ItemType Directory -Path $temporaryTarget,$expectedOutputParent -Force | Out-Null
     Assert-NoReparseAncestors $expectedOutputParent 'plugin build output parent'
     Repair-IncompleteBuildPublication
     Assert-NoReparseAncestors $outputRoot 'plugin build output root'
@@ -114,10 +128,16 @@ try {
         [IO.File]::AppendAllText($manifestPath, "`n", [Text.UTF8Encoding]::new($false))
     }
     foreach ($configName in @('.cargo\config.toml','.cargo\config','rust-toolchain.toml','rust-toolchain')) { if (Test-Path -LiteralPath (Join-Path $stagedRoot $configName)) { throw 'staged consumer Cargo or Rustup config overrides are forbidden' } }
-    $vendor = (Join-Path $sdk 'vendor\cargo-sources').Replace('\','/')
-    $cargoConfig = "[net]`noffline = true`n`n[source.crates-io]`nreplace-with = 'cargo-sources'`n`n[source.cargo-sources]`ndirectory = '$vendor'`n`n[build]`ntarget = '$targetTriple'`n"
-    [IO.File]::WriteAllText((Join-Path $temporaryCargo 'config.toml'), $cargoConfig, [Text.UTF8Encoding]::new($false))
-    & (Join-Path $PSHOME 'powershell.exe') -NoProfile -File (Join-Path $PSScriptRoot 'validate-plugin.ps1') -PluginRoot $stagedRoot | Out-Null
+    Push-Location $sdk
+    $pushed = $true
+    $templateJson = & $cargoPath run --release --locked --offline --config $localCargoConfig --manifest-path (Join-Path $sdk 'tools\plugin-tooling\Cargo.toml') -- materialize-folder-size-template $stagedRoot ([string]$sdkLock.bundle_id) ([string]$sdkLock.build_policy.abi_schema_version)
+    if ($LASTEXITCODE -ne 0) { throw 'private plugin template materialization failed before build' }
+    $templateMaterialization = ($templateJson -join "`n") | ConvertFrom-Json
+    if ($templateMaterialization.template_manifest_sha256 -notmatch '^[0-9a-f]{64}$' -or $templateMaterialization.resolved_manifest_sha256 -notmatch '^[0-9a-f]{64}$') { throw 'template materialization emitted invalid digests' }
+    Pop-Location
+    $pushed = $false
+    foreach ($name in $dangerous) { [Environment]::SetEnvironmentVariable($name, $null, 'Process') }
+    & (Join-Path $PSHOME 'powershell.exe') -NoProfile -File (Join-Path $PSScriptRoot 'validate-plugin.ps1') -PluginRoot $stagedRoot -TemplateManifestSha256 ([string]$templateMaterialization.template_manifest_sha256) -ExpectedResolvedManifestSha256 ([string]$templateMaterialization.resolved_manifest_sha256) | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'plugin validation failed before build' }
     # Only the bounded, no-reparse snapshot reaches PowerShell's JSON parser.
     # The core validator has already accepted the exact schema, so later path
@@ -127,16 +147,17 @@ try {
     if ($stagedManifestInfo.Length -gt 1MB) { throw 'plugin-project.json exceeds the 1 MiB build manifest limit' }
     $manifest = Get-Content -LiteralPath $stagedManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $crateFile = ([string]$manifest.rust.crate_name).Replace('-', '_') + '.dll'
-    $env:CARGO_HOME = $temporaryCargo
+    $env:CARGO_HOME = $localCargoHome
     $env:CARGO_TARGET_DIR = $temporaryTarget
     $env:RUSTC = $cargoAuthority.RustcPath
     $env:SUPEREXPLORER_TRUSTED_CARGO = $cargoPath
     $env:SUPEREXPLORER_TRUSTED_CARGO_SHA256 = $cargoHash
     $env:SUPEREXPLORER_TRUSTED_RUSTC = $cargoAuthority.RustcPath
     $env:SUPEREXPLORER_TRUSTED_RUSTC_SHA256 = $cargoAuthority.RustcSha256
+    $env:PATH = "$cargoDirectory;$rustcDirectory;$savedPath"
     Push-Location $sdk
     $pushed = $true
-    & $cargoPath build --release --locked --offline --target $targetTriple --manifest-path (Join-Path $stagedRoot 'Cargo.toml')
+    & $cargoPath build --release --locked --offline --config $localCargoConfig --target $targetTriple --manifest-path (Join-Path $stagedRoot 'Cargo.toml')
     if ($LASTEXITCODE -ne 0) { throw "plugin build failed ($LASTEXITCODE)" }
     Pop-Location
     $pushed = $false
@@ -144,7 +165,7 @@ try {
 
     $dll = Join-Path $temporaryTarget "$targetTriple\release\$crateFile"
     if (-not (Test-Path -LiteralPath $dll)) { throw "expected cdylib was not produced: $crateFile" }
-    & $cargoPath run --release --locked --offline --manifest-path (Join-Path $sdk 'tools\plugin-tooling\Cargo.toml') -- inspect-dll $dll | Out-Host
+    & $cargoPath run --release --locked --offline --config $localCargoConfig --manifest-path (Join-Path $sdk 'tools\plugin-tooling\Cargo.toml') -- inspect-dll $dll | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'built DLL failed the non-loading abi_stable export inspection' }
     $buildDir = Join-Path $stage 'build'
     $reportDir = Join-Path $stage 'reports'
@@ -169,6 +190,8 @@ try {
         plugin_dll = [ordered]@{ path = 'build/plugin.dll'; size = (Get-Item $dll).Length; sha256 = $dllHash }
         inputs = [ordered]@{
             manifest_sha256 = (Get-FileHash -LiteralPath (Join-Path $stagedRoot 'plugin-project.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+            template_manifest_sha256 = [string]$templateMaterialization.template_manifest_sha256
+            resolved_manifest_sha256 = [string]$templateMaterialization.resolved_manifest_sha256
             cargo_lock_sha256 = (Get-FileHash -LiteralPath (Join-Path $stagedRoot 'Cargo.lock') -Algorithm SHA256).Hash.ToLowerInvariant()
             consumer_tree_sha256 = $consumerTreeDigest
         }
@@ -227,7 +250,7 @@ try {
     if ($pushed) { Pop-Location }
     foreach ($name in $dangerous) { [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process') }
     [Environment]::SetEnvironmentVariable('PATH', $savedPath, 'Process')
-    foreach ($path in @($temporaryCargo,$temporaryTarget,$stage,$stagedRoot)) {
+    foreach ($path in @($temporaryTarget,$stage,$stagedRoot)) {
         if ($path -and (Test-Path -LiteralPath $path)) { Remove-Item -LiteralPath $path -Recurse -Force }
     }
     Remove-SealedCargoAuthority $cargoAuthority
