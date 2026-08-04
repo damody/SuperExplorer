@@ -1,0 +1,7 @@
+$ErrorActionPreference='Stop';$root=(Resolve-Path (Join-Path $PSScriptRoot '..')).Path;Push-Location $root
+try{
+ cargo test -p explorer-extension-host --locked --offline feature_state::tests::;if($LASTEXITCODE-ne 0){throw 'feature state tests failed'}
+ cargo test -p explorer-extension-host --locked --offline contribution_gate::tests::;if($LASTEXITCODE-ne 0){throw 'contribution gate tests failed'}
+ $revision=(git rev-parse HEAD).Trim();$files=@('crates/explorer-extension-host/src/feature_state.rs','crates/explorer-extension-host/src/contribution_gate.rs');$sha=[Security.Cryptography.SHA256]::Create();$bytes=New-Object Collections.Generic.List[byte];foreach($p in $files){$bytes.AddRange([IO.File]::ReadAllBytes((Resolve-Path $p)))};$digest=([BitConverter]::ToString($sha.ComputeHash($bytes.ToArray()))).Replace('-','').ToLowerInvariant()
+ foreach($n in 1..8){$id="3.4.$n";$dir=Join-Path 'target/openspec-evidence/build-extensible-plugin-platform' $id;New-Item -ItemType Directory -Force $dir|Out-Null;$o=[ordered]@{schema_version=1;task_id=$id;procedure_kind='command';command='powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_feature_authority_contract.ps1';cwd='.';environment=[ordered]@{validation_authority='local-only';uitest_executed='false';offline='true'};expected='exit code 0';actual='passed';exit_code=0;source_revision=$revision;input_sha256=[ordered]@{feature_authority_sha256=$digest}};$o|ConvertTo-Json -Depth 6|Set-Content -Encoding utf8 (Join-Path $dir 'result.json');Write-Output "REPORT $id $digest"}
+}finally{Pop-Location}
