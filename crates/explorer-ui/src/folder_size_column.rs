@@ -12,8 +12,8 @@ use explorer_model::{
     ColumnSortSemantics, ColumnValueType, ShellItemId,
 };
 
-/// Stable identity of the one P0 consumer-provided Details column.
-pub const FOLDER_SIZE_COLUMN_PACKAGE_ID: &str = "p0-consumer";
+/// Stable identity of the canonical Rust folder-size Details example.
+pub const FOLDER_SIZE_COLUMN_PACKAGE_ID: &str = "rust-folder-size-visual-column";
 pub const FOLDER_SIZE_COLUMN_ID: &str = "folder-size";
 
 /// Controls whether the folder-size column includes its proportional bar.
@@ -133,7 +133,7 @@ impl FolderSizeColumnVisuals {
 
 pub type VisualColumnRuntimeHandleV1 = Arc<dyn VisualColumnRuntimePortV1>;
 
-/// Returns the one descriptor accepted by this P0 consumer slice.
+/// Returns the one descriptor accepted by this folder-size example slice.
 pub fn folder_size_column_descriptor() -> ColumnDescriptor {
     ColumnDescriptor {
         id: ColumnId::Extension {

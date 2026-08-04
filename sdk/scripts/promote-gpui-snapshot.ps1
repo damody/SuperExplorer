@@ -62,7 +62,7 @@ if(@(Invoke-Git @('status','--porcelain')).Count){throw 'promotion requires a cl
 $gpui=Join-Path $repo 'vendor\gpui-ce';$gpuiBaseline=(git -C $gpui rev-parse HEAD).Trim();$gpuiBranch=& git -C $gpui symbolic-ref --quiet --short HEAD 2>$null;if($LASTEXITCODE -ne 0){$gpuiBranch=$null};$origin=(git -C $gpui remote get-url origin).Trim();if($origin -ne 'https://github.com/damody/gpui-ce-explorer.git'){throw 'unauthorized GPUI origin'}
 git -C $gpui fetch --no-tags origin main --quiet;if($LASTEXITCODE){throw 'could not revalidate GPUI remote head'};$remote=(git -C $gpui rev-parse origin/main).Trim();if($remote -ne $approval.new_revision -or $candidate.source.revision -ne $remote){throw 'GPUI remote head changed; compare-and-swap promotion refused'}
 $requiredChanged=@('sdk/snapshot/approved-gpui.json','sdk/sdk-lock.json','sdk/bundle-manifest.json','sdk/ui-abi-fingerprint.json','vendor/gpui-ce')
-$allowed=@($requiredChanged+@('Cargo.lock','sdk/Cargo.lock','sdk/snapshot/protected-dependency-closure.json','sdk/vendor/cargo-sources','sdk/fixtures/p0-consumer/Cargo.lock'))
+$allowed=@($requiredChanged+@('Cargo.lock','sdk/Cargo.lock','sdk/snapshot/protected-dependency-closure.json','sdk/vendor/cargo-sources','sdk/fixtures/rust-folder-size-visual-column/Cargo.lock'))
 Import-Module (Join-Path $repo 'sdk\scripts\gpui-snapshot-transaction.psm1') -Force
 $authority=New-GpuiSnapshotAuthorityV1 -RepositoryRoot $repo -ExpectedOrigin 'https://github.com/damody/gpui-ce-explorer.git' -GpuiRepository (Join-Path $repo 'vendor\gpui-ce') -GateManifestPath (Join-Path $repo 'sdk\ci\gpui-update-gates.json') -CommandRunner { param($kind,$arguments) throw "unexpected authority command: $kind" }
 try {

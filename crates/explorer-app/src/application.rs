@@ -555,6 +555,37 @@ struct PendingFolderSizeWorkV1 {
     stopped: bool,
 }
 
+fn enqueue_folder_size_requests(
+    state: &mut PendingFolderSizeWorkV1,
+    request_epoch: &AtomicU64,
+    requests: Vec<explorer_ui::folder_size_column::FolderSizeRequestV1>,
+) {
+    let Some(context) = requests.first().map(|request| request.context.clone()) else {
+        return;
+    };
+    if state.context.as_ref() == Some(&context) {
+        let pending = state.requests.get_or_insert_with(Vec::new);
+        for request in requests {
+            if request.context == context
+                && !pending
+                    .iter()
+                    .any(|queued| queued.item_id == request.item_id && queued.path == request.path)
+            {
+                pending.push(request);
+            }
+        }
+    } else {
+        request_epoch.fetch_add(1, Ordering::AcqRel);
+        state.context = Some(context.clone());
+        state.requests = Some(
+            requests
+                .into_iter()
+                .filter(|request| request.context == context)
+                .collect(),
+        );
+    }
+}
+
 impl ApplicationVisualColumnRuntimeV1 {
     fn start(
         mut measure: explorer_extension_host::SinglePluginVisualMeasureRuntimeV1,
@@ -656,28 +687,11 @@ impl explorer_ui::folder_size_column::VisualColumnRuntimePortV1
         &self,
         requests: Vec<explorer_ui::folder_size_column::FolderSizeRequestV1>,
     ) {
-        let Some(context) = requests.first().map(|request| request.context.clone()) else {
-            return;
-        };
         let (lock, ready) = &*self.pending;
         let mut state = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.context.as_ref() == Some(&context) {
-            let pending = state.requests.get_or_insert_with(Vec::new);
-            for request in requests {
-                if !pending
-                    .iter()
-                    .any(|queued| queued.item_id == request.item_id)
-                {
-                    pending.push(request);
-                }
-            }
-        } else {
-            self.request_epoch.fetch_add(1, Ordering::AcqRel);
-            state.context = Some(context);
-            state.requests = Some(requests);
-        }
+        enqueue_folder_size_requests(&mut state, &self.request_epoch, requests);
         ready.notify_one();
     }
 
@@ -2962,10 +2976,11 @@ mod tests {
     use explorer_ui::ExtensionUiPumpPortV1 as _;
 
     use super::{
-        ApplicationExtensionReadyProjectorV1, ApplicationExtensionUiPumpV1, PendingSizeMapWorkV1,
-        SIZE_MAP_REQUEST_QUEUE_CAP_V1, SafeModeIncidentOfferV1, SafeModeIncidentPortV1,
-        cell_render_key, confirm_offered_safe_mode_incident_v1,
-        confirm_presented_safe_mode_incident_v1, emit_post_commit_safe_mode_telemetry_v1,
+        ApplicationExtensionReadyProjectorV1, ApplicationExtensionUiPumpV1,
+        PendingFolderSizeWorkV1, PendingSizeMapWorkV1, SIZE_MAP_REQUEST_QUEUE_CAP_V1,
+        SafeModeIncidentOfferV1, SafeModeIncidentPortV1, cell_render_key,
+        confirm_offered_safe_mode_incident_v1, confirm_presented_safe_mode_incident_v1,
+        emit_post_commit_safe_mode_telemetry_v1, enqueue_folder_size_requests,
         enqueue_size_map_requests, should_restore_saved_tabs, size_map_render_key,
     };
 
@@ -3370,6 +3385,43 @@ mod tests {
             Err::<(), _>(())
         });
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn folder_size_requests_merge_per_context_and_replace_only_on_generation_change() {
+        let tab = TabId::new();
+        let first_context = RequestContext::new(tab, Generation::new(1));
+        let second_context = RequestContext::new(tab, Generation::new(2));
+        let request = |context: RequestContext, id: u64| {
+            explorer_ui::folder_size_column::FolderSizeRequestV1 {
+                context,
+                item_id: ShellItemId::from_provider_bytes(id.to_le_bytes()).unwrap(),
+                path: format!(r"C:\fixture\{id}").into(),
+            }
+        };
+        let epoch = AtomicU64::new(0);
+        let mut pending = PendingFolderSizeWorkV1::default();
+
+        enqueue_folder_size_requests(
+            &mut pending,
+            &epoch,
+            vec![request(first_context.clone(), 1)],
+        );
+        enqueue_folder_size_requests(
+            &mut pending,
+            &epoch,
+            vec![request(first_context.clone(), 1), request(first_context, 2)],
+        );
+        assert_eq!(epoch.load(Ordering::Acquire), 1);
+        assert_eq!(pending.requests.as_ref().unwrap().len(), 2);
+
+        enqueue_folder_size_requests(&mut pending, &epoch, vec![request(second_context, 3)]);
+        assert_eq!(epoch.load(Ordering::Acquire), 2);
+        assert_eq!(pending.requests.as_ref().unwrap().len(), 1);
+        assert_eq!(
+            pending.requests.as_ref().unwrap()[0].item_id,
+            ShellItemId::from_provider_bytes(3_u64.to_le_bytes()).unwrap()
+        );
     }
 
     #[test]

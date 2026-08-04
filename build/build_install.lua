@@ -148,16 +148,16 @@ local function main()
         "NSIS 腳本"
     )
     local plugin_manifest = require_file(
-        path(root, "sdk", "fixtures", "p0-consumer", "Cargo.toml"),
-        "p0-consumer manifest"
+        path(root, "sdk", "fixtures", "rust-folder-size-visual-column", "Cargo.toml"),
+        "rust-folder-size-visual-column manifest"
     )
     local release_executable = path(root, "target", "release", "SuperExplorer.exe")
     local broker_executable = path(root, "target", "release", "explorer-extension-broker.exe")
     local worker_executable = path(root, "target", "release", "explorer-extension-worker.exe")
     local plugin_dll = path(
         root,
-        "sdk", "fixtures", "p0-consumer", "target",
-        "x86_64-pc-windows-msvc", "release", "p0_consumer.dll"
+        "sdk", "fixtures", "rust-folder-size-visual-column", "target",
+        "x86_64-pc-windows-msvc", "release", "rust_folder_size_visual_column.dll"
     )
     local dist = path(root, "dist")
     local output = path(dist, "SuperExplorer-Setup-" .. version .. "-x64.exe")
@@ -185,7 +185,7 @@ local function main()
             log_path = path(logs, "installer-release.log"),
         })
         process.run({
-            stage = "建置內附 p0-consumer Plugin",
+            stage = "建置內附 rust-folder-size-visual-column Plugin",
             exe = "cargo.exe",
             args = {
                 "build",
@@ -202,7 +202,7 @@ local function main()
     local application_size = validate_executable(release_executable, "發行版執行檔")
     validate_executable(broker_executable, "extension broker")
     validate_executable(worker_executable, "extension worker")
-    local plugin_size = validate_executable(plugin_dll, "p0-consumer Plugin DLL")
+    local plugin_size = validate_executable(plugin_dll, "rust-folder-size-visual-column Plugin DLL")
     os.remove(output)
     process.run({
         stage = "編譯 NSIS 安裝程式",

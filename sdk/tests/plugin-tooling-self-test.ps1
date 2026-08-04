@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 $sdk = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $repo = (Resolve-Path (Join-Path $sdk '..')).Path
 $scripts = Join-Path $sdk 'scripts'
-$fixture = Join-Path $sdk 'fixtures\p0-consumer'
+$fixture = Join-Path $sdk 'fixtures\rust-folder-size-visual-column'
 Import-Module (Join-Path $scripts 'canonical-store-zip.psm1') -Force
 Import-Module (Join-Path $scripts 'sealed-cargo-authority.psm1') -Force
 if ((Get-CanonicalZipCrc32 ([Text.Encoding]::UTF8.GetBytes('{}'))) -ne [Convert]::ToUInt32('a3a6bf43', 16)) {
