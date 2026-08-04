@@ -1517,3 +1517,29 @@
 - [deferred] 16.3.10 執行OpenSpec strict/status/detailed-task/traceability validators並索引evidence。
 - [deferred] 16.3.11 確認所有L3已passed、唯一預核N/A或有replacement的superseded，沒有failed/blocked/stale/unexecuted。
 - [deferred] 16.3.12 產生final handoff與archive-readiness review；只有此leaf完成後才可宣稱change apply完成。
+
+# Active example-first completion plan (local only; never CI)
+
+This section is the current source of truth. The older checked prototype slices below remain
+historical milestones; they do not mean that the eight canonical examples are complete.
+Run UITEST only after one example has complete source, production wiring, package artifacts,
+documentation, and local Cargo/smoke verification.
+
+## 17. Eight independently runnable examples
+
+- [ ] 17.1.1 Make `rust-folder-size-visual-column` an independent public-SDK consumer with a sealed runtime manifest, locked offline build, deterministic `.sepack`, locales, license/NOTICE, provenance, screenshots, and bilingual reproduction docs.
+- [ ] 17.1.2 Treat the folder-size foreground deadline as a responsiveness hint only: the app-owned background worker must continue to a typed terminal result after the UI budget expires.
+- [ ] 17.1.3 Persist only stable exact folder totals in the plugin-owned bounded cache, keyed by canonical folder identity, directory modification time, schema, and relevant settings; use atomic replacement and treat corrupt/partial/stale records as misses.
+- [ ] 17.1.4 Prove cold background completion, same-mtime process-restart cache hit, changed-mtime invalidation, corrupt-cache recovery, and stale UI generation rejection with minimal Cargo tests and a local smoke.
+- [ ] 17.1.5 Wire the completed folder-size package into production and the installer without changing the standard no-plugin fallback; only then run its single headful UITEST case.
+- [ ] 17.2.1 Complete `rust-folder-size-map-view` as an independent packaged example, including recursive incremental totals, navigation, selection, refresh/stale rejection, docs, local smoke, then one UITEST.
+- [ ] 17.3.1 Complete `rust-tokei-code-lines-column` as an independent packaged example, including integer sorting/settings, docs, local smoke, then one UITEST.
+- [ ] 17.4.1 Add the discover-only `LockOwnerQueryServiceV1` and complete `rust-lock-owner-column` without exposing process-control authority; package, smoke, then one UITEST.
+- [ ] 17.5.1 Add the minimum host-owned command/form/preview/operation-plan path required by the examples, with commit-time identity recheck, cancellation, truthful partial terminal state, and conservative undo.
+- [ ] 17.6.1 Add the restricted Lua registrar plus package-attested `ToolHandle` and shell-free bounded process lease; complete `lua-tokei-code-lines-column`, package, smoke, then one UITEST.
+- [ ] 17.6.2 Complete `lua-bulk-folder-generator` for 1-100,000 folders with preview, confirmation, cancellation, truthful partial state, and conservative undo; package, smoke, then one UITEST.
+- [ ] 17.7.1 Complete `rust-exif-rename-command` using an in-process Rust EXIF library and host-owned rename plan; package, smoke, then one UITEST.
+- [ ] 17.8.1 Complete the read-only virtual-location/enumeration/bounded-stream spine and `rust-7z-virtual-folder` browsing with traversal, collision, stale-generation, and resource-limit rejection.
+- [ ] 17.8.2 Complete safe 7z extract/mutation using same-volume staging, verification, original-identity recheck, atomic replace, non-serialized secrets, and whole-container undo; package, smoke, then one UITEST.
+- [ ] 17.9.1 Rebuild, validate, and package all eight examples separately with empty `CARGO_HOME`, `--locked --offline`, and no CI; verify production inventory and installer policy.
+- [ ] 17.9.2 After all eight examples pass, resume the deferred roadmap below in dependency order and check only leaves with current local evidence.

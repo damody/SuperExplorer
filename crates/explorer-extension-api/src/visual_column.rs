@@ -134,6 +134,11 @@ pub struct FolderSizeMeasureRequestV1 {
     pub filesystem_path: RString,
     pub max_entries: u32,
     pub max_depth: u16,
+    /// Foreground responsiveness hint in milliseconds. A zero value means no
+    /// foreground limit. Implementations must not publish a time-budget
+    /// expiry as a completed exact result; cacheable background measurements
+    /// continue until they complete, are cancelled by their host, or return a
+    /// typed non-exact error.
     pub deadline_millis: u32,
 }
 

@@ -7,7 +7,9 @@
 
 use std::{
     env, fs,
+    io::Read as _,
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use abi_stable::{
@@ -28,6 +30,10 @@ use explorer_extension_ui_api::{
 };
 
 const MARKER_ENVIRONMENT_VARIABLE: &str = "P0_CONSUMER_REGISTRAR_MARKER";
+const CACHE_SCHEMA_VERSION: u32 = 1;
+const CACHE_MAX_FILES: usize = 256;
+const CACHE_MAX_RECORD_BYTES: u64 = 4 * 1024;
+const CACHE_STABILITY_ATTEMPTS: usize = 3;
 const PLUGIN_ID: StableIdV1 = StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 1_001);
 const PRIMARY_INTERFACE_ID: StableIdV1 = StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 1_002);
 
@@ -40,11 +46,7 @@ impl VisualColumnImplementationV1 for FolderSizeMeasureColumn {
         &self,
         request: FolderSizeMeasureRequestV1,
     ) -> FolderSizeMeasureResultV1 {
-        let (exact_bytes, partial_error) = measure_path_bytes(&request);
-        match partial_error {
-            Some(error) => FolderSizeMeasureResultV1::partial(exact_bytes, error),
-            None => FolderSizeMeasureResultV1::complete(exact_bytes),
-        }
+        measure_folder_size_with_cache(&request, plugin_cache_directory().as_deref())
     }
 
     fn render(&self, context: CellRenderContextV1) -> CellRenderPlanV1 {
@@ -107,9 +109,297 @@ impl VisualColumnImplementationV1 for FolderSizeRenderer {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FolderSizeCacheKey {
+    path_key: String,
+    directory_modified_nanos: u128,
+    max_entries: u32,
+    max_depth: u16,
+}
+
+impl FolderSizeCacheKey {
+    fn from_request(request: &FolderSizeMeasureRequestV1) -> Option<Self> {
+        let path = Path::new(request.filesystem_path.as_str());
+        let canonical = fs::canonicalize(path).ok()?;
+        let metadata = fs::metadata(&canonical).ok()?;
+        if !metadata.is_dir() {
+            return None;
+        }
+        let directory_modified_nanos = metadata
+            .modified()
+            .ok()?
+            .duration_since(UNIX_EPOCH)
+            .ok()?
+            .as_nanos();
+        Some(Self {
+            // Windows directory identities are case-insensitive. Normalizing
+            // here avoids keeping duplicate persistent records for the same
+            // container while keeping the path itself out of cache contents.
+            path_key: canonical.to_string_lossy().to_lowercase(),
+            directory_modified_nanos,
+            max_entries: request.max_entries.max(1),
+            max_depth: request.max_depth,
+        })
+    }
+
+    fn file_name(&self) -> String {
+        // A deterministic private cache filename avoids exposing a user path
+        // in the cache directory and is stable across process restarts.
+        format!(
+            "{:016x}.folder-size-cache",
+            stable_path_hash(&self.path_key)
+        )
+    }
+
+    fn identity_fingerprint(&self) -> String {
+        // The cache record also carries the entire canonical path identity in
+        // a lossless byte encoding. The filename hash is only an index; a
+        // hash collision cannot return another directory's exact result.
+        hex_encode(self.path_key.as_bytes())
+    }
+}
+
+fn stable_path_hash(path_key: &str) -> u64 {
+    // FNV-1a is intentionally implemented locally rather than using
+    // `DefaultHasher`, whose implementation is not a persistent format.
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in path_key.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FolderSizeCacheEntry {
+    key: FolderSizeCacheKey,
+    exact_bytes: u64,
+}
+
+impl FolderSizeCacheEntry {
+    fn encode(&self) -> String {
+        format!(
+            "schema={CACHE_SCHEMA_VERSION}\npath_identity={}\nmodified={}\nmax_entries={}\nmax_depth={}\nexact_bytes={}\n",
+            self.key.identity_fingerprint(),
+            self.key.directory_modified_nanos,
+            self.key.max_entries,
+            self.key.max_depth,
+            self.exact_bytes,
+        )
+    }
+
+    fn decode(key: FolderSizeCacheKey, input: &str) -> Option<Self> {
+        let mut schema = None;
+        let mut path_identity = None;
+        let mut modified = None;
+        let mut max_entries = None;
+        let mut max_depth = None;
+        let mut exact_bytes = None;
+        for line in input.lines() {
+            let (name, value) = line.split_once('=')?;
+            match name {
+                "schema" => schema = value.parse::<u32>().ok(),
+                "path_identity" => path_identity = Some(value),
+                "modified" => modified = value.parse::<u128>().ok(),
+                "max_entries" => max_entries = value.parse::<u32>().ok(),
+                "max_depth" => max_depth = value.parse::<u16>().ok(),
+                "exact_bytes" => exact_bytes = value.parse::<u64>().ok(),
+                _ => return None,
+            }
+        }
+        let expected_identity = key.identity_fingerprint();
+        (schema == Some(CACHE_SCHEMA_VERSION)
+            && path_identity == Some(expected_identity.as_str())
+            && modified == Some(key.directory_modified_nanos)
+            && max_entries == Some(key.max_entries)
+            && max_depth == Some(key.max_depth))
+        .then_some(Self {
+            key,
+            exact_bytes: exact_bytes?,
+        })
+    }
+}
+
+fn plugin_cache_directory() -> Option<PathBuf> {
+    env::var_os("LOCALAPPDATA")
+        .or_else(|| env::var_os("APPDATA"))
+        .map(|root| {
+            PathBuf::from(root)
+                .join("RustGpuiExplorer")
+                .join("plugins")
+                .join("p0-consumer")
+                .join("folder-size")
+                .join("v1")
+        })
+}
+
+fn read_cached_exact(cache_directory: Option<&Path>, key: &FolderSizeCacheKey) -> Option<u64> {
+    let path = cache_directory?.join(key.file_name());
+    let metadata = fs::symlink_metadata(&path).ok()?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() > CACHE_MAX_RECORD_BYTES
+    {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).ok()?);
+    fs::File::open(path)
+        .ok()?
+        .take(CACHE_MAX_RECORD_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if u64::try_from(bytes.len()).ok()? > CACHE_MAX_RECORD_BYTES {
+        return None;
+    }
+    let contents = std::str::from_utf8(&bytes).ok()?;
+    FolderSizeCacheEntry::decode(key.clone(), contents).map(|entry| entry.exact_bytes)
+}
+
+fn prune_cache(cache_directory: &Path) {
+    let Ok(entries) = fs::read_dir(cache_directory) else {
+        return;
+    };
+    let mut entries = entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".folder-size-cache")
+        })
+        .map(|entry| {
+            let modified = entry
+                .metadata()
+                .ok()
+                .and_then(|metadata| metadata.modified().ok())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            (modified, entry.path())
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|(modified, _)| *modified);
+    let excess = entries
+        .len()
+        .saturating_sub(CACHE_MAX_FILES.saturating_sub(1));
+    for (_, path) in entries.into_iter().take(excess) {
+        let _ = fs::remove_file(path);
+    }
+}
+
+fn store_cached_exact(cache_directory: Option<&Path>, entry: &FolderSizeCacheEntry) {
+    let Some(cache_directory) = cache_directory else {
+        return;
+    };
+    if fs::create_dir_all(cache_directory).is_err() {
+        return;
+    }
+    prune_cache(cache_directory);
+    let destination = cache_directory.join(entry.key.file_name());
+    let temporary = cache_directory.join(format!(
+        ".{}.{}-{}.tmp",
+        entry.key.file_name(),
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos())
+    ));
+    if fs::write(&temporary, entry.encode()).is_ok() {
+        // A corrupt or interrupted cache write is a cache miss on the next
+        // call; completed records replace the old record atomically.
+        if atomic_replace_cache_file(&temporary, &destination).is_err() {
+            let _ = fs::remove_file(temporary);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn atomic_replace_cache_file(temporary: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::{iter, os::windows::ffi::OsStrExt};
+
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn MoveFileExW(
+            existing_file_name: *const u16,
+            new_file_name: *const u16,
+            flags: u32,
+        ) -> i32;
+    }
+    let temporary = temporary
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect::<Vec<_>>();
+    // Both paths are in the same plugin-owned cache directory, so this is an
+    // atomic replacement on the local volume rather than a cross-volume move.
+    if unsafe {
+        MoveFileExW(
+            temporary.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING,
+        )
+    } != 0
+    {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(windows))]
+fn atomic_replace_cache_file(temporary: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(temporary, destination)
+}
+
+fn measure_folder_size_with_cache(
+    request: &FolderSizeMeasureRequestV1,
+    cache_directory: Option<&Path>,
+) -> FolderSizeMeasureResultV1 {
+    for _ in 0..CACHE_STABILITY_ATTEMPTS {
+        let Some(key) = FolderSizeCacheKey::from_request(request) else {
+            let (exact_bytes, partial_error) = measure_path_bytes(request);
+            return FolderSizeMeasureResultV1::partial(
+                exact_bytes,
+                partial_error.unwrap_or_else(|| RString::from("folder metadata is unavailable")),
+            );
+        };
+        if let Some(exact_bytes) = read_cached_exact(cache_directory, &key) {
+            return FolderSizeMeasureResultV1::complete(exact_bytes);
+        }
+        let (exact_bytes, partial_error) = measure_path_bytes(request);
+        if let Some(error) = partial_error {
+            // Partial, failed, and capped measurements are diagnostics only;
+            // none may poison an exact persistent cache entry.
+            return FolderSizeMeasureResultV1::partial(exact_bytes, error);
+        }
+        if FolderSizeCacheKey::from_request(request) == Some(key.clone()) {
+            store_cached_exact(cache_directory, &FolderSizeCacheEntry { key, exact_bytes });
+            return FolderSizeMeasureResultV1::complete(exact_bytes);
+        }
+        // The container changed during this background pass. Recompute rather
+        // than publishing stale bytes as an exact value.
+    }
+    FolderSizeMeasureResultV1::partial(
+        0,
+        "folder changed repeatedly while calculating; retry is required",
+    )
+}
+
 fn measure_path_bytes(request: &FolderSizeMeasureRequestV1) -> (u64, Option<RString>) {
-    let started = std::time::Instant::now();
-    let deadline = std::time::Duration::from_millis(u64::from(request.deadline_millis.max(1)));
     let max_entries = request.max_entries.max(1);
     let mut visited = 0_u32;
     let mut total = 0_u64;
@@ -124,10 +414,6 @@ fn measure_path_bytes(request: &FolderSizeMeasureRequestV1) -> (u64, Option<RStr
             partial_error = Some(RString::from("folder measurement entry limit reached"));
             break;
         }
-        if started.elapsed() >= deadline {
-            partial_error = Some(RString::from("folder measurement time limit reached"));
-            break;
-        }
         visited = visited.saturating_add(1);
         let metadata = match fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
@@ -140,7 +426,11 @@ fn measure_path_bytes(request: &FolderSizeMeasureRequestV1) -> (u64, Option<RStr
             continue;
         }
         if metadata.is_file() {
-            total = total.saturating_add(metadata.len());
+            let Some(next_total) = total.checked_add(metadata.len()) else {
+                partial_error = Some(RString::from("folder measurement size overflow"));
+                break;
+            };
+            total = next_total;
             continue;
         }
         if !metadata.is_dir() {
@@ -158,11 +448,6 @@ fn measure_path_bytes(request: &FolderSizeMeasureRequestV1) -> (u64, Option<RStr
                     if visited.saturating_add(queued) >= max_entries {
                         partial_error =
                             Some(RString::from("folder measurement entry limit reached"));
-                        break;
-                    }
-                    if started.elapsed() >= deadline {
-                        partial_error =
-                            Some(RString::from("folder measurement time limit reached"));
                         break;
                     }
                     match entry {
@@ -311,6 +596,8 @@ pub fn plugin_root() -> ExtensionRootModuleV1_Ref {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use explorer_extension_api::{registrar_request_v1, AbiSchemaIdV1, IdNamespaceV1};
 
     use super::*;
@@ -432,5 +719,125 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    fn temporary_directory(label: &str) -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let suffix = NEXT.fetch_add(1, Ordering::Relaxed);
+        let directory = std::env::temp_dir().join(format!(
+            "p0-consumer-{label}-{}-{suffix}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        directory
+    }
+
+    fn measurement_request(path: &Path, max_entries: u32) -> FolderSizeMeasureRequestV1 {
+        FolderSizeMeasureRequestV1 {
+            filesystem_path: path.to_string_lossy().into_owned().into(),
+            max_entries,
+            max_depth: 32,
+            // A one-millisecond foreground hint must not terminate the
+            // background calculation or prevent a complete cache write.
+            deadline_millis: 1,
+        }
+    }
+
+    #[test]
+    fn completed_background_measurement_ignores_foreground_hint_and_reuses_cache() {
+        let root = temporary_directory("measurement");
+        let cache = temporary_directory("cache");
+        let nested = root.join("nested");
+        fs::create_dir(&nested).unwrap();
+        fs::write(root.join("first.bin"), [1_u8; 7]).unwrap();
+        fs::write(nested.join("second.bin"), [2_u8; 11]).unwrap();
+        let request = measurement_request(&root, 100);
+
+        let first = measure_folder_size_with_cache(&request, Some(&cache));
+        assert_eq!(first, FolderSizeMeasureResultV1::complete(18));
+        let key = FolderSizeCacheKey::from_request(&request).expect("directory identity");
+        assert_eq!(read_cached_exact(Some(&cache), &key), Some(18));
+
+        // The same metadata/settings key resolves before a second recursive
+        // walk. An exact cache hit has no partial/error disguise.
+        let second = measure_folder_size_with_cache(&request, Some(&cache));
+        assert_eq!(second, FolderSizeMeasureResultV1::complete(18));
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(cache).unwrap();
+    }
+
+    #[test]
+    fn cache_key_rejects_different_measurement_settings() {
+        let root = temporary_directory("settings");
+        let cache = temporary_directory("settings-cache");
+        fs::write(root.join("entry.bin"), [7_u8; 3]).unwrap();
+        let request = measurement_request(&root, 100);
+        assert!(!measure_folder_size_with_cache(&request, Some(&cache)).partial);
+
+        let changed_settings = measurement_request(&root, 101);
+        let changed_key = FolderSizeCacheKey::from_request(&changed_settings).unwrap();
+        assert_eq!(read_cached_exact(Some(&cache), &changed_key), None);
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(cache).unwrap();
+    }
+
+    #[test]
+    fn cache_miss_follows_directory_modified_time_change() {
+        let root = temporary_directory("mtime");
+        let cache = temporary_directory("mtime-cache");
+        fs::write(root.join("first.bin"), [1_u8; 3]).unwrap();
+        let request = measurement_request(&root, 100);
+        assert!(!measure_folder_size_with_cache(&request, Some(&cache)).partial);
+        let original_key = FolderSizeCacheKey::from_request(&request).unwrap();
+
+        // Creating a direct child advances the directory's modification
+        // identity. A record for the prior identity cannot be reused.
+        fs::write(root.join("second.bin"), [2_u8; 5]).unwrap();
+        let changed_key = FolderSizeCacheKey::from_request(&request).unwrap();
+        assert_ne!(
+            changed_key.directory_modified_nanos,
+            original_key.directory_modified_nanos
+        );
+        assert_eq!(read_cached_exact(Some(&cache), &changed_key), None);
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(cache).unwrap();
+    }
+
+    #[test]
+    fn corrupt_or_oversized_cache_is_a_miss_not_an_exact_value() {
+        let root = temporary_directory("corrupt");
+        let cache = temporary_directory("corrupt-cache");
+        fs::write(root.join("entry.bin"), [1_u8; 3]).unwrap();
+        let request = measurement_request(&root, 100);
+        assert!(!measure_folder_size_with_cache(&request, Some(&cache)).partial);
+        let key = FolderSizeCacheKey::from_request(&request).unwrap();
+        fs::write(cache.join(key.file_name()), "not a cache record").unwrap();
+        assert_eq!(read_cached_exact(Some(&cache), &key), None);
+        fs::write(
+            cache.join(key.file_name()),
+            vec![b'x'; usize::try_from(CACHE_MAX_RECORD_BYTES + 1).unwrap()],
+        )
+        .unwrap();
+        assert_eq!(read_cached_exact(Some(&cache), &key), None);
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(cache).unwrap();
+    }
+
+    #[test]
+    fn partial_measurements_never_enter_the_exact_cache() {
+        let cache = temporary_directory("partial-cache");
+        let missing = cache.join("missing-folder");
+        let result =
+            measure_folder_size_with_cache(&measurement_request(&missing, 100), Some(&cache));
+        assert!(result.partial);
+        assert!(fs::read_dir(&cache).unwrap().flatten().all(|entry| !entry
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".folder-size-cache")));
+        fs::remove_dir_all(cache).unwrap();
     }
 }

@@ -18,3 +18,12 @@ proportional bar from the public cell context. Right-click the **Folder size**
 header to toggle **Show proportional bar**. The Extensions menu also lists
 `folder-size (Column)` and `folder-size-renderer (GPUI Renderer)`. Run without
 `--plugin-dll` to keep the built-in-only Details view.
+
+The foreground measurement hint never cancels an in-flight folder walk. The
+background worker publishes an exact value once the scan has completed; partial
+or error results are never used for numeric sorting or stored as exact values.
+Completed values are cached by this plugin under
+`%LOCALAPPDATA%\RustGpuiExplorer\plugins\p0-consumer\folder-size\v1` (at most
+256 records). A cache entry is reused only when its canonical directory identity,
+directory modified timestamp, recursive limits, and cache schema match. Changing
+the directory timestamp or settings causes a fresh background scan.
