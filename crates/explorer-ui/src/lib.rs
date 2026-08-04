@@ -4057,6 +4057,14 @@ impl ExplorerRoot {
             }
             return;
         }
+        if let ExplorerAction::OpenExtensionCommunityWebsite { index } = action {
+            if let Some(extension) = self.state.extensions().get(index)
+                && extension.community_website.starts_with("https://")
+            {
+                cx.open_url(extension.community_website);
+            }
+            return;
+        }
         if action == ExplorerAction::ToggleFolderSizeProportionalBar {
             if self.code_lines_runtime.is_some() {
                 let current = self.code_lines_visuals.as_ref().map_or(
@@ -4314,6 +4322,10 @@ impl ExplorerRoot {
         }
         if let ExplorerAction::SelectItem { row_index } = &action {
             self.file_scroll.scroll_to_item(*row_index);
+        } else if matches!(action, ExplorerAction::TypeAheadFileView { .. })
+            && let Some(row_index) = self.state.focused_row_index()
+        {
+            self.file_scroll.scroll_to_item(row_index);
         }
         match action {
             ExplorerAction::BeginContextItemGesture { .. } => {
@@ -4866,7 +4878,7 @@ impl ExplorerRoot {
     }
 
     fn file_view_key_action(
-        &self,
+        &mut self,
         event: &gpui::KeyDownEvent,
         window: &Window,
     ) -> Option<ExplorerAction> {
@@ -4888,6 +4900,19 @@ impl ExplorerRoot {
         }
         if let Some(action) = file_view_global_command_action(event) {
             return Some(action);
+        }
+        if event.keystroke.key == "escape" && self.state.file_view_typeahead_active() {
+            return Some(ExplorerAction::ClearFileViewTypeAhead);
+        }
+        if !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.alt
+            && !event.keystroke.modifiers.platform
+            && let Some(text) = event.keystroke.key_char.as_ref()
+            && !text.is_empty()
+            && !text.chars().any(char::is_control)
+            && !text.chars().all(char::is_whitespace)
+        {
+            return Some(ExplorerAction::TypeAheadFileView { text: text.clone() });
         }
         let count = self.state.visible_row_count();
         if count == 0 {
@@ -5960,6 +5985,15 @@ impl Render for ExplorerRoot {
                     {
                         this.handle_action(
                             ExplorerAction::CloseBreadcrumbMenu,
+                            ActionSource::Keyboard,
+                            window,
+                            cx,
+                        );
+                    } else if this.state.focused_surface() == focus::FocusSurface::FileView
+                        && this.state.file_view_typeahead_active()
+                    {
+                        this.handle_action(
+                            ExplorerAction::ClearFileViewTypeAhead,
                             ActionSource::Keyboard,
                             window,
                             cx,

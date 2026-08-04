@@ -1,5 +1,7 @@
 //! Typed M1 actions, key bindings, dispatch, and privacy-safe tracing.
 
+use std::time::Instant;
+
 use crate::{
     focus::FocusSurface,
     layout::{LayoutTokens, LogicalPx},
@@ -206,6 +208,10 @@ pub enum ExplorerAction {
     SelectAllItems,
     InvertSelection,
     ClearSelection,
+    TypeAheadFileView {
+        text: String,
+    },
+    ClearFileViewTypeAhead,
     BeginRenameFocused,
     CommitInlineRename,
     CancelInlineRename,
@@ -268,6 +274,9 @@ pub enum ExplorerAction {
         index: usize,
     },
     OpenExtensionAuthorWebsite {
+        index: usize,
+    },
+    OpenExtensionCommunityWebsite {
         index: usize,
     },
     InvokeExtensionCommand {
@@ -513,6 +522,8 @@ impl ExplorerAction {
             Self::SelectAllItems => "SelectAllItems",
             Self::InvertSelection => "InvertSelection",
             Self::ClearSelection => "ClearSelection",
+            Self::TypeAheadFileView { .. } => "TypeAheadFileView",
+            Self::ClearFileViewTypeAhead => "ClearFileViewTypeAhead",
             Self::BeginRenameFocused => "BeginRenameFocused",
             Self::CommitInlineRename => "CommitInlineRename",
             Self::CancelInlineRename => "CancelInlineRename",
@@ -554,6 +565,7 @@ impl ExplorerAction {
             Self::SetFolderOptionsPage(_) => "SetFolderOptionsPage",
             Self::ToggleFolderOptionExtension { .. } => "ToggleFolderOptionExtension",
             Self::OpenExtensionAuthorWebsite { .. } => "OpenExtensionAuthorWebsite",
+            Self::OpenExtensionCommunityWebsite { .. } => "OpenExtensionCommunityWebsite",
             Self::InvokeExtensionCommand { .. } => "InvokeExtensionCommand",
             Self::ToggleFolderOptionItemCheckBoxes => "ToggleFolderOptionItemCheckBoxes",
             Self::ToggleFolderOptionFileNameExtensions => "ToggleFolderOptionFileNameExtensions",
@@ -1097,6 +1109,8 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         ExplorerAction::SelectAllItems
         | ExplorerAction::InvertSelection
         | ExplorerAction::ClearSelection
+        | ExplorerAction::TypeAheadFileView { .. }
+        | ExplorerAction::ClearFileViewTypeAhead
         | ExplorerAction::CommitInlineRename
         | ExplorerAction::CancelInlineRename
         | ExplorerAction::BeginMarquee { .. }
@@ -1239,6 +1253,7 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::SetFolderOptionsPage(_)
         | ExplorerAction::ToggleFolderOptionExtension { .. }
         | ExplorerAction::OpenExtensionAuthorWebsite { .. }
+        | ExplorerAction::OpenExtensionCommunityWebsite { .. }
         | ExplorerAction::InvokeExtensionCommand { .. }
         | ExplorerAction::ToggleFolderOptionItemCheckBoxes
         | ExplorerAction::ToggleFolderOptionFileNameExtensions
@@ -1595,6 +1610,15 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             state.focus(FocusSurface::FileView);
             FocusSurface::FileView
         }
+        ExplorerAction::TypeAheadFileView { text } => {
+            let _ = state.typeahead_file_view(&text, Instant::now());
+            state.focus(FocusSurface::FileView);
+            FocusSurface::FileView
+        }
+        ExplorerAction::ClearFileViewTypeAhead => {
+            state.clear_file_view_typeahead();
+            FocusSurface::FileView
+        }
         ExplorerAction::BeginRenameFocused => {
             let _ = state.begin_focused_inline_rename();
             state.focus(FocusSurface::FileView);
@@ -1732,6 +1756,7 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             FocusSurface::CommandBar
         }
         ExplorerAction::OpenExtensionAuthorWebsite { .. } => FocusSurface::CommandBar,
+        ExplorerAction::OpenExtensionCommunityWebsite { .. } => FocusSurface::CommandBar,
         ExplorerAction::InvokeExtensionCommand { .. } => {
             state.close_extensions_menu();
             FocusSurface::CommandBar

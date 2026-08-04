@@ -1251,6 +1251,7 @@ fn folder_options_extensions_page(
         .gap(px(tokens.layout.maximum_visible_glyph.value()))
         .children(extensions.iter().enumerate().map(|(index, extension)| {
             let website_action = ExplorerAction::OpenExtensionAuthorWebsite { index };
+            let community_action = ExplorerAction::OpenExtensionCommunityWebsite { index };
             div()
                 .id(SharedString::from(format!(
                     "folder-option-extension-{}",
@@ -1278,7 +1279,7 @@ fn folder_options_extensions_page(
                         .ml(px(tokens.layout.minimum_hit_target.value()))
                         .text_size(px(tokens.typography.tooltip.size.value()))
                         .text_color(tokens.theme.colors.text_secondary.to_gpui())
-                        .child(extension.author_bio),
+                        .child(format!("用途：{}", extension.purpose)),
                 )
                 .child(
                     div()
@@ -1291,12 +1292,36 @@ fn folder_options_extensions_page(
                         .text_size(px(tokens.typography.tooltip.size.value()))
                         .text_color(tokens.theme.colors.accent.to_gpui())
                         .child(format!(
-                            "作者：{} · {}",
-                            extension.author_name, extension.author_website
+                            "作者：{} — {} · {}",
+                            extension.author_name, extension.author_bio, extension.author_website
                         ))
                         .when_some(on_action.clone(), |author, callback| {
                             author.on_click(move |_, window, cx| {
                                 callback(&website_action, window, cx)
+                            })
+                        }),
+                )
+                .child(
+                    div()
+                        .ml(px(tokens.layout.minimum_hit_target.value()))
+                        .text_size(px(tokens.typography.tooltip.size.value()))
+                        .text_color(tokens.theme.colors.text_secondary.to_gpui())
+                        .child(format!("Release date：{}", extension.release_date)),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "extension-community-{}",
+                            extension.package_id
+                        )))
+                        .ml(px(tokens.layout.minimum_hit_target.value()))
+                        .cursor_pointer()
+                        .text_size(px(tokens.typography.tooltip.size.value()))
+                        .text_color(tokens.theme.colors.accent.to_gpui())
+                        .child(format!("社群：{}", extension.community_website))
+                        .when_some(on_action.clone(), |community, callback| {
+                            community.on_click(move |_, window, cx| {
+                                callback(&community_action, window, cx)
                             })
                         }),
                 )
@@ -11109,6 +11134,9 @@ mod tests {
         assert!(production.contains("folder-options-extensions-page"));
         assert!(production.contains("extension-author-"));
         assert!(production.contains("OpenExtensionAuthorWebsite"));
+        assert!(production.contains("extension-community-"));
+        assert!(production.contains("OpenExtensionCommunityWebsite"));
+        assert!(production.contains("Release date："));
         assert!(production.contains("extension-command-lua-bulk-folder-button"));
         assert!(production.contains("view-extension-size-map"));
     }
