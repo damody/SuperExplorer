@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "package": "rust-tokei-code-lines-column@0.1.0",
+  "target": "x86_64-pc-windows-msvc",
+  "dependency_source_of_truth": "Cargo.toml exact requirements resolved by Cargo.lock",
+  "cargo_toml_sha256": "ce9d34e30b3a4ce59ffbfffd2941d955733cf9e3e89e9d80a7a5d550ae33805e",
+  "source": "relative public SDK crate paths plus crates.io registry resolved by Cargo.lock",
+  "lock_sha256": "2a949abbecc3ba56145c9c7c085e497f16f3b1a5b0481268c90cbfd2adcdba44",
+  "static_component_count": 133,
+  "linkage": "static Rust libraries linked into plugin.dll",
+  "runtime_download": false,
+  "runtime_executable": false,
+  "reproducibility": "Cargo.toml exact versions with Cargo.lock and the standard Cargo registry cache under --locked --offline"
+}

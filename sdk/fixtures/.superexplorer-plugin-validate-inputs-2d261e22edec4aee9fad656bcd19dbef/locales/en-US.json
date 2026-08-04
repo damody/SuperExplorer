@@ -1,0 +1,5 @@
+{
+  "plugin": "rust-tokei-code-lines-column",
+  "display_name": "Rust tokei Code Lines Column",
+  "description": "A tokei-powered Code lines column for Details view."
+}

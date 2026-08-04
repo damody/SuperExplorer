@@ -1,0 +1,6 @@
+This example statically links the exact tokei crate version declared in Cargo.toml, the public
+SuperExplorer SDK API crates, serde, serde_json, and their exact transitive
+Cargo.lock closure. It never downloads a dependency or launches tokei.exe at
+runtime. See SBOM.json, LICENSES.json, provenance.json, and Cargo.lock for the
+machine-readable linkage, license, source, and reproducibility inventory.
+The example itself is distributed under LICENSE.

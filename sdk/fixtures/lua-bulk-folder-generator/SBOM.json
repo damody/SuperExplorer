@@ -1,0 +1,1 @@
+{"schema_version":1,"package":"lua-bulk-folder-generator@0.1.0","components":[{"name":"explorer-extension-api","version":"1.2.0","linkage":"static-rust-library"},{"name":"abi_stable","version":"0.11.3","linkage":"static-rust-library"}]}

@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "package": { "id": "rust-lock-owner-column", "version": "0.1.0" },
+  "publisher": {
+    "id": "example-publisher", "display_name": "Example Publisher",
+    "contacts": [{ "kind": "support", "value": "support@example.invalid" }]
+  },
+  "sdk": {
+    "bundle_id": "@SDK_BUNDLE_ID@", "target": "x86_64-pc-windows-msvc",
+    "abi_schema": @ABI_SCHEMA@, "gpui": false, "ui_abi_fingerprint": null
+  },
+  "rust": { "crate_name": "rust-lock-owner-column", "entrypoint": "plugin.dll" },
+  "features": [
+    { "id": "rust-lock-owner", "capabilities": ["abi", "filesystem.read", "lock-owner.query"] }
+  ],
+  "contributions": [
+    { "id": "rust-lock-owner:owners", "feature_id": "rust-lock-owner", "kind": "column", "capabilities": ["abi", "filesystem.read", "lock-owner.query"], "payload": "src/lib.rs" },
+    { "id": "rust-lock-owner:owners-renderer", "feature_id": "rust-lock-owner", "kind": "renderer", "capabilities": ["abi"], "payload": "src/lib.rs" }
+  ],
+  "payloads": [
+    { "path": "src/lib.rs", "size": @SOURCE_SIZE@, "sha256": "@SOURCE_SHA256@", "kind": "rust-source" }
+  ],
+  "private_dependencies": [],
+  "verification": { "requirements": [] }
+}
