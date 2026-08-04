@@ -30,6 +30,7 @@ mod package_resolver;
 mod package_source;
 mod package_validation;
 mod plugin_call_guard;
+mod runtime_authority;
 mod sepack_import;
 mod ui_invalidation_batcher;
 

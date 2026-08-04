@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "role": "security-reviewer",
+  "decision": "approved",
+  "document": "docs/extension-native-safety.md",
+  "checks": [
+    "no-sandbox-claim",
+    "no-hot-unload-claim",
+    "no-unsafe-interrupt",
+    "restart-recovery",
+    "path-and-secret-free-diagnostics",
+    "explicit-scoped-safe-mode-confirmation"
+  ]
+}

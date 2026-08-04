@@ -2012,7 +2012,7 @@ impl ApplicationLifecycle {
     ///
     /// Returns DPI, Shell initialization, or diagnostic write failures without starting GPUI.
     pub fn start(diagnostics: DiagnosticsSession) -> Result<Self, Error> {
-        Self::start_with_plugin(diagnostics, None)
+        Self::start_with_plugins(diagnostics, &[])
     }
 
     /// Starts the application and, when supplied, loads one development plugin DLL.
@@ -2023,6 +2023,14 @@ impl ApplicationLifecycle {
     pub fn start_with_plugin(
         diagnostics: DiagnosticsSession,
         plugin_dll: Option<&Path>,
+    ) -> Result<Self, Error> {
+        Self::start_with_plugins(diagnostics, &plugin_dll.into_iter().map(Path::to_path_buf).collect::<Vec<_>>())
+    }
+
+    /// Starts the application with every explicitly supplied official or development plugin DLL.
+    pub fn start_with_plugins(
+        diagnostics: DiagnosticsSession,
+        plugin_dlls: &[PathBuf],
     ) -> Result<Self, Error> {
         let dpi_outcome = initialize_dpi_awareness()?;
         let dpi_outcome_text = format!("{dpi_outcome:?}");
@@ -2046,19 +2054,22 @@ impl ApplicationLifecycle {
         let mut extension_host =
             explorer_extension_host::ExtensionHost::with_config(extension_config);
         extension_host.start()?;
-        let direct_loaded = match plugin_dll {
-            Some(path) => match extension_host.load_single_plugin_visual_column_runtime(path) {
+        let mut direct_loaded = Vec::new();
+        for path in plugin_dlls {
+            match extension_host.load_single_plugin_visual_column_runtime(path) {
                 Ok(loaded) => Some((path, loaded)),
                 Err(explorer_extension_host::SinglePluginLoadErrorV1::BlockedBySafeMode) => {
                     diagnostics.record_event("development_plugin_blocked_by_safe_mode", &[])?;
                     None
                 }
                 Err(error) => return Err(error.into()),
-            },
-            None => None,
-        };
-        let (loaded_extension_summary, visual_column_runtime, code_lines_runtime, size_map_runtime) =
-            if let Some((path, loaded)) = direct_loaded {
+            }.map(|loaded| direct_loaded.push(loaded));
+        }
+        let mut summaries = Vec::new();
+        let mut visual_column_runtime = None;
+        let mut code_lines_runtime = None;
+        let mut size_map_runtime = None;
+        for (path, loaded) in direct_loaded {
                 let (summary, measure, renderer, size_map_renderer, batch_columns) =
                     loaded.into_parts_with_batch_columns();
                 let supports_folder_size =
@@ -2069,7 +2080,7 @@ impl ApplicationLifecycle {
                     });
                 let supports_code_lines = batch_columns.contains(CODE_LINES_CONTRIBUTION_ID_V1);
                 let supports_lock_owner = batch_columns.contains(LOCK_OWNER_CONTRIBUTION_ID_V1);
-                let (visual_runtime, code_lines_runtime) =
+                let (visual_runtime, code_runtime) =
                     if supports_code_lines || supports_lock_owner {
                         (
                             None,
@@ -2096,20 +2107,17 @@ impl ApplicationLifecycle {
                 // single check rejects descriptor-only and wrong-kind entries.
                 let supports_size_map =
                     size_map_renderer.has_view_contribution(SIZE_MAP_VIEW_CONTRIBUTION_ID_V1);
-                let size_map_runtime = if supports_size_map {
+                let map_runtime = if supports_size_map {
                     Some(ApplicationSizeMapRuntimeV1::start(size_map_renderer)?)
                 } else {
                     None
                 };
-                (
-                    Some(format_single_plugin_summary(path, &summary)),
-                    visual_runtime,
-                    code_lines_runtime,
-                    size_map_runtime,
-                )
-            } else {
-                (None, None, None, None)
-            };
+                summaries.push(format_single_plugin_summary(path, &summary));
+                if visual_column_runtime.is_none() { visual_column_runtime = visual_runtime; }
+                if code_lines_runtime.is_none() { code_lines_runtime = code_runtime; }
+                if size_map_runtime.is_none() { size_map_runtime = map_runtime; }
+        }
+        let loaded_extension_summary = (!summaries.is_empty()).then(|| summaries.join(" | "));
         if let Some(summary) = loaded_extension_summary.as_deref() {
             diagnostics.record_event("development_plugin_loaded", &[("summary", summary)])?;
         }

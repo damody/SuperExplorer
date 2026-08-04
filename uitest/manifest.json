@@ -1731,6 +1731,12 @@
       "covers":["build-extensible-plugin-platform/source-example-plugin-suite/self-contained-rust-exif-rename-example"],"required_artifacts":["report.json","extensions-contribution.png"]
     },
     {
+      "id":"extension-surfaces-eight-plugin-contract","description":"Verify Size Map View, Lua command buttons, eight Folder Options switches, draft/apply fallback, and installer coverage for all official plugins.","suites":["quick","full","visual"],"program":"powershell.exe",
+      "arguments":["-NoProfile","-ExecutionPolicy","Bypass","-File","{workspace_root}\\scripts\\run_extension_surfaces_contract.ps1"],
+      "timeout_seconds":300,"prerequisites":[{"kind":"windows"},{"kind":"command","name":"cargo.exe"}],
+      "covers":["build-extensible-plugin-platform/source-example-plugin-suite/folder-size-map-view-example","build-extensible-plugin-platform/source-example-plugin-suite/lua-bulk-folder-example"]
+    },
+    {
       "id":"rust-7z-virtual-folder-headful","description":"Run real 7z enumerate/read/extract/mutation tests, load the real DLL, and verify its resource contribution in the production Extensions UI.","suites":["full","visual"],"program":"powershell.exe",
       "arguments":["-Sta","-NoProfile","-ExecutionPolicy","Bypass","-File","{workspace_root}\\scripts\\smoke_new_plugin_headful.ps1","-PluginRoot","{workspace_root}\\sdk\\fixtures\\rust-7z-virtual-folder","-PluginDll","{workspace_root}\\sdk\\fixtures\\rust-7z-virtual-folder\\target\\x86_64-pc-windows-msvc\\debug\\rust_7z_virtual_folder.dll","-ExpectedContribution","rust-7z:resource","-InitialPath","{workspace_root}","-OutputDirectory","{evidence_dir}"],
       "timeout_seconds":240,"prerequisites":[{"kind":"windows"},{"kind":"interactive_desktop"},{"kind":"command","name":"cargo.exe"}],"exclusive_resources":["gui","cursor","explorer"],

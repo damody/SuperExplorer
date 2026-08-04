@@ -391,7 +391,10 @@ impl RenderOnce for ExplorerWindow {
             .size_map_runtime
             .as_ref()
             .map(|runtime| runtime.config())
-            .filter(crate::size_map_view::is_supported_size_map_config);
+            .filter(crate::size_map_view::is_supported_size_map_config)
+            .filter(|_| self.state.extensions().iter().any(|extension| {
+                extension.package_id == "rust-folder-size-map-view" && extension.enabled
+            }));
         let show_side_pane = f32::from(window.bounds().size.width)
             >= self.tokens.layout.compact_window_width.value()
             && (view_settings.details_pane || view_settings.preview_pane);
@@ -1088,6 +1091,14 @@ fn folder_options_dialog(
                             ExplorerAction::SetFolderOptionsPage(FolderOptionsPage::View),
                             tokens,
                             on_action.clone(),
+                        ))
+                        .child(folder_option_tab(
+                            "folder-options-extensions-tab",
+                            "Extensions",
+                            page == FolderOptionsPage::Extensions,
+                            ExplorerAction::SetFolderOptionsPage(FolderOptionsPage::Extensions),
+                            tokens,
+                            on_action.clone(),
                         )),
                 )
                 .child(
@@ -1106,6 +1117,13 @@ fn folder_options_dialog(
                             body.child(folder_options_view_page(
                                 tokens,
                                 &settings,
+                                on_action.clone(),
+                            ))
+                        })
+                        .when(page == FolderOptionsPage::Extensions, |body| {
+                            body.child(folder_options_extensions_page(
+                                tokens,
+                                &draft.extension_enabled,
                                 on_action.clone(),
                             ))
                         }),
@@ -1143,6 +1161,35 @@ fn folder_options_dialog(
                         )),
                 ),
         )
+}
+
+fn folder_options_extensions_page(
+    tokens: UiTokens,
+    enabled: &[bool],
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    const EXTENSIONS: [(&str, &str); 8] = [
+        ("folder-option-extension-rust-folder-size-visual-column", "Folder size column"),
+        ("folder-option-extension-rust-folder-size-map-view", "Size Map"),
+        ("folder-option-extension-rust-tokei-code-lines-column", "Code lines (Rust)"),
+        ("folder-option-extension-lua-tokei-code-lines-column", "Code lines (Lua)"),
+        ("folder-option-extension-rust-lock-owner-column", "Lock owner"),
+        ("folder-option-extension-rust-exif-rename-command", "Rename from EXIF"),
+        ("folder-option-extension-rust-7z-virtual-folder", "7-Zip virtual folder"),
+        ("folder-option-extension-lua-bulk-folder-generator", "Bulk folder generator"),
+    ];
+    div().id("folder-options-extensions-page").flex().flex_col().children(
+        EXTENSIONS.into_iter().enumerate().map(|(index, (id, label))| {
+            folder_option_checkbox(
+                id,
+                label,
+                enabled.get(index).copied().unwrap_or(false),
+                ExplorerAction::ToggleFolderOptionExtension { index },
+                tokens,
+                on_action.clone(),
+            )
+        }),
+    )
 }
 
 fn folder_options_general_page(
@@ -1892,6 +1939,10 @@ impl RenderOnce for CommandBar {
         let extensions_open = self.state.extensions_menu_open();
         let tortoise_git_available = self.state.tortoise_git_available();
         let loaded_extension_summary = self.state.loaded_extension_summary().map(str::to_owned);
+        let extension_commands = self.state.extensions().iter()
+            .filter(|extension| extension.enabled)
+            .filter_map(|extension| extension.command_contribution.map(|id| (id, extension.display_name)))
+            .collect::<Vec<_>>();
         let extension_view = self.extension_view;
         div()
             .id(COMMAND_BAR_ID)
@@ -2080,6 +2131,7 @@ impl RenderOnce for CommandBar {
                         self.tokens,
                         tortoise_git_available,
                         loaded_extension_summary,
+                        extension_commands,
                         self.on_action.clone(),
                     )
                     .into_any_element()
@@ -2171,6 +2223,7 @@ fn command_extensions_menu(
     tokens: UiTokens,
     tortoise_git_available: bool,
     loaded_extension_summary: Option<String>,
+    extension_commands: Vec<(&'static str, &'static str)>,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     let outside = on_action.clone();
@@ -2205,6 +2258,23 @@ fn command_extensions_menu(
                     .child(summary),
             )
         })
+        .children(extension_commands.into_iter().map(|(contribution_id, label)| {
+            let element_id = match contribution_id {
+                "lua-bulk-folder:button" => "extension-command-lua-bulk-folder-button",
+                "rust-exif-rename:button" => "extension-command-rust-exif-rename-button",
+                _ => "extension-command-unknown",
+            };
+            command_more_item(
+                element_id,
+                label,
+                ExplorerAction::InvokeExtensionCommand { contribution_id: contribution_id.to_owned() },
+                true,
+                false,
+                None,
+                tokens,
+                on_action.clone(),
+            )
+        }))
         .child(command_more_item(
             "extensions-refresh-tortoisegit",
             if tortoise_git_available {
@@ -2854,15 +2924,11 @@ fn view_menu_item(
     // custom MenuItem. The extension entry is an actionable button inside the
     // menu so keyboard, UIA and pointer activation all reach the same callback.
     let is_extension_item = id == "view-extension-size-map";
-    let accessible_role = if is_extension_item {
-        Role::Button
-    } else {
-        Role::MenuItem
-    };
     div()
         .id(id.clone())
         .debug_selector(move || id.clone())
-        .role(accessible_role)
+        .role(Role::MenuItem)
+        .when(is_extension_item, |element| element.role(Role::Button))
         .aria_label(label)
         .aria_selected(focused)
         .when(is_extension_item, |element| {
@@ -10892,6 +10958,17 @@ mod tests {
                 "placeholder returned: {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn extension_surfaces_are_backed_by_the_shared_eight_plugin_catalog() {
+        let source = include_str!("chrome.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap();
+        assert!(production.contains("folder-options-extensions-tab"));
+        assert!(production.contains("folder-options-extensions-page"));
+        assert_eq!(production.matches("folder-option-extension-").count(), 8);
+        assert!(production.contains("extension-command-lua-bulk-folder-button"));
+        assert!(production.contains("view-extension-size-map"));
     }
 
     #[test]

@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "baseline": "rust-first-v1",
+  "sdk_major": 1,
+  "abi_schema_version": 2,
+  "required_root": ["abi_contract", "sdk_major", "sdk_bundle_id", "ui_abi_fingerprint", "create_registrar"],
+  "numeric_semantics": "append-only transparent newtypes; zero is reserved; reinterpretation requires a new SDK major",
+  "unknown_values": "preserve for diagnostics, reject before invocation when required semantics are unknown",
+  "ownership": {
+    "plugin_objects": "SDK-owned abi_stable RBox/RArc wrappers; plugin allocator and SDK destructor",
+    "host_values": "host-owned copies; never retain borrowed callback inputs",
+    "drop_thread": "creating worker unless the ABI object explicitly declares Send+Sync",
+    "dll_lifetime": "process resident; all plugin objects drain before terminal shutdown; unload is forbidden"
+  },
+  "panic_policy": "panic=unwind only; SDK adapters catch and fault-latch; panic=abort fingerprint mismatch is rejected before callback",
+  "reviews": [
+    {"role": "contract-owner", "decision": "approved", "scope": "layout,numeric-semantics,ownership"},
+    {"role": "architecture-reviewer", "decision": "approved", "scope": "panic,lifetime,threading,forbidden-surface"}
+  ]
+}

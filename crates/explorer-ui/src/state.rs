@@ -34,6 +34,28 @@ pub struct FolderOptionsDraft {
     pub page: FolderOptionsPage,
     pub settings: explorer_model::ViewSettings,
     pub restore_previous_session: bool,
+    pub extension_enabled: Vec<bool>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExtensionOptionV1 {
+    pub package_id: &'static str,
+    pub display_name: &'static str,
+    pub command_contribution: Option<&'static str>,
+    pub enabled: bool,
+}
+
+fn official_extensions_v1() -> Vec<ExtensionOptionV1> {
+    vec![
+        ExtensionOptionV1 { package_id: "rust-folder-size-visual-column", display_name: "Folder size column", command_contribution: None, enabled: true },
+        ExtensionOptionV1 { package_id: "rust-folder-size-map-view", display_name: "Size Map", command_contribution: None, enabled: true },
+        ExtensionOptionV1 { package_id: "rust-tokei-code-lines-column", display_name: "Code lines (Rust)", command_contribution: None, enabled: true },
+        ExtensionOptionV1 { package_id: "lua-tokei-code-lines-column", display_name: "Code lines (Lua)", command_contribution: None, enabled: true },
+        ExtensionOptionV1 { package_id: "rust-lock-owner-column", display_name: "Lock owner", command_contribution: None, enabled: true },
+        ExtensionOptionV1 { package_id: "rust-exif-rename-command", display_name: "Rename from EXIF", command_contribution: Some("rust-exif-rename:button"), enabled: true },
+        ExtensionOptionV1 { package_id: "rust-7z-virtual-folder", display_name: "7-Zip virtual folder", command_contribution: None, enabled: true },
+        ExtensionOptionV1 { package_id: "lua-bulk-folder-generator", display_name: "Bulk folder generator", command_contribution: Some("lua-bulk-folder:button"), enabled: true },
+    ]
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -335,6 +357,7 @@ pub struct AppViewState {
     tortoise_git_available: bool,
     loaded_extension_summary: Option<String>,
     folder_options: Option<FolderOptionsDraft>,
+    extensions: Vec<ExtensionOptionV1>,
     restore_previous_session: bool,
     view_show_submenu_open: bool,
     /// Host-owned descriptor snapshot. Extension-host contribution validation will replace
@@ -488,6 +511,7 @@ impl AppViewState {
             tortoise_git_available: false,
             loaded_extension_summary: None,
             folder_options: None,
+            extensions: official_extensions_v1(),
             restore_previous_session: true,
             view_show_submenu_open: false,
             column_registry: explorer_model::ColumnRegistry::built_ins(),
@@ -1476,7 +1500,18 @@ impl AppViewState {
             page: FolderOptionsPage::General,
             settings: self.view_settings(),
             restore_previous_session: self.restore_previous_session,
+            extension_enabled: self.extensions.iter().map(|extension| extension.enabled).collect(),
         });
+    }
+
+    pub fn extensions(&self) -> &[ExtensionOptionV1] {
+        &self.extensions
+    }
+
+    pub(crate) fn toggle_folder_option_extension(&mut self, index: usize) {
+        if let Some(enabled) = self.folder_options.as_mut().and_then(|draft| draft.extension_enabled.get_mut(index)) {
+            *enabled = !*enabled;
+        }
     }
 
     pub(crate) fn close_folder_options(&mut self) {
@@ -1522,6 +1557,12 @@ impl AppViewState {
         if let Some(draft) = self.folder_options.clone() {
             self.tabs.active_tab_mut().view.settings = draft.settings;
             self.restore_previous_session = draft.restore_previous_session;
+            for (extension, enabled) in self.extensions.iter_mut().zip(draft.extension_enabled) {
+                extension.enabled = enabled;
+            }
+            if !self.extensions.iter().any(|extension| extension.package_id == "rust-folder-size-map-view" && extension.enabled) {
+                self.tabs.active_tab_mut().view.settings.extension_view_id = None;
+            }
         }
     }
 
@@ -6947,6 +6988,26 @@ mod tests {
     }
 
     #[test]
+    fn folder_options_manage_all_eight_extensions_with_cancel_apply_and_view_fallback() {
+        let mut state = AppViewState::default();
+        assert_eq!(state.extensions().len(), 8);
+        state.open_folder_options();
+        state.set_folder_options_page(crate::actions::FolderOptionsPage::Extensions);
+        state.toggle_folder_option_extension(1);
+        assert!(state.extensions()[1].enabled);
+        state.close_folder_options();
+        assert!(state.extensions()[1].enabled, "Cancel must discard the draft");
+
+        state.tabs.active_tab_mut().view.settings.extension_view_id =
+            Some("rust-folder-size-map:view".to_owned());
+        state.open_folder_options();
+        state.toggle_folder_option_extension(1);
+        state.apply_folder_options();
+        assert!(!state.extensions()[1].enabled);
+        assert_eq!(state.view_settings().extension_view_id, None);
+    }
+
+    #[test]
     fn command_and_details_header_menus_are_mutually_exclusive() {
         let mut state = AppViewState::default();
         state.open_details_column_menu(explorer_model::ColumnId::Name);
@@ -7028,7 +7089,7 @@ mod tests {
         state.toggle_view_menu();
         assert!(state.set_view_menu_focus(9));
         assert_eq!(state.view_menu_index(), 9);
-        assert!(!state.set_view_menu_focus(11));
+        assert!(!state.set_view_menu_focus(12));
 
         state.toggle_more_menu();
         assert!(state.set_more_menu_focus(10));

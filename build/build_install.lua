@@ -151,19 +151,24 @@ local function main()
         path(root, "installer", "SuperExplorer.nsi"),
         "NSIS 腳本"
     )
-    local plugin_manifest = require_file(
-        path(root, "sdk", "fixtures", "rust-folder-size-visual-column", "Cargo.toml"),
-        "rust-folder-size-visual-column manifest"
-    )
+    local plugin_specs = {
+        { define = "PLUGIN_FOLDER_SIZE", root = "rust-folder-size-visual-column", dll = "rust_folder_size_visual_column.dll" },
+        { define = "PLUGIN_SIZE_MAP", root = "rust-folder-size-map-view", dll = "rust_folder_size_map_view.dll" },
+        { define = "PLUGIN_RUST_TOKEI", root = "rust-tokei-code-lines-column", dll = "rust_tokei_code_lines_column.dll" },
+        { define = "PLUGIN_LUA_TOKEI", root = "lua-tokei-code-lines-column", dll = "lua_tokei_code_lines_column.dll" },
+        { define = "PLUGIN_LOCK_OWNER", root = "rust-lock-owner-column", dll = "rust_lock_owner_column.dll" },
+        { define = "PLUGIN_EXIF_RENAME", root = "rust-exif-rename-command", dll = "rust_exif_rename_command.dll" },
+        { define = "PLUGIN_7Z", root = "rust-7z-virtual-folder", dll = "rust_7z_virtual_folder.dll" },
+        { define = "PLUGIN_BULK_FOLDER", root = "lua-bulk-folder-generator", dll = "lua_bulk_folder_generator.dll" },
+    }
+    for _, plugin in ipairs(plugin_specs) do
+        plugin.manifest = require_file(path(root, "sdk", "fixtures", plugin.root, "Cargo.toml"), plugin.root .. " manifest")
+        plugin.path = path(root, "sdk", "fixtures", plugin.root, "target", "x86_64-pc-windows-msvc", "release", plugin.dll)
+    end
     local release_executable = path(root, "target", "release", "SuperExplorer.exe")
     local broker_executable = path(root, "target", "release", "explorer-extension-broker.exe")
     local worker_executable = path(root, "target", "release", "explorer-extension-worker.exe")
     local everything_dll = path(root, "target", "release", "Everything64.dll")
-    local plugin_dll = path(
-        root,
-        "sdk", "fixtures", "rust-folder-size-visual-column", "target",
-        "x86_64-pc-windows-msvc", "release", "rust_folder_size_visual_column.dll"
-    )
     local dist = path(root, "dist")
     local output = path(dist, "SuperExplorer-Setup-" .. version .. "-x64.exe")
 
@@ -189,6 +194,7 @@ local function main()
             cwd = root,
             log_path = path(logs, "installer-release.log"),
         })
+        for _, plugin in ipairs(plugin_specs) do
         process.run({
             stage = "建置內附 rust-folder-size-visual-column Plugin",
             exe = "powershell.exe",
@@ -196,19 +202,22 @@ local function main()
                 "-NoLogo", "-NoProfile", "-NonInteractive",
                 "-ExecutionPolicy", "Bypass", "-Command",
                 "$ErrorActionPreference='Stop'; & cargo.exe build --manifest-path "
-                    .. powershell_literal(plugin_manifest)
+                    .. powershell_literal(plugin.manifest)
                     .. " --release --target x86_64-pc-windows-msvc --locked --offline; exit $LASTEXITCODE",
             },
             cwd = root,
-            log_path = path(logs, "installer-plugin-release.log"),
-        })
+            log_path = path(logs, "installer-plugin-" .. plugin.root .. "-release.log"),
+        }) end
     end
 
     local application_size = validate_executable(release_executable, "發行版執行檔")
     validate_executable(broker_executable, "extension broker")
     validate_executable(worker_executable, "extension worker")
     validate_executable(everything_dll, "Everything SDK DLL")
-    local plugin_size = validate_executable(plugin_dll, "rust-folder-size-visual-column Plugin DLL")
+    local plugin_size = 0
+    for _, plugin in ipairs(plugin_specs) do
+        plugin_size = plugin_size + validate_executable(plugin.path, plugin.root .. " Plugin DLL")
+    end
     os.remove(output)
     process.run({
         stage = "編譯 NSIS 安裝程式",
@@ -220,7 +229,14 @@ local function main()
             "/DBROKER_EXE=" .. broker_executable,
             "/DWORKER_EXE=" .. worker_executable,
             "/DEVERYTHING_DLL=" .. everything_dll,
-            "/DPLUGIN_DLL=" .. plugin_dll,
+            "/DPLUGIN_FOLDER_SIZE=" .. plugin_specs[1].path,
+            "/DPLUGIN_SIZE_MAP=" .. plugin_specs[2].path,
+            "/DPLUGIN_RUST_TOKEI=" .. plugin_specs[3].path,
+            "/DPLUGIN_LUA_TOKEI=" .. plugin_specs[4].path,
+            "/DPLUGIN_LOCK_OWNER=" .. plugin_specs[5].path,
+            "/DPLUGIN_EXIF_RENAME=" .. plugin_specs[6].path,
+            "/DPLUGIN_7Z=" .. plugin_specs[7].path,
+            "/DPLUGIN_BULK_FOLDER=" .. plugin_specs[8].path,
             "/DOUTPUT_FILE=" .. output,
             nsis_script,
         },
@@ -238,7 +254,7 @@ local function main()
     end
 
     print(string.format("[完成] 應用程式：%s（%d 位元組）", release_executable, application_size))
-    print(string.format("[完成] 內附 Plugin：%s（%d 位元組）", plugin_dll, plugin_size))
+    print(string.format("[完成] 內附 8 個 Plugin（%d 位元組）", plugin_size))
     print(string.format("[完成] 安裝程式：%s（%d 位元組）", output, installer_size))
     if options.no_launch then
         print("[完成] 已略過啟動安裝程式")

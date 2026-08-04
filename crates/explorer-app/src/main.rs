@@ -47,7 +47,7 @@ fn main() {
 }
 
 fn run(build: AppBuildInfo, diagnostics: &DiagnosticsSession) -> anyhow::Result<()> {
-    let plugin_dll = parse_plugin_dll_argument()?;
+    let plugin_dlls = parse_plugin_dll_arguments()?;
     diagnostics.record_event(
         "startup",
         &[
@@ -57,7 +57,7 @@ fn run(build: AppBuildInfo, diagnostics: &DiagnosticsSession) -> anyhow::Result<
     )?;
 
     let mut lifecycle =
-        ApplicationLifecycle::start_with_plugin(diagnostics.clone(), plugin_dll.as_deref())?;
+        ApplicationLifecycle::start_with_plugins(diagnostics.clone(), &plugin_dlls)?;
 
     let model = WorkspaceModel::new();
     let ui = ExplorerUiState::default();
@@ -78,22 +78,19 @@ fn run(build: AppBuildInfo, diagnostics: &DiagnosticsSession) -> anyhow::Result<
     Ok(())
 }
 
-fn parse_plugin_dll_argument() -> anyhow::Result<Option<std::path::PathBuf>> {
+fn parse_plugin_dll_arguments() -> anyhow::Result<Vec<std::path::PathBuf>> {
     let mut arguments = std::env::args_os().skip(1);
-    let mut plugin_dll = None;
+    let mut plugin_dlls = Vec::new();
 
     while let Some(argument) = arguments.next() {
         if argument != "--plugin-dll" {
             anyhow::bail!("unsupported argument: {}", argument.to_string_lossy());
         }
-        if plugin_dll.is_some() {
-            anyhow::bail!("--plugin-dll may only be supplied once");
-        }
         let path = arguments
             .next()
             .ok_or_else(|| anyhow::anyhow!("--plugin-dll requires an absolute DLL path"))?;
-        plugin_dll = Some(path.into());
+        plugin_dlls.push(path.into());
     }
 
-    Ok(plugin_dll)
+    Ok(plugin_dlls)
 }

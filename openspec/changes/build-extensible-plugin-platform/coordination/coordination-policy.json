@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "shared_manifest_integrator": "release-integrator",
+  "roles": [
+    {"role":"release-integrator","wave":"W0-W5","owned_paths":["openspec/changes/build-extensible-plugin-platform/**","sdk/snapshot/**","sdk/schemas/**"],"forbidden_paths":["crates/**","sdk/fixtures/**"]},
+    {"role":"contract-owner","wave":"W1","owned_paths":["crates/explorer-extension-api/**","crates/explorer-extension-ui-api/**"],"forbidden_paths":["crates/explorer-extension-host/**","crates/explorer-ui/**"]},
+    {"role":"host-owner","wave":"W2-W3","owned_paths":["crates/explorer-extension-host/**","crates/explorer-jobs/**"],"forbidden_paths":["crates/explorer-extension-api/**","crates/explorer-ui/**"]},
+    {"role":"model-ui-owner","wave":"W3","owned_paths":["crates/explorer-ui/**","crates/explorer-model/**"],"forbidden_paths":["crates/explorer-extension-api/**","sdk/snapshot/**"]},
+    {"role":"windows-owner","wave":"W3","owned_paths":["crates/explorer-shell-win/**"],"forbidden_paths":["crates/explorer-extension-api/**","sdk/snapshot/**"]},
+    {"role":"example-owner","wave":"W3-W4","owned_paths":["sdk/fixtures/consumers/**"],"forbidden_paths":["crates/**","sdk/snapshot/**"]},
+    {"role":"fixture-owner","wave":"W1-W4","owned_paths":["sdk/fixtures/validation/**","sdk/tests/**"],"forbidden_paths":["crates/**","sdk/snapshot/**"]},
+    {"role":"docs-owner","wave":"W4","owned_paths":["docs/extensions/**"],"forbidden_paths":["crates/**","sdk/snapshot/**"]}
+  ],
+  "handoff_required_fields":["diff","test_commands","test_results","evidence_ids","known_risks","remaining_dependencies"],
+  "adjustment_classes": {
+    "A":{"requires_user_approval":false,"preserve_l3_ids":true,"preserve_evidence_lineage":true},
+    "B":{"requires_user_approval":false,"pause_affected_work":true,"mark_dependents_stale":true,"rerun_openspec_validation":true},
+    "C":{"requires_user_approval":true,"protected_changes":["public-abi","gate","permission"]}
+  }
+}
