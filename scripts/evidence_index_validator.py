@@ -19,6 +19,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+try:
+    from scripts.signed_release_bundle import verify_record as verify_signed_release_record
+except ModuleNotFoundError:  # Direct `python scripts/evidence_index_validator.py` execution.
+    from signed_release_bundle import verify_record as verify_signed_release_record
+
 
 SCHEMA_VERSION = 1
 TASK_ID_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
@@ -264,9 +269,9 @@ def _validate_cross_record_rules(records: list[tuple[int, dict[str, Any]]]) -> l
         task_id = record["task_id"]
         subcheck_key = record["subcheck_key"]
         existing = subcheck_lines.get(subcheck_key)
-        if existing is not None:
+        if existing is not None and existing[1] != task_id:
             issues.append(ValidationIssue(line, f"subcheck_key {subcheck_key} closes more than one L3 ({existing[1]} on line {existing[0]} and {task_id})"))
-        else:
+        elif existing is None:
             subcheck_lines[subcheck_key] = (line, task_id)
 
     for line, record in records:
@@ -626,6 +631,7 @@ def _closure_issues(
     known_task_ids: set[str],
     selected_task_ids: set[str] | None,
     closure_kind: str,
+    release_trust_root: Path | None = None,
 ) -> list[ValidationIssue]:
     if not records:
         return [ValidationIssue(0, "closure rejects an empty evidence ledger")]
@@ -670,7 +676,14 @@ def _closure_issues(
     issues.extend(completion_issues(records, policy_tasks, scope))
     issues.extend(_supersession_issues(records, policy_tasks))
     if closure_kind == "release":
-        issues.append(ValidationIssue(0, "release closure is unavailable until task 1.1.8 supplies signed retained-bundle trust verification"))
+        retained = [(line, record) for line, record in records if record["record_kind"] == "retained-bundle"]
+        if release_trust_root is None:
+            issues.append(ValidationIssue(0, "release closure requires a local signed-bundle trust root"))
+        elif not retained:
+            issues.append(ValidationIssue(0, "release closure requires at least one signed retained-bundle record"))
+        else:
+            for line, record in retained:
+                issues.extend(ValidationIssue(line, message) for message in verify_signed_release_record(record, release_trust_root))
     return issues
 
 
@@ -686,6 +699,7 @@ def validate_index(
     closure_task_ids: set[str] | None = None,
     closure_kind: str = "leaf",
     local_result_root: Path | None = None,
+    release_trust_root: Path | None = None,
 ) -> list[ValidationIssue]:
     """Return all record and cross-record validation issues in a JSONL index."""
     issues: list[ValidationIssue] = []
@@ -734,7 +748,8 @@ def validate_index(
         if local_result_root is None:
             issues.append(ValidationIssue(0, "leaf completion requires --local-result-root to recheck result bytes"))
         else:
-            issues.extend(_verify_local_results(records, local_result_root))
+            latest_local_records = list(_latest_by_task(records).values())
+            issues.extend(_verify_local_results(latest_local_records, local_result_root))
     if closure_policy_path is not None:
         policy, policy_issues = _load_authoritative_policy(closure_policy_path)
         issues.extend(policy_issues)
@@ -747,8 +762,8 @@ def validate_index(
                 except ValueError as error:
                     issues.append(ValidationIssue(0, str(error)))
                 else:
-                    issues.extend(_closure_issues(records, policy, known_task_ids, closure_task_ids, closure_kind))
-                    if not verified_artifacts:
+                    issues.extend(_closure_issues(records, policy, known_task_ids, closure_task_ids, closure_kind, release_trust_root))
+                    if not verified_artifacts and closure_kind != "release":
                         # Closure never trusts claimant-provided test URL maps.
                         # A production local release-bundle resolver must supply
                         # retained bytes from the configured local trust root.
@@ -764,7 +779,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tasks", type=Path, help="optional tasks.md whose L3 IDs must contain every task and replacement target")
     parser.add_argument("--require-complete", action="store_true", help="check claimant latest states only; use --closure for authoritative closure")
     parser.add_argument("--closure", action="store_true", help="fail closed using the release-integrator authoritative policy and checkpoints")
-    parser.add_argument("--closure-kind", choices=("leaf", "release"), default="leaf", help="leaf closure is bundle-free; release closure fails closed until signed retained-bundle verification exists")
+    parser.add_argument("--closure-kind", choices=("leaf", "release"), default="leaf", help="leaf closure is bundle-free; release closure verifies locally retained signed bundles")
+    parser.add_argument("--release-trust-root", type=Path, help="release-integrator-owned local trust root required for release closure")
     parser.add_argument("--local-result-root", type=Path, help="root containing <task-id>/result.json for leaf completion hash verification")
     parser.add_argument("--policy", type=Path, help="release-integrator-owned evidence policy required by --closure")
     parser.add_argument("--lineage-map", type=Path, help="optional legacy-lineage-map-v1 file whose new_l3_ids must exist in --tasks")
@@ -778,6 +794,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--closure requires --tasks")
     if arguments.closure and arguments.locator_map:
         parser.error("--closure never accepts a test locator map; it resolves signed local release evidence from its trust root")
+    if arguments.closure_kind == "release" and not arguments.release_trust_root:
+        parser.error("--closure-kind release requires --release-trust-root")
+    if arguments.release_trust_root and (not arguments.closure or arguments.closure_kind != "release"):
+        parser.error("--release-trust-root is valid only with --closure --closure-kind release")
     if arguments.policy and not arguments.closure:
         parser.error("--policy requires --closure")
     if arguments.lineage_map and not arguments.tasks:
@@ -807,6 +827,7 @@ def main(argv: list[str] | None = None) -> int:
         closure_task_ids=set(arguments.closure_tasks) if arguments.closure_tasks else None,
         closure_kind=arguments.closure_kind,
         local_result_root=arguments.local_result_root,
+        release_trust_root=arguments.release_trust_root,
     )
     if issues:
         for issue in issues:

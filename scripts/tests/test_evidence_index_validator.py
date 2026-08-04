@@ -165,6 +165,10 @@ class EvidenceIndexValidatorTests(unittest.TestCase):
         messages = self.messages(record(), record("1.1.2", subcheck_key="command-1.1.1"))
         self.assertIn("closes more than one L3", messages)
 
+    def test_retry_for_same_l3_may_reuse_its_reserved_subcheck(self) -> None:
+        first, second = link_events(record(), record())
+        self.assertEqual(self.validate(first, second), [])
+
     def test_terminal_subcheck_reservation_survives_later_stale_history(self) -> None:
         events = link_events(
             record("1.1.1", subcheck_key="shared-terminal-subcheck"),
@@ -380,7 +384,7 @@ class EvidenceIndexValidatorTests(unittest.TestCase):
         self.assertEqual(self.validate(item, policy=policy, tasks="- [ ] 1.1.1 known leaf\n"), [])
         self.assertIn("closure rejects an empty evidence ledger", "\n".join(str(issue) for issue in MODULE._closure_issues([], policy, {"1.1.1"}, {"1.1.1"}, "leaf")))
 
-    def test_release_closure_fails_closed_until_signed_bundle_verifier_exists(self) -> None:
+    def test_release_closure_requires_signed_bundle_trust_root(self) -> None:
         item = record()
         policy = {
             "schema_version": 1,
@@ -389,7 +393,7 @@ class EvidenceIndexValidatorTests(unittest.TestCase):
             "tasks": [{"task_id": "1.1.1", "priority": "P0", "release_blocking": True, "mandatory": True, "depends_on": [], "gate_ids": ["gate-1.1.1"]}],
         }
         messages = "\n".join(str(issue) for issue in self.validate(item, policy=policy, tasks="- [ ] 1.1.1 known leaf\n", closure_kind="release"))
-        self.assertIn("release closure is unavailable until task 1.1.8", messages)
+        self.assertIn("release closure requires a local signed-bundle trust root", messages)
 
     def test_closure_rejects_unresolved_retained_bundle(self) -> None:
         item = retained_record()

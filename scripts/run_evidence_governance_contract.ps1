@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('1.1.1', '1.1.2', '1.1.3', '1.1.4', '1.1.5', '1.1.6', '1.1.7')]
+    [ValidateSet('1.1.1', '1.1.2', '1.1.3', '1.1.4', '1.1.5', '1.1.6', '1.1.7', '1.1.8')]
     [string]$TaskId
 )
 
@@ -44,6 +44,11 @@ $commands = @{
         'scripts.tests.test_evidence_index_validator.EvidenceIndexValidatorTests.test_mandatory_p1_cannot_be_not_applicable',
         'scripts.tests.test_evidence_index_validator.EvidenceIndexValidatorTests.test_authoritative_supersession_transitively_stales_and_allows_bound_revalidation',
         'scripts.tests.test_evidence_index_validator.EvidenceIndexValidatorTests.test_authoritative_supersession_rejects_cycles_nonterminal_replacements_and_unbound_revalidation'
+    )
+    '1.1.8' = @(
+        'python', '-m', 'unittest',
+        'scripts.tests.test_signed_release_bundle',
+        'scripts.tests.test_evidence_index_validator.EvidenceIndexValidatorTests.test_release_closure_requires_signed_bundle_trust_root'
     )
 }
 
@@ -93,7 +98,9 @@ $inputPaths = @(
     'openspec/changes/build-extensible-plugin-platform/evidence/legacy-5.1-final-go-backfill.json',
     'openspec/changes/build-extensible-plugin-platform/evidence/legacy-lineage-contract.ps1',
     'scripts/evidence_index_validator.py',
+    'scripts/signed_release_bundle.py',
     'scripts/tests/test_evidence_index_validator.py',
+    'scripts/tests/test_signed_release_bundle.py',
     'scripts/run_evidence_governance_contract.ps1'
 )
 foreach ($relativePath in $inputPaths) {
