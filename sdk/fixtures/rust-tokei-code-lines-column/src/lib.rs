@@ -69,7 +69,10 @@ fn read_stream(input: &explorer_extension_api::InputStreamV1) -> Option<Vec<u8>>
 }
 
 fn classify(file_name: &str, bytes: &[u8]) -> Option<(String, tokei::CodeStats)> {
-    if std::str::from_utf8(bytes).is_err() {
+    // UTF-8 alone does not make a stream source code: an arbitrary binary can
+    // contain a NUL while still being valid UTF-8. Keep the public outcome
+    // truthful by returning Unsupported rather than a misleading zero count.
+    if bytes.contains(&0) || std::str::from_utf8(bytes).is_err() {
         return None;
     }
     let config = tokei::Config::default();
@@ -130,7 +133,9 @@ impl VisualColumnImplementationV1 for TokeiCodeLinesProvider {
                 .unwrap_or(1_000_000)
                 .min(1_000_000)
         };
-        let detail = if context.settings.contains("comments") {
+        // The host owns the setting token. It deliberately carries no private
+        // UI state across the ABI boundary.
+        let detail = if context.settings.contains("with-detail") {
             RString::from(format!(
                 "{} · {} comments · {} blanks · {} total",
                 value.language, value.comments, value.blanks, value.total
@@ -308,17 +313,53 @@ mod tests {
 
     #[test]
     fn mixed_language_stats_are_exact_and_unsupported_is_not_zero() {
-        let config = tokei::Config::default();
-        let rust = tokei::LanguageType::from_path(Path::new("main.rs"), &config).unwrap();
-        let stats = rust
-            .parse_from_str("fn main() {}\n// comment\n\n", &config)
-            .summarise();
-        assert_eq!(
-            (stats.code, stats.comments, stats.blanks, stats.lines()),
-            (1, 1, 1, 3)
-        );
-        assert!(classify("blob.bin", &[0, 159, 146, 150]).is_none());
-        assert!(classify("empty.py", b"").is_some());
+        let cases = [
+            (
+                "main.rs",
+                b"fn main() {}\n// comment\n\n".as_slice(),
+                "Rust",
+                (1, 1, 1, 3),
+            ),
+            (
+                "native.cpp",
+                b"int main() {}\n// comment\n\n".as_slice(),
+                "C++",
+                (1, 1, 1, 3),
+            ),
+            (
+                "script.py",
+                b"def main():\n    pass\n# comment\n\n".as_slice(),
+                "Python",
+                (2, 1, 1, 4),
+            ),
+            (
+                "script.lua",
+                b"local value = 1\n-- comment\n\n".as_slice(),
+                "Lua",
+                (1, 1, 1, 3),
+            ),
+            (
+                "script.js",
+                b"function main() {}\n// comment\n\n".as_slice(),
+                "JavaScript",
+                (1, 1, 1, 3),
+            ),
+        ];
+        for (name, source, expected_language, expected) in cases {
+            let (language, stats) = classify(name, source).expect("supported source");
+            assert_eq!(language, expected_language, "{name}");
+            assert_eq!(
+                (stats.code, stats.comments, stats.blanks, stats.lines()),
+                expected,
+                "{name}"
+            );
+        }
+        for (name, source) in [
+            ("unknown.data", b"plain text\n".as_slice()),
+            ("binary.rs", b"fn main() {}\0".as_slice()),
+        ] {
+            assert!(classify(name, source).is_none(), "{name}");
+        }
     }
 
     #[test]
@@ -382,7 +423,7 @@ mod tests {
                 selection_background: CellColorV1::rgba(10, 11, 12, 255),
                 accent: CellColorV1::rgba(13, 14, 15, 255),
             },
-            settings: RString::from("comments"),
+            settings: RString::from("with-detail"),
             item_id: explorer_extension_api::StableIdV1::new(
                 explorer_extension_api::EXTENSION_ID_NAMESPACE_V1,
                 1,
@@ -393,5 +434,10 @@ mod tests {
         assert_eq!(plan.label, "25");
         assert_eq!(plan.proportional_bar_millionths, 250_000);
         assert!(plan.detail.contains("Rust"));
+    }
+
+    #[test]
+    fn nul_bearing_known_extension_is_unsupported_not_zero() {
+        assert!(classify("binary.rs", b"fn main() {}\0").is_none());
     }
 }

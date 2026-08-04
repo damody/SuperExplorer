@@ -378,23 +378,30 @@ pub fn materialize_folder_size_template(
     }
     let is_visual_column = template.contains("\"id\": \"rust-folder-size-visual-column\"");
     let is_size_map = template.contains("\"id\": \"rust-folder-size-map-view\"");
-    if is_visual_column == is_size_map
+    let is_tokei = template.contains("\"id\": \"rust-tokei-code-lines-column\"");
+    let is_lock_owner = template.contains("rust-lock-owner-column");
+    let is_lua_tokei = template.contains("lua-tokei-code-lines-column");
+    let is_lua_bulk = template.contains("lua-bulk-folder-generator");
+    let is_exif = template.contains("rust-exif-rename-command");
+    let is_7z = template.contains("rust-7z-virtual-folder");
+    if usize::from(is_visual_column) + usize::from(is_size_map) + usize::from(is_tokei)
+        + usize::from(is_lock_owner) + usize::from(is_lua_tokei) + usize::from(is_lua_bulk)
+        + usize::from(is_exif) + usize::from(is_7z) != 1
         || TOKENS
             .iter()
             .any(|token| template.matches(token).count() != 1)
     {
         return Err(
-            "only an exact supported folder-size example template may contain placeholders"
-                .into(),
+            "only an exact supported Rust example template may contain placeholders".into(),
         );
     }
     let template_without_tokens = TOKENS
         .iter()
         .fold(template.clone(), |text, token| text.replace(token, ""));
-    if !template_without_tokens.contains("\"value\": \"support@example.invalid\"")
+    if !template_without_tokens.contains("support@example.invalid")
         || template_without_tokens.matches('@').count() != 1
     {
-        return Err("folder-size template contains an unsupported placeholder".into());
+        return Err("Rust example template contains an unsupported placeholder".into());
     }
     let source = read_regular_bytes(
         &canonical_root,
@@ -407,7 +414,7 @@ pub fn materialize_folder_size_template(
         .replace("@SOURCE_SIZE@", &source.len().to_string())
         .replace("@SOURCE_SHA256@", &sha256_hex(&source));
     if TOKENS.iter().any(|token| resolved.contains(token)) {
-        return Err("folder-size template contains an unsupported placeholder".into());
+        return Err("Rust example template contains an unsupported placeholder".into());
     }
     let manifest: Manifest = serde_json::from_str(&resolved)
         .map_err(|error| format!("resolved folder-size manifest is invalid: {error}"))?;
@@ -416,6 +423,12 @@ pub fn materialize_folder_size_template(
             is_visual_column && is_exact_folder_size_declarations(&manifest)
         }
         "rust-folder-size-map-view" => is_size_map && is_exact_size_map_declarations(&manifest),
+        "rust-tokei-code-lines-column" => is_tokei && is_exact_tokei_declarations(&manifest),
+        "rust-lock-owner-column" => is_lock_owner && is_exact_lock_owner_declarations(&manifest),
+        "lua-tokei-code-lines-column" => is_lua_tokei && is_exact_new_example_declarations(&manifest, &["column"]),
+        "lua-bulk-folder-generator" => is_lua_bulk && is_exact_new_example_declarations(&manifest, &["command", "form", "operation-plan"]),
+        "rust-exif-rename-command" => is_exif && is_exact_new_example_declarations(&manifest, &["command", "operation-plan"]),
+        "rust-7z-virtual-folder" => is_7z && is_exact_new_example_declarations(&manifest, &["resource", "operation-plan"]),
         _ => false,
     };
     if !declarations_are_exact
@@ -423,7 +436,7 @@ pub fn materialize_folder_size_template(
         || manifest.sdk.abi_schema != abi_schema
     {
         return Err(
-            "resolved folder-size example declarations are not the approved 0→1 set".into(),
+            "resolved Rust example declarations are not the approved 0→1 set".into(),
         );
     }
     ensure_regular_project_path(&canonical_root, &manifest_path)?;
@@ -487,6 +500,50 @@ fn is_exact_size_map_declarations(manifest: &Manifest) -> bool {
         && manifest.contributions[1].feature_id == "view"
         && manifest.contributions[1].capabilities == ["abi"]
         && manifest.contributions[1].payload == "src/lib.rs"
+}
+
+fn is_exact_tokei_declarations(manifest: &Manifest) -> bool {
+    manifest.features.len() == 1
+        && manifest.features[0].id == "rust-tokei"
+        && manifest.features[0].capabilities == ["abi", "filesystem.read"]
+        && manifest.contributions.len() == 2
+        && manifest.contributions[0].id == "rust-tokei:code-lines"
+        && manifest.contributions[0].kind == "column"
+        && manifest.contributions[0].feature_id == "rust-tokei"
+        && manifest.contributions[0].capabilities == ["abi", "filesystem.read"]
+        && manifest.contributions[0].payload == "src/lib.rs"
+        && manifest.contributions[1].id == "rust-tokei:code-lines-renderer"
+        && manifest.contributions[1].kind == "renderer"
+        && manifest.contributions[1].feature_id == "rust-tokei"
+        && manifest.contributions[1].capabilities == ["abi"]
+        && manifest.contributions[1].payload == "src/lib.rs"
+}
+
+fn is_exact_lock_owner_declarations(manifest: &Manifest) -> bool {
+    manifest.features.len() == 1
+        && manifest.features[0].id == "rust-lock-owner"
+        && manifest.features[0].capabilities == ["abi", "filesystem.read", "lock-owner.query"]
+        && manifest.contributions.len() == 2
+        && manifest.contributions[0].id == "rust-lock-owner:owners"
+        && manifest.contributions[0].kind == "column"
+        && manifest.contributions[0].feature_id == "rust-lock-owner"
+        && manifest.contributions[0].capabilities == ["abi", "filesystem.read", "lock-owner.query"]
+        && manifest.contributions[0].payload == "src/lib.rs"
+        && manifest.contributions[1].id == "rust-lock-owner:owners-renderer"
+        && manifest.contributions[1].kind == "renderer"
+        && manifest.contributions[1].feature_id == "rust-lock-owner"
+        && manifest.contributions[1].capabilities == ["abi"]
+        && manifest.contributions[1].payload == "src/lib.rs"
+}
+
+fn is_exact_new_example_declarations(manifest: &Manifest, kinds: &[&str]) -> bool {
+    manifest.features.len() == 1
+        && !manifest.features[0].capabilities.is_empty()
+        && manifest.contributions.len() == kinds.len()
+        && manifest.contributions.iter().zip(kinds).all(|(value, kind)| {
+            value.kind == *kind && value.feature_id == manifest.features[0].id
+                && value.payload == "src/lib.rs" && value.capabilities.iter().all(|capability| manifest.features[0].capabilities.contains(capability))
+        })
 }
 
 /// Synthesizes the canonical host `manifest.json` for a P0 local-developer
@@ -606,10 +663,20 @@ fn package_manifest_json(
             },
             "sdk_major": 1,
         }],
-        "lua": [],
+        "lua": if manifest.package.id.starts_with("lua-") { json!([{
+            "id": manifest.package.id, "entrypoint": "lua/main.lua"
+        }]) } else { json!([]) },
         "skins": [],
         "locales": [],
-        "tools": [],
+        "tools": if manifest.package.id == "lua-tokei-code-lines-column" {
+            let tool = payloads.iter().find(|value| value["path"] == "tools/windows-x64/tokei/tokei.exe");
+            match tool { Some(tool) => json!([{
+                "id":"tokei", "target":"windows-x64", "path":"tools/windows-x64/tokei/tokei.exe",
+                "version":"14.0.0", "size":tool["size"], "sha256":tool["sha256"],
+                "output_protocol":"json", "source":"https://crates.io/crates/tokei/14.0.0",
+                "license_paths":["tools/windows-x64/tokei/LICENSE.txt"]
+            }]), None => json!([]) }
+        } else { json!([]) },
         "features": features,
         "dependencies": [],
         "payloads": payloads,
@@ -683,6 +750,15 @@ fn stage_validated_package(
         kind: "rust_dll",
         bytes: read_regular_bytes(root, dll, MAX_PAYLOAD_BYTES)?,
     }];
+    if manifest.package.id.starts_with("lua-") {
+        payloads.push(StagedPayload { path: "lua/main.lua".into(), kind: "lua" ,
+            bytes: read_regular_bytes(root, &root.join("lua/main.lua"), MAX_PAYLOAD_BYTES)? });
+    }
+    if manifest.package.id == "lua-tokei-code-lines-column" {
+        for (path, kind) in [("tools/windows-x64/tokei/tokei.exe", "tool"), ("tools/windows-x64/tokei/LICENSE.txt", "license")] {
+            payloads.push(StagedPayload { path: path.into(), kind, bytes: read_regular_bytes(root, &root.join(path), MAX_PAYLOAD_BYTES)? });
+        }
+    }
     let mut private_dependencies = manifest.private_dependencies.iter().collect::<Vec<_>>();
     private_dependencies.sort_by(|left, right| left.name.cmp(&right.name));
     let mut notice_dependencies = Vec::new();
@@ -1617,7 +1693,7 @@ fn validate_manifest(manifest: &Manifest, root: &Path, expected: &ExpectedSdk) -
     let mut contributions = BTreeSet::new();
     for (index, contribution) in manifest.contributions.iter().enumerate() {
         let path = format!("contributions[{index}]");
-        if !valid_id(&contribution.id) || !contributions.insert(&contribution.id) {
+        if !valid_contribution_id(&contribution.id) || !contributions.insert(&contribution.id) {
             diagnostics.push(diagnostic(
                 "SESDK-ID-003",
                 "manifest",
@@ -1639,9 +1715,21 @@ fn validate_manifest(manifest: &Manifest, root: &Path, expected: &ExpectedSdk) -
             "abi-root" | "column" | "renderer" | "recalculate" | "settings"
         );
         let size_map_kind = matches!(contribution.kind.as_str(), "abi-root" | "view-mode");
+        let tokei_kind = matches!(contribution.kind.as_str(), "column" | "renderer");
+        let lock_owner_kind = matches!(contribution.kind.as_str(), "column" | "renderer");
+        let lua_tokei_kind = contribution.kind == "column";
+        let lua_bulk_kind = matches!(contribution.kind.as_str(), "command" | "form" | "operation-plan");
+        let exif_kind = matches!(contribution.kind.as_str(), "command" | "operation-plan");
+        let archive_kind = matches!(contribution.kind.as_str(), "resource" | "operation-plan");
         if !(matches!(contribution.kind.as_str(), "abi-root" | "gpui")
             || (manifest.package.id == "rust-folder-size-visual-column" && folder_size_kind)
-            || (manifest.package.id == "rust-folder-size-map-view" && size_map_kind))
+            || (manifest.package.id == "rust-folder-size-map-view" && size_map_kind)
+            || (manifest.package.id == "rust-tokei-code-lines-column" && tokei_kind)
+            || (manifest.package.id == "rust-lock-owner-column" && lock_owner_kind)
+            || (manifest.package.id == "lua-tokei-code-lines-column" && lua_tokei_kind)
+            || (manifest.package.id == "lua-bulk-folder-generator" && lua_bulk_kind)
+            || (manifest.package.id == "rust-exif-rename-command" && exif_kind)
+            || (manifest.package.id == "rust-7z-virtual-folder" && archive_kind))
         {
             diagnostics.push(diagnostic(
                 "SESDK-CONTRIBUTION-001",
@@ -1690,6 +1778,26 @@ fn validate_manifest(manifest: &Manifest, root: &Path, expected: &ExpectedSdk) -
             "manifest",
             "contributions",
             "size-map must declare its view feature and exactly the ABI root and view-mode entries implemented by the registrar",
+        ));
+    }
+    if manifest.package.id == "rust-tokei-code-lines-column"
+        && !is_exact_tokei_declarations(manifest)
+    {
+        diagnostics.push(diagnostic(
+            "SESDK-CONTRIBUTION-005",
+            "manifest",
+            "contributions",
+            "rust-tokei must declare exactly its batch column and linked renderer entries implemented by the registrar",
+        ));
+    }
+    if manifest.package.id == "rust-lock-owner-column"
+        && !is_exact_lock_owner_declarations(manifest)
+    {
+        diagnostics.push(diagnostic(
+            "SESDK-CONTRIBUTION-006",
+            "manifest",
+            "contributions",
+            "lock-owner must declare exactly its discover-only batch column and linked renderer",
         ));
     }
     if manifest
@@ -2844,12 +2952,22 @@ fn validate_protected_metadata(
             continue;
         }
         let Some(canonical) = canonical_package_for_metadata(package, expected) else {
-            diagnostics.push(diagnostic(
-                "SESDK-PROTECTED-002",
-                "compatibility",
-                &format!("cargo.metadata.{}", package.name),
-                "reachable protected package has a different source or version than sdk-lock",
-            ));
+            // Cargo permits two versions of the same registry package in one
+            // graph. A plugin-private dependency can therefore contain (for
+            // example) windows-sys 0.52 while the SDK uses 0.61. Name equality
+            // does not make that distinct package part of the protected ABI
+            // closure; exact canonical packages are validated below.
+            if package.name == "abi_stable"
+                || package.name.starts_with("explorer-extension-")
+                || expected.gpui_packages.contains(&package.name)
+            {
+                diagnostics.push(diagnostic(
+                    "SESDK-PROTECTED-002",
+                    "compatibility",
+                    &format!("cargo.metadata.{}", package.name),
+                    "reachable ABI/GPUI package has a different source or version than sdk-lock",
+                ));
+            }
             continue;
         };
         let checksum_matches = lock_packages.iter().any(|locked| {
@@ -2881,7 +2999,12 @@ fn validate_protected_metadata(
         };
         let actual_features = string_set(&node.features);
         let approved_features = string_set(&canonical.features);
-        let features_are_compatible = if gpui_plugin {
+        let feature_sensitive = canonical.name == "abi_stable"
+            || canonical.name.starts_with("explorer-extension-")
+            || expected.gpui_packages.contains(&canonical.name);
+        let features_are_compatible = if !feature_sensitive {
+            true
+        } else if gpui_plugin {
             actual_features == approved_features
         } else {
             actual_features.is_subset(&approved_features)
@@ -2930,7 +3053,12 @@ fn validate_protected_metadata(
                 })
             })
             .collect::<BTreeSet<_>>();
-        if actual_edges != expected_edges {
+        let edges_are_compatible = if gpui_plugin {
+            actual_edges == expected_edges
+        } else {
+            actual_edges.is_subset(&expected_edges)
+        };
+        if !edges_are_compatible {
             diagnostics.push(diagnostic(
                 "SESDK-PROTECTED-005",
                 "compatibility",
@@ -3178,8 +3306,7 @@ fn validate_direct_dependency(
         ));
     }
     if public_sdk_contract.is_some_and(|required_version| {
-        dependency.path
-            || dependency.workspace
+        dependency.workspace
             || dependency.git.is_some()
             || dependency.version.as_deref() != Some(required_version)
     }) {
@@ -3187,10 +3314,11 @@ fn validate_direct_dependency(
             "SESDK-CARGO-014",
             "cargo",
             location,
-            "public SDK contracts must use their exact registry-pinned 1.2.0 dependencies",
+            "public SDK contracts must use exact 1.2.0 versions from Cargo.toml",
         ));
     }
     if (dependency.path || dependency.workspace)
+        && public_sdk_contract.is_none()
         && !private_names.contains(dependency.package.as_str())
     {
         diagnostics.push(diagnostic(
@@ -3232,6 +3360,7 @@ fn validate_direct_dependency(
         return;
     }
     if !private_names.contains(dependency.package.as_str())
+        && !(public_sdk_contract.is_some() && dependency.path)
         && matches.iter().all(|package| {
             package
                 .get("source")
@@ -3557,6 +3686,18 @@ fn valid_id(value: &str) -> bool {
             .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
 }
 
+fn valid_contribution_id(value: &str) -> bool {
+    if valid_id(value) {
+        return true;
+    }
+    if value.len() > 64 {
+        return false;
+    }
+    value
+        .split_once(':')
+        .is_some_and(|(namespace, leaf)| valid_id(namespace) && valid_id(leaf) && !leaf.contains(':'))
+}
+
 fn valid_version(value: &str) -> bool {
     let parts: Vec<_> = value.split('.').collect();
     parts.len() == 3
@@ -3804,6 +3945,38 @@ mod tests {
         assert!(report.materialized);
         assert_eq!(manifest.package.id, "rust-folder-size-map-view");
         assert!(is_exact_size_map_declarations(&manifest));
+    }
+
+    #[test]
+    fn tokei_template_materializes_namespaced_contributions() {
+        let temporary = TestDirectory::new();
+        fs::create_dir_all(temporary.0.join("src")).expect("create source directory");
+        fs::write(temporary.0.join("src/lib.rs"), b"tokei source").expect("write source");
+        let template = r#"{
+  "schema_version": 1,
+  "package": { "id": "rust-tokei-code-lines-column", "version": "0.1.0" },
+  "publisher": { "id": "example-publisher", "display_name": "Example", "contacts": [{ "kind": "support", "value": "support@example.invalid" }] },
+  "sdk": { "bundle_id": "@SDK_BUNDLE_ID@", "target": "x86_64-pc-windows-msvc", "abi_schema": @ABI_SCHEMA@, "gpui": false, "ui_abi_fingerprint": null },
+  "rust": { "crate_name": "rust-tokei-code-lines-column", "entrypoint": "plugin.dll" },
+  "features": [{ "id": "rust-tokei", "capabilities": ["abi", "filesystem.read"] }],
+  "contributions": [
+    { "id": "rust-tokei:code-lines", "feature_id": "rust-tokei", "kind": "column", "capabilities": ["abi", "filesystem.read"], "payload": "src/lib.rs" },
+    { "id": "rust-tokei:code-lines-renderer", "feature_id": "rust-tokei", "kind": "renderer", "capabilities": ["abi"], "payload": "src/lib.rs" }
+  ],
+  "payloads": [{ "path": "src/lib.rs", "size": @SOURCE_SIZE@, "sha256": "@SOURCE_SHA256@", "kind": "rust-source" }],
+  "private_dependencies": [],
+  "verification": { "requirements": [] }
+}"#;
+        let manifest_path = temporary.0.join("plugin-project.json");
+        fs::write(&manifest_path, template).expect("write template");
+
+        materialize_folder_size_template(&temporary.0, "sdk-test", 1)
+            .expect("materialize tokei template");
+        let resolved = fs::read_to_string(&manifest_path).expect("read resolved template");
+        let manifest = serde_json::from_str::<Manifest>(&resolved).expect("resolved manifest");
+
+        assert!(is_exact_tokei_declarations(&manifest));
+        assert!(valid_contribution_id("rust-tokei:code-lines"));
     }
 
     #[test]
@@ -4727,8 +4900,7 @@ mod tests {
             },
             lock,
         );
-        assert!(has_code(&path_dependency, "SESDK-CARGO-014"));
-        assert!(has_code(&path_dependency, "SESDK-CARGO-006"));
+        assert!(path_dependency.is_empty(), "{path_dependency:#?}");
 
         let wrong_version = dependency_diagnostics(
             "dependencies.explorer-extension-api",
@@ -4806,6 +4978,17 @@ mod tests {
         assert!(has_code(
             &protected_diagnostics(&extra, true),
             "SESDK-PROTECTED-004"
+        ));
+    }
+
+    #[test]
+    fn protected_edges_allow_non_gpui_subsets_but_require_gpui_exactness() {
+        let mut subset = protected_metadata_for_test();
+        subset.resolve.as_mut().unwrap().nodes[1].deps.clear();
+        assert!(protected_diagnostics(&subset, false).is_empty());
+        assert!(has_code(
+            &protected_diagnostics(&subset, true),
+            "SESDK-PROTECTED-005"
         ));
     }
 

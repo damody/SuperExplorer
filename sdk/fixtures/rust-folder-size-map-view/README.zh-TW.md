@@ -11,9 +11,8 @@ Cargo cache 準備被 Git 忽略的本機 directory source，不會改寫 depend
 
 ```powershell
 $pluginRoot = 'sdk/fixtures/rust-folder-size-map-view'
-$cargoConfig = powershell -NoProfile -ExecutionPolicy Bypass -File sdk/scripts/prepare-local-cargo-source.ps1 -PluginRoot $pluginRoot
-cargo build --manifest-path "$pluginRoot/Cargo.toml" --target x86_64-pc-windows-msvc --locked --offline --config $cargoConfig
-cargo test --manifest-path "$pluginRoot/Cargo.toml" --locked --offline --config $cargoConfig
+cargo build --manifest-path "$pluginRoot/Cargo.toml" --target x86_64-pc-windows-msvc --locked --offline
+cargo test --manifest-path "$pluginRoot/Cargo.toml" --locked --offline
 powershell -NoProfile -ExecutionPolicy Bypass -File sdk/scripts/validate-plugin.ps1 -PluginRoot $pluginRoot
 powershell -NoProfile -ExecutionPolicy Bypass -File sdk/scripts/build-plugin.ps1 -PluginRoot $pluginRoot
 powershell -NoProfile -ExecutionPolicy Bypass -File sdk/scripts/package-plugin.ps1 -PluginRoot $pluginRoot

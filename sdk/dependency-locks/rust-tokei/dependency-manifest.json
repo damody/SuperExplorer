@@ -12,8 +12,8 @@
     "registry_package_count": 156
   },
   "source": {
-    "directory": "../../.cache/cargo-directory-sources",
-    "package_directory": "tokei-14.0.0",
+    "registry_cache": "%USERPROFILE%/.cargo/registry",
+    "version_source": "sdk/fixtures/rust-tokei-code-lines-column/Cargo.toml",
     "static_link": true
   },
   "policy": {

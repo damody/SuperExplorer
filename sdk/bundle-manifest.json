@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "bundle_id": "sdk-34a3ea9f04322a9e56c2ad8a",
-  "inventory_root_sha256": "097b0f96ec3f7933c76bbaa7f0a4de0079a117e41c9a20dbac8ec44b0a963241",
-  "sdk_lock_sha256": "cde60744fd5198d469e61eafecefb1ad54fa21fd28e4a82f18916a35c9dfc612",
+  "bundle_id": "sdk-4a6c846750aa954a1a2d9883",
+  "inventory_root_sha256": "a15bb998d00cafcd33845ade1cf29da1880e3c368030fc4bb8480e7131541793",
+  "sdk_lock_sha256": "4336db828010f38c2abe54893368405624daed009d1bed5d9835180e428c2453",
   "files": [
     {
       "path": "crates/explorer-extension-api/Cargo.toml",
@@ -10,15 +10,23 @@
     },
     {
       "path": "crates/explorer-extension-api/src/jobs.rs",
-      "sha256": "0adfc194120274b8ee79cac65799de2db356d2761cbb4b19234661f712c6997f"
+      "sha256": "46ad20cb48a79b0f97841cd69cdae92bc0a731b195076d99012f750111aa0bc8"
     },
     {
       "path": "crates/explorer-extension-api/src/lib.rs",
-      "sha256": "d16fa2b068eee871356bd50233d6361c2a896fe08faf8c971a84b2275fe2261b"
+      "sha256": "642acd36d2bb8173020d8f9166914c38bb8b9905d862b0aa236c86ddfc754a7b"
+    },
+    {
+      "path": "crates/explorer-extension-api/src/operation_plan.rs",
+      "sha256": "0ddc9521c638f5b556f7b7950ea0bb8634e6936eccc2c25486b4ff6f239d6434"
     },
     {
       "path": "crates/explorer-extension-api/src/size_map_view.rs",
       "sha256": "38dc40c3331a78641096eb86f3af6bc1d111b2538b0199a2f6329de114e27915"
+    },
+    {
+      "path": "crates/explorer-extension-api/src/tools.rs",
+      "sha256": "7af567d9b36921427369cbe1d88a83e662113d497b10adff14529f4e7a87f367"
     },
     {
       "path": "crates/explorer-extension-api/src/visual_column.rs",
@@ -42,11 +50,11 @@
     },
     {
       "path": "sdk/Cargo.lock",
-      "sha256": "9c68ebafd36f5895bcfe13319fa97542f0918c8d2616c77d068bbde8702886b7"
+      "sha256": "292b7df2d9c00888a3c29a79471885494e50a0750421debda0284533d9edcc4b"
     },
     {
       "path": "sdk/Cargo.toml",
-      "sha256": "f4c3d7e185decbd03b6d0277ea05441c028b109c90eb0bc7207dce3e56217221"
+      "sha256": "69a47464ad1431fb956ffeb88bdace335cbd02724cd841cb7a7333087d5d6dea"
     },
     {
       "path": "sdk/EXTENSION_API_GUIDE.md",
@@ -78,7 +86,7 @@
     },
     {
       "path": "sdk/build-policy.json",
-      "sha256": "5c78e4c5cd735891bdfc168683fc173412890ed574d59d90f6ade543b9545517"
+      "sha256": "2b238af64b2df8d66fbe09c5ddb8292f0c88d069f3225f2d4a8a3469fedec8fb"
     },
     {
       "path": "sdk/ci/Invoke-OfflineSdkGuest.template.ps1",
@@ -110,7 +118,7 @@
     },
     {
       "path": "sdk/dependency-locks/rust-tokei/dependency-manifest.json",
-      "sha256": "0ccdbf2854d8a17f563937059f99a13f3eee1d1a8c57fd9c0da1ce70905f2397"
+      "sha256": "1ce585369b861c2bd03677142c43ac6db59aabb7189a7520731bd53ed7311e31"
     },
     {
       "path": "sdk/dependency-locks/rust-tokei/src/lib.rs",
@@ -119,6 +127,402 @@
     {
       "path": "sdk/fixtures/.gitignore",
       "sha256": "36a0efa26920e367c3470bb7e6a48fa454ce44e072d5a5f8c8c34bd38c21c6bc"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-1a74af8870ec42a4a4eb0366664dc0d2/Cargo.lock",
+      "sha256": "2a949abbecc3ba56145c9c7c085e497f16f3b1a5b0481268c90cbfd2adcdba44"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-1a74af8870ec42a4a4eb0366664dc0d2/Cargo.toml",
+      "sha256": "ce9d34e30b3a4ce59ffbfffd2941d955733cf9e3e89e9d80a7a5d550ae33805e"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-1a74af8870ec42a4a4eb0366664dc0d2/LICENSE",
+      "sha256": "2b6b08bf55f63c175208feaf0215a4ae6c7a165a6553e6de344fe241c2199c5d"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-1a74af8870ec42a4a4eb0366664dc0d2/LICENSES.json",
+      "sha256": "4257658cb6ac0bbba315179c4113107af0e31ba878c06829fc5e11ed1fdd467b"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-1a74af8870ec42a4a4eb0366664dc0d2/NOTICE",
+      "sha256": "a315f0d31f17328788ddb1b47d026c2d29660b7bfd7ec9dccdca192ed2a0961e"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-1a74af8870ec42a4a4eb0366664dc0d2/README.md",
+      "sha256": "5cbbeb6ec1aa6f55c5b106fe04cf26e7bd5cddf9022cc425b7d9415b3a012786"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-1a74af8870ec42a4a4eb0366664dc0d2/README.zh-TW.md",
+      "sha256": "c109205b79080154ce630f99b36cf9bf00355f8231679a5f26ffbfd6e64e4625"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-1a74af8870ec42a4a4eb0366664dc0d2/SBOM.json",
+      "sha256": "90625b9244a9e705388083ee20b9d2af0841026a58924ac4ce65947025e2fdbc"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-1a74af8870ec42a4a4eb0366664dc0d2/locales/en-US.json",
+      "sha256": "317938adee96ea5ef70480ef5e61942d933e22284ed33cd65a9f60eaa67b7235"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-1a74af8870ec42a4a4eb0366664dc0d2/locales/zh-TW.json",
+      "sha256": "da34fc62198edda2ab69b06565a584f1311f7167be0b4fe7d3e4810c862be505"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-1a74af8870ec42a4a4eb0366664dc0d2/plugin-project.json",
+      "sha256": "4705d16852df1fa40368681a861fbec00ee6e02b56494ad42401f00854c88a0c"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-1a74af8870ec42a4a4eb0366664dc0d2/provenance.json",
+      "sha256": "56cf1b6248a903b43caa3c2760ca027639baa14cf5a8b539536ac65bb2ac26ec"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-1a74af8870ec42a4a4eb0366664dc0d2/samples/binary.bin",
+      "sha256": "21113c904d47f82cfdc5c4979f211e80374e33969ff344e28f98fb5cac851e6d"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-1a74af8870ec42a4a4eb0366664dc0d2/samples/empty.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-1a74af8870ec42a4a4eb0366664dc0d2/samples/main.rs",
+      "sha256": "963960d125e4d152757596392310f40bae69a9600d64160de9ef726f2b64880f"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-1a74af8870ec42a4a4eb0366664dc0d2/samples/native.cpp",
+      "sha256": "56b123fea0a1c5cb01522e54d1e1c2d0075bcbd56565601a972584df4a156a98"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-1a74af8870ec42a4a4eb0366664dc0d2/samples/script.js",
+      "sha256": "5cdae5a1f0d53f8600a47fe2bada68894f36935d9e4e047869c8d13628aea48a"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-1a74af8870ec42a4a4eb0366664dc0d2/samples/script.lua",
+      "sha256": "f051d709b390d73c2a1ffbc076867bee57108a512d620fe3ca40910e61e59613"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-1a74af8870ec42a4a4eb0366664dc0d2/samples/script.py",
+      "sha256": "828e0b3ef1866899fbcd65805746e46335ff74b24b87a94eea79401da1e9984e"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-1a74af8870ec42a4a4eb0366664dc0d2/samples/unknown.data",
+      "sha256": "7b817f0393bc31fce709886e9c6e7c79e3616d370b3ea336d5881a6ede8629c9"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-1a74af8870ec42a4a4eb0366664dc0d2/src/lib.rs",
+      "sha256": "9871207dbcf3115992d4a48682d31a5457c49ad74c949b36ce87eaf78640321d"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-2d261e22edec4aee9fad656bcd19dbef/Cargo.lock",
+      "sha256": "2a949abbecc3ba56145c9c7c085e497f16f3b1a5b0481268c90cbfd2adcdba44"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-2d261e22edec4aee9fad656bcd19dbef/Cargo.toml",
+      "sha256": "ce9d34e30b3a4ce59ffbfffd2941d955733cf9e3e89e9d80a7a5d550ae33805e"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-2d261e22edec4aee9fad656bcd19dbef/LICENSE",
+      "sha256": "2b6b08bf55f63c175208feaf0215a4ae6c7a165a6553e6de344fe241c2199c5d"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-2d261e22edec4aee9fad656bcd19dbef/LICENSES.json",
+      "sha256": "4257658cb6ac0bbba315179c4113107af0e31ba878c06829fc5e11ed1fdd467b"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-2d261e22edec4aee9fad656bcd19dbef/NOTICE",
+      "sha256": "a315f0d31f17328788ddb1b47d026c2d29660b7bfd7ec9dccdca192ed2a0961e"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-2d261e22edec4aee9fad656bcd19dbef/README.md",
+      "sha256": "5cbbeb6ec1aa6f55c5b106fe04cf26e7bd5cddf9022cc425b7d9415b3a012786"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-2d261e22edec4aee9fad656bcd19dbef/README.zh-TW.md",
+      "sha256": "c109205b79080154ce630f99b36cf9bf00355f8231679a5f26ffbfd6e64e4625"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-2d261e22edec4aee9fad656bcd19dbef/SBOM.json",
+      "sha256": "90625b9244a9e705388083ee20b9d2af0841026a58924ac4ce65947025e2fdbc"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-2d261e22edec4aee9fad656bcd19dbef/locales/en-US.json",
+      "sha256": "317938adee96ea5ef70480ef5e61942d933e22284ed33cd65a9f60eaa67b7235"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-2d261e22edec4aee9fad656bcd19dbef/locales/zh-TW.json",
+      "sha256": "da34fc62198edda2ab69b06565a584f1311f7167be0b4fe7d3e4810c862be505"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-2d261e22edec4aee9fad656bcd19dbef/plugin-project.json",
+      "sha256": "9d854b80ed3ce0af5608b40e332346feaeebf23b4207d29591b4634cede2c597"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-2d261e22edec4aee9fad656bcd19dbef/provenance.json",
+      "sha256": "56cf1b6248a903b43caa3c2760ca027639baa14cf5a8b539536ac65bb2ac26ec"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-2d261e22edec4aee9fad656bcd19dbef/samples/binary.bin",
+      "sha256": "21113c904d47f82cfdc5c4979f211e80374e33969ff344e28f98fb5cac851e6d"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-2d261e22edec4aee9fad656bcd19dbef/samples/empty.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-2d261e22edec4aee9fad656bcd19dbef/samples/main.rs",
+      "sha256": "963960d125e4d152757596392310f40bae69a9600d64160de9ef726f2b64880f"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-2d261e22edec4aee9fad656bcd19dbef/samples/native.cpp",
+      "sha256": "56b123fea0a1c5cb01522e54d1e1c2d0075bcbd56565601a972584df4a156a98"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-2d261e22edec4aee9fad656bcd19dbef/samples/script.js",
+      "sha256": "5cdae5a1f0d53f8600a47fe2bada68894f36935d9e4e047869c8d13628aea48a"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-2d261e22edec4aee9fad656bcd19dbef/samples/script.lua",
+      "sha256": "f051d709b390d73c2a1ffbc076867bee57108a512d620fe3ca40910e61e59613"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-2d261e22edec4aee9fad656bcd19dbef/samples/script.py",
+      "sha256": "828e0b3ef1866899fbcd65805746e46335ff74b24b87a94eea79401da1e9984e"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-2d261e22edec4aee9fad656bcd19dbef/samples/unknown.data",
+      "sha256": "7b817f0393bc31fce709886e9c6e7c79e3616d370b3ea336d5881a6ede8629c9"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-2d261e22edec4aee9fad656bcd19dbef/src/lib.rs",
+      "sha256": "9871207dbcf3115992d4a48682d31a5457c49ad74c949b36ce87eaf78640321d"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-7fe5620b61604b19bae631775c31d471/Cargo.lock",
+      "sha256": "24153cd0a3ab44a0410435b652e75326db78ebc91052614fae8aab493108acd8"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-7fe5620b61604b19bae631775c31d471/Cargo.toml",
+      "sha256": "e55e3353daaad81c7399c1deb4a1c008114df86974e953de01cde64613006c19"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-7fe5620b61604b19bae631775c31d471/LICENSE",
+      "sha256": "76e1eb2f08f4959eacd0ac7f6a3ef92d67230ad5af4977cbd851b47b854cd8ee"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-7fe5620b61604b19bae631775c31d471/NOTICE",
+      "sha256": "94f43983793e3df71ec111f495c5e2796186c75cbd4c8cabbc5092b38a9cd288"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-7fe5620b61604b19bae631775c31d471/README.md",
+      "sha256": "c8c9dc92e3c3f19e3e1541cf0084de009f25a8dbde9b275ba112b2c7b0812c9f"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-7fe5620b61604b19bae631775c31d471/README.zh-TW.md",
+      "sha256": "b9c9aa156587880515b750848041bbabb1730f8050d84ccda0e9b957f7787305"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-7fe5620b61604b19bae631775c31d471/fixtures/.keep",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-7fe5620b61604b19bae631775c31d471/fixtures/sample/large/a.txt",
+      "sha256": "5148d9174a05661e7dc65b0b7bf7d1eb511baf27fff3d0e0aec7964344c1301f"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-7fe5620b61604b19bae631775c31d471/fixtures/sample/large/nested/b.txt",
+      "sha256": "c388183d02dd7ffc730d65a3dbcaeedc9a1a5947aeb108d834f2dbd6445fc1f0"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-7fe5620b61604b19bae631775c31d471/fixtures/sample/readme.txt",
+      "sha256": "e3bca76b542ce9b177350e425ad8d9bbe28153d98464c478a0837fa09c29a33a"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-7fe5620b61604b19bae631775c31d471/fixtures/sample/small/a.txt",
+      "sha256": "4c47b3e816fbe7d40cef9f665ba8f0be1ae68b5e8e7ed70f5b6bab7f70528e8f"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-7fe5620b61604b19bae631775c31d471/locales/zh-TW.json",
+      "sha256": "9d179c3ebd740fd72e230a0fa094040a989f1f8ccad1abec0c01db1e4cb4dda4"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-7fe5620b61604b19bae631775c31d471/plugin-project.json",
+      "sha256": "87abcbc6db29d015f6464e8d9011329e6484f618e45afbaf01221ba7423720d7"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-7fe5620b61604b19bae631775c31d471/screenshots/folder-size-bar-off.png",
+      "sha256": "399fcf000d1788805008721f10117d31b0b33ad5b870ebef8447113093f39077"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-7fe5620b61604b19bae631775c31d471/screenshots/folder-size-bar-on.png",
+      "sha256": "2b0ca44413da91079d55719bda4b32723882aea0f251d53fd765b6860a3352f4"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-7fe5620b61604b19bae631775c31d471/screenshots/folder-size-column.png",
+      "sha256": "0157cbbe5da7bb507388f6522dbe2c5cd3da63115d0854c2a7c85abd05aae62e"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-7fe5620b61604b19bae631775c31d471/screenshots/report.json",
+      "sha256": "7c53ea47e3b632525f63737f59764806c17449ba4e9275b8158a7ddf856bd72a"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-7fe5620b61604b19bae631775c31d471/src/lib.rs",
+      "sha256": "0d247705ce3669de28f273d3315bae99b3538058dc2fa1c94167da807a55f59d"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-bb81dd0c02224ae2bc215a798303fb1f/Cargo.lock",
+      "sha256": "2a949abbecc3ba56145c9c7c085e497f16f3b1a5b0481268c90cbfd2adcdba44"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-bb81dd0c02224ae2bc215a798303fb1f/Cargo.toml",
+      "sha256": "ce9d34e30b3a4ce59ffbfffd2941d955733cf9e3e89e9d80a7a5d550ae33805e"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-bb81dd0c02224ae2bc215a798303fb1f/LICENSE",
+      "sha256": "2b6b08bf55f63c175208feaf0215a4ae6c7a165a6553e6de344fe241c2199c5d"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-bb81dd0c02224ae2bc215a798303fb1f/LICENSES.json",
+      "sha256": "4257658cb6ac0bbba315179c4113107af0e31ba878c06829fc5e11ed1fdd467b"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-bb81dd0c02224ae2bc215a798303fb1f/NOTICE",
+      "sha256": "a315f0d31f17328788ddb1b47d026c2d29660b7bfd7ec9dccdca192ed2a0961e"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-bb81dd0c02224ae2bc215a798303fb1f/README.md",
+      "sha256": "5cbbeb6ec1aa6f55c5b106fe04cf26e7bd5cddf9022cc425b7d9415b3a012786"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-bb81dd0c02224ae2bc215a798303fb1f/README.zh-TW.md",
+      "sha256": "c109205b79080154ce630f99b36cf9bf00355f8231679a5f26ffbfd6e64e4625"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-bb81dd0c02224ae2bc215a798303fb1f/SBOM.json",
+      "sha256": "90625b9244a9e705388083ee20b9d2af0841026a58924ac4ce65947025e2fdbc"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-bb81dd0c02224ae2bc215a798303fb1f/locales/en-US.json",
+      "sha256": "317938adee96ea5ef70480ef5e61942d933e22284ed33cd65a9f60eaa67b7235"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-bb81dd0c02224ae2bc215a798303fb1f/locales/zh-TW.json",
+      "sha256": "da34fc62198edda2ab69b06565a584f1311f7167be0b4fe7d3e4810c862be505"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-bb81dd0c02224ae2bc215a798303fb1f/plugin-project.json",
+      "sha256": "743215f9b20509de524bf61eda0219fc081cbc6eb52017bbdfc86fe33101e331"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-bb81dd0c02224ae2bc215a798303fb1f/provenance.json",
+      "sha256": "56cf1b6248a903b43caa3c2760ca027639baa14cf5a8b539536ac65bb2ac26ec"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-bb81dd0c02224ae2bc215a798303fb1f/samples/binary.bin",
+      "sha256": "21113c904d47f82cfdc5c4979f211e80374e33969ff344e28f98fb5cac851e6d"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-bb81dd0c02224ae2bc215a798303fb1f/samples/empty.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-bb81dd0c02224ae2bc215a798303fb1f/samples/main.rs",
+      "sha256": "963960d125e4d152757596392310f40bae69a9600d64160de9ef726f2b64880f"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-bb81dd0c02224ae2bc215a798303fb1f/samples/native.cpp",
+      "sha256": "56b123fea0a1c5cb01522e54d1e1c2d0075bcbd56565601a972584df4a156a98"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-bb81dd0c02224ae2bc215a798303fb1f/samples/script.js",
+      "sha256": "5cdae5a1f0d53f8600a47fe2bada68894f36935d9e4e047869c8d13628aea48a"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-bb81dd0c02224ae2bc215a798303fb1f/samples/script.lua",
+      "sha256": "f051d709b390d73c2a1ffbc076867bee57108a512d620fe3ca40910e61e59613"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-bb81dd0c02224ae2bc215a798303fb1f/samples/script.py",
+      "sha256": "828e0b3ef1866899fbcd65805746e46335ff74b24b87a94eea79401da1e9984e"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-bb81dd0c02224ae2bc215a798303fb1f/samples/unknown.data",
+      "sha256": "7b817f0393bc31fce709886e9c6e7c79e3616d370b3ea336d5881a6ede8629c9"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-bb81dd0c02224ae2bc215a798303fb1f/src/lib.rs",
+      "sha256": "9871207dbcf3115992d4a48682d31a5457c49ad74c949b36ce87eaf78640321d"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-cc02087e43dc4cc9bea2e22eb27bc628/Cargo.lock",
+      "sha256": "24153cd0a3ab44a0410435b652e75326db78ebc91052614fae8aab493108acd8"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-cc02087e43dc4cc9bea2e22eb27bc628/Cargo.toml",
+      "sha256": "e55e3353daaad81c7399c1deb4a1c008114df86974e953de01cde64613006c19"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-cc02087e43dc4cc9bea2e22eb27bc628/LICENSE",
+      "sha256": "76e1eb2f08f4959eacd0ac7f6a3ef92d67230ad5af4977cbd851b47b854cd8ee"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-cc02087e43dc4cc9bea2e22eb27bc628/NOTICE",
+      "sha256": "94f43983793e3df71ec111f495c5e2796186c75cbd4c8cabbc5092b38a9cd288"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-cc02087e43dc4cc9bea2e22eb27bc628/README.md",
+      "sha256": "c8c9dc92e3c3f19e3e1541cf0084de009f25a8dbde9b275ba112b2c7b0812c9f"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-cc02087e43dc4cc9bea2e22eb27bc628/README.zh-TW.md",
+      "sha256": "b9c9aa156587880515b750848041bbabb1730f8050d84ccda0e9b957f7787305"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-cc02087e43dc4cc9bea2e22eb27bc628/fixtures/.keep",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-cc02087e43dc4cc9bea2e22eb27bc628/fixtures/sample/large/a.txt",
+      "sha256": "5148d9174a05661e7dc65b0b7bf7d1eb511baf27fff3d0e0aec7964344c1301f"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-cc02087e43dc4cc9bea2e22eb27bc628/fixtures/sample/large/nested/b.txt",
+      "sha256": "c388183d02dd7ffc730d65a3dbcaeedc9a1a5947aeb108d834f2dbd6445fc1f0"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-cc02087e43dc4cc9bea2e22eb27bc628/fixtures/sample/readme.txt",
+      "sha256": "e3bca76b542ce9b177350e425ad8d9bbe28153d98464c478a0837fa09c29a33a"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-cc02087e43dc4cc9bea2e22eb27bc628/fixtures/sample/small/a.txt",
+      "sha256": "4c47b3e816fbe7d40cef9f665ba8f0be1ae68b5e8e7ed70f5b6bab7f70528e8f"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-cc02087e43dc4cc9bea2e22eb27bc628/locales/zh-TW.json",
+      "sha256": "9d179c3ebd740fd72e230a0fa094040a989f1f8ccad1abec0c01db1e4cb4dda4"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-cc02087e43dc4cc9bea2e22eb27bc628/plugin-project.json",
+      "sha256": "28b47d50b47ffc0320e422948a1869d573447e5c5354a79fb5367a0a160c2fe3"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-cc02087e43dc4cc9bea2e22eb27bc628/screenshots/folder-size-bar-off.png",
+      "sha256": "399fcf000d1788805008721f10117d31b0b33ad5b870ebef8447113093f39077"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-cc02087e43dc4cc9bea2e22eb27bc628/screenshots/folder-size-bar-on.png",
+      "sha256": "2b0ca44413da91079d55719bda4b32723882aea0f251d53fd765b6860a3352f4"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-cc02087e43dc4cc9bea2e22eb27bc628/screenshots/folder-size-column.png",
+      "sha256": "0157cbbe5da7bb507388f6522dbe2c5cd3da63115d0854c2a7c85abd05aae62e"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-cc02087e43dc4cc9bea2e22eb27bc628/screenshots/report.json",
+      "sha256": "7c53ea47e3b632525f63737f59764806c17449ba4e9275b8158a7ddf856bd72a"
+    },
+    {
+      "path": "sdk/fixtures/.superexplorer-plugin-validate-inputs-cc02087e43dc4cc9bea2e22eb27bc628/src/lib.rs",
+      "sha256": "0d247705ce3669de28f273d3315bae99b3538058dc2fa1c94167da807a55f59d"
     },
     {
       "path": "sdk/fixtures/abi-contract/Cargo.lock",
@@ -327,6 +731,126 @@
     {
       "path": "sdk/fixtures/job-context-v1-contract/new-plugin/src/lib.rs",
       "sha256": "ada7b1dc111754addd06e57b24aee71570a09f8fa76b07f78a873e7ea604560d"
+    },
+    {
+      "path": "sdk/fixtures/lua-bulk-folder-generator/Cargo.lock",
+      "sha256": "d3ec771fd2816249acd93f55d2dbac5e800d04084de15bf48b65d8824344a672"
+    },
+    {
+      "path": "sdk/fixtures/lua-bulk-folder-generator/Cargo.toml",
+      "sha256": "350576bddb84beff1ea538d6533a5bb6fd4c95f669e84ffa255ea1d81381299f"
+    },
+    {
+      "path": "sdk/fixtures/lua-bulk-folder-generator/LICENSE",
+      "sha256": "5277e3a4143c4d2ab9221adddd5c5028b778b41077d83824a2cea83099a358fe"
+    },
+    {
+      "path": "sdk/fixtures/lua-bulk-folder-generator/LICENSES.json",
+      "sha256": "68855cb8fb22bdf0e9497087fc141c1150df1d7c0a352ab2182be3a4230a4c9e"
+    },
+    {
+      "path": "sdk/fixtures/lua-bulk-folder-generator/NOTICE",
+      "sha256": "5cb415d264b6a01e61bc693773f42b8008971a836bda32f160923b1052484f92"
+    },
+    {
+      "path": "sdk/fixtures/lua-bulk-folder-generator/README.md",
+      "sha256": "e6ef6d4ad8b70fbe6837b0e6caf41f3d9d297d7d11eed5f1cde5235d9d4d1c2b"
+    },
+    {
+      "path": "sdk/fixtures/lua-bulk-folder-generator/README.zh-TW.md",
+      "sha256": "d40adcf102169807456d491772474d42d927828ae125984b0510f83f4a8f92f7"
+    },
+    {
+      "path": "sdk/fixtures/lua-bulk-folder-generator/SBOM.json",
+      "sha256": "0645aa071eebd0533e6c1d12c44ac1072e0de94aa2287db8270d8d81804a56b4"
+    },
+    {
+      "path": "sdk/fixtures/lua-bulk-folder-generator/locales/en-US.json",
+      "sha256": "015ff2db8b3600837f32ed14a22f0828f2e19466a76cdf304be215ad3d9be671"
+    },
+    {
+      "path": "sdk/fixtures/lua-bulk-folder-generator/locales/zh-TW.json",
+      "sha256": "7b2149c1cf1ff8cd22aabc09e09a683f43601a3be96af8a16be55b99716bf946"
+    },
+    {
+      "path": "sdk/fixtures/lua-bulk-folder-generator/lua/main.lua",
+      "sha256": "bd215245000f2fd7a278be2aefc7a45ece75d0e627d06eadad258e1e416b2563"
+    },
+    {
+      "path": "sdk/fixtures/lua-bulk-folder-generator/plugin-project.json",
+      "sha256": "271eedbd54df8ba66330f8ccd46ce6d22bbd3a4cd9b0ecc0284d21d61570c292"
+    },
+    {
+      "path": "sdk/fixtures/lua-bulk-folder-generator/provenance.json",
+      "sha256": "a339ca9802219cb4e9c5028e75319992a16e8eca14515519b63fcf952fc0061f"
+    },
+    {
+      "path": "sdk/fixtures/lua-bulk-folder-generator/src/lib.rs",
+      "sha256": "39670efce4a3ddf785e94fdf0e845f914487a3562d74f85d91708773d95c8d42"
+    },
+    {
+      "path": "sdk/fixtures/lua-tokei-code-lines-column/Cargo.lock",
+      "sha256": "6638c676689b79aa2aabf9dbdf27fe405fc895c270c6e67c74305426286810f6"
+    },
+    {
+      "path": "sdk/fixtures/lua-tokei-code-lines-column/Cargo.toml",
+      "sha256": "8bc1f5cd3dd92579061dfcaedb9f28b37b8637839f84cfa25fddcf805ae77fcb"
+    },
+    {
+      "path": "sdk/fixtures/lua-tokei-code-lines-column/LICENSE",
+      "sha256": "5277e3a4143c4d2ab9221adddd5c5028b778b41077d83824a2cea83099a358fe"
+    },
+    {
+      "path": "sdk/fixtures/lua-tokei-code-lines-column/LICENSES.json",
+      "sha256": "68855cb8fb22bdf0e9497087fc141c1150df1d7c0a352ab2182be3a4230a4c9e"
+    },
+    {
+      "path": "sdk/fixtures/lua-tokei-code-lines-column/NOTICE",
+      "sha256": "5cb415d264b6a01e61bc693773f42b8008971a836bda32f160923b1052484f92"
+    },
+    {
+      "path": "sdk/fixtures/lua-tokei-code-lines-column/README.md",
+      "sha256": "a864ac129ed5aa79a2379bfec9dc26eff72c630d3c4de8a272c2060a7733dce5"
+    },
+    {
+      "path": "sdk/fixtures/lua-tokei-code-lines-column/README.zh-TW.md",
+      "sha256": "a808b1de82111b056237cce69c8bd5606db03ebb24506aec99bc25da9dc514d6"
+    },
+    {
+      "path": "sdk/fixtures/lua-tokei-code-lines-column/SBOM.json",
+      "sha256": "41ac9bc4416277d36a93bc4a37920a4b09374f2d197592ab1e0d0b2dd5d40385"
+    },
+    {
+      "path": "sdk/fixtures/lua-tokei-code-lines-column/locales/en-US.json",
+      "sha256": "f6787d3c994c70a59bf0d254c729d9fcab5ff45ec0a918734c2f58271d162d07"
+    },
+    {
+      "path": "sdk/fixtures/lua-tokei-code-lines-column/locales/zh-TW.json",
+      "sha256": "a556df87b00912efb74d36efaae2de7a0a1e3bf6242cb1610d162a3d1aec0bda"
+    },
+    {
+      "path": "sdk/fixtures/lua-tokei-code-lines-column/lua/main.lua",
+      "sha256": "da8ace87e55a874d1204c4160f9e5f45de2d40db9080655a68e777c273589968"
+    },
+    {
+      "path": "sdk/fixtures/lua-tokei-code-lines-column/plugin-project.json",
+      "sha256": "429a5b5a332f2ccb45b43af73db540be15caddbf6cda4f940904f191c500bcca"
+    },
+    {
+      "path": "sdk/fixtures/lua-tokei-code-lines-column/provenance.json",
+      "sha256": "a339ca9802219cb4e9c5028e75319992a16e8eca14515519b63fcf952fc0061f"
+    },
+    {
+      "path": "sdk/fixtures/lua-tokei-code-lines-column/src/lib.rs",
+      "sha256": "9c4bc058999d7fdf54d615a316c3cab39161328b86fdb01d607494e84794e8b2"
+    },
+    {
+      "path": "sdk/fixtures/lua-tokei-code-lines-column/tools/LICENSE-tokei.txt",
+      "sha256": "ce388998437d97fb77e2a24091751e3d0b7bac53fe1df1bfb07ade3bd3c2a311"
+    },
+    {
+      "path": "sdk/fixtures/lua-tokei-code-lines-column/tools/tokei.rs",
+      "sha256": "d00d121f6f2b0d7773d886012616390e68654eea2bab2a9e60d6c6f533a3eb26"
     },
     {
       "path": "sdk/fixtures/package-manifest-v1/Cargo.lock",
@@ -553,12 +1077,116 @@
       "sha256": "1e729aa109d2765e8b9d39ee9fbbf62099389957b2bf163b5795e9c9f91d40ad"
     },
     {
+      "path": "sdk/fixtures/rust-7z-virtual-folder/Cargo.lock",
+      "sha256": "8b4959a862519b798c2c16d360de501f9a874a060f2887306a4c4b7c7017113e"
+    },
+    {
+      "path": "sdk/fixtures/rust-7z-virtual-folder/Cargo.toml",
+      "sha256": "f6034c96c80abce827be5dfcbd5832cf99d5f3fec1dd4d4f249e904d2ed93d33"
+    },
+    {
+      "path": "sdk/fixtures/rust-7z-virtual-folder/LICENSE",
+      "sha256": "5277e3a4143c4d2ab9221adddd5c5028b778b41077d83824a2cea83099a358fe"
+    },
+    {
+      "path": "sdk/fixtures/rust-7z-virtual-folder/LICENSES.json",
+      "sha256": "68855cb8fb22bdf0e9497087fc141c1150df1d7c0a352ab2182be3a4230a4c9e"
+    },
+    {
+      "path": "sdk/fixtures/rust-7z-virtual-folder/NOTICE",
+      "sha256": "5cb415d264b6a01e61bc693773f42b8008971a836bda32f160923b1052484f92"
+    },
+    {
+      "path": "sdk/fixtures/rust-7z-virtual-folder/README.md",
+      "sha256": "f2c194af975d51935d34b2eef0fb849d1b66fac4f9b1291769b5f7f6c2c51669"
+    },
+    {
+      "path": "sdk/fixtures/rust-7z-virtual-folder/README.zh-TW.md",
+      "sha256": "c3d1751de52d0254503cf09ea9d3634588d8d79cfbd08a0331363decac927a3e"
+    },
+    {
+      "path": "sdk/fixtures/rust-7z-virtual-folder/SBOM.json",
+      "sha256": "a00d51c3c741c68aef5638e75d2a6037264c60c8e443f66b4ead1a923ba191fd"
+    },
+    {
+      "path": "sdk/fixtures/rust-7z-virtual-folder/locales/en-US.json",
+      "sha256": "be4b0e132ee33b946c3b44ae4370cea6ef298da2726b10b3b77f4b8ab6671c36"
+    },
+    {
+      "path": "sdk/fixtures/rust-7z-virtual-folder/locales/zh-TW.json",
+      "sha256": "cd43ba52b8aa3962ecfa334fef95dea1879c9dba4c9abbfebac6f0eb2ec62afd"
+    },
+    {
+      "path": "sdk/fixtures/rust-7z-virtual-folder/plugin-project.json",
+      "sha256": "9ba7033b6bd977b0c435dda1bbf1d51853a2ffcc8351d2898d5d4adfdd033cce"
+    },
+    {
+      "path": "sdk/fixtures/rust-7z-virtual-folder/provenance.json",
+      "sha256": "dce640a9aee0d99b2eaa4d4a268d10eb6c4461c784e522905b448cc7c1c23219"
+    },
+    {
+      "path": "sdk/fixtures/rust-7z-virtual-folder/src/lib.rs",
+      "sha256": "3d5750aead3d1d3364b89a882321fbf0a8a8d0789ce46cc0e1a97a6728fa3f3c"
+    },
+    {
+      "path": "sdk/fixtures/rust-exif-rename-command/Cargo.lock",
+      "sha256": "c9fa7f2f9e55208906de22ba23f11a6612fc6aa4cd3145ffe197e8d11576a01e"
+    },
+    {
+      "path": "sdk/fixtures/rust-exif-rename-command/Cargo.toml",
+      "sha256": "148f4c73b673494b6535a71e89723afb224df03191ecffc98b76944f986cb821"
+    },
+    {
+      "path": "sdk/fixtures/rust-exif-rename-command/LICENSE",
+      "sha256": "5277e3a4143c4d2ab9221adddd5c5028b778b41077d83824a2cea83099a358fe"
+    },
+    {
+      "path": "sdk/fixtures/rust-exif-rename-command/LICENSES.json",
+      "sha256": "68855cb8fb22bdf0e9497087fc141c1150df1d7c0a352ab2182be3a4230a4c9e"
+    },
+    {
+      "path": "sdk/fixtures/rust-exif-rename-command/NOTICE",
+      "sha256": "5cb415d264b6a01e61bc693773f42b8008971a836bda32f160923b1052484f92"
+    },
+    {
+      "path": "sdk/fixtures/rust-exif-rename-command/README.md",
+      "sha256": "26d06779d9025353e0c81177c5491860938b277b8217d6ec126e6c7f1c9ef2c7"
+    },
+    {
+      "path": "sdk/fixtures/rust-exif-rename-command/README.zh-TW.md",
+      "sha256": "01d92aa60ae5c812649bf4bd509f891250d23a6f8ac2a7f23f798360542fea20"
+    },
+    {
+      "path": "sdk/fixtures/rust-exif-rename-command/SBOM.json",
+      "sha256": "d548544a3eda40c4f8efbf7466c9d7a0061cd2d2bdb30977242dd8851356da3b"
+    },
+    {
+      "path": "sdk/fixtures/rust-exif-rename-command/locales/en-US.json",
+      "sha256": "d85343efc3edbfde574d81a75f0539d95c6aef24ebde4cc57d4f42041749bac3"
+    },
+    {
+      "path": "sdk/fixtures/rust-exif-rename-command/locales/zh-TW.json",
+      "sha256": "72b5b3ba8343d00ab4515069e51c140476b6b0b79bcec0b5e09b4393943d6c89"
+    },
+    {
+      "path": "sdk/fixtures/rust-exif-rename-command/plugin-project.json",
+      "sha256": "e56465e54ac77fa1529cf75e6f0f530b8e6523a15e6407762e91318e914d6bb8"
+    },
+    {
+      "path": "sdk/fixtures/rust-exif-rename-command/provenance.json",
+      "sha256": "a3bd5b656dc62f6331f569ee1c6af1658420a0ddc5601892be9904d7752a318b"
+    },
+    {
+      "path": "sdk/fixtures/rust-exif-rename-command/src/lib.rs",
+      "sha256": "9101f13ec1a7e8da4696b578896e1d996356ef66bf698cb672696f4eb11046cc"
+    },
+    {
       "path": "sdk/fixtures/rust-folder-size-map-view/Cargo.lock",
-      "sha256": "a67c1a1f7cdef356bfda8a354af5764fad6eb35865a7eb5714ba5f04b7a1e1dd"
+      "sha256": "70391c7c44ad6fc45f87a9a152a34e2234dc063ea005050145d3cac55932d65c"
     },
     {
       "path": "sdk/fixtures/rust-folder-size-map-view/Cargo.toml",
-      "sha256": "2de5c9cf90b2016a37fcc01fce3d0613c51b0d0812017b1dc493eba026cfe6ac"
+      "sha256": "081dbea67d049634fa158dbe61928cbd47c5badee09b716899e37125a2b405ba"
     },
     {
       "path": "sdk/fixtures/rust-folder-size-map-view/LICENSE",
@@ -570,11 +1198,11 @@
     },
     {
       "path": "sdk/fixtures/rust-folder-size-map-view/README.md",
-      "sha256": "612aa6299604564ec17beae12128b510f27dd999388318c1bd543144942b3f2a"
+      "sha256": "ebc0414b9616f62d49dee6b444f61e4ec4febe5265fad842dd121cf592d25cbe"
     },
     {
       "path": "sdk/fixtures/rust-folder-size-map-view/README.zh-TW.md",
-      "sha256": "332e55daa9338d38cc7f46b2080630279a400609be57b53b9b7ab221e9fdb797"
+      "sha256": "9608f25be6a0cfbcc5e262373fc260e246f62ac5ac7e3eca486121474e5c2f02"
     },
     {
       "path": "sdk/fixtures/rust-folder-size-map-view/fixtures/sample/large/a.txt",
@@ -634,11 +1262,11 @@
     },
     {
       "path": "sdk/fixtures/rust-folder-size-visual-column/Cargo.lock",
-      "sha256": "f636db0a0e612626e155e4547866d628232e7f5de3c611e162993fb7f3945626"
+      "sha256": "24153cd0a3ab44a0410435b652e75326db78ebc91052614fae8aab493108acd8"
     },
     {
       "path": "sdk/fixtures/rust-folder-size-visual-column/Cargo.toml",
-      "sha256": "a80b7debc7d8e30e3484477f1f0e1771f7e075a8201b44f010cd2eea317c9dff"
+      "sha256": "e55e3353daaad81c7399c1deb4a1c008114df86974e953de01cde64613006c19"
     },
     {
       "path": "sdk/fixtures/rust-folder-size-visual-column/LICENSE",
@@ -650,11 +1278,11 @@
     },
     {
       "path": "sdk/fixtures/rust-folder-size-visual-column/README.md",
-      "sha256": "efca072a1c911b389931413252a612d433496bd999bd4afe6e522517f9eec0da"
+      "sha256": "c8c9dc92e3c3f19e3e1541cf0084de009f25a8dbde9b275ba112b2c7b0812c9f"
     },
     {
       "path": "sdk/fixtures/rust-folder-size-visual-column/README.zh-TW.md",
-      "sha256": "7b8f4ff928fb4a6d1cfe085fb5274f55c7c712731dc876e2aea78dcae3a40f28"
+      "sha256": "b9c9aa156587880515b750848041bbabb1730f8050d84ccda0e9b957f7787305"
     },
     {
       "path": "sdk/fixtures/rust-folder-size-visual-column/fixtures/.keep",
@@ -702,23 +1330,111 @@
     },
     {
       "path": "sdk/fixtures/rust-folder-size-visual-column/src/lib.rs",
-      "sha256": "0d247705ce3669de28f273d3315bae99b3538058dc2fa1c94167da807a55f59d"
+      "sha256": "ecd560d37b81c09f9888bb647bddf4dbd390c4e9860e6c28f1cec9e35ff118e6"
     },
     {
-      "path": "sdk/fixtures/rust-tokei-code-lines-column/.cargo/config.toml",
-      "sha256": "f524074b847b4dcd5437fef439a98249f50376292c32d3258ea0a991b2f588f4"
+      "path": "sdk/fixtures/rust-lock-owner-column/Cargo.lock",
+      "sha256": "2fdf093cf5ac0d7c44f9f65c7737b87d152431b7af710085d2f937604deb614c"
+    },
+    {
+      "path": "sdk/fixtures/rust-lock-owner-column/Cargo.toml",
+      "sha256": "c354c6069b404ef0eaa5698fad9fc3a01d90b9b9951a9d657f0bc819332800b1"
+    },
+    {
+      "path": "sdk/fixtures/rust-lock-owner-column/LICENSE",
+      "sha256": "5277e3a4143c4d2ab9221adddd5c5028b778b41077d83824a2cea83099a358fe"
+    },
+    {
+      "path": "sdk/fixtures/rust-lock-owner-column/LICENSES.json",
+      "sha256": "68855cb8fb22bdf0e9497087fc141c1150df1d7c0a352ab2182be3a4230a4c9e"
+    },
+    {
+      "path": "sdk/fixtures/rust-lock-owner-column/NOTICE",
+      "sha256": "5cb415d264b6a01e61bc693773f42b8008971a836bda32f160923b1052484f92"
+    },
+    {
+      "path": "sdk/fixtures/rust-lock-owner-column/README.md",
+      "sha256": "f4d070dd1783673f28122c6caaacdc8eeab940ba06f44a5d542f5f6f2ba3463d"
+    },
+    {
+      "path": "sdk/fixtures/rust-lock-owner-column/README.zh-TW.md",
+      "sha256": "8c44d1d97d9cc3827af5f8dfad4b52736d21dc0efd139a75c6da19b735ef15c2"
+    },
+    {
+      "path": "sdk/fixtures/rust-lock-owner-column/SBOM.json",
+      "sha256": "a4f9ea56d135cf1dab34165c04de293492c4b2fd792d279ea97b65a5124c8042"
+    },
+    {
+      "path": "sdk/fixtures/rust-lock-owner-column/locales/en-US.json",
+      "sha256": "126ebf28c553d8f9138cc492ccaac656303cf3ac1171002887cb8c418a4080d0"
+    },
+    {
+      "path": "sdk/fixtures/rust-lock-owner-column/locales/zh-TW.json",
+      "sha256": "194355c9a0f25a6e0323772f62bdc5bd195c3cccf67a4eba50fd331e274af679"
+    },
+    {
+      "path": "sdk/fixtures/rust-lock-owner-column/plugin-project.json",
+      "sha256": "16ba2ebd56f4471cba0d34b67df7a4067b58a75be4bd6cce252131d585933dc9"
+    },
+    {
+      "path": "sdk/fixtures/rust-lock-owner-column/provenance.json",
+      "sha256": "a339ca9802219cb4e9c5028e75319992a16e8eca14515519b63fcf952fc0061f"
+    },
+    {
+      "path": "sdk/fixtures/rust-lock-owner-column/samples/locked.txt",
+      "sha256": "67aa3fbc10af07623b7185cdf07ebd95c09aa9e60ab8ea34fb4ac1a721465ab2"
+    },
+    {
+      "path": "sdk/fixtures/rust-lock-owner-column/src/lib.rs",
+      "sha256": "a394e4129023b0acd5034a78dc8811882477d6e0c9fd7ba793e0894451eced29"
     },
     {
       "path": "sdk/fixtures/rust-tokei-code-lines-column/Cargo.lock",
-      "sha256": "c58fdf423eeca7d5df2f9338651ea884753ee450d6a3a0aba93eb767441b085c"
+      "sha256": "2a949abbecc3ba56145c9c7c085e497f16f3b1a5b0481268c90cbfd2adcdba44"
     },
     {
       "path": "sdk/fixtures/rust-tokei-code-lines-column/Cargo.toml",
-      "sha256": "08d19c614398b631f6c03340b7791263e17d64ac7caa333776feef2a3afe3c15"
+      "sha256": "ce9d34e30b3a4ce59ffbfffd2941d955733cf9e3e89e9d80a7a5d550ae33805e"
+    },
+    {
+      "path": "sdk/fixtures/rust-tokei-code-lines-column/LICENSE",
+      "sha256": "2b6b08bf55f63c175208feaf0215a4ae6c7a165a6553e6de344fe241c2199c5d"
+    },
+    {
+      "path": "sdk/fixtures/rust-tokei-code-lines-column/LICENSES.json",
+      "sha256": "4257658cb6ac0bbba315179c4113107af0e31ba878c06829fc5e11ed1fdd467b"
+    },
+    {
+      "path": "sdk/fixtures/rust-tokei-code-lines-column/NOTICE",
+      "sha256": "a315f0d31f17328788ddb1b47d026c2d29660b7bfd7ec9dccdca192ed2a0961e"
     },
     {
       "path": "sdk/fixtures/rust-tokei-code-lines-column/README.md",
-      "sha256": "99dfd436bda7e8d3306b63066433a40da7948bedaf7e642353ec3446d92b938f"
+      "sha256": "5cbbeb6ec1aa6f55c5b106fe04cf26e7bd5cddf9022cc425b7d9415b3a012786"
+    },
+    {
+      "path": "sdk/fixtures/rust-tokei-code-lines-column/README.zh-TW.md",
+      "sha256": "c109205b79080154ce630f99b36cf9bf00355f8231679a5f26ffbfd6e64e4625"
+    },
+    {
+      "path": "sdk/fixtures/rust-tokei-code-lines-column/SBOM.json",
+      "sha256": "90625b9244a9e705388083ee20b9d2af0841026a58924ac4ce65947025e2fdbc"
+    },
+    {
+      "path": "sdk/fixtures/rust-tokei-code-lines-column/locales/en-US.json",
+      "sha256": "317938adee96ea5ef70480ef5e61942d933e22284ed33cd65a9f60eaa67b7235"
+    },
+    {
+      "path": "sdk/fixtures/rust-tokei-code-lines-column/locales/zh-TW.json",
+      "sha256": "da34fc62198edda2ab69b06565a584f1311f7167be0b4fe7d3e4810c862be505"
+    },
+    {
+      "path": "sdk/fixtures/rust-tokei-code-lines-column/plugin-project.json",
+      "sha256": "56afa48649d9edb9e12ba3bc829979abc6bc2570894f75260fdbe34df4fbdd51"
+    },
+    {
+      "path": "sdk/fixtures/rust-tokei-code-lines-column/provenance.json",
+      "sha256": "56cf1b6248a903b43caa3c2760ca027639baa14cf5a8b539536ac65bb2ac26ec"
     },
     {
       "path": "sdk/fixtures/rust-tokei-code-lines-column/samples/binary.bin",
@@ -754,7 +1470,7 @@
     },
     {
       "path": "sdk/fixtures/rust-tokei-code-lines-column/src/lib.rs",
-      "sha256": "5705619812c55c6652a231ebbfda60925e5a9d02b0e31c1826e182b2b3e3b427"
+      "sha256": "9871207dbcf3115992d4a48682d31a5457c49ad74c949b36ce87eaf78640321d"
     },
     {
       "path": "sdk/fixtures/ui-fingerprint-loader/.cargo/config.toml",
@@ -814,7 +1530,7 @@
     },
     {
       "path": "sdk/scripts/build-plugin.ps1",
-      "sha256": "f0b68d971231e95efa8bf73acaae3b9338491e0611ae8ff6be58d12b4ecf4930"
+      "sha256": "96c0e95dd66b43ca6525ea0a8100a1e74b157601b5efcf205280e8130b7f61e8"
     },
     {
       "path": "sdk/scripts/canonical-store-zip.psm1",
@@ -838,11 +1554,7 @@
     },
     {
       "path": "sdk/scripts/package-plugin.ps1",
-      "sha256": "da7b36b9e0734860118ac36a9aca3ff5194c31cd4a6bff7cf47ce4edab3e98c2"
-    },
-    {
-      "path": "sdk/scripts/prepare-local-cargo-source.ps1",
-      "sha256": "185c9513135a20cd06dc2c02dc247fb1053cce178b8c47cff2270b811f57ad59"
+      "sha256": "c41c9083177705f73fd2a18b6d8188ff8e2a7e34fcc3b23fc0c270d0a857c900"
     },
     {
       "path": "sdk/scripts/promote-gpui-snapshot.ps1",
@@ -874,7 +1586,7 @@
     },
     {
       "path": "sdk/scripts/validate-plugin.ps1",
-      "sha256": "e860a6c5eb77502a0ad9d9678bb179de28867d718760893ab5050e3febad78f8"
+      "sha256": "bbe8bf941db03ed52f86d3e2118ba2e0a2a744280a547cd12bc19e372da0f33b"
     },
     {
       "path": "sdk/snapshot/approved-gpui.json",
@@ -906,7 +1618,7 @@
     },
     {
       "path": "sdk/tests/extension-api-abi-contract.ps1",
-      "sha256": "5d2d193135b5010fe21b304bbc6cefe488b9af864391c8ca6807e7870a92cd11"
+      "sha256": "db384fdfc94ae426d7d047e2d08b450f290e0ca53bafaf9f6dd0e98f86ccafe2"
     },
     {
       "path": "sdk/tests/extension-api-docs-contract.ps1",
@@ -914,11 +1626,11 @@
     },
     {
       "path": "sdk/tests/extension-author-jobs-v1-contract.ps1",
-      "sha256": "0cee0da609ea88d0ddc3ce7798a5ff831a8e280b6ff46db0d53d2d92d00d1320"
+      "sha256": "b45d05960fcbedab5a261702e9aad0acba10415e74841dfbc40bda4a2e59ae31"
     },
     {
       "path": "sdk/tests/extension-dll-loader-contract.ps1",
-      "sha256": "76fd36f0fc85b794da674da5e654deea3004d11ada465d93e2d7e7b8287591d0"
+      "sha256": "979c8e5e2b6e23f270124b40be8074dd3a8e24fa2afeff272cb834e91ad8c2f2"
     },
     {
       "path": "sdk/tests/extension-result-cache-v1-contract.ps1",
@@ -978,23 +1690,23 @@
     },
     {
       "path": "sdk/tests/package-manifest-v1-contract.ps1",
-      "sha256": "f54338840b0459e9acfd9d889759ef80a8d9f0a887c7a75d3b835e01b290ba06"
+      "sha256": "04ec7a4d9d47e295eba07edd831604f49421042453ebc689a9ddd4a16ac8ff01"
     },
     {
       "path": "sdk/tests/package-resolution-v1-contract.ps1",
-      "sha256": "988403e990b62bdb3cc5f64cb3ab33f043e7ba1a3d27494e7194bc7b249152f1"
+      "sha256": "3a599093a30e945c7c4dfc2b17f8db79a48c48f43fc91de354f4b325e7da06a7"
     },
     {
       "path": "sdk/tests/package-validation-v1-contract.ps1",
-      "sha256": "07fdc234dd8fc460384e0856fbc94cc46c27ac5de887cbdd12193c6ab185f916"
+      "sha256": "ee07917d119f118a990c86439db4951a87ae1667e100d14758d0c17584c3a233"
     },
     {
       "path": "sdk/tests/plugin-tooling-self-test.ps1",
-      "sha256": "6115ac7bcf26eeaf8d46aec8e165e6b813de8b76f96fd56f8a25b9f7400bbf77"
+      "sha256": "1216d9371f79915433299b44a785af8c96de6e02c1dbe03dd9f357320044b17d"
     },
     {
       "path": "sdk/tests/plugin-value-v1-abi-contract.ps1",
-      "sha256": "950a45bc970745b6489408499e89f3ff162c8b24974a30d9e641dce7caaf2544"
+      "sha256": "5be19a56c4e78147fa642fe6640b54045ceecde22d71e56af4076d6f7f52ff50"
     },
     {
       "path": "sdk/tests/protected-dependency-contract-self-test.ps1",
@@ -1014,7 +1726,7 @@
     },
     {
       "path": "sdk/tests/rust-folder-size-visual-column-abi-contract.ps1",
-      "sha256": "7a049e8b4c95428bbbbbca01cb800d0fd05472b258618e3929437c1085026c21"
+      "sha256": "100995e824ea17929fe5350ea39ea45f79638ab3885a7dcff1f70112eb83070c"
     },
     {
       "path": "sdk/tests/temp-allocation-cleanup-self-test.ps1",
@@ -1090,7 +1802,7 @@
     },
     {
       "path": "sdk/tools/plugin-tooling/src/lib.rs",
-      "sha256": "5730a54d89e5dab883f366ed7c5cab969feedc87097c95a0e0a6581c49c5ca08"
+      "sha256": "a753916974926f26be5dbef7091b302ac416687f11e1c4d5c711116e385a26b7"
     },
     {
       "path": "sdk/tools/plugin-tooling/src/main.rs",
@@ -2620,7 +3332,7 @@
   "generated_artifacts": [
     {
       "path": "sdk/ui-abi-fingerprint.json",
-      "sha256": "cb1fb5d5e1781c3a858bc0117d9fdffb01f40245063935df520c96e5e0733957"
+      "sha256": "5e51ecb0ded00cf80d49a4f4b235852d64a814848beb1ddf637b5d45fa672361"
     }
   ]
 }

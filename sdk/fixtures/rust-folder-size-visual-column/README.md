@@ -13,8 +13,7 @@ the approved local bootstrap procedure before retrying:
 
 ```powershell
 $pluginRoot = 'sdk/fixtures/rust-folder-size-visual-column'
-$cargoConfig = powershell -NoProfile -ExecutionPolicy Bypass -File sdk/scripts/prepare-local-cargo-source.ps1 -PluginRoot $pluginRoot
-cargo test --manifest-path "$pluginRoot/Cargo.toml" --locked --offline --config $cargoConfig
+cargo test --manifest-path "$pluginRoot/Cargo.toml" --locked --offline
 
 # Prerequisite: the local Cargo registry cache already contains every locked
 # source. Missing cache entries are an explicit bootstrap failure, not a reason

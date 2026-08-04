@@ -11,10 +11,7 @@ $savedCargoTargetDir = $env:CARGO_TARGET_DIR
 
 try {
     New-Item -ItemType Directory -Force -Path $cargoHome, $target | Out-Null
-    $configPath = & powershell.exe -NoProfile -File (Join-Path $sdkRoot 'scripts\prepare-local-cargo-source.ps1') -PluginRoot $fixtureRoot
-    $config = Get-Content -LiteralPath $configPath -Raw
-    [IO.File]::WriteAllText((Join-Path $cargoHome 'config.toml'), $config, [Text.UTF8Encoding]::new($false))
-    $env:CARGO_HOME = $cargoHome
+    $env:CARGO_HOME = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) '.cargo'
     $env:CARGO_TARGET_DIR = $target
     Push-Location $fixtureRoot
     try {

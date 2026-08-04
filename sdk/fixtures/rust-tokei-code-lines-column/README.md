@@ -17,16 +17,25 @@ count, a bar proportional to the largest sibling U64 value, and (when the host
 setting contains `comments`) a detail line with language, comments, blanks,
 and total. Rendering is data-only and does not perform I/O.
 
-Build and test from this directory with an empty Cargo home:
+Build and test from this directory using Cargo's standard local registry cache.
+`Cargo.toml` is the dependency-version source of truth, and no third-party
+source tree is tracked in this fixture:
 
 ```powershell
-cargo test --lib --locked --offline
-cargo build --release --locked --offline --target x86_64-pc-windows-msvc
+$pluginRoot = 'sdk/fixtures/rust-tokei-code-lines-column'
+cargo test --manifest-path "$pluginRoot/Cargo.toml" --locked --offline
+cargo build --manifest-path "$pluginRoot/Cargo.toml" --release --locked --offline --target x86_64-pc-windows-msvc
+
+# The wrappers perform the same sealed --locked --offline build.
+powershell -NoProfile -ExecutionPolicy Bypass -File sdk/scripts/validate-plugin.ps1 -PluginRoot $pluginRoot
+powershell -NoProfile -ExecutionPolicy Bypass -File sdk/scripts/build-plugin.ps1 -PluginRoot $pluginRoot
+powershell -NoProfile -ExecutionPolicy Bypass -File sdk/scripts/package-plugin.ps1 -PluginRoot $pluginRoot
 ```
 
 The package payload is the resulting
 `target/x86_64-pc-windows-msvc/release/rust_tokei_code_lines_column.dll`.
 
-The checked-in `.cargo/config.toml` points at the SDK's sealed vendor tree.
 `samples/` contains the mixed-language, empty, binary, and unknown-extension
-inputs used by the smoke script.
+inputs used by `scripts/smoke_tokei_plugin_headful.ps1`. The headful smoke
+stores its profile and extension state below the selected output directory so
+it does not reuse operator settings.

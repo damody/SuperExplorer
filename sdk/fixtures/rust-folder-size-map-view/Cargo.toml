@@ -13,8 +13,8 @@ crate-type = ["cdylib", "rlib"]
 # owns the abi_stable object adapter; no private host/UI crate or GPUI type is
 # available to this example.
 abi_stable = { version = "=0.11.3", default-features = false }
-explorer-extension-api = "=1.2.0"
-explorer-extension-ui-api = "=1.2.0"
+explorer-extension-api = { path = "../../../crates/explorer-extension-api", version = "=1.2.0" }
+explorer-extension-ui-api = { path = "../../../crates/explorer-extension-ui-api", version = "=1.2.0" }
 
 [profile.release]
 panic = "unwind"

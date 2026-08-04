@@ -513,9 +513,7 @@ try {
         $env:SUPEREXPLORER_TEST_SEPACK_PATH = [IO.Path]::GetFullPath($package)
         $hostTestAuthority = New-SealedCargoAuthority $lock.toolchain
         New-Item -ItemType Directory -Path $hostCargoHome -Force | Out-Null
-        $configPath = & powershell.exe -NoProfile -File (Join-Path $repo 'sdk\scripts\prepare-local-cargo-source.ps1') -PluginRoot (Join-Path $sdk 'fixtures\host-gate')
-        Copy-Item -LiteralPath $configPath -Destination (Join-Path $hostCargoHome 'config.toml') -Force
-        $env:CARGO_HOME = $hostCargoHome
+        $env:CARGO_HOME = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) '.cargo'
         $env:RUSTC = $hostTestAuthority.RustcPath
         # Run through a standalone fixture workspace.  Invoking the root
         # workspace here makes Cargo resolve unrelated application members
