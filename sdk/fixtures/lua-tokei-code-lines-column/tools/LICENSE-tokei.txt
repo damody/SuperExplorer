@@ -1,0 +1,2 @@
+Tokei 14.0.0 is distributed under the MIT License, Apache License 2.0, or BSD-3-Clause.
+Source: https://crates.io/crates/tokei/14.0.0

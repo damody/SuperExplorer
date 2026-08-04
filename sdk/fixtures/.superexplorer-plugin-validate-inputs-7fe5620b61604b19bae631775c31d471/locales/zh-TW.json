@@ -1,0 +1,5 @@
+{
+  "plugin": "rust-folder-size-visual-column",
+  "display_name": "資料夾大小",
+  "description": "顯示資料夾的遞迴大小"
+}

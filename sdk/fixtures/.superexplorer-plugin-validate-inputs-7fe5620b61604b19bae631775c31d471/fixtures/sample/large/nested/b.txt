@@ -1,0 +1,1 @@
+Nested content proves that the folder-size example recursively measures descendants instead of only direct children.

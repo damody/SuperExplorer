@@ -1,0 +1,1 @@
+{"plugin":"lua-tokei-code-lines-column","display_name":"程式碼行數（Lua/tokei）","description":"以已驗證 bundled tool 統計語言、程式碼、註解與空白行。"}

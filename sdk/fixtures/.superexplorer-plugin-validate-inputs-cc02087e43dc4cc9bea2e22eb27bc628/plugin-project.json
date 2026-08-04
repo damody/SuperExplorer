@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "package": { "id": "rust-folder-size-visual-column", "version": "0.1.0" },
+  "publisher": {
+    "id": "example-publisher",
+    "display_name": "Example Publisher",
+    "contacts": [{ "kind": "support", "value": "support@example.invalid" }]
+  },
+  "sdk": {
+    "bundle_id": "sdk-16e31ab5f96176e481dd7099",
+    "target": "x86_64-pc-windows-msvc",
+    "abi_schema": 1,
+    "gpui": false,
+    "ui_abi_fingerprint": null
+  },
+  "rust": {
+    "crate_name": "rust-folder-size-visual-column",
+    "entrypoint": "plugin.dll"
+  },
+  "features": [
+    { "id": "column", "capabilities": ["abi", "filesystem.read"] },
+    { "id": "recalculate", "capabilities": ["abi"] },
+    { "id": "settings", "capabilities": ["abi"] }
+  ],
+  "contributions": [
+    {
+      "id": "abi-root",
+      "feature_id": "column",
+      "kind": "abi-root",
+      "capabilities": ["abi"],
+      "payload": "src/lib.rs"
+    },
+    {
+      "id": "folder-size",
+      "feature_id": "column",
+      "kind": "column",
+      "capabilities": ["abi", "filesystem.read"],
+      "payload": "src/lib.rs"
+    },
+    {
+      "id": "folder-size-renderer",
+      "feature_id": "column",
+      "kind": "renderer",
+      "capabilities": ["abi"],
+      "payload": "src/lib.rs"
+    }
+  ],
+  "payloads": [
+    {
+      "path": "src/lib.rs",
+      "size": 39030,
+      "sha256": "0d247705ce3669de28f273d3315bae99b3538058dc2fa1c94167da807a55f59d",
+      "kind": "rust-source"
+    }
+  ],
+  "private_dependencies": [],
+  "verification": { "requirements": [] }
+}

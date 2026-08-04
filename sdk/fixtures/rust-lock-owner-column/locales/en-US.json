@@ -1,0 +1,1 @@
+{"plugin":"rust-lock-owner-column","display_name":"Lock owners","description":"Shows processes currently holding a file."}

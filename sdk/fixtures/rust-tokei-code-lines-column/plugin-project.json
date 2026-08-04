@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "package": { "id": "rust-tokei-code-lines-column", "version": "0.1.0" },
+  "publisher": {
+    "id": "example-publisher",
+    "display_name": "Example Publisher",
+    "contacts": [{ "kind": "support", "value": "support@example.invalid" }]
+  },
+  "sdk": {
+    "bundle_id": "@SDK_BUNDLE_ID@",
+    "target": "x86_64-pc-windows-msvc",
+    "abi_schema": @ABI_SCHEMA@,
+    "gpui": false,
+    "ui_abi_fingerprint": null
+  },
+  "rust": { "crate_name": "rust-tokei-code-lines-column", "entrypoint": "plugin.dll" },
+  "features": [
+    { "id": "rust-tokei", "capabilities": ["abi", "filesystem.read"] }
+  ],
+  "contributions": [
+    {
+      "id": "rust-tokei:code-lines",
+      "feature_id": "rust-tokei",
+      "kind": "column",
+      "capabilities": ["abi", "filesystem.read"],
+      "payload": "src/lib.rs"
+    },
+    {
+      "id": "rust-tokei:code-lines-renderer",
+      "feature_id": "rust-tokei",
+      "kind": "renderer",
+      "capabilities": ["abi"],
+      "payload": "src/lib.rs"
+    }
+  ],
+  "payloads": [
+    {
+      "path": "src/lib.rs",
+      "size": @SOURCE_SIZE@,
+      "sha256": "@SOURCE_SHA256@",
+      "kind": "rust-source"
+    }
+  ],
+  "private_dependencies": [],
+  "verification": { "requirements": [] }
+}

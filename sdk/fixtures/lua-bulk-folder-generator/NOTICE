@@ -1,0 +1,3 @@
+This example statically links the public SuperExplorer SDK ABI crates and their
+exact Cargo.lock dependency closure. It contains no bundled executable and
+does not invoke a process-control API. The example is distributed under LICENSE.

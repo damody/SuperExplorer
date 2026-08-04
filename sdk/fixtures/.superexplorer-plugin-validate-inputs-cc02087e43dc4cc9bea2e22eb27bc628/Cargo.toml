@@ -1,0 +1,25 @@
+[package]
+name = "rust-folder-size-visual-column"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.97.1"
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Dependencies are resolved by exact version from the locked local Cargo cache
+# while Cargo is offline. `explorer-extension-api` is the public author surface; it
+# owns the ABI-safe factory trampoline and never exposes a handwritten callback
+# contract to extension authors.
+abi_stable = { version = "=0.11.3", default-features = false }
+explorer-extension-api = { path = "../../../crates/explorer-extension-api", version = "=1.2.0" }
+explorer-extension-ui-api = { path = "../../../crates/explorer-extension-ui-api", version = "=1.2.0" }
+
+[profile.release]
+panic = "unwind"
+lto = "thin"
+codegen-units = 1
+
+[workspace]

@@ -1,0 +1,1 @@
+{"schema_version":1,"package":"rust-exif-rename-command@0.1.0","components":[{"name":"explorer-extension-api","version":"1.2.0","linkage":"static-rust-library"},{"name":"kamadak-exif","version":"0.6.1","linkage":"static-rust-library"},{"name":"mutate_once","version":"0.1.2","linkage":"static-rust-library"}]}

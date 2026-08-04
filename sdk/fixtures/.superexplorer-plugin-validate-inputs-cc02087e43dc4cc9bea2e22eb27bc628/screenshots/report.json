@@ -1,0 +1,16 @@
+﻿{
+    "status":  "passed",
+    "case_id":  "rust-folder-size-visual-column-headful",
+    "exact_value":  "Folder size: 216 B",
+    "data_items":  1,
+    "decorative_bar_automation_nodes":  0,
+    "proportional_bar_visual_delta":  true,
+    "numeric_sort":  true,
+    "proportional_bar_toggle":  true,
+    "f5_generation_recovery":  true,
+    "screenshots":  [
+                        "folder-size-column.png",
+                        "folder-size-bar-on.png",
+                        "folder-size-bar-off.png"
+                    ]
+}
