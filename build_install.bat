@@ -6,9 +6,11 @@ set "LUA_EXE=%~dp0build\tools\lua\lua.exe"
 set "BUILD_SCRIPT=%~dp0build\build_install.lua"
 set "BUILD_EXIT_CODE=1"
 set "CHECK_ONLY=0"
+set "NO_LAUNCH=0"
 
 for %%A in (%*) do (
     if /I "%%~A"=="--check" set "CHECK_ONLY=1"
+    if /I "%%~A"=="--no-launch" set "NO_LAUNCH=1"
 )
 
 if not exist "%LUA_EXE%" (
@@ -28,7 +30,12 @@ set "BUILD_EXIT_CODE=%ERRORLEVEL%"
 echo.
 if not "%BUILD_EXIT_CODE%"=="0" goto :report_failure
 if "%CHECK_ONLY%"=="1" goto :report_check
+if "%NO_LAUNCH%"=="1" goto :report_built
 echo [SUCCESS] Installer build completed and launched.
+goto :report_done
+
+:report_built
+echo [SUCCESS] Installer build completed without launching it.
 goto :report_done
 
 :report_check

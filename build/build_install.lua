@@ -98,12 +98,14 @@ local function find_makensis()
 end
 
 local function parse_options()
-    local options = { check = false, skip_build = false }
+    local options = { check = false, skip_build = false, no_launch = false }
     for index = 1, #arg do
         if arg[index] == "--check" then
             options.check = true
         elseif arg[index] == "--skip-build" then
             options.skip_build = true
+        elseif arg[index] == "--no-launch" then
+            options.no_launch = true
         else
             error("未知參數：" .. tostring(arg[index]), 0)
         end
@@ -220,16 +222,22 @@ local function main()
     })
     local installer_size = validate_executable(output, "安裝程式")
 
-    process.start({
-        stage = "啟動安裝程式",
-        exe = output,
-        cwd = dist,
-    })
+    if not options.no_launch then
+        process.start({
+            stage = "啟動安裝程式",
+            exe = output,
+            cwd = dist,
+        })
+    end
 
     print(string.format("[完成] 應用程式：%s（%d 位元組）", release_executable, application_size))
     print(string.format("[完成] 內附 Plugin：%s（%d 位元組）", plugin_dll, plugin_size))
     print(string.format("[完成] 安裝程式：%s（%d 位元組）", output, installer_size))
-    print("[完成] 已啟動本次建置的 SuperExplorer 安裝程式")
+    if options.no_launch then
+        print("[完成] 已略過啟動安裝程式")
+    else
+        print("[完成] 已啟動本次建置的 SuperExplorer 安裝程式")
+    end
     return 0
 end
 
