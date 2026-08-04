@@ -2,7 +2,10 @@
 
 use std::{collections::BTreeMap, sync::Mutex};
 
-use ring::{hmac, rand::{SecureRandom as _, SystemRandom}};
+use ring::{
+    hmac,
+    rand::{SecureRandom as _, SystemRandom},
+};
 use serde::Serialize;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -38,10 +41,19 @@ pub(crate) enum AuthorityAdapterV1 {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum AuthorityErrorV1 { Invalid, Tampered, Revoked, Stale, CapabilityDenied }
+pub(crate) enum AuthorityErrorV1 {
+    Invalid,
+    Tampered,
+    Revoked,
+    Stale,
+    CapabilityDenied,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct CurrentAuthorityV1 { claims: AuthorityClaimsV1, revoked: bool }
+struct CurrentAuthorityV1 {
+    claims: AuthorityClaimsV1,
+    revoked: bool,
+}
 
 pub(crate) struct RuntimeAuthorityV1 {
     key: hmac::Key,
@@ -51,61 +63,239 @@ pub(crate) struct RuntimeAuthorityV1 {
 impl RuntimeAuthorityV1 {
     pub(crate) fn new() -> Result<Self, AuthorityErrorV1> {
         let mut secret = [0_u8; 32];
-        SystemRandom::new().fill(&mut secret).map_err(|_| AuthorityErrorV1::Invalid)?;
-        Ok(Self { key: hmac::Key::new(hmac::HMAC_SHA256, &secret), current: Mutex::new(BTreeMap::new()) })
+        SystemRandom::new()
+            .fill(&mut secret)
+            .map_err(|_| AuthorityErrorV1::Invalid)?;
+        Ok(Self {
+            key: hmac::Key::new(hmac::HMAC_SHA256, &secret),
+            current: Mutex::new(BTreeMap::new()),
+        })
     }
 
-    pub(crate) fn issue(&self, claims: AuthorityClaimsV1) -> Result<AuthorityEnvelopeV1, AuthorityErrorV1> {
+    pub(crate) fn issue(
+        &self,
+        claims: AuthorityClaimsV1,
+    ) -> Result<AuthorityEnvelopeV1, AuthorityErrorV1> {
         validate_claims(&claims)?;
         let tag = self.sign(&claims)?;
         let identity = identity(&claims);
-        self.current.lock().map_err(|_| AuthorityErrorV1::Revoked)?.insert(identity, CurrentAuthorityV1 { claims: claims.clone(), revoked: false });
+        self.current
+            .lock()
+            .map_err(|_| AuthorityErrorV1::Revoked)?
+            .insert(
+                identity,
+                CurrentAuthorityV1 {
+                    claims: claims.clone(),
+                    revoked: false,
+                },
+            );
         Ok(AuthorityEnvelopeV1 { claims, tag })
     }
 
-    pub(crate) fn revoke(&self, package: &str, feature: &str, interface: &str) -> Result<(), AuthorityErrorV1> {
+    pub(crate) fn revoke(
+        &self,
+        package: &str,
+        feature: &str,
+        interface: &str,
+    ) -> Result<(), AuthorityErrorV1> {
         let mut current = self.current.lock().map_err(|_| AuthorityErrorV1::Revoked)?;
-        let entry = current.get_mut(&(package.into(), feature.into(), interface.into())).ok_or(AuthorityErrorV1::Revoked)?;
-        entry.revoked = true; Ok(())
+        let entry = current
+            .get_mut(&(package.into(), feature.into(), interface.into()))
+            .ok_or(AuthorityErrorV1::Revoked)?;
+        entry.revoked = true;
+        Ok(())
     }
 
-    pub(crate) fn replace_current(&self, claims: AuthorityClaimsV1) -> Result<(), AuthorityErrorV1> {
+    pub(crate) fn replace_current(
+        &self,
+        claims: AuthorityClaimsV1,
+    ) -> Result<(), AuthorityErrorV1> {
         validate_claims(&claims)?;
-        self.current.lock().map_err(|_| AuthorityErrorV1::Revoked)?.insert(identity(&claims), CurrentAuthorityV1 { claims, revoked: false }); Ok(())
+        self.current
+            .lock()
+            .map_err(|_| AuthorityErrorV1::Revoked)?
+            .insert(
+                identity(&claims),
+                CurrentAuthorityV1 {
+                    claims,
+                    revoked: false,
+                },
+            );
+        Ok(())
     }
 
-    pub(crate) fn revalidate<'a>(&self, envelope: &'a AuthorityEnvelopeV1, adapter: AuthorityAdapterV1) -> Result<&'a AuthorityClaimsV1, AuthorityErrorV1> {
+    pub(crate) fn revalidate<'a>(
+        &self,
+        envelope: &'a AuthorityEnvelopeV1,
+        adapter: AuthorityAdapterV1,
+    ) -> Result<&'a AuthorityClaimsV1, AuthorityErrorV1> {
         validate_claims(&envelope.claims)?;
         let expected = self.sign(&envelope.claims)?;
-        if !constant_time_eq(&expected, &envelope.tag) { return Err(AuthorityErrorV1::Tampered); }
-        if !adapter_accepts(adapter, &envelope.claims.capability) { return Err(AuthorityErrorV1::CapabilityDenied); }
+        if !constant_time_eq(&expected, &envelope.tag) {
+            return Err(AuthorityErrorV1::Tampered);
+        }
+        if !adapter_accepts(adapter, &envelope.claims.capability) {
+            return Err(AuthorityErrorV1::CapabilityDenied);
+        }
         let current = self.current.lock().map_err(|_| AuthorityErrorV1::Revoked)?;
-        let saved = current.get(&identity(&envelope.claims)).ok_or(AuthorityErrorV1::Revoked)?;
-        if saved.revoked { return Err(AuthorityErrorV1::Revoked); }
-        if saved.claims != envelope.claims { return Err(AuthorityErrorV1::Stale); }
+        let saved = current
+            .get(&identity(&envelope.claims))
+            .ok_or(AuthorityErrorV1::Revoked)?;
+        if saved.revoked {
+            return Err(AuthorityErrorV1::Revoked);
+        }
+        if saved.claims != envelope.claims {
+            return Err(AuthorityErrorV1::Stale);
+        }
         Ok(&envelope.claims)
     }
 
     fn sign(&self, claims: &AuthorityClaimsV1) -> Result<[u8; 32], AuthorityErrorV1> {
         let bytes = serde_json::to_vec(claims).map_err(|_| AuthorityErrorV1::Invalid)?;
-        let mut output = [0_u8; 32]; output.copy_from_slice(hmac::sign(&self.key, &bytes).as_ref()); Ok(output)
+        let mut output = [0_u8; 32];
+        output.copy_from_slice(hmac::sign(&self.key, &bytes).as_ref());
+        Ok(output)
     }
 }
 
-fn identity(claims: &AuthorityClaimsV1) -> (String, String, String) { (claims.package_id.clone(), claims.feature_id.clone(), claims.interface_id.clone()) }
-fn valid_id(value: &str) -> bool { !value.is_empty() && value.len() <= 128 && value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':')) }
+fn identity(claims: &AuthorityClaimsV1) -> (String, String, String) {
+    (
+        claims.package_id.clone(),
+        claims.feature_id.clone(),
+        claims.interface_id.clone(),
+    )
+}
+fn valid_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':'))
+}
 fn validate_claims(claims: &AuthorityClaimsV1) -> Result<(), AuthorityErrorV1> {
-    if !valid_id(&claims.package_id) || !valid_id(&claims.feature_id) || !valid_id(&claims.interface_id) || !valid_id(&claims.capability) || claims.incarnation == 0 || claims.authorized_root_sha256.len() != 64 || !claims.authorized_root_sha256.bytes().all(|b| b.is_ascii_digit() || matches!(b, b'a'..=b'f')) { return Err(AuthorityErrorV1::Invalid); }
+    if !valid_id(&claims.package_id)
+        || !valid_id(&claims.feature_id)
+        || !valid_id(&claims.interface_id)
+        || !valid_id(&claims.capability)
+        || claims.incarnation == 0
+        || claims.authorized_root_sha256.len() != 64
+        || !claims
+            .authorized_root_sha256
+            .bytes()
+            .all(|b| b.is_ascii_digit() || matches!(b, b'a'..=b'f'))
+    {
+        return Err(AuthorityErrorV1::Invalid);
+    }
     Ok(())
 }
-fn adapter_accepts(adapter: AuthorityAdapterV1, capability: &str) -> bool { matches!((adapter, capability), (AuthorityAdapterV1::Stream, "filesystem.read") | (AuthorityAdapterV1::Tool, "tools.execute_bundled") | (AuthorityAdapterV1::LockOwner, "lock_owner.query") | (AuthorityAdapterV1::Navigation, "navigation.request") | (AuthorityAdapterV1::OperationPlan, "operations.submit") | (AuthorityAdapterV1::VirtualLocation, "virtual_folder.read") | (AuthorityAdapterV1::Renderer, "gpui.render")) }
-fn constant_time_eq(left: &[u8; 32], right: &[u8; 32]) -> bool { left.iter().zip(right).fold(0_u8, |diff, (a,b)| diff | (a ^ b)) == 0 }
+fn adapter_accepts(adapter: AuthorityAdapterV1, capability: &str) -> bool {
+    matches!(
+        (adapter, capability),
+        (AuthorityAdapterV1::Stream, "filesystem.read")
+            | (AuthorityAdapterV1::Tool, "tools.execute_bundled")
+            | (AuthorityAdapterV1::LockOwner, "lock_owner.query")
+            | (AuthorityAdapterV1::Navigation, "navigation.request")
+            | (AuthorityAdapterV1::OperationPlan, "operations.submit")
+            | (AuthorityAdapterV1::VirtualLocation, "virtual_folder.read")
+            | (AuthorityAdapterV1::Renderer, "gpui.render")
+    )
+}
+fn constant_time_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
+    left.iter()
+        .zip(right)
+        .fold(0_u8, |diff, (a, b)| diff | (a ^ b))
+        == 0
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn claims(capability: &str) -> AuthorityClaimsV1 { AuthorityClaimsV1 { package_id:"package".into(), feature_id:"feature".into(), interface_id:"interface".into(), incarnation:1, capability:capability.into(), authorized_root_sha256:"a".repeat(64), location_generation:1, item_generation:2, refresh_generation:3, container_generation:4, job_generation:5 } }
-    #[test] fn every_adapter_consumes_only_its_capability_bound_envelope() { for (adapter,cap) in [(AuthorityAdapterV1::Stream,"filesystem.read"),(AuthorityAdapterV1::Tool,"tools.execute_bundled"),(AuthorityAdapterV1::LockOwner,"lock_owner.query"),(AuthorityAdapterV1::Navigation,"navigation.request"),(AuthorityAdapterV1::OperationPlan,"operations.submit"),(AuthorityAdapterV1::VirtualLocation,"virtual_folder.read"),(AuthorityAdapterV1::Renderer,"gpui.render")] { let authority=RuntimeAuthorityV1::new().unwrap();let envelope=authority.issue(claims(cap)).unwrap();assert!(authority.revalidate(&envelope,adapter).is_ok());assert_eq!(authority.revalidate(&envelope,AuthorityAdapterV1::Tool),if adapter==AuthorityAdapterV1::Tool {Ok(&envelope.claims)} else {Err(AuthorityErrorV1::CapabilityDenied)}); } }
-    #[test] fn disable_and_package_update_revoke_or_stale_existing_grants() { let authority=RuntimeAuthorityV1::new().unwrap();let envelope=authority.issue(claims("filesystem.read")).unwrap();authority.revoke("package","feature","interface").unwrap();assert_eq!(authority.revalidate(&envelope,AuthorityAdapterV1::Stream),Err(AuthorityErrorV1::Revoked));let mut next=claims("filesystem.read");next.incarnation=2;authority.replace_current(next).unwrap();assert_eq!(authority.revalidate(&envelope,AuthorityAdapterV1::Stream),Err(AuthorityErrorV1::Stale)); }
-    #[test] fn identity_race_and_every_tampered_field_fail_before_use() { let authority=RuntimeAuthorityV1::new().unwrap();let original=authority.issue(claims("filesystem.read")).unwrap();for mutate in 0..11 { let mut bad=original.clone();match mutate {0=>bad.claims.package_id="other".into(),1=>bad.claims.feature_id="other".into(),2=>bad.claims.interface_id="other".into(),3=>bad.claims.incarnation+=1,4=>bad.claims.capability="gpui.render".into(),5=>bad.claims.authorized_root_sha256="b".repeat(64),6=>bad.claims.location_generation+=1,7=>bad.claims.item_generation+=1,8=>bad.claims.refresh_generation+=1,9=>bad.claims.container_generation+=1,_=>bad.claims.job_generation+=1};assert!(matches!(authority.revalidate(&bad,AuthorityAdapterV1::Stream),Err(AuthorityErrorV1::Tampered)|Err(AuthorityErrorV1::CapabilityDenied)));}let mut replaced=claims("filesystem.read");replaced.item_generation+=1;authority.replace_current(replaced).unwrap();assert_eq!(authority.revalidate(&original,AuthorityAdapterV1::Stream),Err(AuthorityErrorV1::Stale)); }
+    fn claims(capability: &str) -> AuthorityClaimsV1 {
+        AuthorityClaimsV1 {
+            package_id: "package".into(),
+            feature_id: "feature".into(),
+            interface_id: "interface".into(),
+            incarnation: 1,
+            capability: capability.into(),
+            authorized_root_sha256: "a".repeat(64),
+            location_generation: 1,
+            item_generation: 2,
+            refresh_generation: 3,
+            container_generation: 4,
+            job_generation: 5,
+        }
+    }
+    #[test]
+    fn every_adapter_consumes_only_its_capability_bound_envelope() {
+        for (adapter, cap) in [
+            (AuthorityAdapterV1::Stream, "filesystem.read"),
+            (AuthorityAdapterV1::Tool, "tools.execute_bundled"),
+            (AuthorityAdapterV1::LockOwner, "lock_owner.query"),
+            (AuthorityAdapterV1::Navigation, "navigation.request"),
+            (AuthorityAdapterV1::OperationPlan, "operations.submit"),
+            (AuthorityAdapterV1::VirtualLocation, "virtual_folder.read"),
+            (AuthorityAdapterV1::Renderer, "gpui.render"),
+        ] {
+            let authority = RuntimeAuthorityV1::new().unwrap();
+            let envelope = authority.issue(claims(cap)).unwrap();
+            assert!(authority.revalidate(&envelope, adapter).is_ok());
+            assert_eq!(
+                authority.revalidate(&envelope, AuthorityAdapterV1::Tool),
+                if adapter == AuthorityAdapterV1::Tool {
+                    Ok(&envelope.claims)
+                } else {
+                    Err(AuthorityErrorV1::CapabilityDenied)
+                }
+            );
+        }
+    }
+    #[test]
+    fn disable_and_package_update_revoke_or_stale_existing_grants() {
+        let authority = RuntimeAuthorityV1::new().unwrap();
+        let envelope = authority.issue(claims("filesystem.read")).unwrap();
+        authority.revoke("package", "feature", "interface").unwrap();
+        assert_eq!(
+            authority.revalidate(&envelope, AuthorityAdapterV1::Stream),
+            Err(AuthorityErrorV1::Revoked)
+        );
+        let mut next = claims("filesystem.read");
+        next.incarnation = 2;
+        authority.replace_current(next).unwrap();
+        assert_eq!(
+            authority.revalidate(&envelope, AuthorityAdapterV1::Stream),
+            Err(AuthorityErrorV1::Stale)
+        );
+    }
+    #[test]
+    fn identity_race_and_every_tampered_field_fail_before_use() {
+        let authority = RuntimeAuthorityV1::new().unwrap();
+        let original = authority.issue(claims("filesystem.read")).unwrap();
+        for mutate in 0..11 {
+            let mut bad = original.clone();
+            match mutate {
+                0 => bad.claims.package_id = "other".into(),
+                1 => bad.claims.feature_id = "other".into(),
+                2 => bad.claims.interface_id = "other".into(),
+                3 => bad.claims.incarnation += 1,
+                4 => bad.claims.capability = "gpui.render".into(),
+                5 => bad.claims.authorized_root_sha256 = "b".repeat(64),
+                6 => bad.claims.location_generation += 1,
+                7 => bad.claims.item_generation += 1,
+                8 => bad.claims.refresh_generation += 1,
+                9 => bad.claims.container_generation += 1,
+                _ => bad.claims.job_generation += 1,
+            };
+            assert!(matches!(
+                authority.revalidate(&bad, AuthorityAdapterV1::Stream),
+                Err(AuthorityErrorV1::Tampered) | Err(AuthorityErrorV1::CapabilityDenied)
+            ));
+        }
+        let mut replaced = claims("filesystem.read");
+        replaced.item_generation += 1;
+        authority.replace_current(replaced).unwrap();
+        assert_eq!(
+            authority.revalidate(&original, AuthorityAdapterV1::Stream),
+            Err(AuthorityErrorV1::Stale)
+        );
+    }
 }

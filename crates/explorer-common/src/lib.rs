@@ -61,6 +61,8 @@ pub enum LifecyclePhase {
 pub struct AppBuildInfo {
     pub package_version: &'static str,
     pub git_revision: &'static str,
+    pub build_date: &'static str,
+    pub author: &'static str,
 }
 
 impl AppBuildInfo {
@@ -74,6 +76,8 @@ impl AppBuildInfo {
         Self {
             package_version: env!("CARGO_PKG_VERSION"),
             git_revision,
+            build_date: env!("EXPLORER_BUILD_DATE"),
+            author: env!("EXPLORER_BUILD_AUTHOR"),
         }
     }
 }

@@ -392,9 +392,11 @@ impl RenderOnce for ExplorerWindow {
             .as_ref()
             .map(|runtime| runtime.config())
             .filter(crate::size_map_view::is_supported_size_map_config)
-            .filter(|_| self.state.extensions().iter().any(|extension| {
-                extension.package_id == "rust-folder-size-map-view" && extension.enabled
-            }));
+            .filter(|_| {
+                self.state.extensions().iter().any(|extension| {
+                    extension.package_id == "rust-folder-size-map-view" && extension.enabled
+                })
+            });
         let show_side_pane = f32::from(window.bounds().size.width)
             >= self.tokens.layout.compact_window_width.value()
             && (view_settings.details_pane || view_settings.preview_pane);
@@ -407,6 +409,7 @@ impl RenderOnce for ExplorerWindow {
         let marquee = self.state.marquee_session().cloned();
         let marquee_active = marquee.is_some();
         let folder_options = self.state.folder_options();
+        let about_dialog_info = self.state.about_dialog().cloned();
         let session_reset_confirmation = self.state.session_reset_confirmation();
         let permanent_delete_count = self.state.permanent_delete_confirmation_count();
         let permanent_delete_focus = self.state.permanent_delete_confirmation_focus();
@@ -612,6 +615,9 @@ impl RenderOnce for ExplorerWindow {
                     draft,
                     self.on_action.clone(),
                 ))
+            })
+            .when_some(about_dialog_info, |element, info| {
+                element.child(about_dialog(self.tokens, info, self.on_action.clone()))
             })
             .when_some(session_reset_confirmation, |element, scope| {
                 element.child(session_reset_confirmation_dialog(
@@ -1163,33 +1169,127 @@ fn folder_options_dialog(
         )
 }
 
+fn about_dialog(
+    tokens: UiTokens,
+    info: crate::state::AboutInfoV1,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let row = |label: &'static str, value: String| {
+        div()
+            .flex()
+            .gap(px(tokens.layout.content_spacing.value() * 2.0))
+            .child(
+                div()
+                    .w(px(100.0))
+                    .flex_none()
+                    .text_color(tokens.theme.colors.text_secondary.to_gpui())
+                    .child(label),
+            )
+            .child(div().flex_1().child(value))
+    };
+    div()
+        .id("about-overlay")
+        .absolute()
+        .top_0()
+        .right_0()
+        .bottom_0()
+        .left_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(crate::theme::MODAL_BACKDROP.to_gpui())
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(
+            div()
+                .id("about-dialog")
+                .role(Role::Dialog)
+                .aria_label("關於 SuperExplorer")
+                .w(px(460.0))
+                .flex()
+                .flex_col()
+                .gap(px(tokens.layout.content_spacing.value() * 2.0))
+                .p(px(tokens.layout.divider_keyboard_step.value()))
+                .rounded(px(tokens.layout.corner_radius.value()))
+                .border(px(1.0))
+                .border_color(tokens.theme.colors.divider.to_gpui())
+                .bg(tokens.theme.colors.menu_fill.to_gpui())
+                .child(
+                    div()
+                        .text_size(px(tokens.typography.address.size.value()))
+                        .child("SuperExplorer"),
+                )
+                .child(row("版本", info.version))
+                .child(row("編譯日期", info.build_date))
+                .child(row("Git hash", info.git_hash))
+                .child(row("作者", info.author))
+                .child(div().flex().justify_end().child(folder_option_button(
+                    "about-ok",
+                    "OK",
+                    ExplorerAction::CloseAboutDialog,
+                    tokens,
+                    on_action,
+                ))),
+        )
+}
+
 fn folder_options_extensions_page(
     tokens: UiTokens,
     enabled: &[bool],
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     const EXTENSIONS: [(&str, &str); 8] = [
-        ("folder-option-extension-rust-folder-size-visual-column", "Folder size column"),
-        ("folder-option-extension-rust-folder-size-map-view", "Size Map"),
-        ("folder-option-extension-rust-tokei-code-lines-column", "Code lines (Rust)"),
-        ("folder-option-extension-lua-tokei-code-lines-column", "Code lines (Lua)"),
-        ("folder-option-extension-rust-lock-owner-column", "Lock owner"),
-        ("folder-option-extension-rust-exif-rename-command", "Rename from EXIF"),
-        ("folder-option-extension-rust-7z-virtual-folder", "7-Zip virtual folder"),
-        ("folder-option-extension-lua-bulk-folder-generator", "Bulk folder generator"),
+        (
+            "folder-option-extension-rust-folder-size-visual-column",
+            "Folder size column",
+        ),
+        (
+            "folder-option-extension-rust-folder-size-map-view",
+            "Size Map",
+        ),
+        (
+            "folder-option-extension-rust-tokei-code-lines-column",
+            "Code lines (Rust)",
+        ),
+        (
+            "folder-option-extension-lua-tokei-code-lines-column",
+            "Code lines (Lua)",
+        ),
+        (
+            "folder-option-extension-rust-lock-owner-column",
+            "Lock owner",
+        ),
+        (
+            "folder-option-extension-rust-exif-rename-command",
+            "Rename from EXIF",
+        ),
+        (
+            "folder-option-extension-rust-7z-virtual-folder",
+            "7-Zip virtual folder",
+        ),
+        (
+            "folder-option-extension-lua-bulk-folder-generator",
+            "Bulk folder generator",
+        ),
     ];
-    div().id("folder-options-extensions-page").flex().flex_col().children(
-        EXTENSIONS.into_iter().enumerate().map(|(index, (id, label))| {
-            folder_option_checkbox(
-                id,
-                label,
-                enabled.get(index).copied().unwrap_or(false),
-                ExplorerAction::ToggleFolderOptionExtension { index },
-                tokens,
-                on_action.clone(),
-            )
-        }),
-    )
+    div()
+        .id("folder-options-extensions-page")
+        .flex()
+        .flex_col()
+        .children(
+            EXTENSIONS
+                .into_iter()
+                .enumerate()
+                .map(|(index, (id, label))| {
+                    folder_option_checkbox(
+                        id,
+                        label,
+                        enabled.get(index).copied().unwrap_or(false),
+                        ExplorerAction::ToggleFolderOptionExtension { index },
+                        tokens,
+                        on_action.clone(),
+                    )
+                }),
+        )
 }
 
 fn folder_options_general_page(
@@ -1939,9 +2039,16 @@ impl RenderOnce for CommandBar {
         let extensions_open = self.state.extensions_menu_open();
         let tortoise_git_available = self.state.tortoise_git_available();
         let loaded_extension_summary = self.state.loaded_extension_summary().map(str::to_owned);
-        let extension_commands = self.state.extensions().iter()
+        let extension_commands = self
+            .state
+            .extensions()
+            .iter()
             .filter(|extension| extension.enabled)
-            .filter_map(|extension| extension.command_contribution.map(|id| (id, extension.display_name)))
+            .filter_map(|extension| {
+                extension
+                    .command_contribution
+                    .map(|id| (id, extension.display_name))
+            })
             .collect::<Vec<_>>();
         let extension_view = self.extension_view;
         div()
@@ -2258,23 +2365,29 @@ fn command_extensions_menu(
                     .child(summary),
             )
         })
-        .children(extension_commands.into_iter().map(|(contribution_id, label)| {
-            let element_id = match contribution_id {
-                "lua-bulk-folder:button" => "extension-command-lua-bulk-folder-button",
-                "rust-exif-rename:button" => "extension-command-rust-exif-rename-button",
-                _ => "extension-command-unknown",
-            };
-            command_more_item(
-                element_id,
-                label,
-                ExplorerAction::InvokeExtensionCommand { contribution_id: contribution_id.to_owned() },
-                true,
-                false,
-                None,
-                tokens,
-                on_action.clone(),
-            )
-        }))
+        .children(
+            extension_commands
+                .into_iter()
+                .map(|(contribution_id, label)| {
+                    let element_id = match contribution_id {
+                        "lua-bulk-folder:button" => "extension-command-lua-bulk-folder-button",
+                        "rust-exif-rename:button" => "extension-command-rust-exif-rename-button",
+                        _ => "extension-command-unknown",
+                    };
+                    command_more_item(
+                        element_id,
+                        label,
+                        ExplorerAction::InvokeExtensionCommand {
+                            contribution_id: contribution_id.to_owned(),
+                        },
+                        true,
+                        false,
+                        None,
+                        tokens,
+                        on_action.clone(),
+                    )
+                }),
+        )
         .child(command_more_item(
             "extensions-refresh-tortoisegit",
             if tortoise_git_available {
@@ -2435,6 +2548,14 @@ fn command_more_menu_v2(
             ExplorerAction::OpenFolderOptions,
             true,
             10,
+            on_action.clone(),
+        ))
+        .child(item(
+            "more-about",
+            "關於",
+            ExplorerAction::OpenAboutDialog,
+            true,
+            11,
             on_action,
         ));
     deferred(
@@ -6538,8 +6659,7 @@ impl RenderOnce for FileViewHost {
                                                         .map_or(ROption::RNone, ROption::RSome),
                                                 },
                                             ),
-                                            loading: entry.is_container
-                                                && exact_bytes.is_none()
+                                            loading: exact_bytes.is_none()
                                                 && measurement_error.is_none(),
                                             error: measurement_error
                                                 .map(|error| ROption::RSome(error.into()))
@@ -6581,10 +6701,14 @@ impl RenderOnce for FileViewHost {
                                                         descriptor.display_name, plan.label
                                                     ))
                                                     .w(px(width))
+                                                    .h_full()
                                                     .flex_none()
                                                     .flex()
                                                     .items_center()
                                                     .justify_end()
+                                                    .border_l(px(1.0))
+                                                    .border_r(px(1.0))
+                                                    .border_color(colors.divider.to_gpui())
                                                     .gap(px(layout.content_spacing.value() / 2.0))
                                                     .px(px(layout.content_spacing.value() / 2.0))
                                                     .when(
@@ -6624,6 +6748,8 @@ impl RenderOnce for FileViewHost {
                                                     .child(
                                                         div()
                                                             .min_w_0()
+                                                            .flex_1()
+                                                            .text_right()
                                                             .overflow_hidden()
                                                             .whitespace_nowrap()
                                                             .text_ellipsis()
@@ -6689,8 +6815,7 @@ impl RenderOnce for FileViewHost {
                                                         largest_sibling_bytes: ROption::RNone,
                                                     },
                                                 ),
-                                                loading: !entry.is_container
-                                                    && value.is_none()
+                                                loading: value.is_none()
                                                     && error.is_none(),
                                                 error: error
                                                     .map(|error| ROption::RSome(error.as_str().into()))
@@ -6737,10 +6862,14 @@ impl RenderOnce for FileViewHost {
                                                             plan.detail
                                                         ))
                                                         .w(px(width))
+                                                        .h_full()
                                                         .flex_none()
                                                         .flex()
                                                         .items_center()
                                                         .justify_end()
+                                                        .border_l(px(1.0))
+                                                        .border_r(px(1.0))
+                                                        .border_color(colors.divider.to_gpui())
                                                         .gap(px(layout.content_spacing.value() / 2.0))
                                                         .px(px(layout.content_spacing.value() / 2.0))
                                                         .when(
@@ -6774,6 +6903,8 @@ impl RenderOnce for FileViewHost {
                                                         .child(
                                                             div()
                                                                 .min_w_0()
+                                                                .flex_1()
+                                                                .text_right()
                                                                 .overflow_hidden()
                                                                 .whitespace_nowrap()
                                                                 .text_ellipsis()
@@ -10969,6 +11100,46 @@ mod tests {
         assert_eq!(production.matches("folder-option-extension-").count(), 8);
         assert!(production.contains("extension-command-lua-bulk-folder-button"));
         assert!(production.contains("view-extension-size-map"));
+    }
+
+    #[test]
+    fn dynamic_numeric_columns_have_full_height_frames_and_aligned_values() {
+        let source = include_str!("chrome.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap();
+        for selector in ["folder-size-column-", "code-lines-column-"] {
+            let start = production.find(selector).expect("dynamic column cell");
+            let local = &production[start..production.len().min(start + 4_500)];
+            assert!(local.contains(".h_full()"), "{selector} height");
+            assert!(
+                local.contains(".border_l(px(1.0))"),
+                "{selector} left frame"
+            );
+            assert!(
+                local.contains(".border_r(px(1.0))"),
+                "{selector} right frame"
+            );
+            assert!(
+                local.contains(".text_right()"),
+                "{selector} numeric alignment"
+            );
+        }
+    }
+
+    #[test]
+    fn about_command_and_dialog_expose_all_build_metadata_fields() {
+        let source = include_str!("chrome.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap();
+        for required in [
+            "more-about",
+            "about-dialog",
+            "版本",
+            "編譯日期",
+            "Git hash",
+            "作者",
+            "about-ok",
+        ] {
+            assert!(production.contains(required), "missing {required}");
+        }
     }
 
     #[test]

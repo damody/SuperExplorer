@@ -259,11 +259,17 @@ pub enum ExplorerAction {
     CompressSelectedToZip,
     AddSelectedToFavorites,
     CopySelectedPaths,
+    OpenAboutDialog,
+    CloseAboutDialog,
     OpenFolderOptions,
     CloseFolderOptions,
     SetFolderOptionsPage(FolderOptionsPage),
-    ToggleFolderOptionExtension { index: usize },
-    InvokeExtensionCommand { contribution_id: String },
+    ToggleFolderOptionExtension {
+        index: usize,
+    },
+    InvokeExtensionCommand {
+        contribution_id: String,
+    },
     ToggleFolderOptionItemCheckBoxes,
     ToggleFolderOptionFileNameExtensions,
     ToggleFolderOptionHiddenItems,
@@ -538,6 +544,8 @@ impl ExplorerAction {
             Self::CompressSelectedToZip => "CompressSelectedToZip",
             Self::AddSelectedToFavorites => "AddSelectedToFavorites",
             Self::CopySelectedPaths => "CopySelectedPaths",
+            Self::OpenAboutDialog => "OpenAboutDialog",
+            Self::CloseAboutDialog => "CloseAboutDialog",
             Self::OpenFolderOptions => "OpenFolderOptions",
             Self::CloseFolderOptions => "CloseFolderOptions",
             Self::SetFolderOptionsPage(_) => "SetFolderOptionsPage",
@@ -1221,6 +1229,8 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::EndDetailsColumnResize
         | ExplorerAction::UndoCurrentFolder
         | ExplorerAction::OpenFolderOptions
+        | ExplorerAction::OpenAboutDialog
+        | ExplorerAction::CloseAboutDialog
         | ExplorerAction::CloseFolderOptions
         | ExplorerAction::SetFolderOptionsPage(_)
         | ExplorerAction::ToggleFolderOptionExtension { .. }
@@ -1694,6 +1704,14 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         ExplorerAction::RefreshTortoiseGitStatus => FocusSurface::CommandBar,
         ExplorerAction::OpenFolderOptions => {
             state.open_folder_options();
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::OpenAboutDialog => {
+            state.open_about_dialog();
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::CloseAboutDialog => {
+            state.close_about_dialog();
             FocusSurface::CommandBar
         }
         ExplorerAction::CloseFolderOptions => {
@@ -2191,14 +2209,14 @@ mod tests {
             ExplorerAction::MoveMoreMenuFocus { direction: i8::MAX },
             ActionSource::Keyboard,
         );
-        assert_eq!(state.more_menu_index(), 10);
+        assert_eq!(state.more_menu_index(), 11);
         assert!(state.more_menu_open());
         dispatch_action(
             &mut state,
             ExplorerAction::MoveMoreMenuFocus { direction: -1 },
             ActionSource::Keyboard,
         );
-        assert_eq!(state.more_menu_index(), 9);
+        assert_eq!(state.more_menu_index(), 10);
         dispatch_action(
             &mut state,
             ExplorerAction::ToggleTheme,

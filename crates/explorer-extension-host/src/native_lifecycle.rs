@@ -2081,10 +2081,9 @@ impl StartupSession<'_> {
         let mut load_marker = if resolved.manifest().rust.is_empty() {
             None
         } else if let Some(markers) = self.lifecycle.markers.as_ref() {
-            let digest = crate::package_validation::sealed_manifest_canonical_digest(
-                resolved.manifest(),
-            )
-            .map_err(|_| NativeLifecycleErrorV1::MarkerStateUnavailable)?;
+            let digest =
+                crate::package_validation::sealed_manifest_canonical_digest(resolved.manifest())
+                    .map_err(|_| NativeLifecycleErrorV1::MarkerStateUnavailable)?;
             let entrypoint = resolved
                 .manifest()
                 .rust
