@@ -6,7 +6,7 @@ if ([string]::IsNullOrWhiteSpace($Root)) { $Root = Split-Path -Parent $evidenceR
 $tasks = Join-Path $Root 'tasks.md'
 $mapPath = Join-Path $evidenceRoot 'legacy-lineage-map.json'
 $backfillPath = Join-Path $evidenceRoot 'legacy-5.1-final-go-backfill.json'
-$valid = Select-String -LiteralPath $tasks -Pattern '- \[.\] (\d+\.\d+\.\d+)' |
+$valid = Select-String -LiteralPath $tasks -Pattern '- \[(?: |x|X|deferred)\]\s+(\d+\.\d+\.\d+)' |
     ForEach-Object { $_.Matches.Groups[1].Value }
 $map = Get-Content -LiteralPath $mapPath -Raw | ConvertFrom-Json
 $canonical = $map.expected_semantic_mappings

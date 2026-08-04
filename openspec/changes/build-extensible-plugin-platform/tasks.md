@@ -87,14 +87,14 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** evidence schema unit test、duplicate task ID/hash/timestamp/status negative fixtures；本 L2 records 置於 `1.1.*`。
 **完成門檻：** 每個 legacy `[x]` 有對應新版 leaf 或明確 superseded link，validator 拒絕 duplicate、missing field、mutable shared evidence 與非 terminal status。
 
-- [deferred] 1.1.1 定義 `evidence-index.jsonl` record schema、terminal status、shared `subcheck_key` 與 append-only lineage，並以可重跑的本機 unit/contract 結果作為輸入。
-- [deferred] 1.1.2 實作evidence record required-field與duplicate task ID validator；以直接可重跑結果、ledger command/result/hash 關閉 leaf。
-- [deferred] 1.1.3 建立舊 task 1.1–4.8 與新版 L3 的 machine-readable lineage，保留原完成 commit 與原測試名稱，並以直接可重跑 lineage report 與 ledger hash 關閉 leaf。
-- [deferred] 1.1.4 將 5.1 FINAL GO、242 UI tests、7 dynamic-column tests 與已知 5.2/5.4 reopen risks 寫成未勾選的 backfill candidate，使用本機可重跑結果與 ledger hash，不直接宣稱新版完成。
-- [deferred] 1.1.5 驗證 failed、blocked、stale、unexecuted 與 trait/mock-only record 均不能讓 task 被解析為完成；以本機 negative fixtures 直接重跑並記錄結果/hash。
-- [deferred] 1.1.6 實作每個L3恰好映射一個command/manual subcheck的cardinality validator，將 deterministic report 的 command/result/hash 寫入 ledger。
-- [deferred] 1.1.7 驗證 mandatory P0/P1 不得 N/A，只有預先列出的 conditional 可 N/A，superseded 必須有唯一 replacement 且 dependents 轉 stale；以直接可重跑 validator result 關閉 leaf。
-- [deferred] 1.1.8 建立通用、release-integrator-owned 的 signed retained-bundle verifier：只接受本機 `release://` locator，驗證簽章與信任主體、manifest/task/subcheck/source revision binding、SHA-256、canonical paths、retention metadata、path traversal/reparse escapes 與大小限制；verifier 供 L2/RC/release 組裝使用，不是任何 leaf 的循環前置條件。
+- [x] 1.1.1 定義 `evidence-index.jsonl` record schema、terminal status、shared `subcheck_key` 與 append-only lineage，並以可重跑的本機 unit/contract 結果作為輸入。
+- [x] 1.1.2 實作evidence record required-field與duplicate task ID validator；以直接可重跑結果、ledger command/result/hash 關閉 leaf。
+- [x] 1.1.3 建立舊 task 1.1–4.8 與新版 L3 的 machine-readable lineage，保留原完成 commit 與原測試名稱，並以直接可重跑 lineage report 與 ledger hash 關閉 leaf。
+- [x] 1.1.4 將 5.1 FINAL GO、242 UI tests、7 dynamic-column tests 與已知 5.2/5.4 reopen risks 寫成未勾選的 backfill candidate，使用本機可重跑結果與 ledger hash，不直接宣稱新版完成。
+- [x] 1.1.5 驗證 failed、blocked、stale、unexecuted 與 trait/mock-only record 均不能讓 task 被解析為完成；以本機 negative fixtures 直接重跑並記錄結果/hash。
+- [x] 1.1.6 實作每個L3恰好映射一個command/manual subcheck的cardinality validator，將 deterministic report 的 command/result/hash 寫入 ledger。
+- [x] 1.1.7 驗證 mandatory P0/P1 不得 N/A，只有預先列出的 conditional 可 N/A，superseded 必須有唯一 replacement 且 dependents 轉 stale；以直接可重跑 validator result 關閉 leaf。
+- [x] 1.1.8 建立通用、release-integrator-owned 的 signed retained-bundle verifier：只接受本機 `release://` locator，驗證簽章與信任主體、manifest/task/subcheck/source revision binding、SHA-256、canonical paths、retention metadata、path traversal/reparse escapes 與大小限制；verifier 供 L2/RC/release 組裝使用，不是任何 leaf 的循環前置條件。
 
 ### 1.2 Requirement／gate／task 雙向追蹤
 
@@ -106,11 +106,11 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** traceability matrix record；records `1.2.*`。
 **完成門檻：** 每個 Requirement 與 Scenario 至少映射一個 L3、gate 和 evidence type；零命中、孤兒 task、只有未來文件承諾均失敗。
 
-- [deferred] 1.2.1 列出十一個 capability 的每個 Requirement 與 Scenario stable selector。
-- [deferred] 1.2.2 將每個 blocking design gate 映射到 requirement/scenario 與負向或恢復 leaf。
-- [deferred] 1.2.3 將每個 L3 映射回唯一 requirement/gate，標記純 governance 或 integration leaf。
-- [deferred] 1.2.4 實作 missing requirement、unknown selector、orphan leaf 與 mock-only coverage 的獨立失敗案例。
-- [deferred] 1.2.5 產生可供 runner/release共用的 matrix；每個 gate_id具exact command/manual procedure、cwd、env、expected exit/artifacts並保存hash。
+- [x] 1.2.1 列出十一個 capability 的每個 Requirement 與 Scenario stable selector。
+- [x] 1.2.2 將每個 blocking design gate 映射到 requirement/scenario 與負向或恢復 leaf。
+- [x] 1.2.3 將每個 L3 映射回唯一 requirement/gate，標記純 governance 或 integration leaf。
+- [x] 1.2.4 實作 missing requirement、unknown selector、orphan leaf 與 mock-only coverage 的獨立失敗案例。
+- [x] 1.2.5 產生可供 runner/release共用的 matrix；每個 gate_id具exact command/manual procedure、cwd、env、expected exit/artifacts並保存hash。
 
 ### 1.3 Multi-agent ownership 與調整控制
 
@@ -122,12 +122,12 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** ownership collision fixture、B/C correction walkthrough、reviewer sign-off；records `1.3.*`。
 **完成門檻：** 每個 L2 有一個 owner/wave；共享 manifests 只有 integrator；handoff 包含 diff、commands、results、risks、remaining tasks；B/C 不可繞過重驗或使用者核准。
 
-- [deferred] 1.3.1 產生 role-to-owned-path 與 forbidden-path matrix，包含 shared manifest integrator。
-- [deferred] 1.3.2 定義 agent handoff 必填 diff、test command/result、evidence IDs、known risks 與 remaining dependencies。
-- [deferred] 1.3.3 驗證兩個 owner 宣告同一 mutable path 時 validator 明確失敗。
-- [deferred] 1.3.4 演練 A refinement，確認永久 L3 ID 與舊 evidence lineage 保留。
-- [deferred] 1.3.5 演練 B correction，確認 dependent evidence 轉 stale、affected work 暫停並重跑 OpenSpec validation。
-- [deferred] 1.3.6 演練 C change，確認沒有使用者核准記錄時 public ABI/gate/permission 變更被拒絕。
+- [x] 1.3.1 產生 role-to-owned-path 與 forbidden-path matrix，包含 shared manifest integrator。
+- [x] 1.3.2 定義 agent handoff 必填 diff、test command/result、evidence IDs、known risks 與 remaining dependencies。
+- [x] 1.3.3 驗證兩個 owner 宣告同一 mutable path 時 validator 明確失敗。
+- [x] 1.3.4 演練 A refinement，確認永久 L3 ID 與舊 evidence lineage 保留。
+- [x] 1.3.5 演練 B correction，確認 dependent evidence 轉 stale、affected work 暫停並重跑 OpenSpec validation。
+- [x] 1.3.6 演練 C change，確認沒有使用者核准記錄時 public ABI/gate/permission 變更被拒絕。
 
 ## 2. P0-0 Rust、ABI 與 GPUI Snapshot 基線
 
@@ -141,13 +141,13 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** isolated `cargo metadata --locked --offline`、toolchain commit validator、closure drift fixtures；records `2.1.*`。
 **完成門檻：** host/SDK/fixture 使用相同 exact baseline；display-version spoof、feature drift、second GPUI/SDK edge 與 missing local registry-cache source 分別 fail closed；第三方來源不得提交或追蹤 vendor。
 
-- [deferred] 2.1.1 核對 root、SDK、host fixture 與 plugin fixture 的 rustc/Cargo commit、target 和 toolchain file 完全一致。
-- [deferred] 2.1.2 核對 `abi_stable = 0.11.3`、空 top-level features 與 protected dependency closure 的 canonical hash。
-- [deferred] 2.1.3 在預先填好的本機 Cargo registry cache 執行 root 與 SDK `cargo metadata --locked --offline` 並保存 resolved graph；缺 cache 時先 bootstrap，不提交 vendor。
-- [deferred] 2.1.4 以相同顯示版本但不同 compiler commit fixture 證明 validator 拒絕。
-- [deferred] 2.1.5 以protected feature drift fixture證明拒絕。
-- [deferred] 2.1.6 稽核所有 locked crate 的 registry-cache provenance/license 與 lock checksum 一致，缺一項即失敗；不建立或追蹤 vendor 目錄。
-- [deferred] 2.1.7 以第二份GPUI/SDK dependency edge fixture證明拒絕。
+- [x] 2.1.1 核對 root、SDK、host fixture 與 plugin fixture 的 rustc/Cargo commit、target 和 toolchain file 完全一致。
+- [x] 2.1.2 核對 `abi_stable = 0.11.3`、空 top-level features 與 protected dependency closure 的 canonical hash。
+- [x] 2.1.3 在預先填好的本機 Cargo registry cache 執行 root 與 SDK `cargo metadata --locked --offline` 並保存 resolved graph；缺 cache 時先 bootstrap，不提交 vendor。
+- [x] 2.1.4 以相同顯示版本但不同 compiler commit fixture 證明 validator 拒絕。
+- [x] 2.1.5 以protected feature drift fixture證明拒絕。
+- [x] 2.1.6 稽核所有 locked crate 的 registry-cache provenance/license 與 lock checksum 一致，缺一項即失敗；不建立或追蹤 vendor 目錄。
+- [x] 2.1.7 以第二份GPUI/SDK dependency edge fixture證明拒絕。
 
 ### 2.2 Canonical bundle 與 UI fingerprint
 
@@ -159,22 +159,22 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** bundle-generator contract、fingerprint unit matrix、two-run byte comparison；records `2.2.*`。
 **完成門檻：** 兩次 clean generation byte-identical；每個 required input 單獨改變均改 fingerprint；unrelated app build ID 不改 fingerprint。
 
-- [deferred] 2.2.1 驗證 GPUI source authority 僅接受 `damody/gpui-ce-explorer.git` 的完整 commit/tree。
-- [deferred] 2.2.2 逐欄核對 canonical bundle input inventory 與 serialization order。
-- [deferred] 2.2.3 在兩個乾淨目錄生成 bundle 並比較所有 canonical output bytes/hash。
-- [deferred] 2.2.4 建立只改一個input且輸出unique subcheck的fingerprint mismatch harness。
-- [deferred] 2.2.5 證明只改 unrelated SuperExplorer build ID 時 fingerprint 與 compatibility decision 不變。
-- [deferred] 2.2.6 由 release-integrator 同步 trust-root/bundle ID consumers 並驗證沒有 mixed snapshot。
-- [deferred] 2.2.7 驗證rustc commit單因子drift改變fingerprint。
-- [deferred] 2.2.8 驗證Cargo commit單因子drift改變fingerprint。
-- [deferred] 2.2.9 驗證target triple單因子drift改變fingerprint。
-- [deferred] 2.2.10 驗證GPUI commit/tree單因子drift改變fingerprint。
-- [deferred] 2.2.11 驗證protected feature單因子drift改變fingerprint。
-- [deferred] 2.2.12 驗證profile/panic strategy單因子drift改變fingerprint。
-- [deferred] 2.2.13 驗證allocator/CRT policy單因子drift改變fingerprint。
-- [deferred] 2.2.14 驗證LTO/codegen-units單因子drift改變fingerprint。
-- [deferred] 2.2.15 驗證rustflags單因子drift改變fingerprint。
-- [deferred] 2.2.16 驗證ABI schema version單因子drift改變fingerprint。
+- [x] 2.2.1 驗證 GPUI source authority 僅接受 `damody/gpui-ce-explorer.git` 的完整 commit/tree。
+- [x] 2.2.2 逐欄核對 canonical bundle input inventory 與 serialization order。
+- [x] 2.2.3 在兩個乾淨目錄生成 bundle 並比較所有 canonical output bytes/hash。
+- [x] 2.2.4 建立只改一個input且輸出unique subcheck的fingerprint mismatch harness。
+- [x] 2.2.5 證明只改 unrelated SuperExplorer build ID 時 fingerprint 與 compatibility decision 不變。
+- [x] 2.2.6 由 release-integrator 同步 trust-root/bundle ID consumers 並驗證沒有 mixed snapshot。
+- [x] 2.2.7 驗證rustc commit單因子drift改變fingerprint。
+- [x] 2.2.8 驗證Cargo commit單因子drift改變fingerprint。
+- [x] 2.2.9 驗證target triple單因子drift改變fingerprint。
+- [x] 2.2.10 驗證GPUI commit/tree單因子drift改變fingerprint。
+- [x] 2.2.11 驗證protected feature單因子drift改變fingerprint。
+- [x] 2.2.12 驗證profile/panic strategy單因子drift改變fingerprint。
+- [x] 2.2.13 驗證allocator/CRT policy單因子drift改變fingerprint。
+- [x] 2.2.14 驗證LTO/codegen-units單因子drift改變fingerprint。
+- [x] 2.2.15 驗證rustflags單因子drift改變fingerprint。
+- [x] 2.2.16 驗證ABI schema version單因子drift改變fingerprint。
 
 ### 2.3 隔離 host/plugin fixture 與 Rust-first ABI baseline
 
@@ -186,16 +186,16 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** `--locked --offline` builds with distinct pre-populated local Cargo registry caches、loader contract；records `2.3.*`。
 **完成門檻：** current plugin loads and registers through SDK-owned factory；legacy/raw/layout/major/fingerprint mismatch all reject before accessor/factory/callback/marker。
 
-- [deferred] 2.3.1 以獨立預先填好的本機 Cargo registry cache、禁止網路建置 host fixture；缺 cache 時明確阻擋。
-- [deferred] 2.3.2 載入 current plugin 並證明 ordinary Rust trait 經 `RootModule`／`#[sabi_trait]` registrar 完成 registration。
-- [deferred] 2.3.3 掃描 author-facing API/fixtures，拒絕手寫 `extern "C"` callback、layout 或 panic trampoline。
-- [deferred] 2.3.4 載入 pre-callback legacy raw root，證明 layout reject 發生在所有 accessor/factory/callback/native marker 之前。
-- [deferred] 2.3.5 驗證SDK major mismatch診斷與pre-callback拒絕。
-- [deferred] 2.3.6 驗證 panic translation 使用 SDK-owned trampoline 且 ABI boundary 不跨 `String`/`Vec`/Future/private types。
-- [deferred] 2.3.7 以另一個獨立預先填好的本機 Cargo registry cache、禁止網路建置 current plugin fixture；不追蹤 vendor。
-- [deferred] 2.3.8 驗證root fingerprint mismatch診斷與pre-callback拒絕。
-- [deferred] 2.3.9 驗證required numeric semantics mismatch診斷與pre-callback拒絕。
-- [deferred] 2.3.10 驗證GPUI fingerprint mismatch診斷與pre-callback拒絕。
+- [x] 2.3.1 以獨立預先填好的本機 Cargo registry cache、禁止網路建置 host fixture；缺 cache 時明確阻擋。
+- [x] 2.3.2 載入 current plugin 並證明 ordinary Rust trait 經 `RootModule`／`#[sabi_trait]` registrar 完成 registration。
+- [x] 2.3.3 掃描 author-facing API/fixtures，拒絕手寫 `extern "C"` callback、layout 或 panic trampoline。
+- [x] 2.3.4 載入 pre-callback legacy raw root，證明 layout reject 發生在所有 accessor/factory/callback/native marker 之前。
+- [x] 2.3.5 驗證SDK major mismatch診斷與pre-callback拒絕。
+- [x] 2.3.6 驗證 panic translation 使用 SDK-owned trampoline 且 ABI boundary 不跨 `String`/`Vec`/Future/private types。
+- [x] 2.3.7 以另一個獨立預先填好的本機 Cargo registry cache、禁止網路建置 current plugin fixture；不追蹤 vendor。
+- [x] 2.3.8 驗證root fingerprint mismatch診斷與pre-callback拒絕。
+- [x] 2.3.9 驗證required numeric semantics mismatch診斷與pre-callback拒絕。
+- [x] 2.3.10 驗證GPUI fingerprint mismatch診斷與pre-callback拒絕。
 
 ### 2.4 Snapshot update、rollback 與 Release freeze tooling
 
@@ -207,12 +207,12 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** snapshot update/promotion/freeze contract scripts and offline rebuild; records `2.4.*`。
 **完成門檻：** fast-forward candidate 只在所有 gates green 後原子切換；failure/non-approved rewrite 保留舊 snapshot；freeze 後 rev change 必須新 RC/bundle。
 
-- [deferred] 2.4.1 驗證 snapshot metadata 將 approved source revision 解析為完整 commit/tree 且不直接以 branch 建置。
-- [deferred] 2.4.2 驗證 fast-forward candidate 在 host、SDK、fixture、examples、package gates 前不修改 approved outputs。
-- [deferred] 2.4.3 模擬 candidate gate failure，確認 rollback 後 canonical outputs 與原 snapshot byte-identical。
-- [deferred] 2.4.4 模擬 non-fast-forward，確認無 approval 時拒絕、有可驗 proof 時才產生隔離 candidate。
-- [deferred] 2.4.5 驗證 `release_frozen = true`、protected-tag metadata、signed release input inventory 與 offline rebuild。
-- [deferred] 2.4.6 模擬 freeze 後 main advance，確認舊 release offline rebuild；模擬 frozen rev change，確認強制新 RC/bundle ID。
+- [x] 2.4.1 驗證 snapshot metadata 將 approved source revision 解析為完整 commit/tree 且不直接以 branch 建置。
+- [x] 2.4.2 驗證 fast-forward candidate 在 host、SDK、fixture、examples、package gates 前不修改 approved outputs。
+- [x] 2.4.3 模擬 candidate gate failure，確認 rollback 後 canonical outputs 與原 snapshot byte-identical。
+- [x] 2.4.4 模擬 non-fast-forward，確認無 approval 時拒絕、有可驗 proof 時才產生隔離 candidate。
+- [x] 2.4.5 驗證 `release_frozen = true`、protected-tag metadata、signed release input inventory 與 offline rebuild。
+- [x] 2.4.6 模擬 freeze 後 main advance，確認舊 release offline rebuild；模擬 frozen rev change，確認強制新 RC/bundle ID。
 
 ### 2.5 作者 scripts、診斷與 minimal prompt fixture
 
@@ -224,15 +224,15 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** plugin-tooling self-test、isolated author reproduction、manifest selector check；records `2.5.*`。
 **完成門檻：** 兩支 script 各有成功與獨立失敗證據；minimal provider+renderer 在 clean consumer build/package；diagnostic 不含 secrets/absolute private paths。
 
-- [deferred] 2.5.1 以 approved bundle 與預先填好的本機 Cargo registry cache 執行 `build-plugin.ps1 --locked --offline` 成功案例。
-- [deferred] 2.5.3 驗證 package script 產出 deterministic store-only `.sepack`、runtime manifest、DLL、SBOM/NOTICE 與 hashes。
-- [deferred] 2.5.4 驗證缺manifest capability fail closed。
-- [deferred] 2.5.5 依公開文件在 clean consumer 重現 minimal provider+GPUI renderer 並保存 command/output hashes。
-- [deferred] 2.5.6 將每個 script gate 靜態映射至 requirement selector 與 `uitest/manifest.json` schema；只驗證 selector/artifact registration，不啟動 `explorer-uitest`（首次 execution 延後至 6.4.7）。
-- [deferred] 2.5.10 驗證private crate dependency fail closed。
-- [deferred] 2.5.11 驗證unlocked dependency fail closed。
-- [deferred] 2.5.12 驗證package path escape fail closed。
-- [deferred] 2.5.13 驗證missing license/NOTICE fail closed。
+- [x] 2.5.1 以 approved bundle 與預先填好的本機 Cargo registry cache 執行 `build-plugin.ps1 --locked --offline` 成功案例。
+- [x] 2.5.3 驗證 package script 產出 deterministic store-only `.sepack`、runtime manifest、DLL、SBOM/NOTICE 與 hashes。
+- [x] 2.5.4 驗證缺manifest capability fail closed。
+- [x] 2.5.5 依公開文件在 clean consumer 重現 minimal provider+GPUI renderer 並保存 command/output hashes。
+- [x] 2.5.6 將每個 script gate 靜態映射至 requirement selector 與 `uitest/manifest.json` schema；只驗證 selector/artifact registration，不啟動 `explorer-uitest`（首次 execution 延後至 6.4.7）。
+- [x] 2.5.10 驗證private crate dependency fail closed。
+- [x] 2.5.11 驗證unlocked dependency fail closed。
+- [x] 2.5.12 驗證package path escape fail closed。
+- [x] 2.5.13 驗證missing license/NOTICE fail closed。
 
 ## 3. Extension API、套件生命週期、Native Loader 與 Safe Mode
 
@@ -246,23 +246,23 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** ABI layout/fingerprint/public-type scans；records `3.1.*`。
 **完成門檻：** required root/factory/trait layout 固定；只使用 fixed-width 與 `abi_stable` owned types；無手寫 raw callback、private type、Future/closure/std collection 跨 DLL。
 
-- [deferred] 3.1.1 盤點並凍結 `ExtensionRootModuleV1` required prefix、SDK-owned factory、registrar trait object 與 numeric semantics。
-- [deferred] 3.1.2 定義 stable IDs、non-exhaustive value policy、unknown-value preserve/reject 規則與 major-version boundary。
-- [deferred] 3.1.3 建立 public-surface scan，拒絕 `std::String/Vec`、ordinary trait object、Future、closure、GPUI entity、private model/native wrapper。
-- [deferred] 3.1.4 建立 author fixture compile test，證明作者不需且不得手寫 `extern "C"` callback/layout/trampoline。
-- [deferred] 3.1.5 建立 old-host/new-value、malformed descriptor、layout drift 與 numeric reinterpretation negative fixtures。
-- [deferred] 3.1.6 取得 contract-owner 與 architecture reviewer 對 V1 baseline 的獨立簽核與 hash。
-- [deferred] 3.1.7 凍結每個 ABI object/returned value 的 allocation origin、destructor owner、registrar/trait-object ownership、permitted drop thread與DLL lifetime。
-- [deferred] 3.1.8 驗證host只在DLL resident且允許thread釋放plugin-created object。
-- [deferred] 3.1.9 對factory執行panic fixture，證明無unwind跨ABI且matching marker/owned memory正確處理。
-- [deferred] 3.1.10 驗證panic strategy進入fingerprint；`panic=abort` plugin不得宣稱typed panic recovery且mismatch在callback前拒絕。
-- [deferred] 3.1.11 對registrar執行panic fixture並驗證no-unwind/marker/owned-memory。
-- [deferred] 3.1.12 對provider執行panic fixture並驗證no-unwind/marker/owned-memory。
-- [deferred] 3.1.13 對renderer執行panic fixture並驗證no-unwind/marker/owned-memory。
-- [deferred] 3.1.14 對host service callback執行panic fixture並驗證no-unwind/marker/owned-memory。
-- [deferred] 3.1.15 對destructor執行panic fixture並驗證no-unwind、DLL resident與safe terminal。
-- [deferred] 3.1.16 驗證wrong-thread destruction被拒絕且object ownership未遺失。
-- [deferred] 3.1.17 驗證after-unload destruction在lifetime model中不可構造或被拒絕。
+- [x] 3.1.1 盤點並凍結 `ExtensionRootModuleV1` required prefix、SDK-owned factory、registrar trait object 與 numeric semantics。
+- [x] 3.1.2 定義 stable IDs、non-exhaustive value policy、unknown-value preserve/reject 規則與 major-version boundary。
+- [x] 3.1.3 建立 public-surface scan，拒絕 `std::String/Vec`、ordinary trait object、Future、closure、GPUI entity、private model/native wrapper。
+- [x] 3.1.4 建立 author fixture compile test，證明作者不需且不得手寫 `extern "C"` callback/layout/trampoline。
+- [x] 3.1.5 建立 old-host/new-value、malformed descriptor、layout drift 與 numeric reinterpretation negative fixtures。
+- [x] 3.1.6 取得 contract-owner 與 architecture reviewer 對 V1 baseline 的獨立簽核與 hash。
+- [x] 3.1.7 凍結每個 ABI object/returned value 的 allocation origin、destructor owner、registrar/trait-object ownership、permitted drop thread與DLL lifetime。
+- [x] 3.1.8 驗證host只在DLL resident且允許thread釋放plugin-created object。
+- [x] 3.1.9 對factory執行panic fixture，證明無unwind跨ABI且matching marker/owned memory正確處理。
+- [x] 3.1.10 驗證panic strategy進入fingerprint；`panic=abort` plugin不得宣稱typed panic recovery且mismatch在callback前拒絕。
+- [x] 3.1.11 對registrar執行panic fixture並驗證no-unwind/marker/owned-memory。
+- [x] 3.1.12 對provider執行panic fixture並驗證no-unwind/marker/owned-memory。
+- [x] 3.1.13 對renderer執行panic fixture並驗證no-unwind/marker/owned-memory。
+- [x] 3.1.14 對host service callback執行panic fixture並驗證no-unwind/marker/owned-memory。
+- [x] 3.1.15 對destructor執行panic fixture並驗證no-unwind、DLL resident與safe terminal。
+- [x] 3.1.16 驗證wrong-thread destruction被拒絕且object ownership未遺失。
+- [x] 3.1.17 驗證after-unload destruction在lifetime model中不可構造或被拒絕。
 
 ### 3.2 `.sepack` manifest、publisher 與 content validation
 
@@ -274,22 +274,22 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** package manifest/lifecycle/import contracts；records `3.2.*`。
 **完成門檻：** valid multi-content package 可表示；duplicate/unknown-required/over-length ID、contact purpose、publisher mismatch、path/hash/signature/target/reparse escape 各自整包拒絕且零 callback。
 
-- [deferred] 3.2.1 驗證 versioned manifest 對 entry points、dependencies、features、capabilities、data version 與 payload inventory 的 bounds。
-- [deferred] 3.2.2 驗證 publisher ID/display name/contact kinds，且至少一筆 support/security purpose。
-- [deferred] 3.2.3 驗證 signing identity 與 manifest publisher mismatch 在 registration 前拒絕。
-- [deferred] 3.2.4 驗證absolute package path拒絕。
-- [deferred] 3.2.5 驗證content hash mismatch整包拒絕。
-- [deferred] 3.2.6 對 valid Rust+Lua+Skin package 做 deterministic import，確認一個 package generation 與獨立 feature declarations。
-- [deferred] 3.2.7 驗證parent traversal package path拒絕。
-- [deferred] 3.2.8 驗證NUL package path拒絕。
-- [deferred] 3.2.9 驗證duplicate normalized package path拒絕。
-- [deferred] 3.2.10 驗證symlink package path escape拒絕。
-- [deferred] 3.2.11 驗證junction package path escape拒絕。
-- [deferred] 3.2.12 驗證generic reparse-point package path escape拒絕。
-- [deferred] 3.2.13 驗證signature mismatch整包拒絕。
-- [deferred] 3.2.14 驗證target mismatch整包拒絕。
-- [deferred] 3.2.15 驗證missing declared payload整包拒絕。
-- [deferred] 3.2.16 驗證undeclared payload整包拒絕。
+- [x] 3.2.1 驗證 versioned manifest 對 entry points、dependencies、features、capabilities、data version 與 payload inventory 的 bounds。
+- [x] 3.2.2 驗證 publisher ID/display name/contact kinds，且至少一筆 support/security purpose。
+- [x] 3.2.3 驗證 signing identity 與 manifest publisher mismatch 在 registration 前拒絕。
+- [x] 3.2.4 驗證absolute package path拒絕。
+- [x] 3.2.5 驗證content hash mismatch整包拒絕。
+- [x] 3.2.6 對 valid Rust+Lua+Skin package 做 deterministic import，確認一個 package generation 與獨立 feature declarations。
+- [x] 3.2.7 驗證parent traversal package path拒絕。
+- [x] 3.2.8 驗證NUL package path拒絕。
+- [x] 3.2.9 驗證duplicate normalized package path拒絕。
+- [x] 3.2.10 驗證symlink package path escape拒絕。
+- [x] 3.2.11 驗證junction package path escape拒絕。
+- [x] 3.2.12 驗證generic reparse-point package path escape拒絕。
+- [x] 3.2.13 驗證signature mismatch整包拒絕。
+- [x] 3.2.14 驗證target mismatch整包拒絕。
+- [x] 3.2.15 驗證missing declared payload整包拒絕。
+- [x] 3.2.16 驗證undeclared payload整包拒絕。
 
 ### 3.3 Package sources、resolver 與原子 registration
 
@@ -301,15 +301,15 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** resolver/source integration matrix；records `3.3.*`。
 **完成門檻：** 每 package ID 最多一版本；cycle/unsatisfied/hash/signature/target/entitlement failure 均無 partial contribution；built-in/local 在無 Steam 環境可用。
 
-- [deferred] 3.3.1 驗證 built-in 與 local-developer discovery 的 deterministic candidate order 與 package identity。
-- [deferred] 3.3.2 實作/稽核 replaceable Package Source 與 Entitlement Provider boundary，確認 root dependency graph 無 Steamworks。
-- [deferred] 3.3.3 驗證 version selection、dependency range 與 transitive graph 的 deterministic resolution。
-- [deferred] 3.3.4 驗證unsatisfied dependency的whole-package blocked state。
-- [deferred] 3.3.5 驗證 resolver 成功後才建立 sealed atomic registration plan，途中 fault 不留下 half registry。
-- [deferred] 3.3.6 驗證dependency cycle的whole-package blocked state。
-- [deferred] 3.3.7 驗證duplicate selected version的whole-package blocked state。
-- [deferred] 3.3.8 驗證target incompatibility的whole-package blocked state。
-- [deferred] 3.3.9 驗證SDK/UI compatibility failure的whole-package blocked state。
+- [x] 3.3.1 驗證 built-in 與 local-developer discovery 的 deterministic candidate order 與 package identity。
+- [x] 3.3.2 實作/稽核 replaceable Package Source 與 Entitlement Provider boundary，確認 root dependency graph 無 Steamworks。
+- [x] 3.3.3 驗證 version selection、dependency range 與 transitive graph 的 deterministic resolution。
+- [x] 3.3.4 驗證unsatisfied dependency的whole-package blocked state。
+- [x] 3.3.5 驗證 resolver 成功後才建立 sealed atomic registration plan，途中 fault 不留下 half registry。
+- [x] 3.3.6 驗證dependency cycle的whole-package blocked state。
+- [x] 3.3.7 驗證duplicate selected version的whole-package blocked state。
+- [x] 3.3.8 驗證target incompatibility的whole-package blocked state。
+- [x] 3.3.9 驗證SDK/UI compatibility failure的whole-package blocked state。
 
 ### 3.4 Desired/effective state 與 contribution authority
 
@@ -321,14 +321,14 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** feature-state/contribution-gate tests；records `3.4.*`。
 **完成門檻：** enabled/disabled/disabling/pending-restart/blocked/faulted transitions deterministic；parent off 保留 child desired；undeclared/duplicate/capability-exceeding contribution 整包拒絕。
 
-- [deferred] 3.4.1 驗證 global/package/feature desired state persistence 與 parent disable/re-enable child-state preservation。
-- [deferred] 3.4.2 驗證 dependency/compatibility/capability/restart inputs 對 effective state 的 deterministic resolution。
-- [deferred] 3.4.3 將每個 registrar descriptor 綁定 sealed package generation、feature ID 與 capability token。
-- [deferred] 3.4.4 驗證unknown feature contribution整包拒絕。
-- [deferred] 3.4.5 產生 host-owned immutable catalog snapshot；證明 model/UI 無法直接繞過 gate 修改 authority registry。
-- [deferred] 3.4.6 驗證duplicate stable contribution ID整包拒絕。
-- [deferred] 3.4.7 驗證undeclared capability contribution整包拒絕。
-- [deferred] 3.4.8 驗證capability-exceeding callback registration整包拒絕。
+- [x] 3.4.1 驗證 global/package/feature desired state persistence 與 parent disable/re-enable child-state preservation。
+- [x] 3.4.2 驗證 dependency/compatibility/capability/restart inputs 對 effective state 的 deterministic resolution。
+- [x] 3.4.3 將每個 registrar descriptor 綁定 sealed package generation、feature ID 與 capability token。
+- [x] 3.4.4 驗證unknown feature contribution整包拒絕。
+- [x] 3.4.5 產生 host-owned immutable catalog snapshot；證明 model/UI 無法直接繞過 gate 修改 authority registry。
+- [x] 3.4.6 驗證duplicate stable contribution ID整包拒絕。
+- [x] 3.4.7 驗證undeclared capability contribution整包拒絕。
+- [x] 3.4.8 驗證capability-exceeding callback registration整包拒絕。
 
 ### 3.5 Startup loader、resident lifecycle 與 bounded drain
 
@@ -340,13 +340,13 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** DLL loader/lifecycle/drain integration tests；records `3.5.*`。
 **完成門檻：** layout/major/fingerprint 在 callback 前 fail closed；loaded DLL resident 至 process exit；new/update/remove/unloaded enable 需 restart；drain timeout 轉 pending-restart。
 
-- [deferred] 3.5.1 驗證 DLL content/import/root/SDK major/UI fingerprint 的 pre-callback load order。
-- [deferred] 3.5.2 驗證 startup-only load 與 loaded module resident-until-exit invariants。
-- [deferred] 3.5.3 實作/稽核 disable sequence：gate new dispatch、cancel jobs、remove contributions、bounded callback drain。
-- [deferred] 3.5.4 驗證 successful drain 立即停止 contribution 但不 unload DLL。
-- [deferred] 3.5.5 驗證 callback drain timeout/fault 轉 pending-restart 且不強制中止或 unload。
-- [deferred] 3.5.6 驗證安裝、替換、移除與啟用本次 startup 未載入 DLL 均只設定 restart semantics。
-- [deferred] 3.5.7 將package/hash/signature/target/PE-policy pre-load validation獨立成gate，失敗時不得呼叫`LoadLibrary`。
+- [x] 3.5.1 驗證 DLL content/import/root/SDK major/UI fingerprint 的 pre-callback load order。
+- [x] 3.5.2 驗證 startup-only load 與 loaded module resident-until-exit invariants。
+- [x] 3.5.3 實作/稽核 disable sequence：gate new dispatch、cancel jobs、remove contributions、bounded callback drain。
+- [x] 3.5.4 驗證 successful drain 立即停止 contribution 但不 unload DLL。
+- [x] 3.5.5 驗證 callback drain timeout/fault 轉 pending-restart 且不強制中止或 unload。
+- [x] 3.5.6 驗證安裝、替換、移除與啟用本次 startup 未載入 DLL 均只設定 restart semantics。
+- [x] 3.5.7 將package/hash/signature/target/PE-policy pre-load validation獨立成gate，失敗時不得呼叫`LoadLibrary`。
 - [deferred] 3.5.8 在`LoadLibrary`前durably寫入package/incarnation-scoped load-attempt marker，寫入失敗時拒絕load。
 - [deferred] 3.5.9 以child-process DLLMain/TLS abort fixture證明next-start Safe Mode抑制嫌疑package。
 - [deferred] 3.5.10 驗證成功registration後matching load-attempt原子clear/registered且不與callback records混用。
@@ -1527,6 +1527,7 @@ documentation, and local Cargo completion.
 - [x] 17.1.4 Prove cold background completion, same-mtime process-restart cache hit, changed-mtime invalidation, corrupt-cache recovery, and stale UI generation rejection with minimal Cargo tests.
 - [x] 17.1.5 Wire the completed folder-size package into production and the installer without changing the standard no-plugin fallback; only then run its single headful UITEST case.
 - [x] 17.1.6 Track queued and in-flight folder-size identities so repeated UI submissions cannot restart an active recursive measurement; allow stale scans to finish caching while rejecting stale UI publication, then rebuild/package the DLL and rerun its headful UITEST.
+- [x] 17.1.7 Retain bounded folder-size value snapshots and submitted identities per `(tab_id, generation)` so tab switching reuses completed values while F5/navigation/content generation changes recalculate only the changed tab; add regression coverage and rerun the headful UITEST.
 - [x] 17.2.1 Complete `rust-folder-size-map-view` as an independent packaged example, including recursive incremental totals, navigation, selection, refresh/stale rejection, docs, then one UITEST.
 - [x] 17.3.1 Complete `rust-tokei-code-lines-column` as an independent packaged example, including integer sorting/settings, docs, then one UITEST.
 - [x] 17.4.1 Add the discover-only `LockOwnerQueryServiceV1` and complete `rust-lock-owner-column` without exposing process-control authority; package, then one UITEST.

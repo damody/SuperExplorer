@@ -63,6 +63,14 @@ Examples SHALL depend only on public SDK crates, their precisely locked private 
 - **WHEN** the active request generation changes before an existing folder measurement finishes
 - **THEN** the existing measurement may finish and populate its exact cache, its stale UI result is rejected, and work for the new generation is scheduled independently
 
+#### Scenario: User switches between two unchanged tabs
+- **WHEN** two tabs have completed folder-size values and the user switches between them without changing either tab generation
+- **THEN** the global presentation owner reuses each tab's retained snapshot, does not clear submitted identities, and does not schedule either folder again
+
+#### Scenario: One tab refreshes after snapshots were retained
+- **WHEN** F5, navigation, or content refresh advances one tab generation
+- **THEN** only that new tab generation starts with an empty snapshot and schedules fresh work; snapshots belonging to other unchanged tab generations remain reusable
+
 ### Requirement: Rust tokei column example
 `rust-tokei-code-lines-column` SHALL use a locked Rust tokei library in its DLL to return language, code, comment, blank and total counts in bounded batches, with a numeric selected sort metric and no OS process per file.
 
