@@ -34,7 +34,7 @@ use crate::{
 
 const ED25519_PUBLIC_KEY_BYTES: usize = 32;
 const RELEASE_TRUST_ROOTS_ARTIFACT_V1: &str = include_str!("../trusted-publisher-keys-v1.json");
-pub(crate) const RELEASE_TRUST_ROOTS_BUNDLE_ID_V1: &str = "sdk-c469f647d79d0534511b532c";
+pub(crate) const RELEASE_TRUST_ROOTS_BUNDLE_ID_V1: &str = "sdk-8107e581f0e1ba61c128dc64";
 const MAX_RELEASE_TRUST_ROOTS_V1: usize = 64;
 
 #[derive(Deserialize)]
