@@ -7,10 +7,7 @@ $cargoHome = Join-Path $tempRoot 'cargo-home'; $targetDir = Join-Path $tempRoot 
 $savedCargoHome = $env:CARGO_HOME; $savedTarget = $env:CARGO_TARGET_DIR
 try {
     New-Item -ItemType Directory -Path $cargoHome, $targetDir -Force | Out-Null
-    $configPath = & powershell.exe -NoProfile -File (Join-Path $sdkRoot 'scripts\prepare-local-cargo-source.ps1') -PluginRoot $fixtureRoot
-    $config = Get-Content -LiteralPath $configPath -Raw
-    [IO.File]::WriteAllText((Join-Path $cargoHome 'config.toml'), $config, [Text.UTF8Encoding]::new($false))
-    $env:CARGO_HOME = $cargoHome; $env:CARGO_TARGET_DIR = $targetDir
+    $env:CARGO_HOME = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) '.cargo'; $env:CARGO_TARGET_DIR = $targetDir
     Push-Location $fixtureRoot
     try {
         & cargo build --locked --offline --target x86_64-pc-windows-msvc

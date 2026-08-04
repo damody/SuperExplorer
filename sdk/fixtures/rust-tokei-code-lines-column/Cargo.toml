@@ -10,8 +10,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 abi_stable = { version = "=0.11.3", default-features = false }
-explorer-extension-api = "=1.2.0"
-explorer-extension-ui-api = "=1.2.0"
+explorer-extension-api = { path = "../../../crates/explorer-extension-api", version = "=1.2.0" }
+explorer-extension-ui-api = { path = "../../../crates/explorer-extension-ui-api", version = "=1.2.0" }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 tokei = { version = "=14.0.0", default-features = false }

@@ -35,8 +35,7 @@ function Invoke-Host([string] $Mode, [string] $Plugin, [bool] $ExpectProcessSucc
 }
 try {
     New-Item -ItemType Directory -Path $cargoHome, $pluginTarget, $baselineTarget, $hostTarget, $markerRoot -Force | Out-Null
-    $configPath = & powershell.exe -NoProfile -File (Join-Path $sdkRoot 'scripts\prepare-local-cargo-source.ps1') -PluginRoot $fixtureRoot
-    Copy-Item -LiteralPath $configPath -Destination (Join-Path $cargoHome 'config.toml') -Force
+    $env:CARGO_HOME = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) '.cargo'
     Invoke-CargoBuild $oldPluginRoot $pluginTarget; Invoke-CargoBuild $baselinePluginRoot $baselineTarget; Invoke-CargoBuild $hostRoot $hostTarget
     $pluginDll = Find-Artifact $pluginTarget 'extension_api_contract_old_v1_plugin.dll'; $hostExe = Find-Artifact $hostTarget 'extension-api-contract-host.exe'
     $baselineDll = Find-Artifact $baselineTarget 'extension_api_contract_rust_first_baseline_plugin.dll'

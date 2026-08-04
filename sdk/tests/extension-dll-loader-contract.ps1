@@ -33,9 +33,7 @@ try {
     # ABI v1 is still unpublished. This fixture intentionally exercises only
     # the current stateful registrar object; legacy raw-callback roots are not
     # a compatibility promise during this migration.
-    $configPath = & powershell.exe -NoProfile -File (Join-Path $repo 'sdk\scripts\prepare-local-cargo-source.ps1') -PluginRoot $fixture
-    Copy-Item -LiteralPath $configPath -Destination (Join-Path $cargoHome 'config.toml') -Force
-    $env:CARGO_HOME = $cargoHome; $env:CARGO_TARGET_DIR = $target
+    $env:CARGO_HOME = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) '.cargo'; $env:CARGO_TARGET_DIR = $target
     $artifact = Get-Content -LiteralPath (Join-Path $repo 'sdk\ui-abi-fingerprint.json') -Raw | ConvertFrom-Json
     $env:SUPEREXPLORER_UI_ABI_FINGERPRINT = $artifact.fingerprint
     $plugin = Join-Path $target 'x86_64-pc-windows-msvc\debug\extension_dll_loader_contract_plugin.dll'

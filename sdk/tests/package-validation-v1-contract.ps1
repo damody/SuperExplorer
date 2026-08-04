@@ -8,10 +8,7 @@ $savedCargoHome = $env:CARGO_HOME; $savedTarget = $env:CARGO_TARGET_DIR
 try {
     New-Item -ItemType Directory -Path $cargoHome, $targetDir, $runtimeRoot -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $fixtureRoot 'manifests') -Destination $runtimeRoot -Recurse -Force
-    $configPath = & powershell.exe -NoProfile -File (Join-Path $sdkRoot 'scripts\prepare-local-cargo-source.ps1') -PluginRoot $fixtureRoot
-    Copy-Item -LiteralPath $configPath -Destination (Join-Path $cargoHome 'config.toml') -Force
-    [IO.File]::WriteAllText((Join-Path $cargoHome 'config.toml'), $config, [Text.UTF8Encoding]::new($false))
-    $env:CARGO_HOME = $cargoHome; $env:CARGO_TARGET_DIR = $targetDir; $env:PACKAGE_VALIDATION_FIXTURE_ROOT = $runtimeRoot
+    $env:CARGO_HOME = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) '.cargo'; $env:CARGO_TARGET_DIR = $targetDir; $env:PACKAGE_VALIDATION_FIXTURE_ROOT = $runtimeRoot
     Push-Location $fixtureRoot
     try { & cargo build --locked --offline --target x86_64-pc-windows-msvc; if ($LASTEXITCODE -ne 0) { throw "cargo build failed (exit $LASTEXITCODE)" } } finally { Pop-Location }
     $exe = Join-Path $targetDir 'x86_64-pc-windows-msvc\debug\package-validation-v1-contract.exe'

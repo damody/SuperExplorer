@@ -13,9 +13,7 @@ $manifestPath = Join-Path $root 'plugin-project.json'
 if (-not (Test-Path -LiteralPath $manifestPath)) { throw 'plugin-project.json required' }
 if (-not (Test-Path -LiteralPath (Join-Path $core 'Cargo.toml'))) { throw 'plugin Rust core missing' }
 $sdkLock = Get-Content -LiteralPath (Join-Path $sdk 'sdk-lock.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-$localCargoConfig = (& (Join-Path $PSHOME 'powershell.exe') -NoProfile -File (Join-Path $PSScriptRoot 'prepare-local-cargo-source.ps1') -PluginRoot $root | Select-Object -Last 1)
-if (-not $localCargoConfig -or -not (Test-Path -LiteralPath $localCargoConfig -PathType Leaf)) { throw 'local exact-version Cargo source bootstrap failed' }
-$localCargoHome = Split-Path -Parent $localCargoConfig
+$standardCargoHome = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) '.cargo'
 Import-Module (Join-Path $PSScriptRoot 'sealed-cargo-authority.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'consumer-snapshot.psm1') -Force
 foreach ($configName in @('.cargo\config.toml','.cargo\config','rust-toolchain.toml','rust-toolchain')) {
@@ -58,7 +56,9 @@ function Assert-ValidationSnapshotIdentity {
 }
 $consumerTreeDigest = Get-BoundedConsumerTreeDigest $root
 $temporaryTarget = Join-Path ([IO.Path]::GetTempPath()) ('superexplorer-plugin-validate-target-' + [guid]::NewGuid().ToString('N'))
-$temporarySnapshot = Join-Path ([IO.Path]::GetTempPath()) ('superexplorer-plugin-validate-inputs-' + [guid]::NewGuid().ToString('N'))
+$snapshotBase = Join-Path (Split-Path -Parent $sdk) '.cache\consumer-snapshots'
+New-Item -ItemType Directory -Path $snapshotBase -Force | Out-Null
+$temporarySnapshot = Join-Path $snapshotBase ('validate-' + [guid]::NewGuid().ToString('N'))
 $savedCargoHome = [Environment]::GetEnvironmentVariable('CARGO_HOME','Process')
 $savedTargetDir = [Environment]::GetEnvironmentVariable('CARGO_TARGET_DIR','Process')
 $savedRustc = [Environment]::GetEnvironmentVariable('RUSTC','Process')
@@ -82,7 +82,7 @@ try {
     $cargoDirectory = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($cargoPath))
     $rustcDirectory = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($cargoAuthority.RustcPath))
     foreach ($name in $dangerous) { [Environment]::SetEnvironmentVariable($name,$null,'Process') }
-    $env:CARGO_HOME = $localCargoHome
+    $env:CARGO_HOME = $standardCargoHome
     New-Item -ItemType Directory -Path $temporaryTarget -Force | Out-Null
     Copy-BoundedConsumerSnapshot $root $temporarySnapshot | Out-Null
     if ((Get-BoundedConsumerTreeDigest $temporarySnapshot) -ne $consumerTreeDigest) {
@@ -101,7 +101,7 @@ try {
     $env:SUPEREXPLORER_TRUSTED_RUSTC_SHA256 = $cargoAuthority.RustcSha256
     Push-Location $sdk
     $sdkPushed = $true
-    $templateJson = & $cargoPath run --release --manifest-path (Join-Path $core 'Cargo.toml') --locked --offline --config $localCargoConfig -- materialize-folder-size-template $temporarySnapshot ([string]$sdkLock.bundle_id) ([string]$sdkLock.build_policy.abi_schema_version)
+    $templateJson = & $cargoPath run --release --manifest-path (Join-Path $core 'Cargo.toml') --locked --offline -- materialize-folder-size-template $temporarySnapshot ([string]$sdkLock.bundle_id) ([string]$sdkLock.build_policy.abi_schema_version)
     if ($LASTEXITCODE -ne 0) { throw 'private plugin template materialization failed' }
     $templateMaterialization = ($templateJson -join "`n") | ConvertFrom-Json
     if ($templateMaterialization.template_manifest_sha256 -notmatch '^[0-9a-f]{64}$' -or $templateMaterialization.resolved_manifest_sha256 -notmatch '^[0-9a-f]{64}$') { throw 'template materialization emitted invalid digests' }
@@ -120,7 +120,7 @@ try {
     $ErrorActionPreference = 'Continue'
     Push-Location $sdk
     $sdkPushed = $true
-    $reportJson = & $cargoPath run --release --manifest-path (Join-Path $core 'Cargo.toml') --locked --offline --config $localCargoConfig -- validate $temporarySnapshot
+    $reportJson = & $cargoPath run --release --manifest-path (Join-Path $core 'Cargo.toml') --locked --offline -- validate $temporarySnapshot
     $exitCode = $LASTEXITCODE
     Pop-Location
     $sdkPushed = $false

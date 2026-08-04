@@ -7,9 +7,7 @@ $root = (Resolve-Path -LiteralPath $PluginRoot).Path
 $manifestPath = Join-Path $root 'plugin-project.json'
 if (-not (Test-Path -LiteralPath $manifestPath)) { throw 'plugin-project.json required' }
 $sdkLock = Get-Content -LiteralPath (Join-Path $sdk 'sdk-lock.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-$localCargoConfig = (& (Join-Path $PSHOME 'powershell.exe') -NoProfile -File (Join-Path $PSScriptRoot 'prepare-local-cargo-source.ps1') -PluginRoot $root | Select-Object -Last 1)
-if (-not $localCargoConfig -or -not (Test-Path -LiteralPath $localCargoConfig -PathType Leaf)) { throw 'local exact-version Cargo source bootstrap failed' }
-$localCargoHome = Split-Path -Parent $localCargoConfig
+$standardCargoHome = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) '.cargo'
 Import-Module (Join-Path $PSScriptRoot 'sealed-cargo-authority.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'canonical-store-zip.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'consumer-snapshot.psm1') -Force
@@ -39,7 +37,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $localCargoRegistry 'cache') -PathTy
 $templateTarget = Join-Path ([IO.Path]::GetTempPath()) ('superexplorer-package-template-target-' + [guid]::NewGuid().ToString('N'))
 foreach ($name in @('CARGO_HOME','CARGO_TARGET_DIR','RUSTC','PATH','SUPEREXPLORER_TRUSTED_CARGO','SUPEREXPLORER_TRUSTED_CARGO_SHA256','SUPEREXPLORER_TRUSTED_RUSTC','SUPEREXPLORER_TRUSTED_RUSTC_SHA256')) { $savedTemplateEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 New-Item -ItemType Directory -Path $templateTarget -Force | Out-Null
-$env:CARGO_HOME = $localCargoHome
+$env:CARGO_HOME = $standardCargoHome
 $env:CARGO_TARGET_DIR = $templateTarget
 $env:RUSTC = $cargoAuthority.RustcPath
 $env:PATH = "$cargoDirectory;$rustcDirectory;$($savedTemplateEnvironment['PATH'])"
@@ -58,8 +56,17 @@ if (-not (Test-Path -LiteralPath $buildReportPath) -or -not (Test-Path -LiteralP
 foreach ($path in @($manifestPath, (Join-Path $root 'Cargo.lock'), $buildReportPath, $buildCompletePath, $validationReportPath, $dllPath)) {
     if ((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'package input is a symlink or reparse point' }
 }
-$privateSnapshotRoot = Join-Path ([IO.Path]::GetTempPath()) ('superexplorer-package-inputs-' + [guid]::NewGuid().ToString('N'))
+$snapshotBase = Join-Path (Split-Path -Parent $sdk) '.cache\consumer-snapshots'
+New-Item -ItemType Directory -Path $snapshotBase -Force | Out-Null
+$privateSnapshotRoot = Join-Path $snapshotBase ('package-' + [guid]::NewGuid().ToString('N'))
 $liveInputs = [ordered]@{ 'plugin-project.json' = $manifestPath; 'Cargo.lock' = (Join-Path $root 'Cargo.lock'); 'reports/build.json' = $buildReportPath; 'reports/build.complete.json' = $buildCompletePath; 'reports/validation.json' = $validationReportPath; 'plugin/plugin.dll' = $dllPath }
+$toolPath = Join-Path $buildRoot 'build\tools\windows-x64\tokei\tokei.exe'
+$toolLicensePath = Join-Path $buildRoot 'build\tools\windows-x64\tokei\LICENSE.txt'
+if ((Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8) -match 'lua-tokei-code-lines-column') {
+    if (-not (Test-Path -LiteralPath $toolPath) -or -not (Test-Path -LiteralPath $toolLicensePath)) { throw 'lua-tokei package requires its sealed tool and license build outputs' }
+    $liveInputs['tools/windows-x64/tokei/tokei.exe'] = $toolPath
+    $liveInputs['tools/windows-x64/tokei/LICENSE.txt'] = $toolLicensePath
+}
 $liveInputHashes = @{}
 $consumerTreeDigest = Get-BoundedConsumerTreeDigest $root
 Copy-BoundedConsumerSnapshot $root $privateSnapshotRoot | Out-Null
@@ -80,7 +87,7 @@ $privateBuildReportPath = Join-Path $privateSnapshotRoot 'reports\build.json'
 $privateBuildCompletePath = Join-Path $privateSnapshotRoot 'reports\build.complete.json'
 $privateValidationReportPath = Join-Path $privateSnapshotRoot 'reports\validation.json'
 $privateDllPath = Join-Path $privateSnapshotRoot 'plugin\plugin.dll'
-$templateJson = & $cargoPath run --release --locked --offline --config $localCargoConfig --manifest-path (Join-Path $sdk 'tools\plugin-tooling\Cargo.toml') -- materialize-folder-size-template $privateSnapshotRoot ([string]$sdkLock.bundle_id) ([string]$sdkLock.build_policy.abi_schema_version)
+$templateJson = & $cargoPath run --release --locked --offline --manifest-path (Join-Path $sdk 'tools\plugin-tooling\Cargo.toml') -- materialize-folder-size-template $privateSnapshotRoot ([string]$sdkLock.bundle_id) ([string]$sdkLock.build_policy.abi_schema_version)
 if ($LASTEXITCODE -ne 0) { throw 'private plugin template materialization failed before packaging' }
 $templateMaterialization = ($templateJson -join "`n") | ConvertFrom-Json
 if ($templateMaterialization.template_manifest_sha256 -notmatch '^[0-9a-f]{64}$' -or $templateMaterialization.resolved_manifest_sha256 -notmatch '^[0-9a-f]{64}$') { throw 'template materialization emitted invalid digests' }
@@ -170,7 +177,7 @@ try {
         $env:SUPEREXPLORER_TRUSTED_RUSTC_SHA256 = $cargoAuthority.RustcSha256
         Push-Location $sdk
         try {
-            & $cargoPath run --release --locked --offline --config $localCargoConfig --manifest-path (Join-Path $sdk 'tools\plugin-tooling\Cargo.toml') -- stage-package $privateSnapshotRoot $privateDllPath ([IO.Path]::GetFullPath($coreStageDirectory))
+            & $cargoPath run --release --locked --offline --manifest-path (Join-Path $sdk 'tools\plugin-tooling\Cargo.toml') -- stage-package $privateSnapshotRoot $privateDllPath ([IO.Path]::GetFullPath($coreStageDirectory))
         } finally { Pop-Location }
         if ($LASTEXITCODE -ne 0) { throw 'production PackageManifestV1 staging failed' }
     } finally {

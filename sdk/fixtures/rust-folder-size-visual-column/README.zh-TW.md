@@ -7,8 +7,7 @@ registry cache，並以鎖定依賴的 `--offline` 執行。若 cache 缺少鎖�
 
 ```powershell
 $pluginRoot = 'sdk/fixtures/rust-folder-size-visual-column'
-$cargoConfig = powershell -NoProfile -ExecutionPolicy Bypass -File sdk/scripts/prepare-local-cargo-source.ps1 -PluginRoot $pluginRoot
-cargo test --manifest-path "$pluginRoot/Cargo.toml" --locked --offline --config $cargoConfig
+cargo test --manifest-path "$pluginRoot/Cargo.toml" --locked --offline
 powershell -NoProfile -ExecutionPolicy Bypass -File sdk/scripts/validate-plugin.ps1 -PluginRoot sdk/fixtures/rust-folder-size-visual-column
 powershell -NoProfile -ExecutionPolicy Bypass -File sdk/scripts/build-plugin.ps1 -PluginRoot sdk/fixtures/rust-folder-size-visual-column
 powershell -NoProfile -ExecutionPolicy Bypass -File sdk/scripts/package-plugin.ps1 -PluginRoot sdk/fixtures/rust-folder-size-visual-column

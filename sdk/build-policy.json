@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "abi_schema_version": 1,
+  "abi_schema_version": 2,
   "fingerprint_algorithm": "sha256-canonical-json-v1",
   "profile": {
     "name": "release",

@@ -829,7 +829,7 @@ mod tests {
         let root = plugin_root();
         let registrar = root.create_registrar().create().into_result().unwrap();
         let request = RegistrarRequestV1 {
-            abi_schema: AbiSchemaIdV1::new(0x5345, 2),
+            abi_schema: AbiSchemaIdV1::new(0x5345, 3),
             ..registrar_request_v1()
         };
 

@@ -10,9 +10,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $root 'Cargo.toml')) -or -not (Test-
 }
 
 $sdkLock = Get-Content -LiteralPath (Join-Path $sdk 'sdk-lock.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-$localCargoConfig = (& (Join-Path $PSHOME 'powershell.exe') -NoProfile -File (Join-Path $PSScriptRoot 'prepare-local-cargo-source.ps1') -PluginRoot $root | Select-Object -Last 1)
-if (-not $localCargoConfig -or -not (Test-Path -LiteralPath $localCargoConfig -PathType Leaf)) { throw 'local exact-version Cargo source bootstrap failed' }
-$localCargoHome = Split-Path -Parent $localCargoConfig
+$standardCargoHome = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) '.cargo'
 Import-Module (Join-Path $PSScriptRoot 'sealed-cargo-authority.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'consumer-snapshot.psm1') -Force
 $targetTriple = 'x86_64-pc-windows-msvc'
@@ -33,10 +31,12 @@ if (-not (Test-Path -LiteralPath (Join-Path $localCargoRegistry 'cache') -PathTy
 foreach ($configName in @('.cargo\config.toml','.cargo\config','rust-toolchain.toml','rust-toolchain')) {
     if (Test-Path -LiteralPath (Join-Path $root $configName)) { throw 'consumer Cargo config overrides are forbidden' }
 }
-# Cargo walks ancestor directories for .cargo configuration. Build a private,
-# no-follow snapshot below the temporary hierarchy so neither a consumer nor an
-# ancestor can supply compiler/linker authority after preflight.
-$stagedRoot = Join-Path ([IO.Path]::GetTempPath()) ('superexplorer-plugin-source-' + [guid]::NewGuid().ToString('N'))
+# Keep the snapshot three levels below the repository so approved relative
+# public-SDK paths continue to resolve, but outside sdk/ where it would alter
+# the canonical bundle inventory during validation.
+$snapshotBase = Join-Path (Split-Path -Parent $sdk) '.cache\consumer-snapshots'
+New-Item -ItemType Directory -Path $snapshotBase -Force | Out-Null
+$stagedRoot = Join-Path $snapshotBase ('build-' + [guid]::NewGuid().ToString('N'))
 function Get-ConsumerTreeDigest([string]$Base) {
     return Get-BoundedConsumerTreeDigest $Base
 }
@@ -106,7 +106,7 @@ try {
     $cargoDirectory = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($cargoPath))
     $rustcDirectory = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($cargoAuthority.RustcPath))
     foreach ($name in $dangerous) { [Environment]::SetEnvironmentVariable($name, $null, 'Process') }
-    $env:CARGO_HOME = $localCargoHome
+    $env:CARGO_HOME = $standardCargoHome
     $env:RUSTC = $cargoAuthority.RustcPath
     $env:SUPEREXPLORER_TRUSTED_CARGO = $cargoPath
     $env:SUPEREXPLORER_TRUSTED_CARGO_SHA256 = $cargoHash
@@ -130,14 +130,14 @@ try {
     foreach ($configName in @('.cargo\config.toml','.cargo\config','rust-toolchain.toml','rust-toolchain')) { if (Test-Path -LiteralPath (Join-Path $stagedRoot $configName)) { throw 'staged consumer Cargo or Rustup config overrides are forbidden' } }
     Push-Location $sdk
     $pushed = $true
-    $templateJson = & $cargoPath run --release --locked --offline --config $localCargoConfig --manifest-path (Join-Path $sdk 'tools\plugin-tooling\Cargo.toml') -- materialize-folder-size-template $stagedRoot ([string]$sdkLock.bundle_id) ([string]$sdkLock.build_policy.abi_schema_version)
+    $templateJson = & $cargoPath run --release --locked --offline --manifest-path (Join-Path $sdk 'tools\plugin-tooling\Cargo.toml') -- materialize-folder-size-template $stagedRoot ([string]$sdkLock.bundle_id) ([string]$sdkLock.build_policy.abi_schema_version)
     if ($LASTEXITCODE -ne 0) { throw 'private plugin template materialization failed before build' }
     $templateMaterialization = ($templateJson -join "`n") | ConvertFrom-Json
     if ($templateMaterialization.template_manifest_sha256 -notmatch '^[0-9a-f]{64}$' -or $templateMaterialization.resolved_manifest_sha256 -notmatch '^[0-9a-f]{64}$') { throw 'template materialization emitted invalid digests' }
     Pop-Location
     $pushed = $false
     foreach ($name in $dangerous) { [Environment]::SetEnvironmentVariable($name, $null, 'Process') }
-    & (Join-Path $PSHOME 'powershell.exe') -NoProfile -File (Join-Path $PSScriptRoot 'validate-plugin.ps1') -PluginRoot $stagedRoot -TemplateManifestSha256 ([string]$templateMaterialization.template_manifest_sha256) -ExpectedResolvedManifestSha256 ([string]$templateMaterialization.resolved_manifest_sha256) | Out-Null
+    & (Join-Path $PSHOME 'powershell.exe') -NoProfile -File (Join-Path $PSScriptRoot 'validate-plugin.ps1') -PluginRoot $stagedRoot -TemplateManifestSha256 ([string]$templateMaterialization.template_manifest_sha256) -ExpectedResolvedManifestSha256 ([string]$templateMaterialization.resolved_manifest_sha256)
     if ($LASTEXITCODE -ne 0) { throw 'plugin validation failed before build' }
     # Only the bounded, no-reparse snapshot reaches PowerShell's JSON parser.
     # The core validator has already accepted the exact schema, so later path
@@ -147,7 +147,7 @@ try {
     if ($stagedManifestInfo.Length -gt 1MB) { throw 'plugin-project.json exceeds the 1 MiB build manifest limit' }
     $manifest = Get-Content -LiteralPath $stagedManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $crateFile = ([string]$manifest.rust.crate_name).Replace('-', '_') + '.dll'
-    $env:CARGO_HOME = $localCargoHome
+    $env:CARGO_HOME = $standardCargoHome
     $env:CARGO_TARGET_DIR = $temporaryTarget
     $env:RUSTC = $cargoAuthority.RustcPath
     $env:SUPEREXPLORER_TRUSTED_CARGO = $cargoPath
@@ -157,7 +157,7 @@ try {
     $env:PATH = "$cargoDirectory;$rustcDirectory;$savedPath"
     Push-Location $sdk
     $pushed = $true
-    & $cargoPath build --release --locked --offline --config $localCargoConfig --target $targetTriple --manifest-path (Join-Path $stagedRoot 'Cargo.toml')
+    & $cargoPath build --release --locked --offline --target $targetTriple --manifest-path (Join-Path $stagedRoot 'Cargo.toml')
     if ($LASTEXITCODE -ne 0) { throw "plugin build failed ($LASTEXITCODE)" }
     Pop-Location
     $pushed = $false
@@ -165,7 +165,7 @@ try {
 
     $dll = Join-Path $temporaryTarget "$targetTriple\release\$crateFile"
     if (-not (Test-Path -LiteralPath $dll)) { throw "expected cdylib was not produced: $crateFile" }
-    & $cargoPath run --release --locked --offline --config $localCargoConfig --manifest-path (Join-Path $sdk 'tools\plugin-tooling\Cargo.toml') -- inspect-dll $dll | Out-Host
+    & $cargoPath run --release --locked --offline --manifest-path (Join-Path $sdk 'tools\plugin-tooling\Cargo.toml') -- inspect-dll $dll | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'built DLL failed the non-loading abi_stable export inspection' }
     $buildDir = Join-Path $stage 'build'
     $reportDir = Join-Path $stage 'reports'
@@ -174,6 +174,16 @@ try {
     if (-not (Test-Path -LiteralPath $validationReport)) { throw 'validation report was not produced' }
     Copy-Item -LiteralPath $validationReport -Destination (Join-Path $reportDir 'validation.json')
     Copy-Item -LiteralPath $dll -Destination (Join-Path $buildDir 'plugin.dll')
+    $bundledTool = Join-Path $temporaryTarget "$targetTriple\release\tokei.exe"
+    $bundledToolReport = $null
+    if ([string]$manifest.package.id -eq 'lua-tokei-code-lines-column') {
+        if (-not (Test-Path -LiteralPath $bundledTool -PathType Leaf)) { throw 'lua-tokei build did not produce its exact bundled tokei.exe' }
+        $toolDir = Join-Path $buildDir 'tools\windows-x64\tokei'
+        New-Item -ItemType Directory -Path $toolDir -Force | Out-Null
+        Copy-Item -LiteralPath $bundledTool -Destination (Join-Path $toolDir 'tokei.exe')
+        Copy-Item -LiteralPath (Join-Path $stagedRoot 'tools\LICENSE-tokei.txt') -Destination (Join-Path $toolDir 'LICENSE.txt')
+        $bundledToolReport = [ordered]@{ path = 'build/tools/windows-x64/tokei/tokei.exe'; size = (Get-Item $bundledTool).Length; sha256 = (Get-FileHash -LiteralPath $bundledTool -Algorithm SHA256).Hash.ToLowerInvariant() }
+    }
     $dllHash = (Get-FileHash -LiteralPath $dll -Algorithm SHA256).Hash.ToLowerInvariant()
     $report = [ordered]@{
         schema_version = 1
@@ -188,6 +198,7 @@ try {
         }
         build_policy = $sdkLock.build_policy
         plugin_dll = [ordered]@{ path = 'build/plugin.dll'; size = (Get-Item $dll).Length; sha256 = $dllHash }
+        bundled_tool = $bundledToolReport
         inputs = [ordered]@{
             manifest_sha256 = (Get-FileHash -LiteralPath (Join-Path $stagedRoot 'plugin-project.json') -Algorithm SHA256).Hash.ToLowerInvariant()
             template_manifest_sha256 = [string]$templateMaterialization.template_manifest_sha256

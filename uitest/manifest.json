@@ -1688,6 +1688,53 @@
         "code-lines.png",
         "code-lines-detail.png"
       ]
+    },
+    {
+      "id": "rust-lock-owner-headful",
+      "description": "Load the discover-only Lock Owner column, observe a controlled holder, release it, refresh, and prove stale owner data clears.",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": [
+        "-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+        "{workspace_root}\\scripts\\smoke_tokei_plugin_headful.ps1",
+        "-Executable", "{workspace_root}\\target\\debug\\SuperExplorer.exe",
+        "-PluginDll", "{workspace_root}\\sdk\\fixtures\\rust-lock-owner-column\\target\\x86_64-pc-windows-msvc\\debug\\rust_lock_owner_column.dll",
+        "-InitialPath", "{workspace_root}\\sdk\\fixtures\\rust-lock-owner-column\\samples",
+        "-OutputDirectory", "{evidence_dir}", "-LockOwnerMode"
+      ],
+      "timeout_seconds": 120,
+      "prerequisites": [
+        {"kind":"windows"}, {"kind":"interactive_desktop"},
+        {"kind":"path","path":"{workspace_root}\\target\\debug\\SuperExplorer.exe"},
+        {"kind":"path","path":"{workspace_root}\\sdk\\fixtures\\rust-lock-owner-column\\target\\x86_64-pc-windows-msvc\\debug\\rust_lock_owner_column.dll"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "explorer"],
+      "covers": ["build-extensible-plugin-platform/source-example-plugin-suite/lock-owner-column-example"],
+      "required_artifacts": ["report.json", "lock-owner-present.png", "lock-owner-cleared.png"]
+    },
+    {
+      "id":"lua-tokei-code-lines-headful","description":"Run the Lua tokei functional suite, load its real DLL in the production app, and verify its registered column is present in the Extensions UI.","suites":["full","visual"],"program":"powershell.exe",
+      "arguments":["-Sta","-NoProfile","-ExecutionPolicy","Bypass","-File","{workspace_root}\\scripts\\smoke_new_plugin_headful.ps1","-PluginRoot","{workspace_root}\\sdk\\fixtures\\lua-tokei-code-lines-column","-PluginDll","{workspace_root}\\sdk\\fixtures\\lua-tokei-code-lines-column\\target\\x86_64-pc-windows-msvc\\debug\\lua_tokei_code_lines_column.dll","-ExpectedContribution","lua-tokei:column","-InitialPath","{workspace_root}\\sdk\\fixtures\\lua-tokei-code-lines-column\\samples","-OutputDirectory","{evidence_dir}"],
+      "timeout_seconds":240,"prerequisites":[{"kind":"windows"},{"kind":"interactive_desktop"},{"kind":"command","name":"cargo.exe"}],"exclusive_resources":["gui","cursor","explorer"],
+      "covers":["build-extensible-plugin-platform/source-example-plugin-suite/lua-tokei-column-example"],"required_artifacts":["report.json","extensions-contribution.png"]
+    },
+    {
+      "id":"lua-bulk-folder-headful","description":"Run bulk-folder plan tests, load the real DLL, and verify its command contribution is present in the production Extensions UI.","suites":["full","visual"],"program":"powershell.exe",
+      "arguments":["-Sta","-NoProfile","-ExecutionPolicy","Bypass","-File","{workspace_root}\\scripts\\smoke_new_plugin_headful.ps1","-PluginRoot","{workspace_root}\\sdk\\fixtures\\lua-bulk-folder-generator","-PluginDll","{workspace_root}\\sdk\\fixtures\\lua-bulk-folder-generator\\target\\x86_64-pc-windows-msvc\\debug\\lua_bulk_folder_generator.dll","-ExpectedContribution","lua-bulk-folder:button","-InitialPath","{workspace_root}","-OutputDirectory","{evidence_dir}"],
+      "timeout_seconds":240,"prerequisites":[{"kind":"windows"},{"kind":"interactive_desktop"},{"kind":"command","name":"cargo.exe"}],"exclusive_resources":["gui","cursor","explorer"],
+      "covers":["build-extensible-plugin-platform/source-example-plugin-suite/lua-bulk-folder-example"],"required_artifacts":["report.json","extensions-contribution.png"]
+    },
+    {
+      "id":"rust-exif-rename-headful","description":"Run in-process EXIF/token/plan tests, load the real DLL, and verify its command contribution in the production Extensions UI.","suites":["full","visual"],"program":"powershell.exe",
+      "arguments":["-Sta","-NoProfile","-ExecutionPolicy","Bypass","-File","{workspace_root}\\scripts\\smoke_new_plugin_headful.ps1","-PluginRoot","{workspace_root}\\sdk\\fixtures\\rust-exif-rename-command","-PluginDll","{workspace_root}\\sdk\\fixtures\\rust-exif-rename-command\\target\\x86_64-pc-windows-msvc\\debug\\rust_exif_rename_command.dll","-ExpectedContribution","rust-exif-rename:command","-InitialPath","{workspace_root}","-OutputDirectory","{evidence_dir}"],
+      "timeout_seconds":240,"prerequisites":[{"kind":"windows"},{"kind":"interactive_desktop"},{"kind":"command","name":"cargo.exe"}],"exclusive_resources":["gui","cursor","explorer"],
+      "covers":["build-extensible-plugin-platform/source-example-plugin-suite/self-contained-rust-exif-rename-example"],"required_artifacts":["report.json","extensions-contribution.png"]
+    },
+    {
+      "id":"rust-7z-virtual-folder-headful","description":"Run real 7z enumerate/read/extract/mutation tests, load the real DLL, and verify its resource contribution in the production Extensions UI.","suites":["full","visual"],"program":"powershell.exe",
+      "arguments":["-Sta","-NoProfile","-ExecutionPolicy","Bypass","-File","{workspace_root}\\scripts\\smoke_new_plugin_headful.ps1","-PluginRoot","{workspace_root}\\sdk\\fixtures\\rust-7z-virtual-folder","-PluginDll","{workspace_root}\\sdk\\fixtures\\rust-7z-virtual-folder\\target\\x86_64-pc-windows-msvc\\debug\\rust_7z_virtual_folder.dll","-ExpectedContribution","rust-7z:resource","-InitialPath","{workspace_root}","-OutputDirectory","{evidence_dir}"],
+      "timeout_seconds":240,"prerequisites":[{"kind":"windows"},{"kind":"interactive_desktop"},{"kind":"command","name":"cargo.exe"}],"exclusive_resources":["gui","cursor","explorer"],
+      "covers":["build-extensible-plugin-platform/source-example-plugin-suite/editable-7z-virtual-folder-example"],"required_artifacts":["report.json","extensions-contribution.png"]
     }
   ]
 }

@@ -8,15 +8,13 @@ incremental totals, GPUI drawing, selection, navigation, and F5 generation
 handling. No filesystem path, native handle, GPUI entity, or render context
 crosses the ABI.
 
-Build it from the repository root. The helper only prepares an ignored local
-Cargo directory source; dependency versions come directly from this example's
-`Cargo.toml`:
+Build it from the repository root. Dependency versions come directly from
+this example's `Cargo.toml`; offline builds use Cargo's standard local cache:
 
 ```powershell
 $pluginRoot = 'sdk/fixtures/rust-folder-size-map-view'
-$cargoConfig = powershell -NoProfile -ExecutionPolicy Bypass -File sdk/scripts/prepare-local-cargo-source.ps1 -PluginRoot $pluginRoot
-cargo build --manifest-path "$pluginRoot/Cargo.toml" --target x86_64-pc-windows-msvc --locked --offline --config $cargoConfig
-cargo test --manifest-path "$pluginRoot/Cargo.toml" --locked --offline --config $cargoConfig
+cargo build --manifest-path "$pluginRoot/Cargo.toml" --target x86_64-pc-windows-msvc --locked --offline
+cargo test --manifest-path "$pluginRoot/Cargo.toml" --locked --offline
 powershell -NoProfile -ExecutionPolicy Bypass -File sdk/scripts/validate-plugin.ps1 -PluginRoot $pluginRoot
 powershell -NoProfile -ExecutionPolicy Bypass -File sdk/scripts/build-plugin.ps1 -PluginRoot $pluginRoot
 powershell -NoProfile -ExecutionPolicy Bypass -File sdk/scripts/package-plugin.ps1 -PluginRoot $pluginRoot
