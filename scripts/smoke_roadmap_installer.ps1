@@ -21,7 +21,7 @@ function Invoke-Installer([string]$Name) {
 }
 
 function Assert-InstalledBinaries {
-    foreach ($name in @('SuperExplorer.exe','explorer-extension-broker.exe','explorer-extension-worker.exe','Uninstall.exe')) {
+    foreach ($name in @('SuperExplorer.exe','explorer-extension-broker.exe','explorer-extension-worker.exe','Everything64.dll','Uninstall.exe')) {
         $path = Join-Path $ownedRoot $name
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "installed binary is missing: $name" }
     }
@@ -77,7 +77,7 @@ try {
 
     [ordered]@{
         schema='roadmap-installer-validation-v1'; result='PASS'; captured_utc=[DateTime]::UtcNow.ToString('o')
-        installed_binaries=@('SuperExplorer.exe','explorer-extension-broker.exe','explorer-extension-worker.exe')
+        installed_binaries=@('SuperExplorer.exe','explorer-extension-broker.exe','explorer-extension-worker.exe','Everything64.dll')
         broker_marker=$marker; fresh_install='PASS'; installed_path_e2e='PASS'; upgrade='PASS'; uninstall='PASS'
         user_data_policy='The uninstaller removes program files only; isolated LOCALAPPDATA remains recoverable by design.'
     } | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $OutputDirectory 'report.json')

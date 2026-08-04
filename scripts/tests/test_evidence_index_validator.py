@@ -354,6 +354,9 @@ class EvidenceIndexValidatorTests(unittest.TestCase):
         self.assertIn("task_id 1.1.2 is not an L3", "\n".join(str(issue) for issue in issues))
         self.assertEqual(self.validate(record(), tasks=plan), [])
 
+    def test_deferred_task_marker_is_an_authoritative_l3(self) -> None:
+        self.assertEqual(self.validate(record(), tasks="- [deferred] 1.1.1 deferred leaf\n"), [])
+
     def test_lineage_mapping_targets_must_exist_in_authoritative_tasks_plan(self) -> None:
         plan = "- [ ] 1.1.1 known leaf\n"
         mapping = {"format": "legacy-lineage-map-v1", "entries": [{"new_l3_ids": ["9.9.9"]}]}

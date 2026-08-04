@@ -158,6 +158,7 @@ local function main()
     local release_executable = path(root, "target", "release", "SuperExplorer.exe")
     local broker_executable = path(root, "target", "release", "explorer-extension-broker.exe")
     local worker_executable = path(root, "target", "release", "explorer-extension-worker.exe")
+    local everything_dll = path(root, "target", "release", "Everything64.dll")
     local plugin_dll = path(
         root,
         "sdk", "fixtures", "rust-folder-size-visual-column", "target",
@@ -206,6 +207,7 @@ local function main()
     local application_size = validate_executable(release_executable, "發行版執行檔")
     validate_executable(broker_executable, "extension broker")
     validate_executable(worker_executable, "extension worker")
+    validate_executable(everything_dll, "Everything SDK DLL")
     local plugin_size = validate_executable(plugin_dll, "rust-folder-size-visual-column Plugin DLL")
     os.remove(output)
     process.run({
@@ -217,6 +219,7 @@ local function main()
             "/DAPP_EXE=" .. release_executable,
             "/DBROKER_EXE=" .. broker_executable,
             "/DWORKER_EXE=" .. worker_executable,
+            "/DEVERYTHING_DLL=" .. everything_dll,
             "/DPLUGIN_DLL=" .. plugin_dll,
             "/DOUTPUT_FILE=" .. output,
             nsis_script,

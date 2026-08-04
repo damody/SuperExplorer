@@ -17,6 +17,9 @@
 !ifndef WORKER_EXE
     !error "WORKER_EXE must be provided by build_install.lua"
 !endif
+!ifndef EVERYTHING_DLL
+    !error "EVERYTHING_DLL must be provided by build_install.lua"
+!endif
 !ifndef PLUGIN_DLL
     !error "PLUGIN_DLL must be provided by build_install.lua"
 !endif
@@ -69,6 +72,7 @@ Section "SuperExplorer" SEC_MAIN
     File "${APP_EXE}"
     File /oname=explorer-extension-broker.exe "${BROKER_EXE}"
     File /oname=explorer-extension-worker.exe "${WORKER_EXE}"
+    File /oname=Everything64.dll "${EVERYTHING_DLL}"
 
     SetOutPath "$INSTDIR\plugins"
     File /oname=rust_folder_size_visual_column.dll "${PLUGIN_DLL}"
@@ -102,6 +106,7 @@ Section "Uninstall"
     Delete "$INSTDIR\SuperExplorer.exe"
     Delete "$INSTDIR\explorer-extension-broker.exe"
     Delete "$INSTDIR\explorer-extension-worker.exe"
+    Delete "$INSTDIR\Everything64.dll"
     Delete "$INSTDIR\plugins\rust_folder_size_visual_column.dll"
     RMDir "$INSTDIR\plugins"
     Delete "$INSTDIR\Uninstall.exe"
