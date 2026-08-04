@@ -277,7 +277,11 @@ fn diagnostic(state: SearchSourceState, detail: impl Into<String>) -> BackendDia
 
 fn evaluates(expression: &Expr, path: &Path, metadata: &Metadata) -> bool {
     match expression {
-        Expr::Text { value, .. } => contains(file_name(path), value),
+        Expr::Text {
+            value,
+            phrase,
+            glob,
+        } => crate::matches_text(file_name(path), value, *phrase, *glob),
         Expr::Filter {
             key,
             comparison,

@@ -76,7 +76,7 @@ pub(crate) fn execute_with_terminals<P: RequiredTerminalPublisher>(
                 None,
             )?;
             match run_everything_bounded(provider, root, &expression, context, events) {
-                Ok(result_count) => {
+                Ok(_result_count) => {
                     publish_status(
                         events,
                         context,
@@ -84,13 +84,11 @@ pub(crate) fn execute_with_terminals<P: RequiredTerminalPublisher>(
                         SearchSourcePhase::Complete,
                         None,
                     )?;
-                    if result_count > 0 {
-                        terminals.publish_terminal(ExplorerEvent::SearchFinished {
-                            context: context.clone(),
-                            outcome: SearchTerminal::Finished,
-                        });
-                        return Ok(());
-                    }
+                    terminals.publish_terminal(ExplorerEvent::SearchFinished {
+                        context: context.clone(),
+                        outcome: SearchTerminal::Finished,
+                    });
+                    return Ok(());
                 }
                 Err(_detail) if context.cancellation.is_cancelled() => {
                     publish_status(
