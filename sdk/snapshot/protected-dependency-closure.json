@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "algorithm": "normalized-package-edges-v2",
-  "edge_digest": "3787240d05be01881b9d7e953ad3322ac13dc6211372caec76fc4b110432264d",
+  "edge_digest": "c8f7bc6527e6ae9b52f3474f6e23342c2b6f554c71c3e8919831b66c50ad2143",
   "required_roots": [
     "abi_stable@0.11.3",
     "gpui@0.2.2"

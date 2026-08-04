@@ -6,7 +6,7 @@ $oldPluginRoot = Join-Path $fixtureRoot 'old-v1-plugin'
 $baselinePluginRoot = Join-Path $fixtureRoot 'rust-first-baseline-plugin'
 $hostRoot = Join-Path $fixtureRoot 'current-host'
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('superexplorer-extension-api-' + [Guid]::NewGuid().ToString('N'))
-$cargoHome = Join-Path $tempRoot 'cargo-home'; $pluginTarget = Join-Path $tempRoot 'target-old-v1-plugin'; $baselineTarget = Join-Path $tempRoot 'target-rust-first-baseline'; $hostTarget = Join-Path $tempRoot 'target-current-host'; $markerRoot = Join-Path $tempRoot 'markers'
+$cargoHome = if ([string]::IsNullOrWhiteSpace($env:CARGO_HOME)) { Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) '.cargo' } else { $env:CARGO_HOME }; $pluginTarget = Join-Path $tempRoot 'target-old-v1-plugin'; $baselineTarget = Join-Path $tempRoot 'target-rust-first-baseline'; $hostTarget = Join-Path $tempRoot 'target-current-host'; $markerRoot = Join-Path $tempRoot 'markers'
 $savedCargoHome = $env:CARGO_HOME; $savedCargoTargetDir = $env:CARGO_TARGET_DIR
 function Fail([string] $Message) { throw $Message }
 function Invoke-CargoBuild([string] $Project, [string] $TargetDir) {
@@ -34,8 +34,8 @@ function Invoke-Host([string] $Mode, [string] $Plugin, [bool] $ExpectProcessSucc
     if ($markerExists -ne $ExpectMarker) { Fail "$Mode marker presence was $markerExists, expected $ExpectMarker" }
 }
 try {
-    New-Item -ItemType Directory -Path $cargoHome, $pluginTarget, $baselineTarget, $hostTarget, $markerRoot -Force | Out-Null
-    $env:CARGO_HOME = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) '.cargo'
+    New-Item -ItemType Directory -Path $pluginTarget, $baselineTarget, $hostTarget, $markerRoot -Force | Out-Null
+    if (-not (Test-Path -LiteralPath (Join-Path $cargoHome 'registry') -PathType Container)) { Fail 'Prefilled local Cargo registry cache is unavailable; bootstrap it before offline validation.' }
     Invoke-CargoBuild $oldPluginRoot $pluginTarget; Invoke-CargoBuild $baselinePluginRoot $baselineTarget; Invoke-CargoBuild $hostRoot $hostTarget
     $pluginDll = Find-Artifact $pluginTarget 'extension_api_contract_old_v1_plugin.dll'; $hostExe = Find-Artifact $hostTarget 'extension-api-contract-host.exe'
     $baselineDll = Find-Artifact $baselineTarget 'extension_api_contract_rust_first_baseline_plugin.dll'

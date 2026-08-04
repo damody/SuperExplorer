@@ -3,7 +3,7 @@
   "package": {"id": "example.multi-content", "version": "1.2.3"},
   "publisher": {"id": "example.publisher", "display_name": "Example Publisher", "contacts": [{"kind": "email", "value": "support@example.invalid", "purposes": ["support"]}]},
   "sdk": {"bundle_id": "dev.20260802", "target": "x86_64-pc-windows-msvc", "abi_schema": 1, "gpui": true, "ui_abi_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-  "rust": [{"id": "native", "entrypoint": "native/plugin.dll", "root_module": "example.root", "sdk_major": 1}],
+  "rust": [{"id": "native", "entrypoint": "native/plugin.dll", "root_contract_id": {"namespace": 1397030913, "value": 1}, "sdk_major": 1}],
   "lua": [{"id": "automation", "entrypoint": "lua/commands.lua"}],
   "skins": [{"id": "appearance", "entrypoint": "skin/skin.json"}],
   "locales": [{"locale": "en-US", "path": "locales/en-US.json", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
