@@ -122,6 +122,7 @@ pub enum ContextMenuHostCommand {
     Share,
     PinToStart,
     ToggleQuickAccess,
+    AddBookmark,
     Properties,
 }
 
@@ -138,6 +139,7 @@ impl ContextMenuHostCommand {
             Self::Share => "windows.share",
             Self::PinToStart => "pintostartscreen",
             Self::ToggleQuickAccess => "togglequickaccess",
+            Self::AddBookmark => "addbookmark",
             Self::Properties => "properties",
         }
     }
@@ -154,6 +156,7 @@ impl ContextMenuHostCommand {
             "windows.share" => Some(Self::Share),
             "pintostartscreen" => Some(Self::PinToStart),
             "togglequickaccess" => Some(Self::ToggleQuickAccess),
+            "addbookmark" => Some(Self::AddBookmark),
             "properties" => Some(Self::Properties),
             _ => None,
         }
@@ -193,6 +196,7 @@ mod tests {
             ContextMenuHostCommand::Share,
             ContextMenuHostCommand::PinToStart,
             ContextMenuHostCommand::ToggleQuickAccess,
+            ContextMenuHostCommand::AddBookmark,
             ContextMenuHostCommand::Properties,
         ] {
             assert_eq!(

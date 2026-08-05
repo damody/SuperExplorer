@@ -22,6 +22,7 @@ pub mod diagnostics;
 pub mod extension_commands;
 pub mod file_view;
 mod fluent_assets;
+pub mod folder_options_window;
 pub mod folder_size_column;
 pub mod size_map_view;
 pub use fluent_assets::ExplorerAssets;
@@ -49,15 +50,42 @@ use std::{
 };
 
 const SHELL_TEXTURE_CACHE_CAPACITY: usize = 512;
-const SHELL_TEXTURE_CACHE_BYTE_BUDGET: usize = 64 * 1024 * 1024;
+const SHELL_TEXTURE_CACHE_BYTE_BUDGET: usize = 128 * 1024 * 1024;
 const BASE_ICON_CACHE_CAPACITY: usize = 256;
 const BASE_ICON_CACHE_BYTE_BUDGET: usize = 32 * 1024 * 1024;
 const FILE_VIEWPORT_ICON_REQUEST_CAP: usize = 64;
+const FILE_PRELAYOUT_ICON_PRIME_CAP: usize = 16;
+// Keep UI admission aligned with explorer-shell-win's bounded thumbnail worker domain.
+// Admitting more here turns the excess requests into terminal Availability failures, leaving
+// their Shell-icon fallback visible until the directory is revisited.
+const THUMBNAIL_CONCURRENCY_LIMIT: usize = 2;
 const FOREGROUND_SERVICE_EVENT_CAPACITY: usize = 512;
 const ENRICHMENT_SERVICE_EVENT_CAPACITY: usize = 512;
 
-fn prelayout_icon_range(item_count: usize, layout_ready: bool) -> Option<std::ops::Range<usize>> {
-    (!layout_ready).then_some(0..item_count.min(FILE_VIEWPORT_ICON_REQUEST_CAP))
+fn icon_prime_cap(settings: &explorer_model::ViewSettings, dpi: u16) -> usize {
+    let logical_size = navigation_pane::view_icon_logical_size_for_settings(settings);
+    let physical_size = ((u32::from(dpi) * u32::from(logical_size) + 48) / 96).clamp(16, 1_024);
+    let bytes_per_icon = usize::try_from(physical_size)
+        .unwrap_or(1_024)
+        .saturating_pow(2)
+        .saturating_mul(4);
+    (shell_texture_cache_byte_budget(settings) / 2 / bytes_per_icon.max(1))
+        .clamp(1, FILE_PRELAYOUT_ICON_PRIME_CAP)
+}
+
+fn shell_texture_cache_byte_budget(settings: &explorer_model::ViewSettings) -> usize {
+    usize::from(explorer_model::normalized_icon_cache_memory_mb(
+        settings.icon_cache_memory_mb,
+    ))
+    .saturating_mul(1024 * 1024)
+}
+
+fn prelayout_icon_range(
+    item_count: usize,
+    layout_ready: bool,
+    prime_cap: usize,
+) -> Option<std::ops::Range<usize>> {
+    (!layout_ready).then_some(0..item_count.min(prime_cap))
 }
 
 #[cfg(test)]
@@ -72,11 +100,10 @@ fn prime_top_icon_range(
     item_count: usize,
     scroll_offset: f32,
     range: std::ops::Range<usize>,
+    prime_cap: usize,
 ) -> std::ops::Range<usize> {
-    if scroll_offset <= f32::EPSILON {
-        0..range
-            .end
-            .max(item_count.min(FILE_VIEWPORT_ICON_REQUEST_CAP))
+    if scroll_offset <= f32::EPSILON && range.is_empty() {
+        0..item_count.min(prime_cap)
     } else {
         range
     }
@@ -113,6 +140,45 @@ fn dpi_from_scale(scale_factor: f32) -> u16 {
     (scale_factor * 96.0)
         .round()
         .clamp(96.0, f32::from(u16::MAX)) as u16
+}
+
+fn thumbnail_physical_size(logical_size: u16, dpi: u16) -> u16 {
+    let physical = u32::from(logical_size)
+        .saturating_mul(u32::from(dpi))
+        .saturating_add(95)
+        / 96;
+    u16::try_from(physical).unwrap_or(u16::MAX).max(1)
+}
+
+fn thumbnail_presentation_matches_demand(
+    key: &explorer_model::ThumbnailRequestKey,
+    presentation: &explorer_model::ShellIconKey,
+    context: &explorer_model::RequestContext,
+    settings: &explorer_model::ViewSettings,
+    theme: explorer_model::ShellIconTheme,
+    dpi: u16,
+    association_generation: u64,
+    overlay_generation: u64,
+) -> bool {
+    let (mode, policy_thumbnail_size) = explorer_model::view_mode_thumbnail_policy(settings.mode);
+    let logical_icon_size = navigation_pane::view_icon_logical_size_for_settings(settings);
+    let logical_thumbnail_size = policy_thumbnail_size.max(logical_icon_size);
+    let expected_icon_size =
+        ((u32::from(dpi) * u32::from(logical_icon_size) + 48) / 96).clamp(16, 1_024) as u16;
+    mode == explorer_model::ThumbnailMode::Thumbnail
+        && key.mode == mode
+        && key.source_generation == context.generation.value()
+        && key.physical_size == thumbnail_physical_size(logical_thumbnail_size, dpi)
+        && key.dpi == dpi
+        && key.theme == theme
+        && key.association_generation == association_generation
+        && key.overlay_generation == overlay_generation
+        && presentation.item_id.as_ref() == Some(&key.item_id)
+        && presentation.size_bucket == expected_icon_size
+        && presentation.dpi == dpi
+        && presentation.theme == theme
+        && presentation.association_generation == association_generation
+        && presentation.overlay_generation == overlay_generation
 }
 
 fn physical_client_to_logical(value: f32, scale_factor: f32) -> Option<f32> {
@@ -175,6 +241,9 @@ fn action_for_host_context_command(
         explorer_model::ContextMenuHostCommand::ToggleQuickAccess => {
             ExplorerAction::AddSelectedToFavorites
         }
+        explorer_model::ContextMenuHostCommand::AddBookmark => {
+            ExplorerAction::AddSelectedToBookmarks
+        }
         explorer_model::ContextMenuHostCommand::Properties => {
             ExplorerAction::ShowPropertiesSelected
         }
@@ -222,6 +291,7 @@ fn coalesce_directory_events(
 
 struct VisibleItemIconCache {
     entries: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+    thumbnail_entries: HashSet<explorer_model::ShellIconKey>,
     order: VecDeque<explorer_model::ShellIconKey>,
     latest_association: HashMap<explorer_model::LocationDescriptor, u64>,
     latest_overlay: HashMap<explorer_model::LocationDescriptor, u64>,
@@ -252,6 +322,7 @@ impl Default for VisibleItemIconCache {
     fn default() -> Self {
         Self {
             entries: HashMap::new(),
+            thumbnail_entries: HashSet::new(),
             order: VecDeque::new(),
             latest_association: HashMap::new(),
             latest_overlay: HashMap::new(),
@@ -274,13 +345,47 @@ impl VisibleItemIconCache {
 
     fn clear_overlay_dependent(&mut self) {
         self.entries.clear();
+        self.thumbnail_entries.clear();
         self.order.clear();
         self.latest_association.clear();
         self.latest_overlay.clear();
         self.current_bytes = 0;
     }
 
+    fn set_byte_budget(&mut self, byte_budget: usize) {
+        self.byte_budget = byte_budget.max(1024 * 1024);
+        while self.current_bytes > self.byte_budget {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            if self.entries.remove(&oldest).is_some() {
+                self.thumbnail_entries.remove(&oldest);
+                self.current_bytes = self
+                    .current_bytes
+                    .saturating_sub(estimated_icon_bytes(&oldest));
+                self.evictions = self.evictions.saturating_add(1);
+            }
+        }
+    }
+
     fn insert(&mut self, key: &explorer_model::ShellIconKey, texture: Arc<RenderImage>) -> bool {
+        self.insert_with_provenance(key, texture, FileVisualProvenance::Shell)
+    }
+
+    fn insert_thumbnail(
+        &mut self,
+        key: &explorer_model::ShellIconKey,
+        texture: Arc<RenderImage>,
+    ) -> bool {
+        self.insert_with_provenance(key, texture, FileVisualProvenance::Thumbnail)
+    }
+
+    fn insert_with_provenance(
+        &mut self,
+        key: &explorer_model::ShellIconKey,
+        texture: Arc<RenderImage>,
+        provenance: FileVisualProvenance,
+    ) -> bool {
         let latest = self
             .latest_association
             .entry(key.location.clone())
@@ -298,11 +403,21 @@ impl VisibleItemIconCache {
                     || candidate.association_generation >= key.association_generation
                         && candidate.overlay_generation >= key.overlay_generation
             });
+            self.thumbnail_entries
+                .retain(|candidate| self.entries.contains_key(candidate));
             self.order
                 .retain(|candidate| self.entries.contains_key(candidate));
             self.recalculate_bytes();
         }
         let replaced = self.entries.insert(key.clone(), texture);
+        match provenance {
+            FileVisualProvenance::Shell => {
+                self.thumbnail_entries.remove(key);
+            }
+            FileVisualProvenance::Thumbnail => {
+                self.thumbnail_entries.insert(key.clone());
+            }
+        }
         if replaced.is_none() {
             self.current_bytes = self.current_bytes.saturating_add(estimated_icon_bytes(key));
         }
@@ -311,6 +426,7 @@ impl VisibleItemIconCache {
             if let Some(oldest) = self.order.pop_front()
                 && self.entries.remove(&oldest).is_some()
             {
+                self.thumbnail_entries.remove(&oldest);
                 self.current_bytes = self
                     .current_bytes
                     .saturating_sub(estimated_icon_bytes(&oldest));
@@ -329,6 +445,51 @@ impl VisibleItemIconCache {
             self.misses = self.misses.saturating_add(1);
             None
         }
+    }
+
+    /// Returns the exact file texture when available, otherwise the largest texture for the same
+    /// item and current display/invalidation context. This lets maximum zoom enlarge valid Shell
+    /// pixels instead of dropping to the fixed generic fallback while a larger request is pending
+    /// or unavailable.
+    #[cfg(test)]
+    fn get_compatible_file_icon(
+        &mut self,
+        key: &explorer_model::ShellIconKey,
+    ) -> Option<Arc<RenderImage>> {
+        self.get_compatible_file_visual(key)
+            .map(|visual| visual.texture)
+    }
+
+    fn get_compatible_file_visual(
+        &mut self,
+        key: &explorer_model::ShellIconKey,
+    ) -> Option<CachedFileVisual> {
+        let candidate = if self.entries.contains_key(key) {
+            key.clone()
+        } else {
+            self.entries
+                .keys()
+                .filter(|candidate| {
+                    key.item_id.is_some()
+                        && candidate.item_id == key.item_id
+                        && candidate.location == key.location
+                        && candidate.dpi == key.dpi
+                        && candidate.theme == key.theme
+                        && candidate.association_generation == key.association_generation
+                        && candidate.overlay_generation == key.overlay_generation
+                })
+                .max_by_key(|candidate| candidate.size_bucket)
+                .cloned()?
+        };
+        let provenance = if self.thumbnail_entries.contains(&candidate) {
+            FileVisualProvenance::Thumbnail
+        } else {
+            FileVisualProvenance::Shell
+        };
+        self.get(&candidate).map(|texture| CachedFileVisual {
+            texture,
+            provenance,
+        })
     }
 
     fn get_compatible_navigation_icon(
@@ -365,6 +526,8 @@ impl VisibleItemIconCache {
     fn invalidate_environment(&mut self, dpi: u16, theme: explorer_model::ShellIconTheme) {
         self.entries
             .retain(|key, _| key.dpi == dpi && key.theme == theme);
+        self.thumbnail_entries
+            .retain(|key| self.entries.contains_key(key));
         self.order.retain(|key| self.entries.contains_key(key));
         self.recalculate_bytes();
     }
@@ -390,6 +553,23 @@ impl VisibleItemIconCache {
             stale_rejections: self.stale_rejections,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FileVisualProvenance {
+    Shell,
+    Thumbnail,
+}
+
+struct CachedFileVisual {
+    texture: Arc<RenderImage>,
+    provenance: FileVisualProvenance,
+}
+
+#[derive(Default)]
+struct FileIconSnapshot {
+    textures: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+    thumbnail_keys: HashSet<explorer_model::ShellIconKey>,
 }
 
 fn estimated_icon_bytes(key: &explorer_model::ShellIconKey) -> usize {
@@ -441,6 +621,26 @@ impl BaseIconCache {
             self.misses = self.misses.saturating_add(1);
             None
         }
+    }
+
+    /// Selects the largest current-context base texture when Shell cannot provide the exact
+    /// maximum-size folder bitmap. Exact pixels always win.
+    fn get_compatible(&mut self, key: &explorer_model::BaseIconKey) -> Option<Arc<RenderImage>> {
+        if let Some(texture) = self.get(key) {
+            return Some(texture);
+        }
+        let candidate = self
+            .entries
+            .keys()
+            .filter(|candidate| {
+                candidate.class == key.class
+                    && candidate.dpi == key.dpi
+                    && candidate.theme == key.theme
+                    && candidate.association_epoch == key.association_epoch
+            })
+            .max_by_key(|candidate| candidate.size_bucket)
+            .cloned()?;
+        self.get(&candidate)
     }
 
     fn invalidate_environment(&mut self, dpi: u16, theme: explorer_model::ShellIconTheme) {
@@ -651,7 +851,6 @@ pub struct ExplorerRoot {
     tokens: UiTokens,
     state: AppViewState,
     service: Option<Arc<dyn ExplorerService>>,
-    folder_scripts: Option<explorer_automation::FolderScriptHandle>,
     pending_foreground_events: VecDeque<explorer_model::ExplorerEvent>,
     pending_enrichment_events: VecDeque<explorer_model::ExplorerEvent>,
     pending_extension_file_operations: VecDeque<explorer_model::FileOperationRequest>,
@@ -706,6 +905,8 @@ pub struct ExplorerRoot {
     address_input: Option<gpui::Entity<EditableTextState>>,
     search_input: Option<gpui::Entity<EditableTextState>>,
     rename_input: Option<gpui::Entity<EditableTextState>>,
+    bookmark_name_input: Option<gpui::Entity<EditableTextState>>,
+    bookmark_payload_input: Option<gpui::Entity<EditableTextState>>,
     pointer_capture_factory: Option<PointerCaptureFactory>,
     pointer_capture: Option<Box<dyn PointerCaptureSession>>,
     durable_state_observer: Option<DurableStateObserver>,
@@ -713,6 +914,8 @@ pub struct ExplorerRoot {
     session_reset_observer: Option<SessionResetObserver>,
     broker_retry_observer: Option<BrokerRetryObserver>,
     command_prompt_launcher: Option<CommandPromptLauncher>,
+    bookmark_file_launcher: Option<BookmarkFileLauncher>,
+    folder_options_window_observer: Option<FolderOptionsWindowObserver>,
     last_window_title: Option<String>,
     navigation_history_release_deadline: Option<Instant>,
     safe_mode_offers: Vec<SafeModeOfferV1>,
@@ -728,9 +931,10 @@ pub struct ExplorerRoot {
     )>,
     folder_size_context: Option<explorer_model::RequestContext>,
     folder_size_display_override: Option<folder_size_column::FolderSizeDisplayMode>,
-    code_lines_runtime: Option<code_lines_column::CodeLinesRuntimeHandleV1>,
-    code_lines_visuals: Option<code_lines_column::CodeLinesColumnVisuals>,
+    code_lines_runtimes: Vec<code_lines_column::CodeLinesRuntimeHandleV1>,
+    code_lines_visuals: Vec<code_lines_column::CodeLinesColumnVisuals>,
     code_lines_requested: HashSet<(
+        explorer_model::ColumnId,
         explorer_model::TabId,
         explorer_model::Generation,
         explorer_model::ShellItemId,
@@ -752,6 +956,7 @@ pub type DurableStateObserver = Arc<
             explorer_model::ExplorerWindowState,
             bool,
             Vec<explorer_model::PersistedQuickAccessPin>,
+            explorer_model::Bookmarks,
             explorer_model::PersistedWindowPlacement,
         ) -> bool
         + Send
@@ -763,6 +968,17 @@ pub type SessionResetObserver =
 pub type BrokerRetryObserver = Arc<dyn Fn() -> state::BrokerUiHealth + Send + Sync>;
 pub type CommandPromptLauncher =
     Arc<dyn Fn(Option<std::path::PathBuf>) -> Result<(), String> + Send + Sync>;
+pub type BookmarkFileLauncher =
+    Arc<dyn Fn(explorer_model::LocationDescriptor) -> Result<(), String> + Send + Sync>;
+/// Application-owned bridge that creates or activates the singleton Folder
+/// Options native window after the reducer has created a fresh draft.
+pub type FolderOptionsWindowObserver = std::rc::Rc<
+    dyn Fn(
+        bool,
+        Option<folder_options_window::FolderOptionsWindowSnapshotV1>,
+        &mut gpui::Context<ExplorerRoot>,
+    ) -> bool,
+>;
 /// Path-free Safe Mode identity shown before a native extension can be re-enabled.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SafeModeOfferV1 {
@@ -963,7 +1179,6 @@ impl ExplorerRoot {
             tokens,
             state: AppViewState::default(),
             service: None,
-            folder_scripts: None,
             pending_foreground_events: VecDeque::new(),
             pending_enrichment_events: VecDeque::new(),
             pending_extension_file_operations: VecDeque::new(),
@@ -985,7 +1200,11 @@ impl ExplorerRoot {
             pending_icon_keys: HashSet::new(),
             pending_icon_contexts: HashMap::new(),
             pending_thumbnail_keys: HashSet::new(),
-            thumbnail_scheduler: explorer_jobs::ThumbnailScheduler::new(512, 4, 64 * 1024 * 1024),
+            thumbnail_scheduler: explorer_jobs::ThumbnailScheduler::new(
+                512,
+                THUMBNAIL_CONCURRENCY_LIMIT,
+                64 * 1024 * 1024,
+            ),
             thumbnail_memory_cache: explorer_jobs::ThumbnailMemoryCache::new(
                 128 * 1024 * 1024,
                 2_048,
@@ -1009,6 +1228,8 @@ impl ExplorerRoot {
             address_input: None,
             search_input: None,
             rename_input: None,
+            bookmark_name_input: None,
+            bookmark_payload_input: None,
             pointer_capture_factory: None,
             pointer_capture: None,
             durable_state_observer: None,
@@ -1016,6 +1237,8 @@ impl ExplorerRoot {
             session_reset_observer: None,
             broker_retry_observer: None,
             command_prompt_launcher: None,
+            bookmark_file_launcher: None,
+            folder_options_window_observer: None,
             last_window_title: None,
             navigation_history_release_deadline: None,
             safe_mode_offers: Vec::new(),
@@ -1027,8 +1250,8 @@ impl ExplorerRoot {
             folder_size_requested: HashSet::new(),
             folder_size_context: None,
             folder_size_display_override: None,
-            code_lines_runtime: None,
-            code_lines_visuals: None,
+            code_lines_runtimes: Vec::new(),
+            code_lines_visuals: Vec::new(),
             code_lines_requested: HashSet::new(),
             code_lines_display_override: None,
             size_map_runtime: None,
@@ -1047,6 +1270,22 @@ impl ExplorerRoot {
 
     pub fn attach_command_prompt_launcher(&mut self, launcher: CommandPromptLauncher) {
         self.command_prompt_launcher = Some(launcher);
+    }
+
+    pub fn attach_folder_options_window_observer(&mut self, observer: FolderOptionsWindowObserver) {
+        self.folder_options_window_observer = Some(observer);
+    }
+
+    /// Applies one action from the dedicated Folder Options native window
+    /// through the normal reducer, persistence, and extension reconciliation path.
+    pub fn dispatch_folder_options_action(
+        &mut self,
+        action: ExplorerAction,
+        source: ActionSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.handle_action(action, source, window, cx);
     }
 
     /// Connects the application-owned folder-size provider to the Details UI.
@@ -1092,14 +1331,31 @@ impl ExplorerRoot {
         if let Some(display) = self.code_lines_display_override {
             config.display = display;
         }
-        self.code_lines_runtime = Some(runtime);
-        self.code_lines_visuals = Some(code_lines_column::CodeLinesColumnVisuals {
-            config,
-            context: None,
-            values: HashMap::new(),
-            errors: HashMap::new(),
-        });
-        self.code_lines_requested.clear();
+        let column_id = config.descriptor.id.clone();
+        if let Some(index) = self
+            .code_lines_visuals
+            .iter()
+            .position(|visuals| visuals.config.descriptor.id == column_id)
+        {
+            self.code_lines_runtimes[index] = runtime;
+            self.code_lines_visuals[index] = code_lines_column::CodeLinesColumnVisuals {
+                config,
+                context: None,
+                values: HashMap::new(),
+                errors: HashMap::new(),
+            };
+            self.code_lines_requested
+                .retain(|(requested_column, _, _, _)| requested_column != &column_id);
+            return;
+        }
+        self.code_lines_runtimes.push(runtime);
+        self.code_lines_visuals
+            .push(code_lines_column::CodeLinesColumnVisuals {
+                config,
+                context: None,
+                values: HashMap::new(),
+                errors: HashMap::new(),
+            });
     }
 
     /// Connects the application-owned Size Map adapter. A malformed or
@@ -1385,19 +1641,16 @@ impl ExplorerRoot {
     }
 
     fn cancel_active_code_lines_context(&mut self) {
-        let context = self
-            .code_lines_visuals
-            .as_ref()
-            .and_then(|visuals| visuals.context.clone());
-        let Some(context) = context else {
-            return;
-        };
-        if let Some(runtime) = self.code_lines_runtime.as_ref() {
-            runtime.cancel_code_lines_context(&context);
+        for (runtime, visuals) in self
+            .code_lines_runtimes
+            .iter()
+            .zip(&self.code_lines_visuals)
+        {
+            if let Some(context) = visuals.context.as_ref() {
+                runtime.cancel_code_lines_context(context);
+            }
         }
-        self.code_lines_requested.retain(|(tab_id, generation, _)| {
-            *tab_id != context.tab_id || *generation != context.generation
-        });
+        self.code_lines_requested.clear();
     }
 
     fn pump_visual_column_runtime(&mut self) -> bool {
@@ -1489,15 +1742,6 @@ impl ExplorerRoot {
     }
 
     fn submit_code_lines_requests(&mut self) {
-        let Some(runtime) = self.code_lines_runtime.as_ref() else {
-            return;
-        };
-        if !self
-            .state
-            .extension_enabled(&runtime.config().option_package_id)
-        {
-            return;
-        }
         let (tab_id, generation, entries) = {
             let tab = self.state.tabs().active_tab();
             let Some(snapshot) = tab.visible_snapshot() else {
@@ -1509,26 +1753,34 @@ impl ExplorerRoot {
         // This runs in the render path before we clone visuals into the GPUI
         // tree, so a Shell item ID reused by F5/navigation cannot leak an old
         // value for even one frame while the 16 ms pump is idle.
-        self.begin_code_lines_context(request_context.clone());
-        let requests = entries
-            .iter()
-            .filter_map(|entry| match &entry.location {
-                explorer_model::LocationDescriptor::FileSystem(path)
-                    if self
-                        .code_lines_requested
-                        .insert((tab_id, generation, entry.id.clone())) =>
-                {
-                    Some(code_lines_column::CodeLinesRequestV1 {
-                        context: request_context.clone(),
-                        item_id: entry.id.clone(),
-                        path: path.clone(),
-                    })
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        if !requests.is_empty() {
-            if let Some(runtime) = self.code_lines_runtime.as_ref() {
+        self.begin_code_lines_contexts(request_context.clone());
+        for runtime in &self.code_lines_runtimes {
+            let config = runtime.config();
+            if !self.state.extension_enabled(&config.option_package_id) {
+                continue;
+            }
+            let column_id = config.descriptor.id;
+            let requests = entries
+                .iter()
+                .filter_map(|entry| match &entry.location {
+                    explorer_model::LocationDescriptor::FileSystem(path)
+                        if self.code_lines_requested.insert((
+                            column_id.clone(),
+                            tab_id,
+                            generation,
+                            entry.id.clone(),
+                        )) =>
+                    {
+                        Some(code_lines_column::CodeLinesRequestV1 {
+                            context: request_context.clone(),
+                            item_id: entry.id.clone(),
+                            path: path.clone(),
+                        })
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            if !requests.is_empty() {
                 runtime.submit_code_lines_requests(requests);
             }
         }
@@ -1537,85 +1789,59 @@ impl ExplorerRoot {
     /// Starts the current Code lines presentation synchronously. The worker
     /// still enforces the same context on accepted results; this only removes
     /// already-painted values before the next render snapshot is built.
-    fn begin_code_lines_context(&mut self, context: explorer_model::RequestContext) -> bool {
-        let Some(visuals) = self.code_lines_visuals.as_mut() else {
-            return false;
-        };
-        if !visuals.begin_context(context.clone()) {
-            return false;
+    fn begin_code_lines_contexts(&mut self, context: explorer_model::RequestContext) -> bool {
+        let mut changed = false;
+        for visuals in &mut self.code_lines_visuals {
+            if visuals.begin_context(context.clone()) {
+                self.state.set_code_lines_sort_values(
+                    visuals.config.descriptor.id.clone(),
+                    HashMap::new(),
+                );
+                changed = true;
+            }
         }
-        self.code_lines_requested.retain(|(tab, generation, _)| {
+        self.code_lines_requested.retain(|(_, tab, generation, _)| {
             *tab == context.tab_id && *generation == context.generation
         });
-        self.state.set_code_lines_sort_values(HashMap::new());
-        true
+        changed
     }
 
     fn reconcile_code_lines_extension_state(&mut self) -> bool {
-        let Some(runtime) = self.code_lines_runtime.as_ref() else {
-            return false;
-        };
-        let config = runtime.config();
-        let enabled = self.state.extension_enabled(&config.option_package_id);
-        if enabled {
-            return self
-                .state
-                .install_code_lines_column_descriptor(config.descriptor);
-        }
-        if let Some(context) = self
-            .code_lines_visuals
-            .as_ref()
-            .and_then(|visuals| visuals.context.as_ref())
+        let mut changed = false;
+        for (runtime, visuals) in self
+            .code_lines_runtimes
+            .iter()
+            .zip(&mut self.code_lines_visuals)
         {
-            runtime.cancel_code_lines_context(context);
-        }
-        self.code_lines_requested.clear();
-        if let Some(visuals) = self.code_lines_visuals.as_mut() {
+            let config = runtime.config();
+            if self.state.extension_enabled(&config.option_package_id) {
+                changed |= self
+                    .state
+                    .install_code_lines_column_descriptor(config.descriptor);
+                continue;
+            }
+            if let Some(context) = visuals.context.as_ref() {
+                runtime.cancel_code_lines_context(context);
+            }
+            let column_id = config.descriptor.id.clone();
+            self.code_lines_requested
+                .retain(|(requested_column, _, _, _)| requested_column != &column_id);
             visuals.context = None;
             visuals.values.clear();
             visuals.errors.clear();
+            changed |= self
+                .state
+                .uninstall_code_lines_column_descriptor(&config.descriptor);
         }
-        self.state
-            .uninstall_code_lines_column_descriptor(&config.descriptor)
+        changed
     }
 
     fn pump_code_lines_runtime(&mut self) -> bool {
-        let Some(runtime) = self.code_lines_runtime.as_ref() else {
-            return false;
-        };
-        let render_ready = runtime.drain_render_results();
-        let mut config = runtime.config();
-        let results = runtime.drain_code_lines_results();
-        if !self.state.extension_enabled(&config.option_package_id) {
-            return render_ready;
-        }
-        if let Some(display) = self.code_lines_display_override {
-            config.display = display;
-        }
-        if !code_lines_column::is_supported_code_lines_descriptor(&config.descriptor) {
-            return false;
-        }
-        let descriptor_changed = self
-            .code_lines_visuals
-            .as_ref()
-            .is_none_or(|visuals| visuals.config.descriptor != config.descriptor);
-        let mut changed = render_ready
-            || (descriptor_changed
-                && self
-                    .state
-                    .install_code_lines_column_descriptor(config.descriptor.clone()));
+        let mut changed = false;
         let active_tab = self.state.tabs().active_tab();
         let current_context =
             explorer_model::RequestContext::new(active_tab.id, active_tab.generation);
-        let context_changed = self.begin_code_lines_context(current_context.clone());
-        let visuals = self.code_lines_visuals.get_or_insert_with(|| {
-            code_lines_column::CodeLinesColumnVisuals {
-                config: config.clone(),
-                context: Some(current_context.clone()),
-                values: HashMap::new(),
-                errors: HashMap::new(),
-            }
-        });
+        changed |= self.begin_code_lines_contexts(current_context.clone());
         let visible_ids = self
             .state
             .tabs()
@@ -1629,37 +1855,58 @@ impl ExplorerRoot {
                     .collect::<HashSet<_>>()
             })
             .unwrap_or_default();
-        let old_values = visuals.values.len();
-        let old_errors = visuals.errors.len();
-        visuals.values.retain(|id, _| visible_ids.contains(id));
-        visuals.errors.retain(|id, _| visible_ids.contains(id));
-        changed |= visuals.values.len() != old_values || visuals.errors.len() != old_errors;
-        if visuals.config != config {
-            visuals.config = config;
-            changed = true;
-        }
-        changed |= context_changed;
-        for result in results.into_iter().filter(|result| {
-            result.context.tab_id == current_context.tab_id
-                && result.context.generation == current_context.generation
-        }) {
-            if let Some(value) = result.value {
-                visuals.errors.remove(&result.item_id);
-                if visuals.values.insert(result.item_id, value.clone()) != Some(value) {
-                    changed = true;
-                }
-            } else {
-                visuals.values.remove(&result.item_id);
-                if let Some(error) = result.error
-                    && visuals.errors.insert(result.item_id, error.clone()) != Some(error)
-                {
-                    changed = true;
+        for (runtime, visuals) in self
+            .code_lines_runtimes
+            .iter()
+            .zip(&mut self.code_lines_visuals)
+        {
+            changed |= runtime.drain_render_results();
+            let mut config = runtime.config();
+            let results = runtime.drain_code_lines_results();
+            if !self.state.extension_enabled(&config.option_package_id) {
+                continue;
+            }
+            if let Some(display) = self.code_lines_display_override {
+                config.display = display;
+            }
+            if !code_lines_column::is_supported_code_lines_descriptor(&config.descriptor) {
+                continue;
+            }
+            let column_id = config.descriptor.id.clone();
+            if visuals.config.descriptor != config.descriptor {
+                changed |= self
+                    .state
+                    .install_code_lines_column_descriptor(config.descriptor.clone());
+            }
+            let old_values = visuals.values.len();
+            let old_errors = visuals.errors.len();
+            visuals.values.retain(|id, _| visible_ids.contains(id));
+            visuals.errors.retain(|id, _| visible_ids.contains(id));
+            changed |= visuals.values.len() != old_values || visuals.errors.len() != old_errors;
+            if visuals.config != config {
+                visuals.config = config;
+                changed = true;
+            }
+            for result in results.into_iter().filter(|result| {
+                result.context.tab_id == current_context.tab_id
+                    && result.context.generation == current_context.generation
+            }) {
+                if let Some(value) = result.value {
+                    visuals.errors.remove(&result.item_id);
+                    if visuals.values.insert(result.item_id, value.clone()) != Some(value) {
+                        changed = true;
+                    }
+                } else {
+                    visuals.values.remove(&result.item_id);
+                    if let Some(error) = result.error
+                        && visuals.errors.insert(result.item_id, error.clone()) != Some(error)
+                    {
+                        changed = true;
+                    }
                 }
             }
-        }
-        if changed {
             self.state
-                .set_code_lines_sort_values(visuals.exact_sort_values());
+                .set_code_lines_sort_values(column_id, visuals.exact_sort_values());
         }
         changed
     }
@@ -2045,7 +2292,6 @@ impl ExplorerRoot {
                 drag_threshold,
             ),
             service: Some(service),
-            folder_scripts: None,
             pending_foreground_events: VecDeque::new(),
             pending_enrichment_events: VecDeque::new(),
             pending_extension_file_operations: VecDeque::new(),
@@ -2067,7 +2313,11 @@ impl ExplorerRoot {
             pending_icon_keys: HashSet::new(),
             pending_icon_contexts: HashMap::new(),
             pending_thumbnail_keys: HashSet::new(),
-            thumbnail_scheduler: explorer_jobs::ThumbnailScheduler::new(512, 4, 64 * 1024 * 1024),
+            thumbnail_scheduler: explorer_jobs::ThumbnailScheduler::new(
+                512,
+                THUMBNAIL_CONCURRENCY_LIMIT,
+                64 * 1024 * 1024,
+            ),
             thumbnail_memory_cache: explorer_jobs::ThumbnailMemoryCache::new(
                 128 * 1024 * 1024,
                 2_048,
@@ -2091,6 +2341,8 @@ impl ExplorerRoot {
             address_input: None,
             search_input: None,
             rename_input: None,
+            bookmark_name_input: None,
+            bookmark_payload_input: None,
             pointer_capture_factory: None,
             pointer_capture: None,
             durable_state_observer: None,
@@ -2098,6 +2350,8 @@ impl ExplorerRoot {
             session_reset_observer: None,
             broker_retry_observer: None,
             command_prompt_launcher: None,
+            bookmark_file_launcher: None,
+            folder_options_window_observer: None,
             last_window_title: None,
             navigation_history_release_deadline: None,
             safe_mode_offers: Vec::new(),
@@ -2109,8 +2363,8 @@ impl ExplorerRoot {
             folder_size_requested: HashSet::new(),
             folder_size_context: None,
             folder_size_display_override: None,
-            code_lines_runtime: None,
-            code_lines_visuals: None,
+            code_lines_runtimes: Vec::new(),
+            code_lines_visuals: Vec::new(),
             code_lines_requested: HashSet::new(),
             code_lines_display_override: None,
             size_map_runtime: None,
@@ -2134,7 +2388,6 @@ impl ExplorerRoot {
             tokens,
             state: AppViewState::with_restored_window_and_drag_threshold(restored, drag_threshold),
             service: Some(service),
-            folder_scripts: None,
             pending_foreground_events: VecDeque::new(),
             pending_enrichment_events: VecDeque::new(),
             pending_extension_file_operations: VecDeque::new(),
@@ -2156,7 +2409,11 @@ impl ExplorerRoot {
             pending_icon_keys: HashSet::new(),
             pending_icon_contexts: HashMap::new(),
             pending_thumbnail_keys: HashSet::new(),
-            thumbnail_scheduler: explorer_jobs::ThumbnailScheduler::new(512, 4, 64 * 1024 * 1024),
+            thumbnail_scheduler: explorer_jobs::ThumbnailScheduler::new(
+                512,
+                THUMBNAIL_CONCURRENCY_LIMIT,
+                64 * 1024 * 1024,
+            ),
             thumbnail_memory_cache: explorer_jobs::ThumbnailMemoryCache::new(
                 128 * 1024 * 1024,
                 2_048,
@@ -2180,6 +2437,8 @@ impl ExplorerRoot {
             address_input: None,
             search_input: None,
             rename_input: None,
+            bookmark_name_input: None,
+            bookmark_payload_input: None,
             pointer_capture_factory: None,
             pointer_capture: None,
             durable_state_observer: None,
@@ -2187,6 +2446,8 @@ impl ExplorerRoot {
             session_reset_observer: None,
             broker_retry_observer: None,
             command_prompt_launcher: None,
+            bookmark_file_launcher: None,
+            folder_options_window_observer: None,
             last_window_title: None,
             navigation_history_release_deadline: None,
             safe_mode_offers: Vec::new(),
@@ -2198,8 +2459,8 @@ impl ExplorerRoot {
             folder_size_requested: HashSet::new(),
             folder_size_context: None,
             folder_size_display_override: None,
-            code_lines_runtime: None,
-            code_lines_visuals: None,
+            code_lines_runtimes: Vec::new(),
+            code_lines_visuals: Vec::new(),
             code_lines_requested: HashSet::new(),
             code_lines_display_override: None,
             size_map_runtime: None,
@@ -2242,6 +2503,14 @@ impl ExplorerRoot {
     /// Applies ordered pins loaded by the application-owned session store.
     pub fn configure_quick_access(&mut self, pins: Vec<explorer_model::PersistedQuickAccessPin>) {
         self.state.configure_quick_access(pins);
+    }
+
+    pub fn configure_bookmarks(&mut self, bookmarks: explorer_model::Bookmarks) {
+        self.state.configure_bookmarks(bookmarks);
+    }
+
+    pub fn attach_bookmark_file_launcher(&mut self, launcher: BookmarkFileLauncher) {
+        self.bookmark_file_launcher = Some(launcher);
     }
 
     /// Configures the privacy-safe broker status and its explicit user retry bridge.
@@ -2296,6 +2565,7 @@ impl ExplorerRoot {
                 self.state.tabs().clone(),
                 self.state.restore_previous_session(),
                 self.state.persisted_quick_access(),
+                self.state.bookmarks().clone(),
                 self.durable_window_placement,
             );
         }
@@ -2318,11 +2588,6 @@ impl ExplorerRoot {
         self.durable_window_placement.maximized = maximized;
     }
 
-    /// Connects exact-directory `super_explorer.lua` lifecycle observation.
-    pub fn attach_folder_scripts(&mut self, handle: explorer_automation::FolderScriptHandle) {
-        self.folder_scripts = Some(handle);
-    }
-
     fn acquire_pointer_capture(&self, window: &Window) -> Option<Box<dyn PointerCaptureSession>> {
         let hwnd = pointer_capture::window_handle_value(window)?;
         self.pointer_capture_factory.as_ref()?(hwnd)
@@ -2336,9 +2601,7 @@ impl ExplorerRoot {
         let Some(service) = self.service.clone() else {
             return;
         };
-        let folder_scripts = self.folder_scripts.clone();
         cx.spawn(async move |this, cx| {
-            let mut last_folder_script_refresh = Instant::now();
             let mut last_namespace_refresh = Instant::now();
             loop {
                 cx.background_executor()
@@ -2372,22 +2635,6 @@ impl ExplorerRoot {
                 {
                     break;
                 }
-                    let maintenance_allowed = match this.update(cx, |this, _| {
-                        this.optional_work_allowed(explorer_jobs::QosWorkClass::Maintenance)
-                    }) {
-                        Ok(allowed) => allowed,
-                        Err(_) => break,
-                    };
-                    if maintenance_allowed
-                        && last_folder_script_refresh.elapsed() >= Duration::from_millis(500)
-                    {
-                    if let Some(handle) = &folder_scripts
-                        && let Err(error) = handle.refresh_changed()
-                    {
-                        tracing::warn!(%error, "folder automation refresh failed");
-                    }
-                    last_folder_script_refresh = Instant::now();
-                }
                 if last_namespace_refresh.elapsed() >= Duration::from_secs(30) {
                     let refreshed = this.update(cx, |this, _| {
                         let is_non_path = this
@@ -2417,8 +2664,8 @@ impl ExplorerRoot {
                     Ok(room) => room,
                     Err(_) => break,
                 };
-                let receive_limit = foreground_room
-                    .min(explorer_jobs::FrameDrainBudget::DEFAULT_ITEM_LIMIT);
+                let receive_limit =
+                    foreground_room.min(explorer_jobs::FrameDrainBudget::DEFAULT_ITEM_LIMIT);
                 let mut received_events = Vec::with_capacity(receive_limit);
                 let mut disconnected = false;
                 while received_events.len() < receive_limit {
@@ -2442,374 +2689,366 @@ impl ExplorerRoot {
                 let mut delegated_actions = Vec::new();
                 if this
                     .update(cx, |this, cx| {
-                            for event in received_events {
-                                this.enqueue_service_event(event);
+                        for event in received_events {
+                            this.enqueue_service_event(event);
+                        }
+                        let budget = this.service_qos.frame_drain_budget();
+                        let started = Instant::now();
+                        let mut integrated = 0_usize;
+                        while budget.admit_next(integrated, started.elapsed()).is_ok() {
+                            let Some(event) = this.pop_next_service_event() else {
+                                break;
+                            };
+                            integrated = integrated.saturating_add(1);
+                            if !this.accepts_presentation_event(&event) {
+                                this.service_qos.observations_mut().record_stale_result();
+                                tracing::debug!(
+                                    context = ?event.context(),
+                                    "rejected superseded service result at presentation boundary"
+                                );
+                                continue;
                             }
-                            let budget = this.service_qos.frame_drain_budget();
-                            let started = Instant::now();
-                            let mut integrated = 0_usize;
-                            while budget.admit_next(integrated, started.elapsed()).is_ok() {
-                                let Some(event) = this.pop_next_service_event() else {
-                                    break;
-                                };
-                                integrated = integrated.saturating_add(1);
-                                if !this.accepts_presentation_event(&event) {
-                                    this.service_qos
-                                        .observations_mut()
-                                        .record_stale_result();
-                                    tracing::debug!(
-                                        context = ?event.context(),
-                                        "rejected superseded service result at presentation boundary"
-                                    );
-                                    continue;
-                                }
-                                let delegated_action = match &event {
-                                    explorer_model::ExplorerEvent::ContextMenuFinished {
-                                        outcome:
-                                            explorer_model::ContextMenuOutcome::Delegated {
-                                                command,
-                                                target,
-                                                ..
-                                            },
-                                        ..
-                                    } => Some((*command, target.clone())),
-                                    _ => None,
-                                };
-                                let context = event.context().cloned();
-                                let terminal = event.is_terminal();
-                                let directory_enrichment_terminal = matches!(
-                                    &event,
-                                    explorer_model::ExplorerEvent::DirectoryFinished { .. }
-                                        | explorer_model::ExplorerEvent::SearchFinished { .. }
-                                );
-                                let navigation_children = matches!(
-                                    &event,
-                                    explorer_model::ExplorerEvent::ChildContainersBatch { .. }
-                                );
-                                this.observe_service_event(&event);
-                                if let explorer_model::ExplorerEvent::DirectoryChanged {
-                                    changes,
+                            let delegated_action = match &event {
+                                explorer_model::ExplorerEvent::ContextMenuFinished {
+                                    outcome:
+                                        explorer_model::ContextMenuOutcome::Delegated {
+                                            command,
+                                            target,
+                                            ..
+                                        },
                                     ..
-                                } = &event
-                                {
-                                    for change in changes {
-                                        let id = match change {
-                                            explorer_model::DirectoryDelta::Upsert(entry) => {
-                                                &entry.id
-                                            }
-                                            explorer_model::DirectoryDelta::Remove(id) => id,
-                                            explorer_model::DirectoryDelta::Overflow => continue,
-                                        };
-                                        advance_item_overlay_epoch(
-                                            &mut this.item_overlay_epochs,
-                                            id,
-                                        );
-                                    }
+                                } => Some((*command, target.clone())),
+                                _ => None,
+                            };
+                            let context = event.context().cloned();
+                            let terminal = event.is_terminal();
+                            let directory_enrichment_terminal = matches!(
+                                &event,
+                                explorer_model::ExplorerEvent::DirectoryFinished { .. }
+                                    | explorer_model::ExplorerEvent::SearchFinished { .. }
+                            );
+                            let navigation_children = matches!(
+                                &event,
+                                explorer_model::ExplorerEvent::ChildContainersBatch { .. }
+                            );
+                            this.observe_service_event(&event);
+                            if let explorer_model::ExplorerEvent::DirectoryChanged {
+                                changes, ..
+                            } = &event
+                            {
+                                for change in changes {
+                                    let id = match change {
+                                        explorer_model::DirectoryDelta::Upsert(entry) => &entry.id,
+                                        explorer_model::DirectoryDelta::Remove(id) => id,
+                                        explorer_model::DirectoryDelta::Overflow => continue,
+                                    };
+                                    advance_item_overlay_epoch(&mut this.item_overlay_epochs, id);
                                 }
-                                if let explorer_model::ExplorerEvent::AncestryBatch {
+                            }
+                            if let explorer_model::ExplorerEvent::AncestryBatch {
+                                context,
+                                segments,
+                            } = &event
+                            {
+                                this.submit_location_icon_loads(
                                     context,
-                                    segments,
-                                } = &event
+                                    segments.iter().map(|segment| &segment.location),
+                                );
+                            }
+                            if let explorer_model::ExplorerEvent::ShellIconLoaded {
+                                payload, ..
+                            } = &event
+                                && let Some(texture) = shell_icon_texture(payload)
+                            {
+                                if let Some(base_key) = this.pending_base_icons.remove(&payload.key)
                                 {
-                                    this.submit_location_icon_loads(
-                                        context,
-                                        segments.iter().map(|segment| &segment.location),
+                                    this.base_icons.insert(
+                                        base_key,
+                                        texture,
+                                        icon_payload_hash(payload),
                                     );
-                                }
-                                if let explorer_model::ExplorerEvent::ShellIconLoaded {
-                                    payload,
-                                    ..
-                                } = &event
-                                    && let Some(texture) = shell_icon_texture(payload)
+                                } else if let Some(base_key) =
+                                    this.pending_visible_bases.remove(&payload.key)
+                                    && this.base_icons.hashes.get(&base_key)
+                                        == Some(&icon_payload_hash(payload))
                                 {
-                                    if let Some(base_key) =
-                                        this.pending_base_icons.remove(&payload.key)
-                                    {
-                                        this.base_icons.insert(
-                                            base_key,
-                                            texture,
-                                            icon_payload_hash(payload),
-                                        );
-                                    } else if let Some(base_key) =
-                                        this.pending_visible_bases.remove(&payload.key)
-                                        && this.base_icons.hashes.get(&base_key)
-                                            == Some(&icon_payload_hash(payload))
-                                    {
-                                        this.remember_negative_icon(payload.key.clone());
-                                    } else {
-                                        this.shell_icons.insert(&payload.key, texture);
-                                    }
+                                    this.remember_negative_icon(payload.key.clone());
+                                } else {
+                                    this.shell_icons.insert(&payload.key, texture);
                                 }
-                                if let explorer_model::ExplorerEvent::ShellIconLoaded {
-                                    payload,
-                                    ..
-                                } = &event
-                                {
-                                    this.pending_icon_keys.remove(&payload.key);
-                                    this.pending_icon_contexts.remove(&payload.key);
+                            }
+                            if let explorer_model::ExplorerEvent::ShellIconLoaded {
+                                payload, ..
+                            } = &event
+                            {
+                                this.pending_icon_keys.remove(&payload.key);
+                                this.pending_icon_contexts.remove(&payload.key);
+                            }
+                            if let explorer_model::ExplorerEvent::ShellIconFailed { key, .. } =
+                                &event
+                            {
+                                this.pending_icon_keys.remove(key);
+                                this.pending_icon_contexts.remove(key);
+                                if let Some(base_key) = this.pending_base_icons.remove(key) {
+                                    this.failed_base_icons.insert(base_key);
                                 }
-                                if let explorer_model::ExplorerEvent::ShellIconFailed {
-                                    key, ..
-                                } = &event
-                                {
-                                    this.pending_icon_keys.remove(key);
-                                    this.pending_icon_contexts.remove(key);
-                                    if let Some(base_key) = this.pending_base_icons.remove(key) {
-                                        this.failed_base_icons.insert(base_key);
-                                    }
-                                    this.pending_visible_bases.remove(key);
-                                    if key.item_id.is_some() {
-                                        this.remember_negative_icon(key.clone());
-                                    }
+                                this.pending_visible_bases.remove(key);
+                                if key.item_id.is_some() {
+                                    this.remember_negative_icon(key.clone());
                                 }
-                                if let explorer_model::ExplorerEvent::ThumbnailFinished {
-                                    key,
-                                    outcome,
-                                    ..
-                                } = &event
+                            }
+                            if let explorer_model::ExplorerEvent::ThumbnailFinished {
+                                key,
+                                outcome,
+                                context,
+                            } = &event
+                            {
+                                let presentation = this.thumbnail_presentations.remove(key);
+                                let admit_presentation =
+                                    presentation.as_ref().is_some_and(|value| {
+                                        this.thumbnail_presentation_is_current(key, value, context)
+                                    });
+                                this.pending_thumbnail_keys.remove(key);
+                                let _ = this.thumbnail_scheduler.complete(key);
+                                this.thumbnail_requests.remove(key);
+                                if let explorer_model::ThumbnailTerminal::Ready { pixels, .. } =
+                                    outcome
                                 {
-                                    this.pending_thumbnail_keys.remove(key);
-                                    let _ = this.thumbnail_scheduler.complete(key);
-                                    this.thumbnail_requests.remove(key);
-                                    if let explorer_model::ThumbnailTerminal::Ready { pixels, .. } = outcome {
-                                        let _ = this.thumbnail_memory_cache.insert(
-                                            key.clone(),
-                                            Arc::new(pixels.clone()),
-                                        );
-                                    }
-                                    let current_preview = this.preview_thumbnail_key.as_ref() == Some(key)
-                                        && this.state.view_settings().preview_pane
-                                        && this.state.tabs().active_tab().selection.len() == 1
-                                        && this.state.tabs().active_tab().selection.contains(&key.item_id)
-                                        && this.state.tabs().active_tab().generation.value()
-                                            == key.source_generation;
-                                    if current_preview {
-                                        match outcome {
-                                            explorer_model::ThumbnailTerminal::Ready { pixels, .. } => {
-                                                this.preview_texture = thumbnail_texture(pixels);
-                                                this.preview_thumbnail_failed =
-                                                    this.preview_texture.is_none();
-                                            }
-                                            explorer_model::ThumbnailTerminal::Fallback(_)
-                                            | explorer_model::ThumbnailTerminal::Failed(_) => {
-                                                this.preview_texture = None;
-                                                this.preview_thumbnail_failed = true;
-                                            }
+                                    let _ = this
+                                        .thumbnail_memory_cache
+                                        .insert(key.clone(), Arc::new(pixels.clone()));
+                                }
+                                let current_preview = this.preview_thumbnail_key.as_ref()
+                                    == Some(key)
+                                    && this.state.view_settings().preview_pane
+                                    && this.state.tabs().active_tab().selection.len() == 1
+                                    && this
+                                        .state
+                                        .tabs()
+                                        .active_tab()
+                                        .selection
+                                        .contains(&key.item_id)
+                                    && this.state.tabs().active_tab().generation.value()
+                                        == key.source_generation;
+                                if current_preview {
+                                    match outcome {
+                                        explorer_model::ThumbnailTerminal::Ready {
+                                            pixels, ..
+                                        } => {
+                                            this.preview_texture = thumbnail_texture(pixels);
+                                            this.preview_thumbnail_failed =
+                                                this.preview_texture.is_none();
+                                        }
+                                        explorer_model::ThumbnailTerminal::Fallback(_)
+                                        | explorer_model::ThumbnailTerminal::Failed(_) => {
+                                            this.preview_texture = None;
+                                            this.preview_thumbnail_failed = true;
                                         }
                                     }
-                                    let presentation = this.thumbnail_presentations.remove(key);
-                                    if let (
-                                        Some(presentation),
-                                        explorer_model::ThumbnailTerminal::Ready { pixels, .. },
-                                    ) = (presentation, outcome)
-                                        && let Some(texture) = thumbnail_texture(pixels)
-                                    {
-                                        this.shell_icons.insert(&presentation, texture);
-                                    }
-                                    let scheduler = this.thumbnail_scheduler.stats();
-                                    let cache = this.thumbnail_memory_cache.stats();
-                                    let icons = this.shell_icons.stats();
-                                    tracing::debug!(
-                                        queued = scheduler.queued_unique,
-                                        queue_capacity = scheduler.queue_capacity,
-                                        active = scheduler.active_unique,
-                                        concurrency_limit = scheduler.concurrency_limit,
-                                        consumers = scheduler.consumers,
-                                        decoded_in_flight_bytes = scheduler.decoded_in_flight_bytes,
-                                        decoded_byte_limit = scheduler.decoded_byte_limit,
-                                        cancellations = scheduler.cancellations,
-                                        cache_entries = cache.entries,
-                                        cache_entry_budget = cache.entry_budget,
-                                        cache_bytes = cache.current_bytes,
-                                        cache_byte_budget = cache.byte_budget,
-                                        cache_hits = cache.hits,
-                                        cache_misses = cache.misses,
-                                        cache_evictions = cache.evictions,
-                                        icon_entries = icons.entries,
-                                        icon_entry_budget = icons.entry_budget,
-                                        icon_bytes = icons.current_bytes,
-                                        icon_byte_budget = icons.byte_budget,
-                                        icon_hits = icons.hits,
-                                        icon_misses = icons.misses,
-                                        icon_negative_hits = icons.negative_hits,
-                                        icon_evictions = icons.evictions,
-                                        icon_stale_rejections = icons.stale_rejections,
-                                        "thumbnail performance snapshot"
-                                    );
-                                    this.pump_thumbnail_scheduler();
                                 }
-                                if let explorer_model::ExplorerEvent::PreviewHostFinished {
-                                    outcome,
+                                if let (
+                                    Some(presentation),
+                                    explorer_model::ThumbnailTerminal::Ready { pixels, .. },
+                                ) = (presentation, outcome)
+                                    && admit_presentation
+                                    && let Some(texture) = thumbnail_texture(pixels)
+                                {
+                                    this.shell_icons.insert_thumbnail(&presentation, texture);
+                                }
+                                let scheduler = this.thumbnail_scheduler.stats();
+                                let cache = this.thumbnail_memory_cache.stats();
+                                let icons = this.shell_icons.stats();
+                                tracing::debug!(
+                                    queued = scheduler.queued_unique,
+                                    queue_capacity = scheduler.queue_capacity,
+                                    active = scheduler.active_unique,
+                                    concurrency_limit = scheduler.concurrency_limit,
+                                    consumers = scheduler.consumers,
+                                    decoded_in_flight_bytes = scheduler.decoded_in_flight_bytes,
+                                    decoded_byte_limit = scheduler.decoded_byte_limit,
+                                    cancellations = scheduler.cancellations,
+                                    cache_entries = cache.entries,
+                                    cache_entry_budget = cache.entry_budget,
+                                    cache_bytes = cache.current_bytes,
+                                    cache_byte_budget = cache.byte_budget,
+                                    cache_hits = cache.hits,
+                                    cache_misses = cache.misses,
+                                    cache_evictions = cache.evictions,
+                                    icon_entries = icons.entries,
+                                    icon_entry_budget = icons.entry_budget,
+                                    icon_bytes = icons.current_bytes,
+                                    icon_byte_budget = icons.byte_budget,
+                                    icon_hits = icons.hits,
+                                    icon_misses = icons.misses,
+                                    icon_negative_hits = icons.negative_hits,
+                                    icon_evictions = icons.evictions,
+                                    icon_stale_rejections = icons.stale_rejections,
+                                    "thumbnail performance snapshot"
+                                );
+                                this.pump_thumbnail_scheduler();
+                            }
+                            if let explorer_model::ExplorerEvent::PreviewHostFinished {
+                                outcome,
+                                ..
+                            } = &event
+                            {
+                                this.apply_preview_host_terminal(outcome);
+                            }
+                            let ancestry = match &event {
+                                explorer_model::ExplorerEvent::LocationResolved {
+                                    context,
+                                    metadata,
+                                } => Some((context.clone(), metadata.descriptor.clone())),
+                                _ => None,
+                            };
+                            let active_search_scope_changed = matches!(
+                                &event,
+                                explorer_model::ExplorerEvent::LocationResolved {
+                                    context,
                                     ..
-                                } = &event
-                                {
-                                    this.apply_preview_host_terminal(outcome);
-                                }
-                                let ancestry = match &event {
-                                    explorer_model::ExplorerEvent::LocationResolved {
-                                        context,
-                                        metadata,
-                                    } => Some((context.clone(), metadata.descriptor.clone())),
-                                    _ => None,
-                                };
-                                let folder_transition = match &event {
-                                    explorer_model::ExplorerEvent::LocationResolved {
-                                        context,
-                                        metadata,
-                                    } => Some((
-                                        context.tab_id,
-                                        metadata.descriptor.path().map(std::path::Path::to_path_buf),
-                                    )),
-                                    _ => None,
-                                };
-                                let active_search_scope_changed = matches!(
-                                    &event,
-                                    explorer_model::ExplorerEvent::LocationResolved {
-                                        context,
-                                        ..
-                                    } if context.tab_id == this.state.tabs().active_tab_id()
+                                } if context.tab_id == this.state.tabs().active_tab_id()
+                            );
+                            // Capture the affected navigation parents before watcher recovery
+                            // advances the tab generation. The replacement tree requests are
+                            // created afterwards so they share the refreshed generation.
+                            let navigation_reconciliation =
+                                this.state.navigation_reconciliation_targets(&event);
+                            let recovery = this.state.watcher_recovery_command(&event);
+                            let navigation_recovery = this
+                                .state
+                                .begin_navigation_reconciliation(navigation_reconciliation);
+                            let refresh_after_action =
+                                this.state.service_event_requires_active_refresh(&event);
+                            let extension_operation_finished = matches!(
+                                &event,
+                                explorer_model::ExplorerEvent::OperationFinished { .. }
+                            );
+                            let outcome = this.state.apply_service_event(event);
+                            if outcome == explorer_model::WindowEventOutcome::Applied
+                                && extension_operation_finished
+                            {
+                                this.continue_extension_file_operation_batch();
+                            }
+                            if outcome == explorer_model::WindowEventOutcome::IgnoredStale {
+                                this.service_qos.observations_mut().record_stale_result();
+                            }
+                            if outcome == explorer_model::WindowEventOutcome::Applied
+                                && active_search_scope_changed
+                                && matches!(
+                                    this.state.tabs().active_tab().search,
+                                    explorer_model::TabSearchState::Idle
+                                )
+                            {
+                                // GPUI's editable text element retains its original
+                                // placeholder with the input entity. Recreate an empty idle
+                                // input when the committed location changes so the visible
+                                // Explorer search scope follows the new folder immediately.
+                                this.reset_search_input(String::new(), cx);
+                            }
+                            if outcome == explorer_model::WindowEventOutcome::Applied
+                                && directory_enrichment_terminal
+                            {
+                                // The directory reducer now owns the complete sorted snapshot.
+                                // Seed its visible icon/thumbnail pipeline immediately instead
+                                // of waiting for a later ScrollHandle layout callback to cause
+                                // another render. This is especially important when the first
+                                // rows are folders and lower visible file rows need extension
+                                // icons or thumbnails.
+                                this.resume_visual_refinement();
+                            }
+                            if outcome == explorer_model::WindowEventOutcome::Applied
+                                && let Some(action) = delegated_action
+                            {
+                                delegated_actions.push(action);
+                            }
+                            if outcome == explorer_model::WindowEventOutcome::Applied
+                                && navigation_children
+                            {
+                                this.submit_navigation_icon_loads();
+                            }
+                            tracing::debug!(
+                                ?context,
+                                ?outcome,
+                                terminal,
+                                "Explorer UI applied service event"
+                            );
+                            if outcome == explorer_model::WindowEventOutcome::Applied
+                                && ancestry.is_some()
+                            {
+                                this.notify_durable_state();
+                            }
+                            if let Some(command) = recovery {
+                                this.submit_command(command);
+                            }
+                            if let Some(command) = this.state.take_pending_lock_recovery_command() {
+                                this.submit_command(command);
+                            }
+                            if let Some(command) = this.state.take_pending_context_menu_command() {
+                                this.submit_command(command);
+                            }
+                            // Reconciliation targets were validated before applying the event.
+                            // DirectoryChanged is intentionally `IgnoredUnrelated` by the tab
+                            // reducer, but its navigation-tree reload must still be submitted.
+                            for command in navigation_recovery {
+                                this.submit_command(command);
+                            }
+                            if outcome == explorer_model::WindowEventOutcome::Applied
+                                && refresh_after_action
+                                && let Some(command) = this.state.begin_refresh_navigation()
+                            {
+                                this.submit_command(command);
+                            }
+                            if outcome == explorer_model::WindowEventOutcome::Applied
+                                && let Some((source, location)) = ancestry
+                                && let Some(command) =
+                                    this.state.begin_ancestry_request(&source, location)
+                            {
+                                this.submit_command(command);
+                            }
+                        }
+                        let deferred = this.pending_service_event_count();
+                        let exhausted = deferred > 0
+                            && budget.admit_next(integrated, started.elapsed()).is_err();
+                        this.service_delivery
+                            .record_drain(integrated, deferred, exhausted);
+                        match this
+                            .service_qos
+                            .observe_pressure(explorer_jobs::PressureSample::new(
+                                deferred,
+                                budget.item_limit(),
+                                exhausted,
+                            )) {
+                            explorer_jobs::DegradationTransition::Recovered { from, to } => {
+                                tracing::debug!(
+                                    ?from,
+                                    ?to,
+                                    deferred,
+                                    "UI result-delivery degradation recovery"
                                 );
-                                // Capture the affected navigation parents before watcher recovery
-                                // advances the tab generation. The replacement tree requests are
-                                // created afterwards so they share the refreshed generation.
-                                let navigation_reconciliation =
-                                    this.state.navigation_reconciliation_targets(&event);
-                                let recovery = this.state.watcher_recovery_command(&event);
-                                let navigation_recovery = this
-                                    .state
-                                    .begin_navigation_reconciliation(navigation_reconciliation);
-                                let refresh_after_action =
-                                    this.state.service_event_requires_active_refresh(&event);
-                                let extension_operation_finished = matches!(
-                                    &event,
-                                    explorer_model::ExplorerEvent::OperationFinished { .. }
-                                );
-                                let outcome = this.state.apply_service_event(event);
-                                if outcome == explorer_model::WindowEventOutcome::Applied
-                                    && extension_operation_finished
+                                this.recover_discarded_enrichment();
+                                if from.sheds(explorer_jobs::QosWorkClass::VisualRefinement)
+                                    && !to.sheds(explorer_jobs::QosWorkClass::VisualRefinement)
                                 {
-                                    this.continue_extension_file_operation_batch();
-                                }
-                                if outcome == explorer_model::WindowEventOutcome::IgnoredStale {
-                                    this.service_qos
-                                        .observations_mut()
-                                        .record_stale_result();
-                                }
-                                if outcome == explorer_model::WindowEventOutcome::Applied
-                                    && active_search_scope_changed
-                                    && matches!(
-                                        this.state.tabs().active_tab().search,
-                                        explorer_model::TabSearchState::Idle
-                                    )
-                                {
-                                    // GPUI's editable text element retains its original
-                                    // placeholder with the input entity. Recreate an empty idle
-                                    // input when the committed location changes so the visible
-                                    // Explorer search scope follows the new folder immediately.
-                                    this.reset_search_input(String::new(), cx);
-                                }
-                                if outcome == explorer_model::WindowEventOutcome::Applied
-                                    && directory_enrichment_terminal
-                                {
-                                    // The directory reducer now owns the complete sorted snapshot.
-                                    // Seed its visible icon/thumbnail pipeline immediately instead
-                                    // of waiting for a later ScrollHandle layout callback to cause
-                                    // another render. This is especially important when the first
-                                    // rows are folders and lower visible file rows need extension
-                                    // icons or thumbnails.
                                     this.resume_visual_refinement();
                                 }
-                                if outcome == explorer_model::WindowEventOutcome::Applied
-                                    && let Some(action) = delegated_action
-                                {
-                                    delegated_actions.push(action);
-                                }
-                                if outcome == explorer_model::WindowEventOutcome::Applied
-                                    && navigation_children
-                                {
-                                    this.submit_navigation_icon_loads();
-                                }
+                            }
+                            explorer_jobs::DegradationTransition::Degraded { from, to } => {
                                 tracing::debug!(
-                                    ?context,
-                                    ?outcome,
-                                    terminal,
-                                    "Explorer UI applied service event"
-                                );
-                                if outcome == explorer_model::WindowEventOutcome::Applied
-                                    && ancestry.is_some()
-                                {
-                                    this.notify_durable_state();
-                                }
-                                if outcome == explorer_model::WindowEventOutcome::Applied
-                                    && let Some((tab_id, directory)) = folder_transition
-                                    && let Some(handle) = &folder_scripts
-                                    && let Err(error) =
-                                        handle.enter_directory(tab_id, directory.as_deref())
-                                {
-                                    tracing::warn!(%error, ?tab_id, "folder automation transition failed");
-                                }
-                                if let Some(command) = recovery {
-                                    this.submit_command(command);
-                                }
-                                if let Some(command) = this.state.take_pending_lock_recovery_command() {
-                                    this.submit_command(command);
-                                }
-                                if let Some(command) = this.state.take_pending_context_menu_command() {
-                                    this.submit_command(command);
-                                }
-                                // Reconciliation targets were validated before applying the event.
-                                // DirectoryChanged is intentionally `IgnoredUnrelated` by the tab
-                                // reducer, but its navigation-tree reload must still be submitted.
-                                for command in navigation_recovery {
-                                    this.submit_command(command);
-                                }
-                                if outcome == explorer_model::WindowEventOutcome::Applied
-                                    && refresh_after_action
-                                    && let Some(command) = this.state.begin_refresh_navigation()
-                                {
-                                    this.submit_command(command);
-                                }
-                                if outcome == explorer_model::WindowEventOutcome::Applied
-                                    && let Some((source, location)) = ancestry
-                                    && let Some(command) =
-                                        this.state.begin_ancestry_request(&source, location)
-                                {
-                                    this.submit_command(command);
-                                }
-                            }
-                            let deferred = this.pending_service_event_count();
-                            let exhausted = deferred > 0
-                                && budget.admit_next(integrated, started.elapsed()).is_err();
-                            this.service_delivery
-                                .record_drain(integrated, deferred, exhausted);
-                            match this.service_qos.observe_pressure(
-                                explorer_jobs::PressureSample::new(
+                                    ?from,
+                                    ?to,
                                     deferred,
-                                    budget.item_limit(),
-                                    exhausted,
-                                ),
-                            ) {
-                                explorer_jobs::DegradationTransition::Recovered { from, to } => {
-                                    tracing::debug!(?from, ?to, deferred, "UI result-delivery degradation recovery");
-                                    this.recover_discarded_enrichment();
-                                    if from.sheds(explorer_jobs::QosWorkClass::VisualRefinement)
-                                        && !to.sheds(explorer_jobs::QosWorkClass::VisualRefinement)
-                                    {
-                                        this.resume_visual_refinement();
-                                    }
-                                }
-                                explorer_jobs::DegradationTransition::Degraded { from, to } => {
-                                    tracing::debug!(?from, ?to, deferred, "UI result-delivery degradation transition");
-                                }
-                                explorer_jobs::DegradationTransition::Unchanged(_) => {}
+                                    "UI result-delivery degradation transition"
+                                );
                             }
-                            if deferred == 0 && this.enrichment_retry_needed {
-                                this.recover_discarded_enrichment();
-                            }
-                            if integrated > 0 {
-                                cx.notify();
-                            }
-                        })
+                            explorer_jobs::DegradationTransition::Unchanged(_) => {}
+                        }
+                        if deferred == 0 && this.enrichment_retry_needed {
+                            this.recover_discarded_enrichment();
+                        }
+                        if integrated > 0 {
+                            cx.notify();
+                        }
+                    })
                     .is_err()
                 {
                     break;
@@ -2821,9 +3060,7 @@ impl ExplorerRoot {
                     for (command, target) in delegated_actions {
                         if root
                             .update(cx, |this, window, cx| {
-                                if command
-                                    == explorer_model::ContextMenuHostCommand::Properties
-                                {
+                                if command == explorer_model::ContextMenuHostCommand::Properties {
                                     let (owner_window, _, _) = chrome::context_menu_coordinates(
                                         gpui::point(px(0.0), px(0.0)),
                                         window,
@@ -2936,6 +3173,35 @@ impl ExplorerRoot {
         self.rename_input = Some(rename);
     }
 
+    fn reset_bookmark_editor_inputs(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.state.bookmark_editor().cloned() else {
+            return;
+        };
+        let payload = match &editor.target {
+            explorer_model::BookmarkTarget::Folder { location }
+            | explorer_model::BookmarkTarget::File { location } => location
+                .path()
+                .map_or_else(String::new, |path| path.to_string_lossy().into_owned()),
+            explorer_model::BookmarkTarget::LuaScript { source } => source.clone(),
+        };
+        let name = cx.new(|cx| EditableTextState::new(StringStorage::from(editor.name), cx));
+        cx.subscribe(&name, |this, input, _: &TextChanged, cx| {
+            this.state
+                .update_bookmark_editor_name(input.read(cx).as_str().to_owned());
+            cx.notify();
+        })
+        .detach();
+        let payload = cx.new(|cx| EditableTextState::new(StringStorage::from(payload), cx));
+        cx.subscribe(&payload, |this, input, _: &TextChanged, cx| {
+            this.state
+                .update_bookmark_editor_payload(input.read(cx).as_str().to_owned());
+            cx.notify();
+        })
+        .detach();
+        self.bookmark_name_input = Some(name);
+        self.bookmark_payload_input = Some(payload);
+    }
+
     fn submit_active_location_load(&mut self) {
         let Some(command) = self.state.begin_active_location_load() else {
             return;
@@ -3018,20 +3284,48 @@ impl ExplorerRoot {
             .find(|tab| tab.id == directory_context.tab_id)
             .is_some_and(|tab| tab.view.settings.always_show_icons);
         let logical_size = navigation_pane::view_icon_logical_size_for_settings(&view_settings);
+        self.shell_icons
+            .set_byte_budget(shell_texture_cache_byte_budget(&view_settings));
         let theme = match self.tokens.theme.mode {
             ThemeMode::Light => explorer_model::ShellIconTheme::Light,
             ThemeMode::Dark => explorer_model::ShellIconTheme::Dark,
         };
         let generation = directory_context.generation.value();
         let association_epoch = self.icon_epochs.association();
+        let (thumbnail_mode, policy_thumbnail_size) =
+            explorer_model::view_mode_thumbnail_policy(view_settings.mode);
+        let thumbnail_logical_size = policy_thumbnail_size.max(logical_size);
+        let thumbnail_physical_size =
+            thumbnail_physical_size(thumbnail_logical_size, self.shell_icon_dpi);
         let visible_ids = entries
             .iter()
             .map(|entry| entry.id.clone())
             .collect::<HashSet<_>>();
+        let current_shell_keys = entries
+            .iter()
+            .map(|entry| {
+                let mut key = file_icon_cache_key(
+                    entry,
+                    theme,
+                    self.shell_icon_dpi,
+                    logical_size,
+                    association_epoch,
+                );
+                key.overlay_generation = self
+                    .item_overlay_epochs
+                    .get(&entry.id)
+                    .copied()
+                    .unwrap_or_else(|| self.icon_epochs.overlay());
+                key
+            })
+            .collect::<HashSet<_>>();
         self.pending_icon_keys.retain(|key| {
-            key.item_id
-                .as_ref()
-                .is_none_or(|item_id| visible_ids.contains(item_id))
+            key.item_id.is_none()
+                || current_shell_keys.contains(key)
+                    && self.pending_icon_contexts.get(key).is_some_and(|context| {
+                        context.tab_id == directory_context.tab_id
+                            && context.generation == directory_context.generation
+                    })
         });
         self.pending_icon_contexts
             .retain(|key, _| self.pending_icon_keys.contains(key));
@@ -3046,22 +3340,40 @@ impl ExplorerRoot {
         let pending_visible_files = self
             .pending_icon_keys
             .iter()
-            .filter(|key| {
-                key.item_id
-                    .as_ref()
-                    .is_some_and(|item_id| visible_ids.contains(item_id))
-            })
+            .filter(|key| current_shell_keys.contains(*key))
             .count();
-        let remaining = FILE_VIEWPORT_ICON_REQUEST_CAP.saturating_sub(pending_visible_files);
+        let remaining_shell = FILE_VIEWPORT_ICON_REQUEST_CAP.saturating_sub(pending_visible_files);
+        let desired_thumbnail_keys =
+            if thumbnail_mode == explorer_model::ThumbnailMode::Thumbnail && !always_show_icons {
+                entries
+                    .iter()
+                    .filter(|entry| namespace_thumbnail_supported(entry))
+                    .map(|entry| explorer_model::ThumbnailRequestKey {
+                        item_id: entry.id.clone(),
+                        physical_size: thumbnail_physical_size,
+                        dpi: self.shell_icon_dpi,
+                        mode: thumbnail_mode,
+                        source_generation: generation,
+                        theme,
+                        association_generation: association_epoch,
+                        overlay_generation: self
+                            .item_overlay_epochs
+                            .get(&entry.id)
+                            .copied()
+                            .unwrap_or_else(|| self.icon_epochs.overlay()),
+                    })
+                    .collect::<HashSet<_>>()
+            } else {
+                HashSet::new()
+            };
         let stale = self
             .thumbnail_requests
             .iter()
             .filter(|(key, (_, _, consumer))| {
                 consumer.tab_id == directory_context.tab_id
+                    && self.preview_thumbnail_key.as_ref() != Some(*key)
                     && (consumer.generation != directory_context.generation
-                        || key.source_generation != generation
-                        || (!visible_ids.contains(&key.item_id)
-                            && self.preview_thumbnail_key.as_ref() != Some(*key)))
+                        || !desired_thumbnail_keys.contains(*key))
             })
             .map(|(key, (_, _, consumer))| (key.clone(), *consumer))
             .collect::<Vec<_>>();
@@ -3118,8 +3430,11 @@ impl ExplorerRoot {
                 self.request_enrichment_retry();
             }
         }
-        let mut keys = Vec::with_capacity(remaining);
-        for entry in entries.iter().take(remaining) {
+        let mut keys = Vec::with_capacity(remaining_shell);
+        for entry in entries.iter().take(FILE_VIEWPORT_ICON_REQUEST_CAP) {
+            if keys.len() == remaining_shell {
+                break;
+            }
             let presentation = navigation_pane::file_icon_key_for_size(
                 entry,
                 theme,
@@ -3186,22 +3501,22 @@ impl ExplorerRoot {
                 self.pending_visible_bases.insert(key, base_key);
             }
         }
-        let (thumbnail_mode, thumbnail_logical_size) =
-            explorer_model::view_mode_thumbnail_policy(view_settings.mode);
         if thumbnail_mode == explorer_model::ThumbnailMode::Thumbnail && !always_show_icons {
-            let physical = u32::from(thumbnail_logical_size)
-                .saturating_mul(u32::from(self.shell_icon_dpi))
-                .saturating_add(95)
-                / 96;
-            let physical_size = u16::try_from(physical).unwrap_or(u16::MAX).max(1);
+            let pending_visible_thumbnails = self
+                .pending_thumbnail_keys
+                .iter()
+                .filter(|key| desired_thumbnail_keys.contains(*key))
+                .count();
+            let remaining_thumbnails =
+                FILE_VIEWPORT_ICON_REQUEST_CAP.saturating_sub(pending_visible_thumbnails);
             for entry in entries
                 .iter()
                 .filter(|entry| namespace_thumbnail_supported(entry))
-                .take(remaining)
+                .take(remaining_thumbnails)
             {
                 let key = explorer_model::ThumbnailRequestKey {
                     item_id: entry.id.clone(),
-                    physical_size,
+                    physical_size: thumbnail_physical_size,
                     dpi: self.shell_icon_dpi,
                     mode: thumbnail_mode,
                     source_generation: generation,
@@ -3234,7 +3549,7 @@ impl ExplorerRoot {
                 let consumer = explorer_model::ThumbnailConsumer {
                     tab_id: directory_context.tab_id,
                     generation: directory_context.generation,
-                    size_generation: u64::from(physical_size),
+                    size_generation: u64::from(thumbnail_physical_size),
                 };
                 let outcome = self.thumbnail_scheduler.submit(
                     key.clone(),
@@ -3262,6 +3577,45 @@ impl ExplorerRoot {
         }
     }
 
+    fn thumbnail_presentation_is_current(
+        &self,
+        key: &explorer_model::ThumbnailRequestKey,
+        presentation: &explorer_model::ShellIconKey,
+        context: &explorer_model::RequestContext,
+    ) -> bool {
+        let Some(tab) = self
+            .state
+            .tabs()
+            .tabs()
+            .iter()
+            .find(|tab| tab.id == context.tab_id && tab.generation == context.generation)
+        else {
+            return false;
+        };
+        if tab.view.settings.always_show_icons {
+            return false;
+        }
+        let theme = match self.tokens.theme.mode {
+            ThemeMode::Light => explorer_model::ShellIconTheme::Light,
+            ThemeMode::Dark => explorer_model::ShellIconTheme::Dark,
+        };
+        let overlay_generation = self
+            .item_overlay_epochs
+            .get(&key.item_id)
+            .copied()
+            .unwrap_or_else(|| self.icon_epochs.overlay());
+        thumbnail_presentation_matches_demand(
+            key,
+            presentation,
+            context,
+            &tab.view.settings,
+            theme,
+            self.shell_icon_dpi,
+            self.icon_epochs.association(),
+            overlay_generation,
+        )
+    }
+
     /// Schedules a snapshot-wide refinement pass only while off-screen enrichment remains
     /// admitted. The visible viewport re-requests its own entries during rendering.
     fn submit_offscreen_file_icon_loads(
@@ -3270,7 +3624,23 @@ impl ExplorerRoot {
         entries: &[explorer_model::FileEntry],
     ) {
         if self.optional_work_allowed(explorer_jobs::QosWorkClass::OffscreenEnrichment) {
-            self.submit_file_icon_loads(context, entries);
+            // Mode switches and QoS recovery can hand us the complete directory snapshot. At
+            // large DPI buckets, admitting 64 of those entries exceeds the entire 64 MiB texture
+            // cache and evicts the first visible icons before the next frame. Prime one bounded
+            // top viewport; normal rendering immediately follows with the actual realized range.
+            let settings = self
+                .state
+                .tabs()
+                .tabs()
+                .iter()
+                .find(|tab| tab.id == context.tab_id)
+                .map_or_else(explorer_model::ViewSettings::default, |tab| {
+                    tab.view.settings.clone()
+                });
+            let end = entries
+                .len()
+                .min(icon_prime_cap(&settings, self.shell_icon_dpi));
+            self.submit_file_icon_loads(context, &entries[..end]);
         }
     }
 
@@ -3538,9 +3908,10 @@ impl ExplorerRoot {
                     self.preview_thumbnail_failed = self.preview_texture.is_none();
                 }
                 if let Some(presentation) = self.thumbnail_presentations.remove(&key)
+                    && self.thumbnail_presentation_is_current(&key, &presentation, &context)
                     && let Some(texture) = thumbnail_texture(&pixels)
                 {
-                    self.shell_icons.insert(&presentation, texture);
+                    self.shell_icons.insert_thumbnail(&presentation, texture);
                 }
                 self.pending_thumbnail_keys.remove(&key);
                 self.thumbnail_requests.remove(&key);
@@ -3600,7 +3971,7 @@ impl ExplorerRoot {
     fn navigation_icon_snapshot(
         &mut self,
         file_entries: &[explorer_model::FileEntry],
-    ) -> HashMap<explorer_model::ShellIconKey, Arc<RenderImage>> {
+    ) -> FileIconSnapshot {
         let theme = match self.tokens.theme.mode {
             ThemeMode::Light => explorer_model::ShellIconTheme::Light,
             ThemeMode::Dark => explorer_model::ShellIconTheme::Dark,
@@ -3611,23 +3982,26 @@ impl ExplorerRoot {
         .into_iter()
         .filter_map(|item| item.icon_location)
         .collect::<Vec<_>>();
-        let mut snapshot = static_locations
-            .iter()
-            .filter_map(|location| {
-                self.shell_icons.get_compatible_navigation_icon(
-                    location,
-                    theme,
-                    self.shell_icon_dpi,
-                )
-            })
-            .collect::<HashMap<_, _>>();
+        let mut snapshot = FileIconSnapshot {
+            textures: static_locations
+                .iter()
+                .filter_map(|location| {
+                    self.shell_icons.get_compatible_navigation_icon(
+                        location,
+                        theme,
+                        self.shell_icon_dpi,
+                    )
+                })
+                .collect(),
+            thumbnail_keys: HashSet::new(),
+        };
         let generic_breadcrumb_key = navigation_pane::generic_breadcrumb_folder_icon_key(
             theme,
             self.shell_icon_dpi,
             self.icon_epochs.association(),
         );
         if let Some(texture) = self.shell_icons.get(&generic_breadcrumb_key) {
-            snapshot.insert(generic_breadcrumb_key, texture);
+            snapshot.textures.insert(generic_breadcrumb_key, texture);
         }
         for location in self.state.navigation_icon_locations() {
             if let Some((key, texture)) = self.shell_icons.get_compatible_navigation_icon(
@@ -3635,7 +4009,7 @@ impl ExplorerRoot {
                 theme,
                 self.shell_icon_dpi,
             ) {
-                snapshot.insert(key, texture);
+                snapshot.textures.insert(key, texture);
             }
         }
         for location in self
@@ -3650,7 +4024,7 @@ impl ExplorerRoot {
                 theme,
                 self.shell_icon_dpi,
             ) {
-                snapshot.insert(key, texture);
+                snapshot.textures.insert(key, texture);
             }
         }
         let address = &self.state.tabs().active_tab().view.address;
@@ -3665,7 +4039,7 @@ impl ExplorerRoot {
                 theme,
                 self.shell_icon_dpi,
             ) {
-                snapshot.insert(key, texture);
+                snapshot.textures.insert(key, texture);
             }
         }
         let theme = match self.tokens.theme.mode {
@@ -3694,8 +4068,11 @@ impl ExplorerRoot {
                 .get(&entry.id)
                 .copied()
                 .unwrap_or_else(|| self.icon_epochs.overlay());
-            if let Some(texture) = self.shell_icons.get(&cache_key) {
-                snapshot.insert(presentation_key, texture);
+            if let Some(visual) = self.shell_icons.get_compatible_file_visual(&cache_key) {
+                if visual.provenance == FileVisualProvenance::Thumbnail {
+                    snapshot.thumbnail_keys.insert(presentation_key.clone());
+                }
+                snapshot.textures.insert(presentation_key, visual.texture);
             } else {
                 let base_key = explorer_model::base_icon_key(
                     entry,
@@ -3704,8 +4081,8 @@ impl ExplorerRoot {
                     theme,
                     association_epoch,
                 );
-                if let Some(texture) = self.base_icons.get(&base_key) {
-                    snapshot.insert(presentation_key, texture);
+                if let Some(texture) = self.base_icons.get_compatible(&base_key) {
+                    snapshot.textures.insert(presentation_key, texture);
                 }
             }
         }
@@ -4145,32 +4522,19 @@ impl ExplorerRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let ExplorerAction::SubmitAddress(value) = &action
-            && is_command_prompt_address(value)
+        if action == ExplorerAction::OpenFolderOptions
+            && self
+                .folder_options_window_observer
+                .clone()
+                .is_some_and(|observer| observer(false, None, cx))
         {
-            let working_directory =
-                self.state
-                    .tabs()
-                    .active_tab()
-                    .history
-                    .current()
-                    .and_then(|entry| match &entry.location {
-                        explorer_model::LocationDescriptor::FileSystem(path) => Some(path.clone()),
-                        _ => None,
-                    });
-            let result = self
-                .command_prompt_launcher
-                .as_ref()
-                .ok_or_else(|| "Command Prompt launcher is unavailable".to_owned())
-                .and_then(|launcher| launcher(working_directory));
-            match result {
-                Ok(()) => {
-                    self.state.cancel_address_edit();
-                    self.reset_address_input(self.state.address_draft().to_owned(), cx);
-                }
-                Err(error) => self.state.fail_address_submission(error),
-            }
-            cx.notify();
+            // Repeated invocation activates the existing native window and
+            // deliberately preserves its current uncommitted draft.
+            return;
+        }
+        if let ExplorerAction::SubmitAddress(value) = &action
+            && self.try_launch_command_prompt(value, cx)
+        {
             return;
         }
         if let ExplorerAction::RunBulkFolderPreset { count } = &action {
@@ -4226,8 +4590,8 @@ impl ExplorerRoot {
             return;
         }
         if action == ExplorerAction::ToggleFolderSizeProportionalBar {
-            if self.code_lines_runtime.is_some() {
-                let current = self.code_lines_visuals.as_ref().map_or(
+            if !self.code_lines_runtimes.is_empty() {
+                let current = self.code_lines_visuals.first().map_or(
                     code_lines_column::CodeLinesDisplayMode::default(),
                     |visuals| visuals.config.display,
                 );
@@ -4240,7 +4604,7 @@ impl ExplorerRoot {
                     }
                 };
                 self.code_lines_display_override = Some(next);
-                if let Some(visuals) = self.code_lines_visuals.as_mut() {
+                for visuals in &mut self.code_lines_visuals {
                     visuals.config.display = next;
                 }
                 cx.notify();
@@ -4349,14 +4713,235 @@ impl ExplorerRoot {
         }
         let focused_before = self.state.focused_surface();
         let seven_z_enabled_before = self.state.extension_enabled("rust-7z-virtual-folder");
-        let closing_tab = match &action {
-            ExplorerAction::CloseActiveTab => Some(self.state.tabs().active_tab_id()),
-            ExplorerAction::CloseTab { tab_id } => Some(*tab_id),
-            _ => None,
-        };
         let ((), measurement) = measure_callback(action.name(), || {
             dispatch_action(&mut self.state, action.clone(), source);
         });
+        if action == ExplorerAction::AddLuaBookmark {
+            self.state.begin_bookmark_editor(None);
+            self.reset_bookmark_editor_inputs(cx);
+            cx.notify();
+        }
+        if let ExplorerAction::EditBookmark { id } = action {
+            self.state.begin_bookmark_editor(Some(id));
+            self.reset_bookmark_editor_inputs(cx);
+            cx.notify();
+        }
+        if action == ExplorerAction::CancelBookmarkEditor {
+            self.state.cancel_bookmark_editor();
+            self.bookmark_name_input = None;
+            self.bookmark_payload_input = None;
+            cx.notify();
+        }
+        if action == ExplorerAction::SaveBookmarkEditor {
+            if let Some(mutation) = self.state.commit_bookmark_editor() {
+                self.state.set_bookmark_notice("Bookmark saved.");
+                if !self.notify_durable_state() {
+                    self.state.rollback_bookmark(mutation);
+                    self.state
+                        .set_bookmark_notice("Unable to save the bookmark.");
+                }
+                self.bookmark_name_input = None;
+                self.bookmark_payload_input = None;
+            } else {
+                self.state.set_bookmark_notice("Bookmark name is required.");
+            }
+            cx.notify();
+        }
+        if action == ExplorerAction::ToggleBookmarkManager {
+            self.state.toggle_bookmark_manager();
+            cx.notify();
+        }
+        if action == ExplorerAction::ToggleBookmarkOverflow {
+            self.state.toggle_bookmark_overflow();
+            cx.notify();
+        }
+        if let ExplorerAction::RemoveBookmark { id } = action {
+            let mutation = self.state.remove_bookmark(id);
+            if mutation.changed() {
+                self.state.set_bookmark_notice("Bookmark removed.");
+                if !self.notify_durable_state() {
+                    self.state.rollback_bookmark(mutation);
+                    self.state
+                        .set_bookmark_notice("Unable to save the bookmark removal.");
+                }
+                cx.notify();
+            }
+        }
+        if let ExplorerAction::MoveBookmark { id, destination } = action {
+            let mutation = self.state.reorder_bookmark(id, destination);
+            if mutation.changed() {
+                self.state.set_bookmark_notice("Bookmark order updated.");
+                if !self.notify_durable_state() {
+                    self.state.rollback_bookmark(mutation);
+                    self.state
+                        .set_bookmark_notice("Unable to save the bookmark order.");
+                }
+                cx.notify();
+            }
+        }
+        if action == ExplorerAction::AddSelectedToBookmarks {
+            let selected = self.state.selected_items_for_extension_command();
+            let mut mutations = Vec::new();
+            for item in selected {
+                let target = if item.location.path().is_some_and(std::path::Path::is_dir) {
+                    explorer_model::BookmarkTarget::Folder {
+                        location: item.location.clone(),
+                    }
+                } else {
+                    explorer_model::BookmarkTarget::File {
+                        location: item.location.clone(),
+                    }
+                };
+                let name = item
+                    .location
+                    .path()
+                    .and_then(std::path::Path::file_name)
+                    .map_or_else(
+                        || "Bookmark".to_owned(),
+                        |name| name.to_string_lossy().into_owned(),
+                    );
+                mutations.push(self.state.add_bookmark(name, target));
+            }
+            if mutations
+                .iter()
+                .any(explorer_model::BookmarkMutation::changed)
+            {
+                self.state.set_bookmark_notice("Bookmark added.");
+                if !self.notify_durable_state() {
+                    for mutation in mutations.into_iter().rev() {
+                        self.state.rollback_bookmark(mutation);
+                    }
+                    self.state
+                        .set_bookmark_notice("Unable to save the bookmark.");
+                }
+                cx.notify();
+            }
+        }
+        if action == ExplorerAction::ToggleSelectedBookmark {
+            if let Some((target, existing_id)) = self.state.selected_bookmark_target_and_id() {
+                let mutation = if let Some(id) = existing_id {
+                    self.state.remove_bookmark(id)
+                } else {
+                    let name = match &target {
+                        explorer_model::BookmarkTarget::Folder { location }
+                        | explorer_model::BookmarkTarget::File { location } => location
+                            .path()
+                            .and_then(std::path::Path::file_name)
+                            .map_or_else(
+                                || "Bookmark".to_owned(),
+                                |name| name.to_string_lossy().into_owned(),
+                            ),
+                        explorer_model::BookmarkTarget::LuaScript { .. } => unreachable!(),
+                    };
+                    self.state.add_bookmark(name, target)
+                };
+                if mutation.changed() {
+                    self.state.set_bookmark_notice(if existing_id.is_some() {
+                        "Bookmark removed."
+                    } else {
+                        "Bookmark added."
+                    });
+                    if !self.notify_durable_state() {
+                        self.state.rollback_bookmark(mutation);
+                        self.state
+                            .set_bookmark_notice("Unable to save the bookmark change.");
+                    }
+                    cx.notify();
+                }
+            }
+        }
+        if let ExplorerAction::ActivateBookmark { id } = action {
+            let bookmark = self
+                .state
+                .bookmarks()
+                .entries()
+                .iter()
+                .find(|bookmark| bookmark.id == id)
+                .cloned();
+            if let Some(bookmark) = bookmark {
+                match bookmark.target {
+                    explorer_model::BookmarkTarget::Folder { location } => {
+                        if !location.path().is_some_and(std::path::Path::is_dir) {
+                            self.state.set_bookmark_notice(
+                                "Unable to open bookmark: the folder no longer exists.",
+                            );
+                            cx.notify();
+                            return;
+                        }
+                        self.handle_action(
+                            ExplorerAction::ActivateNavigationItem { location },
+                            ActionSource::Mouse,
+                            window,
+                            cx,
+                        );
+                    }
+                    explorer_model::BookmarkTarget::File { location } => {
+                        let result = self
+                            .bookmark_file_launcher
+                            .as_ref()
+                            .ok_or_else(|| "File launcher is unavailable".to_owned())
+                            .and_then(|launcher| launcher(location));
+                        self.state.set_bookmark_notice(match result {
+                            Ok(()) => "Bookmark opened.".to_owned(),
+                            Err(error) => format!("Unable to open bookmark: {error}"),
+                        });
+                        cx.notify();
+                    }
+                    explorer_model::BookmarkTarget::LuaScript { source } => {
+                        let Some(current_folder) = self
+                            .state
+                            .active_location_for_extension_command()
+                            .and_then(|location| location.path().map(std::path::Path::to_path_buf))
+                        else {
+                            self.state
+                                .set_bookmark_notice("Lua bookmarks require a filesystem folder.");
+                            cx.notify();
+                            return;
+                        };
+                        let request = explorer_automation::LuaBookmarkRequest {
+                            source,
+                            current_folder,
+                            timeout_ms: explorer_automation::BOOKMARK_LUA_TIMEOUT_MS,
+                        };
+                        cx.spawn(async move |this, cx| {
+                            let result = cx
+                                .background_executor()
+                                .spawn(async move {
+                                    explorer_automation::execute_lua_bookmark(&request)
+                                })
+                                .await;
+                            let _ = this.update(cx, |this, cx| {
+                                let notice = match result {
+                                    explorer_automation::LuaBookmarkResult::Completed => {
+                                        "Lua bookmark completed.".to_owned()
+                                    }
+                                    explorer_automation::LuaBookmarkResult::TimedOut => {
+                                        "Lua bookmark timed out.".to_owned()
+                                    }
+                                    explorer_automation::LuaBookmarkResult::Failed(error) => {
+                                        format!("Lua bookmark failed: {error}")
+                                    }
+                                };
+                                this.state.set_bookmark_notice(notice);
+                                cx.notify();
+                            });
+                        })
+                        .detach();
+                    }
+                }
+            }
+        }
+        if action == ExplorerAction::OpenFolderOptions
+            && let Some(observer) = self.folder_options_window_observer.clone()
+        {
+            let snapshot = self.state.folder_options().map(|draft| {
+                folder_options_window::FolderOptionsWindowSnapshotV1 {
+                    draft,
+                    extensions: self.state.extensions().to_vec(),
+                }
+            });
+            let _ = observer(true, snapshot, cx);
+        }
         if matches!(
             action,
             ExplorerAction::ApplyFolderOptions | ExplorerAction::ConfirmFolderOptions
@@ -4492,13 +5077,6 @@ impl ExplorerRoot {
         }
         if action == ExplorerAction::RefreshTortoiseGitStatus {
             let _ = self.refresh_tortoise_git_status();
-        }
-        if let Some(tab_id) = closing_tab
-            && !self.state.tabs().tabs().iter().any(|tab| tab.id == tab_id)
-            && let Some(handle) = &self.folder_scripts
-            && let Err(error) = handle.close_tab(tab_id)
-        {
-            tracing::warn!(%error, ?tab_id, "folder automation tab cleanup failed");
         }
         if let ExplorerAction::SelectItem { row_index } = &action {
             self.file_scroll.scroll_to_item(*row_index);
@@ -4773,7 +5351,7 @@ impl ExplorerRoot {
                     if let Some(runtime) = self.visual_column_runtime.as_ref() {
                         runtime.invalidate_directory_cache(&directory);
                     }
-                    if let Some(runtime) = self.code_lines_runtime.as_ref() {
+                    for runtime in &self.code_lines_runtimes {
                         runtime.invalidate_directory_cache(&directory);
                     }
                 }
@@ -5375,14 +5953,47 @@ impl ExplorerRoot {
                     .as_ref()
                     .map(|input| input.read(cx).as_str().trim().to_owned())
                     .unwrap_or_default();
-                if !input.is_empty()
-                    && let Some(command) = self.state.begin_address_submission(&input)
-                {
-                    self.submit_command(command);
+                if !input.is_empty() {
+                    if self.try_launch_command_prompt(&input, cx) {
+                        return;
+                    }
+                    if let Some(command) = self.state.begin_address_submission(&input) {
+                        self.submit_command(command);
+                    }
                 }
             }
             _ => {}
         }
+    }
+
+    fn try_launch_command_prompt(&mut self, input: &str, cx: &mut Context<Self>) -> bool {
+        if !is_command_prompt_address(input) {
+            return false;
+        }
+        let working_directory =
+            self.state
+                .tabs()
+                .active_tab()
+                .history
+                .current()
+                .and_then(|entry| match &entry.location {
+                    explorer_model::LocationDescriptor::FileSystem(path) => Some(path.clone()),
+                    _ => None,
+                });
+        let result = self
+            .command_prompt_launcher
+            .as_ref()
+            .ok_or_else(|| "Command Prompt launcher is unavailable".to_owned())
+            .and_then(|launcher| launcher(working_directory));
+        match result {
+            Ok(()) => {
+                self.state.cancel_address_edit();
+                self.reset_address_input(self.state.address_draft().to_owned(), cx);
+            }
+            Err(error) => self.state.fail_address_submission(error),
+        }
+        cx.notify();
+        true
     }
 
     fn synchronize_native_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -5819,8 +6430,9 @@ impl Render for ExplorerRoot {
                     fallback_viewport_height
                 }
                 .max(metrics.cell_height);
+                let prime_cap = icon_prime_cap(&view_settings, self.shell_icon_dpi);
                 let range = if let Some(range) =
-                    prelayout_icon_range(presentation.len(), layout_ready)
+                    prelayout_icon_range(presentation.len(), layout_ready, prime_cap)
                 {
                     range
                 } else if metrics.wrapped {
@@ -5849,7 +6461,7 @@ impl Render for ExplorerRoot {
                     )
                     .items
                 };
-                prime_top_icon_range(presentation.len(), scroll_offset, range)
+                prime_top_icon_range(presentation.len(), scroll_offset, range, prime_cap)
                     .filter_map(|ordinal| {
                         presentation.entry(ordinal).map(|(_, entry)| entry.clone())
                     })
@@ -5886,11 +6498,15 @@ impl Render for ExplorerRoot {
                 .filter(|context| context.tab_id == tab.id && context.generation == tab.generation)
                 .cloned()
         };
-        let shell_icons = self.navigation_icon_snapshot(&realized_entries);
+        let file_icons = self.navigation_icon_snapshot(&realized_entries);
         let safe_mode_offer = self.safe_mode_offers.first().cloned();
         let safe_mode_error = self.safe_mode_confirmation_error.clone();
         let content = chrome::ExplorerWindow::new(self.tokens, self.state.clone())
-            .with_shell_icons(shell_icons, self.shell_icon_dpi)
+            .with_shell_icons(
+                file_icons.textures,
+                file_icons.thumbnail_keys,
+                self.shell_icon_dpi,
+            )
             .with_file_presentation(file_presentation)
             .with_file_performance(Arc::clone(&self.file_performance))
             .with_navigation_scroll(self.navigation_scroll.clone())
@@ -5900,13 +6516,23 @@ impl Render for ExplorerRoot {
                 self.search_input.as_ref().map(gpui::Entity::downgrade),
                 self.rename_input.as_ref().map(gpui::Entity::downgrade),
             )
+            .with_bookmark_editor_inputs(
+                self.bookmark_name_input
+                    .as_ref()
+                    .map(gpui::Entity::downgrade),
+                self.bookmark_payload_input
+                    .as_ref()
+                    .map(gpui::Entity::downgrade),
+            )
             .with_breadcrumb_menu_focus(self.breadcrumb_menu_focus.clone())
             .with_command_menu_focus(self.command_menu_focus.clone())
             .with_preview_thumbnail(self.preview_texture.clone(), self.preview_thumbnail_failed)
             .with_folder_size_visuals(self.folder_size_visuals.clone())
             .with_visual_column_runtime(self.visual_column_runtime.clone())
-            .with_code_lines_visuals(self.code_lines_visuals.clone())
-            .with_code_lines_runtime(self.code_lines_runtime.clone())
+            .with_code_lines_columns(
+                self.code_lines_visuals.clone(),
+                self.code_lines_runtimes.clone(),
+            )
             .with_size_map(
                 self.size_map_is_active(),
                 size_map_context
@@ -5957,18 +6583,6 @@ impl Render for ExplorerRoot {
                 }),
             )
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if this.state.folder_options().is_some() {
-                    cx.stop_propagation();
-                    if event.keystroke.key == "escape" {
-                        this.handle_action(
-                            ExplorerAction::CloseFolderOptions,
-                            ActionSource::Keyboard,
-                            window,
-                            cx,
-                        );
-                    }
-                    return;
-                }
                 if this.state.about_dialog().is_some() {
                     cx.stop_propagation();
                     if event.keystroke.key == "escape" {
@@ -6471,6 +7085,7 @@ pub fn window_options_with_placement(
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::HashSet,
         sync::{Arc, Mutex},
         time::{Duration, Instant},
     };
@@ -6578,7 +7193,7 @@ mod tests {
         );
         let item =
             explorer_model::ShellItemId::from_provider_bytes([0x63]).expect("fixture identity");
-        root.code_lines_visuals = Some(super::code_lines_column::CodeLinesColumnVisuals {
+        root.code_lines_visuals = vec![super::code_lines_column::CodeLinesColumnVisuals {
             config: super::code_lines_column::CodeLinesColumnConfigV1::default(),
             context: Some(previous.clone()),
             values: std::collections::HashMap::from([(
@@ -6592,15 +7207,13 @@ mod tests {
                 },
             )]),
             errors: std::collections::HashMap::from([(item.clone(), "old error".to_owned())]),
-        });
+        }];
+        let column_id = root.code_lines_visuals[0].config.descriptor.id.clone();
         root.code_lines_requested
-            .insert((previous.tab_id, previous.generation, item));
+            .insert((column_id, previous.tab_id, previous.generation, item));
 
-        assert!(root.begin_code_lines_context(current.clone()));
-        let visuals = root
-            .code_lines_visuals
-            .as_ref()
-            .expect("Code lines visuals");
+        assert!(root.begin_code_lines_contexts(current.clone()));
+        let visuals = &root.code_lines_visuals[0];
         assert_eq!(visuals.context.as_ref(), Some(&current));
         assert!(visuals.values.is_empty());
         assert!(visuals.errors.is_empty());
@@ -6840,17 +7453,67 @@ mod tests {
 
     #[test]
     fn prelayout_icon_range_primes_one_bounded_first_viewport() {
+        assert_eq!(super::prelayout_icon_range(100_000, false, 8), Some(0..8));
         assert_eq!(
-            super::prelayout_icon_range(100_000, false),
-            Some(0..super::FILE_VIEWPORT_ICON_REQUEST_CAP)
+            super::prelayout_icon_range(100_000, false, 16),
+            Some(0..super::FILE_PRELAYOUT_ICON_PRIME_CAP)
         );
-        assert_eq!(super::prelayout_icon_range(32, false), Some(0..32));
-        assert_eq!(super::prelayout_icon_range(100_000, true), None);
         assert_eq!(
-            super::prime_top_icon_range(100_000, 0.0, 0..5),
-            0..super::FILE_VIEWPORT_ICON_REQUEST_CAP
+            super::prelayout_icon_range(32, false, 16),
+            Some(0..super::FILE_PRELAYOUT_ICON_PRIME_CAP)
         );
-        assert_eq!(super::prime_top_icon_range(100_000, 400.0, 8..24), 8..24);
+        assert_eq!(super::prelayout_icon_range(100_000, true, 16), None);
+        assert_eq!(super::prime_top_icon_range(100_000, 0.0, 0..5, 16), 0..5);
+        assert_eq!(super::prime_top_icon_range(100_000, 0.0, 0..0, 8), 0..8);
+        assert_eq!(
+            super::prime_top_icon_range(100_000, 400.0, 8..24, 16),
+            8..24
+        );
+    }
+
+    #[test]
+    fn maximum_icons_leave_half_the_texture_cache_for_visible_and_chrome_assets() {
+        let mut settings = explorer_model::ViewSettings {
+            mode: explorer_model::ViewMode::ExtraLargeIcons,
+            ..explorer_model::ViewSettings::default()
+        };
+        settings.icon_size = 512;
+
+        assert_eq!(super::icon_prime_cap(&settings, 192), 16);
+        settings.icon_cache_memory_mb = 64;
+        assert_eq!(super::icon_prime_cap(&settings, 192), 8);
+        settings.icon_cache_memory_mb = 1_024;
+        assert_eq!(super::icon_prime_cap(&settings, 192), 16);
+
+        settings.icon_cache_memory_mb = 128;
+        let budget = super::shell_texture_cache_byte_budget(&settings);
+        let mut cache = super::VisibleItemIconCache::default();
+        cache.set_byte_budget(budget);
+        for id in 0_u8..16 {
+            let item_id = explorer_model::ShellItemId::from_provider_bytes([id + 1])
+                .expect("stable item identity");
+            let key = explorer_model::ShellIconKey {
+                item_id: Some(item_id),
+                location: explorer_model::LocationDescriptor::file_system(format!(
+                    r"D:\fixture\max-{id}.png"
+                )),
+                size_bucket: 1_024,
+                dpi: 192,
+                theme: explorer_model::ShellIconTheme::Light,
+                association_generation: 1,
+                overlay_generation: 1,
+            };
+            assert!(cache.insert(
+                &key,
+                Arc::new(gpui::RenderImage::new(smallvec::SmallVec::<
+                    [image::Frame; 1],
+                >::new()))
+            ));
+        }
+        let stats = cache.stats();
+        assert_eq!(stats.entries, 16);
+        assert_eq!(stats.evictions, 0);
+        assert!(stats.current_bytes <= stats.byte_budget / 2);
     }
 
     #[test]
@@ -6935,6 +7598,230 @@ mod tests {
                 if key.item_id.as_ref() == Some(&entry.id)
         )));
         assert!(commands.iter().any(|command| matches!(
+            command,
+            explorer_model::ExplorerCommand::LoadThumbnail { .. }
+        )));
+    }
+
+    fn thumbnail_capable_entry(id: u8, extension: &str) -> explorer_model::FileEntry {
+        explorer_model::FileEntry {
+            id: explorer_model::ShellItemId::from_provider_bytes([id]).expect("identity"),
+            location: explorer_model::LocationDescriptor::file_system(format!(
+                r"C:\fixture\{id}.{extension}"
+            )),
+            display_name: format!("{id}.{extension}"),
+            is_container: false,
+            metadata: explorer_model::FileEntryMetadata {
+                namespace_capabilities: explorer_model::NamespaceCapabilities::from_public_bits(
+                    explorer_model::NamespaceCapabilities::THUMBNAIL,
+                ),
+                ..explorer_model::FileEntryMetadata::default()
+            },
+        }
+    }
+
+    #[test]
+    fn obsolete_shell_size_does_not_starve_current_thumbnail_requests() {
+        let entry = thumbnail_capable_entry(41, "jpg");
+        let mut root = ExplorerRoot::for_directory_fixture(
+            UiTokens::default(),
+            vec![entry.clone()],
+            explorer_model::ViewMode::LargeIcons,
+        );
+        let service = Arc::new(RecordingService::default());
+        root.service = Some(service.clone());
+        let tab = root.state.tabs().active_tab();
+        let context = explorer_model::RequestContext::new(tab.id, tab.generation);
+        for size_bucket in 16..80 {
+            let mut key = super::file_icon_cache_key(
+                &entry,
+                explorer_model::ShellIconTheme::Light,
+                96,
+                size_bucket,
+                root.icon_epochs.association(),
+            );
+            key.overlay_generation = root.icon_epochs.overlay();
+            root.pending_icon_keys.insert(key.clone());
+            root.pending_icon_contexts.insert(key, context.clone());
+        }
+
+        root.submit_file_icon_loads(&context, std::slice::from_ref(&entry));
+
+        assert!(service.0.lock().unwrap().iter().any(|command| matches!(
+            command,
+            explorer_model::ExplorerCommand::LoadThumbnail { key, .. }
+                if key.item_id == entry.id && key.physical_size == 108
+        )));
+    }
+
+    #[test]
+    fn thumbnail_admission_matches_the_shell_worker_capacity() {
+        let root = ExplorerRoot::for_directory_fixture(
+            UiTokens::default(),
+            vec![thumbnail_capable_entry(40, "jpg")],
+            explorer_model::ViewMode::LargeIcons,
+        );
+
+        assert_eq!(
+            root.thumbnail_scheduler.stats().concurrency_limit,
+            super::THUMBNAIL_CONCURRENCY_LIMIT
+        );
+        assert_eq!(super::THUMBNAIL_CONCURRENCY_LIMIT, 2);
+    }
+
+    #[test]
+    fn offscreen_refinement_primes_only_one_bounded_top_viewport() {
+        let entries = (1..=64)
+            .map(|id| thumbnail_capable_entry(id, "jpg"))
+            .collect::<Vec<_>>();
+        let allowed = entries
+            .iter()
+            .take(super::FILE_PRELAYOUT_ICON_PRIME_CAP)
+            .map(|entry| entry.id.clone())
+            .collect::<HashSet<_>>();
+        let mut root = ExplorerRoot::for_directory_fixture(
+            UiTokens::default(),
+            entries.clone(),
+            explorer_model::ViewMode::ExtraLargeIcons,
+        );
+        root.service = Some(Arc::new(RecordingService::default()));
+        let tab = root.state.tabs().active_tab();
+        let context = explorer_model::RequestContext::new(tab.id, tab.generation);
+
+        root.submit_offscreen_file_icon_loads(&context, &entries);
+
+        assert_eq!(
+            root.thumbnail_requests.len(),
+            super::FILE_PRELAYOUT_ICON_PRIME_CAP
+        );
+        assert!(
+            root.thumbnail_requests
+                .keys()
+                .all(|key| allowed.contains(&key.item_id))
+        );
+    }
+
+    #[test]
+    fn saturated_thumbnail_budget_does_not_starve_shell_icon_requests() {
+        let entries = (1..=64)
+            .map(|id| thumbnail_capable_entry(id, "exe"))
+            .collect::<Vec<_>>();
+        let mut root = ExplorerRoot::for_directory_fixture(
+            UiTokens::default(),
+            entries.clone(),
+            explorer_model::ViewMode::LargeIcons,
+        );
+        let service = Arc::new(RecordingService::default());
+        root.service = Some(service.clone());
+        let tab = root.state.tabs().active_tab();
+        let context = explorer_model::RequestContext::new(tab.id, tab.generation);
+        for entry in &entries {
+            root.pending_thumbnail_keys
+                .insert(explorer_model::ThumbnailRequestKey {
+                    item_id: entry.id.clone(),
+                    physical_size: 108,
+                    dpi: 96,
+                    mode: explorer_model::ThumbnailMode::Thumbnail,
+                    source_generation: context.generation.value(),
+                    theme: explorer_model::ShellIconTheme::Light,
+                    association_generation: root.icon_epochs.association(),
+                    overlay_generation: root.icon_epochs.overlay(),
+                });
+        }
+
+        root.submit_file_icon_loads(&context, &entries);
+
+        let shell_count = service
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|command| matches!(command, explorer_model::ExplorerCommand::LoadShellIcon { key, .. } if key.item_id.is_some()))
+            .count();
+        assert_eq!(shell_count, super::FILE_VIEWPORT_ICON_REQUEST_CAP);
+    }
+
+    #[test]
+    fn stale_thumbnail_demand_is_rejected_without_removing_cached_shell_fallback() {
+        let entry = thumbnail_capable_entry(42, "jpg");
+        let mut root = ExplorerRoot::for_directory_fixture(
+            UiTokens::default(),
+            vec![entry.clone()],
+            explorer_model::ViewMode::LargeIcons,
+        );
+        let tab = root.state.tabs().active_tab();
+        let context = explorer_model::RequestContext::new(tab.id, tab.generation);
+        let presentation = super::file_icon_cache_key(
+            &entry,
+            explorer_model::ShellIconTheme::Light,
+            96,
+            crate::navigation_pane::view_icon_logical_size_for_settings(
+                &root.state.view_settings(),
+            ),
+            root.icon_epochs.association(),
+        );
+        let key = explorer_model::ThumbnailRequestKey {
+            item_id: entry.id.clone(),
+            physical_size: 108,
+            dpi: 96,
+            mode: explorer_model::ThumbnailMode::Thumbnail,
+            source_generation: context.generation.value(),
+            theme: explorer_model::ShellIconTheme::Light,
+            association_generation: root.icon_epochs.association(),
+            overlay_generation: root.icon_epochs.overlay(),
+        };
+        let fallback = Arc::new(gpui::RenderImage::new(smallvec::SmallVec::<
+            [image::Frame; 1],
+        >::new()));
+        assert!(root.shell_icons.insert(&presentation, fallback));
+        assert!(root.thumbnail_presentation_is_current(&key, &presentation, &context));
+
+        let _ = dispatch_action(
+            &mut root.state,
+            ExplorerAction::SetViewMode(explorer_model::ViewMode::Tiles),
+            ActionSource::Programmatic,
+        );
+
+        assert!(!root.thumbnail_presentation_is_current(&key, &presentation, &context));
+        assert!(root.shell_icons.get(&presentation).is_some());
+    }
+
+    #[test]
+    fn completed_thumbnail_cache_is_reused_for_a_compatible_view() {
+        let entry = thumbnail_capable_entry(43, "jpg");
+        let mut root = ExplorerRoot::for_directory_fixture(
+            UiTokens::default(),
+            vec![entry.clone()],
+            explorer_model::ViewMode::LargeIcons,
+        );
+        let service = Arc::new(RecordingService::default());
+        root.service = Some(service.clone());
+        let tab = root.state.tabs().active_tab();
+        let context = explorer_model::RequestContext::new(tab.id, tab.generation);
+        let key = explorer_model::ThumbnailRequestKey {
+            item_id: entry.id.clone(),
+            physical_size: 108,
+            dpi: 96,
+            mode: explorer_model::ThumbnailMode::Thumbnail,
+            source_generation: context.generation.value(),
+            theme: explorer_model::ShellIconTheme::Light,
+            association_generation: root.icon_epochs.association(),
+            overlay_generation: root.icon_epochs.overlay(),
+        };
+        let pixels = explorer_model::ThumbnailPixels {
+            width: 1,
+            height: 1,
+            stride: 4,
+            bytes: vec![0, 0, 0, 255],
+        };
+        assert_eq!(
+            root.thumbnail_memory_cache.insert(key, Arc::new(pixels)),
+            explorer_jobs::CacheInsertOutcome::Inserted
+        );
+
+        root.submit_file_icon_loads(&context, std::slice::from_ref(&entry));
+
+        assert!(!service.0.lock().unwrap().iter().any(|command| matches!(
             command,
             explorer_model::ExplorerCommand::LoadThumbnail { .. }
         )));
@@ -7637,6 +8524,203 @@ mod tests {
         assert!(cache.current_bytes <= super::BASE_ICON_CACHE_BYTE_BUDGET);
     }
 
+    #[test]
+    fn maximum_folder_icon_prefers_exact_then_largest_compatible_shell_texture() {
+        let texture = || {
+            Arc::new(gpui::RenderImage::new(smallvec::SmallVec::<
+                [image::Frame; 1],
+            >::new()))
+        };
+        let item_id = explorer_model::ShellItemId::from_provider_bytes([0x51]).unwrap();
+        let requested = explorer_model::ShellIconKey {
+            item_id: Some(item_id.clone()),
+            location: explorer_model::LocationDescriptor::file_system(r"D:\fixture\folder"),
+            size_bucket: 512,
+            dpi: 96,
+            theme: explorer_model::ShellIconTheme::Light,
+            association_generation: 7,
+            overlay_generation: 3,
+        };
+        let smaller = explorer_model::ShellIconKey {
+            size_bucket: 256,
+            ..requested.clone()
+        };
+        let smallest = explorer_model::ShellIconKey {
+            size_bucket: 96,
+            ..requested.clone()
+        };
+        let incompatible = explorer_model::ShellIconKey {
+            size_bucket: 384,
+            theme: explorer_model::ShellIconTheme::Dark,
+            ..requested.clone()
+        };
+        let largest_texture = texture();
+        let exact_texture = texture();
+        let mut cache = VisibleItemIconCache::default();
+        assert!(cache.insert(&smallest, texture()));
+        assert!(cache.insert(&smaller, Arc::clone(&largest_texture)));
+        assert!(cache.insert(&incompatible, texture()));
+        let selected = cache
+            .get_compatible_file_icon(&requested)
+            .expect("largest compatible Shell pixels");
+        assert!(Arc::ptr_eq(&selected, &largest_texture));
+
+        assert!(cache.insert(&requested, Arc::clone(&exact_texture)));
+        let selected = cache
+            .get_compatible_file_icon(&requested)
+            .expect("exact Shell pixels");
+        assert!(Arc::ptr_eq(&selected, &exact_texture));
+
+        let wrong_context = explorer_model::ShellIconKey {
+            dpi: 144,
+            ..requested
+        };
+        assert!(cache.get_compatible_file_icon(&wrong_context).is_none());
+    }
+
+    #[test]
+    fn maximum_folder_icon_uses_largest_compatible_shared_base_texture() {
+        let key = explorer_model::BaseIconKey {
+            class: explorer_model::BaseIconClass::Folder,
+            size_bucket: 512,
+            dpi: 96,
+            theme: explorer_model::ShellIconTheme::Light,
+            association_epoch: 4,
+        };
+        let smaller = explorer_model::BaseIconKey {
+            size_bucket: 256,
+            ..key.clone()
+        };
+        let incompatible = explorer_model::BaseIconKey {
+            size_bucket: 384,
+            association_epoch: 3,
+            ..key.clone()
+        };
+        let selected_texture = Arc::new(gpui::RenderImage::new(smallvec::SmallVec::<
+            [image::Frame; 1],
+        >::new()));
+        let mut cache = BaseIconCache::default();
+        cache.insert(smaller, Arc::clone(&selected_texture), 11);
+        cache.insert(
+            incompatible,
+            Arc::new(gpui::RenderImage::new(smallvec::SmallVec::<
+                [image::Frame; 1],
+            >::new())),
+            12,
+        );
+        let selected = cache
+            .get_compatible(&key)
+            .expect("largest current-context folder base");
+        assert!(Arc::ptr_eq(&selected, &selected_texture));
+    }
+
+    #[test]
+    fn maximum_folder_icon_failed_exact_base_keeps_bounded_real_item_request_eligible() {
+        let service = Arc::new(RecordingService::default());
+        let mut root = ExplorerRoot {
+            service: Some(service.clone()),
+            ..ExplorerRoot::default()
+        };
+        root.state
+            .set_view_mode(explorer_model::ViewMode::ExtraLargeIcons);
+        root.state.zoom_view(1);
+        root.state.zoom_view(1);
+        let entry = explorer_model::FileEntry {
+            id: explorer_model::ShellItemId::from_provider_bytes([0x52]).unwrap(),
+            location: explorer_model::LocationDescriptor::file_system(r"D:\fixture\folder"),
+            display_name: "folder".to_owned(),
+            is_container: true,
+            metadata: explorer_model::FileEntryMetadata::default(),
+        };
+        let tab = root.state.tabs().active_tab();
+        let context = explorer_model::RequestContext::new(tab.id, tab.generation);
+        let presentation = crate::navigation_pane::file_icon_key_for_size(
+            &entry,
+            explorer_model::ShellIconTheme::Light,
+            96,
+            512,
+        );
+        let failed_base = explorer_model::base_icon_key(
+            &entry,
+            presentation.size_bucket,
+            96,
+            explorer_model::ShellIconTheme::Light,
+            root.icon_epochs.association(),
+        );
+        root.failed_base_icons.insert(failed_base);
+
+        root.submit_file_icon_loads(&context, &[entry]);
+        let commands = service.0.lock().unwrap();
+        assert!(commands.iter().any(|command| matches!(
+            command,
+            explorer_model::ExplorerCommand::LoadShellIcon { key, .. }
+                if key.item_id.is_some() && key.size_bucket == 512
+        )));
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|command| matches!(
+                    command,
+                    explorer_model::ExplorerCommand::LoadShellIcon { key, .. }
+                        if key.item_id.is_some()
+                ))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn thumbnail_edge_fit_provenance_survives_snapshot_and_shell_replacement_is_conservative() {
+        let mut root = ExplorerRoot::default();
+        root.state
+            .set_view_mode(explorer_model::ViewMode::ExtraLargeIcons);
+        root.state.zoom_view(1);
+        root.state.zoom_view(1);
+        let entry = explorer_model::FileEntry {
+            id: explorer_model::ShellItemId::from_provider_bytes([0x53]).unwrap(),
+            location: explorer_model::LocationDescriptor::file_system(r"D:\fixture\photo.jpg"),
+            display_name: "photo.jpg".to_owned(),
+            is_container: false,
+            metadata: explorer_model::FileEntryMetadata::default(),
+        };
+        let logical_size = crate::navigation_pane::view_icon_logical_size_for_settings(
+            &root.state.view_settings(),
+        );
+        let mut cache_key = super::file_icon_cache_key(
+            &entry,
+            explorer_model::ShellIconTheme::Light,
+            root.shell_icon_dpi,
+            logical_size,
+            root.icon_epochs.association(),
+        );
+        cache_key.overlay_generation = root.icon_epochs.overlay();
+        let presentation_key = crate::navigation_pane::file_icon_key_for_size(
+            &entry,
+            explorer_model::ShellIconTheme::Light,
+            root.shell_icon_dpi,
+            logical_size,
+        );
+        let texture = || {
+            Arc::new(gpui::RenderImage::new(smallvec::SmallVec::<
+                [image::Frame; 1],
+            >::new()))
+        };
+
+        assert!(root.shell_icons.insert_thumbnail(&cache_key, texture()));
+        let thumbnail_snapshot = root.navigation_icon_snapshot(std::slice::from_ref(&entry));
+        assert!(thumbnail_snapshot.textures.contains_key(&presentation_key));
+        assert!(
+            thumbnail_snapshot
+                .thumbnail_keys
+                .contains(&presentation_key)
+        );
+
+        assert!(root.shell_icons.insert(&cache_key, texture()));
+        let shell_snapshot = root.navigation_icon_snapshot(std::slice::from_ref(&entry));
+        assert!(shell_snapshot.textures.contains_key(&presentation_key));
+        assert!(!shell_snapshot.thumbnail_keys.contains(&presentation_key));
+    }
+
     #[derive(Default)]
     struct RecordingService(Mutex<Vec<explorer_model::ExplorerCommand>>);
 
@@ -8292,6 +9376,7 @@ mod tests {
 
         let snapshot = root.navigation_icon_snapshot(&[]);
         let captured = snapshot
+            .textures
             .get(&generic_key)
             .expect("generic breadcrumb texture is included");
         assert!(Arc::ptr_eq(captured, &texture));

@@ -14,6 +14,7 @@
     reason = "the model exposes many inexpensive constructors and state queries; requiring every caller to consume them would add noise without preventing resource loss"
 )]
 
+mod bookmark;
 mod context_menu;
 mod domain;
 mod drag_drop;
@@ -29,6 +30,7 @@ mod window;
 
 use explorer_common::LifecyclePhase;
 
+pub use bookmark::{Bookmark, BookmarkId, BookmarkMutation, BookmarkTarget, Bookmarks};
 pub use context_menu::{
     ContextMenuHostCommand, ContextMenuInvocationProfile, ContextMenuOutcome, ContextMenuRequest,
     ContextMenuSession, ContextMenuSessionState, MenuPoint,
@@ -60,11 +62,13 @@ pub use navigation::{
     AddressBarMode, AddressBarState, BreadcrumbIconHint, BreadcrumbMenuItem, BreadcrumbSegment,
     BreadcrumbSegmentId, ColumnAlignment, ColumnApplicability, ColumnCost, ColumnDescriptor,
     ColumnId, ColumnIdError, ColumnLayoutEntry, ColumnRegistry, ColumnRegistryError,
-    ColumnSortSemantics, ColumnValueType, DirectorySnapshot, DirectoryState, DriveAvailability,
-    DriveKind, DriveMetadata, FileEntry, FileEntryMetadata, HistoryEntry, MenuFocusMovement,
-    NavigationHistory, OrderedColumnLayout, PresentationChange, SelectionModel, SortDescriptor,
-    SortDirection, TabRequestScopes, TabSearchState, TabState, TabViewState, ViewAnchor, ViewMode,
-    ViewSettings, default_icon_size_for_mode, effective_icon_size, location_breadcrumbs,
+    ColumnSortSemantics, ColumnValueType, DEFAULT_ICON_CACHE_MEMORY_MB, DirectorySnapshot,
+    DirectoryState, DriveAvailability, DriveKind, DriveMetadata, FileEntry, FileEntryMetadata,
+    HistoryEntry, MAX_ICON_CACHE_MEMORY_MB, MenuFocusMovement, NavigationHistory,
+    OrderedColumnLayout, PresentationChange, SelectionModel, SortDescriptor, SortDirection,
+    TabRequestScopes, TabSearchState, TabState, TabViewState, ViewAnchor, ViewMode, ViewSettings,
+    default_icon_size_for_mode, effective_icon_size, location_breadcrumbs,
+    normalized_icon_cache_memory_mb,
 };
 pub use operation::{
     JournalEntry, JournalInverse, JournalPreimage, JournalValidation, OperationCenterState,

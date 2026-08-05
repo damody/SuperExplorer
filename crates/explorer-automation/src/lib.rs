@@ -11,11 +11,11 @@
 //! Platform-neutral Lua automation coordination for Explorer.
 
 pub mod adapters;
+pub mod bookmark;
 pub mod event;
 pub mod event_bridge;
 pub mod fakes;
 pub mod file_host;
-pub mod folder_scope;
 pub mod lifecycle;
 pub mod process_host;
 pub mod registration;
@@ -31,16 +31,15 @@ pub use adapters::{
     CredentialStore, EventSink, FileHost, FileWriteMode, HostEffect, ProcessHost, ProcessRequest,
     ProcessResult, TimerHost, UiHost,
 };
+pub use bookmark::{
+    BOOKMARK_LUA_TIMEOUT_MS, LuaBookmarkRequest, LuaBookmarkResult, execute_lua_bookmark,
+};
 pub use event::{
     AUTOMATION_EVENT_NAMES, AutomationEvent, AutomationEventData, EVENT_SCHEMA_VERSION,
     EventContext, EventName, EventNameError, EventSource,
 };
 pub use event_bridge::{EventBridge, EventBridgeError};
 pub use file_host::{ConfirmingFileHost, NativeFileHost, TaskFiles};
-pub use folder_scope::{
-    FOLDER_SCRIPT_FILENAME, FolderScriptCoordinator, FolderScriptHandle, FolderScriptSnapshot,
-    FolderScriptState,
-};
 pub use lifecycle::{
     DiscoveredScript, ScriptLifecycle, ScriptLifecycleState, ScriptRegistry, discover_lua_scripts,
 };

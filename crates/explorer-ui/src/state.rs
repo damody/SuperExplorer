@@ -89,7 +89,7 @@ fn official_extensions_v1() -> Vec<ExtensionOptionV1> {
         },
         ExtensionOptionV1 {
             package_id: "rust-tokei-code-lines-column",
-            display_name: "Code lines (Rust)",
+            display_name: "Main code lines",
             author_name: "Damody",
             author_bio: "SuperExplorer 與官方範例擴充功能作者",
             author_website: "https://github.com/damody/SuperExplorer",
@@ -101,7 +101,7 @@ fn official_extensions_v1() -> Vec<ExtensionOptionV1> {
         },
         ExtensionOptionV1 {
             package_id: "lua-tokei-code-lines-column",
-            display_name: "Code lines (Lua)",
+            display_name: "Code lines",
             author_name: "Damody",
             author_bio: "SuperExplorer 與官方範例擴充功能作者",
             author_website: "https://github.com/damody/SuperExplorer",
@@ -403,6 +403,13 @@ impl CommandAvailability {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BookmarkEditorDraft {
+    pub(crate) id: Option<explorer_model::BookmarkId>,
+    pub(crate) name: String,
+    pub(crate) target: explorer_model::BookmarkTarget,
+}
+
 #[derive(Clone, Debug)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -432,8 +439,13 @@ pub struct AppViewState {
     context_menu_error: Option<explorer_common::ExplorerError>,
     thumbnail_cache_notice: Option<String>,
     quick_access: QuickAccessPins,
+    bookmarks: explorer_model::Bookmarks,
     recent_items: RecentItems,
     quick_access_notice: Option<String>,
+    bookmark_notice: Option<String>,
+    bookmark_manager_open: bool,
+    bookmark_overflow_open: bool,
+    bookmark_editor: Option<BookmarkEditorDraft>,
     broker_health: BrokerUiHealth,
     session_reset_confirmation: Option<explorer_model::SessionResetScope>,
     confirmed_session_reset: Option<explorer_model::SessionResetScope>,
@@ -471,6 +483,7 @@ pub struct AppViewState {
     /// package descriptors in task 5.2; UI only reads this registry.
     column_registry: explorer_model::ColumnRegistry,
     details_column_resize: Option<DetailsColumnResizeSession>,
+    details_column_drag: Option<explorer_model::ColumnId>,
     details_column_menu: Option<explorer_model::ColumnId>,
     details_filter_menu: Option<explorer_model::ColumnId>,
     details_filters: HashMap<TabId, crate::file_view::DetailsFilters>,
@@ -481,8 +494,7 @@ pub struct AppViewState {
     /// Exact values for the one P0 runtime column. Keeping these in view state
     /// makes its sorted presentation authoritative for every row action.
     folder_size_sort_values: HashMap<ShellItemId, Option<u64>>,
-    code_lines_sort_values: HashMap<ShellItemId, Option<u64>>,
-    active_code_lines_column: Option<explorer_model::ColumnId>,
+    code_lines_sort_values: HashMap<explorer_model::ColumnId, HashMap<ShellItemId, Option<u64>>>,
     presentation_cache: Arc<Mutex<crate::file_view::DirectoryPresentationCache>>,
 }
 
@@ -601,8 +613,13 @@ impl AppViewState {
             context_menu_error: None,
             thumbnail_cache_notice: None,
             quick_access: QuickAccessPins::default(),
+            bookmarks: explorer_model::Bookmarks::default(),
             recent_items: RecentItems::new(64, 30 * 24 * 60 * 60, Vec::new()),
             quick_access_notice: None,
+            bookmark_notice: None,
+            bookmark_manager_open: false,
+            bookmark_overflow_open: false,
+            bookmark_editor: None,
             broker_health: BrokerUiHealth::Healthy,
             session_reset_confirmation: None,
             confirmed_session_reset: None,
@@ -643,6 +660,7 @@ impl AppViewState {
             view_show_submenu_open: false,
             column_registry: explorer_model::ColumnRegistry::built_ins(),
             details_column_resize: None,
+            details_column_drag: None,
             details_column_menu: None,
             details_filter_menu: None,
             details_filters: HashMap::from([(
@@ -655,7 +673,6 @@ impl AppViewState {
             file_view_typeahead: None,
             folder_size_sort_values: HashMap::new(),
             code_lines_sort_values: HashMap::new(),
-            active_code_lines_column: None,
             presentation_cache: Arc::new(Mutex::new(
                 crate::file_view::DirectoryPresentationCache::default(),
             )),
@@ -715,7 +732,6 @@ impl AppViewState {
         {
             return false;
         }
-        self.active_code_lines_column = Some(descriptor.id.clone());
         self.tabs
             .active_tab_mut()
             .view
@@ -741,12 +757,13 @@ impl AppViewState {
 
     pub(crate) fn set_code_lines_sort_values(
         &mut self,
+        column_id: explorer_model::ColumnId,
         values: HashMap<ShellItemId, Option<u64>>,
     ) -> bool {
-        if self.code_lines_sort_values == values {
+        if self.code_lines_sort_values.get(&column_id) == Some(&values) {
             return false;
         }
-        self.code_lines_sort_values = values;
+        self.code_lines_sort_values.insert(column_id, values);
         self.presentation_cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -792,6 +809,41 @@ impl AppViewState {
                 order: pin.order,
             })
             .collect()
+    }
+
+    pub(crate) fn configure_bookmarks(&mut self, bookmarks: explorer_model::Bookmarks) {
+        self.bookmarks = bookmarks;
+    }
+
+    pub(crate) const fn bookmarks(&self) -> &explorer_model::Bookmarks {
+        &self.bookmarks
+    }
+
+    pub(crate) fn add_bookmark(
+        &mut self,
+        name: String,
+        target: explorer_model::BookmarkTarget,
+    ) -> explorer_model::BookmarkMutation {
+        self.bookmarks.begin_add(name, target)
+    }
+
+    pub(crate) fn remove_bookmark(
+        &mut self,
+        id: explorer_model::BookmarkId,
+    ) -> explorer_model::BookmarkMutation {
+        self.bookmarks.begin_remove(id)
+    }
+
+    pub(crate) fn reorder_bookmark(
+        &mut self,
+        id: explorer_model::BookmarkId,
+        destination: usize,
+    ) -> explorer_model::BookmarkMutation {
+        self.bookmarks.begin_reorder(id, destination)
+    }
+
+    pub(crate) fn rollback_bookmark(&mut self, mutation: explorer_model::BookmarkMutation) {
+        self.bookmarks.rollback(mutation);
     }
 
     pub(crate) fn quick_access_navigation_pins(&self) -> Vec<(String, LocationDescriptor)> {
@@ -1698,10 +1750,7 @@ impl AppViewState {
         };
         let removed = self.column_registry.unregister_package(package_id) != 0;
         if removed {
-            if self.active_code_lines_column.as_ref() == Some(&descriptor.id) {
-                self.active_code_lines_column = None;
-            }
-            self.code_lines_sort_values.clear();
+            self.code_lines_sort_values.remove(&descriptor.id);
             self.presentation_cache
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1768,7 +1817,9 @@ impl AppViewState {
             }
             if !self.extension_enabled("rust-lock-owner-column") {
                 self.column_registry.unregister_package("rust-lock-owner");
-                self.code_lines_sort_values.clear();
+                self.code_lines_sort_values.retain(|column_id, _| {
+                    !matches!(column_id, explorer_model::ColumnId::Extension { package_id, .. } if package_id == "rust-lock-owner")
+                });
                 self.presentation_cache
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1857,7 +1908,11 @@ impl AppViewState {
         // Details is the stable built-in fallback whenever this extension is
         // missing or faults during rendering.
         settings.mode = explorer_model::ViewMode::Details;
-        settings.extension_view_id = Some(view_id);
+        if settings.extension_view_id.as_deref() == Some(view_id.as_str()) {
+            settings.extension_view_id = None;
+        } else {
+            settings.extension_view_id = Some(view_id);
+        }
         self.close_view_menu();
     }
 
@@ -2259,6 +2314,33 @@ impl AppViewState {
         self.details_column_resize.is_some()
     }
 
+    pub(crate) fn move_details_column_before(
+        &mut self,
+        column: explorer_model::ColumnId,
+        before: Option<explorer_model::ColumnId>,
+    ) -> bool {
+        self.tabs
+            .active_tab_mut()
+            .view
+            .settings
+            .details_layout
+            .move_before(&column, before.as_ref())
+    }
+
+    pub(crate) fn begin_details_column_drag(&mut self, column: explorer_model::ColumnId) {
+        self.details_column_drag = (column != explorer_model::ColumnId::Name).then_some(column);
+    }
+
+    pub(crate) fn drop_details_column_before(
+        &mut self,
+        before: explorer_model::ColumnId,
+    ) -> bool {
+        let Some(column) = self.details_column_drag.take() else {
+            return false;
+        };
+        self.move_details_column_before(column, Some(before))
+    }
+
     pub(crate) fn toggle_details_pane(&mut self) {
         let settings = &mut self.tabs.active_tab_mut().view.settings;
         settings.details_pane = !settings.details_pane;
@@ -2391,6 +2473,95 @@ impl AppViewState {
 
     pub fn quick_access_notice(&self) -> Option<&str> {
         self.quick_access_notice.as_deref()
+    }
+
+    pub fn bookmark_notice(&self) -> Option<&str> {
+        self.bookmark_notice.as_deref()
+    }
+
+    pub(crate) fn set_bookmark_notice(&mut self, notice: impl Into<String>) {
+        self.bookmark_notice = Some(notice.into());
+    }
+
+    pub(crate) const fn bookmark_manager_open(&self) -> bool {
+        self.bookmark_manager_open
+    }
+
+    pub(crate) fn toggle_bookmark_manager(&mut self) {
+        self.bookmark_manager_open = !self.bookmark_manager_open;
+    }
+
+    pub(crate) const fn bookmark_overflow_open(&self) -> bool {
+        self.bookmark_overflow_open
+    }
+
+    pub(crate) fn toggle_bookmark_overflow(&mut self) {
+        self.bookmark_overflow_open = !self.bookmark_overflow_open;
+    }
+
+    pub(crate) fn bookmark_editor(&self) -> Option<&BookmarkEditorDraft> {
+        self.bookmark_editor.as_ref()
+    }
+
+    pub(crate) fn begin_bookmark_editor(&mut self, id: Option<explorer_model::BookmarkId>) {
+        let bookmark =
+            id.and_then(|id| self.bookmarks.entries().iter().find(|entry| entry.id == id));
+        self.bookmark_editor = Some(match bookmark {
+            Some(bookmark) => BookmarkEditorDraft {
+                id: Some(bookmark.id),
+                name: bookmark.name.clone(),
+                target: bookmark.target.clone(),
+            },
+            None => BookmarkEditorDraft {
+                id: None,
+                name: "Lua command".to_owned(),
+                target: explorer_model::BookmarkTarget::LuaScript {
+                    source: "-- current_folder is a read-only string\n".to_owned(),
+                },
+            },
+        });
+    }
+
+    pub(crate) fn cancel_bookmark_editor(&mut self) {
+        self.bookmark_editor = None;
+    }
+
+    pub(crate) fn update_bookmark_editor_name(&mut self, name: String) {
+        if let Some(editor) = &mut self.bookmark_editor {
+            editor.name = name;
+        }
+    }
+
+    pub(crate) fn update_bookmark_editor_payload(&mut self, payload: String) {
+        if let Some(editor) = &mut self.bookmark_editor {
+            editor.target = match &editor.target {
+                explorer_model::BookmarkTarget::Folder { .. } => {
+                    explorer_model::BookmarkTarget::Folder {
+                        location: LocationDescriptor::file_system(payload),
+                    }
+                }
+                explorer_model::BookmarkTarget::File { .. } => {
+                    explorer_model::BookmarkTarget::File {
+                        location: LocationDescriptor::file_system(payload),
+                    }
+                }
+                explorer_model::BookmarkTarget::LuaScript { .. } => {
+                    explorer_model::BookmarkTarget::LuaScript { source: payload }
+                }
+            };
+        }
+    }
+
+    pub(crate) fn commit_bookmark_editor(&mut self) -> Option<explorer_model::BookmarkMutation> {
+        let editor = self.bookmark_editor.take()?;
+        if editor.name.trim().is_empty() {
+            self.bookmark_editor = Some(editor);
+            return None;
+        }
+        Some(match editor.id {
+            Some(id) => self.bookmarks.begin_update(id, editor.name, editor.target),
+            None => self.bookmarks.begin_add(editor.name, editor.target),
+        })
     }
 
     pub const fn session_reset_confirmation(&self) -> Option<explorer_model::SessionResetScope> {
@@ -3679,13 +3850,11 @@ impl AppViewState {
                 &self.folder_size_sort_values,
                 tab.view.settings.sort.direction,
             ))
-        } else if self.active_code_lines_column.as_ref()
-            == Some(&tab.view.settings.sort.column)
+        } else if let Some(values) = self
+            .code_lines_sort_values
+            .get(&tab.view.settings.sort.column)
         {
-            Some(presentation.sorted_by_extension_bytes(
-                &self.code_lines_sort_values,
-                tab.view.settings.sort.direction,
-            ))
+            Some(presentation.sorted_by_extension_bytes(values, tab.view.settings.sort.direction))
         } else {
             Some(presentation)
         }
@@ -4081,6 +4250,30 @@ impl AppViewState {
 
     pub(crate) fn selected_items_for_extension_command(&self) -> Vec<ItemDescriptor> {
         self.selected_items()
+    }
+
+    pub(crate) fn selected_bookmark_target_and_id(
+        &self,
+    ) -> Option<(
+        explorer_model::BookmarkTarget,
+        Option<explorer_model::BookmarkId>,
+    )> {
+        let selected = self.selected_items();
+        let [item] = selected.as_slice() else {
+            return None;
+        };
+        let path = item.location.path()?;
+        let target = if path.is_dir() {
+            explorer_model::BookmarkTarget::Folder {
+                location: item.location.clone(),
+            }
+        } else {
+            explorer_model::BookmarkTarget::File {
+                location: item.location.clone(),
+            }
+        };
+        let id = self.bookmarks.id_for_target(&target);
+        Some((target, id))
     }
 
     pub(crate) fn active_location_for_extension_command(&self) -> Option<LocationDescriptor> {
@@ -6629,10 +6822,7 @@ mod tests {
             explorer_model::WindowEventOutcome::Applied
         );
         assert!(state.select_row(0));
-        assert!(state.row_namespace_command_enabled(
-            0,
-            explorer_model::NamespaceCommand::Rename
-        ));
+        assert!(state.row_namespace_command_enabled(0, explorer_model::NamespaceCommand::Rename));
         assert!(state.begin_focused_inline_rename());
         assert_eq!(state.rename_editor().unwrap().buffer, "hello.txt");
     }
@@ -7582,8 +7772,12 @@ mod tests {
     fn folder_options_use_a_cancelable_draft_and_apply_to_the_active_tab() {
         let mut state = AppViewState::default();
         state.open_folder_options();
-        state.update_folder_options(|settings| settings.hidden_items = true);
+        state.update_folder_options(|settings| {
+            settings.hidden_items = true;
+            settings.icon_cache_memory_mb = 1_024;
+        });
         assert!(!state.view_settings().hidden_items);
+        assert_eq!(state.view_settings().icon_cache_memory_mb, 128);
         state.close_folder_options();
         assert!(!state.view_settings().hidden_items);
 
@@ -7592,11 +7786,13 @@ mod tests {
         state.update_folder_options(|settings| {
             settings.hidden_items = true;
             settings.file_name_extensions = false;
+            settings.icon_cache_memory_mb = 1_024;
         });
         state.confirm_folder_options();
         assert!(state.folder_options().is_none());
         assert!(state.view_settings().hidden_items);
         assert!(!state.view_settings().file_name_extensions);
+        assert_eq!(state.view_settings().icon_cache_memory_mb, 1_024);
     }
 
     #[test]
@@ -7637,6 +7833,68 @@ mod tests {
         state.apply_folder_options();
         assert!(!state.extensions()[4].enabled);
         assert!(!state.column_registry().contains(&lock_owner.id));
+    }
+
+    #[test]
+    fn lua_and_rust_code_lines_columns_keep_independent_identity_and_sort_state() {
+        let mut state = AppViewState::default();
+        let rust = crate::code_lines_column::code_lines_column_descriptor();
+        let mut lua = rust.clone();
+        lua.id = explorer_model::ColumnId::Extension {
+            package_id: "lua-tokei-code-lines-column".to_owned(),
+            column_id: crate::code_lines_column::CODE_LINES_COLUMN_ID.to_owned(),
+        };
+        lua.display_name = "Code lines".to_owned();
+        assert_ne!(rust.id, lua.id);
+        assert!(state.install_code_lines_column_descriptor(rust.clone()));
+        assert!(state.install_code_lines_column_descriptor(lua.clone()));
+        assert!(state.column_registry().contains(&rust.id));
+        assert!(state.column_registry().contains(&lua.id));
+
+        let item = explorer_model::ShellItemId::from_provider_bytes([0x42]).unwrap();
+        assert!(state.set_code_lines_sort_values(
+            rust.id.clone(),
+            std::collections::HashMap::from([(item.clone(), Some(1_250))]),
+        ));
+        assert!(state.set_code_lines_sort_values(
+            lua.id.clone(),
+            std::collections::HashMap::from([(item, Some(75))]),
+        ));
+        assert_eq!(
+            state.code_lines_sort_values[&rust.id].values().next(),
+            Some(&Some(1_250))
+        );
+        assert_eq!(
+            state.code_lines_sort_values[&lua.id].values().next(),
+            Some(&Some(75))
+        );
+
+        assert!(state.uninstall_code_lines_column_descriptor(&lua));
+        assert!(state.column_registry().contains(&rust.id));
+        assert!(!state.column_registry().contains(&lua.id));
+        assert!(state.code_lines_sort_values.contains_key(&rust.id));
+        assert!(!state.code_lines_sort_values.contains_key(&lua.id));
+    }
+
+    #[test]
+    fn selecting_the_active_extension_view_toggles_back_to_details() {
+        let mut state = AppViewState::default();
+        let view_id = "rust-folder-size-map-view:folder-size-map".to_owned();
+        state.set_extension_view(view_id.clone());
+        assert_eq!(
+            state.view_settings().extension_view_id.as_deref(),
+            Some(view_id.as_str())
+        );
+        assert_eq!(
+            state.view_settings().mode,
+            explorer_model::ViewMode::Details
+        );
+        state.set_extension_view(view_id);
+        assert_eq!(state.view_settings().extension_view_id, None);
+        assert_eq!(
+            state.view_settings().mode,
+            explorer_model::ViewMode::Details
+        );
     }
 
     #[test]

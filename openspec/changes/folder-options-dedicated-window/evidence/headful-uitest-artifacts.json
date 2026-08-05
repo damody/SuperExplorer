@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "case_id": "folder-options-extensions-scroll-escape",
+  "run_id": "1785912270-ed910e08221e4efa95a661af8fa5ce5c",
+  "source_revision": "0ae42a982eade333822edfc9b761816aff7d3d30",
+  "status": "passed",
+  "artifacts": [
+    {
+      "path": "target/uitest-runs/1785912270-ed910e08221e4efa95a661af8fa5ce5c/evidence/folder-options-extensions-scroll-escape/report.json",
+      "sha256": "e7a0120980231a7749f2357866acdd4376039190f66626b527a0d4150532e9a2"
+    },
+    {
+      "path": "target/uitest-runs/1785912270-ed910e08221e4efa95a661af8fa5ce5c/evidence/folder-options-extensions-scroll-escape/folder-options-before-scroll.png",
+      "sha256": "c883190f0feacf7dbfeb3664a67f74f7b40da318bbd8f7daf8f9cd707d12306d"
+    },
+    {
+      "path": "target/uitest-runs/1785912270-ed910e08221e4efa95a661af8fa5ce5c/evidence/folder-options-extensions-scroll-escape/folder-options-after-scroll.png",
+      "sha256": "726f84b3ed92e2cff44080be0ea44893d595011b54e31ef4feabfdad604f9cad"
+    },
+    {
+      "path": "target/uitest-runs/1785912270-ed910e08221e4efa95a661af8fa5ce5c/evidence/folder-options-extensions-scroll-escape/folder-options-after-escape.png",
+      "sha256": "7bd7f1cba8433b78377c6b1fc39d05e40f1cdbb7aa4279a8de1aae8c1fb8cdee"
+    },
+    {
+      "path": "target/uitest-runs/1785912270-ed910e08221e4efa95a661af8fa5ce5c/evidence/folder-options-extensions-scroll-escape/explorer.log",
+      "sha256": "9abda4c979dafd2a5d2ebe21870932e74b88c0a95fa54296f259b481c6e2a809"
+    },
+    {
+      "path": "target/uitest-runs/1785912270-ed910e08221e4efa95a661af8fa5ce5c/evidence/folder-options-extensions-scroll-escape/error.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}

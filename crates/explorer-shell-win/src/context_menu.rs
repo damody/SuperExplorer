@@ -54,18 +54,18 @@ use windows::{
                 ILFindLastID, ILIsParent, IShellFolder, SHBindToObject,
             },
             WindowsAndMessaging::{
-                CREATESTRUCTW, CallNextHookEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-                DestroyMenu, DestroyWindow, EVENT_OBJECT_SHOW, EnumWindows, GA_ROOT, GWLP_USERDATA,
-                GetAncestor, GetClassNameW, GetCursorPos, GetMenuItemCount, GetMenuItemID,
-                GetMenuStringW, GetSubMenu, GetWindowLongPtrW, GetWindowRect,
+                AppendMenuW, CREATESTRUCTW, CallNextHookEx, CreatePopupMenu, CreateWindowExW,
+                DefWindowProcW, DestroyMenu, DestroyWindow, EVENT_OBJECT_SHOW, EnumWindows,
+                GA_ROOT, GWLP_USERDATA, GetAncestor, GetClassNameW, GetCursorPos, GetMenuItemCount,
+                GetMenuItemID, GetMenuStringW, GetSubMenu, GetWindowLongPtrW, GetWindowRect,
                 GetWindowThreadProcessId, HHOOK, HMENU, IsWindow, IsWindowVisible, MF_BYPOSITION,
-                OBJID_WINDOW, PostMessageW, RegisterClassW, SW_SHOWNORMAL, SWP_NOACTIVATE,
-                SWP_NOSIZE, SWP_NOZORDER, SetCursorPos, SetForegroundWindow, SetWindowLongPtrW,
-                SetWindowPos, SetWindowsHookExW, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-                TPM_TOPALIGN, TrackPopupMenuEx, UnhookWindowsHookEx, WH_MOUSE_LL, WINDOW_EX_STYLE,
-                WINEVENT_INCONTEXT, WM_CANCELMODE, WM_DRAWITEM, WM_INITMENUPOPUP, WM_MEASUREITEM,
-                WM_MENUCHAR, WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WNDCLASSW, WS_POPUP,
-                WindowFromPoint,
+                MF_SEPARATOR, MF_STRING, OBJID_WINDOW, PostMessageW, RegisterClassW, SW_SHOWNORMAL,
+                SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetCursorPos, SetForegroundWindow,
+                SetWindowLongPtrW, SetWindowPos, SetWindowsHookExW, TPM_LEFTALIGN, TPM_RETURNCMD,
+                TPM_RIGHTBUTTON, TPM_TOPALIGN, TrackPopupMenuEx, UnhookWindowsHookEx, WH_MOUSE_LL,
+                WINDOW_EX_STYLE, WINEVENT_INCONTEXT, WM_CANCELMODE, WM_DRAWITEM, WM_INITMENUPOPUP,
+                WM_MEASUREITEM, WM_MENUCHAR, WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WNDCLASSW,
+                WS_POPUP, WindowFromPoint,
             },
         },
     },
@@ -584,6 +584,25 @@ fn show_with_deferred_replay(
         matches!(request.target, ShellContextMenuTarget::Items { .. }),
         profile,
     )?;
+    if matches!(request.target, ShellContextMenuTarget::Items { .. }) {
+        let custom_id = COMMAND_FIRST
+            .saturating_add(u32::try_from(command_count).unwrap_or(COMMAND_LAST - COMMAND_FIRST));
+        unsafe { AppendMenuW(popup.get(), MF_SEPARATOR, 0, PCWSTR::null()) }.map_err(|error| {
+            menu_error(
+                "append bookmark separator",
+                "無法建立加入書籤命令",
+                &error.to_string(),
+            )
+        })?;
+        unsafe { AppendMenuW(popup.get(), MF_STRING, custom_id as usize, w!("加入書籤")) }
+            .map_err(|error| {
+                menu_error(
+                    "append bookmark command",
+                    "無法建立加入書籤命令",
+                    &error.to_string(),
+                )
+            })?;
+    }
     if started.elapsed() > Duration::from_millis(u64::from(request.deadline_ms.max(1))) {
         return Err(menu_error(
             "query context menu",
@@ -722,6 +741,9 @@ fn host_command_at_offset(
         }
     }
     let selected_id = COMMAND_FIRST.checked_add(command_offset)?;
+    if item_menu && command_label(popup, selected_id).is_some_and(|label| label == "加入書籤") {
+        return Some(ContextMenuHostCommand::AddBookmark);
+    }
     if item_menu && command_label(popup, selected_id).is_some_and(|label| is_share_label(&label)) {
         return Some(ContextMenuHostCommand::Share);
     }

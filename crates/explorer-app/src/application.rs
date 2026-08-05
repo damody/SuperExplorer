@@ -1,7 +1,8 @@
 //! Production process composition root.
 
 use std::{
-    collections::{HashMap, HashSet},
+    cell::RefCell,
+    collections::{HashMap, HashSet, VecDeque},
     fs,
     hash::{Hash, Hasher},
     io::Read as _,
@@ -26,10 +27,7 @@ use explorer_ui::{
 use gpui::AppContext as _;
 
 use crate::windows_prerequisites::initialize_dpi_awareness;
-use crate::{
-    automation_service::AutomationComposition, system_theme::high_contrast_tokens,
-    visual_fixture::VisualFixtureConfig,
-};
+use crate::{system_theme::high_contrast_tokens, visual_fixture::VisualFixtureConfig};
 
 const SHELL_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -46,7 +44,8 @@ const CODE_LINES_RENDERER_CONTRIBUTION_ID_V1: &str = "rust-tokei:code-lines-rend
 const LOCK_OWNER_CONTRIBUTION_ID_V1: &str = "rust-lock-owner:owners";
 const LOCK_OWNER_RENDERER_CONTRIBUTION_ID_V1: &str = "rust-lock-owner:owners-renderer";
 const CODE_LINES_BATCH_ITEMS_V1: usize = 128;
-const CODE_LINES_DIRECTORY_CACHE_SCHEMA_V1: u32 = 1;
+const SIZE_MAP_VISIBLE_NODE_LIMIT_V1: u32 = 10_000;
+const CODE_LINES_DIRECTORY_CACHE_SCHEMA_V1: u32 = 2;
 const CODE_LINES_DIRECTORY_CACHE_MAX_RECORD_BYTES_V1: u64 = 8 * 1024;
 const CODE_LINES_DIRECTORY_CACHE_MAX_FILES_V1: usize = 1_024;
 const DIRECT_RENDER_QUEUE_CAP_V1: usize = 256;
@@ -781,14 +780,20 @@ impl<T: Clone> HostExtensionColumnCacheV1<T> {
     }
 
     fn get(&self, admission: &HostExtensionColumnCacheAdmissionV1) -> Option<T> {
-        self.values.get(&admission.key).and_then(|(directory, epoch, value)| {
-            (directory == &admission.directory && *epoch == admission.directory_epoch)
-                .then(|| value.clone())
-        })
+        self.values
+            .get(&admission.key)
+            .and_then(|(directory, epoch, value)| {
+                (directory == &admission.directory && *epoch == admission.directory_epoch)
+                    .then(|| value.clone())
+            })
     }
 
     fn insert(&mut self, admission: HostExtensionColumnCacheAdmissionV1, value: T) -> bool {
-        if self.directory_epochs.get(&admission.directory).copied().unwrap_or(0)
+        if self
+            .directory_epochs
+            .get(&admission.directory)
+            .copied()
+            .unwrap_or(0)
             != admission.directory_epoch
         {
             return false;
@@ -988,11 +993,15 @@ impl ApplicationVisualColumnRuntimeV1 {
                             finish_folder_size_request(&worker_pending, &request);
                             continue;
                         }
-                        let cache_admission = worker_cache.lock().ok().and_then(|cache| {
-                            cache.admission(&request.path)
-                        });
+                        let cache_admission = worker_cache
+                            .lock()
+                            .ok()
+                            .and_then(|cache| cache.admission(&request.path));
                         let cached = cache_admission.as_ref().and_then(|admission| {
-                            worker_cache.lock().ok().and_then(|cache| cache.get(admission))
+                            worker_cache
+                                .lock()
+                                .ok()
+                                .and_then(|cache| cache.get(admission))
                         });
                         let measured = if let Some(cached) = cached {
                             Ok(explorer_extension_ui_api::FolderSizeMeasureResultV1 {
@@ -1002,17 +1011,21 @@ impl ApplicationVisualColumnRuntimeV1 {
                             })
                         } else {
                             measure.measure_folder_size(
-                            FOLDER_SIZE_CONTRIBUTION_ID_V1,
-                            explorer_extension_ui_api::FolderSizeMeasureRequestV1 {
-                                filesystem_path: request.path.to_string_lossy().into_owned().into(),
-                                max_entries: 100_000,
-                                max_depth: 128,
-                                // This callback already runs off the GPUI thread. A
-                                // foreground budget must never terminate the scan:
-                                // let it finish and populate the plugin cache even
-                                // when navigation makes its UI result stale.
-                                deadline_millis: 0,
-                            },
+                                FOLDER_SIZE_CONTRIBUTION_ID_V1,
+                                explorer_extension_ui_api::FolderSizeMeasureRequestV1 {
+                                    filesystem_path: request
+                                        .path
+                                        .to_string_lossy()
+                                        .into_owned()
+                                        .into(),
+                                    max_entries: 100_000,
+                                    max_depth: 128,
+                                    // This callback already runs off the GPUI thread. A
+                                    // foreground budget must never terminate the scan:
+                                    // let it finish and populate the plugin cache even
+                                    // when navigation makes its UI result stale.
+                                    deadline_millis: 0,
+                                },
                             )
                         };
                         finish_folder_size_request(&worker_pending, &request);
@@ -1269,11 +1282,15 @@ impl ApplicationCodeLinesRuntimeV1 {
                         if worker_epoch.load(Ordering::Acquire) != epoch {
                             break;
                         }
-                        let cache_admission = worker_cache.lock().ok().and_then(|cache| {
-                            cache.admission(&request.path)
-                        });
+                        let cache_admission = worker_cache
+                            .lock()
+                            .ok()
+                            .and_then(|cache| cache.admission(&request.path));
                         let cached = cache_admission.as_ref().and_then(|admission| {
-                            worker_cache.lock().ok().and_then(|cache| cache.get(admission))
+                            worker_cache
+                                .lock()
+                                .ok()
+                                .and_then(|cache| cache.get(admission))
                         });
                         if let Some(cached) = cached {
                             if current_code_lines_epoch(&worker_epoch, epoch)
@@ -1292,7 +1309,12 @@ impl ApplicationCodeLinesRuntimeV1 {
                             continue;
                         }
                         if mode != BatchDetailsColumnModeV1::LockOwner {
-                            match measure_code_lines_directory(&request.path) {
+                            let directory_value = if mode == BatchDetailsColumnModeV1::LuaCodeLines {
+                                measure_all_code_lines_directory(&request.path)
+                            } else {
+                                measure_code_lines_directory(&request.path)
+                            };
+                            match directory_value {
                                 Ok(Some(value)) => {
                                     if let Some(admission) = cache_admission.as_ref()
                                         && host_extension_column_cache_key(&request.path).as_ref()
@@ -1559,8 +1581,7 @@ fn process_code_lines_batch(
                 _ => "Code lines provider returned no value".to_owned(),
             });
             if let Some(admission) = cache_admission.as_ref()
-                && host_extension_column_cache_key(&request.path).as_ref()
-                    == Some(&admission.key)
+                && host_extension_column_cache_key(&request.path).as_ref() == Some(&admission.key)
                 && let Ok(mut cache) = cache.lock()
             {
                 cache.insert(
@@ -1863,6 +1884,37 @@ fn measure_code_lines_directory(
     measure_code_lines_directory_with_cache(path, code_lines_directory_cache_directory().as_deref())
 }
 
+fn measure_all_code_lines_directory(
+    path: &Path,
+) -> Result<Option<explorer_ui::code_lines_column::CodeLinesValueV1>, String> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| "Source unavailable".to_owned())?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Ok(None);
+    }
+    let mut languages = tokei::Languages::new();
+    languages.get_statistics(&[path], &[], &tokei::Config::default());
+    if languages.is_empty() {
+        return Ok(None);
+    }
+    let (code, comments, blanks) = languages.iter().fold(
+        (0_u64, 0_u64, 0_u64),
+        |(code, comments, blanks), (_, statistics)| {
+            (
+                code.saturating_add(statistics.code as u64),
+                comments.saturating_add(statistics.comments as u64),
+                blanks.saturating_add(statistics.blanks as u64),
+            )
+        },
+    );
+    Ok(Some(explorer_ui::code_lines_column::CodeLinesValueV1 {
+        language: "All".to_owned(),
+        code,
+        comments,
+        blanks,
+        total: code.saturating_add(comments).saturating_add(blanks),
+    }))
+}
+
 fn measure_code_lines_directory_with_cache(
     path: &Path,
     cache_directory: Option<&Path>,
@@ -1879,21 +1931,23 @@ fn measure_code_lines_directory_with_cache(
     }
     let mut languages = tokei::Languages::new();
     languages.get_statistics(&[path], &[], &tokei::Config::default());
-    let total = languages.total();
-    let language = if languages.len() == 1 {
+    let Some((language, statistics)) =
         languages
-            .keys()
-            .next()
-            .map_or_else(|| "Folder".to_owned(), |kind| kind.name().to_owned())
-    } else {
-        "Mixed folder".to_owned()
+            .iter()
+            .max_by(|(left_language, left), (right_language, right)| {
+                left.code
+                    .cmp(&right.code)
+                    .then_with(|| right_language.name().cmp(left_language.name()))
+            })
+    else {
+        return Ok(None);
     };
     let value = explorer_ui::code_lines_column::CodeLinesValueV1 {
-        language,
-        code: total.code as u64,
-        comments: total.comments as u64,
-        blanks: total.blanks as u64,
-        total: total.lines() as u64,
+        language: language.name().to_owned(),
+        code: statistics.code as u64,
+        comments: statistics.comments as u64,
+        blanks: statistics.blanks as u64,
+        total: statistics.lines() as u64,
     };
     if code_lines_directory_cache_key(path).as_ref() == Some(&key) {
         store_code_lines_directory_cache(cache_directory, &key, &value);
@@ -2165,6 +2219,7 @@ impl explorer_ui::code_lines_column::CodeLinesRuntimePortV1 for ApplicationCodeL
                 package_id: "lua-tokei-code-lines-column".to_owned(),
                 column_id: explorer_ui::code_lines_column::CODE_LINES_COLUMN_ID.to_owned(),
             };
+            config.descriptor.display_name = "Code lines".to_owned();
         }
         config
     }
@@ -2330,7 +2385,35 @@ impl ApplicationSizeMapRuntimeV1 {
                             break;
                         }
                         if worker_result_tx
-                            .send(size_map_scanning_result(request))
+                            .send(size_map_scanning_result(
+                                request.clone(),
+                                preferred_size_map_scan_method(&request.path),
+                            ))
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                    #[cfg(windows)]
+                    let mft_index = requests.first().and_then(|request| {
+                        match crate::mft_size_map::read_volume_index_with_helper(&request.path, || {
+                            worker_epoch.load(Ordering::Acquire) != batch_epoch
+                        }) {
+                            Ok(index) => Some(index),
+                            Err(error) => {
+                                tracing::debug!(%error, path = %request.path.display(), "Size Map MFT fast path unavailable; using breadth scan");
+                                None
+                            }
+                        }
+                    });
+                    let scan_method = if mft_index.is_some() {
+                        "NTFS MFT"
+                    } else {
+                        "Breadth-first fallback"
+                    };
+                    for request in requests.iter().cloned() {
+                        if worker_result_tx
+                            .send(size_map_scanning_result(request, scan_method))
                             .is_err()
                         {
                             return;
@@ -2340,14 +2423,57 @@ impl ApplicationSizeMapRuntimeV1 {
                         if worker_epoch.load(Ordering::Acquire) != batch_epoch {
                             break;
                         }
-                        let scan = measure_size_map_tree(
+                        #[cfg(windows)]
+                        let mft_scan = mft_index.as_ref().and_then(|index| {
+                            measure_size_map_tree_from_mft(
+                                index,
+                                &request.path,
+                                &request.item_id,
+                                SIZE_MAP_VISIBLE_NODE_LIMIT_V1,
+                                || worker_epoch.load(Ordering::Acquire) != batch_epoch,
+                            )
+                            .ok()
+                        });
+                        #[cfg(not(windows))]
+                        let mft_scan: Option<SizeMapTreeScanV1> = None;
+                        let scan = mft_scan.unwrap_or_else(|| measure_size_map_tree(
                             &request.path,
                             &request.item_id,
-                            100_000,
+                            SIZE_MAP_VISIBLE_NODE_LIMIT_V1,
                             128,
                             SizeMapHardLinkPolicyV1::PerEntry,
                             || worker_epoch.load(Ordering::Acquire) != batch_epoch,
-                        );
+                            |progress| {
+                                let shallow_progress = progress
+                                    .outcome
+                                    .diagnostic
+                                    .as_deref()
+                                    .and_then(|message| message.strip_prefix("Scanning depth "))
+                                    .and_then(|depth| depth.parse::<u16>().ok())
+                                    .is_some_and(|depth| depth <= 3);
+                                if !shallow_progress {
+                                    return;
+                                }
+                                for nodes in progress.nodes.chunks(SIZE_MAP_TREE_DELTA_BATCH_CAP_V1)
+                                {
+                                    if worker_epoch.load(Ordering::Acquire) != batch_epoch {
+                                        return;
+                                    }
+                                    let _ = worker_result_tx.send(
+                                        explorer_ui::size_map_view::SizeMapMeasureResultV1 {
+                                            context: request.context.clone(),
+                                            item_id: request.item_id.clone(),
+                                            exact_bytes: Some(progress.outcome.bytes),
+                                            partial: true,
+                                            error: Some(
+                                                "Breadth-first fallback".to_owned(),
+                                            ),
+                                            tree_nodes: nodes.to_vec(),
+                                        },
+                                    );
+                                }
+                            },
+                        ));
                         if scan.outcome.terminal == SizeMapScanTerminalV1::Cancelled
                             || worker_epoch.load(Ordering::Acquire) != batch_epoch
                         {
@@ -2363,7 +2489,7 @@ impl ApplicationSizeMapRuntimeV1 {
                                     item_id: request.item_id.clone(),
                                     exact_bytes: None,
                                     partial: true,
-                                    error: Some("Scanning recursively".to_owned()),
+                                    error: Some("Breadth-first fallback".to_owned()),
                                     tree_nodes: nodes.to_vec(),
                                 })
                                 .is_err()
@@ -2418,15 +2544,33 @@ impl ApplicationSizeMapRuntimeV1 {
 
 fn size_map_scanning_result(
     request: explorer_ui::size_map_view::SizeMapMeasureRequestV1,
+    method: &str,
 ) -> explorer_ui::size_map_view::SizeMapMeasureResultV1 {
     explorer_ui::size_map_view::SizeMapMeasureResultV1 {
         context: request.context,
         item_id: request.item_id,
         exact_bytes: None,
         partial: true,
-        error: Some("Scanning recursively".to_owned()),
+        error: Some(method.to_owned()),
         tree_nodes: Vec::new(),
     }
+}
+
+fn preferred_size_map_scan_method(path: &Path) -> &'static str {
+    #[cfg(windows)]
+    {
+        let text = path.as_os_str().to_string_lossy();
+        let bytes = text.as_bytes();
+        if bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'\\' | b'/')
+        {
+            return "NTFS MFT";
+        }
+    }
+    let _ = path;
+    "Breadth-first fallback"
 }
 
 fn size_map_terminal_result(
@@ -2584,6 +2728,72 @@ fn filesystem_file_identity_v1(_path: &Path) -> Option<Vec<u8>> {
     None
 }
 
+#[cfg(windows)]
+fn measure_size_map_tree_from_mft(
+    index: &crate::mft_size_map::MftIndexV1,
+    root: &Path,
+    root_item_id: &explorer_model::ShellItemId,
+    visible_limit: u32,
+    mut cancelled: impl FnMut() -> bool,
+) -> Result<SizeMapTreeScanV1, String> {
+    let root_reference = crate::mft_size_map::file_reference_number(root)?;
+    let projected = index.project_subtree(
+        root_reference,
+        usize::try_from(visible_limit)
+            .unwrap_or(usize::MAX)
+            .saturating_add(1),
+        &mut cancelled,
+    )?;
+    let root_bytes = projected.first().map_or(0, |node| node.allocated_bytes);
+    let mut ids = HashMap::with_capacity(projected.len());
+    let mut paths = HashMap::with_capacity(projected.len());
+    ids.insert(root_reference, root_item_id.clone());
+    paths.insert(root_reference, root.to_path_buf());
+    let mut nodes = Vec::with_capacity(projected.len().saturating_sub(1));
+    for node in projected.into_iter().skip(1) {
+        if cancelled() {
+            return Err("MFT projection cancelled".to_owned());
+        }
+        let Some(parent_reference) = node.parent_reference else {
+            continue;
+        };
+        let Some(parent_item_id) = ids.get(&parent_reference).cloned() else {
+            continue;
+        };
+        let Some(parent_path) = paths.get(&parent_reference) else {
+            continue;
+        };
+        let path = parent_path.join(&node.name);
+        let item_id = size_map_tree_item_id(
+            root_item_id,
+            Path::new(&format!("mft-{}", node.reference)),
+            0,
+        );
+        ids.insert(node.reference, item_id.clone());
+        paths.insert(node.reference, path.clone());
+        nodes.push(explorer_ui::size_map_view::SizeMapTreeNodeV1 {
+            item_id,
+            root_item_id: root_item_id.clone(),
+            parent_item_id,
+            location: explorer_model::LocationDescriptor::file_system(&path),
+            display_name: node.name,
+            type_name: if node.is_directory { "Folder" } else { "File" }.to_owned(),
+            is_container: node.is_directory,
+            exact_bytes: Some(node.allocated_bytes),
+            partial: false,
+            error: None,
+        });
+    }
+    Ok(SizeMapTreeScanV1 {
+        outcome: SizeMapScanOutcomeV1 {
+            bytes: root_bytes,
+            terminal: SizeMapScanTerminalV1::Complete,
+            diagnostic: Some("NTFS MFT fast path".to_owned()),
+        },
+        nodes,
+    })
+}
+
 fn measure_size_map_tree(
     root: &Path,
     root_item_id: &explorer_model::ShellItemId,
@@ -2591,21 +2801,34 @@ fn measure_size_map_tree(
     max_depth: u16,
     hard_link_policy: SizeMapHardLinkPolicyV1,
     mut cancelled: impl FnMut() -> bool,
+    mut progress: impl FnMut(&SizeMapTreeScanV1),
 ) -> SizeMapTreeScanV1 {
-    let mut pending: Vec<(PathBuf, Option<usize>, u16)> = vec![(root.to_path_buf(), None, 0_u16)];
+    // Breadth-first traversal guarantees that large, shallow folders remain
+    // available to a bounded TreeSize-style projection before deep file trees
+    // can consume the node budget.
+    let mut pending: VecDeque<(PathBuf, Option<usize>, u16)> =
+        VecDeque::from([(root.to_path_buf(), None, 0_u16)]);
     let mut nodes = Vec::<PendingSizeMapTreeNodeV1>::new();
     let mut terminal = SizeMapScanTerminalV1::Complete;
     let mut diagnostic = None;
     let mut counted_file_identities = HashSet::<Vec<u8>>::new();
-    while let Some((path, parent, depth)) = pending.pop() {
+    let mut published_depth = 0_u16;
+    while let Some((path, parent, depth)) = pending.pop_front() {
+        if depth > published_depth && nodes.len() > 1 {
+            let snapshot = project_size_map_tree(
+                root,
+                root_item_id,
+                &nodes,
+                SizeMapScanTerminalV1::Partial,
+                Some(format!("Scanning depth {depth}")),
+                true,
+            );
+            progress(&snapshot);
+            published_depth = depth;
+        }
         if cancelled() {
             terminal = SizeMapScanTerminalV1::Cancelled;
             diagnostic = Some("Size Map scan cancelled".to_owned());
-            break;
-        }
-        if nodes.len() >= usize::try_from(max_entries).unwrap_or(usize::MAX) {
-            terminal = SizeMapScanTerminalV1::ResourceLimited;
-            diagnostic = Some("Size Map scan resource limit reached".to_owned());
             break;
         }
         let metadata = match fs::symlink_metadata(&path) {
@@ -2657,6 +2880,54 @@ fn measure_size_map_tree(
                     .then_some(metadata.len())
                     .unwrap_or_default()
             };
+        let retain_node =
+            parent.is_none() || nodes.len() < usize::try_from(max_entries).unwrap_or(usize::MAX);
+        if !retain_node {
+            let parent_index = parent.expect("only the root is retained without a parent");
+            if !is_container {
+                nodes[parent_index].bytes = nodes[parent_index].bytes.saturating_add(file_bytes);
+                continue;
+            }
+            if depth >= max_depth {
+                nodes[parent_index].partial = true;
+                nodes[parent_index]
+                    .error
+                    .get_or_insert_with(|| "Size Map scan depth limit reached".to_owned());
+                terminal = SizeMapScanTerminalV1::ResourceLimited;
+                diagnostic.get_or_insert_with(|| "Size Map scan depth limit reached".to_owned());
+                continue;
+            }
+            match fs::read_dir(&path) {
+                Ok(entries) => {
+                    for entry in entries {
+                        if cancelled() {
+                            terminal = SizeMapScanTerminalV1::Cancelled;
+                            diagnostic = Some("Size Map scan cancelled".to_owned());
+                            break;
+                        }
+                        match entry {
+                            Ok(entry) => {
+                                pending.push_back((entry.path(), Some(parent_index), depth + 1));
+                            }
+                            Err(cause) => {
+                                nodes[parent_index].partial = true;
+                                nodes[parent_index]
+                                    .error
+                                    .get_or_insert_with(|| cause.to_string());
+                            }
+                        }
+                    }
+                }
+                Err(cause) => {
+                    nodes[parent_index].partial = true;
+                    nodes[parent_index].error = Some(cause.to_string());
+                }
+            }
+            if terminal == SizeMapScanTerminalV1::Cancelled {
+                break;
+            }
+            continue;
+        }
         let index = nodes.len();
         nodes.push(PendingSizeMapTreeNodeV1 {
             path: path.clone(),
@@ -2685,7 +2956,7 @@ fn measure_size_map_tree(
                         break;
                     }
                     match entry {
-                        Ok(entry) => pending.push((entry.path(), Some(index), depth + 1)),
+                        Ok(entry) => pending.push_back((entry.path(), Some(index), depth + 1)),
                         Err(cause) => {
                             nodes[index].partial = true;
                             nodes[index].error.get_or_insert_with(|| cause.to_string());
@@ -2703,6 +2974,25 @@ fn measure_size_map_tree(
         }
     }
 
+    project_size_map_tree(root, root_item_id, &nodes, terminal, diagnostic, false)
+}
+
+fn project_size_map_tree(
+    root: &Path,
+    root_item_id: &explorer_model::ShellItemId,
+    source_nodes: &[PendingSizeMapTreeNodeV1],
+    mut terminal: SizeMapScanTerminalV1,
+    mut diagnostic: Option<String>,
+    force_partial: bool,
+) -> SizeMapTreeScanV1 {
+    let mut nodes = source_nodes.to_vec();
+    if force_partial {
+        for node in &mut nodes {
+            if node.is_container {
+                node.partial = true;
+            }
+        }
+    }
     for index in (0..nodes.len()).rev() {
         let Some(parent_index) = nodes[index].parent else {
             continue;
@@ -2767,7 +3057,10 @@ fn measure_size_map_tree(
                 display_name,
                 type_name: if node.is_container { "Folder" } else { "File" }.to_owned(),
                 is_container: node.is_container,
-                exact_bytes: (!node.partial).then_some(node.bytes),
+                // Progressive breadth snapshots expose the bytes discovered so
+                // far while retaining `partial`, so the treemap can grow in
+                // place instead of showing equal-sized placeholders.
+                exact_bytes: (force_partial || !node.partial).then_some(node.bytes),
                 partial: node.partial,
                 error: node.error.clone(),
             })
@@ -2932,7 +3225,9 @@ impl explorer_ui::size_map_view::ExtensionSizeMapRuntimePortV1 for ApplicationSi
         let Ok(results) = self.results.lock() else {
             return Vec::new();
         };
-        results.try_iter().collect()
+        // Avoid merging and laying out the full 10,000-node projection in one
+        // GPUI frame. The periodic pump drains the remaining batches later.
+        results.try_iter().take(4).collect()
     }
 
     fn drain_render_results(&self) -> bool {
@@ -3096,6 +3391,16 @@ impl explorer_ui::size_map_view::ExtensionSizeMapRuntimePortV1 for ApplicationSi
                     .map(|index| node_ids[*index])
             })
             .collect();
+        let scan_method = context
+            .nodes
+            .iter()
+            .filter_map(|node| node.error.as_deref())
+            .find(|error| {
+                error.contains("NTFS MFT")
+                    || error.contains("Breadth-first fallback")
+                    || error.contains("Detecting scan method")
+            })
+            .unwrap_or("Detecting scan method");
         let mut public_context = explorer_extension_ui_api::SizeMapRenderContextV1 {
             snapshot: explorer_extension_ui_api::ViewSnapshotIdentityV1 {
                 location_generation: generation,
@@ -3116,7 +3421,7 @@ impl explorer_ui::size_map_view::ExtensionSizeMapRuntimePortV1 for ApplicationSi
                 accent: CellColorV1::rgba(0, 120, 212, 255),
             },
             selected_node_ids,
-            settings: "default".into(),
+            settings: scan_method.into(),
         };
         let key = size_map_render_key(
             &mut public_context,
@@ -3430,13 +3735,38 @@ pub struct ApplicationLifecycle {
     resources: Arc<Mutex<ShutdownResources>>,
 }
 
+#[derive(Default)]
+struct FolderOptionsWindowControllerV1 {
+    window: Option<gpui::WindowHandle<explorer_ui::folder_options_window::FolderOptionsWindow>>,
+    owner: Option<gpui::WindowHandle<ExplorerRoot>>,
+}
+
+impl FolderOptionsWindowControllerV1 {
+    fn install(
+        &mut self,
+        window: gpui::WindowHandle<explorer_ui::folder_options_window::FolderOptionsWindow>,
+        owner: gpui::WindowHandle<ExplorerRoot>,
+    ) {
+        self.window = Some(window);
+        self.owner = Some(owner);
+    }
+
+    fn clear(
+        &mut self,
+    ) -> Option<(
+        gpui::WindowHandle<explorer_ui::folder_options_window::FolderOptionsWindow>,
+        gpui::WindowHandle<ExplorerRoot>,
+    )> {
+        self.window.take().zip(self.owner.take())
+    }
+}
+
 struct ShutdownResources {
     diagnostics: DiagnosticsSession,
-    automation: Option<AutomationComposition>,
     extension_host: Option<explorer_extension_host::ExtensionHost>,
     loaded_extension_summary: Option<String>,
     visual_column_runtime: Option<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1>,
-    code_lines_runtime: Option<explorer_ui::code_lines_column::CodeLinesRuntimeHandleV1>,
+    code_lines_runtimes: Vec<explorer_ui::code_lines_column::CodeLinesRuntimeHandleV1>,
     size_map_runtime: Option<explorer_ui::size_map_view::SizeMapRuntimeHandleV1>,
     virtual_folder_runtime: Option<explorer_extension_host::SinglePluginVirtualFolderRuntimeV1>,
     extension_job_ui_inbox: Option<explorer_extension_host::ExtensionJobUiInboxV1>,
@@ -3486,9 +3816,6 @@ impl ApplicationLifecycle {
         diagnostics.record_event("windows_prerequisites_ready", &[("dpi", &dpi_outcome_text)])?;
         let shell_sta = Arc::new(ShellStaHandle::start()?);
         diagnostics.record_event("shell_sta_ready", &[])?;
-        let automation = AutomationComposition::start()?;
-        let script_count = automation.snapshots()?.len().to_string();
-        diagnostics.record_event("automation_ready", &[("scripts", &script_count)])?;
         let _uitest_state_root = uitest_extension_state_root_v1()?;
         #[cfg(feature = "uitest-support")]
         let extension_config = _uitest_state_root.as_ref().map_or_else(
@@ -3517,7 +3844,7 @@ impl ApplicationLifecycle {
         }
         let mut summaries = Vec::new();
         let mut visual_column_runtime = None;
-        let mut code_lines_runtime = None;
+        let mut code_lines_runtimes = Vec::new();
         let mut size_map_runtime = None;
         let mut virtual_folder_runtime = None;
         for (path, loaded) in direct_loaded {
@@ -3529,46 +3856,43 @@ impl ApplicationLifecycle {
                 contribution.contribution_id() == FOLDER_SIZE_RENDERER_CONTRIBUTION_ID_V1
             });
             let supports_code_lines = batch_columns.contains(CODE_LINES_CONTRIBUTION_ID_V1);
-            let supports_lua_code_lines =
-                batch_columns.contains(LUA_CODE_LINES_CONTRIBUTION_ID_V1);
+            let supports_lua_code_lines = batch_columns.contains(LUA_CODE_LINES_CONTRIBUTION_ID_V1);
             let supports_lock_owner = batch_columns.contains(LOCK_OWNER_CONTRIBUTION_ID_V1);
-            let (visual_runtime, code_runtime) = if supports_code_lines
-                || supports_lua_code_lines
-                || supports_lock_owner
-            {
-                (
-                    None,
-                    Some(ApplicationCodeLinesRuntimeV1::start(
-                        batch_columns,
-                        renderer,
-                        if supports_lock_owner {
-                            BatchDetailsColumnModeV1::LockOwner
-                        } else if supports_lua_code_lines {
-                            BatchDetailsColumnModeV1::LuaCodeLines
-                        } else {
-                            BatchDetailsColumnModeV1::CodeLines
-                        },
-                        if supports_lock_owner {
-                            "rust-lock-owner-column".to_owned()
-                        } else if path
-                            .to_string_lossy()
-                            .to_ascii_lowercase()
-                            .contains("lua-tokei-code-lines-column")
-                        {
-                            "lua-tokei-code-lines-column".to_owned()
-                        } else {
-                            "rust-tokei-code-lines-column".to_owned()
-                        },
-                    )?),
-                )
-            } else if supports_folder_size {
-                (
-                    Some(ApplicationVisualColumnRuntimeV1::start(measure, renderer)?),
-                    None,
-                )
-            } else {
-                (None, None)
-            };
+            let (visual_runtime, code_runtime) =
+                if supports_code_lines || supports_lua_code_lines || supports_lock_owner {
+                    (
+                        None,
+                        Some(ApplicationCodeLinesRuntimeV1::start(
+                            batch_columns,
+                            renderer,
+                            if supports_lock_owner {
+                                BatchDetailsColumnModeV1::LockOwner
+                            } else if supports_lua_code_lines {
+                                BatchDetailsColumnModeV1::LuaCodeLines
+                            } else {
+                                BatchDetailsColumnModeV1::CodeLines
+                            },
+                            if supports_lock_owner {
+                                "rust-lock-owner-column".to_owned()
+                            } else if path
+                                .to_string_lossy()
+                                .to_ascii_lowercase()
+                                .contains("lua-tokei-code-lines-column")
+                            {
+                                "lua-tokei-code-lines-column".to_owned()
+                            } else {
+                                "rust-tokei-code-lines-column".to_owned()
+                            },
+                        )?),
+                    )
+                } else if supports_folder_size {
+                    (
+                        Some(ApplicationVisualColumnRuntimeV1::start(measure, renderer)?),
+                        None,
+                    )
+                } else {
+                    (None, None)
+                };
             // The host retains a Size Map renderer only after validating
             // that its descriptor is a VIEW_MODE contribution, so this
             // single check rejects descriptor-only and wrong-kind entries.
@@ -3583,8 +3907,8 @@ impl ApplicationLifecycle {
             if visual_column_runtime.is_none() {
                 visual_column_runtime = visual_runtime;
             }
-            if code_lines_runtime.is_none() {
-                code_lines_runtime = code_runtime;
+            if let Some(code_runtime) = code_runtime {
+                code_lines_runtimes.push(code_runtime);
             }
             if size_map_runtime.is_none() {
                 size_map_runtime = map_runtime;
@@ -3680,11 +4004,10 @@ impl ApplicationLifecycle {
         Ok(Self {
             resources: Arc::new(Mutex::new(ShutdownResources {
                 diagnostics,
-                automation: Some(automation),
                 extension_host: Some(extension_host),
                 loaded_extension_summary,
                 visual_column_runtime,
-                code_lines_runtime,
+                code_lines_runtimes,
                 size_map_runtime,
                 virtual_folder_runtime,
                 extension_job_ui_inbox,
@@ -3746,11 +4069,10 @@ impl ApplicationLifecycle {
                 self.take_virtual_folder_runtime()?,
             ));
         let shutdown_resources = Arc::clone(&self.resources);
-        let folder_scripts = self.automation_handle()?;
         let safe_mode_offers = self.safe_mode_ui_offers()?;
         let loaded_extension_summary = self.loaded_extension_summary()?;
         let visual_column_runtime = self.visual_column_runtime()?;
-        let code_lines_runtime = self.code_lines_runtime()?;
+        let code_lines_runtimes = self.code_lines_runtimes()?;
         let size_map_runtime = self.size_map_runtime()?;
         let safe_mode_resources = Arc::clone(&self.resources);
         let safe_mode_confirm: explorer_ui::SafeModeConfirmObserverV1 = Arc::new(move |token| {
@@ -3778,12 +4100,25 @@ impl ApplicationLifecycle {
         } else {
             (None, None)
         };
-        let (mut persistence, durable_observer, reset_observer, restore_preference, quick_access) =
-            if visual_fixture.is_none() {
-                create_session_persistence(restored_placement)
-            } else {
-                (None, None, None, true, Vec::new())
-            };
+        let (
+            mut persistence,
+            durable_observer,
+            reset_observer,
+            restore_preference,
+            quick_access,
+            bookmarks,
+        ) = if visual_fixture.is_none() {
+            create_session_persistence(restored_placement)
+        } else {
+            (
+                None,
+                None,
+                None,
+                true,
+                Vec::new(),
+                explorer_model::Bookmarks::default(),
+            )
+        };
 
         let platform = gpui_windows::WindowsPlatform::new(false)
             .context("failed to initialize GPUI-CE Windows platform")?;
@@ -3795,6 +4130,9 @@ impl ApplicationLifecycle {
                 }
                 cx.bind_keys(explorer_ui::actions::gpui_text_input_bindings());
                 cx.bind_keys(explorer_ui::actions::gpui_key_bindings());
+
+                let folder_options_controller =
+                    Rc::new(RefCell::new(FolderOptionsWindowControllerV1::default()));
 
                 cx.on_app_quit(move |_| {
                     if let Err(error) = shutdown_shared(&shutdown_resources) {
@@ -3813,7 +4151,33 @@ impl ApplicationLifecycle {
                 })
                 .detach();
 
-                cx.on_window_closed(|cx, _| {
+                let folder_options_controller_for_close = Rc::clone(&folder_options_controller);
+                cx.on_window_closed(move |cx, closed_id| {
+                    let closing = {
+                        let mut controller = folder_options_controller_for_close.borrow_mut();
+                        let options_closed = controller
+                            .window
+                            .is_some_and(|handle| handle.window_id() == closed_id);
+                        let owner_closed = controller
+                            .owner
+                            .is_some_and(|handle| handle.window_id() == closed_id);
+                        (options_closed || owner_closed)
+                            .then(|| (options_closed, controller.clear()))
+                    };
+                    if let Some((options_closed, Some((options, owner)))) = closing {
+                        if options_closed {
+                            let _ = owner.update(cx, |root, owner_window, cx| {
+                                root.dispatch_folder_options_action(
+                                    explorer_ui::actions::ExplorerAction::CloseFolderOptions,
+                                    explorer_ui::actions::ActionSource::Programmatic,
+                                    owner_window,
+                                    cx,
+                                );
+                            });
+                        } else {
+                            let _ = options.update(cx, |_, window, _| window.remove_window());
+                        }
+                    }
                     if cx.windows().is_empty() {
                         cx.quit();
                     }
@@ -3836,10 +4200,13 @@ impl ApplicationLifecycle {
                 let reset_observer_for_window = reset_observer.clone();
                 let restore_preference_for_window = restore_preference;
                 let quick_access_for_window = quick_access.clone();
+                let bookmarks_for_window = bookmarks.clone();
                 let loaded_extension_summary_for_window = loaded_extension_summary.clone();
                 let visual_column_runtime_for_window = visual_column_runtime.clone();
-                let code_lines_runtime_for_window = code_lines_runtime.clone();
+                let code_lines_runtimes_for_window = code_lines_runtimes.clone();
                 let size_map_runtime_for_window = size_map_runtime.clone();
+                let folder_options_controller_for_window = Rc::clone(&folder_options_controller);
+                let folder_options_diagnostics = diagnostics.clone();
                 let fixture_diagnostics = diagnostics.clone();
                 let tokens = fixture_tokens(fixture_for_window.as_ref());
                 let main_window = match cx.open_window(window_options, move |window, cx| {
@@ -3853,7 +4220,9 @@ impl ApplicationLifecycle {
                         let frames = if fixture.real_shell { 30 } else { 1 };
                         schedule_visual_diagnostics(window, fixture, tokens, diagnostics, frames);
                     }
-                    cx.new(move |cx| {
+                    let owner_window =
+                        gpui::WindowHandle::<ExplorerRoot>::new(window.window_handle().window_id());
+                    let root = cx.new(move |cx| {
                         let extension_ui_pump =
                             extension_job_ui_bridge.take().and_then(|(inbox, ingress)| {
                                 ApplicationExtensionUiPumpV1::new(inbox, ingress)
@@ -3869,14 +4238,14 @@ impl ApplicationLifecycle {
                             reset_observer_for_window,
                             restore_preference_for_window,
                             quick_access_for_window,
+                            bookmarks_for_window,
                             broker_health,
                             broker_retry,
-                            folder_scripts,
                             safe_mode_offers,
                             safe_mode_confirm,
                             loaded_extension_summary_for_window,
                             visual_column_runtime_for_window,
-                            code_lines_runtime_for_window,
+                            code_lines_runtimes_for_window,
                             size_map_runtime_for_window,
                             extension_ui_pump.map(|pump| {
                                 Box::new(pump) as Box<dyn explorer_ui::ExtensionUiPumpPortV1>
@@ -3884,7 +4253,63 @@ impl ApplicationLifecycle {
                             window,
                             cx,
                         )
-                    })
+                    });
+                    let controller = Rc::clone(&folder_options_controller_for_window);
+                    let observer_diagnostics = folder_options_diagnostics.clone();
+                    root.update(cx, |root, _| {
+                        root.attach_folder_options_window_observer(Rc::new(move |create, snapshot, cx| {
+                            let existing = controller.borrow().window;
+                            if let Some(existing) = existing {
+                                if existing
+                                    .update(cx, |_, window, _| window.activate_window())
+                                    .is_ok()
+                                {
+                                    return true;
+                                }
+                                let _ = controller.borrow_mut().clear();
+                            }
+                            if !create {
+                                return false;
+                            }
+                            let Some(snapshot) = snapshot else {
+                                tracing::warn!("Folder Options window creation lacked its draft snapshot");
+                                return false;
+                            };
+                            let options =
+                                explorer_ui::folder_options_window::folder_options_window_options(
+                                    cx,
+                                );
+                            let opened = cx.open_window(options, move |window, cx| {
+                                cx.new(|cx| {
+                                    explorer_ui::folder_options_window::FolderOptionsWindow::new(
+                                        tokens,
+                                        owner_window,
+                                        snapshot,
+                                        window,
+                                        cx,
+                                    )
+                                })
+                            });
+                            match opened {
+                                Ok(handle) => {
+                                    controller.borrow_mut().install(handle, owner_window);
+                                    let _ = observer_diagnostics
+                                        .record_event("folder_options_window_ready", &[]);
+                                    true
+                                }
+                                Err(error) => {
+                                    tracing::warn!(%error, "Folder Options window creation failed");
+                                    let message = error.to_string();
+                                    let _ = observer_diagnostics.record_event(
+                                        "folder_options_window_create_failed",
+                                        &[("error", &message)],
+                                    );
+                                    false
+                                }
+                            }
+                        }));
+                    });
+                    root
                 }) {
                     Ok(handle) => {
                         let _ = diagnostics.record_event("window_ready", &[]);
@@ -4076,12 +4501,12 @@ impl ApplicationLifecycle {
             .map_err(|_| anyhow::anyhow!("application lifecycle mutex was poisoned"))
     }
 
-    fn code_lines_runtime(
+    fn code_lines_runtimes(
         &self,
-    ) -> Result<Option<explorer_ui::code_lines_column::CodeLinesRuntimeHandleV1>, Error> {
+    ) -> Result<Vec<explorer_ui::code_lines_column::CodeLinesRuntimeHandleV1>, Error> {
         self.resources
             .lock()
-            .map(|resources| resources.code_lines_runtime.clone())
+            .map(|resources| resources.code_lines_runtimes.clone())
             .map_err(|_| anyhow::anyhow!("application lifecycle mutex was poisoned"))
     }
 
@@ -4112,16 +4537,6 @@ impl ApplicationLifecycle {
             .ok_or_else(|| anyhow::anyhow!("Shell STA is not available"))
     }
 
-    fn automation_handle(&self) -> Result<explorer_automation::FolderScriptHandle, Error> {
-        self.resources
-            .lock()
-            .map_err(|_| anyhow::anyhow!("application lifecycle mutex was poisoned"))?
-            .automation
-            .as_ref()
-            .map(AutomationComposition::handle)
-            .ok_or_else(|| anyhow::anyhow!("automation service is not available"))
-    }
-
     fn broker_client(&self) -> Result<explorer_extension_broker::BrokerClient, Error> {
         self.resources
             .lock()
@@ -4147,11 +4562,11 @@ fn create_explorer_root(
     reset_observer: Option<explorer_ui::SessionResetObserver>,
     restore_preference: bool,
     quick_access: Vec<explorer_model::PersistedQuickAccessPin>,
+    bookmarks: explorer_model::Bookmarks,
     broker_health: explorer_ui::state::BrokerUiHealth,
     broker_retry: explorer_ui::BrokerRetryObserver,
-    folder_scripts: explorer_automation::FolderScriptHandle,
     visual_column_runtime: Option<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1>,
-    code_lines_runtime: Option<explorer_ui::code_lines_column::CodeLinesRuntimeHandleV1>,
+    code_lines_runtimes: Vec<explorer_ui::code_lines_column::CodeLinesRuntimeHandleV1>,
     size_map_runtime: Option<explorer_ui::size_map_view::SizeMapRuntimeHandleV1>,
     extension_ui_pump: Option<Box<dyn explorer_ui::ExtensionUiPumpPortV1>>,
     window: &gpui::Window,
@@ -4171,18 +4586,21 @@ fn create_explorer_root(
             restored_tabs,
         ),
     };
-    root.attach_folder_scripts(folder_scripts);
     root.configure_restore_previous_session(restore_preference);
     root.configure_quick_access(quick_access);
+    root.configure_bookmarks(bookmarks);
     root.configure_broker_health(broker_health, broker_retry);
     root.attach_command_prompt_launcher(Arc::new(|working_directory| {
         explorer_shell_win::launch_command_prompt(working_directory.as_deref())
             .map_err(|error| format!("Unable to open Command Prompt: {error}"))
     }));
+    root.attach_bookmark_file_launcher(Arc::new(|location| {
+        explorer_shell_win::open_default(&location).map_err(|error| error.to_string())
+    }));
     if let Some(runtime) = visual_column_runtime {
         root.attach_visual_column_runtime(runtime);
     }
-    if let Some(runtime) = code_lines_runtime {
+    for runtime in code_lines_runtimes {
         root.attach_code_lines_runtime(runtime);
     }
     if let Some(runtime) = size_map_runtime {
@@ -4216,14 +4634,14 @@ fn create_focused_explorer_root(
     reset_observer: Option<explorer_ui::SessionResetObserver>,
     restore_preference: bool,
     quick_access: Vec<explorer_model::PersistedQuickAccessPin>,
+    bookmarks: explorer_model::Bookmarks,
     broker_health: explorer_ui::state::BrokerUiHealth,
     broker_retry: explorer_ui::BrokerRetryObserver,
-    folder_scripts: explorer_automation::FolderScriptHandle,
     safe_mode_offers: Vec<explorer_ui::SafeModeOfferV1>,
     safe_mode_confirm: explorer_ui::SafeModeConfirmObserverV1,
     loaded_extension_summary: Option<String>,
     visual_column_runtime: Option<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1>,
-    code_lines_runtime: Option<explorer_ui::code_lines_column::CodeLinesRuntimeHandleV1>,
+    code_lines_runtimes: Vec<explorer_ui::code_lines_column::CodeLinesRuntimeHandleV1>,
     size_map_runtime: Option<explorer_ui::size_map_view::SizeMapRuntimeHandleV1>,
     extension_ui_pump: Option<Box<dyn explorer_ui::ExtensionUiPumpPortV1>>,
     window: &mut gpui::Window,
@@ -4242,11 +4660,11 @@ fn create_focused_explorer_root(
         reset_observer,
         restore_preference,
         quick_access,
+        bookmarks,
         broker_health,
         broker_retry,
-        folder_scripts,
         visual_column_runtime,
-        code_lines_runtime,
+        code_lines_runtimes,
         size_map_runtime,
         extension_ui_pump,
         window,
@@ -4502,10 +4920,18 @@ fn create_session_persistence(
     Option<explorer_ui::SessionResetObserver>,
     bool,
     Vec<explorer_model::PersistedQuickAccessPin>,
+    explorer_model::Bookmarks,
 ) {
     let limits = RoadmapLimits::default();
     let Ok(store) = crate::session_store::WindowsSessionStore::from_environment(limits) else {
-        return (None, None, None, true, Vec::new());
+        return (
+            None,
+            None,
+            None,
+            true,
+            Vec::new(),
+            explorer_model::Bookmarks::default(),
+        );
     };
     let loaded = store.load().ok().and_then(|outcome| outcome.envelope);
     let generation = loaded
@@ -4514,6 +4940,11 @@ fn create_session_persistence(
     let quick_access = loaded
         .as_ref()
         .map_or_else(Vec::new, |envelope| envelope.payload.quick_access.clone());
+    let bookmarks = loaded
+        .as_ref()
+        .map_or_else(explorer_model::Bookmarks::default, |envelope| {
+            envelope.payload.bookmarks.clone()
+        });
     let restore_enabled = loaded
         .as_ref()
         .is_none_or(|envelope| envelope.payload.restore_enabled);
@@ -4528,8 +4959,8 @@ fn create_session_persistence(
     let reset_handle = handle.clone();
     let reset_observer: explorer_ui::SessionResetObserver =
         Arc::new(move |scope| reset_handle.request_reset(scope));
-    let observer: explorer_ui::DurableStateObserver =
-        Arc::new(move |window, restore_enabled, quick_access, placement| {
+    let observer: explorer_ui::DurableStateObserver = Arc::new(
+        move |window, restore_enabled, quick_access, bookmarks, placement| {
             let write_generation = generation.fetch_add(1, Ordering::AcqRel);
             handle.accepted_runtime(
                 crate::session_lifecycle::DurableTransition::ViewSettingsChanged,
@@ -4537,6 +4968,7 @@ fn create_session_persistence(
                     window,
                     placement,
                     quick_access,
+                    bookmarks,
                     restore_enabled,
                     write_generation,
                     provenance: explorer_model::SessionProvenance {
@@ -4547,13 +4979,15 @@ fn create_session_persistence(
                     limits,
                 },
             )
-        });
+        },
+    );
     (
         Some(coordinator),
         Some(observer),
         Some(reset_observer),
         restore_enabled,
         quick_access,
+        bookmarks,
     )
 }
 
@@ -4572,15 +5006,6 @@ impl ShutdownResources {
         self.shutdown = true;
 
         let mut failures = Vec::new();
-        let _ = self
-            .diagnostics
-            .record_event("shutdown_stage_started", &[("stage", "automation")]);
-        if let Some(mut automation) = self.automation.take() {
-            automation.shutdown();
-        }
-        let _ = self
-            .diagnostics
-            .record_event("shutdown_stage_finished", &[("stage", "automation")]);
         let _ = self
             .diagnostics
             .record_event("shutdown_stage_started", &[("stage", "extension_host")]);
@@ -4691,21 +5116,19 @@ mod tests {
     use explorer_ui::ExtensionUiPumpPortV1 as _;
 
     use super::{
-        ApplicationExtensionReadyProjectorV1, ApplicationExtensionUiPumpV1,
-        CodeLinesCachedValueV1, FolderSizeCachedValueV1, HostExtensionColumnCacheV1,
-        LockOwnerCacheKeyV1,
-        PendingFolderSizeWorkV1, PendingSizeMapWorkV1,
-        SIZE_MAP_REQUEST_QUEUE_CAP_V1,
+        ApplicationExtensionReadyProjectorV1, ApplicationExtensionUiPumpV1, CodeLinesCachedValueV1,
+        FolderSizeCachedValueV1, HostExtensionColumnCacheV1, LockOwnerCacheKeyV1,
+        PendingFolderSizeWorkV1, PendingSizeMapWorkV1, SIZE_MAP_REQUEST_QUEUE_CAP_V1,
         SafeModeIncidentOfferV1, SafeModeIncidentPortV1, SizeMapHardLinkPolicyV1,
         SizeMapProjectionV1, SizeMapScanOutcomeV1, SizeMapScanTerminalV1, aggregate_size_map_items,
         cancel_folder_size_context, cell_render_key, code_lines_directory_cache_key,
         confirm_offered_safe_mode_incident_v1, confirm_presented_safe_mode_incident_v1,
         emit_post_commit_safe_mode_telemetry_v1, enqueue_folder_size_requests,
         enqueue_size_map_requests, lock_owner_cache_lookup, lock_owner_cache_store,
-        measure_code_lines_directory,
+        measure_all_code_lines_directory, measure_code_lines_directory,
         measure_code_lines_directory_with_cache,
-        measure_size_map_path, measure_size_map_tree, partition_size_map_projection,
-        partition_code_lines_cache_hits, partition_folder_size_cache_hits, project_size_map_plan,
+        measure_size_map_path, measure_size_map_tree, partition_code_lines_cache_hits,
+        partition_folder_size_cache_hits, partition_size_map_projection, project_size_map_plan,
         read_code_lines_directory_cache, read_code_lines_file_bounded,
         read_code_lines_path_bounded, should_restore_saved_tabs, size_map_node_id,
         size_map_render_key, take_folder_size_requests,
@@ -4727,10 +5150,8 @@ mod tests {
         let source = root.join("value.rs");
         fs::write(&source, "fn main() {}\n").unwrap();
         let file = fs::OpenOptions::new().write(true).open(&source).unwrap();
-        file.set_times(
-            fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(10)),
-        )
-        .unwrap();
+        file.set_times(fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(10)))
+            .unwrap();
 
         let mut cache = HostExtensionColumnCacheV1::<u64>::default();
         let original = cache.admission(&source).expect("host metadata admission");
@@ -4750,7 +5171,10 @@ mod tests {
         };
         let (hits, misses) = partition_folder_size_cache_hits(&folder_cache, vec![request.clone()]);
         assert_eq!(hits.len(), 1, "a host hit is rebound without provider work");
-        assert!(misses.is_empty(), "a host hit must not reach provider dispatch");
+        assert!(
+            misses.is_empty(),
+            "a host hit must not reach provider dispatch"
+        );
 
         let code_cache = Mutex::new(HostExtensionColumnCacheV1::default());
         let code_value = explorer_ui::code_lines_column::CodeLinesValueV1 {
@@ -4775,14 +5199,20 @@ mod tests {
         };
         let (hits, misses) =
             partition_code_lines_cache_hits(&code_cache, vec![code_request.clone()]);
-        assert_eq!(hits.first().and_then(|hit| hit.value.as_ref()), Some(&code_value));
-        assert!(misses.is_empty(), "Rust/Lua cache hits must bypass provider dispatch");
+        assert_eq!(
+            hits.first().and_then(|hit| hit.value.as_ref()),
+            Some(&code_value)
+        );
+        assert!(
+            misses.is_empty(),
+            "Rust/Lua cache hits must bypass provider dispatch"
+        );
 
-        file.set_times(
-            fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(20)),
-        )
-        .unwrap();
-        let changed = cache.admission(&source).expect("changed metadata admission");
+        file.set_times(fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(20)))
+            .unwrap();
+        let changed = cache
+            .admission(&source)
+            .expect("changed metadata admission");
         assert_ne!(changed.key, original.key);
         assert_eq!(cache.get(&changed), None);
         let (hits, misses) = partition_folder_size_cache_hits(&folder_cache, vec![request]);
@@ -4790,7 +5220,11 @@ mod tests {
         assert_eq!(misses.len(), 1, "changed mtime must invoke the provider");
         let (hits, misses) = partition_code_lines_cache_hits(&code_cache, vec![code_request]);
         assert!(hits.is_empty());
-        assert_eq!(misses.len(), 1, "changed mtime must invoke Rust/Lua providers");
+        assert_eq!(
+            misses.len(),
+            1,
+            "changed mtime must invoke Rust/Lua providers"
+        );
 
         let other_root = root.join("other");
         fs::create_dir(&other_root).unwrap();
@@ -4801,9 +5235,20 @@ mod tests {
         assert!(cache.insert(current.clone(), 7));
         assert!(cache.insert(other_admission.clone(), 9));
         cache.invalidate_directory(&root);
-        assert_eq!(cache.get(&current), None, "F5 invalidates current directory");
-        assert_eq!(cache.get(&other_admission), Some(9), "other directories survive F5");
-        assert!(!cache.insert(current, 11), "pre-F5 work cannot repopulate the scope");
+        assert_eq!(
+            cache.get(&current),
+            None,
+            "F5 invalidates current directory"
+        );
+        assert_eq!(
+            cache.get(&other_admission),
+            Some(9),
+            "other directories survive F5"
+        );
+        assert!(
+            !cache.insert(current, 11),
+            "pre-F5 work cannot repopulate the scope"
+        );
         let refreshed = cache.admission(&source).unwrap();
         assert!(cache.insert(refreshed.clone(), 12));
         assert_eq!(cache.get(&refreshed), Some(12));
@@ -5020,11 +5465,37 @@ mod tests {
         let value = measure_code_lines_directory(&root)
             .unwrap()
             .expect("directory value");
-        assert_eq!(value.code, 4);
+        assert_eq!(value.language, "Rust");
+        assert_eq!(value.code, 3);
         assert_eq!(value.comments, 1);
-        assert_eq!(value.blanks, 2);
-        assert_eq!(value.total, 7);
+        assert_eq!(value.blanks, 1);
+        assert_eq!(value.total, 5);
         assert_ne!(value.code, value.total);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn all_code_lines_directory_sums_languages_while_main_selects_one() {
+        let root = std::env::temp_dir().join(format!(
+            "superexplorer-all-code-lines-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("main.rs"), "fn main() {}\n".repeat(1_250)).unwrap();
+        fs::write(root.join("script.js"), "const value = 1;\n".repeat(75)).unwrap();
+        let main = measure_code_lines_directory_with_cache(&root, None)
+            .unwrap()
+            .expect("main language");
+        let all = measure_all_code_lines_directory(&root)
+            .unwrap()
+            .expect("all languages");
+        assert_eq!((main.language.as_str(), main.code), ("Rust", 1_250));
+        assert_eq!(all.code, 1_325);
+        assert_ne!(main.code, all.code);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -5750,6 +6221,7 @@ mod tests {
             16,
             SizeMapHardLinkPolicyV1::PerEntry,
             || false,
+            |_| {},
         );
         fs::remove_dir_all(&root).unwrap();
 
@@ -5770,6 +6242,73 @@ mod tests {
             .unwrap();
         assert_eq!(child.parent_item_id, nested.item_id);
         assert_eq!(child.exact_bytes, Some(11));
+    }
+
+    #[test]
+    fn size_map_tree_budget_preserves_shallow_nodes_and_continues_exact_totals() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "superexplorer-size-map-breadth-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(root.join("a-deep/child/grandchild")).unwrap();
+        fs::create_dir_all(root.join("z-large-sibling")).unwrap();
+        fs::write(root.join("a-deep/child/grandchild/deep.bin"), [0_u8; 13]).unwrap();
+        fs::write(root.join("z-large-sibling/shallow.bin"), [0_u8; 7]).unwrap();
+        let root_id = ShellItemId::from_provider_bytes(b"breadth-root".to_vec()).unwrap();
+
+        let mut progress_snapshots = Vec::new();
+        let scan = measure_size_map_tree(
+            &root,
+            &root_id,
+            3,
+            16,
+            SizeMapHardLinkPolicyV1::PerEntry,
+            || false,
+            |snapshot| progress_snapshots.push(snapshot.clone()),
+        );
+        fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(scan.outcome.terminal, SizeMapScanTerminalV1::Complete);
+        assert_eq!(scan.outcome.bytes, 20);
+        assert!(
+            progress_snapshots.iter().any(|snapshot| {
+                snapshot.outcome.terminal == SizeMapScanTerminalV1::Partial
+                    && snapshot
+                        .nodes
+                        .iter()
+                        .any(|node| node.display_name == "a-deep")
+                    && snapshot
+                        .nodes
+                        .iter()
+                        .any(|node| node.display_name == "z-large-sibling")
+            }),
+            "breadth levels must be published before the recursive scan completes"
+        );
+        assert!(scan.nodes.iter().any(|node| node.display_name == "a-deep"));
+        assert!(
+            scan.nodes
+                .iter()
+                .any(|node| node.display_name == "z-large-sibling"),
+            "a deep subtree must not consume the budget before a root sibling"
+        );
+        assert!(!scan.nodes.iter().any(|node| node.display_name == "child"));
+    }
+
+    #[test]
+    fn local_drive_size_map_announces_mft_before_index_construction() {
+        #[cfg(windows)]
+        assert_eq!(
+            preferred_size_map_scan_method(Path::new(r"D:\folder")),
+            "NTFS MFT"
+        );
+        assert_eq!(
+            preferred_size_map_scan_method(Path::new(r"\\server\share")),
+            "Breadth-first fallback"
+        );
     }
 
     #[cfg(windows)]
@@ -5796,6 +6335,7 @@ mod tests {
             16,
             SizeMapHardLinkPolicyV1::PerEntry,
             || false,
+            |_| {},
         );
         let identity_once = measure_size_map_tree(
             &root,
@@ -5804,6 +6344,7 @@ mod tests {
             16,
             SizeMapHardLinkPolicyV1::IdentityOnce,
             || false,
+            |_| {},
         );
         fs::remove_dir_all(&root).unwrap();
 

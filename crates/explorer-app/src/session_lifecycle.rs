@@ -54,10 +54,11 @@ impl PendingSnapshot {
     fn project(&self) -> Result<PersistedSessionEnvelope, SessionStoreError> {
         match self {
             Self::Envelope(envelope) => Ok(envelope.clone()),
-            Self::Runtime(runtime) => PersistedSessionEnvelope::project(
+            Self::Runtime(runtime) => PersistedSessionEnvelope::project_with_bookmarks(
                 &runtime.window,
                 runtime.placement,
                 &runtime.quick_access,
+                &runtime.bookmarks,
                 runtime.restore_enabled,
                 runtime.write_generation,
                 runtime.provenance.clone(),
@@ -74,6 +75,7 @@ pub struct RuntimeSessionSnapshot {
     pub window: ExplorerWindowState,
     pub placement: PersistedWindowPlacement,
     pub quick_access: Vec<PersistedQuickAccessPin>,
+    pub bookmarks: explorer_model::Bookmarks,
     pub restore_enabled: bool,
     pub write_generation: u64,
     pub provenance: SessionProvenance,
