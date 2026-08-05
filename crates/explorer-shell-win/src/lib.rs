@@ -50,7 +50,7 @@ pub use drag_drop::{
 pub use extension::tortoise_git_is_installed;
 pub use namespace::inspect_namespace_item;
 pub use native::NativeResourceSnapshot;
-pub use navigation::{DIRECTORY_BATCH_BYTE_CAP, DIRECTORY_BATCH_ITEM_CAP};
+pub use navigation::{DIRECTORY_BATCH_BYTE_CAP, DIRECTORY_BATCH_ITEM_CAP, open_default};
 pub use preview::{
     AttachedPreviewSession, PreviewHandlerHost, PreviewLookup, render_preview_in_worker,
 };

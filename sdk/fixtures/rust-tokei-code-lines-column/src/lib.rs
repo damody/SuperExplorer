@@ -4,6 +4,7 @@
 //! streams. It never opens a path or starts a child process.
 
 use std::{
+    collections::BTreeMap,
     env, fs,
     io::Read,
     path::{Path, PathBuf},
@@ -37,7 +38,7 @@ const CONTRIBUTION_ID: &str = "rust-tokei:code-lines";
 const MAX_FILE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_DIRECTORY_PACK_BYTES: usize = 64 * 1024 * 1024;
 const DIRECTORY_MAGIC_V1: &[u8; 8] = b"SECLDIR1";
-const CACHE_SCHEMA_VERSION: u32 = 1;
+const CACHE_SCHEMA_VERSION: u32 = 2;
 const CACHE_MAX_RECORD_BYTES: u64 = 8 * 1024;
 const CACHE_MAX_FILES: usize = 256;
 
@@ -283,8 +284,7 @@ fn classify(file_name: &str, bytes: &[u8]) -> Option<(String, tokei::CodeStats)>
 
 fn classify_directory_pack(bytes: &[u8]) -> Option<(String, tokei::CodeStats)> {
     let mut cursor = DIRECTORY_MAGIC_V1.len();
-    let mut aggregate = tokei::CodeStats::new();
-    let mut supported = 0_usize;
+    let mut by_language = BTreeMap::<String, tokei::CodeStats>::new();
     while cursor < bytes.len() {
         let name_end = cursor.checked_add(4)?;
         let name_len = usize::try_from(u32::from_le_bytes(
@@ -304,12 +304,44 @@ fn classify_directory_pack(bytes: &[u8]) -> Option<(String, tokei::CodeStats)> {
         let data_end = cursor.checked_add(data_len)?;
         let data = bytes.get(cursor..data_end)?;
         cursor = data_end;
-        if let Some((_, stats)) = classify(name, data) {
-            aggregate += stats;
-            supported = supported.saturating_add(1);
+        if let Some((language, stats)) = classify(name, data) {
+            *by_language
+                .entry(language)
+                .or_insert_with(tokei::CodeStats::new) += stats;
         }
     }
-    (supported > 0).then(|| ("Mixed folder".to_owned(), aggregate))
+    let mut main_language: Option<(String, tokei::CodeStats)> = None;
+    for (language, stats) in by_language {
+        let replace = main_language
+            .as_ref()
+            .is_none_or(|(current_language, current)| {
+                stats.code > current.code
+                    || (stats.code == current.code && language < *current_language)
+            });
+        if replace {
+            main_language = Some((language, stats));
+        }
+    }
+    main_language
+}
+
+fn format_grouped_decimal(value: u64) -> String {
+    let digits = value.to_string();
+    let first_group = digits.len() % 3;
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+    let mut cursor = 0;
+    if first_group != 0 {
+        formatted.push_str(&digits[..first_group]);
+        cursor = first_group;
+    }
+    while cursor < digits.len() {
+        if !formatted.is_empty() {
+            formatted.push(',');
+        }
+        formatted.push_str(&digits[cursor..cursor + 3]);
+        cursor += 3;
+    }
+    formatted
 }
 
 fn payload(value: &PluginValueV1) -> Option<CodeLinesPayload> {
@@ -345,7 +377,11 @@ impl VisualColumnImplementationV1 for TokeiCodeLinesProvider {
             RString::new()
         };
         CellRenderPlanV1 {
-            label: RString::from(value.code.to_string()),
+            label: RString::from(format!(
+                "{}: {}",
+                value.language,
+                format_grouped_decimal(value.code)
+            )),
             detail,
             proportional_bar_millionths: 0,
             text_color: if context.selected {
@@ -620,6 +656,7 @@ mod tests {
         let mut packed = DIRECTORY_MAGIC_V1.to_vec();
         for (name, source) in [
             ("src/main.rs", b"fn main() {}\n// comment\n".as_slice()),
+            ("src/lib.rs", b"pub fn helper() {}\n\n".as_slice()),
             ("script.py", b"print('ok')\n\n".as_slice()),
         ] {
             packed.extend_from_slice(&(name.len() as u32).to_le_bytes());
@@ -628,10 +665,46 @@ mod tests {
             packed.extend_from_slice(source);
         }
         let (language, stats) = classify("folder", &packed).expect("folder aggregate");
-        assert_eq!(language, "Mixed folder");
+        assert_eq!(language, "Rust");
         assert_eq!(stats.code, 2);
         assert_eq!(stats.comments, 1);
         assert_eq!(stats.blanks, 1);
+    }
+
+    #[test]
+    fn directory_pack_selects_language_sum_not_largest_file() {
+        let mut packed = DIRECTORY_MAGIC_V1.to_vec();
+        for (name, source) in [
+            ("a.rs", b"fn a() {}\n".as_slice()),
+            ("b.rs", b"fn b() {}\n".as_slice()),
+            ("c.rs", b"fn c() {}\n".as_slice()),
+            ("main.py", b"one = 1\ntwo = 2\n".as_slice()),
+        ] {
+            packed.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            packed.extend_from_slice(&(source.len() as u64).to_le_bytes());
+            packed.extend_from_slice(name.as_bytes());
+            packed.extend_from_slice(source);
+        }
+        let (language, stats) = classify("folder", &packed).expect("folder aggregate");
+        assert_eq!(language, "Rust");
+        assert_eq!(stats.code, 3);
+    }
+
+    #[test]
+    fn directory_pack_breaks_equal_code_ties_by_language_name() {
+        let mut packed = DIRECTORY_MAGIC_V1.to_vec();
+        for (name, source) in [
+            ("main.rs", b"fn main() {}\n".as_slice()),
+            ("main.py", b"print('ok')\n".as_slice()),
+        ] {
+            packed.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            packed.extend_from_slice(&(source.len() as u64).to_le_bytes());
+            packed.extend_from_slice(name.as_bytes());
+            packed.extend_from_slice(source);
+        }
+        assert_eq!(classify("folder", &packed).unwrap().0, "Python");
+        assert!(classify("folder", DIRECTORY_MAGIC_V1).is_none());
+        assert!(classify("folder", b"SECLDIR1\x01").is_none());
     }
 
     #[test]
@@ -671,10 +744,23 @@ mod tests {
             render_generation: 1,
             request_generation: 1,
         });
-        assert_eq!(plan.label, "25");
+        assert_eq!(plan.label, "Rust: 25");
         assert_eq!(plan.proportional_bar_millionths, 0);
         assert_eq!(plan.bar_color.alpha, 0);
         assert!(plan.detail.contains("Rust"));
+    }
+
+    #[test]
+    fn grouped_decimal_formatting_covers_boundaries() {
+        for (value, expected) in [
+            (0, "0"),
+            (999, "999"),
+            (1_000, "1,000"),
+            (1_250, "1,250"),
+            (1_000_000, "1,000,000"),
+        ] {
+            assert_eq!(format_grouped_decimal(value), expected);
+        }
     }
 
     #[test]

@@ -136,7 +136,7 @@ pub fn code_lines_column_descriptor() -> ColumnDescriptor {
             package_id: CODE_LINES_COLUMN_PACKAGE_ID.to_owned(),
             column_id: CODE_LINES_COLUMN_ID.to_owned(),
         },
-        display_name: "Code lines".to_owned(),
+        display_name: "Main code lines".to_owned(),
         value_type: ColumnValueType::Integer,
         default_width: 168,
         minimum_width: 104,
@@ -188,6 +188,7 @@ mod tests {
         assert!(is_supported_code_lines_descriptor(&descriptor));
         assert_eq!(descriptor.cost, ColumnCost::BackgroundBatch);
         assert_eq!(descriptor.applicability, ColumnApplicability::AllEntries);
+        assert_eq!(descriptor.display_name, "Main code lines");
     }
 
     #[test]

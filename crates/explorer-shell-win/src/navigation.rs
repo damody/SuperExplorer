@@ -1098,7 +1098,7 @@ mod tests {
     }
 }
 
-pub(crate) fn open_default(descriptor: &LocationDescriptor) -> Result<(), ExplorerError> {
+pub fn open_default(descriptor: &LocationDescriptor) -> Result<(), ExplorerError> {
     let target = match descriptor {
         LocationDescriptor::FileSystem(path) => path.as_os_str().to_string_lossy().into_owned(),
         LocationDescriptor::ParsingName(name) => name.clone(),

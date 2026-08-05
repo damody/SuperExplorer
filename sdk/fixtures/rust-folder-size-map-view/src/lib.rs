@@ -12,11 +12,11 @@ use abi_stable::{
     std_types::{ROption, RResult, RString, RVec},
 };
 use explorer_extension_api::{
-    AbiErrorCodeV1, AbiErrorV1, ExtensionRegistrarImplementationV1, ExtensionRootModuleV1,
-    ExtensionRootModuleV1_Ref, PluginMetadataV1, RegisteredContributionKindV1,
+    ABI_SCHEMA_V1, AbiErrorCodeV1, AbiErrorV1, EXTENSION_ID_NAMESPACE_V1,
+    ExtensionRegistrarImplementationV1, ExtensionRootModuleV1, ExtensionRootModuleV1_Ref,
+    PluginMetadataV1, ROOT_MODULE_CONTRACT_ID_V1, RegisteredContributionKindV1,
     RegisteredContributionV1, RegistrarOutputResultV1, RegistrarOutputV1, RegistrarRequestV1,
-    RegistrationOutcomeV1, StableIdV1, ABI_SCHEMA_V1, EXTENSION_ID_NAMESPACE_V1,
-    ROOT_MODULE_CONTRACT_ID_V1, SDK_MAJOR_VERSION_V1,
+    RegistrationOutcomeV1, SDK_MAJOR_VERSION_V1, StableIdV1,
 };
 use explorer_extension_ui_api::{
     CellColorV1, SizeMapNodeKindV1, SizeMapNodeStatusV1, SizeMapRectangleV1,
@@ -60,6 +60,9 @@ impl SizeMapViewImplementationV1 for FolderSizeMapView {
             });
         }
         let mut rectangles = Vec::with_capacity(context.nodes.len());
+        let title_height = normalized_pixels(28_000, context.viewport.height_milli, 20_000, 80_000);
+        let gutter_x = normalized_pixels(4_000, context.viewport.width_milli, 3_000, 20_000);
+        let gutter_y = normalized_pixels(4_000, context.viewport.height_milli, 3_000, 20_000);
         layout_siblings(
             &children,
             None,
@@ -71,8 +74,13 @@ impl SizeMapViewImplementationV1 for FolderSizeMapView {
             },
             0,
             exact_total,
+            exact_total,
             context.theme.accent,
             context.theme.muted_foreground,
+            None,
+            title_height,
+            gutter_x,
+            gutter_y,
             &mut rectangles,
         );
 
@@ -80,13 +88,14 @@ impl SizeMapViewImplementationV1 for FolderSizeMapView {
             .nodes
             .iter()
             .all(|node| node.status == SizeMapNodeStatusV1::COMPLETE);
+        let calculating_method = context.settings.as_str();
         SizeMapRenderPlanV1 {
             snapshot: context.snapshot,
             rectangles: RVec::from(rectangles),
             status: RString::from(if all_exact {
-                "Exact sizes"
+                String::new()
             } else {
-                "Calculating sizes"
+                format!("Calculating sizes · {calculating_method}")
             }),
         }
     }
@@ -107,45 +116,54 @@ fn layout_siblings(
     bounds: BoundsV1,
     depth: usize,
     exact_total: u64,
+    available_total: u64,
     accent: CellColorV1,
     muted: CellColorV1,
+    palette_group: Option<usize>,
+    title_height: u32,
+    gutter_x: u32,
+    gutter_y: u32,
     output: &mut Vec<SizeMapRectangleV1>,
 ) {
     let Some(siblings) = children.get(&parent) else {
         return;
     };
-    let total = siblings.iter().fold(0_u64, |total, node| {
-        total.saturating_add(node.exact_bytes.unwrap_or_default().max(1))
-    });
-    let horizontal = depth.is_multiple_of(2);
-    let extent = if horizontal {
-        bounds.width
+    let known_sum = siblings
+        .iter()
+        .filter_map(|node| node.exact_bytes.into_option())
+        .fold(0_u64, u64::saturating_add);
+    let unknown_count = siblings
+        .iter()
+        .filter(|node| node.exact_bytes.into_option().is_none())
+        .count() as u64;
+    let minimum_weight = siblings
+        .iter()
+        .filter_map(|node| node.exact_bytes.into_option())
+        .max()
+        .unwrap_or_default()
+        / 500;
+    let remaining = available_total.saturating_sub(known_sum);
+    let unfinished_pool = if unknown_count == 0 {
+        0
+    } else if remaining > 0 {
+        remaining
     } else {
-        bounds.height
+        known_sum.max(1) / 3
     };
-    let mut used = 0_u32;
-    for (index, node) in siblings.iter().enumerate() {
-        let weight = node.exact_bytes.unwrap_or_default().max(1);
-        let length = if index + 1 == siblings.len() {
-            extent.saturating_sub(used)
-        } else {
-            u32::try_from((u128::from(weight) * u128::from(extent)) / u128::from(total))
-                .unwrap_or(extent)
-        };
-        let node_bounds = if horizontal {
-            BoundsV1 {
-                x: bounds.x.saturating_add(used),
-                width: length,
-                ..bounds
-            }
-        } else {
-            BoundsV1 {
-                y: bounds.y.saturating_add(used),
-                height: length,
-                ..bounds
-            }
-        };
-        used = used.saturating_add(length);
+    let unknown_weight = unfinished_pool
+        .checked_div(unknown_count)
+        .unwrap_or(0)
+        .max(1);
+    let mut placements = Vec::with_capacity(siblings.len());
+    layout_balanced(
+        siblings,
+        bounds,
+        minimum_weight.max(1),
+        unknown_weight.max(1),
+        &mut placements,
+    );
+    for (index, (node, node_bounds)) in placements.into_iter().enumerate() {
+        let palette_group = palette_group.unwrap_or(index);
         let bytes = node.exact_bytes.unwrap_or_default();
         let detail = if node.status == SizeMapNodeStatusV1::COMPLETE {
             let percentage = if exact_total == 0 {
@@ -171,28 +189,36 @@ fn layout_siblings(
             y_millionths: node_bounds.y,
             width_millionths: node_bounds.width,
             height_millionths: node_bounds.height,
-            color: color_for(node.kind, node.status, accent, muted),
+            color: color_for(node.kind, node.status, accent, muted, palette_group, depth),
             label: node.name.clone(),
             detail: RString::from(detail),
         });
         if children.contains_key(&Some(node.node_id)) {
-            let inset = node_bounds.width.min(node_bounds.height).min(8_000);
-            if node_bounds.width > inset.saturating_mul(2)
-                && node_bounds.height > inset.saturating_mul(2)
+            let reserved_title = title_height.min(node_bounds.height / 3);
+            if node_bounds.width > gutter_x.saturating_mul(2)
+                && node_bounds.height > reserved_title.saturating_add(gutter_y)
             {
                 layout_siblings(
                     children,
                     Some(node.node_id),
                     BoundsV1 {
-                        x: node_bounds.x.saturating_add(inset),
-                        y: node_bounds.y.saturating_add(inset),
-                        width: node_bounds.width.saturating_sub(inset.saturating_mul(2)),
-                        height: node_bounds.height.saturating_sub(inset.saturating_mul(2)),
+                        x: node_bounds.x.saturating_add(gutter_x),
+                        y: node_bounds.y.saturating_add(reserved_title),
+                        width: node_bounds.width.saturating_sub(gutter_x.saturating_mul(2)),
+                        height: node_bounds
+                            .height
+                            .saturating_sub(reserved_title)
+                            .saturating_sub(gutter_y),
                     },
                     depth.saturating_add(1),
                     exact_total,
+                    bytes,
                     accent,
                     muted,
+                    Some(palette_group),
+                    title_height,
+                    gutter_x,
+                    gutter_y,
                     output,
                 );
             }
@@ -200,11 +226,133 @@ fn layout_siblings(
     }
 }
 
+fn visual_weight(
+    node: &explorer_extension_ui_api::SizeMapNodeV1,
+    minimum_weight: u64,
+    unknown_weight: u64,
+) -> u64 {
+    node.exact_bytes
+        .into_option()
+        .unwrap_or(unknown_weight)
+        .max(minimum_weight)
+}
+
+fn layout_balanced<'a>(
+    nodes: &[&'a explorer_extension_ui_api::SizeMapNodeV1],
+    bounds: BoundsV1,
+    minimum_weight: u64,
+    unknown_weight: u64,
+    output: &mut Vec<(&'a explorer_extension_ui_api::SizeMapNodeV1, BoundsV1)>,
+) {
+    if nodes.is_empty() || bounds.width == 0 || bounds.height == 0 {
+        return;
+    }
+    if nodes.len() == 1 {
+        output.push((nodes[0], bounds));
+        return;
+    }
+    let total = nodes.iter().fold(0_u64, |sum, node| {
+        sum.saturating_add(visual_weight(node, minimum_weight, unknown_weight))
+    });
+    let mut first_total = 0_u64;
+    let mut split = 1_usize;
+    let mut best_delta = u64::MAX;
+    for index in 1..nodes.len() {
+        first_total = first_total.saturating_add(visual_weight(
+            nodes[index - 1],
+            minimum_weight,
+            unknown_weight,
+        ));
+        let delta = total.abs_diff(first_total.saturating_mul(2));
+        if delta <= best_delta {
+            best_delta = delta;
+            split = index;
+        } else {
+            break;
+        }
+    }
+    let first_total = nodes[..split].iter().fold(0_u64, |sum, node| {
+        sum.saturating_add(visual_weight(node, minimum_weight, unknown_weight))
+    });
+    if bounds.width >= bounds.height {
+        let first_width =
+            u32::try_from((u128::from(bounds.width) * u128::from(first_total)) / u128::from(total))
+                .unwrap_or(bounds.width)
+                .clamp(1, bounds.width.saturating_sub(1).max(1));
+        layout_balanced(
+            &nodes[..split],
+            BoundsV1 {
+                width: first_width,
+                ..bounds
+            },
+            minimum_weight,
+            unknown_weight,
+            output,
+        );
+        layout_balanced(
+            &nodes[split..],
+            BoundsV1 {
+                x: bounds.x.saturating_add(first_width),
+                width: bounds.width.saturating_sub(first_width),
+                ..bounds
+            },
+            minimum_weight,
+            unknown_weight,
+            output,
+        );
+    } else {
+        let first_height = u32::try_from(
+            (u128::from(bounds.height) * u128::from(first_total)) / u128::from(total),
+        )
+        .unwrap_or(bounds.height)
+        .clamp(1, bounds.height.saturating_sub(1).max(1));
+        layout_balanced(
+            &nodes[..split],
+            BoundsV1 {
+                height: first_height,
+                ..bounds
+            },
+            minimum_weight,
+            unknown_weight,
+            output,
+        );
+        layout_balanced(
+            &nodes[split..],
+            BoundsV1 {
+                y: bounds.y.saturating_add(first_height),
+                height: bounds.height.saturating_sub(first_height),
+                ..bounds
+            },
+            minimum_weight,
+            unknown_weight,
+            output,
+        );
+    }
+}
+
+fn normalized_pixels(
+    logical_pixels_milli: u32,
+    viewport_extent_milli: u32,
+    minimum: u32,
+    maximum: u32,
+) -> u32 {
+    if viewport_extent_milli == 0 {
+        return maximum;
+    }
+    u32::try_from(
+        (u128::from(logical_pixels_milli) * 1_000_000_u128) / u128::from(viewport_extent_milli),
+    )
+    .unwrap_or(maximum)
+    .clamp(minimum, maximum)
+}
+
 fn color_for(
     kind: SizeMapNodeKindV1,
     status: SizeMapNodeStatusV1,
     accent: CellColorV1,
     muted: CellColorV1,
+    palette_group: usize,
+    depth: usize,
 ) -> CellColorV1 {
     if status == SizeMapNodeStatusV1::FAILED {
         return CellColorV1::rgba(196, 43, 28, 224);
@@ -212,13 +360,28 @@ fn color_for(
     if status != SizeMapNodeStatusV1::COMPLETE {
         return CellColorV1::rgba(muted.red, muted.green, muted.blue, 176);
     }
-    if kind == SizeMapNodeKindV1::DIRECTORY {
-        return accent;
-    }
+    const PALETTE: [(u8, u8, u8); 8] = [
+        (55, 145, 222),
+        (62, 153, 224),
+        (48, 158, 213),
+        (68, 164, 218),
+        (57, 150, 205),
+        (76, 169, 221),
+        (47, 164, 200),
+        (70, 157, 211),
+    ];
+    let (mut red, mut green, mut blue) = PALETTE[palette_group % PALETTE.len()];
+    let depth_shift = (depth.min(7) as u8) * 12;
+    red = red.saturating_add(depth_shift);
+    green = green.saturating_add(depth_shift);
+    blue = blue.saturating_add(depth_shift / 2);
     if kind == SizeMapNodeKindV1::FILE {
-        return CellColorV1::rgba(accent.blue, accent.red, accent.green, 208);
+        red = red.saturating_add(12);
+        green = green.saturating_add(12);
+        blue = blue.saturating_add(12);
     }
-    muted
+    let _ = (accent, muted);
+    CellColorV1::rgba(red, green, blue, 242)
 }
 
 fn status_label(status: SizeMapNodeStatusV1) -> &'static str {
@@ -338,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn public_trait_returns_proportional_data_only_treemap() {
+    fn public_trait_tracks_exact_ratio_with_only_a_tiny_visibility_floor() {
         let color = color();
         let plan = FolderSizeMapView.render_size_map(SizeMapRenderContextV1 {
             snapshot: ViewSnapshotIdentityV1 {
@@ -365,8 +528,8 @@ mod tests {
                 },
             ]),
             viewport: SizeMapViewportV1 {
-                width_milli: 1_000,
-                height_milli: 1_000,
+                width_milli: 1_000_000,
+                height_milli: 1_000_000,
                 dpi_milli: 1_000,
             },
             theme: CellThemeV1 {
@@ -383,8 +546,10 @@ mod tests {
         assert_eq!(plan.rectangles.len(), 2);
         assert_eq!(plan.rectangles[0].width_millionths, 750_000);
         assert_eq!(plan.rectangles[1].width_millionths, 250_000);
+        assert_eq!(plan.rectangles[0].height_millionths, 1_000_000);
+        assert_eq!(plan.rectangles[1].height_millionths, 1_000_000);
         assert!(plan.rectangles[0].detail.contains("30 bytes"));
-        assert_eq!(plan.status.as_str(), "Exact sizes");
+        assert!(plan.status.is_empty());
     }
 
     #[test]
@@ -417,12 +582,15 @@ mod tests {
                 accent: color,
             },
             selected_node_ids: RVec::new(),
-            settings: RString::new(),
+            settings: RString::from("Breadth-first fallback"),
         });
         assert_eq!(plan.rectangles.len(), 1);
         assert!(plan.rectangles[0].detail.contains("failed"));
         assert!(plan.rectangles[0].detail.contains("size unavailable"));
-        assert_eq!(plan.status.as_str(), "Calculating sizes");
+        assert_eq!(
+            plan.status.as_str(),
+            "Calculating sizes · Breadth-first fallback"
+        );
     }
 
     #[test]
@@ -461,7 +629,7 @@ mod tests {
         assert_eq!(plan.rectangles[0].label.as_str(), "Other (300 items)");
         assert!(plan.rectangles[0].detail.contains("4096 bytes"));
         assert!(plan.rectangles[0].detail.contains("other"));
-        assert_eq!(plan.status.as_str(), "Exact sizes");
+        assert!(plan.status.is_empty());
     }
 
     #[test]
@@ -494,8 +662,8 @@ mod tests {
                 },
             ]),
             viewport: SizeMapViewportV1 {
-                width_milli: 1_000,
-                height_milli: 1_000,
+                width_milli: 1_000_000,
+                height_milli: 1_000_000,
                 dpi_milli: 1_000,
             },
             theme: CellThemeV1 {
@@ -519,7 +687,13 @@ mod tests {
             .find(|rectangle| rectangle.node_id == child)
             .expect("child rectangle");
         assert!(child_rect.x_millionths > parent_rect.x_millionths);
-        assert!(child_rect.y_millionths > parent_rect.y_millionths);
+        assert!(
+            child_rect
+                .y_millionths
+                .saturating_sub(parent_rect.y_millionths)
+                >= 28_000,
+            "a nested map must reserve a 28 logical-pixel parent title band"
+        );
         assert!(child_rect.width_millionths < parent_rect.width_millionths);
         assert!(child_rect.height_millionths < parent_rect.height_millionths);
     }

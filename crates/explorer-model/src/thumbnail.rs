@@ -265,10 +265,11 @@ pub const fn view_mode_thumbnail_policy(mode: ViewMode) -> (ThumbnailMode, u16) 
     match mode {
         ViewMode::ExtraLargeIcons => (ThumbnailMode::Thumbnail, 256),
         ViewMode::LargeIcons => (ThumbnailMode::Thumbnail, 96),
-        ViewMode::MediumIcons | ViewMode::Tiles | ViewMode::Content => {
-            (ThumbnailMode::Thumbnail, 48)
+        ViewMode::MediumIcons => (ThumbnailMode::Thumbnail, 64),
+        ViewMode::Content => (ThumbnailMode::Thumbnail, 48),
+        ViewMode::SmallIcons | ViewMode::List | ViewMode::Details | ViewMode::Tiles => {
+            (ThumbnailMode::IconOnly, 16)
         }
-        ViewMode::SmallIcons | ViewMode::List | ViewMode::Details => (ThumbnailMode::IconOnly, 16),
     }
 }
 
@@ -398,6 +399,34 @@ mod tests {
             let (_, logical) = view_mode_thumbnail_policy(mode);
             assert!(logical > 0);
         }
+    }
+
+    #[test]
+    fn explorer_icon_views_use_the_expected_thumbnail_targets() {
+        assert_eq!(
+            view_mode_thumbnail_policy(ViewMode::ExtraLargeIcons),
+            (ThumbnailMode::Thumbnail, 256)
+        );
+        assert_eq!(
+            view_mode_thumbnail_policy(ViewMode::LargeIcons),
+            (ThumbnailMode::Thumbnail, 96)
+        );
+        assert_eq!(
+            view_mode_thumbnail_policy(ViewMode::MediumIcons),
+            (ThumbnailMode::Thumbnail, 64)
+        );
+    }
+
+    #[test]
+    fn small_icon_and_tile_views_are_shell_icon_only() {
+        assert_eq!(
+            view_mode_thumbnail_policy(ViewMode::SmallIcons).0,
+            ThumbnailMode::IconOnly
+        );
+        assert_eq!(
+            view_mode_thumbnail_policy(ViewMode::Tiles).0,
+            ThumbnailMode::IconOnly
+        );
     }
 
     #[test]

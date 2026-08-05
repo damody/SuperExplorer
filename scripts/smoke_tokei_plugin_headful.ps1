@@ -2,25 +2,63 @@ param(
     [string]$Executable = 'target\debug\SuperExplorer.exe',
     [string]$PluginRoot = 'sdk\fixtures\rust-tokei-code-lines-column',
     [string]$PluginDll = 'sdk\fixtures\rust-tokei-code-lines-column\target\x86_64-pc-windows-msvc\debug\rust_tokei_code_lines_column.dll',
+    [string]$SecondPluginRoot = 'sdk\fixtures\lua-tokei-code-lines-column',
+    [string]$SecondPluginDll = 'sdk\fixtures\lua-tokei-code-lines-column\target\x86_64-pc-windows-msvc\debug\lua_tokei_code_lines_column.dll',
     [string]$InitialPath = 'sdk\fixtures\rust-tokei-code-lines-column\samples',
     [string]$OutputDirectory = 'target\tokei-headful-smoke',
+    [string[]]$AdditionalPluginDlls = @(),
     [switch]$DirectoryAggregateMode,
-    [switch]$LockOwnerMode
+    [switch]$LockOwnerMode,
+    [switch]$DualCodeLinesMode,
+    [switch]$WideWindow
 )
 
 $ErrorActionPreference = 'Stop'
 $workspace = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $pluginRoot = if ($LockOwnerMode) { Join-Path $workspace 'sdk\fixtures\rust-lock-owner-column' } elseif ([IO.Path]::IsPathRooted($PluginRoot)) { $PluginRoot } else { Join-Path $workspace $PluginRoot }
+$codeLinesColumn = if ($pluginRoot -match 'lua-tokei-code-lines-column') { 'Code lines' } else { 'Main code lines' }
+$codeLinesCellPattern = "^$([regex]::Escape($codeLinesColumn)): (?:.+: )?([\d,]+)"
+$codeLinesDetailPattern = "^$([regex]::Escape($codeLinesColumn)): (?:.+: )?[\d,]+ .*comments.*blanks"
 & cargo.exe test --manifest-path (Join-Path $pluginRoot 'Cargo.toml') --locked --offline
 if ($LASTEXITCODE -ne 0) { throw "tokei plugin cargo test failed ($LASTEXITCODE)" }
 & cargo.exe build --manifest-path (Join-Path $pluginRoot 'Cargo.toml') --target x86_64-pc-windows-msvc --locked --offline
 if ($LASTEXITCODE -ne 0) { throw "tokei plugin cargo build failed ($LASTEXITCODE)" }
+if ($DualCodeLinesMode) {
+    $secondPluginRoot = if ([IO.Path]::IsPathRooted($SecondPluginRoot)) { $SecondPluginRoot } else { Join-Path $workspace $SecondPluginRoot }
+    & cargo.exe test --manifest-path (Join-Path $secondPluginRoot 'Cargo.toml') --locked --offline
+    if ($LASTEXITCODE -ne 0) { throw "second tokei plugin cargo test failed ($LASTEXITCODE)" }
+    & cargo.exe build --manifest-path (Join-Path $secondPluginRoot 'Cargo.toml') --target x86_64-pc-windows-msvc --locked --offline
+    if ($LASTEXITCODE -ne 0) { throw "second tokei plugin cargo build failed ($LASTEXITCODE)" }
+    $dualOutputRoot = if ([IO.Path]::IsPathRooted($OutputDirectory)) { $OutputDirectory } else { Join-Path $workspace $OutputDirectory }
+    $dualFixture = Join-Path $dualOutputRoot 'dual-main-language-sample'
+    New-Item -ItemType Directory -Force -Path $dualFixture | Out-Null
+    $mixedProject = Join-Path $dualFixture 'mixed-project'
+    New-Item -ItemType Directory -Force -Path $mixedProject | Out-Null
+    foreach ($fixtureDirectory in $dualFixture,$mixedProject) {
+        foreach ($staleFixtureFile in 'main.rs','script.py','script.lua','script.js') {
+            Remove-Item -LiteralPath (Join-Path $fixtureDirectory $staleFixtureFile) -Force -ErrorAction SilentlyContinue
+        }
+    }
+    $rustLines = 1..1250 | ForEach-Object { "fn line_$($_)() {}" }
+    $javaScriptLines = 1..75 | ForEach-Object { "const value_$($_) = $($_);" }
+    [IO.File]::WriteAllText((Join-Path $mixedProject 'main.rs'),($rustLines -join "`n") + "`n")
+    [IO.File]::WriteAllText((Join-Path $mixedProject 'script.js'),($javaScriptLines -join "`n") + "`n")
+    $InitialPath = $dualFixture
+}
 foreach ($name in 'Executable','PluginDll','InitialPath','OutputDirectory') {
     $value = Get-Variable -Name $name -ValueOnly
     if (-not [IO.Path]::IsPathRooted($value)) { Set-Variable -Name $name -Value ([IO.Path]::GetFullPath((Join-Path $workspace $value))) }
 }
 $Executable = (Resolve-Path -LiteralPath $Executable).Path
 $PluginDll = (Resolve-Path -LiteralPath $PluginDll).Path
+$SecondPluginDll = if ($DualCodeLinesMode) {
+    if (-not [IO.Path]::IsPathRooted($SecondPluginDll)) { $SecondPluginDll = [IO.Path]::GetFullPath((Join-Path $workspace $SecondPluginDll)) }
+    (Resolve-Path -LiteralPath $SecondPluginDll).Path
+} else { $null }
+$AdditionalPluginDlls = @($AdditionalPluginDlls | ForEach-Object {
+    $path = if ([IO.Path]::IsPathRooted($_)) { $_ } else { [IO.Path]::GetFullPath((Join-Path $workspace $_)) }
+    (Resolve-Path -LiteralPath $path).Path
+})
 $InitialPath = (Resolve-Path -LiteralPath $InitialPath).Path
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 $profileRoot=Join-Path $OutputDirectory 'profile'
@@ -60,6 +98,7 @@ namespace TokeiHeadfulSmoke {
     [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
     [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out Rect rect);
+    [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr window, int x, int y, int width, int height, bool repaint);
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr window, IntPtr dc, uint flags);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, UIntPtr wparam, IntPtr lparam);
     [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern IntPtr LoadKeyboardLayout(string id,uint flags);
@@ -284,9 +323,9 @@ function Find-NamePrefix($Root,[string]$Prefix) {
 function Code-Line-Values($Root) {
     $all=$Root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
     @(0..($all.Count-1) | ForEach-Object { $all.Item($_) } |
-        Where-Object { $_.Current.Name -match '^Code lines: (\d+)' } |
+        Where-Object { $_.Current.Name -match $codeLinesCellPattern } |
         Sort-Object { $_.Current.BoundingRectangle.Top } |
-        ForEach-Object { [int]([regex]::Match($_.Current.Name,'^Code lines: (\d+)').Groups[1].Value) })
+        ForEach-Object { [int]([regex]::Match($_.Current.Name,$codeLinesCellPattern).Groups[1].Value.Replace(',','')) })
 }
 
 function Assert-NoProportionalBars([string]$Path) {
@@ -307,6 +346,35 @@ function Assert-NoProportionalBars([string]$Path) {
         if ($bars.Count -ne 0) { throw "Code lines must render as text without proportional bars: $($bars -join ',')" }
         return $true
     } finally { $bitmap.Dispose() }
+}
+
+function Assert-NoCodeLineBarElements($Root) {
+    $all=$Root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+    $bars=@(0..($all.Count-1) | ForEach-Object { $all.Item($_) } | Where-Object {
+        $_.Current.AutomationId -like 'code-lines-bar-track-*'
+    })
+    if ($bars.Count -ne 0) { throw "Code lines exposed $($bars.Count) proportional bar elements" }
+    return $true
+}
+
+function Assert-DetailsColumnAlignment($Root,[string[]]$ColumnNames) {
+    $verified=@()
+    foreach ($columnName in $ColumnNames) {
+        $header=Find-ButtonName $Root "Sort by $columnName"
+        if ($null -eq $header) { throw "Missing details header for alignment check: $columnName" }
+        $all=$Root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+        $cell=0..($all.Count-1) | ForEach-Object { $all.Item($_) } |
+            Where-Object { $_.Current.Name -like "$columnName`:*" } | Select-Object -First 1
+        if ($null -eq $cell) { throw "Missing populated cell for alignment check: $columnName" }
+        $headerBounds=$header.Current.BoundingRectangle
+        $cellBounds=$cell.Current.BoundingRectangle
+        $cellCenter=$cellBounds.Left + ($cellBounds.Width / 2.0)
+        if ($cellCenter -lt $headerBounds.Left -or $cellCenter -gt $headerBounds.Right) {
+            throw "$columnName cell is outside its header bounds: header=$headerBounds cell=$cellBounds"
+        }
+        $verified += $columnName
+    }
+    return $verified
 }
 
 function Click-Element($Root,$Element,[switch]$Right) {
@@ -349,6 +417,28 @@ function Click-ElementPointer($Root,$Element) {
     [TokeiHeadfulSmoke.Native]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero)
 }
 
+function Drag-ElementToElement($Root,$Source,$Target) {
+    $sourceBounds=$Source.Current.BoundingRectangle; $targetBounds=$Target.Current.BoundingRectangle
+    $rootBounds=$Root.Current.BoundingRectangle
+    $windowRect=[TokeiHeadfulSmoke.Native+Rect]::new()
+    if (-not [TokeiHeadfulSmoke.Native]::GetWindowRect($window,[ref]$windowRect)) { throw 'GetWindowRect failed' }
+    $sx=($windowRect.Right-$windowRect.Left)/$rootBounds.Width; $sy=($windowRect.Bottom-$windowRect.Top)/$rootBounds.Height
+    $fromX=[int]($windowRect.Left+(($sourceBounds.Left+$sourceBounds.Width/2)-$rootBounds.Left)*$sx)
+    $fromY=[int]($windowRect.Top+(($sourceBounds.Top+$sourceBounds.Height/2)-$rootBounds.Top)*$sy)
+    $toX=[int]($windowRect.Left+(($targetBounds.Left+$targetBounds.Width/2)-$rootBounds.Left)*$sx)
+    $toY=[int]($windowRect.Top+(($targetBounds.Top+$targetBounds.Height/2)-$rootBounds.Top)*$sy)
+    [void][TokeiHeadfulSmoke.Native]::SetCursorPos($fromX,$fromY); Start-Sleep -Milliseconds 100
+    [TokeiHeadfulSmoke.Native]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero)
+    foreach ($step in 1..12) {
+        $x=[int]($fromX+(($toX-$fromX)*$step/12.0)); $y=[int]($fromY+(($toY-$fromY)*$step/12.0))
+        [void][TokeiHeadfulSmoke.Native]::SetCursorPos($x,$y)
+        [TokeiHeadfulSmoke.Native]::mouse_event(0x0001,0,0,0,[UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 35
+    }
+    [TokeiHeadfulSmoke.Native]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 400
+}
+
 $diagnostics=Join-Path $OutputDirectory 'diagnostics.json'
 $childEnvironment=[ordered]@{
     EXPLORER_VISUAL_FIXTURE='1'; EXPLORER_VISUAL_REAL_SHELL='1'; EXPLORER_VISUAL_WIDTH='1280'; EXPLORER_VISUAL_HEIGHT='760'
@@ -372,7 +462,12 @@ if ($LockOwnerMode) {
     if ($lockHolder.HasExited) { throw 'lock-holder exited before the app query' }
 }
 try {
-    $processObserver=[TokeiHeadfulSmoke.JobProcessObserver]::StartSuspended($Executable,"--plugin-dll `"$PluginDll`"",$workspace)
+    $pluginArguments="--plugin-dll `"$PluginDll`""
+    if ($DualCodeLinesMode) { $pluginArguments += " --plugin-dll `"$SecondPluginDll`"" }
+    foreach ($additionalPluginDll in $AdditionalPluginDlls) {
+        $pluginArguments += " --plugin-dll `"$additionalPluginDll`""
+    }
+    $processObserver=[TokeiHeadfulSmoke.JobProcessObserver]::StartSuspended($Executable,$pluginArguments,$workspace)
 } finally {
     foreach($entry in $childEnvironment.GetEnumerator()) { [Environment]::SetEnvironmentVariable($entry.Key,$previousEnvironment[$entry.Key],'Process') }
 }
@@ -390,6 +485,7 @@ try {
     }
     while (($window -eq [IntPtr]::Zero -or -not (Test-Path $diagnostics)) -and [DateTime]::UtcNow -lt $deadline)
     if ($window -eq [IntPtr]::Zero) { throw 'Timed out waiting for SuperExplorer' }
+    if ($WideWindow) { [void][TokeiHeadfulSmoke.Native]::MoveWindow($window,0,0,2600,1200,$true) }
     [void][TokeiHeadfulSmoke.Native]::SetForegroundWindow($window)
     $root=[Windows.Automation.AutomationElement]::FromHandle($window)
     if ($LockOwnerMode) {
@@ -533,24 +629,65 @@ try {
         Get-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Raw
         return
     }
+    $directoryMinimum = if ($DualCodeLinesMode) { 1 } else { 10 }
     $deadline=[DateTime]::UtcNow.AddSeconds(90); $header=$null; $cells=@(); $loading=@()
     do {
-        Start-Sleep -Milliseconds 150; $header=Find-ButtonName $root 'Sort by Code lines'
+        Start-Sleep -Milliseconds 150; $header=Find-ButtonName $root "Sort by $codeLinesColumn"
         $all=$root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
-        $cells=0..($all.Count-1) | ForEach-Object { $all.Item($_) } | Where-Object { $_.Current.Name -match '^Code lines: \d+' }
+        $cells=0..($all.Count-1) | ForEach-Object { $all.Item($_) } | Where-Object { $_.Current.Name -match $codeLinesCellPattern }
         $loading=0..($all.Count-1) | ForEach-Object { $all.Item($_) } | Where-Object { $_.Current.Name -match 'Loading code lines' }
-    } while (($null -eq $header -or $cells.Count -lt $(if($DirectoryAggregateMode){10}else{3}) -or $loading.Count -ne 0) -and [DateTime]::UtcNow -lt $deadline)
-    if ($null -eq $header) { throw 'Code lines header was not installed' }
-    if ($cells.Count -lt 3) {
+    } while (($null -eq $header -or $cells.Count -lt $(if($DirectoryAggregateMode){$directoryMinimum}else{3}) -or $loading.Count -ne 0) -and [DateTime]::UtcNow -lt $deadline)
+    if ($null -eq $header) { throw "$codeLinesColumn header was not installed" }
+    if ($DualCodeLinesMode) {
+        $luaHeader=Find-ButtonName $root 'Sort by Code lines'
+        $rustHeader=Find-ButtonName $root 'Sort by Main code lines'
+        if ($null -eq $luaHeader -or $null -eq $rustHeader) {
+            Capture-Window $window (Join-Path $OutputDirectory 'dual-code-lines-failure.png')
+            throw 'Code lines and Main code lines were not simultaneously installed'
+        }
+        $nameHeader=Find-ButtonName $root 'Sort by Name'
+        if ($null -eq $nameHeader) { $nameHeader=Find-ButtonNamePrefix $root 'Name, sorted' }
+        $dateHeader=Find-ButtonName $root 'Sort by Date modified'
+        if ($null -eq $dateHeader) { throw 'Date modified header was unavailable for reorder test' }
+        Drag-ElementToElement $root $luaHeader $dateHeader
+        $luaHeader=Find-ButtonName $root 'Sort by Code lines'
+        $rustHeader=Find-ButtonName $root 'Sort by Main code lines'
+        $dateHeader=Find-ButtonName $root 'Sort by Date modified'
+        if ($luaHeader.Current.BoundingRectangle.Left -ge $dateHeader.Current.BoundingRectangle.Left) {
+            Capture-Window $window (Join-Path $OutputDirectory 'column-drag-failure.png')
+            throw 'Code lines was not moved before Date modified by pointer drag'
+        }
+        Drag-ElementToElement $root $nameHeader $rustHeader
+        $nameHeader=Find-ButtonName $root 'Sort by Name'
+        if ($null -eq $nameHeader) { $nameHeader=Find-ButtonNamePrefix $root 'Name, sorted' }
+        if ($nameHeader.Current.BoundingRectangle.Left -gt $rustHeader.Current.BoundingRectangle.Left) {
+            throw 'Name moved away from the leftmost column'
+        }
+        Capture-Window $window (Join-Path $OutputDirectory 'columns-reordered.png')
+    }
+    if ($cells.Count -lt $(if($DirectoryAggregateMode){$directoryMinimum}else{3})) {
         Capture-Window $window (Join-Path $OutputDirectory 'code-lines-failure.png')
-        $names=0..($all.Count-1) | ForEach-Object { $all.Item($_).Current.Name } | Where-Object { $_ -match 'Code lines|Unsupported|unavailable|provider' } | Select-Object -Unique
-        throw "Expected real Code lines values; found $($cells.Count); visible: $($names -join ' | ')"
+        $names=0..($all.Count-1) | ForEach-Object { $all.Item($_).Current.Name } | Where-Object { $_ -match 'code lines|Unsupported|unavailable|provider' } | Select-Object -Unique
+        throw "Expected real $codeLinesColumn values; found $($cells.Count); visible: $($names -join ' | ')"
     }
     $codeLinesImage=Join-Path $OutputDirectory 'code-lines.png'
     Capture-Window $window $codeLinesImage
-    $noProgressBars=Assert-NoProportionalBars $codeLinesImage
+    $noProgressBars=if ($DualCodeLinesMode) { Assert-NoCodeLineBarElements $root } else { Assert-NoProportionalBars $codeLinesImage }
+    $alignmentColumns=@($codeLinesColumn)
+    if ($DualCodeLinesMode) { $alignmentColumns=@('Code lines','Main code lines') }
+    if ($null -ne (Find-ButtonName $root 'Sort by Folder size')) { $alignmentColumns += 'Folder size' }
+    $alignedColumns=@(Assert-DetailsColumnAlignment $root $alignmentColumns)
     if ($DirectoryAggregateMode) {
-        if ($cells.Count -lt 10) { throw "Expected directory Code lines values; found $($cells.Count)" }
+        if ($cells.Count -lt $directoryMinimum) { throw "Expected directory $codeLinesColumn values; found $($cells.Count)" }
+        if ($DualCodeLinesMode) {
+            $allNames = 0..($all.Count-1) | ForEach-Object { $all.Item($_).Current.Name }
+            if (-not ($allNames -match '^Main code lines: Rust: 1,250\b')) {
+                throw "Main code lines did not expose the dominant-language-only value Rust: 1,250"
+            }
+            if (-not ($allNames -match '^Code lines: 1325\b')) {
+                throw "Code lines did not expose the all-language total 1,325"
+            }
+        }
         if (-not [TokeiHeadfulSmoke.Native]::PostMessage($window,0x0010,[UIntPtr]::Zero,[IntPtr]::Zero)) { throw 'Could not request clean app shutdown' }
         if (-not $process.WaitForExit(10000)) { throw 'App did not complete clean shutdown' }
         $descendants=@($processObserver.WaitForActiveProcessZero(10000))
@@ -558,7 +695,7 @@ try {
         $expectedBroker=if (Test-Path -LiteralPath $expectedBrokerPath) { (Resolve-Path -LiteralPath $expectedBrokerPath).Path } else { $null }
         $unexpectedChildren=@($descendants | Where-Object { $null -eq $expectedBroker -or ($_ -split ':\d+$')[0] -ine $expectedBroker })
         if ($unexpectedChildren.Count -ne 0) { throw "Unexpected plugin/tool descendant process observed: $($unexpectedChildren | ConvertTo-Json -Compress)" }
-        [pscustomobject]@{status='passed'; directory_values=$cells.Count; blank_excluded_from_value=$true; no_progress_bars=$noProgressBars; observed_descendant_processes=$descendants; observed_plugin_tool_descendants=$unexpectedChildren; clean_shutdown=$true; screenshots=@('code-lines.png')} |
+        [pscustomobject]@{status='passed'; directory_values=$cells.Count; aligned_columns=$alignedColumns; blank_excluded_from_value=$true; no_progress_bars=$noProgressBars; observed_descendant_processes=$descendants; observed_plugin_tool_descendants=$unexpectedChildren; clean_shutdown=$true; screenshots=$(if($DualCodeLinesMode){@('code-lines.png','columns-reordered.png')}else{@('code-lines.png')})} |
             ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Encoding utf8
         Get-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Raw
         return
@@ -567,33 +704,33 @@ try {
     $sortDeadline=[DateTime]::UtcNow.AddSeconds(10); $sorted=@(); $sortStable=$false
     do {
         Start-Sleep -Milliseconds 150
-        $header=Find-ButtonNamePrefix $root 'Code lines, sorted'
-        if($null-eq$header){$header=Find-ButtonName $root 'Sort by Code lines'}
+        $header=Find-ButtonNamePrefix $root "$codeLinesColumn, sorted"
+        if($null-eq$header){$header=Find-ButtonName $root "Sort by $codeLinesColumn"}
         $sorted=Code-Line-Values $root
         $sortStable=$null -ne $header -and $sorted.Count -ge 3
         for ($i=1; $sortStable -and $i -lt $sorted.Count; $i++) {
             if ($sorted[$i] -lt $sorted[$i-1]) { $sortStable=$false }
         }
     } while (-not $sortStable -and [DateTime]::UtcNow -lt $sortDeadline)
-    if ($null -eq $header) { throw 'Code lines sort state was not exposed' }
-    if (-not $sortStable) { throw "Code lines numeric ascending sort failed: $($sorted -join ',')" }
+    if ($null -eq $header) { throw "$codeLinesColumn sort state was not exposed" }
+    if (-not $sortStable) { throw "$codeLinesColumn numeric ascending sort failed: $($sorted -join ',')" }
     Click-Element $root $header -Right; Start-Sleep -Milliseconds 250
     $safeModeConfirm=Find-NamePrefix $root 'Confirm and re-enable'
     if ($null -ne $safeModeConfirm) {
         Click-Element $root $safeModeConfirm
         Start-Sleep -Milliseconds 350
-        $header=Find-ButtonNamePrefix $root 'Code lines, sorted'
-        if ($null -eq $header) { throw 'Code lines header disappeared after Safe Mode confirmation' }
+        $header=Find-ButtonNamePrefix $root "$codeLinesColumn, sorted"
+        if ($null -eq $header) { throw "$codeLinesColumn header disappeared after Safe Mode confirmation" }
         Click-Element $root $header -Right
         Start-Sleep -Milliseconds 250
     }
     Capture-Window $window (Join-Path $OutputDirectory 'code-lines-menu.png')
     $toggle=Find-NamePrefix $root 'Show comment and blank detail'
-    if ($null -eq $toggle) { throw 'Code lines detail setting was not exposed' }
+    if ($null -eq $toggle) { throw "$codeLinesColumn detail setting was not exposed" }
     Click-Element $root $toggle; Start-Sleep -Milliseconds 350
     $all=$root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
-    $detail=0..($all.Count-1) | ForEach-Object { $all.Item($_) } | Where-Object { $_.Current.Name -match '^Code lines: \d+ .*comments.*blanks' } | Select-Object -First 1
-    if ($null -eq $detail) { throw 'Code lines comment/blank detail did not render' }
+    $detail=0..($all.Count-1) | ForEach-Object { $all.Item($_) } | Where-Object { $_.Current.Name -match $codeLinesDetailPattern } | Select-Object -First 1
+    if ($null -eq $detail) { throw "$codeLinesColumn comment/blank detail did not render" }
     $detailName=$detail.Current.Name
     Capture-Window $window (Join-Path $OutputDirectory 'code-lines-detail.png')
     Start-Sleep -Milliseconds 250

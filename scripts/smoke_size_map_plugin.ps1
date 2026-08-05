@@ -3,7 +3,10 @@ param(
     [string]$PluginDll = 'sdk\fixtures\rust-folder-size-map-view\target\x86_64-pc-windows-msvc\debug\rust_folder_size_map_view.dll',
     [string]$InitialPath = '.',
     [string]$OutputDirectory = 'target\size-map-smoke',
-    [switch]$UsePointerActivation
+    [switch]$UsePointerActivation,
+    [switch]$UseExistingPath,
+    [switch]$CaptureOnly,
+    [int]$ProgressiveCaptureSeconds = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -18,24 +21,26 @@ $Executable = (Resolve-Path -LiteralPath $Executable).Path
 $PluginDll = (Resolve-Path -LiteralPath $PluginDll).Path
 $InitialPath = (Resolve-Path -LiteralPath $InitialPath).Path
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
-$aggregateFixture = Join-Path $OutputDirectory 'aggregate-fixture'
-if (Test-Path -LiteralPath $aggregateFixture) {
-    throw "UITEST output must be fresh; aggregate fixture already exists: $aggregateFixture"
+if (-not $UseExistingPath) {
+    $aggregateFixture = Join-Path $OutputDirectory 'aggregate-fixture'
+    if (Test-Path -LiteralPath $aggregateFixture) {
+        throw "UITEST output must be fresh; aggregate fixture already exists: $aggregateFixture"
+    }
+    Copy-Item -LiteralPath $InitialPath -Destination $aggregateFixture -Recurse
+    foreach ($index in 0..249) {
+        [IO.File]::WriteAllText(
+            (Join-Path $aggregateFixture ('tiny-{0:D4}.txt' -f $index)),
+            'x',
+            [Text.UTF8Encoding]::new($false))
+    }
+    foreach ($index in 0..9) {
+        [IO.File]::WriteAllText(
+            (Join-Path $aggregateFixture ('aaa-omitted-{0:D4}.txt' -f $index)),
+            '',
+            [Text.UTF8Encoding]::new($false))
+    }
+    $InitialPath = (Resolve-Path -LiteralPath $aggregateFixture).Path
 }
-Copy-Item -LiteralPath $InitialPath -Destination $aggregateFixture -Recurse
-foreach ($index in 0..249) {
-    [IO.File]::WriteAllText(
-        (Join-Path $aggregateFixture ('tiny-{0:D4}.txt' -f $index)),
-        'x',
-        [Text.UTF8Encoding]::new($false))
-}
-foreach ($index in 0..9) {
-    [IO.File]::WriteAllText(
-        (Join-Path $aggregateFixture ('aaa-omitted-{0:D4}.txt' -f $index)),
-        '',
-        [Text.UTF8Encoding]::new($false))
-}
-$InitialPath = (Resolve-Path -LiteralPath $aggregateFixture).Path
 $profileRoot = Join-Path $OutputDirectory 'profile'
 $localAppData = Join-Path $profileRoot 'LocalAppData'
 $roamingAppData = Join-Path $profileRoot 'AppData'
@@ -303,7 +308,8 @@ try {
     }
 
     $node = $null
-    $deadline = [DateTime]::UtcNow.AddSeconds(12)
+    $renderTimeoutSeconds = if ($CaptureOnly) { 180 } else { 12 }
+    $deadline = [DateTime]::UtcNow.AddSeconds($renderTimeoutSeconds)
     do {
         Start-Sleep -Milliseconds 100
         $buttons = $root.FindAll(
@@ -325,6 +331,47 @@ try {
             Where-Object { $_ -match 'Size Map|Exact|%' } |
             Select-Object -Unique
         throw "Size Map did not expose a rendered percentage node; visible markers: $($visibleNames -join ', ')"
+    }
+    if ($CaptureOnly) {
+        if ($ProgressiveCaptureSeconds -gt 0) {
+            Start-Sleep -Seconds $ProgressiveCaptureSeconds
+            Capture-Window $window $sizeMapPath
+            [pscustomobject]@{
+                status = 'passed'
+                case_id = 'size-map-progressive-capture'
+                initial_path = $InitialPath
+                screenshots = @($sizeMapPath)
+            } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $OutputDirectory 'report.json') -Encoding utf8
+            return
+        }
+        $exactDeadline = [DateTime]::UtcNow.AddSeconds(300)
+        $methodSeen = $false
+        $completed = $false
+        do {
+            Start-Sleep -Milliseconds 250
+            $methodSeen = $methodSeen -or
+                ($null -ne (Find-NamedElement $root 'Calculating sizes · NTFS MFT')) -or
+                ($null -ne (Find-NamedElement $root 'Calculating sizes · Breadth-first fallback')) -or
+                ($null -ne (Find-NamedElement $root 'Calculating sizes · Detecting scan method'))
+            if ($methodSeen) {
+                $stillCalculating = $null -ne (Find-NamedElement $root 'Calculating sizes · NTFS MFT') -or
+                    $null -ne (Find-NamedElement $root 'Calculating sizes · Breadth-first fallback') -or
+                    $null -ne (Find-NamedElement $root 'Calculating sizes · Detecting scan method')
+                $completed = -not $stillCalculating
+            }
+        } while (-not $completed -and [DateTime]::UtcNow -lt $exactDeadline)
+        if (-not $completed) {
+            Capture-Window $window (Join-Path $OutputDirectory 'size-map-incomplete.png')
+            throw 'Size Map did not clear its method status after completing'
+        }
+        Capture-Window $window $sizeMapPath
+        [pscustomobject]@{
+            status = 'passed'
+            case_id = 'size-map-capture-only'
+            initial_path = $InitialPath
+            screenshots = @($sizeMapPath)
+        } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $OutputDirectory 'report.json') -Encoding utf8
+        return
     }
     $nodeNames = 0..($buttons.Count - 1) |
         ForEach-Object { $buttons.Item($_).Current.Name }

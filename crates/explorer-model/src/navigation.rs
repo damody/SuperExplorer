@@ -1430,6 +1430,12 @@ impl OrderedColumnLayout {
         if !restored.iter().any(|entry| entry.id == ColumnId::Name) {
             return Err(ColumnIdError::MissingNamespace);
         }
+        let name_index = restored
+            .iter()
+            .position(|entry| entry.id == ColumnId::Name)
+            .expect("validated Name entry");
+        let name = restored.remove(name_index);
+        restored.insert(0, name);
         Ok(Self { entries: restored })
     }
 
@@ -1502,18 +1508,26 @@ impl OrderedColumnLayout {
             return false;
         }
         if self.entry(&descriptor.id).is_none() {
-            self.entries.push(ColumnLayoutEntry {
+            let entry = ColumnLayoutEntry {
                 id: descriptor.id.clone(),
                 width: descriptor
                     .default_width
                     .clamp(descriptor.minimum_width, descriptor.maximum_width),
                 visible,
-            });
+            };
+            if descriptor.id == ColumnId::Name {
+                self.entries.insert(0, entry);
+            } else {
+                self.entries.push(entry);
+            }
         }
         true
     }
 
     pub fn move_before(&mut self, id: &ColumnId, before: Option<&ColumnId>) -> bool {
+        if *id == ColumnId::Name {
+            return false;
+        }
         let Some(index) = self.entries.iter().position(|entry| entry.id == *id) else {
             return false;
         };
@@ -1524,6 +1538,12 @@ impl OrderedColumnLayout {
         };
         if before == id {
             return false;
+        }
+        if *before == ColumnId::Name {
+            let entry = self.entries.remove(index);
+            let insertion = usize::from(!self.entries.is_empty());
+            self.entries.insert(insertion, entry);
+            return true;
         }
         let Some(target) = self.entries.iter().position(|entry| entry.id == *before) else {
             return false;
@@ -1539,7 +1559,17 @@ impl OrderedColumnLayout {
     /// four-column migrations.
     pub fn reorder_known(&mut self, order: impl IntoIterator<Item = ColumnId>) {
         let mut reordered = Vec::with_capacity(self.entries.len());
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|entry| entry.id == ColumnId::Name)
+        {
+            reordered.push(self.entries.remove(index));
+        }
         for id in order {
+            if id == ColumnId::Name {
+                continue;
+            }
             if let Some(index) = self.entries.iter().position(|entry| entry.id == id) {
                 reordered.push(self.entries.remove(index));
             }
@@ -1692,6 +1722,8 @@ pub struct ViewSettings {
     pub hidden_items: bool,
     pub compact_view: bool,
     pub always_show_icons: bool,
+    /// Shared in-process Shell icon and thumbnail presentation cache budget in MiB.
+    pub icon_cache_memory_mb: u16,
     pub sort: SortDescriptor,
     pub details_layout: OrderedColumnLayout,
     pub details_pane_width: u16,
@@ -1711,11 +1743,25 @@ impl Default for ViewSettings {
             hidden_items: false,
             compact_view: false,
             always_show_icons: false,
+            icon_cache_memory_mb: DEFAULT_ICON_CACHE_MEMORY_MB,
             sort: SortDescriptor::default(),
             details_layout: OrderedColumnLayout::default(),
             details_pane_width: 293,
             preview_pane_width: 293,
         }
+    }
+}
+
+pub const DEFAULT_ICON_CACHE_MEMORY_MB: u16 = 128;
+pub const MAX_ICON_CACHE_MEMORY_MB: u16 = 1_024;
+
+pub const fn normalized_icon_cache_memory_mb(value: u16) -> u16 {
+    match value {
+        0..=95 => 64,
+        96..=191 => 128,
+        192..=383 => 256,
+        384..=767 => 512,
+        _ => MAX_ICON_CACHE_MEMORY_MB,
     }
 }
 
@@ -3219,5 +3265,15 @@ mod tests {
         assert_eq!(settings.mode, ViewMode::Details);
         settings.extension_view_id = None;
         assert_eq!(settings.effective_extension_view_id(|_| true), None);
+    }
+
+    #[test]
+    fn icon_cache_memory_presets_default_to_128_mib_and_cap_at_one_gib() {
+        assert_eq!(ViewSettings::default().icon_cache_memory_mb, 128);
+        assert_eq!(normalized_icon_cache_memory_mb(64), 64);
+        assert_eq!(normalized_icon_cache_memory_mb(127), 128);
+        assert_eq!(normalized_icon_cache_memory_mb(300), 256);
+        assert_eq!(normalized_icon_cache_memory_mb(900), 1_024);
+        assert_eq!(normalized_icon_cache_memory_mb(u16::MAX), 1_024);
     }
 }
