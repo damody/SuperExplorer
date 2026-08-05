@@ -37,10 +37,10 @@ namespace NewPluginSmoke { public static class Native {
 [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h,IntPtr dc,uint flags);
 } }
 '@}
-$old=@{}; foreach($name in 'LOCALAPPDATA','APPDATA','SUPEREXPLORER_UITEST_EXTENSION_STATE_ROOT','EXPLORER_INITIAL_PATH','EXPLORER_AUTO_CLOSE_MS'){$old[$name]=[Environment]::GetEnvironmentVariable($name,'Process')}
+$old=@{}; foreach($name in 'LOCALAPPDATA','APPDATA','EXPLORER_UITEST_EXTENSION_STATE_ROOT','EXPLORER_INITIAL_PATH','EXPLORER_AUTO_CLOSE_MS'){$old[$name]=[Environment]::GetEnvironmentVariable($name,'Process')}
 $process=$null
 try{
-    $env:LOCALAPPDATA=$local; $env:APPDATA=$roaming; $env:SUPEREXPLORER_UITEST_EXTENSION_STATE_ROOT=$state; $env:EXPLORER_INITIAL_PATH=$InitialPath; $env:EXPLORER_AUTO_CLOSE_MS='60000'
+    $env:LOCALAPPDATA=$local; $env:APPDATA=$roaming; $env:EXPLORER_UITEST_EXTENSION_STATE_ROOT=$state; $env:EXPLORER_INITIAL_PATH=$InitialPath; $env:EXPLORER_AUTO_CLOSE_MS='60000'
     $process=Start-Process -FilePath $Executable -ArgumentList @('--plugin-dll',$PluginDll) -PassThru
     $deadline=[DateTime]::UtcNow.AddSeconds(30); do{$process.Refresh(); if($process.MainWindowHandle -ne 0){break}; Start-Sleep -Milliseconds 100}while([DateTime]::UtcNow -lt $deadline)
     if($process.MainWindowHandle -eq 0){throw 'application window did not appear'}
@@ -59,10 +59,38 @@ try{
         for($i=0;$i -lt $visible.Count;$i++){ $item=$visible.Item($i); Write-Host ("UIA {0} | {1} | {2}" -f $item.Current.AutomationId,$item.Current.Name,$item.Current.ControlType.ProgrammaticName) }
         throw 'production Extensions button was not exposed to UIA'
     }
-    $invoke=$button.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern); $invoke.Invoke(); Start-Sleep -Milliseconds 500
-    $all=$root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
-    $summary=$null; for($i=0;$i -lt $all.Count;$i++){if($all.Item($i).Current.Name -like "*$ExpectedContribution*"){$summary=$all.Item($i);break}}
-    if($null -eq $summary){throw "loaded contribution was absent from production Extensions UI: $ExpectedContribution"}
+    $invoke=$button.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern); $invoke.Invoke()
+    $summary=$null; $summaryDeadline=[DateTime]::UtcNow.AddSeconds(4)
+    do {
+        foreach($searchRoot in @($root)) {
+            $all=$searchRoot.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+            for($i=0;$i -lt $all.Count;$i++){if($all.Item($i).Current.Name -like "*$ExpectedContribution*"){$summary=$all.Item($i);break}}
+            if($null -ne $summary){break}
+        }
+        if($null -eq $summary) {
+            $topLevel=[Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Children,[Windows.Automation.Condition]::TrueCondition)
+            for($windowIndex=0;$windowIndex -lt $topLevel.Count;$windowIndex++) {
+                $candidate=$topLevel.Item($windowIndex)
+                if($candidate.Current.ProcessId -ne $process.Id){continue}
+                $all=$candidate.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+                for($i=0;$i -lt $all.Count;$i++){if($all.Item($i).Current.Name -like "*$ExpectedContribution*"){$summary=$all.Item($i);break}}
+                if($null -ne $summary){break}
+            }
+        }
+        if($null -eq $summary){Start-Sleep -Milliseconds 100}
+    } while($null -eq $summary -and [DateTime]::UtcNow -lt $summaryDeadline)
+    if($null -eq $summary){
+        $dump=New-Object Collections.Generic.List[string]
+        $topLevel=[Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Children,[Windows.Automation.Condition]::TrueCondition)
+        for($windowIndex=0;$windowIndex -lt $topLevel.Count;$windowIndex++) {
+            $candidate=$topLevel.Item($windowIndex); if($candidate.Current.ProcessId -ne $process.Id){continue}
+            $dump.Add(("WINDOW {0} | {1}" -f $candidate.Current.AutomationId,$candidate.Current.Name))
+            $all=$candidate.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+            for($i=0;$i -lt $all.Count;$i++){ $item=$all.Item($i); $dump.Add(("UIA {0} | {1} | {2}" -f $item.Current.AutomationId,$item.Current.Name,$item.Current.ControlType.ProgrammaticName)) }
+        }
+        [IO.File]::WriteAllLines((Join-Path $OutputDirectory 'uia-after-extensions.txt'),$dump,[Text.UTF8Encoding]::new($false))
+        throw "loaded contribution was absent from production Extensions UI: $ExpectedContribution"
+    }
     $rect=[NewPluginSmoke.Native+Rect]::new(); if(-not [NewPluginSmoke.Native]::GetWindowRect($process.MainWindowHandle,[ref]$rect)){throw 'GetWindowRect failed'}
     $bitmap=[Drawing.Bitmap]::new($rect.Right-$rect.Left,$rect.Bottom-$rect.Top)
     try{$graphics=[Drawing.Graphics]::FromImage($bitmap);try{$dc=$graphics.GetHdc();try{if(-not [NewPluginSmoke.Native]::PrintWindow($process.MainWindowHandle,$dc,2)){throw 'PrintWindow failed'}}finally{$graphics.ReleaseHdc($dc)}}finally{$graphics.Dispose()};$bitmap.Save((Join-Path $OutputDirectory 'extensions-contribution.png'),[Drawing.Imaging.ImageFormat]::Png)}finally{$bitmap.Dispose()}

@@ -28,6 +28,28 @@ The public API SHALL represent booleans, integers, floats, bytes, time, duration
 ### Requirement: Generation-safe handles and cache
 Item/location handles, job results and cache entries SHALL carry generations. Cache keys SHALL include package, interface, plugin data version, file identity/metadata and option hash; recursive scans SHALL additionally account for watcher/TTL/manual invalidation. Stale generations SHALL never update current UI.
 
+The host SHALL enforce caching for every extension-provided data column before provider dispatch. The decision SHALL use host-attested stable item identity and modification timestamp and SHALL NOT be delegated to, disabled by, or forged by plugin code. A cache hit SHALL be rebound to the current request context without invoking the provider; a changed or unavailable modification timestamp SHALL be a miss.
+
+#### Scenario: Navigation returns to unchanged data
+- **WHEN** the user moves from folder A to folder B and returns to folder A while an item's stable identity and modification timestamp are unchanged
+- **THEN** the host publishes the cached extension-column value for the new UI generation without invoking the plugin
+
+#### Scenario: Modification invalidates cached data
+- **WHEN** an item's modification timestamp differs from the timestamp recorded with its cached extension-column value
+- **THEN** the host does not publish that entry and invokes the provider to produce a new value
+
+#### Scenario: Plugin cannot opt out of host caching
+- **WHEN** an extension data-column provider is registered without provider-local cache behavior
+- **THEN** the host still performs the same pre-dispatch cache lookup and modification-time invalidation
+
+#### Scenario: Manual refresh invalidates only the current directory
+- **WHEN** the user presses F5 while directory A is active and cached extension-column values also exist for directory B
+- **THEN** the host forces new provider dispatches for items directly in A, preserves B's cache entries, and rejects cache writes from A work admitted before the refresh
+
+#### Scenario: Large folder measurement continues in background
+- **WHEN** a folder contains more entries than the foreground responsiveness hint
+- **THEN** folder-size measurement continues off the UI thread to an exact terminal result and never displays an entry-limit diagnostic
+
 #### Scenario: Folder changes before completion
 - **WHEN** a user navigates away while a background result is still running
 - **THEN** the job is cancelled or allowed to finish, but its old-generation result is discarded

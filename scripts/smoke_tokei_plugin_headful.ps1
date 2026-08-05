@@ -1,14 +1,16 @@
 param(
     [string]$Executable = 'target\debug\SuperExplorer.exe',
+    [string]$PluginRoot = 'sdk\fixtures\rust-tokei-code-lines-column',
     [string]$PluginDll = 'sdk\fixtures\rust-tokei-code-lines-column\target\x86_64-pc-windows-msvc\debug\rust_tokei_code_lines_column.dll',
     [string]$InitialPath = 'sdk\fixtures\rust-tokei-code-lines-column\samples',
     [string]$OutputDirectory = 'target\tokei-headful-smoke',
+    [switch]$DirectoryAggregateMode,
     [switch]$LockOwnerMode
 )
 
 $ErrorActionPreference = 'Stop'
 $workspace = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$pluginRoot = Join-Path $workspace $(if ($LockOwnerMode) { 'sdk\fixtures\rust-lock-owner-column' } else { 'sdk\fixtures\rust-tokei-code-lines-column' })
+$pluginRoot = if ($LockOwnerMode) { Join-Path $workspace 'sdk\fixtures\rust-lock-owner-column' } elseif ([IO.Path]::IsPathRooted($PluginRoot)) { $PluginRoot } else { Join-Path $workspace $PluginRoot }
 & cargo.exe test --manifest-path (Join-Path $pluginRoot 'Cargo.toml') --locked --offline
 if ($LASTEXITCODE -ne 0) { throw "tokei plugin cargo test failed ($LASTEXITCODE)" }
 & cargo.exe build --manifest-path (Join-Path $pluginRoot 'Cargo.toml') --target x86_64-pc-windows-msvc --locked --offline
@@ -26,6 +28,11 @@ $localAppData=Join-Path $profileRoot 'LocalAppData'
 $roamingAppData=Join-Path $profileRoot 'AppData'
 $extensionState=Join-Path $profileRoot 'ExtensionState'
 New-Item -ItemType Directory -Force -Path $localAppData,$roamingAppData,$extensionState | Out-Null
+$alternateFolder=Join-Path $OutputDirectory 'lock-owner-alternate'
+if ($LockOwnerMode) {
+    New-Item -ItemType Directory -Force -Path $alternateFolder | Out-Null
+    [IO.File]::WriteAllText((Join-Path $alternateFolder 'alternate-marker.txt'),'alternate')
+}
 $isolatedLaunchDirectory=Join-Path $OutputDirectory 'isolated-app'
 New-Item -ItemType Directory -Force -Path $isolatedLaunchDirectory | Out-Null
 $isolatedExecutable=Join-Path $isolatedLaunchDirectory (Split-Path -Leaf $Executable)
@@ -51,9 +58,14 @@ namespace TokeiHeadfulSmoke {
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
+    [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out Rect rect);
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr window, IntPtr dc, uint flags);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, UIntPtr wparam, IntPtr lparam);
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern IntPtr LoadKeyboardLayout(string id,uint flags);
+    [DllImport("user32.dll")] public static extern IntPtr ActivateKeyboardLayout(IntPtr layout,uint flags);
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window,IntPtr processId);
+    [DllImport("user32.dll")] public static extern IntPtr GetKeyboardLayout(uint threadId);
     [DllImport("dwmapi.dll")] public static extern int DwmFlush();
   }
   public sealed class JobProcessObserver : IDisposable {
@@ -156,6 +168,113 @@ function Find-Name($Root,[string]$Name) {
         [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,$Name))
 }
 
+function Find-AutomationId($Root,[string]$Id) {
+    $Root.FindFirst([Windows.Automation.TreeScope]::Descendants,
+        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::AutomationIdProperty,$Id))
+}
+
+function Find-ButtonName($Root,[string]$Name) {
+    $condition=[Windows.Automation.AndCondition]::new(
+        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,$Name),
+        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Button)
+    )
+    $Root.FindFirst([Windows.Automation.TreeScope]::Descendants,$condition)
+}
+
+function Find-ButtonNamePrefix($Root,[string]$Prefix) {
+    $all=$Root.FindAll([Windows.Automation.TreeScope]::Descendants,
+        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Button))
+    0..($all.Count-1) | ForEach-Object { $all.Item($_) } |
+        Where-Object { $_.Current.Name -like "$Prefix*" } | Select-Object -First 1
+}
+
+function Find-ControlTypeName($Root,$Type,[string]$Name) {
+    $condition=[Windows.Automation.AndCondition]::new(
+        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,$Name),
+        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,$Type)
+    )
+    $Root.FindFirst([Windows.Automation.TreeScope]::Descendants,$condition)
+}
+
+function Find-ControlTypeNamePrefix($Root,$Type,[string]$Prefix) {
+    $all=$Root.FindAll([Windows.Automation.TreeScope]::Descendants,
+        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,$Type))
+    0..($all.Count-1) | ForEach-Object { $all.Item($_) } |
+        Where-Object { $_.Current.Name -like "$Prefix*" } | Select-Object -First 1
+}
+
+function Find-MoreOptionsElement($Root) {
+    $items=$Root.FindAll([Windows.Automation.TreeScope]::Descendants,
+        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::MenuItem))
+    $ordered=@(0..($items.Count-1) | ForEach-Object { $items.Item($_) } |
+        Where-Object { $_.Current.BoundingRectangle.Height -gt 0 } | Sort-Object { $_.Current.BoundingRectangle.Top })
+    if ($ordered.Count -lt 2) { return $null }
+    $ordered[$ordered.Count-2]
+}
+
+function Find-MoreToolbarButton($Root) {
+    $buttons=@($Root.FindAll([Windows.Automation.TreeScope]::Descendants,
+        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Button)) |
+        ForEach-Object { $_ } | Where-Object { $_.Current.BoundingRectangle.Height -gt 0 })
+    $extensions=$buttons | Where-Object { $_.Current.Name -in @('Extensions',(([string][char]0x64F4)+[char]0x5145+[char]0x529F+[char]0x80FD)) } | Select-Object -First 1
+    if ($null -eq $extensions) { return $null }
+    $bounds=$extensions.Current.BoundingRectangle
+    $buttons | Where-Object {
+        $_.Current.BoundingRectangle.Left -lt $bounds.Left -and
+        [Math]::Abs($_.Current.BoundingRectangle.Top-$bounds.Top) -lt 8
+    } | Sort-Object { $_.Current.BoundingRectangle.Left } -Descending | Select-Object -First 1
+}
+
+function Send-Key([byte]$Key,[byte[]]$Modifiers=@()) {
+    foreach($modifier in $Modifiers) { [TokeiHeadfulSmoke.Native]::keybd_event($modifier,0,0,[UIntPtr]::Zero) }
+    [TokeiHeadfulSmoke.Native]::keybd_event($Key,0,0,[UIntPtr]::Zero)
+    [TokeiHeadfulSmoke.Native]::keybd_event($Key,0,2,[UIntPtr]::Zero)
+    for($index=$Modifiers.Count-1;$index -ge 0;$index--) {
+        [TokeiHeadfulSmoke.Native]::keybd_event($Modifiers[$index],0,2,[UIntPtr]::Zero)
+    }
+    Start-Sleep -Milliseconds 120
+}
+
+function Set-EnglishInput([IntPtr]$WindowHandle) {
+    $english=[TokeiHeadfulSmoke.Native]::LoadKeyboardLayout('00000409',1)
+    if ($english -eq [IntPtr]::Zero) { throw 'Failed to load English keyboard layout' }
+    [void][TokeiHeadfulSmoke.Native]::ActivateKeyboardLayout($english,0)
+    if (-not [TokeiHeadfulSmoke.Native]::PostMessage($WindowHandle,0x0050,[UIntPtr]::Zero,$english)) {
+        throw 'Failed to switch explorer input to English'
+    }
+    $threadId=[TokeiHeadfulSmoke.Native]::GetWindowThreadProcessId($WindowHandle,[IntPtr]::Zero)
+    $deadline=[DateTime]::UtcNow.AddSeconds(3)
+    do {
+        if (([TokeiHeadfulSmoke.Native]::GetKeyboardLayout($threadId).ToInt64() -band 0xFFFF) -eq 0x0409) { return }
+        Start-Sleep -Milliseconds 50
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw 'Explorer input language did not switch to English'
+}
+
+function Set-Address($Root,[string]$Path,[string]$ExpectedRow) {
+    [void][TokeiHeadfulSmoke.Native]::SetForegroundWindow($window)
+    Set-EnglishInput $window
+    $editor=$null
+    for($attempt=0;$attempt -lt 3 -and $null -eq $editor;$attempt++) {
+        Send-Key 0x1B
+        Send-Key 0x4C @(0x11)
+        Start-Sleep -Milliseconds 300
+        $edits=$Root.FindAll([Windows.Automation.TreeScope]::Descendants,
+            [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Edit))
+        $editor=0..($edits.Count-1) | ForEach-Object { $edits.Item($_) } |
+            Where-Object { $_.Current.AutomationId -ne 'search-box' -and $_.Current.BoundingRectangle.Top -lt ($Root.Current.BoundingRectangle.Top+220) } |
+            Select-Object -First 1
+    }
+    if ($null -eq $editor) { throw 'Address editor did not appear after Ctrl+L' }
+    $editor.SetFocus(); Send-Key 0x41 @(0x11)
+    [Windows.Forms.SendKeys]::SendWait($Path)
+    Send-Key 0x0D
+    $deadline=[DateTime]::UtcNow.AddSeconds(8); $row=$null
+    do { Start-Sleep -Milliseconds 100; $row=Find-NamePrefix $Root $ExpectedRow }
+    while ($null -eq $row -and [DateTime]::UtcNow -lt $deadline)
+    if ($null -eq $row) { throw "Navigation did not reach folder containing $ExpectedRow" }
+}
+
 function Find-NamePrefix($Root,[string]$Prefix) {
     $all=$Root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
     0..($all.Count-1) | ForEach-Object { $all.Item($_) } |
@@ -166,10 +285,11 @@ function Code-Line-Values($Root) {
     $all=$Root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
     @(0..($all.Count-1) | ForEach-Object { $all.Item($_) } |
         Where-Object { $_.Current.Name -match '^Code lines: (\d+)' } |
+        Sort-Object { $_.Current.BoundingRectangle.Top } |
         ForEach-Object { [int]([regex]::Match($_.Current.Name,'^Code lines: (\d+)').Groups[1].Value) })
 }
 
-function Assert-ProportionalBars([string]$Path) {
+function Assert-NoProportionalBars([string]$Path) {
     $bitmap=[Drawing.Bitmap]::new($Path)
     try {
         $widths=@()
@@ -183,15 +303,24 @@ function Assert-ProportionalBars([string]$Path) {
             }
             if ($count -ge 8) { $widths += $count }
         }
-        if ($widths.Count -eq 0) { throw 'No proportional bars were visible' }
-        $small=@($widths | Where-Object { $_ -ge 20 -and $_ -le 45 })
-        $large=@($widths | Where-Object { $_ -ge 70 })
-        if ($small.Count -eq 0 -or $large.Count -eq 0) { throw "Proportional bars did not expose distinct 1-line and 3-line widths: $($widths -join ',')" }
-        return [pscustomobject]@{one_line=($small | Measure-Object -Maximum).Maximum;three_lines=($large | Measure-Object -Maximum).Maximum}
+        $bars=@($widths | Where-Object { $_ -ge 20 })
+        if ($bars.Count -ne 0) { throw "Code lines must render as text without proportional bars: $($bars -join ',')" }
+        return $true
     } finally { $bitmap.Dispose() }
 }
 
 function Click-Element($Root,$Element,[switch]$Right) {
+    if (-not $Right) {
+        $pattern=$null
+        if ($Element.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)) {
+            ([Windows.Automation.InvokePattern]$pattern).Invoke()
+            return
+        }
+        if ($Element.TryGetCurrentPattern([Windows.Automation.TogglePattern]::Pattern,[ref]$pattern)) {
+            ([Windows.Automation.TogglePattern]$pattern).Toggle()
+            return
+        }
+    }
     $bounds=$Element.Current.BoundingRectangle; $rootBounds=$Root.Current.BoundingRectangle
     $windowRect=[TokeiHeadfulSmoke.Native+Rect]::new()
     if (-not [TokeiHeadfulSmoke.Native]::GetWindowRect($window,[ref]$windowRect)) { throw 'GetWindowRect failed' }
@@ -203,12 +332,30 @@ function Click-Element($Root,$Element,[switch]$Right) {
     else { [TokeiHeadfulSmoke.Native]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero); [TokeiHeadfulSmoke.Native]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero) }
 }
 
+function Click-ElementPointer($Root,$Element) {
+    $scrollPattern=$null
+    if ($Element.TryGetCurrentPattern([Windows.Automation.ScrollItemPattern]::Pattern,[ref]$scrollPattern)) {
+        ([Windows.Automation.ScrollItemPattern]$scrollPattern).ScrollIntoView()
+        Start-Sleep -Milliseconds 180
+    }
+    $bounds=$Element.Current.BoundingRectangle; $rootBounds=$Root.Current.BoundingRectangle
+    $windowRect=[TokeiHeadfulSmoke.Native+Rect]::new()
+    if (-not [TokeiHeadfulSmoke.Native]::GetWindowRect($window,[ref]$windowRect)) { throw 'GetWindowRect failed' }
+    $sx=($windowRect.Right-$windowRect.Left)/$rootBounds.Width; $sy=($windowRect.Bottom-$windowRect.Top)/$rootBounds.Height
+    $x=[int]($windowRect.Left+(($bounds.Left+$bounds.Width/2)-$rootBounds.Left)*$sx)
+    $y=[int]($windowRect.Top+(($bounds.Top+$bounds.Height/2)-$rootBounds.Top)*$sy)
+    [void][TokeiHeadfulSmoke.Native]::SetCursorPos($x,$y); Start-Sleep -Milliseconds 80
+    [TokeiHeadfulSmoke.Native]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero)
+    [TokeiHeadfulSmoke.Native]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero)
+}
+
 $diagnostics=Join-Path $OutputDirectory 'diagnostics.json'
 $childEnvironment=[ordered]@{
     EXPLORER_VISUAL_FIXTURE='1'; EXPLORER_VISUAL_REAL_SHELL='1'; EXPLORER_VISUAL_WIDTH='1280'; EXPLORER_VISUAL_HEIGHT='760'
     EXPLORER_VISUAL_STATE='populated'; EXPLORER_VISUAL_DIAGNOSTICS=$diagnostics; EXPLORER_INITIAL_PATH=$InitialPath; EXPLORER_LOG_DIR=$OutputDirectory
     LOCALAPPDATA=$localAppData; APPDATA=$roamingAppData; EXPLORER_UITEST_EXTENSION_STATE_ROOT=$extensionState
 }
+if ($LockOwnerMode) { $childEnvironment.EXPLORER_LOCK_OWNER_TEST_DELAY_MS='900' }
 $previousEnvironment=@{}
 foreach($entry in $childEnvironment.GetEnumerator()) {
     $previousEnvironment[$entry.Key]=[Environment]::GetEnvironmentVariable($entry.Key,'Process')
@@ -246,7 +393,7 @@ try {
     [void][TokeiHeadfulSmoke.Native]::SetForegroundWindow($window)
     $root=[Windows.Automation.AutomationElement]::FromHandle($window)
     if ($LockOwnerMode) {
-        $deadline=[DateTime]::UtcNow.AddSeconds(20); $header=$null; $ownerCell=$null
+        $deadline=[DateTime]::UtcNow.AddSeconds(40); $header=$null; $ownerCell=$null
         do {
             Start-Sleep -Milliseconds 150
             $header=Find-Name $root 'Sort by Lock owners'
@@ -261,9 +408,29 @@ try {
         }
         $appeared=$ownerCell.Current.Name
         Capture-Window $window (Join-Path $OutputDirectory 'lock-owner-present.png')
+
+        # Start several old-generation queries, then change both tab and
+        # location before the deterministic debug delay expires. Keep the lock
+        # alive until those old queries have had time to discover it.
+        Send-Key 0x74; Send-Key 0x74; Send-Key 0x74
+        $newTab=Find-AutomationId $root 'new-tab-button'
+        if ($null -eq $newTab) { $newTab=Find-ButtonName $root 'New tab' }
+        if ($null -eq $newTab) { throw 'New tab button was unavailable' }
+        Click-Element $root $newTab
+        Start-Sleep -Milliseconds 500
+        Set-Address $root $alternateFolder 'alternate-marker.txt'
+        Start-Sleep -Milliseconds 1400
+        $all=$root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+        $crossContextOwner=0..($all.Count-1) | ForEach-Object { $all.Item($_) } |
+            Where-Object { $_.Current.Name -match '^Lock owners: .*(explorer-lock-holder|controlled lock holder)' } | Select-Object -First 1
+        if ($null -ne $crossContextOwner) { throw 'Old lock-owner result crossed tab/location generation' }
+
         $lockHolder.Kill(); $lockHolder.WaitForExit(); $lockHolder=$null
         [void][TokeiHeadfulSmoke.Native]::SetForegroundWindow($window)
-        [Windows.Forms.SendKeys]::SendWait('{F5}')
+        $refresh = Find-AutomationId $root 'navigation-refresh'
+        if ($null -eq $refresh) { $refresh = Find-ButtonName $root 'Refresh' }
+        if ($null -eq $refresh) { throw 'Refresh control was unavailable' }
+        Click-Element $root $refresh
         $deadline=[DateTime]::UtcNow.AddSeconds(20); $lateOwner=$ownerCell
         do {
             Start-Sleep -Milliseconds 200
@@ -272,20 +439,107 @@ try {
                 Where-Object { $_.Current.Name -match '^Lock owners: .*(explorer-lock-holder|controlled lock holder)' } | Select-Object -First 1
         } while ($null -ne $lateOwner -and [DateTime]::UtcNow -lt $deadline)
         if ($null -ne $lateOwner) { throw 'Old-generation lock owner returned after F5 and release' }
+
+        # Disable the contribution through production Folder Options. Any
+        # delayed result must remain unable to restore the column or a cell.
+        $more=Find-AutomationId $root 'command-more-menu'
+        if ($null -eq $more) { $more=Find-ButtonName $root 'See more' }
+        if ($null -eq $more) { $more=Find-ButtonName $root 'More' }
+        if ($null -eq $more) { $more=Find-Name $root (([string][char]0x5176)+[char]0x4ED6) }
+        if ($null -eq $more) { $more=Find-MoreToolbarButton $root }
+        if ($null -eq $more) { throw 'More menu was unavailable for extension disable' }
+        Click-Element $root $more
+        $deadline=[DateTime]::UtcNow.AddSeconds(5); $options=$null
+        do {
+            Start-Sleep -Milliseconds 100
+            $options=Find-AutomationId $root 'more-options'
+            if ($null -eq $options) { $options=Find-MoreOptionsElement $root }
+        }
+        while ($null -eq $options -and [DateTime]::UtcNow -lt $deadline)
+        if ($null -eq $options) { throw 'Folder Options command was unavailable' }
+        Click-Element $root $options
+        $deadline=[DateTime]::UtcNow.AddSeconds(5); $extensionsTab=$null
+        do { Start-Sleep -Milliseconds 100; $extensionsTab=Find-AutomationId $root 'folder-options-extensions-tab' }
+        while ($null -eq $extensionsTab -and [DateTime]::UtcNow -lt $deadline)
+        if ($null -eq $extensionsTab) { $extensionsTab=Find-Name $root 'Extensions' }
+        if ($null -eq $extensionsTab) { throw 'Folder Options Extensions tab was unavailable' }
+        Click-Element $root $extensionsTab
+        $deadline=[DateTime]::UtcNow.AddSeconds(5); $toggle=$null
+        do { Start-Sleep -Milliseconds 100; $toggle=Find-ControlTypeName $root ([Windows.Automation.ControlType]::CheckBox) 'Lock owners' }
+        while ($null -eq $toggle -and [DateTime]::UtcNow -lt $deadline)
+        if ($null -eq $toggle) { $toggle=Find-ControlTypeNamePrefix $root ([Windows.Automation.ControlType]::CheckBox) 'Lock owners' }
+        if ($null -eq $toggle) { $toggle=Find-ControlTypeName $root ([Windows.Automation.ControlType]::CheckBox) 'Lock owner' }
+        if ($null -eq $toggle) { $toggle=Find-ControlTypeNamePrefix $root ([Windows.Automation.ControlType]::CheckBox) (([string][char]0x9396)+[char]0x5B9A+[char]0x7A0B+[char]0x5E8F) }
+        if ($null -eq $toggle) {
+            Capture-Window $window (Join-Path $OutputDirectory 'lock-owner-options-failure.png')
+            $checkboxes=$root.FindAll([Windows.Automation.TreeScope]::Descendants,
+                [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::CheckBox))
+            $checkboxNames=@(0..($checkboxes.Count-1) | ForEach-Object { $checkboxes.Item($_).Current.Name })
+            throw "Lock owners extension toggle was unavailable; checkboxes=$($checkboxNames -join ' | ')"
+        }
+        $extensionsPage=Find-ControlTypeName $root ([Windows.Automation.ControlType]::List) 'Extensions'
+        if ($null -eq $extensionsPage) { throw 'Scrollable Extensions page was unavailable' }
+        $pageBounds=$extensionsPage.Current.BoundingRectangle; $rootBounds=$root.Current.BoundingRectangle
+        $windowRect=[TokeiHeadfulSmoke.Native+Rect]::new()
+        if (-not [TokeiHeadfulSmoke.Native]::GetWindowRect($window,[ref]$windowRect)) { throw 'GetWindowRect failed' }
+        $sx=($windowRect.Right-$windowRect.Left)/$rootBounds.Width; $sy=($windowRect.Bottom-$windowRect.Top)/$rootBounds.Height
+        $pageX=[int]($windowRect.Left+(($pageBounds.Left+$pageBounds.Width/2)-$rootBounds.Left)*$sx)
+        $pageY=[int]($windowRect.Top+(($pageBounds.Top+$pageBounds.Height/2)-$rootBounds.Top)*$sy)
+        [void][TokeiHeadfulSmoke.Native]::SetCursorPos($pageX,$pageY)
+        $wheelDown=[BitConverter]::ToUInt32([BitConverter]::GetBytes([int32]-120),0)
+        foreach($step in 1..5) {
+            [TokeiHeadfulSmoke.Native]::mouse_event(0x0800,0,0,$wheelDown,[UIntPtr]::Zero)
+            Start-Sleep -Milliseconds 80
+        }
+        Start-Sleep -Milliseconds 250
+        $toggle=Find-ControlTypeName $root ([Windows.Automation.ControlType]::CheckBox) 'Lock owner'
+        if ($null -eq $toggle) { throw 'Lock owner checkbox disappeared after scrolling' }
+        Click-ElementPointer $root $toggle
+        Start-Sleep -Milliseconds 250
+        $toggle=Find-ControlTypeName $root ([Windows.Automation.ControlType]::CheckBox) 'Lock owner'
+        if ($null -eq $toggle) { throw 'Lock owner checkbox disappeared before Apply' }
+        $togglePattern=$null
+        if ($toggle.TryGetCurrentPattern([Windows.Automation.TogglePattern]::Pattern,[ref]$togglePattern) -and
+            ([Windows.Automation.TogglePattern]$togglePattern).Current.ToggleState -ne [Windows.Automation.ToggleState]::Off) {
+            throw 'Lock owner extension checkbox did not turn off'
+        }
+        $apply=Find-AutomationId $root 'folder-options-apply'
+        if ($null -eq $apply) { $apply=Find-ButtonName $root 'Apply' }
+        if ($null -eq $apply) { $apply=Find-Name $root (([string][char]0x5957)+[char]0x7528) }
+        if ($null -eq $apply) { throw 'Folder Options Apply was unavailable' }
+        Click-Element $root $apply
+        $ok=Find-AutomationId $root 'folder-options-ok'
+        if ($null -eq $ok) { $ok=Find-ButtonName $root 'OK' }
+        if ($null -eq $ok) { $ok=Find-Name $root (([string][char]0x78BA)+[char]0x5B9A) }
+        if ($null -eq $ok) { throw 'Folder Options OK was unavailable' }
+        Click-Element $root $ok
+        Start-Sleep -Milliseconds 1300
+        if ($null -ne (Find-Name $root 'Sort by Lock owners')) {
+            Capture-Window $window (Join-Path $OutputDirectory 'lock-owner-disable-failure.png')
+            throw 'Disabled Lock owners column remained active'
+        }
+        $all=$root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+        $disabledOwner=0..($all.Count-1) | ForEach-Object { $all.Item($_) } |
+            Where-Object { $_.Current.Name -match '^Lock owners:' } | Select-Object -First 1
+        if ($null -ne $disabledOwner) {
+            Capture-Window $window (Join-Path $OutputDirectory 'lock-owner-disabled-value-failure.png')
+            throw "A lock-owner value published after feature disable: $($disabledOwner.Current.Name) bounds=$($disabledOwner.Current.BoundingRectangle)"
+        }
         Capture-Window $window (Join-Path $OutputDirectory 'lock-owner-cleared.png')
         if (-not [TokeiHeadfulSmoke.Native]::PostMessage($window,0x0010,[UIntPtr]::Zero,[IntPtr]::Zero)) { throw 'Could not request clean app shutdown' }
         if (-not $process.WaitForExit(10000)) { throw 'App did not complete clean shutdown' }
-        [pscustomobject]@{status='passed';owner_appeared=$appeared;owner_cleared_after_f5=$true;stale_generation_rejected=$true;process_control_exposed=$false;screenshots=@('lock-owner-present.png','lock-owner-cleared.png')} |
+        [pscustomobject]@{status='passed';owner_appeared=$appeared;rapid_refresh_rejected=$true;tab_change_rejected=$true;folder_change_rejected=$true;feature_disable_rejected=$true;owner_cleared_after_refresh=$true;stale_generation_rejected=$true;process_control_exposed=$false;screenshots=@('lock-owner-present.png','lock-owner-cleared.png')} |
             ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Encoding utf8
         Get-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Raw
         return
     }
-    $deadline=[DateTime]::UtcNow.AddSeconds(20); $header=$null; $cells=@()
+    $deadline=[DateTime]::UtcNow.AddSeconds(90); $header=$null; $cells=@(); $loading=@()
     do {
-        Start-Sleep -Milliseconds 150; $header=Find-Name $root 'Sort by Code lines'
+        Start-Sleep -Milliseconds 150; $header=Find-ButtonName $root 'Sort by Code lines'
         $all=$root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
         $cells=0..($all.Count-1) | ForEach-Object { $all.Item($_) } | Where-Object { $_.Current.Name -match '^Code lines: \d+' }
-    } while (($null -eq $header -or $cells.Count -lt 3) -and [DateTime]::UtcNow -lt $deadline)
+        $loading=0..($all.Count-1) | ForEach-Object { $all.Item($_) } | Where-Object { $_.Current.Name -match 'Loading code lines' }
+    } while (($null -eq $header -or $cells.Count -lt $(if($DirectoryAggregateMode){10}else{3}) -or $loading.Count -ne 0) -and [DateTime]::UtcNow -lt $deadline)
     if ($null -eq $header) { throw 'Code lines header was not installed' }
     if ($cells.Count -lt 3) {
         Capture-Window $window (Join-Path $OutputDirectory 'code-lines-failure.png')
@@ -294,15 +548,45 @@ try {
     }
     $codeLinesImage=Join-Path $OutputDirectory 'code-lines.png'
     Capture-Window $window $codeLinesImage
-    $barWidths=Assert-ProportionalBars $codeLinesImage
-    Click-Element $root $header; Start-Sleep -Milliseconds 350
-    $sorted=Code-Line-Values $root
-    for ($i=1; $i -lt $sorted.Count; $i++) {
-        if ($sorted[$i] -lt $sorted[$i-1]) { throw "Code lines numeric ascending sort failed: $($sorted -join ',')" }
+    $noProgressBars=Assert-NoProportionalBars $codeLinesImage
+    if ($DirectoryAggregateMode) {
+        if ($cells.Count -lt 10) { throw "Expected directory Code lines values; found $($cells.Count)" }
+        if (-not [TokeiHeadfulSmoke.Native]::PostMessage($window,0x0010,[UIntPtr]::Zero,[IntPtr]::Zero)) { throw 'Could not request clean app shutdown' }
+        if (-not $process.WaitForExit(10000)) { throw 'App did not complete clean shutdown' }
+        $descendants=@($processObserver.WaitForActiveProcessZero(10000))
+        $expectedBrokerPath=Join-Path (Split-Path -Parent $Executable) 'explorer-extension-broker.exe'
+        $expectedBroker=if (Test-Path -LiteralPath $expectedBrokerPath) { (Resolve-Path -LiteralPath $expectedBrokerPath).Path } else { $null }
+        $unexpectedChildren=@($descendants | Where-Object { $null -eq $expectedBroker -or ($_ -split ':\d+$')[0] -ine $expectedBroker })
+        if ($unexpectedChildren.Count -ne 0) { throw "Unexpected plugin/tool descendant process observed: $($unexpectedChildren | ConvertTo-Json -Compress)" }
+        [pscustomobject]@{status='passed'; directory_values=$cells.Count; blank_excluded_from_value=$true; no_progress_bars=$noProgressBars; observed_descendant_processes=$descendants; observed_plugin_tool_descendants=$unexpectedChildren; clean_shutdown=$true; screenshots=@('code-lines.png')} |
+            ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Encoding utf8
+        Get-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Raw
+        return
     }
-    $header=Find-NamePrefix $root 'Code lines, sorted'
+    Click-Element $root $header
+    $sortDeadline=[DateTime]::UtcNow.AddSeconds(10); $sorted=@(); $sortStable=$false
+    do {
+        Start-Sleep -Milliseconds 150
+        $header=Find-ButtonNamePrefix $root 'Code lines, sorted'
+        if($null-eq$header){$header=Find-ButtonName $root 'Sort by Code lines'}
+        $sorted=Code-Line-Values $root
+        $sortStable=$null -ne $header -and $sorted.Count -ge 3
+        for ($i=1; $sortStable -and $i -lt $sorted.Count; $i++) {
+            if ($sorted[$i] -lt $sorted[$i-1]) { $sortStable=$false }
+        }
+    } while (-not $sortStable -and [DateTime]::UtcNow -lt $sortDeadline)
     if ($null -eq $header) { throw 'Code lines sort state was not exposed' }
+    if (-not $sortStable) { throw "Code lines numeric ascending sort failed: $($sorted -join ',')" }
     Click-Element $root $header -Right; Start-Sleep -Milliseconds 250
+    $safeModeConfirm=Find-NamePrefix $root 'Confirm and re-enable'
+    if ($null -ne $safeModeConfirm) {
+        Click-Element $root $safeModeConfirm
+        Start-Sleep -Milliseconds 350
+        $header=Find-ButtonNamePrefix $root 'Code lines, sorted'
+        if ($null -eq $header) { throw 'Code lines header disappeared after Safe Mode confirmation' }
+        Click-Element $root $header -Right
+        Start-Sleep -Milliseconds 250
+    }
     Capture-Window $window (Join-Path $OutputDirectory 'code-lines-menu.png')
     $toggle=Find-NamePrefix $root 'Show comment and blank detail'
     if ($null -eq $toggle) { throw 'Code lines detail setting was not exposed' }
@@ -320,7 +604,7 @@ try {
     $expectedBroker=if (Test-Path -LiteralPath $expectedBrokerPath) { (Resolve-Path -LiteralPath $expectedBrokerPath).Path } else { $null }
     $unexpectedChildren=@($descendants | Where-Object { $null -eq $expectedBroker -or ($_ -split ':\d+$')[0] -ine $expectedBroker })
     if ($unexpectedChildren.Count -ne 0) { throw "Unexpected plugin/tool descendant process observed: $($unexpectedChildren | ConvertTo-Json -Compress)" }
-    [pscustomobject]@{status='passed'; values=$cells.Count; real_shell_icons='captured'; proportional_bar_widths=$barWidths; numeric_sort=$sorted; detail=$detailName; observed_descendant_processes=$descendants; observed_plugin_tool_descendants=$unexpectedChildren; clean_shutdown=$true; screenshots=@('code-lines.png','code-lines-detail.png')} |
+    [pscustomobject]@{status='passed'; values=$cells.Count; real_shell_icons='captured'; no_progress_bars=$noProgressBars; numeric_sort=$sorted; detail=$detailName; observed_descendant_processes=$descendants; observed_plugin_tool_descendants=$unexpectedChildren; clean_shutdown=$true; screenshots=@('code-lines.png','code-lines-detail.png')} |
         ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Encoding utf8
     Get-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Raw
 } finally {

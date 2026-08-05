@@ -202,3 +202,6 @@ The consumer statically links one exact locked Rust `tokei` dependency closure a
 - 第一個正式 Release 的 GPUI commit 與受保護 tag 在 RC cut 時由最後一個通過完整 gate 的 development snapshot 決定；目前開發 snapshot 不是 Release 承諾。
 - Per-package CPU/I/O quota、Lock Owner TTL、Virtual Folder 資源上限與 Size Map memory budget 的預設數值由效能 fixture 校準，但其 bounded 行為與可診斷 terminal state 已由 specs 固定。
 - Steam 簽署／審核、DLC entitlement 與付費作者流程留待獨立 change；本 change 只建立可替換的 Package Source／Entitlement Provider 接點。
+# Approved correction: host-enforced extension data-column caching (2026-08-05)
+
+All extension-provided data columns use a bounded host-owned cache before provider dispatch. The key is contribution-scoped and contains host-attested stable filesystem identity plus the source modification timestamp; values are copied host types and are rebound to the current UI request context. A cache hit must not call plugin code. A changed or unavailable modification timestamp is a miss. Folder-size exact totals and Rust/Lua Code-lines values use this common rule; provider-local caches are optional second-level restart optimizations and never decide dispatch. See `docs/superpowers/specs/2026-08-05-host-extension-column-cache-design.md`.
