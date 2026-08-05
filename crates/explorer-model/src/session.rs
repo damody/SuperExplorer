@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// Current durable session schema.
-pub const SESSION_SCHEMA_VERSION: u16 = 1;
+pub const SESSION_SCHEMA_VERSION: u16 = 2;
 const MAX_PROVENANCE_BYTES: usize = 256;
 const MAX_DISPLAY_TITLE_BYTES: usize = 4 * 1024;
 const MAX_PIN_NAME_BYTES: usize = 4 * 1024;
@@ -90,6 +90,24 @@ pub enum PersistedSortDirection {
 pub struct PersistedSort {
     pub column: PersistedColumn,
     pub direction: PersistedSortDirection,
+}
+
+/// Canonical extensible sort identity. Unknown extension IDs remain durable
+/// while the runtime safely falls back to Name until that ID is installed.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersistedExtensionSort {
+    pub column_id: String,
+    pub direction: PersistedSortDirection,
+}
+
+/// One ordered built-in or extension column preference in schema v2.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersistedColumnLayoutEntry {
+    pub id: String,
+    pub width: u16,
+    pub visible: bool,
 }
 
 /// Persisted widths for the current four Details columns.
@@ -198,6 +216,10 @@ pub struct PersistedViewSettings {
         skip_serializing_if = "is_default_column_visibility"
     )]
     pub details_column_visibility: u16,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extensible_column_layout: Vec<PersistedColumnLayoutEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extension_sort: Option<PersistedExtensionSort>,
     pub details_pane_width: u16,
     pub preview_pane_width: u16,
 }
@@ -222,6 +244,8 @@ impl Default for PersistedViewSettings {
             details_column_order: PersistedColumn::ALL.to_vec(),
             details_columns: PersistedColumnWidths::default(),
             details_column_visibility: default_column_visibility(),
+            extensible_column_layout: Vec::new(),
+            extension_sort: None,
             details_pane_width: 320,
             preview_pane_width: 360,
         }
@@ -495,6 +519,17 @@ impl PersistedSessionEnvelope {
             serde_json::from_slice(bytes).map_err(SessionValidationError::json)?;
         match header.schema_version {
             SESSION_SCHEMA_VERSION => Self::decode(bytes, limits).map(|value| (value, false)),
+            1 => {
+                let legacy: LegacySessionV1 =
+                    serde_json::from_slice(bytes).map_err(SessionValidationError::json)?;
+                let migrated = Self::new(
+                    legacy.write_generation.saturating_add(1),
+                    legacy.provenance,
+                    legacy.payload,
+                    limits,
+                )?;
+                Ok((migrated, true))
+            }
             0 => {
                 let legacy: LegacySessionV0 =
                     serde_json::from_slice(bytes).map_err(SessionValidationError::json)?;
@@ -696,6 +731,38 @@ impl RestorePlan {
 impl PersistedViewSettings {
     /// Converts explicit schema fields into the runtime view representation.
     pub fn to_runtime(&self) -> ViewSettings {
+        let details_layout = if self.extensible_column_layout.is_empty() {
+            layout_from_legacy(
+                &self.details_column_order,
+                self.details_columns,
+                self.details_column_visibility,
+            )
+        } else {
+            OrderedColumnLayout::restore_entries(
+                self.extensible_column_layout
+                    .iter()
+                    .map(|entry| (entry.id.clone(), entry.width, entry.visible)),
+            )
+            .unwrap_or_else(|_| {
+                layout_from_legacy(
+                    &self.details_column_order,
+                    self.details_columns,
+                    self.details_column_visibility,
+                )
+            })
+        };
+        let sort = self
+            .extension_sort
+            .as_ref()
+            .and_then(|sort| ColumnId::parse(sort.column_id.clone()).ok())
+            .map(|column| SortDescriptor {
+                column,
+                direction: match self.extension_sort.as_ref().map(|sort| sort.direction) {
+                    Some(PersistedSortDirection::Descending) => SortDirection::Descending,
+                    _ => SortDirection::Ascending,
+                },
+            })
+            .unwrap_or_else(|| self.sort.into());
         ViewSettings {
             mode: self.mode.into(),
             extension_view_id: self.extension_view_id.clone(),
@@ -707,12 +774,8 @@ impl PersistedViewSettings {
             hidden_items: self.hidden_items,
             compact_view: self.compact_view,
             always_show_icons: self.always_show_icons,
-            sort: self.sort.into(),
-            details_layout: layout_from_legacy(
-                &self.details_column_order,
-                self.details_columns,
-                self.details_column_visibility,
-            ),
+            sort,
+            details_layout,
             details_pane_width: self.details_pane_width,
             preview_pane_width: self.preview_pane_width,
         }
@@ -811,6 +874,13 @@ fn resolve_with_ancestors(
     if let Some(entry) = resolve(location) {
         return Some(entry);
     }
+    let mut virtual_ancestor = location.virtual_parent();
+    while let Some(ancestor) = virtual_ancestor {
+        if let Some(entry) = resolve(&ancestor) {
+            return Some(entry);
+        }
+        virtual_ancestor = ancestor.virtual_parent();
+    }
     let mut path = location.path()?.parent();
     while let Some(ancestor) = path {
         let descriptor = LocationDescriptor::file_system(ancestor.to_path_buf());
@@ -845,6 +915,18 @@ struct LegacySessionV0 {
     payload: PersistedSessionPayload,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacySessionV1 {
+    #[serde(rename = "schema_version")]
+    _schema_version: u16,
+    #[serde(rename = "checksum")]
+    _checksum: u64,
+    write_generation: u64,
+    provenance: SessionProvenance,
+    payload: PersistedSessionPayload,
+}
+
 impl From<&HistoryEntry> for PersistedHistoryEntry {
     fn from(entry: &HistoryEntry) -> Self {
         Self {
@@ -858,6 +940,28 @@ impl From<&HistoryEntry> for PersistedHistoryEntry {
 
 impl From<ViewSettings> for PersistedViewSettings {
     fn from(settings: ViewSettings) -> Self {
+        let extension_sort =
+            settings
+                .sort
+                .column
+                .extension_parts()
+                .map(|_| PersistedExtensionSort {
+                    column_id: settings.sort.column.stable_id(),
+                    direction: match settings.sort.direction {
+                        SortDirection::Ascending => PersistedSortDirection::Ascending,
+                        SortDirection::Descending => PersistedSortDirection::Descending,
+                    },
+                });
+        let extensible_column_layout = settings
+            .details_layout
+            .entries()
+            .iter()
+            .map(|entry| PersistedColumnLayoutEntry {
+                id: entry.id.stable_id(),
+                width: entry.width,
+                visible: entry.visible,
+            })
+            .collect();
         Self {
             mode: settings.mode.into(),
             extension_view_id: settings.extension_view_id,
@@ -878,6 +982,8 @@ impl From<ViewSettings> for PersistedViewSettings {
                 .collect(),
             details_columns: legacy_widths_from_layout(&settings.details_layout),
             details_column_visibility: legacy_visibility_from_layout(&settings.details_layout),
+            extensible_column_layout,
+            extension_sort,
             details_pane_width: settings.details_pane_width,
             preview_pane_width: settings.preview_pane_width,
         }
@@ -1136,6 +1242,53 @@ fn validate_view_settings(
             reason: "column visibility must contain Name and no unknown bits".to_owned(),
         });
     }
+    if !settings.extensible_column_layout.is_empty() {
+        if settings.extensible_column_layout.len() > limits.max_columns_per_tab {
+            return Err(SessionValidationError::BoundExceeded {
+                field: format!("{field}.extensible_column_layout"),
+                value: settings.extensible_column_layout.len(),
+                maximum: limits.max_columns_per_tab,
+            });
+        }
+        let mut ids = HashSet::new();
+        for entry in &settings.extensible_column_layout {
+            ColumnId::parse(entry.id.clone()).map_err(|error| {
+                SessionValidationError::InvalidField {
+                    field: format!("{field}.extensible_column_layout"),
+                    reason: error.to_string(),
+                }
+            })?;
+            if !ids.insert(entry.id.as_str())
+                || !(OrderedColumnLayout::MINIMUM_WIDTH..=limits.max_column_width)
+                    .contains(&entry.width)
+            {
+                return Err(SessionValidationError::InvalidField {
+                    field: format!("{field}.extensible_column_layout"),
+                    reason: "duplicate ID or width outside configured bounds".to_owned(),
+                });
+            }
+        }
+        if !ids.contains("builtin:name") {
+            return Err(SessionValidationError::InvalidField {
+                field: format!("{field}.extensible_column_layout"),
+                reason: "column layout must retain builtin:name".to_owned(),
+            });
+        }
+    }
+    if let Some(sort) = &settings.extension_sort {
+        let id = ColumnId::parse(sort.column_id.clone()).map_err(|error| {
+            SessionValidationError::InvalidField {
+                field: format!("{field}.extension_sort"),
+                reason: error.to_string(),
+            }
+        })?;
+        if id.is_builtin() {
+            return Err(SessionValidationError::InvalidField {
+                field: format!("{field}.extension_sort"),
+                reason: "extension sort must use an extension ID".to_owned(),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -1240,6 +1393,26 @@ mod tests {
 
     use super::*;
     use crate::{HistoryEntry, LocationDescriptor};
+
+    #[test]
+    fn virtual_restore_walks_to_available_parent_and_missing_provider_falls_back() {
+        let nested = LocationDescriptor::try_virtual(
+            "rust-7z",
+            [7; 16],
+            3,
+            Some(44),
+            vec!["docs".to_owned(), "nested".to_owned()],
+        )
+        .expect("virtual location");
+        let parent = nested.virtual_parent().expect("parent");
+        let resolved = resolve_with_ancestors(&nested, &mut |candidate| {
+            (candidate == &parent).then(|| HistoryEntry::new(candidate.clone(), "docs"))
+        })
+        .expect("available virtual parent");
+        assert_eq!(resolved.location, parent);
+
+        assert!(resolve_with_ancestors(&nested, &mut |_| None).is_none());
+    }
 
     fn provenance() -> SessionProvenance {
         SessionProvenance {
@@ -1407,8 +1580,9 @@ mod tests {
         let current = include_bytes!("fixtures/session_v1.json");
         let (decoded, migrated) =
             PersistedSessionEnvelope::decode_or_migrate(current, RoadmapLimits::default())
-                .expect("current golden fixture");
-        assert!(!migrated);
+                .expect("v1 golden fixture");
+        assert!(migrated);
+        assert_eq!(decoded.schema_version, SESSION_SCHEMA_VERSION);
         let reencoded = decoded
             .encode_pretty(RoadmapLimits::default())
             .expect("golden encode");
@@ -1426,5 +1600,20 @@ mod tests {
         assert_eq!(decoded.schema_version, SESSION_SCHEMA_VERSION);
         assert_eq!(decoded.write_generation, 8);
         assert_eq!(decoded.payload.tabs.len(), 2);
+    }
+
+    #[test]
+    fn unknown_extension_view_identity_round_trips_without_registry_access() {
+        let persisted = PersistedViewSettings {
+            extension_view_id: Some("extension:missing.publisher:future-view".to_owned()),
+            ..PersistedViewSettings::default()
+        };
+        let bytes = serde_json::to_vec(&persisted).expect("serialize view settings");
+        let decoded: PersistedViewSettings =
+            serde_json::from_slice(&bytes).expect("deserialize view settings");
+        assert_eq!(decoded.extension_view_id, persisted.extension_view_id);
+        let restored = decoded.to_runtime();
+        assert_eq!(restored.extension_view_id, persisted.extension_view_id);
+        assert_eq!(restored.mode, ViewMode::Details);
     }
 }

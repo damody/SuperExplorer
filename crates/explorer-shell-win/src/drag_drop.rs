@@ -30,7 +30,9 @@ use windows::{
             },
         },
         UI::{
-            Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_SHIFT},
+            Input::KeyboardAndMouse::{
+                GetAsyncKeyState, GetKeyState, VK_CONTROL, VK_LBUTTON, VK_RBUTTON, VK_SHIFT,
+            },
             WindowsAndMessaging::{
                 GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId, SM_CXDRAG,
                 SM_CYDRAG,
@@ -278,7 +280,17 @@ impl IDropSource_Impl for NativeDropSource_Impl {
             DragButton::Left => MK_LBUTTON,
             DragButton::Right => MK_RBUTTON,
         };
-        if key_state.0 & required.0 == 0 {
+        let virtual_key = match self.button {
+            DragButton::Left => VK_LBUTTON,
+            DragButton::Right => VK_RBUTTON,
+        };
+        // A virtual item may be materialized before the Shell STA enters
+        // DoDragDrop. Its first OLE key_state can therefore be stale even
+        // though the initiating mouse button is still physically held.
+        // GetAsyncKeyState reflects the current system state and preserves
+        // the user's original drag until the real release arrives.
+        let async_pressed = unsafe { GetAsyncKeyState(virtual_key.0 as i32) } < 0;
+        if key_state.0 & required.0 == 0 && !async_pressed {
             DRAGDROP_S_DROP
         } else {
             HRESULT(0)

@@ -30,6 +30,7 @@ use explorer_extension_api::{
     StableIdV1, StableSortValueKindV1,
 };
 use ring::rand::{SecureRandom as _, SystemRandom};
+use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
 use crate::{ContributionKindV1, NativeDispatchLeaseV1, ValidatedContributionSetV1};
@@ -45,6 +46,9 @@ use crate::{
     extension_value_router::{
         ExtensionValueGenerationStateV1, ExtensionValueGenerationV1, HostIncrementalResultEntryV1,
         ingest_entry_v1,
+    },
+    runtime_authority::{
+        AuthorityAdapterV1, AuthorityClaimsV1, AuthorityEnvelopeV1, RuntimeAuthorityV1,
     },
 };
 
@@ -213,6 +217,7 @@ pub struct ExtensionJobAuthorityV1 {
     pub(crate) opaque_schema: Option<StableIdV1>,
     pub(crate) opaque_schema_version: Option<u32>,
     filesystem_read_authorized: bool,
+    lock_owner_query_authorized: bool,
     _lease: Option<NativeDispatchLeaseV1>,
 }
 
@@ -258,6 +263,7 @@ impl ExtensionJobAuthorityV1 {
             opaque_schema: None,
             opaque_schema_version: None,
             filesystem_read_authorized: true,
+            lock_owner_query_authorized: false,
             _lease: None,
         })
     }
@@ -297,12 +303,18 @@ impl ExtensionJobAuthorityV1 {
             opaque_schema: descriptor.opaque_schema,
             opaque_schema_version: descriptor.opaque_schema_version,
             filesystem_read_authorized: descriptor.filesystem_read_authorized,
+            lock_owner_query_authorized: descriptor.lock_owner_query_authorized,
             _lease: Some(lease),
         })
     }
     #[must_use]
     pub fn producer(&self) -> &ExtensionJobProducerV1 {
         &self.producer
+    }
+
+    pub(crate) fn with_lock_owner_query_for_direct_loader(mut self) -> Self {
+        self.lock_owner_query_authorized = true;
+        self
     }
 
     #[cfg(any(test, feature = "integration-test-support"))]
@@ -325,6 +337,7 @@ impl ExtensionJobAuthorityV1 {
             opaque_schema: None,
             opaque_schema_version: None,
             filesystem_read_authorized: false,
+            lock_owner_query_authorized: false,
             _lease: None,
         }
     }
@@ -474,6 +487,10 @@ pub struct HostBatchColumnItemV1 {
     /// Host-attested basename only; never a path.
     pub file_name: RString,
     pub source: HostInputStreamSourceV1,
+    pub cache_identity: RString,
+    pub modified_unix_seconds: ROption<u64>,
+    pub modified_subsec_nanos: u32,
+    pub source_size: ROption<u64>,
     /// Optional host-only filesystem identity for discover-only lock queries.
     /// It is mapped to the opaque item handle and never copied across the ABI.
     pub lock_owner_resource: Option<PathBuf>,
@@ -610,6 +627,7 @@ pub enum ExtensionJobFinishOutcomeV1 {
 pub struct ExtensionJobRuntimeV1 {
     state: Arc<Mutex<RuntimeStateV1>>,
     result_cache: Arc<ExtensionResultCacheV1>,
+    runtime_authority: Option<Arc<RuntimeAuthorityV1>>,
 }
 
 /// Runtime-integrated cache result. A hit has already been rebound to the
@@ -782,6 +800,10 @@ struct RuntimeBatchInputV1 {
     item: ItemHandleV1,
     file_name: RString,
     source: HostInputStreamSourceV1,
+    cache_identity: RString,
+    modified_unix_seconds: ROption<u64>,
+    modified_subsec_nanos: u32,
+    source_size: ROption<u64>,
     lock_owner_resource: Option<PathBuf>,
 }
 
@@ -793,6 +815,8 @@ struct HostLockOwnerQueryAdapterV1 {
     location_generation: u64,
     resources: Arc<Vec<(ItemHandleV1, PathBuf)>>,
     service: HostLockOwnerQueryServiceV1,
+    runtime_authority: Arc<RuntimeAuthorityV1>,
+    authority: AuthorityEnvelopeV1,
 }
 
 impl AbiLockOwnerQueryServiceV1 for HostLockOwnerQueryAdapterV1 {
@@ -804,6 +828,13 @@ impl AbiLockOwnerQueryServiceV1 for HostLockOwnerQueryAdapterV1 {
             location_generation: request.location_generation,
             owners: RVec::new(),
         };
+        if self
+            .runtime_authority
+            .revalidate(&self.authority, AuthorityAdapterV1::LockOwner)
+            .is_err()
+        {
+            return empty(LockOwnerQueryStatusV1::CANCELLED);
+        }
         if request.items.is_empty()
             || request.items.len() > explorer_extension_api::MAX_LOCK_OWNER_QUERY_ITEMS_V1
             || request.item_generation != self.item_generation
@@ -846,6 +877,14 @@ impl AbiLockOwnerQueryServiceV1 for HostLockOwnerQueryAdapterV1 {
             }
             for owner in &mut item_owners {
                 owner.item = item;
+                truncate_utf8_rstring(
+                    &mut owner.display_name,
+                    explorer_extension_api::MAX_LOCK_OWNER_DISPLAY_NAME_BYTES_V1,
+                );
+                truncate_utf8_rstring(
+                    &mut owner.service_name,
+                    explorer_extension_api::MAX_LOCK_OWNER_DISPLAY_NAME_BYTES_V1,
+                );
             }
             owners.extend(item_owners);
         }
@@ -864,6 +903,18 @@ impl AbiLockOwnerQueryServiceV1 for HostLockOwnerQueryAdapterV1 {
             owners: owners.into(),
         }
     }
+}
+
+fn truncate_utf8_rstring(value: &mut RString, maximum_bytes: usize) {
+    if value.len() <= maximum_bytes {
+        return;
+    }
+    let text = value.as_str();
+    let mut boundary = maximum_bytes.min(text.len());
+    while boundary > 0 && !text.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    *value = RString::from(&text[..boundary]);
 }
 
 /// Per-invocation gate retained by the Rust-ABI host-services object. Clones
@@ -1427,6 +1478,7 @@ impl ExtensionJobRuntimeV1 {
                 panic_next_progress_submit: false,
             })),
             result_cache,
+            runtime_authority: RuntimeAuthorityV1::new().ok().map(Arc::new),
         }
     }
 
@@ -1625,6 +1677,9 @@ impl ExtensionJobRuntimeV1 {
         feature_id: &str,
         epoch: u64,
     ) {
+        if let Some(authority) = &self.runtime_authority {
+            let _ = authority.revoke_feature_incarnation(package_id, feature_id, epoch);
+        }
         self.result_cache.invalidate_feature_generation(
             package_id,
             manifest_digest,
@@ -1772,6 +1827,54 @@ impl ExtensionJobRuntimeV1 {
             return Err(ExtensionJobRuntimeErrorV1::InputStreamCapacityExceeded);
         }
         let lock_owner_query = request.lock_owner_query.clone();
+        let lock_owner_authority = if lock_owner_query.is_some() {
+            if !request.authority.lock_owner_query_authorized {
+                return Err(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority);
+            }
+            let runtime_authority = self
+                .runtime_authority
+                .as_ref()
+                .ok_or(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+            let producer = request.authority.producer();
+            let interface = producer.interface_id();
+            let authorized_root_sha256 = if producer.sealed_manifest_digest().len() == 64
+                && producer
+                    .sealed_manifest_digest()
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+            {
+                producer.sealed_manifest_digest().to_ascii_lowercase()
+            } else {
+                Sha256::digest(producer.sealed_manifest_digest().as_bytes())
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect()
+            };
+            Some((
+                Arc::clone(runtime_authority),
+                runtime_authority
+                    .issue(AuthorityClaimsV1 {
+                        package_id: producer.package_id().to_owned(),
+                        feature_id: producer.feature_id().to_owned(),
+                        interface_id: format!(
+                            "{}:{}",
+                            interface.namespace.into_raw(),
+                            interface.value
+                        ),
+                        incarnation: producer.feature_epoch(),
+                        capability: "lock_owner.query".to_owned(),
+                        authorized_root_sha256,
+                        location_generation: request.location_generation,
+                        item_generation: request.item_generation,
+                        refresh_generation: request.source_generation,
+                        container_generation: request.source_generation,
+                        job_generation: request.job_generation,
+                    })
+                    .map_err(|_| ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?,
+            ))
+        } else {
+            None
+        };
         let sources = request
             .items
             .into_iter()
@@ -1780,6 +1883,10 @@ impl ExtensionJobRuntimeV1 {
                     item: handle,
                     file_name: item.file_name,
                     source: item.source,
+                    cache_identity: item.cache_identity,
+                    modified_unix_seconds: item.modified_unix_seconds,
+                    modified_subsec_nanos: item.modified_subsec_nanos,
+                    source_size: item.source_size,
                     lock_owner_resource: item.lock_owner_resource,
                 })
             })
@@ -1848,6 +1955,10 @@ impl ExtensionJobRuntimeV1 {
                         item: item.item,
                         item_generation: context.item_generation,
                         file_name: item.file_name.clone(),
+                        cache_identity: item.cache_identity.clone(),
+                        modified_unix_seconds: item.modified_unix_seconds,
+                        modified_subsec_nanos: item.modified_subsec_nanos,
+                        source_size: item.source_size,
                         input: InputStreamV1::from_host(
                             InputStreamCapabilityV1::from_host(random_nonce()?),
                             HostInputStreamServicesAdapterV1 {
@@ -1875,16 +1986,20 @@ impl ExtensionJobRuntimeV1 {
                 return Err(error);
             }
         };
-        let lock_owner_query = lock_owner_query.map(|service| {
-            LockOwnerQueryServiceV1::from_host(HostLockOwnerQueryAdapterV1 {
-                state: Arc::downgrade(&self.state),
-                job: context.job,
-                item_generation: context.item_generation,
-                location_generation: context.location_generation,
-                resources: Arc::new(lock_owner_resources),
-                service,
-            })
-        });
+        let lock_owner_query = lock_owner_query.zip(lock_owner_authority).map(
+            |(service, (runtime_authority, authority))| {
+                LockOwnerQueryServiceV1::from_host(HostLockOwnerQueryAdapterV1 {
+                    state: Arc::downgrade(&self.state),
+                    job: context.job,
+                    item_generation: context.item_generation,
+                    location_generation: context.location_generation,
+                    resources: Arc::new(lock_owner_resources),
+                    service,
+                    runtime_authority,
+                    authority,
+                })
+            },
+        );
         Ok(PreparedBatchColumnDispatchTicketV1 {
             state: Arc::clone(&self.state),
             context: BatchColumnContextV1 {
@@ -4816,6 +4931,190 @@ mod tests {
         }
     }
 
+    fn lock_owner_batch_request(
+        package_id: &str,
+        authority: ExtensionJobAuthorityV1,
+        service_calls: Arc<AtomicUsize>,
+    ) -> BatchColumnRuntimeRequestV1 {
+        BatchColumnRuntimeRequestV1 {
+            authority,
+            job_generation: 1,
+            item_generation: 1,
+            location_generation: 1,
+            source_generation: 1,
+            items: vec![HostBatchColumnItemV1 {
+                file_name: RString::from(format!("{package_id}.rs")),
+                source: HostInputStreamSourceV1::from_host_snapshot(vec![1], 1, true).unwrap(),
+                cache_identity: RString::new(),
+                modified_unix_seconds: ROption::RNone,
+                modified_subsec_nanos: 0,
+                source_size: ROption::RNone,
+                lock_owner_resource: Some(PathBuf::from(format!(r"C:\{package_id}.rs"))),
+            }],
+            lock_owner_query: Some(HostLockOwnerQueryServiceV1::new(move |_, _| {
+                service_calls.fetch_add(1, Ordering::SeqCst);
+                (LockOwnerQueryStatusV1::EMPTY, Vec::new())
+            })),
+        }
+    }
+
+    #[test]
+    fn lock_owner_service_requires_declared_runtime_capability() {
+        let runtime = ExtensionJobRuntimeV1::new(config());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let request = lock_owner_batch_request(
+            "lock-owner-denied",
+            ExtensionJobAuthorityV1::for_test("lock-owner-denied").with_filesystem_read_for_test(),
+            Arc::clone(&calls),
+        );
+
+        assert!(matches!(
+            runtime.prepare_batch_column_dispatch(request),
+            Err(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn lock_owner_service_revalidates_after_feature_revoke_before_use() {
+        let runtime = ExtensionJobRuntimeV1::new(config());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let authority = ExtensionJobAuthorityV1::for_test("lock-owner-revoked")
+            .with_filesystem_read_for_test()
+            .with_lock_owner_query_for_direct_loader();
+        let ticket = runtime
+            .prepare_batch_column_dispatch(lock_owner_batch_request(
+                "lock-owner-revoked",
+                authority,
+                Arc::clone(&calls),
+            ))
+            .unwrap();
+        let item = ticket.context.items[0].item;
+        let service = ticket
+            .context
+            .lock_owner_query
+            .clone()
+            .into_option()
+            .unwrap();
+
+        runtime.revoke_feature_generation("lock-owner-revoked", "test-digest", "test-feature", 1);
+        let outcome = service.query(LockOwnerQueryRequestV1 {
+            items: RVec::from(vec![item]),
+            item_generation: 1,
+            location_generation: 1,
+            deadline_millis: 100,
+            reserved: 0,
+        });
+
+        assert_eq!(outcome.status, LockOwnerQueryStatusV1::CANCELLED);
+        assert!(outcome.owners.is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn lock_owner_service_bounds_owned_results_and_utf8_display_names() {
+        let runtime = ExtensionJobRuntimeV1::new(config());
+        let authority = ExtensionJobAuthorityV1::for_test("lock-owner-bounds")
+            .with_filesystem_read_for_test()
+            .with_lock_owner_query_for_direct_loader();
+        let mut request = lock_owner_batch_request(
+            "lock-owner-bounds",
+            authority,
+            Arc::new(AtomicUsize::new(0)),
+        );
+        request.lock_owner_query = Some(HostLockOwnerQueryServiceV1::new(|_, _| {
+            let owners = (0..(explorer_extension_api::MAX_LOCK_OWNER_QUERY_RESULTS_V1 + 32))
+                .map(|process_id| LockOwnerRecordV1 {
+                    item: ItemHandleV1::from_host([1; 16], 1),
+                    process_id: process_id as u32,
+                    application_type:
+                        explorer_extension_api::LockOwnerApplicationTypeV1::MAIN_WINDOW,
+                    display_name: RString::from("界".repeat(300)),
+                    service_name: RString::from("服務".repeat(300)),
+                })
+                .collect();
+            (LockOwnerQueryStatusV1::READY, owners)
+        }));
+        let ticket = runtime.prepare_batch_column_dispatch(request).unwrap();
+        let item = ticket.context.items[0].item;
+        let outcome = ticket
+            .context
+            .lock_owner_query
+            .clone()
+            .into_option()
+            .unwrap()
+            .query(LockOwnerQueryRequestV1 {
+                items: RVec::from(vec![item]),
+                item_generation: 1,
+                location_generation: 1,
+                deadline_millis: 100,
+                reserved: 0,
+            });
+
+        assert_eq!(outcome.status, LockOwnerQueryStatusV1::READY);
+        assert_eq!(
+            outcome.owners.len(),
+            explorer_extension_api::MAX_LOCK_OWNER_QUERY_RESULTS_V1
+        );
+        assert!(outcome.owners.iter().all(|owner| {
+            owner.item == item
+                && owner.display_name.len()
+                    <= explorer_extension_api::MAX_LOCK_OWNER_DISPLAY_NAME_BYTES_V1
+                && owner.service_name.len()
+                    <= explorer_extension_api::MAX_LOCK_OWNER_DISPLAY_NAME_BYTES_V1
+        }));
+    }
+
+    #[test]
+    fn lock_owner_service_enforces_input_bound_and_deadline() {
+        let runtime = ExtensionJobRuntimeV1::new(config());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let authority = ExtensionJobAuthorityV1::for_test("lock-owner-limits")
+            .with_filesystem_read_for_test()
+            .with_lock_owner_query_for_direct_loader();
+        let mut request =
+            lock_owner_batch_request("lock-owner-limits", authority, Arc::clone(&calls));
+        let delayed_calls = Arc::clone(&calls);
+        request.lock_owner_query = Some(HostLockOwnerQueryServiceV1::new(move |_, _| {
+            delayed_calls.fetch_add(1, Ordering::SeqCst);
+            thread::sleep(Duration::from_millis(5));
+            (LockOwnerQueryStatusV1::EMPTY, Vec::new())
+        }));
+        let ticket = runtime.prepare_batch_column_dispatch(request).unwrap();
+        let item = ticket.context.items[0].item;
+        let service = ticket
+            .context
+            .lock_owner_query
+            .clone()
+            .into_option()
+            .unwrap();
+
+        let oversized = service.query(LockOwnerQueryRequestV1 {
+            items: RVec::from(vec![
+                item;
+                explorer_extension_api::MAX_LOCK_OWNER_QUERY_ITEMS_V1
+                    + 1
+            ]),
+            item_generation: 1,
+            location_generation: 1,
+            deadline_millis: 100,
+            reserved: 0,
+        });
+        assert_eq!(oversized.status, LockOwnerQueryStatusV1::UNAVAILABLE);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let expired = service.query(LockOwnerQueryRequestV1 {
+            items: RVec::from(vec![item]),
+            item_generation: 1,
+            location_generation: 1,
+            deadline_millis: 1,
+            reserved: 0,
+        });
+        assert_eq!(expired.status, LockOwnerQueryStatusV1::DEADLINE_ELAPSED);
+        assert!(expired.owners.is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
     #[test]
     fn batch_column_dispatch_is_bounded_host_attested_and_generation_safe() {
         let runtime = ExtensionJobRuntimeV1::new(config());
@@ -4836,11 +5135,19 @@ mod tests {
                     HostBatchColumnItemV1 {
                         file_name: RString::from("one.rs"),
                         source: source_one,
+                        cache_identity: RString::new(),
+                        modified_unix_seconds: ROption::RNone,
+                        modified_subsec_nanos: 0,
+                        source_size: ROption::RNone,
                         lock_owner_resource: None,
                     },
                     HostBatchColumnItemV1 {
                         file_name: RString::from("two.py"),
                         source: source_two,
+                        cache_identity: RString::new(),
+                        modified_unix_seconds: ROption::RNone,
+                        modified_subsec_nanos: 0,
+                        source_size: ROption::RNone,
                         lock_owner_resource: None,
                     },
                 ],
@@ -4863,6 +5170,10 @@ mod tests {
             .map(|_| HostBatchColumnItemV1 {
                 file_name: RString::from("limit.rs"),
                 source: HostInputStreamSourceV1::from_host_snapshot(vec![], 1, true).unwrap(),
+                cache_identity: RString::new(),
+                modified_unix_seconds: ROption::RNone,
+                modified_subsec_nanos: 0,
+                source_size: ROption::RNone,
                 lock_owner_resource: None,
             })
             .collect();
@@ -4900,11 +5211,19 @@ mod tests {
                     HostBatchColumnItemV1 {
                         file_name: RString::from("one.rs"),
                         source: source(),
+                        cache_identity: RString::new(),
+                        modified_unix_seconds: ROption::RNone,
+                        modified_subsec_nanos: 0,
+                        source_size: ROption::RNone,
                         lock_owner_resource: None,
                     },
                     HostBatchColumnItemV1 {
                         file_name: RString::from("two.rs"),
                         source: source(),
+                        cache_identity: RString::new(),
+                        modified_unix_seconds: ROption::RNone,
+                        modified_subsec_nanos: 0,
+                        source_size: ROption::RNone,
                         lock_owner_resource: None,
                     },
                 ],

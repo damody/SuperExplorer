@@ -19,6 +19,7 @@ pub mod automation;
 pub mod chrome;
 pub mod code_lines_column;
 pub mod diagnostics;
+pub mod extension_commands;
 pub mod file_view;
 mod fluent_assets;
 pub mod folder_size_column;
@@ -549,7 +550,8 @@ pub fn window_title_for_history_entry(entry: Option<&explorer_model::HistoryEntr
         }
         explorer_model::LocationDescriptor::FileSystem(_)
         | explorer_model::LocationDescriptor::ShellNamespace(_)
-        | explorer_model::LocationDescriptor::KnownFolder(_) => false,
+        | explorer_model::LocationDescriptor::KnownFolder(_)
+        | explorer_model::LocationDescriptor::Virtual(_) => false,
     };
     if display_title.is_empty() || exposes_internal_identity {
         PRODUCT_NAME.to_owned()
@@ -652,6 +654,7 @@ pub struct ExplorerRoot {
     folder_scripts: Option<explorer_automation::FolderScriptHandle>,
     pending_foreground_events: VecDeque<explorer_model::ExplorerEvent>,
     pending_enrichment_events: VecDeque<explorer_model::ExplorerEvent>,
+    pending_extension_file_operations: VecDeque<explorer_model::FileOperationRequest>,
     enrichment_retry_needed: bool,
     service_qos: explorer_jobs::InteractionFirstQos,
     service_delivery: qos::UiDeliveryCounters,
@@ -709,6 +712,7 @@ pub struct ExplorerRoot {
     durable_window_placement: explorer_model::PersistedWindowPlacement,
     session_reset_observer: Option<SessionResetObserver>,
     broker_retry_observer: Option<BrokerRetryObserver>,
+    command_prompt_launcher: Option<CommandPromptLauncher>,
     last_window_title: Option<String>,
     navigation_history_release_deadline: Option<Instant>,
     safe_mode_offers: Vec<SafeModeOfferV1>,
@@ -757,6 +761,8 @@ pub type DurableStateObserver = Arc<
 pub type SessionResetObserver =
     Arc<dyn Fn(explorer_model::SessionResetScope) -> bool + Send + Sync>;
 pub type BrokerRetryObserver = Arc<dyn Fn() -> state::BrokerUiHealth + Send + Sync>;
+pub type CommandPromptLauncher =
+    Arc<dyn Fn(Option<std::path::PathBuf>) -> Result<(), String> + Send + Sync>;
 /// Path-free Safe Mode identity shown before a native extension can be re-enabled.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SafeModeOfferV1 {
@@ -960,6 +966,7 @@ impl ExplorerRoot {
             folder_scripts: None,
             pending_foreground_events: VecDeque::new(),
             pending_enrichment_events: VecDeque::new(),
+            pending_extension_file_operations: VecDeque::new(),
             enrichment_retry_needed: false,
             service_qos: explorer_jobs::InteractionFirstQos::default(),
             service_delivery: qos::UiDeliveryCounters::default(),
@@ -1008,6 +1015,7 @@ impl ExplorerRoot {
             durable_window_placement: default_durable_window_placement(),
             session_reset_observer: None,
             broker_retry_observer: None,
+            command_prompt_launcher: None,
             last_window_title: None,
             navigation_history_release_deadline: None,
             safe_mode_offers: Vec::new(),
@@ -1035,6 +1043,10 @@ impl ExplorerRoot {
     /// during composition; workers cannot reach this UI-owned object.
     pub fn attach_extension_ui_pump(&mut self, pump: Box<dyn ExtensionUiPumpPortV1>) {
         self.extension_ui_pump = Some(pump);
+    }
+
+    pub fn attach_command_prompt_launcher(&mut self, launcher: CommandPromptLauncher) {
+        self.command_prompt_launcher = Some(launcher);
     }
 
     /// Connects the application-owned folder-size provider to the Details UI.
@@ -1132,6 +1144,7 @@ impl ExplorerRoot {
         self.size_map_requested.clear();
         if let Some(visuals) = self.size_map_visuals.as_mut() {
             visuals.values.clear();
+            visuals.tree_nodes.clear();
         }
     }
 
@@ -1257,11 +1270,23 @@ impl ExplorerRoot {
         let visuals = self.size_map_visuals.get_or_insert_with(Default::default);
         let previous_count = visuals.values.len();
         visuals.values.retain(|id, _| visible_ids.contains(id));
-        let mut changed = render_ready || visuals.values.len() != previous_count;
+        let previous_tree_count = visuals.tree_nodes.len();
+        visuals
+            .tree_nodes
+            .retain(|_, node| visible_ids.contains(&node.root_item_id));
+        let mut changed = render_ready
+            || visuals.values.len() != previous_count
+            || visuals.tree_nodes.len() != previous_tree_count;
         for result in results
             .into_iter()
             .filter(|result| Self::size_map_result_is_current(result, &context))
         {
+            for node in result.tree_nodes {
+                let node_id = node.item_id.clone();
+                if visuals.tree_nodes.insert(node_id, node.clone()) != Some(node) {
+                    changed = true;
+                }
+            }
             let value = size_map_view::SizeMapMeasuredValueV1 {
                 exact_bytes: result.exact_bytes,
                 partial: result.partial,
@@ -1464,7 +1489,13 @@ impl ExplorerRoot {
     }
 
     fn submit_code_lines_requests(&mut self) {
-        if self.code_lines_runtime.is_none() {
+        let Some(runtime) = self.code_lines_runtime.as_ref() else {
+            return;
+        };
+        if !self
+            .state
+            .extension_enabled(&runtime.config().option_package_id)
+        {
             return;
         }
         let (tab_id, generation, entries) = {
@@ -1520,6 +1551,34 @@ impl ExplorerRoot {
         true
     }
 
+    fn reconcile_code_lines_extension_state(&mut self) -> bool {
+        let Some(runtime) = self.code_lines_runtime.as_ref() else {
+            return false;
+        };
+        let config = runtime.config();
+        let enabled = self.state.extension_enabled(&config.option_package_id);
+        if enabled {
+            return self
+                .state
+                .install_code_lines_column_descriptor(config.descriptor);
+        }
+        if let Some(context) = self
+            .code_lines_visuals
+            .as_ref()
+            .and_then(|visuals| visuals.context.as_ref())
+        {
+            runtime.cancel_code_lines_context(context);
+        }
+        self.code_lines_requested.clear();
+        if let Some(visuals) = self.code_lines_visuals.as_mut() {
+            visuals.context = None;
+            visuals.values.clear();
+            visuals.errors.clear();
+        }
+        self.state
+            .uninstall_code_lines_column_descriptor(&config.descriptor)
+    }
+
     fn pump_code_lines_runtime(&mut self) -> bool {
         let Some(runtime) = self.code_lines_runtime.as_ref() else {
             return false;
@@ -1527,6 +1586,9 @@ impl ExplorerRoot {
         let render_ready = runtime.drain_render_results();
         let mut config = runtime.config();
         let results = runtime.drain_code_lines_results();
+        if !self.state.extension_enabled(&config.option_package_id) {
+            return render_ready;
+        }
         if let Some(display) = self.code_lines_display_override {
             config.display = display;
         }
@@ -1986,6 +2048,7 @@ impl ExplorerRoot {
             folder_scripts: None,
             pending_foreground_events: VecDeque::new(),
             pending_enrichment_events: VecDeque::new(),
+            pending_extension_file_operations: VecDeque::new(),
             enrichment_retry_needed: false,
             service_qos: explorer_jobs::InteractionFirstQos::default(),
             service_delivery: qos::UiDeliveryCounters::default(),
@@ -2034,6 +2097,7 @@ impl ExplorerRoot {
             durable_window_placement: default_durable_window_placement(),
             session_reset_observer: None,
             broker_retry_observer: None,
+            command_prompt_launcher: None,
             last_window_title: None,
             navigation_history_release_deadline: None,
             safe_mode_offers: Vec::new(),
@@ -2073,6 +2137,7 @@ impl ExplorerRoot {
             folder_scripts: None,
             pending_foreground_events: VecDeque::new(),
             pending_enrichment_events: VecDeque::new(),
+            pending_extension_file_operations: VecDeque::new(),
             enrichment_retry_needed: false,
             service_qos: explorer_jobs::InteractionFirstQos::default(),
             service_delivery: qos::UiDeliveryCounters::default(),
@@ -2121,6 +2186,7 @@ impl ExplorerRoot {
             durable_window_placement: default_durable_window_placement(),
             session_reset_observer: None,
             broker_retry_observer: None,
+            command_prompt_launcher: None,
             last_window_title: None,
             navigation_history_release_deadline: None,
             safe_mode_offers: Vec::new(),
@@ -2614,7 +2680,16 @@ impl ExplorerRoot {
                                     .begin_navigation_reconciliation(navigation_reconciliation);
                                 let refresh_after_action =
                                     this.state.service_event_requires_active_refresh(&event);
+                                let extension_operation_finished = matches!(
+                                    &event,
+                                    explorer_model::ExplorerEvent::OperationFinished { .. }
+                                );
                                 let outcome = this.state.apply_service_event(event);
+                                if outcome == explorer_model::WindowEventOutcome::Applied
+                                    && extension_operation_finished
+                                {
+                                    this.continue_extension_file_operation_batch();
+                                }
                                 if outcome == explorer_model::WindowEventOutcome::IgnoredStale {
                                     this.service_qos
                                         .observations_mut()
@@ -3644,6 +3719,23 @@ impl ExplorerRoot {
         self.submit_command(command);
     }
 
+    fn execute_extension_file_operation_batch(
+        &mut self,
+        requests: impl IntoIterator<Item = explorer_model::FileOperationRequest>,
+    ) {
+        let start_now = self.pending_extension_file_operations.is_empty();
+        self.pending_extension_file_operations.extend(requests);
+        if start_now && let Some(request) = self.pending_extension_file_operations.pop_front() {
+            self.execute_file_operation(request);
+        }
+    }
+
+    fn continue_extension_file_operation_batch(&mut self) {
+        if let Some(request) = self.pending_extension_file_operations.pop_front() {
+            self.execute_file_operation(request);
+        }
+    }
+
     /// Requests cooperative cancellation; the Shell STA flips the shared token immediately and
     /// the progress sink aborts at the next native callback boundary.
     pub fn cancel_file_operation(&mut self, request_id: explorer_common::RequestId) {
@@ -4009,7 +4101,11 @@ impl ExplorerRoot {
         };
         let maximum = if horizontal {
             let settings = self.state.view_settings();
-            chrome::details_horizontal_maximum(&settings, self.file_viewport_width)
+            chrome::details_horizontal_maximum_with_registry(
+                &settings,
+                self.state.column_registry(),
+                self.file_viewport_width,
+            )
         } else {
             f32::from(handle.max_offset().y).max(0.0)
         };
@@ -4049,6 +4145,70 @@ impl ExplorerRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let ExplorerAction::SubmitAddress(value) = &action
+            && is_command_prompt_address(value)
+        {
+            let working_directory =
+                self.state
+                    .tabs()
+                    .active_tab()
+                    .history
+                    .current()
+                    .and_then(|entry| match &entry.location {
+                        explorer_model::LocationDescriptor::FileSystem(path) => Some(path.clone()),
+                        _ => None,
+                    });
+            let result = self
+                .command_prompt_launcher
+                .as_ref()
+                .ok_or_else(|| "Command Prompt launcher is unavailable".to_owned())
+                .and_then(|launcher| launcher(working_directory));
+            match result {
+                Ok(()) => {
+                    self.state.cancel_address_edit();
+                    self.reset_address_input(self.state.address_draft().to_owned(), cx);
+                }
+                Err(error) => self.state.fail_address_submission(error),
+            }
+            cx.notify();
+            return;
+        }
+        if let ExplorerAction::RunBulkFolderPreset { count } = &action {
+            let parent = self.state.active_location_for_extension_command();
+            match (
+                parent,
+                extension_commands::generate_bulk_folder_names(*count),
+            ) {
+                (Some(parent), Ok(names)) => {
+                    self.execute_extension_file_operation_batch(names.into_iter().map(|name| {
+                        explorer_model::FileOperationRequest {
+                            kind: explorer_model::FileOperationKind::CreateFolder {
+                                parent: parent.clone(),
+                                name,
+                            },
+                            flags: explorer_model::FileOperationFlags::default(),
+                        }
+                    }));
+                }
+                (None, _) => {
+                    tracing::warn!("bulk-folder command requires an active destination");
+                }
+                (_, Err(error)) => {
+                    tracing::warn!(%error, "bulk-folder command validation failed");
+                }
+            }
+        }
+        if let ExplorerAction::RunExifRenamePreset { preset } = &action {
+            let items = self.state.selected_items_for_extension_command();
+            match extension_commands::exif_rename_requests(&items, *preset) {
+                Ok(requests) => {
+                    self.execute_extension_file_operation_batch(requests);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "EXIF rename command validation failed");
+                }
+            }
+        }
         if let ExplorerAction::OpenExtensionAuthorWebsite { index } = action {
             if let Some(extension) = self.state.extensions().get(index)
                 && extension.author_website.starts_with("https://")
@@ -4188,6 +4348,7 @@ impl ExplorerRoot {
             }
         }
         let focused_before = self.state.focused_surface();
+        let seven_z_enabled_before = self.state.extension_enabled("rust-7z-virtual-folder");
         let closing_tab = match &action {
             ExplorerAction::CloseActiveTab => Some(self.state.tabs().active_tab_id()),
             ExplorerAction::CloseTab { tab_id } => Some(*tab_id),
@@ -4196,6 +4357,25 @@ impl ExplorerRoot {
         let ((), measurement) = measure_callback(action.name(), || {
             dispatch_action(&mut self.state, action.clone(), source);
         });
+        if matches!(
+            action,
+            ExplorerAction::ApplyFolderOptions | ExplorerAction::ConfirmFolderOptions
+        ) && self.reconcile_code_lines_extension_state()
+        {
+            cx.notify();
+        }
+        if matches!(
+            action,
+            ExplorerAction::ApplyFolderOptions | ExplorerAction::ConfirmFolderOptions
+        ) && seven_z_enabled_before
+            && !self.state.extension_enabled("rust-7z-virtual-folder")
+            && let Some(command) = self
+                .state
+                .begin_disabled_virtual_provider_fallback("rust-7z:resource")
+        {
+            self.submit_command(command);
+            cx.notify();
+        }
         self.invalidate_size_map_after_action(&action);
         if matches!(
             &action,
@@ -4584,7 +4764,21 @@ impl ExplorerRoot {
                 self.state.begin_history_navigation(*direction, *steps)
             }
             ExplorerAction::Up => self.state.begin_up_navigation(),
-            ExplorerAction::Refresh => self.state.begin_refresh_navigation(),
+            ExplorerAction::Refresh => {
+                if let Some(directory) = self
+                    .state
+                    .active_location_for_extension_command()
+                    .and_then(|location| location.path().map(std::path::Path::to_path_buf))
+                {
+                    if let Some(runtime) = self.visual_column_runtime.as_ref() {
+                        runtime.invalidate_directory_cache(&directory);
+                    }
+                    if let Some(runtime) = self.code_lines_runtime.as_ref() {
+                        runtime.invalidate_directory_cache(&directory);
+                    }
+                }
+                self.state.begin_refresh_navigation()
+            }
             ExplorerAction::SubmitAddress(value) => self.state.begin_address_submission(value),
             ExplorerAction::ActivateBreadcrumbSegment { location }
             | ExplorerAction::ActivateBreadcrumbChild { location }
@@ -4638,6 +4832,21 @@ impl ExplorerRoot {
             if let Some(command) = self.state.open_row_command(row_index, new_tab) {
                 self.submit_command(command);
             }
+        }
+        if let ExplorerAction::OpenExtensionViewItem {
+            item_id,
+            location,
+            is_container,
+            new_tab,
+        } = &action
+            && let Some(command) = self.state.open_extension_view_item_command(
+                item_id.clone(),
+                location.clone(),
+                *is_container,
+                *new_tab,
+            )
+        {
+            self.submit_command(command);
         }
         if action == ExplorerAction::OpenFocused
             && let Some(row_index) = self.state.focused_row_index()
@@ -5108,6 +5317,9 @@ impl ExplorerRoot {
             return None;
         }
         match event.keystroke.key.as_str() {
+            "escape" | "left" if self.state.extension_command_panel().is_some() => {
+                Some(ExplorerAction::CloseExtensionCommandPanel)
+            }
             "escape" | "left" | "right" => Some(ExplorerAction::CloseExtensionsMenu),
             "enter" | "space" if self.state.tortoise_git_available() => {
                 Some(ExplorerAction::RefreshTortoiseGitStatus)
@@ -5220,6 +5432,10 @@ impl ExplorerRoot {
             root.focus(window, cx);
         }
     }
+}
+
+fn is_command_prompt_address(input: &str) -> bool {
+    input.trim().eq_ignore_ascii_case("cmd")
 }
 
 fn file_view_navigation_target(
@@ -5741,6 +5957,18 @@ impl Render for ExplorerRoot {
                 }),
             )
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if this.state.folder_options().is_some() {
+                    cx.stop_propagation();
+                    if event.keystroke.key == "escape" {
+                        this.handle_action(
+                            ExplorerAction::CloseFolderOptions,
+                            ActionSource::Keyboard,
+                            window,
+                            cx,
+                        );
+                    }
+                    return;
+                }
                 if this.state.about_dialog().is_some() {
                     cx.stop_propagation();
                     if event.keystroke.key == "escape" {
@@ -5943,8 +6171,9 @@ impl Render for ExplorerRoot {
                         }
                         return;
                     }
-                    let menu_action = if this.state.permanent_delete_confirmation_count().is_some()
-                    {
+                    let menu_action = if this.state.folder_options().is_some() {
+                        Some(ExplorerAction::CloseFolderOptions)
+                    } else if this.state.permanent_delete_confirmation_count().is_some() {
                         Some(ExplorerAction::CancelPermanentDelete)
                     } else if this.state.lock_recovery().is_some() {
                         Some(ExplorerAction::CancelLockedDeleteRecovery)
@@ -5952,6 +6181,8 @@ impl Render for ExplorerRoot {
                         Some(ExplorerAction::CloseNavigationHistory)
                     } else if this.state.details_column_menu().is_some() {
                         Some(ExplorerAction::CloseDetailsColumnMenu)
+                    } else if this.state.extension_command_panel().is_some() {
+                        Some(ExplorerAction::CloseExtensionCommandPanel)
                     } else if this.state.extensions_menu_open() {
                         Some(ExplorerAction::CloseExtensionsMenu)
                     } else if this.state.new_menu_open() {
@@ -6250,11 +6481,21 @@ mod tests {
         action_for_host_context_command, active_window_title, advance_item_overlay_epoch,
         captured_scrollbar_axis_to_logical, coalesce_directory_events, extension_ui_pump_due,
         file_view_global_command_action, file_view_item_command_action,
-        file_view_navigation_target, folder_size_result_is_current, is_passive_pointer_action,
-        physical_client_to_logical, prepare_shell_texture_pixels, should_end_address_edit,
-        should_end_inline_rename, synchronize_theme, thumbnail_texture,
+        file_view_navigation_target, folder_size_result_is_current, is_command_prompt_address,
+        is_passive_pointer_action, physical_client_to_logical, prepare_shell_texture_pixels,
+        should_end_address_edit, should_end_inline_rename, synchronize_theme, thumbnail_texture,
         window_title_for_history_entry,
     };
+
+    #[test]
+    fn address_bar_recognizes_only_the_bare_cmd_command() {
+        for input in ["cmd", " CMD ", "CmD"] {
+            assert!(is_command_prompt_address(input));
+        }
+        for input in ["cmd.exe", "cmd /c dir", "C:\\cmd", "command"] {
+            assert!(!is_command_prompt_address(input));
+        }
+    }
 
     struct SequenceExtensionPumpV1 {
         due: std::collections::VecDeque<bool>,
@@ -6289,6 +6530,7 @@ mod tests {
                     error: None,
                 },
             )]),
+            tree_nodes: std::collections::HashMap::new(),
         });
         root.size_map_requested
             .insert((tab_id, generation, item_id.clone()));
@@ -6319,6 +6561,7 @@ mod tests {
             exact_bytes: Some(1),
             partial: false,
             error: None,
+            tree_nodes: Vec::new(),
         };
         assert_ne!(result.context, resumed);
         assert!(!ExplorerRoot::size_map_result_is_current(&result, &resumed));

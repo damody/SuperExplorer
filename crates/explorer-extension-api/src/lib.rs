@@ -72,12 +72,19 @@ use abi_stable::{
     std_types::{RBox, ROption, RResult, RString, RVec},
 };
 
+mod column;
 mod jobs;
 mod operation_plan;
 mod size_map_view;
 mod tools;
+mod view_mode;
+mod virtual_folder;
 mod visual_column;
 
+pub use column::{
+    ColumnAggregateDescriptorV1, ColumnAlignmentV1, ColumnApplicabilityV1, ColumnDescriptorErrorV1,
+    ColumnDescriptorV1, ColumnLocalIdV1, ColumnProviderCostV1, ColumnRendererDescriptorV1,
+};
 pub use jobs::{
     AbiInputStreamServicesV1, AbiJobHostServicesV1, AbiLockOwnerQueryServiceV1,
     BatchColumnContextV1, BatchColumnItemV1, BatchColumnProviderImplementationV1,
@@ -98,9 +105,12 @@ pub use jobs::{
     SinkSubmitStatusV1, StableSortValueKindV1, StableSortValueTransportErrorV1, StableSortValueV1,
 };
 pub use operation_plan::{
-    CommandFormV1, FileIdentityV1, FormFieldV1, MAX_FORM_FIELDS_V1, MAX_OPERATION_STEPS_V1,
-    OperationKindV1, OperationOutcomeV1, OperationPlanV1, OperationPreviewV1, OperationStepV1,
-    OperationTerminalV1,
+    CommandDescriptorV1, CommandFormV1, CommandPlacementV1, FileIdentityV1, FormFieldKindV1,
+    FormFieldV1, FormSubmissionEntryV1, FormSubmissionV1, FormValueV1, LocalizedFormErrorV1,
+    MAX_FORM_FIELDS_V1, MAX_OPERATION_STEPS_V1, OperationConflictV1, OperationKindV1,
+    OperationObjectHandleV1, OperationOutcomeV1, OperationPermissionV1, OperationPlanV1,
+    OperationPreviewStepV1, OperationPreviewV1, OperationProgressV1, OperationStepV1,
+    OperationTerminalV1, SelectionRequirementV1,
 };
 pub use size_map_view::{
     MAX_SIZE_MAP_DETAIL_BYTES_V1, MAX_SIZE_MAP_LABEL_BYTES_V1, MAX_SIZE_MAP_PLAN_TEXT_BYTES_V1,
@@ -111,6 +121,23 @@ pub use size_map_view::{
 pub use tools::{
     AbiToolExecutorV1, MAX_TOOL_ARGUMENT_BYTES_V1, MAX_TOOL_ARGUMENTS_V1, MAX_TOOL_OUTPUT_BYTES_V1,
     ToolExecuteOutcomeV1, ToolExecuteRequestV1, ToolExecuteStatusV1, ToolHandleV1,
+};
+pub use view_mode::{
+    NavigationRequestV1, ViewIconV1, ViewLifecycleEventV1, ViewLifecycleStateV1, ViewLifecycleV1,
+    ViewLocationKindsV1, ViewModeRegistrationErrorV1, ViewModeRegistrationV1,
+    ViewNavigationOperationV1, ViewSelectionCapabilityV1, ViewSelectionOperationV1,
+    ViewSelectionRequestV1, ViewSnapshotIdentityV1,
+};
+pub use virtual_folder::{
+    AbiVirtualOutputServicesV1, AbiVirtualSecretServicesV1, MAX_VIRTUAL_COMPONENTS_V1,
+    MAX_VIRTUAL_ENTRIES_V1, MAX_VIRTUAL_MUTATION_STEPS_V1, MAX_VIRTUAL_READ_BYTES_V1,
+    MAX_VIRTUAL_SECRET_UTF16_V1, MAX_VIRTUAL_WRITE_BYTES_V1, VirtualAllowedOperationsV1,
+    VirtualEntryKindV1, VirtualEntryV1, VirtualEnumerateRequestV1, VirtualEnumerationOutcomeV1,
+    VirtualFolderProviderImplementationV1, VirtualFolderProviderObjectV1, VirtualMutationKindV1,
+    VirtualMutationOutcomeV1, VirtualMutationRequestV1, VirtualMutationStepV1,
+    VirtualOutputOutcomeV1, VirtualOutputStatusV1, VirtualOutputStreamV1, VirtualProviderStatusV1,
+    VirtualReadOutcomeV1, VirtualReadRequestV1, VirtualSecretMaterialV1, VirtualSecretStatusV1,
+    VirtualSecretV1,
 };
 pub use visual_column::{
     CellAggregateV1, CellColorV1, CellRenderContextV1, CellRenderPlanV1, CellThemeV1,
@@ -504,6 +531,9 @@ pub struct RegisteredContributionV1 {
     /// rebuilt against the new schema while prefix-compatible root machinery
     /// continues to own the ABI object layout.
     pub batch_column_provider: ROption<BatchColumnProviderObjectV1>,
+    /// Optional bounded virtual-folder provider. Only a `RESOURCE`
+    /// contribution may supply this object.
+    pub virtual_folder_provider: ROption<VirtualFolderProviderObjectV1>,
 }
 
 /// Complete stateful registrar result; registration status cannot claim success

@@ -39,6 +39,28 @@ exercise generation/stale-result recovery. The final local smoke writes
 `report.json` plus screenshots under its output directory; only a report whose
 status is `passed` counts as current evidence.
 
+The host sends a parent-before-child recursive hierarchy. Child rectangles are
+drawn inside their parent rectangle, so nested folders remain visually owned by
+the closest visible ancestor. When the bounded public projection exceeds 255
+individual nodes, the host keeps the largest root siblings first and then only
+admits descendants whose parent is already present. The remaining tail becomes
+an **Other (N items)** rectangle without exposing orphan nodes.
+Other is a non-openable accessibility group. Every omitted item remains an
+individually named, keyboard-focusable UIA child and selecting one uses the
+same host-owned selection as Details. Exact totals are preserved; the group is
+reported partial unless every omitted item has a complete measurement.
+
+## Modification guide
+
+- Change rectangle layout, labels, or colors in `src/lib.rs`; keep the callback
+  data-only and bounded.
+- Change contribution metadata in `plugin-project.json` and keep its feature,
+  capability, and contribution IDs aligned with registration in `src/lib.rs`.
+- When dependencies change, update exact requirements, regenerate `Cargo.lock`,
+  and refresh `provenance.json` and `SBOM.json` before packaging.
+- Re-run the commands above and the `size-map-plugin-headful` local UITEST after
+  the complete example gate; do not use CI as an acceptance path.
+
 This independent example is packaged as the resulting DLL plus this README;
 it is intentionally not added to `build_install.bat`. The installer continues
 to bundle the single completed folder-size plugin while this view is selected

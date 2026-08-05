@@ -67,6 +67,19 @@ pub struct CellAggregateV1 {
 /// enumerate files or perform parsing/I/O. The host invokes this synchronous
 /// ABI callback on its bounded worker and owns all GPUI painting of the
 /// returned plan; no GPUI thread, entity, handle, or context crosses the ABI.
+/// The callback surface intentionally has no filesystem path, stream, socket,
+/// native handle, runtime handle, or GPUI render context. Expensive parsing and
+/// I/O belong to a provider job; the renderer receives its immutable result.
+///
+/// ```compile_fail
+/// fn renderer_cannot_reach_filesystem(
+///     context: explorer_extension_api::CellRenderContextV1,
+/// ) {
+///     let _ = context.filesystem_path;
+///     let _ = context.network_client;
+///     let _ = context.gpui_context;
+/// }
+/// ```
 #[repr(C)]
 #[derive(Clone, Debug, StableAbi)]
 pub struct CellRenderContextV1 {
@@ -333,6 +346,24 @@ impl VisualColumnObjectV1 {
 mod tests {
     use super::*;
 
+    struct PanickingLifecycle;
+
+    impl VisualColumnImplementationV1 for PanickingLifecycle {
+        fn measure_folder_size(&self, _: FolderSizeMeasureRequestV1) -> FolderSizeMeasureResultV1 {
+            FolderSizeMeasureResultV1::complete(0)
+        }
+
+        fn render(&self, _: CellRenderContextV1) -> CellRenderPlanV1 {
+            panic!("fixture render panic")
+        }
+    }
+
+    impl Drop for PanickingLifecycle {
+        fn drop(&mut self) {
+            panic!("fixture drop panic")
+        }
+    }
+
     struct Example;
 
     impl VisualColumnImplementationV1 for Example {
@@ -386,5 +417,34 @@ mod tests {
             request_generation: 1,
         });
         assert_eq!(plan.proportional_bar_millionths, 1_000_000);
+    }
+
+    #[test]
+    fn renderer_panic_faults_object_and_drop_never_unwinds_into_host() {
+        let object = VisualColumnObjectV1::new(PanickingLifecycle);
+        let context = CellRenderContextV1 {
+            value: ROption::RNone,
+            exact_bytes: ROption::RNone,
+            aggregate: ROption::RNone,
+            loading: false,
+            error: ROption::RNone,
+            selected: false,
+            hovered: false,
+            dpi_milli: 1_000,
+            theme: theme(),
+            settings: RString::new(),
+            item_id: StableIdV1::new(crate::EXTENSION_ID_NAMESPACE_V1, 1),
+            render_generation: 1,
+            request_generation: 1,
+        };
+        assert_eq!(
+            object.render(context.clone()).label.as_str(),
+            "visual column renderer panicked"
+        );
+        assert_eq!(
+            object.render(context).label.as_str(),
+            "visual column is unavailable"
+        );
+        assert!(catch_unwind(AssertUnwindSafe(|| drop(object))).is_ok());
     }
 }

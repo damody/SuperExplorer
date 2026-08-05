@@ -19,3 +19,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File sdk/scripts/package-plugin.p
 
 To modify the example, change the owned JSON display projection or renderer in
 `src/lib.rs`; do not add private product crates or process-control APIs.
+When the query or dependencies change, keep exact Cargo versions, regenerate
+`Cargo.lock`, and refresh `provenance.json`, `SBOM.json`, and `LICENSES.json`.
+After this complete example gate, run `rust-lock-owner-headful` locally; CI is
+not an acceptance path.

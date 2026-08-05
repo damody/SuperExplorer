@@ -22,6 +22,7 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 image.workspace = true
+kamadak-exif.workspace = true
 smallvec.workspace = true
 abi_stable.workspace = true
 

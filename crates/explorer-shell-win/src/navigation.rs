@@ -158,6 +158,11 @@ pub(crate) fn location_absolute_pidl(
                 "copy namespace PIDL",
             )
         }
+        LocationDescriptor::Virtual(_) => Err(shell_error(
+            "resolve virtual location as Shell PIDL",
+            None,
+            "virtual locations must be routed to their extension provider",
+        )),
     }
 }
 
@@ -228,6 +233,13 @@ pub(crate) fn resolve_location(
             drop(item);
             let raw = unsafe { ILCombine(None, Some(aligned.as_ptr())) };
             OwnedPidl::from_raw(raw, "copy Shell namespace PIDL")?
+        }
+        LocationDescriptor::Virtual(_) => {
+            return Err(shell_error(
+                "resolve virtual location through Shell",
+                None,
+                "virtual locations must be routed to their extension provider",
+            ));
         }
     };
 
@@ -316,6 +328,11 @@ pub(crate) fn shell_item(descriptor: &LocationDescriptor) -> Result<IShellItem, 
             unsafe { SHCreateItemFromIDList(pidl.as_ptr()) }
                 .map_err(|error| windows_error("create namespace item", &error))
         }
+        LocationDescriptor::Virtual(_) => Err(shell_error(
+            "resolve virtual location as Shell item",
+            None,
+            "virtual locations must be routed to their extension provider",
+        )),
     }
 }
 
@@ -1106,11 +1123,21 @@ pub(crate) fn open_default(descriptor: &LocationDescriptor) -> Result<(), Explor
                 LocationDescriptor::FileSystem(_) | LocationDescriptor::ParsingName(_) => {
                     unreachable!("path and parsing-name cases returned above")
                 }
+                LocationDescriptor::Virtual(_) => {
+                    unreachable!("virtual location case returned above")
+                }
             };
             name_from_pidl(
                 absolute.as_ptr(),
                 windows::Win32::UI::Shell::SIGDN_DESKTOPABSOLUTEPARSING,
             )?
+        }
+        LocationDescriptor::Virtual(_) => {
+            return Err(shell_error(
+                "open virtual location through Shell",
+                None,
+                "virtual locations must be opened by their extension provider",
+            ));
         }
     };
     let target = HSTRING::from(target);
@@ -1186,6 +1213,13 @@ fn child_entry(
             let mut identity = vec![b'K'];
             identity.extend_from_slice(bytes);
             identity
+        }
+        LocationDescriptor::Virtual(_) => {
+            return Err(shell_error(
+                "enumerate virtual location through Shell",
+                None,
+                "virtual locations must be routed to their extension provider",
+            ));
         }
     };
     let id = ShellItemId::from_provider_bytes(identity_bytes)
@@ -1546,12 +1580,7 @@ fn estimate_entry_bytes(entry: &FileEntry) -> usize {
                 .map_or(0, String::len),
         )
         .saturating_add(entry.metadata.type_display.as_ref().map_or(0, String::len))
-        .saturating_add(match &entry.location {
-            LocationDescriptor::FileSystem(path) => path.as_os_str().len(),
-            LocationDescriptor::ShellNamespace(bytes) => bytes.len(),
-            LocationDescriptor::ParsingName(name) => name.len(),
-            LocationDescriptor::KnownFolder(bytes) => bytes.len(),
-        })
+        .saturating_add(entry.location.encoded_payload_len())
 }
 
 fn windows_error(operation: &'static str, error: &windows::core::Error) -> ExplorerError {

@@ -116,6 +116,10 @@ impl ValidatedContributionSetV1 {
                 .required_capabilities
                 .iter()
                 .any(|capability| capability == "filesystem.read"),
+            lock_owner_query_authorized: contribution
+                .required_capabilities
+                .iter()
+                .any(|capability| capability == "lock_owner.query"),
         })
     }
 }
@@ -133,6 +137,7 @@ pub(crate) struct ValidatedJobDescriptorV1 {
     /// Fixed host-attested bit derived from the canonical validated
     /// contribution capability set. Stream open never accepts a plugin string.
     pub(crate) filesystem_read_authorized: bool,
+    pub(crate) lock_owner_query_authorized: bool,
 }
 
 #[cfg(all(test, feature = "integration-test-support"))]

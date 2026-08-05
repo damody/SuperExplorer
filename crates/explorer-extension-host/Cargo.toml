@@ -17,6 +17,7 @@ abi_stable.workspace = true
 base64 = "=0.22.1"
 explorer-extension-api = { path = "../explorer-extension-api" }
 explorer-extension-ui-api = { path = "../explorer-extension-ui-api" }
+explorer-model = { path = "../explorer-model" }
 libloading = "=0.7.4"
 mlua.workspace = true
 ring = "=0.17.14"
@@ -30,7 +31,6 @@ windows.workspace = true
 [dev-dependencies]
 explorer-common = { path = "../explorer-common" }
 explorer-jobs = { path = "../explorer-jobs" }
-explorer-model = { path = "../explorer-model" }
 tempfile.workspace = true
 
 [lints]

@@ -1,6 +1,6 @@
 //! Host-internal, use-time authorization envelope shared by extension adapters.
 
-use std::{collections::BTreeMap, sync::Mutex};
+use std::{collections::BTreeMap, fmt, sync::Mutex};
 
 use ring::{
     hmac,
@@ -29,6 +29,12 @@ pub(crate) struct AuthorityEnvelopeV1 {
     tag: [u8; 32],
 }
 
+impl AuthorityEnvelopeV1 {
+    pub(crate) const fn location_generation(&self) -> u64 {
+        self.claims.location_generation
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AuthorityAdapterV1 {
     Stream,
@@ -38,6 +44,7 @@ pub(crate) enum AuthorityAdapterV1 {
     OperationPlan,
     VirtualLocation,
     Renderer,
+    Lua,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,7 +64,16 @@ struct CurrentAuthorityV1 {
 
 pub(crate) struct RuntimeAuthorityV1 {
     key: hmac::Key,
-    current: Mutex<BTreeMap<(String, String, String), CurrentAuthorityV1>>,
+    current: Mutex<BTreeMap<(String, String, String, String), CurrentAuthorityV1>>,
+}
+
+impl fmt::Debug for RuntimeAuthorityV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RuntimeAuthorityV1")
+            .field("key", &"<redacted>")
+            .finish_non_exhaustive()
+    }
 }
 
 impl RuntimeAuthorityV1 {
@@ -99,11 +115,55 @@ impl RuntimeAuthorityV1 {
         interface: &str,
     ) -> Result<(), AuthorityErrorV1> {
         let mut current = self.current.lock().map_err(|_| AuthorityErrorV1::Revoked)?;
-        let entry = current
-            .get_mut(&(package.into(), feature.into(), interface.into()))
-            .ok_or(AuthorityErrorV1::Revoked)?;
-        entry.revoked = true;
+        let mut found = false;
+        for ((entry_package, entry_feature, entry_interface, _), entry) in current.iter_mut() {
+            if entry_package == package && entry_feature == feature && entry_interface == interface
+            {
+                entry.revoked = true;
+                found = true;
+            }
+        }
+        if !found {
+            return Err(AuthorityErrorV1::Revoked);
+        }
         Ok(())
+    }
+
+    pub(crate) fn revoke_feature(
+        &self,
+        package: &str,
+        feature: &str,
+    ) -> Result<usize, AuthorityErrorV1> {
+        let mut current = self.current.lock().map_err(|_| AuthorityErrorV1::Revoked)?;
+        let mut revoked = 0;
+        for ((entry_package, entry_feature, _, _), entry) in current.iter_mut() {
+            if entry_package == package && entry_feature == feature && !entry.revoked {
+                entry.revoked = true;
+                revoked += 1;
+            }
+        }
+        Ok(revoked)
+    }
+
+    pub(crate) fn revoke_feature_incarnation(
+        &self,
+        package: &str,
+        feature: &str,
+        incarnation: u64,
+    ) -> Result<usize, AuthorityErrorV1> {
+        let mut current = self.current.lock().map_err(|_| AuthorityErrorV1::Revoked)?;
+        let mut revoked = 0;
+        for ((entry_package, entry_feature, _, _), entry) in current.iter_mut() {
+            if entry_package == package
+                && entry_feature == feature
+                && entry.claims.incarnation == incarnation
+                && !entry.revoked
+            {
+                entry.revoked = true;
+                revoked += 1;
+            }
+        }
+        Ok(revoked)
     }
 
     pub(crate) fn replace_current(
@@ -158,11 +218,12 @@ impl RuntimeAuthorityV1 {
     }
 }
 
-fn identity(claims: &AuthorityClaimsV1) -> (String, String, String) {
+fn identity(claims: &AuthorityClaimsV1) -> (String, String, String, String) {
     (
         claims.package_id.clone(),
         claims.feature_id.clone(),
         claims.interface_id.clone(),
+        claims.capability.clone(),
     )
 }
 fn valid_id(value: &str) -> bool {
@@ -198,6 +259,13 @@ fn adapter_accepts(adapter: AuthorityAdapterV1, capability: &str) -> bool {
             | (AuthorityAdapterV1::OperationPlan, "operations.submit")
             | (AuthorityAdapterV1::VirtualLocation, "virtual_folder.read")
             | (AuthorityAdapterV1::Renderer, "gpui.render")
+            | (AuthorityAdapterV1::Lua, "column.read")
+            | (AuthorityAdapterV1::Lua, "filesystem.read")
+            | (AuthorityAdapterV1::Lua, "filesystem.write")
+            | (AuthorityAdapterV1::Lua, "commands.invoke")
+            | (AuthorityAdapterV1::Lua, "forms.submit")
+            | (AuthorityAdapterV1::Lua, "operations.submit")
+            | (AuthorityAdapterV1::Lua, "tools.execute_bundled")
     )
 }
 fn constant_time_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
@@ -264,6 +332,34 @@ mod tests {
         assert_eq!(
             authority.revalidate(&envelope, AuthorityAdapterV1::Stream),
             Err(AuthorityErrorV1::Stale)
+        );
+    }
+
+    #[test]
+    fn feature_revoke_closes_every_interface_grant_without_touching_siblings() {
+        let authority = RuntimeAuthorityV1::new().unwrap();
+        let first = authority.issue(claims("filesystem.read")).unwrap();
+        let mut second_claims = claims("gpui.render");
+        second_claims.interface_id = "renderer".into();
+        let second = authority.issue(second_claims).unwrap();
+        let mut sibling_claims = claims("filesystem.read");
+        sibling_claims.feature_id = "sibling".into();
+        sibling_claims.interface_id = "sibling-stream".into();
+        let sibling = authority.issue(sibling_claims).unwrap();
+
+        assert_eq!(authority.revoke_feature("package", "feature"), Ok(2));
+        assert_eq!(
+            authority.revalidate(&first, AuthorityAdapterV1::Stream),
+            Err(AuthorityErrorV1::Revoked)
+        );
+        assert_eq!(
+            authority.revalidate(&second, AuthorityAdapterV1::Renderer),
+            Err(AuthorityErrorV1::Revoked)
+        );
+        assert!(
+            authority
+                .revalidate(&sibling, AuthorityAdapterV1::Stream)
+                .is_ok()
         );
     }
     #[test]

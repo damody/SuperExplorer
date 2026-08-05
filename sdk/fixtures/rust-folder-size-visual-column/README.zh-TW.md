@@ -19,7 +19,7 @@ manifest 分別保留 `column`、`recalculate`、`settings` feature 身分，且
 registrar 真正實作的 ABI root、column 與 renderer contribution。
 
 完成且穩定的精確值最多快取 256 筆，位置為
-`%LOCALAPPDATA%\RustGpuiExplorer\plugins\rust-folder-size-visual-column\folder-size\v1`。
+`%LOCALAPPDATA%\RustGpuiExplorer\cache\folder-size\v1`。
 目錄修改日期或計量限制改變時會重新在背景掃描；partial/error 不會寫成精確快取。
 前景時間提示不會終止已開始的遞迴計算；完成結果會留在 Plugin 自己的快取，
 下次程序啟動時若目錄 identity、修改日期與設定相同便直接載入。

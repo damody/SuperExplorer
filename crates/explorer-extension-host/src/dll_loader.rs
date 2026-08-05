@@ -24,6 +24,8 @@ use explorer_extension_api::{
     FolderSizeMeasureResultV1, PluginMetadataV1, ROOT_MODULE_CONTRACT_ID_V1,
     RegisteredContributionKindV1, RegistrarOutputV1, RegistrationStatusV1, SDK_MAJOR_VERSION_V1,
     SizeMapRenderContextV1, SizeMapRenderPlanV1, SizeMapViewObjectV1, UiAbiFingerprintV1,
+    VirtualEnumerateRequestV1, VirtualEnumerationOutcomeV1, VirtualFolderProviderObjectV1,
+    VirtualMutationOutcomeV1, VirtualMutationRequestV1, VirtualReadOutcomeV1, VirtualReadRequestV1,
     VisualColumnObjectV1, registrar_request_v1,
 };
 use serde::Deserialize;
@@ -36,9 +38,12 @@ use crate::{
     PreparedBatchColumnDispatchTicketV1, ResolvedPackageV1, SealedPackageActivationGuardV1,
     SinglePluginBatchColumnCallErrorV1, SinglePluginContributionSummaryV1, SinglePluginLoadErrorV1,
     SinglePluginLoadSummaryV1, SinglePluginSizeMapViewCallErrorV1,
-    SinglePluginVisualColumnCallErrorV1,
+    SinglePluginVirtualFolderCallErrorV1, SinglePluginVisualColumnCallErrorV1,
     package_validation::sealed_manifest_canonical_digest,
     plugin_call_guard::{self, NativeCallOperationV1, PluginCallGuardStoreV1, PluginCallGuardV1},
+    runtime_authority::{
+        AuthorityAdapterV1, AuthorityClaimsV1, AuthorityEnvelopeV1, RuntimeAuthorityV1,
+    },
 };
 
 const MANIFEST_ABI_SCHEMA_V1: u32 = 2;
@@ -402,6 +407,10 @@ pub struct SinglePluginVisualColumnRuntimeV1 {
     render_columns: BTreeMap<String, VisualColumnObjectV1>,
     size_map_views: BTreeMap<String, SizeMapViewObjectV1>,
     batch_column_providers: BTreeMap<String, BatchColumnProviderObjectV1>,
+    virtual_folder_providers: BTreeMap<String, VirtualFolderProviderObjectV1>,
+    batch_lock_owner_capabilities: BTreeSet<String>,
+    renderer_authority: Arc<RuntimeAuthorityV1>,
+    renderer_grants: BTreeMap<String, AuthorityEnvelopeV1>,
     direct_call_guard: DirectPluginCallGuardV1,
 }
 
@@ -492,17 +501,23 @@ pub struct SinglePluginVisualMeasureRuntimeV1 {
     _single_owner: PhantomData<Cell<()>>,
 }
 
-/// GPUI-thread owner for retained visual renderer objects.
+/// Bounded-worker owner for retained data-only visual renderer objects.
 pub struct SinglePluginVisualRenderRuntimeV1 {
     columns: BTreeMap<String, VisualColumnObjectV1>,
     direct_call_guard: DirectPluginCallGuardV1,
+    runtime_authority: Arc<RuntimeAuthorityV1>,
+    grants: BTreeMap<String, AuthorityEnvelopeV1>,
+    owner_thread: Option<std::thread::ThreadId>,
     _single_owner: PhantomData<Cell<()>>,
 }
 
-/// GPUI-thread owner for retained data-only Size Map renderer objects.
+/// Bounded-worker owner for retained data-only Size Map renderer objects.
 pub struct SinglePluginSizeMapViewRuntimeV1 {
     views: BTreeMap<String, SizeMapViewObjectV1>,
     direct_call_guard: DirectPluginCallGuardV1,
+    runtime_authority: Arc<RuntimeAuthorityV1>,
+    grants: BTreeMap<String, AuthorityEnvelopeV1>,
+    owner_thread: Option<std::thread::ThreadId>,
     _single_owner: PhantomData<Cell<()>>,
 }
 
@@ -513,6 +528,14 @@ pub struct SinglePluginSizeMapViewRuntimeV1 {
 pub struct SinglePluginBatchColumnRuntimeV1 {
     plugin_id: explorer_extension_api::StableIdV1,
     providers: BTreeMap<String, BatchColumnProviderObjectV1>,
+    lock_owner_capabilities: BTreeSet<String>,
+    direct_call_guard: DirectPluginCallGuardV1,
+    _single_owner: PhantomData<Cell<()>>,
+}
+
+/// Background-worker owner for retained bounded virtual-folder providers.
+pub struct SinglePluginVirtualFolderRuntimeV1 {
+    providers: BTreeMap<String, VirtualFolderProviderObjectV1>,
     direct_call_guard: DirectPluginCallGuardV1,
     _single_owner: PhantomData<Cell<()>>,
 }
@@ -548,6 +571,9 @@ impl SinglePluginVisualColumnRuntimeV1 {
             SinglePluginVisualRenderRuntimeV1 {
                 columns: self.render_columns,
                 direct_call_guard: self.direct_call_guard,
+                runtime_authority: self.renderer_authority,
+                grants: self.renderer_grants,
+                owner_thread: None,
                 _single_owner: PhantomData,
             },
         )
@@ -577,11 +603,17 @@ impl SinglePluginVisualColumnRuntimeV1 {
             SinglePluginVisualRenderRuntimeV1 {
                 columns: self.render_columns,
                 direct_call_guard: self.direct_call_guard.clone(),
+                runtime_authority: Arc::clone(&self.renderer_authority),
+                grants: self.renderer_grants.clone(),
+                owner_thread: None,
                 _single_owner: PhantomData,
             },
             SinglePluginSizeMapViewRuntimeV1 {
                 views: self.size_map_views,
                 direct_call_guard: self.direct_call_guard,
+                runtime_authority: self.renderer_authority,
+                grants: self.renderer_grants,
+                owner_thread: None,
                 _single_owner: PhantomData,
             },
         )
@@ -610,20 +642,151 @@ impl SinglePluginVisualColumnRuntimeV1 {
             SinglePluginVisualRenderRuntimeV1 {
                 columns: self.render_columns,
                 direct_call_guard: self.direct_call_guard.clone(),
+                runtime_authority: Arc::clone(&self.renderer_authority),
+                grants: self.renderer_grants.clone(),
+                owner_thread: None,
                 _single_owner: PhantomData,
             },
             SinglePluginSizeMapViewRuntimeV1 {
                 views: self.size_map_views,
                 direct_call_guard: self.direct_call_guard.clone(),
+                runtime_authority: self.renderer_authority,
+                grants: self.renderer_grants,
+                owner_thread: None,
                 _single_owner: PhantomData,
             },
             SinglePluginBatchColumnRuntimeV1 {
                 plugin_id,
                 providers: self.batch_column_providers,
+                lock_owner_capabilities: self.batch_lock_owner_capabilities,
                 direct_call_guard: self.direct_call_guard,
                 _single_owner: PhantomData,
             },
         )
+    }
+
+    /// Separates every direct-loader object, including virtual-folder providers.
+    #[must_use]
+    pub fn into_parts_with_virtual_folders(
+        self,
+    ) -> (
+        SinglePluginLoadSummaryV1,
+        SinglePluginVisualMeasureRuntimeV1,
+        SinglePluginVisualRenderRuntimeV1,
+        SinglePluginSizeMapViewRuntimeV1,
+        SinglePluginBatchColumnRuntimeV1,
+        SinglePluginVirtualFolderRuntimeV1,
+    ) {
+        let plugin_id = self.summary.plugin_id;
+        (
+            self.summary,
+            SinglePluginVisualMeasureRuntimeV1 {
+                columns: self.measure_columns,
+                direct_call_guard: self.direct_call_guard.clone(),
+                _single_owner: PhantomData,
+            },
+            SinglePluginVisualRenderRuntimeV1 {
+                columns: self.render_columns,
+                direct_call_guard: self.direct_call_guard.clone(),
+                runtime_authority: Arc::clone(&self.renderer_authority),
+                grants: self.renderer_grants.clone(),
+                owner_thread: None,
+                _single_owner: PhantomData,
+            },
+            SinglePluginSizeMapViewRuntimeV1 {
+                views: self.size_map_views,
+                direct_call_guard: self.direct_call_guard.clone(),
+                runtime_authority: self.renderer_authority,
+                grants: self.renderer_grants,
+                owner_thread: None,
+                _single_owner: PhantomData,
+            },
+            SinglePluginBatchColumnRuntimeV1 {
+                plugin_id,
+                providers: self.batch_column_providers,
+                lock_owner_capabilities: self.batch_lock_owner_capabilities,
+                direct_call_guard: self.direct_call_guard.clone(),
+                _single_owner: PhantomData,
+            },
+            SinglePluginVirtualFolderRuntimeV1 {
+                providers: self.virtual_folder_providers,
+                direct_call_guard: self.direct_call_guard,
+                _single_owner: PhantomData,
+            },
+        )
+    }
+}
+
+impl SinglePluginVirtualFolderRuntimeV1 {
+    #[must_use]
+    pub fn contains(&self, contribution_id: &str) -> bool {
+        self.providers.contains_key(contribution_id)
+    }
+
+    pub fn enumerate(
+        &self,
+        contribution_id: &str,
+        request: VirtualEnumerateRequestV1,
+    ) -> Result<VirtualEnumerationOutcomeV1, SinglePluginVirtualFolderCallErrorV1> {
+        let provider = self.providers.get(contribution_id).ok_or_else(|| {
+            SinglePluginVirtualFolderCallErrorV1::MissingContribution(contribution_id.to_owned())
+        })?;
+        let permit = self
+            .direct_call_guard
+            .begin(
+                "direct-virtual-folder",
+                NativeCallOperationV1::VirtualFolderProvider,
+            )
+            .map_err(|_| SinglePluginVirtualFolderCallErrorV1::BlockedBySafeMode)?;
+        let outcome = provider.enumerate(request);
+        permit
+            .clear()
+            .map_err(|_| SinglePluginVirtualFolderCallErrorV1::MarkerClearFailed)?;
+        Ok(outcome)
+    }
+
+    pub fn read(
+        &self,
+        contribution_id: &str,
+        request: VirtualReadRequestV1,
+    ) -> Result<VirtualReadOutcomeV1, SinglePluginVirtualFolderCallErrorV1> {
+        let provider = self.providers.get(contribution_id).ok_or_else(|| {
+            SinglePluginVirtualFolderCallErrorV1::MissingContribution(contribution_id.to_owned())
+        })?;
+        let permit = self
+            .direct_call_guard
+            .begin(
+                "direct-virtual-folder",
+                NativeCallOperationV1::VirtualFolderProvider,
+            )
+            .map_err(|_| SinglePluginVirtualFolderCallErrorV1::BlockedBySafeMode)?;
+        let outcome = provider.read(request);
+        permit
+            .clear()
+            .map_err(|_| SinglePluginVirtualFolderCallErrorV1::MarkerClearFailed)?;
+        Ok(outcome)
+    }
+
+    pub fn mutate(
+        &self,
+        contribution_id: &str,
+        request: VirtualMutationRequestV1,
+    ) -> Result<VirtualMutationOutcomeV1, SinglePluginVirtualFolderCallErrorV1> {
+        let provider = self.providers.get(contribution_id).ok_or_else(|| {
+            SinglePluginVirtualFolderCallErrorV1::MissingContribution(contribution_id.to_owned())
+        })?;
+        let permit = self
+            .direct_call_guard
+            .begin(
+                "direct-virtual-folder-mutation",
+                NativeCallOperationV1::VirtualFolderProvider,
+            )
+            .map_err(|_| SinglePluginVirtualFolderCallErrorV1::BlockedBySafeMode)?;
+        let outcome = provider.mutate(request);
+        permit
+            .clear()
+            .map_err(|_| SinglePluginVirtualFolderCallErrorV1::MarkerClearFailed)?;
+        Ok(outcome)
     }
 }
 
@@ -672,11 +835,19 @@ impl SinglePluginBatchColumnRuntimeV1 {
                 contribution_id: contribution_id.to_owned(),
             });
         }
-        let authority =
+        let mut authority =
             ExtensionJobAuthorityV1::for_direct_batch_column(self.plugin_id, contribution_id)
                 .ok_or(SinglePluginBatchColumnCallErrorV1::Runtime(
                     ExtensionJobRuntimeErrorV1::InvalidRequest,
                 ))?;
+        if lock_owner_query.is_some() {
+            if !self.lock_owner_capabilities.contains(contribution_id) {
+                return Err(SinglePluginBatchColumnCallErrorV1::Runtime(
+                    ExtensionJobRuntimeErrorV1::UnauthorizedAuthority,
+                ));
+            }
+            authority = authority.with_lock_owner_query_for_direct_loader();
+        }
         runtime
             .prepare_batch_column_dispatch(BatchColumnRuntimeRequestV1 {
                 authority,
@@ -795,18 +966,38 @@ impl SinglePluginVisualMeasureRuntimeV1 {
 }
 
 impl SinglePluginVisualRenderRuntimeV1 {
-    /// Calls the retained renderer from the GPUI thread with its current public
-    /// value, aggregate, interaction, DPI, theme, and settings snapshot.
+    /// Calls the retained renderer from its bounded host worker with a copied,
+    /// public data-only snapshot. GPUI paints the returned plan separately.
     pub fn render(
         &mut self,
         contribution_id: &str,
         context: CellRenderContextV1,
     ) -> Result<CellRenderPlanV1, SinglePluginVisualColumnCallErrorV1> {
+        let current_thread = std::thread::current().id();
+        match self.owner_thread {
+            Some(owner) if owner != current_thread => {
+                return Err(SinglePluginVisualColumnCallErrorV1::WrongRenderThread);
+            }
+            None => self.owner_thread = Some(current_thread),
+            Some(_) => {}
+        }
         let column = self.columns.get(contribution_id).ok_or_else(|| {
             SinglePluginVisualColumnCallErrorV1::UnknownRenderContribution(
                 contribution_id.to_owned(),
             )
         })?;
+        let grant = self.grants.get(contribution_id).ok_or_else(|| {
+            SinglePluginVisualColumnCallErrorV1::UnknownRenderContribution(
+                contribution_id.to_owned(),
+            )
+        })?;
+        self.runtime_authority
+            .revalidate(grant, AuthorityAdapterV1::Renderer)
+            .map_err(|_| {
+                SinglePluginVisualColumnCallErrorV1::UnknownRenderContribution(
+                    contribution_id.to_owned(),
+                )
+            })?;
         let permit = self
             .direct_call_guard
             .begin("direct-render", NativeCallOperationV1::VisualRender)
@@ -816,6 +1007,13 @@ impl SinglePluginVisualRenderRuntimeV1 {
                 )
             })?;
         let result = column.render(context);
+        self.runtime_authority
+            .revalidate(grant, AuthorityAdapterV1::Renderer)
+            .map_err(|_| {
+                SinglePluginVisualColumnCallErrorV1::UnknownRenderContribution(
+                    contribution_id.to_owned(),
+                )
+            })?;
         permit.clear().map_err(|_| {
             SinglePluginVisualColumnCallErrorV1::UnknownRenderContribution(
                 contribution_id.to_owned(),
@@ -834,14 +1032,22 @@ impl SinglePluginSizeMapViewRuntimeV1 {
         self.views.contains_key(contribution_id)
     }
 
-    /// Calls the retained Size Map renderer on the GPUI thread with a copied
-    /// node snapshot. The host owns scan I/O, generation rejection, selection,
-    /// navigation, and final rectangle clipping.
+    /// Calls the retained Size Map renderer on its bounded host worker with a
+    /// copied node snapshot. GPUI owns painting, selection, navigation, and
+    /// final rectangle clipping.
     pub fn render(
         &mut self,
         contribution_id: &str,
         context: SizeMapRenderContextV1,
     ) -> Result<SizeMapRenderPlanV1, SinglePluginSizeMapViewCallErrorV1> {
+        let current_thread = std::thread::current().id();
+        match self.owner_thread {
+            Some(owner) if owner != current_thread => {
+                return Err(SinglePluginSizeMapViewCallErrorV1::WrongRenderThread);
+            }
+            None => self.owner_thread = Some(current_thread),
+            Some(_) => {}
+        }
         let view = self.views.get(contribution_id).ok_or_else(|| {
             SinglePluginSizeMapViewCallErrorV1::UnknownViewContribution(contribution_id.to_owned())
         })?;
@@ -852,11 +1058,21 @@ impl SinglePluginSizeMapViewRuntimeV1 {
                 0,
             ))
         };
+        let grant = self
+            .grants
+            .get(contribution_id)
+            .ok_or_else(callback_error)?;
+        self.runtime_authority
+            .revalidate(grant, AuthorityAdapterV1::Renderer)
+            .map_err(|_| callback_error())?;
         let permit = self
             .direct_call_guard
             .begin("direct-size-map", NativeCallOperationV1::VisualRender)
             .map_err(|_| callback_error())?;
         let plan = view.render_size_map(context).into_result();
+        self.runtime_authority
+            .revalidate(grant, AuthorityAdapterV1::Renderer)
+            .map_err(|_| callback_error())?;
         permit.clear().map_err(|_| callback_error())?;
         plan.map_err(SinglePluginSizeMapViewCallErrorV1::Plugin)
     }
@@ -924,6 +1140,12 @@ pub(crate) fn load_single_plugin_visual_column_runtime(
     let mut render_columns = BTreeMap::new();
     let mut size_map_views = BTreeMap::new();
     let mut batch_column_providers = BTreeMap::new();
+    let mut virtual_folder_providers = BTreeMap::new();
+    let mut batch_lock_owner_capabilities = BTreeSet::new();
+    let renderer_authority = Arc::new(RuntimeAuthorityV1::new().map_err(|_| {
+        SinglePluginLoadErrorV1::LoadFailed("runtime renderer authority unavailable".to_owned())
+    })?);
+    let mut renderer_grants = BTreeMap::new();
     for contribution in output.contributions.into_iter() {
         let contribution_id = contribution.contribution_id.into_string();
         if let Some(object) = contribution.visual_column.into_option() {
@@ -941,6 +1163,28 @@ pub(crate) fn load_single_plugin_visual_column_runtime(
                     "registrar returned duplicate visual contribution {contribution_id:?}"
                 )));
             }
+            if contribution.kind == RegisteredContributionKindV1::GPUI_RENDERER {
+                let grant = renderer_authority
+                    .issue(AuthorityClaimsV1 {
+                        package_id: direct_call_guard.package_id.clone(),
+                        feature_id: "direct-renderer".to_owned(),
+                        interface_id: contribution_id.clone(),
+                        incarnation: 1,
+                        capability: "gpui.render".to_owned(),
+                        authorized_root_sha256: direct_call_guard.digest.clone(),
+                        location_generation: 1,
+                        item_generation: 1,
+                        refresh_generation: 1,
+                        container_generation: 1,
+                        job_generation: 1,
+                    })
+                    .map_err(|_| {
+                        SinglePluginLoadErrorV1::LoadFailed(format!(
+                            "renderer authority rejected {contribution_id:?}"
+                        ))
+                    })?;
+                renderer_grants.insert(contribution_id.clone(), grant);
+            }
         }
         if let Some(view) = contribution.size_map_view.into_option() {
             if contribution.kind != RegisteredContributionKindV1::VIEW_MODE {
@@ -956,6 +1200,26 @@ pub(crate) fn load_single_plugin_visual_column_runtime(
                     "registrar returned duplicate Size Map view contribution {contribution_id:?}"
                 )));
             }
+            let grant = renderer_authority
+                .issue(AuthorityClaimsV1 {
+                    package_id: direct_call_guard.package_id.clone(),
+                    feature_id: "direct-renderer".to_owned(),
+                    interface_id: contribution_id.clone(),
+                    incarnation: 1,
+                    capability: "gpui.render".to_owned(),
+                    authorized_root_sha256: direct_call_guard.digest.clone(),
+                    location_generation: 1,
+                    item_generation: 1,
+                    refresh_generation: 1,
+                    container_generation: 1,
+                    job_generation: 1,
+                })
+                .map_err(|_| {
+                    SinglePluginLoadErrorV1::LoadFailed(format!(
+                        "view renderer authority rejected {contribution_id:?}"
+                    ))
+                })?;
+            renderer_grants.insert(contribution_id.clone(), grant);
         }
         if let Some(provider) = contribution.batch_column_provider.into_option() {
             if contribution.kind != RegisteredContributionKindV1::COLUMN {
@@ -971,6 +1235,46 @@ pub(crate) fn load_single_plugin_visual_column_runtime(
                     "registrar returned duplicate batch-column contribution {contribution_id:?}"
                 )));
             }
+            if contribution
+                .required_capabilities
+                .iter()
+                .any(|capability| capability.as_str() == "lock_owner.query")
+            {
+                batch_lock_owner_capabilities.insert(contribution_id.clone());
+            }
+        }
+        if let Some(provider) = contribution.virtual_folder_provider.into_option() {
+            if contribution.kind != RegisteredContributionKindV1::RESOURCE {
+                return Err(SinglePluginLoadErrorV1::LoadFailed(format!(
+                    "virtual-folder provider contribution {contribution_id:?} has a non-resource kind"
+                )));
+            }
+            if !contribution
+                .required_capabilities
+                .iter()
+                .any(|capability| capability.as_str() == "filesystem.read")
+            {
+                return Err(SinglePluginLoadErrorV1::LoadFailed(format!(
+                    "virtual-folder provider contribution {contribution_id:?} lacks filesystem.read"
+                )));
+            }
+            if !contribution
+                .required_capabilities
+                .iter()
+                .any(|capability| capability.as_str() == "filesystem.write")
+            {
+                return Err(SinglePluginLoadErrorV1::LoadFailed(format!(
+                    "virtual-folder mutation provider contribution {contribution_id:?} lacks filesystem.write"
+                )));
+            }
+            if virtual_folder_providers
+                .insert(contribution_id.clone(), provider)
+                .is_some()
+            {
+                return Err(SinglePluginLoadErrorV1::LoadFailed(format!(
+                    "registrar returned duplicate virtual-folder contribution {contribution_id:?}"
+                )));
+            }
         }
     }
 
@@ -980,6 +1284,10 @@ pub(crate) fn load_single_plugin_visual_column_runtime(
         render_columns,
         size_map_views,
         batch_column_providers,
+        virtual_folder_providers,
+        batch_lock_owner_capabilities,
+        renderer_authority,
+        renderer_grants,
         direct_call_guard,
     })
 }
@@ -1420,7 +1728,7 @@ mod tests {
 
     use abi_stable::{
         prefix_type::PrefixTypeTrait,
-        std_types::{ROption, RResult},
+        std_types::{ROption, RResult, RVec},
     };
     use explorer_extension_api::{
         AbiErrorV1, ExtensionRegistrarImplementationV1, ExtensionRootModuleV1, PluginMetadataV1,
@@ -1450,12 +1758,423 @@ mod tests {
         assert_send::<SinglePluginSizeMapViewRuntimeV1>();
     }
 
+    #[test]
+    fn explicit_7z_dll_smoke_enumerates_through_production_host_stream_when_configured() {
+        let (Some(dll), Some(archive)) = (
+            std::env::var_os("SUPEREXPLORER_7Z_SMOKE_DLL"),
+            std::env::var_os("SUPEREXPLORER_7Z_SMOKE_ARCHIVE"),
+        ) else {
+            return;
+        };
+        let directory = tempfile::tempdir().expect("marker directory");
+        let markers =
+            PluginCallGuardStoreV1::open(directory.path().join("markers"), Duration::ZERO)
+                .expect("markers");
+        let loaded = load_single_plugin_visual_column_runtime(Path::new(&dll), markers)
+            .expect("load 7z DLL");
+        let (_, _, _, _, _, virtual_folders) = loaded.into_parts_with_virtual_folders();
+        assert!(virtual_folders.contains("rust-7z:resource"));
+        let password = std::env::var("SUPEREXPLORER_7Z_SMOKE_PASSWORD").ok();
+        let secret = || {
+            password
+                .as_ref()
+                .and_then(|password| {
+                    crate::mint_virtual_secret_v1(password.encode_utf16().collect())
+                        .map(ROption::RSome)
+                })
+                .unwrap_or(ROption::RNone)
+        };
+        if password.is_some() {
+            let missing = virtual_folders
+                .enumerate(
+                    "rust-7z:resource",
+                    VirtualEnumerateRequestV1 {
+                        container: crate::open_virtual_container_input_v1(Path::new(&archive), 1)
+                            .expect("open encrypted archive without password"),
+                        container_generation: 1,
+                        source_generation: 1,
+                        parent_components: RVec::new(),
+                        maximum_entries: 128,
+                        reserved: 0,
+                        secret: ROption::RNone,
+                    },
+                )
+                .expect("invoke encrypted provider without password");
+            assert_eq!(
+                missing.status,
+                explorer_extension_api::VirtualProviderStatusV1::PASSWORD_REQUIRED
+            );
+            let wrong = virtual_folders
+                .enumerate(
+                    "rust-7z:resource",
+                    VirtualEnumerateRequestV1 {
+                        container: crate::open_virtual_container_input_v1(Path::new(&archive), 1)
+                            .expect("open encrypted archive with wrong password"),
+                        container_generation: 1,
+                        source_generation: 1,
+                        parent_components: RVec::new(),
+                        maximum_entries: 128,
+                        reserved: 0,
+                        secret: crate::mint_virtual_secret_v1(
+                            "definitely-wrong".encode_utf16().collect(),
+                        )
+                        .map(ROption::RSome)
+                        .unwrap_or(ROption::RNone),
+                    },
+                )
+                .expect("invoke encrypted provider with wrong password");
+            assert_eq!(
+                wrong.status,
+                explorer_extension_api::VirtualProviderStatusV1::FAILED
+            );
+        }
+        let stream = crate::open_virtual_container_input_v1(Path::new(&archive), 1)
+            .expect("open archive stream");
+        let outcome = virtual_folders
+            .enumerate(
+                "rust-7z:resource",
+                VirtualEnumerateRequestV1 {
+                    container: stream,
+                    container_generation: 1,
+                    source_generation: 1,
+                    parent_components: RVec::new(),
+                    maximum_entries: 128,
+                    reserved: 0,
+                    secret: secret(),
+                },
+            )
+            .expect("invoke 7z provider");
+        assert_eq!(
+            outcome.status,
+            explorer_extension_api::VirtualProviderStatusV1::READY
+        );
+        assert!(!outcome.entries.is_empty());
+        let directory = outcome
+            .entries
+            .iter()
+            .find(|entry| entry.kind == explorer_extension_api::VirtualEntryKindV1::DIRECTORY)
+            .expect("archive directory");
+        let nested = virtual_folders
+            .enumerate(
+                "rust-7z:resource",
+                VirtualEnumerateRequestV1 {
+                    container: crate::open_virtual_container_input_v1(Path::new(&archive), 1)
+                        .expect("reopen archive stream"),
+                    container_generation: 1,
+                    source_generation: 1,
+                    parent_components: directory.components.clone(),
+                    maximum_entries: 128,
+                    reserved: 0,
+                    secret: secret(),
+                },
+            )
+            .expect("enumerate nested archive directory");
+        let file = nested
+            .entries
+            .iter()
+            .find(|entry| entry.kind == explorer_extension_api::VirtualEntryKindV1::FILE)
+            .expect("archive file");
+        let read = virtual_folders
+            .read(
+                "rust-7z:resource",
+                VirtualReadRequestV1 {
+                    container: crate::open_virtual_container_input_v1(Path::new(&archive), 1)
+                        .expect("reopen archive stream for entry"),
+                    container_generation: 1,
+                    source_generation: 1,
+                    entry_id: file.id,
+                    offset: 0,
+                    maximum_bytes: 64 * 1024,
+                    reserved: 0,
+                    secret: secret(),
+                },
+            )
+            .expect("read archive entry");
+        assert_eq!(
+            read.status,
+            explorer_extension_api::VirtualProviderStatusV1::READY
+        );
+        assert_eq!(read.bytes.as_slice(), b"hello archive");
+        assert!(read.end_of_entry);
+        let mutation_root = tempfile::tempdir().expect("mutation directory");
+        let mutation_archive = mutation_root.path().join("mutation.7z");
+        std::fs::copy(Path::new(&archive), &mutation_archive).expect("copy mutation archive");
+        let original_mutation_bytes = std::fs::read(&mutation_archive).expect("original bytes");
+        let maximum_staging = std::fs::metadata(&mutation_archive)
+            .expect("archive metadata")
+            .len()
+            .saturating_mul(4)
+            .max(1024 * 1024);
+        let (staging_output, staging) =
+            crate::create_virtual_container_staging_v1(&mutation_archive, 1, maximum_staging, None)
+                .expect("create same-volume staging");
+        let mut destination = file.components.clone().into_vec();
+        *destination.last_mut().expect("file name") = "renamed.txt".into();
+        let mutation = virtual_folders
+            .mutate(
+                "rust-7z:resource",
+                explorer_extension_api::VirtualMutationRequestV1 {
+                    container: crate::open_virtual_container_input_v1(&mutation_archive, 1)
+                        .expect("open mutation input"),
+                    staging: staging_output,
+                    container_generation: 1,
+                    source_generation: 1,
+                    steps: vec![explorer_extension_api::VirtualMutationStepV1 {
+                        kind: explorer_extension_api::VirtualMutationKindV1::RENAME,
+                        entry_id: file.id,
+                        destination_components: destination.clone().into(),
+                        source: ROption::RNone,
+                        source_generation: 0,
+                    }]
+                    .into(),
+                    reserved: 0,
+                    secret: secret(),
+                },
+            )
+            .expect("invoke mutation provider");
+        assert_eq!(
+            mutation.status,
+            explorer_extension_api::VirtualProviderStatusV1::READY
+        );
+        staging.sync().expect("sync staging");
+        let staging_path = staging.retain();
+        let renamed = virtual_folders
+            .enumerate(
+                "rust-7z:resource",
+                VirtualEnumerateRequestV1 {
+                    container: crate::open_virtual_container_input_v1(&staging_path, 2)
+                        .expect("open rebuilt staging"),
+                    container_generation: 2,
+                    source_generation: 2,
+                    parent_components: directory.components.clone(),
+                    maximum_entries: 128,
+                    reserved: 0,
+                    secret: secret(),
+                },
+            )
+            .expect("enumerate rebuilt archive");
+        assert!(
+            renamed
+                .entries
+                .iter()
+                .any(|entry| entry.name == "renamed.txt")
+        );
+        std::fs::remove_file(staging_path).expect("clean retained staging");
+
+        let failure_step = || explorer_extension_api::VirtualMutationStepV1 {
+            kind: explorer_extension_api::VirtualMutationKindV1::RENAME,
+            entry_id: file.id,
+            destination_components: destination.clone().into(),
+            source: ROption::RNone,
+            source_generation: 0,
+        };
+        let quota_failure = crate::commit_virtual_container_mutation_v1(
+            &virtual_folders,
+            "rust-7z:resource",
+            &mutation_archive,
+            1,
+            vec![failure_step()],
+            32,
+            None,
+            password
+                .as_ref()
+                .map(|password| password.encode_utf16().collect()),
+        );
+        assert!(quota_failure.is_err());
+        assert_eq!(
+            std::fs::read(&mutation_archive).unwrap(),
+            original_mutation_bytes
+        );
+        let cancelled = explorer_model::CancellationToken::new();
+        cancelled.cancel();
+        let cancellation_failure = crate::commit_virtual_container_mutation_v1(
+            &virtual_folders,
+            "rust-7z:resource",
+            &mutation_archive,
+            1,
+            vec![failure_step()],
+            maximum_staging,
+            Some(cancelled),
+            password
+                .as_ref()
+                .map(|password| password.encode_utf16().collect()),
+        );
+        assert!(cancellation_failure.is_err());
+        assert_eq!(
+            std::fs::read(&mutation_archive).unwrap(),
+            original_mutation_bytes
+        );
+
+        for fault in [
+            crate::virtual_container_mutation::VirtualMutationFaultV1::Rebuild,
+            crate::virtual_container_mutation::VirtualMutationFaultV1::Flush,
+            crate::virtual_container_mutation::VirtualMutationFaultV1::Reopen,
+            crate::virtual_container_mutation::VirtualMutationFaultV1::Header,
+            crate::virtual_container_mutation::VirtualMutationFaultV1::Inventory,
+            crate::virtual_container_mutation::VirtualMutationFaultV1::Crc,
+        ] {
+            let result =
+                crate::virtual_container_mutation::commit_virtual_container_mutation_with_fault_v1(
+                    &virtual_folders,
+                    "rust-7z:resource",
+                    &mutation_archive,
+                    1,
+                    vec![failure_step()],
+                    maximum_staging,
+                    password
+                        .as_ref()
+                        .map(|password| password.encode_utf16().collect()),
+                    fault,
+                );
+            assert!(result.is_err(), "fault {fault:?} must fail closed");
+            assert_eq!(
+                std::fs::read(&mutation_archive).unwrap(),
+                original_mutation_bytes,
+                "fault {fault:?} changed the original"
+            );
+            assert!(
+                !std::fs::read_dir(mutation_root.path())
+                    .unwrap()
+                    .any(|entry| {
+                        entry
+                            .ok()
+                            .and_then(|entry| entry.file_name().into_string().ok())
+                            .is_some_and(|name| name.ends_with(".staging"))
+                    })
+            );
+        }
+
+        let commit = crate::commit_virtual_container_mutation_v1(
+            &virtual_folders,
+            "rust-7z:resource",
+            &mutation_archive,
+            1,
+            vec![
+                explorer_extension_api::VirtualMutationStepV1 {
+                    kind: explorer_extension_api::VirtualMutationKindV1::MOVE,
+                    entry_id: directory.id,
+                    destination_components: vec!["moved-directory".into()].into(),
+                    source: ROption::RNone,
+                    source_generation: 0,
+                },
+                explorer_extension_api::VirtualMutationStepV1 {
+                    kind: explorer_extension_api::VirtualMutationKindV1::ADD_FILE,
+                    entry_id: StableIdV1::new(crate::extension_id_namespace_v1(), 1),
+                    destination_components: vec!["added.txt".into()].into(),
+                    source: crate::open_virtual_memory_input_v1(b"added through ABI".to_vec(), 77)
+                        .map(ROption::RSome)
+                        .unwrap_or(ROption::RNone),
+                    source_generation: 77,
+                },
+                explorer_extension_api::VirtualMutationStepV1 {
+                    kind: explorer_extension_api::VirtualMutationKindV1::CREATE_DIRECTORY,
+                    entry_id: StableIdV1::new(crate::extension_id_namespace_v1(), 2),
+                    destination_components: vec!["new-folder".into()].into(),
+                    source: ROption::RNone,
+                    source_generation: 0,
+                },
+            ],
+            maximum_staging,
+            None,
+            password
+                .as_ref()
+                .map(|password| password.encode_utf16().collect()),
+        )
+        .expect("verify and atomically commit rebuilt archive");
+        assert!(commit.backup.exists());
+        assert_ne!(
+            std::fs::read(&mutation_archive).unwrap(),
+            original_mutation_bytes
+        );
+        let committed_root = virtual_folders
+            .enumerate(
+                "rust-7z:resource",
+                VirtualEnumerateRequestV1 {
+                    container: crate::open_virtual_container_input_v1(
+                        &mutation_archive,
+                        commit.new_generation,
+                    )
+                    .expect("open committed archive"),
+                    container_generation: commit.new_generation,
+                    source_generation: commit.new_generation,
+                    parent_components: RVec::new(),
+                    maximum_entries: 128,
+                    reserved: 0,
+                    secret: secret(),
+                },
+            )
+            .expect("enumerate committed root");
+        assert_eq!(
+            committed_root.status,
+            explorer_extension_api::VirtualProviderStatusV1::READY
+        );
+        assert!(
+            committed_root
+                .entries
+                .iter()
+                .any(|entry| entry.name == "added.txt")
+        );
+        assert!(
+            committed_root
+                .entries
+                .iter()
+                .any(|entry| entry.name == "new-folder")
+        );
+        assert!(
+            committed_root
+                .entries
+                .iter()
+                .any(|entry| entry.name == "moved-directory")
+        );
+        crate::undo_virtual_container_mutation_v1(
+            &virtual_folders,
+            "rust-7z:resource",
+            &mutation_archive,
+            &commit.backup,
+            commit.new_generation,
+            password
+                .as_ref()
+                .map(|password| password.encode_utf16().collect()),
+        )
+        .expect("atomically undo whole-container mutation");
+        assert_eq!(
+            std::fs::read(&mutation_archive).unwrap(),
+            original_mutation_bytes
+        );
+        assert!(!commit.backup.exists());
+    }
+
     struct TestSizeMapView;
 
     impl SizeMapViewImplementationV1 for TestSizeMapView {
         fn render_size_map(&self, context: SizeMapRenderContextV1) -> SizeMapRenderPlanV1 {
-            SizeMapRenderPlanV1::empty(context.generation, context.render_revision, "test")
+            SizeMapRenderPlanV1::empty(context.snapshot, "test")
         }
+    }
+
+    fn test_renderer_authority(
+        contribution_id: &str,
+    ) -> (
+        Arc<RuntimeAuthorityV1>,
+        BTreeMap<String, AuthorityEnvelopeV1>,
+    ) {
+        let runtime = Arc::new(RuntimeAuthorityV1::new().unwrap());
+        let grant = runtime
+            .issue(AuthorityClaimsV1 {
+                package_id: "direct-test".into(),
+                feature_id: "direct-renderer".into(),
+                interface_id: contribution_id.into(),
+                incarnation: 1,
+                capability: "gpui.render".into(),
+                authorized_root_sha256: "a".repeat(64),
+                location_generation: 1,
+                item_generation: 1,
+                refresh_generation: 1,
+                container_generation: 1,
+                job_generation: 1,
+            })
+            .unwrap();
+        (runtime, BTreeMap::from([(contribution_id.into(), grant)]))
     }
 
     #[test]
@@ -1474,19 +2193,71 @@ mod tests {
         let empty = SinglePluginSizeMapViewRuntimeV1 {
             views: BTreeMap::new(),
             direct_call_guard: guard.clone(),
+            runtime_authority: Arc::new(RuntimeAuthorityV1::new().unwrap()),
+            grants: BTreeMap::new(),
+            owner_thread: None,
             _single_owner: PhantomData,
         };
         assert!(!empty.has_view_contribution("size-map"));
 
-        let supplied = SinglePluginSizeMapViewRuntimeV1 {
+        let (runtime_authority, grants) = test_renderer_authority("size-map");
+        let revoke_authority = Arc::clone(&runtime_authority);
+        let mut supplied = SinglePluginSizeMapViewRuntimeV1 {
             views: BTreeMap::from([(
                 "size-map".to_owned(),
                 SizeMapViewObjectV1::new(TestSizeMapView),
             )]),
             direct_call_guard: guard,
+            runtime_authority,
+            grants,
+            owner_thread: None,
             _single_owner: PhantomData,
         };
         assert!(supplied.has_view_contribution("size-map"));
+        let color = explorer_extension_api::CellColorV1::rgba(1, 2, 3, 255);
+        let context = SizeMapRenderContextV1 {
+            snapshot: explorer_extension_api::ViewSnapshotIdentityV1 {
+                location_generation: 1,
+                refresh_generation: 1,
+                render_revision: 1,
+            },
+            nodes: Vec::new().into(),
+            viewport: explorer_extension_api::SizeMapViewportV1 {
+                width_milli: 1_000,
+                height_milli: 1_000,
+                dpi_milli: 1_000,
+            },
+            theme: explorer_extension_api::CellThemeV1 {
+                foreground: color,
+                muted_foreground: color,
+                background: color,
+                selection_background: color,
+                accent: color,
+            },
+            selected_node_ids: Vec::new().into(),
+            settings: "{}".into(),
+        };
+        assert!(supplied.render("size-map", context.clone()).is_ok());
+        let (returned, wrong_thread_error) = thread::spawn({
+            let context = context.clone();
+            move || {
+                let mut renderer = supplied;
+                let error = renderer.render("size-map", context).unwrap_err();
+                (renderer, error)
+            }
+        })
+        .join()
+        .expect("wrong-thread probe must not panic");
+        supplied = returned;
+        assert_eq!(
+            wrong_thread_error,
+            SinglePluginSizeMapViewCallErrorV1::WrongRenderThread
+        );
+        assert_eq!(
+            revoke_authority.revoke_feature("direct-test", "direct-renderer"),
+            Ok(1)
+        );
+        assert!(supplied.render("size-map", context).is_err());
     }
 
     #[test]
@@ -1627,7 +2398,6 @@ mod tests {
             ExtensionDllLoadErrorV1::EntrypointSdkMajorMismatch { .. }
         ));
     }
-
     #[test]
     fn root_schema_failure_never_invokes_the_registrar() {
         CALLBACK_CALLED.store(false, Ordering::SeqCst);

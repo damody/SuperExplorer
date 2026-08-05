@@ -1,36 +1,48 @@
 {
   "schema_version": 1,
-  "bundle_id": "sdk-8107e581f0e1ba61c128dc64",
-  "inventory_root_sha256": "3440736e594c17a0da42450d3e3f09264c9f4dc195b59f545626b104aa155733",
-  "sdk_lock_sha256": "044a3322e3f53c0cf39f86fa52144bb3511ed4af2c19ed5dff3a777f7efc0cc6",
+  "bundle_id": "sdk-c86fcee404372eb4a2b5947a",
+  "inventory_root_sha256": "9714837bb953345cbca1a884603ac42f83e45ed529120aa1646e57dd5c025e17",
+  "sdk_lock_sha256": "848b76cb1f71e4bcb114330c7d94d9a43d317ba45e46e4b1fdb7814cabd4c5bf",
   "files": [
     {
       "path": "crates/explorer-extension-api/Cargo.toml",
       "sha256": "59a9f345473c75e138ca618b43664fc2997a3cf4008a341cdd21370801fd0db8"
     },
     {
+      "path": "crates/explorer-extension-api/src/column.rs",
+      "sha256": "2c3483b4e82975d4a21aa8af23f2a96edada3374fa0f94962f9609f3430738b4"
+    },
+    {
       "path": "crates/explorer-extension-api/src/jobs.rs",
-      "sha256": "46ad20cb48a79b0f97841cd69cdae92bc0a731b195076d99012f750111aa0bc8"
+      "sha256": "e879dbd9b721d3d1d59b4e5674406c71278221550d5523e2dca6f33f24d6525d"
     },
     {
       "path": "crates/explorer-extension-api/src/lib.rs",
-      "sha256": "642acd36d2bb8173020d8f9166914c38bb8b9905d862b0aa236c86ddfc754a7b"
+      "sha256": "fcf7a099bdd25f0e73021edc40474cfc3ef9378e8158dc873928ef58f2e5e6cd"
     },
     {
       "path": "crates/explorer-extension-api/src/operation_plan.rs",
-      "sha256": "0ddc9521c638f5b556f7b7950ea0bb8634e6936eccc2c25486b4ff6f239d6434"
+      "sha256": "98e0344013a2d82ffa1cf6ebe192c531bfe2b261b0716a798093b6215964d988"
     },
     {
       "path": "crates/explorer-extension-api/src/size_map_view.rs",
-      "sha256": "38dc40c3331a78641096eb86f3af6bc1d111b2538b0199a2f6329de114e27915"
+      "sha256": "57635a3e5466b247b50a2ca7562424bd97520e27e1bc3e4688dd2c98bcdfd86e"
     },
     {
       "path": "crates/explorer-extension-api/src/tools.rs",
-      "sha256": "7af567d9b36921427369cbe1d88a83e662113d497b10adff14529f4e7a87f367"
+      "sha256": "4789f014ba76aa3c18c700355814c1b4653b71cb030b3095ce8cc4158ca25a0f"
+    },
+    {
+      "path": "crates/explorer-extension-api/src/view_mode.rs",
+      "sha256": "6c1eec582b11704b43d554bbec838e2f2a03668e459fb85ab5b33b990f25a3bd"
+    },
+    {
+      "path": "crates/explorer-extension-api/src/virtual_folder.rs",
+      "sha256": "4e4799a93657796ebe0b0f1e7e3e75d12fb935c3d0d22512a320b94f94903bc6"
     },
     {
       "path": "crates/explorer-extension-api/src/visual_column.rs",
-      "sha256": "308269b012f33682cbe1ae29f34dbb906fc5ecd3b99087d2324226ee5f28c9c0"
+      "sha256": "2d3d2d9be3e8285ca69cb033313014569a78337535fbf71ddfc2b87e25572366"
     },
     {
       "path": "crates/explorer-extension-ui-api/Cargo.toml",
@@ -38,7 +50,7 @@
     },
     {
       "path": "crates/explorer-extension-ui-api/src/lib.rs",
-      "sha256": "d738b46f2a84838b3a8c7bbd1313c7e5d9c7eeaad6b40cec5c116f3954434164"
+      "sha256": "bde6be624bc020f5d126c9a42a5ec1a27c027eb4c7c9578286a631df6b1248a6"
     },
     {
       "path": "sdk/.cargo/config.toml",
@@ -55,6 +67,14 @@
     {
       "path": "sdk/Cargo.toml",
       "sha256": "69a47464ad1431fb956ffeb88bdace335cbd02724cd841cb7a7333087d5d6dea"
+    },
+    {
+      "path": "sdk/DYNAMIC_COLUMNS_AND_RENDERERS.md",
+      "sha256": "1405c484bfbb337c446658c6456cfdf54ff646c41571402742baf72669dbc1b3"
+    },
+    {
+      "path": "sdk/DYNAMIC_COLUMNS_AND_RENDERERS.zh-TW.md",
+      "sha256": "e5e7a93e118cc6f20206b29d9c46a0a422e758c8cb86de375c640cb76af87921"
     },
     {
       "path": "sdk/EXTENSION_API_GUIDE.md",
@@ -654,7 +674,7 @@
     },
     {
       "path": "sdk/fixtures/extension-author-jobs-v1/src/main.rs",
-      "sha256": "cb3401dd9bda55fda7bd34a6b661578cd567a93b0481325a8a8de161e2f1e1bf"
+      "sha256": "19b5f2bbf169be9f56acf917fb083cafbf3e92a1b0781643879a33beefb17fcf"
     },
     {
       "path": "sdk/fixtures/extension-dll-loader-contract/Cargo.lock",
@@ -682,7 +702,7 @@
     },
     {
       "path": "sdk/fixtures/extension-dll-loader-contract/plugin/src/lib.rs",
-      "sha256": "1b408e3f2b9eacd375053646692579c84278a6d3f3eafae7245bf8f3ba7f7654"
+      "sha256": "d9dccc8d41d3f85ebf7e8e96a5bfe1e1f61e6c2d2ab60c689333128464ad0664"
     },
     {
       "path": "sdk/fixtures/extension-dll-loader-contract/runner/Cargo.toml",
@@ -730,7 +750,7 @@
     },
     {
       "path": "sdk/fixtures/job-context-v1-contract/new-plugin/src/lib.rs",
-      "sha256": "ada7b1dc111754addd06e57b24aee71570a09f8fa76b07f78a873e7ea604560d"
+      "sha256": "a48451375ec8418ca930e46193b5d514d60659655e205302ae8ef5721c202c38"
     },
     {
       "path": "sdk/fixtures/lua-bulk-folder-generator/Cargo.lock",
@@ -754,11 +774,11 @@
     },
     {
       "path": "sdk/fixtures/lua-bulk-folder-generator/README.md",
-      "sha256": "e6ef6d4ad8b70fbe6837b0e6caf41f3d9d297d7d11eed5f1cde5235d9d4d1c2b"
+      "sha256": "3796feb8673304a89357da2fa9df0f21a602f03a9686e64b1cf6428e8d8ba44c"
     },
     {
       "path": "sdk/fixtures/lua-bulk-folder-generator/README.zh-TW.md",
-      "sha256": "d40adcf102169807456d491772474d42d927828ae125984b0510f83f4a8f92f7"
+      "sha256": "cfd6bd61099dacc916923b70e6064100f57de1547855b761997be0261c50b023"
     },
     {
       "path": "sdk/fixtures/lua-bulk-folder-generator/SBOM.json",
@@ -785,16 +805,24 @@
       "sha256": "a339ca9802219cb4e9c5028e75319992a16e8eca14515519b63fcf952fc0061f"
     },
     {
+      "path": "sdk/fixtures/lua-bulk-folder-generator/screenshots/bulk-folder-panel.png",
+      "sha256": "5c72d000fa59f5c57ccfb8ba86f1762deeb8d26ff97ba3f90aa585e038174f18"
+    },
+    {
+      "path": "sdk/fixtures/lua-bulk-folder-generator/screenshots/extensions-contribution.png",
+      "sha256": "bd5b40d15560d77e7402b63791a33c44e96c2ddf33f9fd21be3f4462244f6710"
+    },
+    {
       "path": "sdk/fixtures/lua-bulk-folder-generator/src/lib.rs",
-      "sha256": "39670efce4a3ddf785e94fdf0e845f914487a3562d74f85d91708773d95c8d42"
+      "sha256": "ad5ff913a61541c42f38982bc6dc86aeb944e1a55f47ae56569519ec0ce44f91"
     },
     {
       "path": "sdk/fixtures/lua-tokei-code-lines-column/Cargo.lock",
-      "sha256": "6638c676689b79aa2aabf9dbdf27fe405fc895c270c6e67c74305426286810f6"
+      "sha256": "e8318cddbb8f4e13cea83e05466664e75a639c5d30b8f4d70866ab85904b31d5"
     },
     {
       "path": "sdk/fixtures/lua-tokei-code-lines-column/Cargo.toml",
-      "sha256": "8bc1f5cd3dd92579061dfcaedb9f28b37b8637839f84cfa25fddcf805ae77fcb"
+      "sha256": "b81b618709fef595c6bac2aebe72177b4d09a613c4ef7d57529dd5a74e5dff88"
     },
     {
       "path": "sdk/fixtures/lua-tokei-code-lines-column/LICENSE",
@@ -810,11 +838,11 @@
     },
     {
       "path": "sdk/fixtures/lua-tokei-code-lines-column/README.md",
-      "sha256": "a864ac129ed5aa79a2379bfec9dc26eff72c630d3c4de8a272c2060a7733dce5"
+      "sha256": "12ef7404667f47fa3dadd7c9c6e37b1adb0dec31a0f887c3a43a6616217b0f6a"
     },
     {
       "path": "sdk/fixtures/lua-tokei-code-lines-column/README.zh-TW.md",
-      "sha256": "a808b1de82111b056237cce69c8bd5606db03ebb24506aec99bc25da9dc514d6"
+      "sha256": "15c3e1f98c2a5d7068941e4d668ea0106455dc3158c43787b6e2f1000bf0a111"
     },
     {
       "path": "sdk/fixtures/lua-tokei-code-lines-column/SBOM.json",
@@ -841,8 +869,12 @@
       "sha256": "a339ca9802219cb4e9c5028e75319992a16e8eca14515519b63fcf952fc0061f"
     },
     {
+      "path": "sdk/fixtures/lua-tokei-code-lines-column/screenshots/extensions-contribution.png",
+      "sha256": "aa0a567418e2484275eb8a6a3e8006ac3ea7bf8c57b58580e91b0baac66fe0ce"
+    },
+    {
       "path": "sdk/fixtures/lua-tokei-code-lines-column/src/lib.rs",
-      "sha256": "9c4bc058999d7fdf54d615a316c3cab39161328b86fdb01d607494e84794e8b2"
+      "sha256": "e09f20ce2faa84b448cc0f4c9efd9c19ca114e148ccb0751e98cfc517a2baa03"
     },
     {
       "path": "sdk/fixtures/lua-tokei-code-lines-column/tools/LICENSE-tokei.txt",
@@ -1078,11 +1110,11 @@
     },
     {
       "path": "sdk/fixtures/rust-7z-virtual-folder/Cargo.lock",
-      "sha256": "8b4959a862519b798c2c16d360de501f9a874a060f2887306a4c4b7c7017113e"
+      "sha256": "8d2b3e6c61ece613eada7eea72c98f741c480357ece2c84a19d5ac2406bd3896"
     },
     {
       "path": "sdk/fixtures/rust-7z-virtual-folder/Cargo.toml",
-      "sha256": "f6034c96c80abce827be5dfcbd5832cf99d5f3fec1dd4d4f249e904d2ed93d33"
+      "sha256": "54bc2f5538f1d96c1aefbbd51f8c360d1ae0297a911afb07aa2af3eea193c891"
     },
     {
       "path": "sdk/fixtures/rust-7z-virtual-folder/LICENSE",
@@ -1098,11 +1130,11 @@
     },
     {
       "path": "sdk/fixtures/rust-7z-virtual-folder/README.md",
-      "sha256": "f2c194af975d51935d34b2eef0fb849d1b66fac4f9b1291769b5f7f6c2c51669"
+      "sha256": "c79e61a37b577466c5bc7b54ec61799ffd535443852d6886b017e3f51d1b7f8b"
     },
     {
       "path": "sdk/fixtures/rust-7z-virtual-folder/README.zh-TW.md",
-      "sha256": "c3d1751de52d0254503cf09ea9d3634588d8d79cfbd08a0331363decac927a3e"
+      "sha256": "3c48dcc64f6c5c1fcbfbe4949e59df6b8be4ff827a24adfbe5c411320e281277"
     },
     {
       "path": "sdk/fixtures/rust-7z-virtual-folder/SBOM.json",
@@ -1118,15 +1150,19 @@
     },
     {
       "path": "sdk/fixtures/rust-7z-virtual-folder/plugin-project.json",
-      "sha256": "9ba7033b6bd977b0c435dda1bbf1d51853a2ffcc8351d2898d5d4adfdd033cce"
+      "sha256": "7b79a8db0b3dc11a45c4a3a476ab6e8401d52c21655206fc259d8c64e19248e7"
     },
     {
       "path": "sdk/fixtures/rust-7z-virtual-folder/provenance.json",
       "sha256": "dce640a9aee0d99b2eaa4d4a268d10eb6c4461c784e522905b448cc7c1c23219"
     },
     {
+      "path": "sdk/fixtures/rust-7z-virtual-folder/screenshots/extensions-contribution.png",
+      "sha256": "303b1a73bfa078930ab16d8268486bb1e45a18b4b69853f00f96df29dfb90365"
+    },
+    {
       "path": "sdk/fixtures/rust-7z-virtual-folder/src/lib.rs",
-      "sha256": "3d5750aead3d1d3364b89a882321fbf0a8a8d0789ce46cc0e1a97a6728fa3f3c"
+      "sha256": "35f81c17dd9251eb7dc5d3835ad48c0d13884b3ebd80222d8b6a05c942fc32db"
     },
     {
       "path": "sdk/fixtures/rust-exif-rename-command/Cargo.lock",
@@ -1150,11 +1186,11 @@
     },
     {
       "path": "sdk/fixtures/rust-exif-rename-command/README.md",
-      "sha256": "26d06779d9025353e0c81177c5491860938b277b8217d6ec126e6c7f1c9ef2c7"
+      "sha256": "93e97fb78f5729229de6e82b8a76591d81b2a1e8810c9d0b7c26ac11498e5acc"
     },
     {
       "path": "sdk/fixtures/rust-exif-rename-command/README.zh-TW.md",
-      "sha256": "01d92aa60ae5c812649bf4bd509f891250d23a6f8ac2a7f23f798360542fea20"
+      "sha256": "29cc0982aa6dc6bbfc9ccfaf6cd6022e4384d2037308f3860c8a06a4a49b97e7"
     },
     {
       "path": "sdk/fixtures/rust-exif-rename-command/SBOM.json",
@@ -1177,8 +1213,16 @@
       "sha256": "a3bd5b656dc62f6331f569ee1c6af1658420a0ddc5601892be9904d7752a318b"
     },
     {
+      "path": "sdk/fixtures/rust-exif-rename-command/screenshots/exif-rename-panel.png",
+      "sha256": "7e708ae046a7a01afc8847039ea21f66bd3634009db8fdb032934471129d2ad2"
+    },
+    {
+      "path": "sdk/fixtures/rust-exif-rename-command/screenshots/extensions-contribution.png",
+      "sha256": "492cae9fb974f3bd33ba94fe9ca9b45cf4d8db2bc1e446abf732c276dd19e6a2"
+    },
+    {
       "path": "sdk/fixtures/rust-exif-rename-command/src/lib.rs",
-      "sha256": "9101f13ec1a7e8da4696b578896e1d996356ef66bf698cb672696f4eb11046cc"
+      "sha256": "2287407e490204cb6e51786e45140127dd297e34003323192eebdf23a17311d3"
     },
     {
       "path": "sdk/fixtures/rust-folder-size-map-view/Cargo.lock",
@@ -1198,11 +1242,15 @@
     },
     {
       "path": "sdk/fixtures/rust-folder-size-map-view/README.md",
-      "sha256": "ebc0414b9616f62d49dee6b444f61e4ec4febe5265fad842dd121cf592d25cbe"
+      "sha256": "36b409d5c06e0829ad937ad2713513da58f1931561f441eb33eebe6525c9f1d6"
     },
     {
       "path": "sdk/fixtures/rust-folder-size-map-view/README.zh-TW.md",
-      "sha256": "9608f25be6a0cfbcc5e262373fc260e246f62ac5ac7e3eca486121474e5c2f02"
+      "sha256": "91c818956b8faf70fbb1952645a84977285eb5dbf619e08b1515eb92b7665d41"
+    },
+    {
+      "path": "sdk/fixtures/rust-folder-size-map-view/SBOM.json",
+      "sha256": "35fa364e861969bb7ae6ec1681317d76b80d537b743df26d300c344071f3162d"
     },
     {
       "path": "sdk/fixtures/rust-folder-size-map-view/fixtures/sample/large/a.txt",
@@ -1233,32 +1281,36 @@
       "sha256": "4db233ee636fdaaec7fe0b6c7697439c3146ec5fc2a2fc8cca659b25a9d6c7ad"
     },
     {
+      "path": "sdk/fixtures/rust-folder-size-map-view/provenance.json",
+      "sha256": "1dbc8a460e2ea0b8b50f1a67cfda57af57a3978a0445d898020497b7eed6a3bd"
+    },
+    {
       "path": "sdk/fixtures/rust-folder-size-map-view/screenshots/details-before.png",
-      "sha256": "ecfa587b2509988dfef605146996cd5ba3d56e2bf2efaa164fdcd2d4871c5b1f"
+      "sha256": "263f24ed7cfe76cf7ba11335d8e0435b4f0c8eae1c0258c8b481a8aef8ad4081"
     },
     {
       "path": "sdk/fixtures/rust-folder-size-map-view/screenshots/report.json",
-      "sha256": "e88a2f7e1e6d00b64f6e1266f4ddc548fb8d702fa82cd11b04bfa1945f3e2a88"
+      "sha256": "55c7708c8b71ec703492fb891babbd993cf2b7982ea7fb5af6706be8bee32bac"
     },
     {
       "path": "sdk/fixtures/rust-folder-size-map-view/screenshots/size-map-after-f5.png",
-      "sha256": "7bfda8260539c7f786bcdc9cb04e4e26ee4d3b7db13215126072c70ebc25b4c6"
+      "sha256": "1a23e1089c54ec3e1677797bde8e9495c9005dce4863b74cf0e6989d4ce709b4"
     },
     {
       "path": "sdk/fixtures/rust-folder-size-map-view/screenshots/size-map-selected.png",
-      "sha256": "7d7908607ab6e079de586d44e95e11fb4c6884afceab34cecfc819db4197a8e6"
+      "sha256": "c4d01ee388cd3403f42e680c56f3868375d0a258652f8ee92174b8b219f5f648"
     },
     {
       "path": "sdk/fixtures/rust-folder-size-map-view/screenshots/size-map.png",
-      "sha256": "bd2826f8afd6dc5fc0d02b3f31673e2db6f8b6bee6a0793bf954261cd19ca927"
+      "sha256": "4c593708e15a18f62f8a9cad4c786486db8a8125cff388e8f87876c201fc7b8e"
     },
     {
       "path": "sdk/fixtures/rust-folder-size-map-view/screenshots/view-menu.png",
-      "sha256": "b8722f9f83e2856c07dcc773fed7b73a9eeb569101f073162395bedc5a915506"
+      "sha256": "bcc31c9ea4c46b66c0f790087a5dcd6a1078c0c5869807bc936a883faf61e94a"
     },
     {
       "path": "sdk/fixtures/rust-folder-size-map-view/src/lib.rs",
-      "sha256": "73e918512621e1f450649322bf8ecec873e61c9ccb24bc9fef12f0cc5edffeee"
+      "sha256": "ad7f6894f6f315beb963ad491c4b855f2c1e4bd67fa1e1e312427545963cd12f"
     },
     {
       "path": "sdk/fixtures/rust-folder-size-visual-column/Cargo.lock",
@@ -1278,11 +1330,15 @@
     },
     {
       "path": "sdk/fixtures/rust-folder-size-visual-column/README.md",
-      "sha256": "c8c9dc92e3c3f19e3e1541cf0084de009f25a8dbde9b275ba112b2c7b0812c9f"
+      "sha256": "354dd293ac920748fa0683e09d9fd971e84eb8900529b02f90764dc96e0a9a6e"
     },
     {
       "path": "sdk/fixtures/rust-folder-size-visual-column/README.zh-TW.md",
-      "sha256": "b9c9aa156587880515b750848041bbabb1730f8050d84ccda0e9b957f7787305"
+      "sha256": "46d1bb6df428cd3643dd19c945e822b48a3aedd622a360ab759b69c31f8fbb92"
+    },
+    {
+      "path": "sdk/fixtures/rust-folder-size-visual-column/SBOM.json",
+      "sha256": "b78c35ce3619ed60e55f927e04a3b0727621a77299798afd06b36582491622ee"
     },
     {
       "path": "sdk/fixtures/rust-folder-size-visual-column/fixtures/.keep",
@@ -1313,6 +1369,10 @@
       "sha256": "d2a8bd06182b0f6c4cf4bf97f4b981043e89f71aadd9bdaf8f09991cd612053b"
     },
     {
+      "path": "sdk/fixtures/rust-folder-size-visual-column/provenance.json",
+      "sha256": "71f26dcfa24891f7f79c25632f7c10070188b4265661c0c50470d4243bb7f545"
+    },
+    {
       "path": "sdk/fixtures/rust-folder-size-visual-column/screenshots/folder-size-bar-off.png",
       "sha256": "399fcf000d1788805008721f10117d31b0b33ad5b870ebef8447113093f39077"
     },
@@ -1330,7 +1390,7 @@
     },
     {
       "path": "sdk/fixtures/rust-folder-size-visual-column/src/lib.rs",
-      "sha256": "ecd560d37b81c09f9888bb647bddf4dbd390c4e9860e6c28f1cec9e35ff118e6"
+      "sha256": "e69f0b3d111a44e685d4eb017ad6b2b6413b0595a4676077ec8ac8985363b4e3"
     },
     {
       "path": "sdk/fixtures/rust-lock-owner-column/Cargo.lock",
@@ -1354,11 +1414,11 @@
     },
     {
       "path": "sdk/fixtures/rust-lock-owner-column/README.md",
-      "sha256": "f4d070dd1783673f28122c6caaacdc8eeab940ba06f44a5d542f5f6f2ba3463d"
+      "sha256": "fd602722377a7244f303a9b9b6a5e69bb644d72d1645d2d4490d4691aec1a551"
     },
     {
       "path": "sdk/fixtures/rust-lock-owner-column/README.zh-TW.md",
-      "sha256": "8c44d1d97d9cc3827af5f8dfad4b52736d21dc0efd139a75c6da19b735ef15c2"
+      "sha256": "abcc570f36400d142eff7933fafa621271d1ca1d41632cbba8060203797f7640"
     },
     {
       "path": "sdk/fixtures/rust-lock-owner-column/SBOM.json",
@@ -1385,8 +1445,16 @@
       "sha256": "67aa3fbc10af07623b7185cdf07ebd95c09aa9e60ab8ea34fb4ac1a721465ab2"
     },
     {
+      "path": "sdk/fixtures/rust-lock-owner-column/screenshots/lock-owner-cleared.png",
+      "sha256": "cd57a0d4b0c85e3ac1498f20c1a110831db66a33cc4764cf72e42e93b4474be4"
+    },
+    {
+      "path": "sdk/fixtures/rust-lock-owner-column/screenshots/lock-owner-present.png",
+      "sha256": "9bca2b69835eead973c96c2ab4dd7789e61a68590b41efbe598603b7f2dc1750"
+    },
+    {
       "path": "sdk/fixtures/rust-lock-owner-column/src/lib.rs",
-      "sha256": "a394e4129023b0acd5034a78dc8811882477d6e0c9fd7ba793e0894451eced29"
+      "sha256": "c3b7b749b26756fb89dac52b9c5f0ee2b828c7c2d2aa13a18de12e313797893a"
     },
     {
       "path": "sdk/fixtures/rust-tokei-code-lines-column/Cargo.lock",
@@ -1410,11 +1478,11 @@
     },
     {
       "path": "sdk/fixtures/rust-tokei-code-lines-column/README.md",
-      "sha256": "5cbbeb6ec1aa6f55c5b106fe04cf26e7bd5cddf9022cc425b7d9415b3a012786"
+      "sha256": "5d02ecf6ba4ebcf28559b07e89bbfa75df0cc577148f0f1176943cdc987492e5"
     },
     {
       "path": "sdk/fixtures/rust-tokei-code-lines-column/README.zh-TW.md",
-      "sha256": "c109205b79080154ce630f99b36cf9bf00355f8231679a5f26ffbfd6e64e4625"
+      "sha256": "09ddcd0b0fce16e2928fbe43a6a84b17e5ac0e24f1020cfc2624e5ec3f5f466f"
     },
     {
       "path": "sdk/fixtures/rust-tokei-code-lines-column/SBOM.json",
@@ -1469,8 +1537,16 @@
       "sha256": "7b817f0393bc31fce709886e9c6e7c79e3616d370b3ea336d5881a6ede8629c9"
     },
     {
+      "path": "sdk/fixtures/rust-tokei-code-lines-column/screenshots/code-lines-detail.png",
+      "sha256": "bc4d7e3c2a6036928f7e54ade630bed9b82194f8195b649108f7411e9d0cb875"
+    },
+    {
+      "path": "sdk/fixtures/rust-tokei-code-lines-column/screenshots/code-lines.png",
+      "sha256": "06dea9daad7d57d11f96180cd3a95d4836bab586a00b6ae614b10b98f89d255e"
+    },
+    {
       "path": "sdk/fixtures/rust-tokei-code-lines-column/src/lib.rs",
-      "sha256": "9871207dbcf3115992d4a48682d31a5457c49ad74c949b36ce87eaf78640321d"
+      "sha256": "8d264dcaab8f49dee03901283432dc8dec17136965e6484c2d7fbbe469f63110"
     },
     {
       "path": "sdk/fixtures/ui-fingerprint-loader/.cargo/config.toml",
@@ -1585,6 +1661,10 @@
       "sha256": "688cc3d1432e70a9ac995b253fcaba47948ddd9748ecabc58374bfa9e7f9bfef"
     },
     {
+      "path": "sdk/scripts/validate-example.ps1",
+      "sha256": "708cd4410c71b5f6f2a6293ef3c16d25dbb2a297094cef57a042b5b5511f9cc1"
+    },
+    {
       "path": "sdk/scripts/validate-plugin.ps1",
       "sha256": "bbe8bf941db03ed52f86d3e2118ba2e0a2a744280a547cd12bc19e372da0f33b"
     },
@@ -1601,6 +1681,18 @@
       "sha256": "512ead01858ac2a7761926716303a931e33c2d4472cb0b1ffd01c4ff2b3acf10"
     },
     {
+      "path": "sdk/templates/README.md",
+      "sha256": "800418c4100a6f346018f0a85a46029b9f97ce0d17e14cb8298e70a181075a3b"
+    },
+    {
+      "path": "sdk/templates/lua-plugin/Cargo.toml.template",
+      "sha256": "25a20fd6849878214b64cc65917df6d0aeb9cceb1a1cf2fa24eaa3da718010ef"
+    },
+    {
+      "path": "sdk/templates/rust-plugin/Cargo.toml.template",
+      "sha256": "25a20fd6849878214b64cc65917df6d0aeb9cceb1a1cf2fa24eaa3da718010ef"
+    },
+    {
       "path": "sdk/tests/abi-layout-contract.ps1",
       "sha256": "b44f498eff40e28fd3f2e680f6e7d9ee9292427e53bae4f6179717b1664efd99"
     },
@@ -1615,6 +1707,10 @@
     {
       "path": "sdk/tests/dynamic-columns-v1-contract.ps1",
       "sha256": "cf26d51252af4e7bafe169bccfc273bef764845a0e08a29ceb88799643294a3c"
+    },
+    {
+      "path": "sdk/tests/example-validator-self-test.ps1",
+      "sha256": "2bf3510d18da0ecf394fe2da90c536b3708f523667c82eefbc2bbec9b33383bf"
     },
     {
       "path": "sdk/tests/extension-api-abi-contract.ps1",
@@ -3332,7 +3428,7 @@
   "generated_artifacts": [
     {
       "path": "sdk/ui-abi-fingerprint.json",
-      "sha256": "f6e17a15db0f204b713030a4ff33c515c78cd853c593872bce45e783ab13bc8e"
+      "sha256": "ec65547fe00e012fb84fd6753300995e3a35576fb1139a944e70f6f13d9bfb0b"
     }
   ]
 }

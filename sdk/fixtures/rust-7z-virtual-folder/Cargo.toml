@@ -14,6 +14,9 @@ explorer-extension-api = { path = "../../../crates/explorer-extension-api", vers
 explorer-extension-ui-api = { path = "../../../crates/explorer-extension-ui-api", version = "=1.2.0" }
 sevenz-rust = { version = "=0.6.1", features = ["aes256", "compress"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.52.0", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
 [profile.release]
 panic = "unwind"
 lto = "thin"

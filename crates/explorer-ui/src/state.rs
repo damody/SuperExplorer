@@ -18,6 +18,7 @@ use explorer_model::{
 
 use crate::{
     actions::{FolderOptionsPage, NavigationHistoryDirection, PermanentDeleteDialogTarget},
+    extension_commands::ExtensionCommandPanel,
     focus::{FocusCoordinator, FocusDirection, FocusSurface},
     interaction::{DividerInteraction, ScrollbarDragSession, ScrollbarKind, ScrollbarTerminal},
     layout::{LayoutTokens, LogicalPx},
@@ -459,6 +460,7 @@ pub struct AppViewState {
     about_dialog_open: bool,
     about_info: AboutInfoV1,
     extensions_menu_open: bool,
+    extension_command_panel: Option<ExtensionCommandPanel>,
     tortoise_git_available: bool,
     loaded_extension_summary: Option<String>,
     folder_options: Option<FolderOptionsDraft>,
@@ -480,6 +482,7 @@ pub struct AppViewState {
     /// makes its sorted presentation authoritative for every row action.
     folder_size_sort_values: HashMap<ShellItemId, Option<u64>>,
     code_lines_sort_values: HashMap<ShellItemId, Option<u64>>,
+    active_code_lines_column: Option<explorer_model::ColumnId>,
     presentation_cache: Arc<Mutex<crate::file_view::DirectoryPresentationCache>>,
 }
 
@@ -631,6 +634,7 @@ impl AppViewState {
                 author: "unknown".to_owned(),
             },
             extensions_menu_open: false,
+            extension_command_panel: None,
             tortoise_git_available: false,
             loaded_extension_summary: None,
             folder_options: None,
@@ -651,6 +655,7 @@ impl AppViewState {
             file_view_typeahead: None,
             folder_size_sort_values: HashMap::new(),
             code_lines_sort_values: HashMap::new(),
+            active_code_lines_column: None,
             presentation_cache: Arc::new(Mutex::new(
                 crate::file_view::DirectoryPresentationCache::default(),
             )),
@@ -710,6 +715,7 @@ impl AppViewState {
         {
             return false;
         }
+        self.active_code_lines_column = Some(descriptor.id.clone());
         self.tabs
             .active_tab_mut()
             .view
@@ -1285,6 +1291,10 @@ impl AppViewState {
         self.extensions_menu_open
     }
 
+    pub const fn extension_command_panel(&self) -> Option<ExtensionCommandPanel> {
+        self.extension_command_panel
+    }
+
     pub const fn tortoise_git_available(&self) -> bool {
         self.tortoise_git_available
     }
@@ -1582,6 +1592,9 @@ impl AppViewState {
 
     pub(crate) fn toggle_extensions_menu(&mut self) {
         self.extensions_menu_open = !self.extensions_menu_open;
+        if !self.extensions_menu_open {
+            self.extension_command_panel = None;
+        }
         if self.extensions_menu_open {
             self.details_column_menu = None;
             self.details_filter_menu = None;
@@ -1594,6 +1607,22 @@ impl AppViewState {
 
     pub(crate) fn close_extensions_menu(&mut self) {
         self.extensions_menu_open = false;
+        self.extension_command_panel = None;
+    }
+
+    pub(crate) fn open_extension_command_panel(&mut self, contribution_id: &str) -> bool {
+        let panel = match contribution_id {
+            "rust-exif-rename:button" => ExtensionCommandPanel::ExifRename,
+            "lua-bulk-folder:button" => ExtensionCommandPanel::BulkFolder,
+            _ => return false,
+        };
+        self.extensions_menu_open = true;
+        self.extension_command_panel = Some(panel);
+        true
+    }
+
+    pub(crate) fn close_extension_command_panel(&mut self) -> bool {
+        self.extension_command_panel.take().is_some()
     }
 
     pub(crate) fn move_more_menu_focus(&mut self, direction: i8) {
@@ -1653,6 +1682,34 @@ impl AppViewState {
         &self.extensions
     }
 
+    pub fn extension_enabled(&self, package_id: &str) -> bool {
+        self.extensions
+            .iter()
+            .find(|extension| extension.package_id == package_id)
+            .is_some_and(|extension| extension.enabled)
+    }
+
+    pub(crate) fn uninstall_code_lines_column_descriptor(
+        &mut self,
+        descriptor: &explorer_model::ColumnDescriptor,
+    ) -> bool {
+        let explorer_model::ColumnId::Extension { package_id, .. } = &descriptor.id else {
+            return false;
+        };
+        let removed = self.column_registry.unregister_package(package_id) != 0;
+        if removed {
+            if self.active_code_lines_column.as_ref() == Some(&descriptor.id) {
+                self.active_code_lines_column = None;
+            }
+            self.code_lines_sort_values.clear();
+            self.presentation_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
+        }
+        removed
+    }
+
     pub(crate) fn toggle_folder_option_extension(&mut self, index: usize) {
         if let Some(enabled) = self
             .folder_options
@@ -1708,6 +1765,14 @@ impl AppViewState {
             self.restore_previous_session = draft.restore_previous_session;
             for (extension, enabled) in self.extensions.iter_mut().zip(draft.extension_enabled) {
                 extension.enabled = enabled;
+            }
+            if !self.extension_enabled("rust-lock-owner-column") {
+                self.column_registry.unregister_package("rust-lock-owner");
+                self.code_lines_sort_values.clear();
+                self.presentation_cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clear();
             }
             if !self.extensions.iter().any(|extension| {
                 extension.package_id == "rust-folder-size-map-view" && extension.enabled
@@ -2461,17 +2526,54 @@ impl AppViewState {
         Some(ExplorerCommand::Navigate { context, location })
     }
 
+    pub(crate) fn begin_disabled_virtual_provider_fallback(
+        &mut self,
+        provider_id: &str,
+    ) -> Option<ExplorerCommand> {
+        let history = &self.tabs.active_tab().history;
+        let current_matches = matches!(
+            history.current().map(|entry| &entry.location),
+            Some(LocationDescriptor::Virtual(location)) if location.provider_id == provider_id
+        );
+        if !current_matches {
+            return None;
+        }
+        let steps = history
+            .back_entries()
+            .iter()
+            .rev()
+            .position(|entry| {
+                !matches!(
+                    &entry.location,
+                    LocationDescriptor::Virtual(location) if location.provider_id == provider_id
+                )
+            })?
+            .saturating_add(1);
+        self.begin_history_navigation(NavigationHistoryDirection::Back, steps)
+    }
+
     pub(crate) fn begin_up_navigation(&mut self) -> Option<ExplorerCommand> {
-        let parent = self
-            .tabs
-            .active_tab()
-            .history
-            .current()?
-            .location
-            .path()?
-            .parent()?
-            .to_path_buf();
-        self.begin_active_navigation(LocationDescriptor::file_system(parent), false)
+        let location = &self.tabs.active_tab().history.current()?.location;
+        let resolved_virtual_parent = matches!(location, LocationDescriptor::Virtual(_))
+            .then(|| {
+                let ancestry = &self.tabs.active_tab().view.address.resolved_ancestry;
+                (ancestry
+                    .last()
+                    .is_some_and(|segment| &segment.location == location)
+                    && ancestry.len() >= 2)
+                    .then(|| ancestry[ancestry.len() - 2].location.clone())
+            })
+            .flatten();
+        let parent = location
+            .virtual_parent()
+            .or(resolved_virtual_parent)
+            .or_else(|| {
+                location
+                    .path()?
+                    .parent()
+                    .map(|parent| LocationDescriptor::file_system(parent.to_path_buf()))
+            })?;
+        self.begin_active_navigation(parent, false)
     }
 
     pub(crate) fn begin_refresh_navigation(&mut self) -> Option<ExplorerCommand> {
@@ -3577,8 +3679,8 @@ impl AppViewState {
                 &self.folder_size_sort_values,
                 tab.view.settings.sort.direction,
             ))
-        } else if tab.view.settings.sort.column
-            == crate::code_lines_column::code_lines_column_descriptor().id
+        } else if self.active_code_lines_column.as_ref()
+            == Some(&tab.view.settings.sort.column)
         {
             Some(presentation.sorted_by_extension_bytes(
                 &self.code_lines_sort_values,
@@ -3977,6 +4079,18 @@ impl AppViewState {
             .collect()
     }
 
+    pub(crate) fn selected_items_for_extension_command(&self) -> Vec<ItemDescriptor> {
+        self.selected_items()
+    }
+
+    pub(crate) fn active_location_for_extension_command(&self) -> Option<LocationDescriptor> {
+        self.tabs
+            .active_tab()
+            .history
+            .current()
+            .map(|entry| entry.location.clone())
+    }
+
     pub(crate) fn selected_paths_clipboard_text(&self) -> Option<String> {
         let paths = self
             .selected_items()
@@ -3984,7 +4098,9 @@ impl AppViewState {
             .filter_map(|item| match item.location {
                 LocationDescriptor::FileSystem(path) => Some(path.to_string_lossy().into_owned()),
                 LocationDescriptor::ParsingName(name) => Some(name),
-                LocationDescriptor::ShellNamespace(_) | LocationDescriptor::KnownFolder(_) => None,
+                LocationDescriptor::ShellNamespace(_)
+                | LocationDescriptor::KnownFolder(_)
+                | LocationDescriptor::Virtual(_) => None,
             })
             .map(|path| format!("\"{}\"", path.replace('"', "\"\"")))
             .collect::<Vec<_>>();
@@ -4467,6 +4583,31 @@ impl AppViewState {
                 item: ItemDescriptor {
                     id: entry.id,
                     location: entry.location,
+                },
+                disposition: OpenDisposition::DefaultApplication,
+            })
+        }
+    }
+
+    pub(crate) fn open_extension_view_item_command(
+        &mut self,
+        item_id: ShellItemId,
+        location: LocationDescriptor,
+        is_container: bool,
+        new_tab: bool,
+    ) -> Option<ExplorerCommand> {
+        if is_container {
+            if new_tab {
+                self.new_tab();
+            }
+            self.begin_active_navigation(location, false)
+        } else {
+            let tab = self.tabs.active_tab();
+            Some(ExplorerCommand::OpenItem {
+                context: RequestContext::new(tab.id, tab.generation),
+                item: ItemDescriptor {
+                    id: item_id,
+                    location,
                 },
                 disposition: OpenDisposition::DefaultApplication,
             })
@@ -6388,6 +6529,115 @@ mod tests {
     }
 
     #[test]
+    fn up_from_virtual_archive_root_uses_the_resolved_filesystem_parent() {
+        let virtual_root = explorer_model::LocationDescriptor::try_virtual(
+            "rust-7z",
+            [7; 16],
+            1,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        let filesystem_parent = explorer_model::LocationDescriptor::file_system(r"D:\fixture");
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            virtual_root.clone(),
+            "fixture.7z",
+        ));
+        state.tabs.active_tab_mut().view.address.resolved_ancestry = vec![
+            explorer_model::BreadcrumbSegment {
+                id: explorer_model::BreadcrumbSegmentId(1),
+                display_name: "fixture".to_owned(),
+                location: filesystem_parent.clone(),
+                icon_hint: explorer_model::BreadcrumbIconHint::Folder,
+                is_container: true,
+            },
+            explorer_model::BreadcrumbSegment {
+                id: explorer_model::BreadcrumbSegmentId(2),
+                display_name: "fixture.7z".to_owned(),
+                location: virtual_root,
+                icon_hint: explorer_model::BreadcrumbIconHint::Archive,
+                is_container: true,
+            },
+        ];
+
+        assert!(matches!(
+            state.begin_up_navigation(),
+            Some(explorer_model::ExplorerCommand::Navigate { location, .. })
+                if location == filesystem_parent
+        ));
+    }
+
+    #[test]
+    fn writable_virtual_entry_with_rename_capability_opens_inline_editor() {
+        let virtual_root = explorer_model::LocationDescriptor::try_virtual(
+            "rust-7z",
+            [9; 16],
+            1,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        let entry_location = explorer_model::LocationDescriptor::try_virtual(
+            "rust-7z",
+            [9; 16],
+            1,
+            Some(42),
+            vec!["hello.txt".to_owned()],
+        )
+        .unwrap();
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            virtual_root.clone(),
+            "fixture.7z",
+        ));
+        let command = state.begin_active_location_load().unwrap();
+        let context = command.context().unwrap().clone();
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::LocationResolved {
+                context: context.clone(),
+                metadata: explorer_model::LocationMetadata {
+                    descriptor: virtual_root,
+                    display_title: "fixture.7z".to_owned(),
+                    can_go_up: true,
+                    can_write: true,
+                },
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        let entry = explorer_model::FileEntry {
+            id: explorer_model::ShellItemId::from_provider_bytes([42]).unwrap(),
+            display_name: "hello.txt".to_owned(),
+            location: entry_location,
+            is_container: false,
+            metadata: explorer_model::FileEntryMetadata {
+                namespace_capabilities: explorer_model::NamespaceCapabilities::from_public_bits(
+                    explorer_model::NamespaceCapabilities::OPEN
+                        | explorer_model::NamespaceCapabilities::RENAME
+                        | explorer_model::NamespaceCapabilities::DELETE,
+                ),
+                ..explorer_model::FileEntryMetadata::default()
+            },
+        };
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::DirectoryBatch {
+                context: context.clone(),
+                entries: vec![entry],
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::DirectoryFinished { context }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert!(state.select_row(0));
+        assert!(state.row_namespace_command_enabled(
+            0,
+            explorer_model::NamespaceCommand::Rename
+        ));
+        assert!(state.begin_focused_inline_rename());
+        assert_eq!(state.rename_editor().unwrap().buffer, "hello.txt");
+    }
+
+    #[test]
     fn resolved_known_folder_address_displays_and_resubmits_canonical_path() {
         let requested =
             explorer_model::LocationDescriptor::ParsingName("shell:Personal".to_owned());
@@ -6872,11 +7122,43 @@ mod tests {
         let command = current
             .open_row_command(0, false)
             .expect("current-tab folder");
+        let context = command.context().expect("folder context").clone();
         assert!(matches!(
-            command,
+            &command,
             explorer_model::ExplorerCommand::Navigate { location, .. }
                 if location.path() == Some(std::path::Path::new(r"C:\fixture\folder"))
         ));
+        assert_eq!(
+            current.apply_service_event(explorer_model::ExplorerEvent::LocationResolved {
+                context,
+                metadata: explorer_model::LocationMetadata {
+                    descriptor: explorer_model::LocationDescriptor::file_system(
+                        r"C:\fixture\folder",
+                    ),
+                    display_title: "folder".to_owned(),
+                    can_go_up: true,
+                    can_write: true,
+                },
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        let tab = current.tabs().active_tab();
+        assert_eq!(
+            tab.history
+                .current()
+                .and_then(|entry| entry.location.path()),
+            Some(std::path::Path::new(r"C:\fixture\folder"))
+        );
+        assert!(tab.history.can_go_back());
+        assert_eq!(tab.view.address.draft, r"C:\fixture\folder");
+        assert_eq!(
+            tab.view
+                .address
+                .resolved_ancestry
+                .last()
+                .map(|segment| segment.display_name.as_str()),
+            Some("folder")
+        );
 
         let mut new_tab = state_with_rows();
         let first = new_tab.tabs().active_tab_id();
@@ -6898,6 +7180,38 @@ mod tests {
             }
         ));
         assert_eq!(file.active_presentation().item_count, before_count);
+
+        let mut nested = state_with_rows();
+        let nested_folder = nested
+            .open_extension_view_item_command(
+                explorer_model::ShellItemId::from_provider_bytes([9]).unwrap(),
+                explorer_model::LocationDescriptor::file_system(r"C:\fixture\folder\nested"),
+                true,
+                false,
+            )
+            .expect("nested folder navigation");
+        assert!(matches!(
+            nested_folder,
+            explorer_model::ExplorerCommand::Navigate { location, .. }
+                if location.path() == Some(std::path::Path::new(r"C:\fixture\folder\nested"))
+        ));
+        let nested_file = nested
+            .open_extension_view_item_command(
+                explorer_model::ShellItemId::from_provider_bytes([10]).unwrap(),
+                explorer_model::LocationDescriptor::file_system(
+                    r"C:\fixture\folder\nested\child.txt",
+                ),
+                false,
+                false,
+            )
+            .expect("nested file open");
+        assert!(matches!(
+            nested_file,
+            explorer_model::ExplorerCommand::OpenItem {
+                disposition: explorer_model::OpenDisposition::DefaultApplication,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -7314,6 +7628,15 @@ mod tests {
         state.apply_folder_options();
         assert!(!state.extensions()[1].enabled);
         assert_eq!(state.view_settings().extension_view_id, None);
+
+        let lock_owner = crate::code_lines_column::lock_owner_column_descriptor();
+        assert!(state.install_code_lines_column_descriptor(lock_owner.clone()));
+        assert!(state.column_registry().contains(&lock_owner.id));
+        state.open_folder_options();
+        state.toggle_folder_option_extension(4);
+        state.apply_folder_options();
+        assert!(!state.extensions()[4].enabled);
+        assert!(!state.column_registry().contains(&lock_owner.id));
     }
 
     #[test]

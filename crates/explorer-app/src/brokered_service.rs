@@ -1,11 +1,17 @@
 //! App-owned routing boundary for extension-backed Shell work.
 
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicUsize, Ordering},
-    mpsc::{Receiver, SyncSender, TryRecvError, TrySendError},
+use std::{
+    collections::HashMap,
+    hash::{Hash, Hasher},
+    path::{Path, PathBuf},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+        mpsc::{Receiver, SyncSender, TryRecvError, TrySendError},
+    },
 };
 
+use abi_stable::std_types::RVec;
 use explorer_model::{ExplorerCommand, ExplorerEvent, ExplorerService, ExplorerServiceError};
 
 fn is_host_owned_context_verb(verb: Option<&str>) -> bool {
@@ -99,12 +105,233 @@ pub struct BrokeredExplorerService {
     active_preview:
         Arc<Mutex<Option<(explorer_model::RequestContext, explorer_model::Generation)>>>,
     maximum_in_flight: usize,
+    virtual_folder: Option<Arc<Mutex<explorer_extension_host::SinglePluginVirtualFolderRuntimeV1>>>,
+    virtual_containers: Arc<Mutex<HashMap<[u8; 16], VirtualContainerRecordV1>>>,
+    /// One-shot old-to-new generation bridges minted only by a successful
+    /// local mutation. They let the operation-triggered Refresh commit the
+    /// new location while unrelated stale locations remain rejected.
+    virtual_refresh_remaps: Arc<Mutex<HashMap<([u8; 16], u64), u64>>>,
+    virtual_mutation_undo: Arc<Mutex<HashMap<[u8; 16], (PathBuf, u64)>>>,
+    virtual_materializations: Arc<VirtualMaterializationStoreV1>,
+    virtual_icon_requests: Mutex<HashMap<explorer_common::RequestId, explorer_model::ShellIconKey>>,
+}
+
+#[derive(Clone)]
+struct VirtualContainerRecordV1 {
+    path: PathBuf,
+    generation: u64,
+    title: String,
+    entries: Arc<Mutex<HashMap<u64, VirtualEntryRecordV1>>>,
+    secret: Arc<VirtualContainerSecretV1>,
+}
+
+#[derive(Default)]
+struct VirtualContainerSecretV1(Mutex<Option<Vec<u16>>>);
+
+impl VirtualContainerSecretV1 {
+    fn snapshot(&self) -> Option<Vec<u16>> {
+        self.0
+            .lock()
+            .ok()
+            .and_then(|secret| secret.as_ref().cloned())
+    }
+
+    fn mint(&self) -> abi_stable::std_types::ROption<explorer_extension_api::VirtualSecretV1> {
+        self.0
+            .lock()
+            .ok()
+            .and_then(|secret| secret.as_ref().cloned())
+            .and_then(explorer_extension_host::mint_virtual_secret_v1)
+            .map(abi_stable::std_types::ROption::RSome)
+            .unwrap_or(abi_stable::std_types::ROption::RNone)
+    }
+
+    fn replace(&self, mut replacement: Vec<u16>) {
+        if let Ok(mut secret) = self.0.lock() {
+            if let Some(previous) = secret.as_mut() {
+                previous.fill(0);
+                std::hint::black_box(previous);
+            }
+            *secret = Some(std::mem::take(&mut replacement));
+        }
+        replacement.fill(0);
+        std::hint::black_box(&mut replacement);
+    }
+}
+
+impl Drop for VirtualContainerSecretV1 {
+    fn drop(&mut self) {
+        if let Ok(secret) = self.0.get_mut()
+            && let Some(secret) = secret.as_mut()
+        {
+            secret.fill(0);
+            std::hint::black_box(secret);
+        }
+    }
+}
+
+#[derive(Clone)]
+struct VirtualEntryRecordV1 {
+    id: explorer_extension_api::StableIdV1,
+    is_container: bool,
+    size: u64,
+    name: String,
+    components: Vec<String>,
+}
+
+#[derive(Default)]
+struct VirtualMaterializationStoreV1(Mutex<Vec<PathBuf>>);
+
+impl Drop for VirtualMaterializationStoreV1 {
+    fn drop(&mut self) {
+        if let Ok(paths) = self.0.get_mut() {
+            for path in paths.drain(..) {
+                let _ = std::fs::remove_dir_all(path);
+            }
+        }
+    }
+}
+
+const SEVEN_Z_PROVIDER_V1: &str = "rust-7z:resource";
+const MAX_VIRTUAL_MATERIALIZATION_BYTES_V1: u64 = 512 * 1024 * 1024;
+static VIRTUAL_MATERIALIZATION_NONCE_V1: AtomicU64 = AtomicU64::new(1);
+
+fn virtual_failed(context: &explorer_model::RequestContext, message: &str) -> ExplorerEvent {
+    ExplorerEvent::Failed {
+        context: context.clone(),
+        error: explorer_common::ExplorerError::new(
+            explorer_common::ExplorerErrorKind::Extension,
+            "virtual archive navigation",
+            true,
+            message,
+            "virtual-folder provider did not return a usable result",
+        ),
+    }
+}
+
+fn is_7z_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("7z"))
+}
+
+fn virtual_container_record(path: &Path) -> std::io::Result<([u8; 16], VirtualContainerRecordV1)> {
+    let metadata = std::fs::metadata(path)?;
+    let modified = metadata
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    let generation = (modified ^ metadata.len()).max(1);
+    let canonical = path.canonicalize()?;
+    let mut first = std::collections::hash_map::DefaultHasher::new();
+    canonical.hash(&mut first);
+    let mut second = std::collections::hash_map::DefaultHasher::new();
+    canonical.hash(&mut second);
+    canonical.as_os_str().len().hash(&mut second);
+    "virtual-container-v1".hash(&mut second);
+    let mut identity = [0_u8; 16];
+    identity[..8].copy_from_slice(&first.finish().to_le_bytes());
+    identity[8..].copy_from_slice(&second.finish().to_le_bytes());
+    let title = canonical
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("7z archive")
+        .to_owned();
+    Ok((
+        identity,
+        VirtualContainerRecordV1 {
+            path: canonical,
+            generation,
+            title,
+            entries: Arc::new(Mutex::new(HashMap::new())),
+            secret: Arc::new(VirtualContainerSecretV1::default()),
+        },
+    ))
+}
+
+#[cfg(windows)]
+fn prompt_archive_password(title: &str, incorrect: bool) -> Option<Vec<u16>> {
+    use windows::{
+        Win32::{
+            Foundation::{ERROR_CANCELLED, ERROR_SUCCESS},
+            Security::Credentials::{
+                CREDUI_FLAGS_ALWAYS_SHOW_UI, CREDUI_FLAGS_DO_NOT_PERSIST,
+                CREDUI_FLAGS_GENERIC_CREDENTIALS, CREDUI_FLAGS_INCORRECT_PASSWORD,
+                CREDUI_FLAGS_PASSWORD_ONLY_OK, CREDUI_INFOW, CredUIPromptForCredentialsW,
+            },
+        },
+        core::PCWSTR,
+    };
+
+    let mut caption = "SuperExplorer archive password"
+        .encode_utf16()
+        .collect::<Vec<_>>();
+    caption.push(0);
+    let mut message = format!("Enter the password for {title}")
+        .encode_utf16()
+        .collect::<Vec<_>>();
+    message.push(0);
+    let mut target = format!("SuperExplorer:7z:{title}")
+        .encode_utf16()
+        .collect::<Vec<_>>();
+    target.push(0);
+    let info = CREDUI_INFOW {
+        cbSize: std::mem::size_of::<CREDUI_INFOW>() as u32,
+        pszMessageText: PCWSTR(message.as_ptr()),
+        pszCaptionText: PCWSTR(caption.as_ptr()),
+        ..Default::default()
+    };
+    let mut username = vec![0_u16; 514];
+    let mut password = vec![0_u16; explorer_extension_api::MAX_VIRTUAL_SECRET_UTF16_V1 + 1];
+    let mut flags = CREDUI_FLAGS_ALWAYS_SHOW_UI
+        | CREDUI_FLAGS_DO_NOT_PERSIST
+        | CREDUI_FLAGS_GENERIC_CREDENTIALS
+        | CREDUI_FLAGS_PASSWORD_ONLY_OK;
+    if incorrect {
+        flags |= CREDUI_FLAGS_INCORRECT_PASSWORD;
+    }
+    // SAFETY: all pointers reference live, NUL-terminated buffers for the
+    // duration of this modal OS call; persistence is explicitly disabled.
+    let result = unsafe {
+        CredUIPromptForCredentialsW(
+            Some(&raw const info),
+            PCWSTR(target.as_ptr()),
+            None,
+            0,
+            &mut username,
+            &mut password,
+            None,
+            flags,
+        )
+    };
+    username.fill(0);
+    std::hint::black_box(&mut username);
+    if result == ERROR_CANCELLED || result != ERROR_SUCCESS {
+        password.fill(0);
+        std::hint::black_box(&mut password);
+        return None;
+    }
+    let length = password
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(password.len());
+    let secret = password[..length].to_vec();
+    password.fill(0);
+    std::hint::black_box(&mut password);
+    (!secret.is_empty()).then_some(secret)
+}
+
+#[cfg(not(windows))]
+fn prompt_archive_password(_: &str, _: bool) -> Option<Vec<u16>> {
+    None
 }
 
 impl BrokeredExplorerService {
     pub fn new(
         shell: Arc<explorer_shell_win::ShellStaHandle>,
         broker: explorer_extension_broker::BrokerClient,
+        virtual_folder: Option<explorer_extension_host::SinglePluginVirtualFolderRuntimeV1>,
     ) -> Self {
         let (sender, receiver) = std::sync::mpsc::sync_channel(64);
         let (context_menu_sender, context_menu_receiver) = std::sync::mpsc::sync_channel::<(
@@ -238,7 +465,1162 @@ impl BrokeredExplorerService {
             preview_sender,
             active_preview,
             maximum_in_flight: 4,
+            virtual_folder: virtual_folder.map(|runtime| Arc::new(Mutex::new(runtime))),
+            virtual_containers: Arc::new(Mutex::new(HashMap::new())),
+            virtual_refresh_remaps: Arc::new(Mutex::new(HashMap::new())),
+            virtual_mutation_undo: Arc::new(Mutex::new(HashMap::new())),
+            virtual_materializations: Arc::new(VirtualMaterializationStoreV1::default()),
+            virtual_icon_requests: Mutex::new(HashMap::new()),
         }
+    }
+
+    fn submit_virtual_icon(
+        &self,
+        context: explorer_model::RequestContext,
+        key: explorer_model::ShellIconKey,
+    ) -> Result<(), ExplorerServiceError> {
+        let (_, entry) = self
+            .virtual_entry(&key.location)
+            .ok_or(ExplorerServiceError::Internal)?;
+        let synthetic = if entry.is_container {
+            PathBuf::from(r"C:\__super_explorer_folder_base__")
+        } else if let Some(extension) = Path::new(&entry.name).extension() {
+            PathBuf::from(format!(
+                r"C:\__super_explorer_virtual__.{}",
+                extension.to_string_lossy()
+            ))
+        } else {
+            PathBuf::from(r"C:\__super_explorer_virtual_extensionless__")
+        };
+        let mut proxy = key.clone();
+        proxy.item_id = None;
+        proxy.location = explorer_model::LocationDescriptor::file_system(synthetic);
+        self.virtual_icon_requests
+            .lock()
+            .map_err(|_| ExplorerServiceError::Internal)?
+            .insert(context.request_id, key);
+        if let Err(error) = ExplorerService::submit(
+            self.shell.as_ref(),
+            ExplorerCommand::LoadShellIcon {
+                context: context.clone(),
+                key: proxy,
+            },
+        ) {
+            if let Ok(mut requests) = self.virtual_icon_requests.lock() {
+                requests.remove(&context.request_id);
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn restore_virtual_icon_key(&self, event: ExplorerEvent) -> ExplorerEvent {
+        let request_id = match &event {
+            ExplorerEvent::ShellIconLoaded { context, .. }
+            | ExplorerEvent::ShellIconFailed { context, .. } => context.request_id,
+            _ => return event,
+        };
+        let original = self
+            .virtual_icon_requests
+            .lock()
+            .ok()
+            .and_then(|mut requests| requests.remove(&request_id));
+        let Some(original) = original else {
+            return event;
+        };
+        match event {
+            ExplorerEvent::ShellIconLoaded {
+                context,
+                mut payload,
+            } => {
+                payload.key = original;
+                ExplorerEvent::ShellIconLoaded { context, payload }
+            }
+            ExplorerEvent::ShellIconFailed {
+                context, reason, ..
+            } => ExplorerEvent::ShellIconFailed {
+                context,
+                key: original,
+                reason,
+            },
+            event => event,
+        }
+    }
+
+    fn virtual_entry(
+        &self,
+        location: &explorer_model::LocationDescriptor,
+    ) -> Option<(VirtualContainerRecordV1, VirtualEntryRecordV1)> {
+        let explorer_model::LocationDescriptor::Virtual(location) = location else {
+            return None;
+        };
+        let entry_id = location.entry_id?;
+        let record = self
+            .virtual_containers
+            .lock()
+            .ok()?
+            .get(&location.container_identity)
+            .cloned()?;
+        if record.generation != location.container_generation {
+            return None;
+        }
+        let entry = record.entries.lock().ok()?.get(&entry_id).cloned()?;
+        Some((record, entry))
+    }
+
+    fn submit_virtual_file_open(
+        &self,
+        context: explorer_model::RequestContext,
+        item: explorer_model::ItemDescriptor,
+        disposition: explorer_model::OpenDisposition,
+        record: VirtualContainerRecordV1,
+        entry: VirtualEntryRecordV1,
+    ) -> Result<(), ExplorerServiceError> {
+        if entry.size > MAX_VIRTUAL_MATERIALIZATION_BYTES_V1 {
+            return Err(ExplorerServiceError::Internal);
+        }
+        let Some(runtime) = self.virtual_folder.as_ref().cloned() else {
+            return Err(ExplorerServiceError::Disconnected);
+        };
+        let sender = self.sender.clone();
+        let shell = Arc::clone(&self.shell);
+        let retained = Arc::clone(&self.virtual_materializations);
+        std::thread::spawn(move || {
+            let fail = |message| {
+                let _ = sender.send(virtual_failed(&context, message));
+            };
+            let nonce = VIRTUAL_MATERIALIZATION_NONCE_V1.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir()
+                .join("SuperExplorer")
+                .join(format!("virtual-{}-{nonce:016x}", std::process::id()));
+            if std::fs::create_dir_all(&root).is_err() {
+                fail("Unable to prepare a temporary archive item.");
+                return;
+            }
+            let target = root.join(&entry.name);
+            let mut file = match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)
+            {
+                Ok(file) => file,
+                Err(_) => {
+                    let _ = std::fs::remove_dir_all(&root);
+                    fail("Unable to prepare a temporary archive item.");
+                    return;
+                }
+            };
+            let mut offset = 0_u64;
+            let result = (|| -> Result<(), ()> {
+                use std::io::Write as _;
+                while offset < entry.size {
+                    if context.cancellation.is_cancelled() {
+                        return Err(());
+                    }
+                    let input =
+                        explorer_extension_host::open_virtual_container_input_with_cancellation_v1(
+                            &record.path,
+                            record.generation,
+                            Some(context.cancellation.clone()),
+                        )
+                        .map_err(|_| ())?;
+                    let outcome = runtime
+                        .lock()
+                        .map_err(|_| ())?
+                        .read(
+                            SEVEN_Z_PROVIDER_V1,
+                            explorer_extension_api::VirtualReadRequestV1 {
+                                container: input,
+                                container_generation: record.generation,
+                                source_generation: record.generation,
+                                entry_id: entry.id,
+                                offset,
+                                maximum_bytes: explorer_extension_api::MAX_VIRTUAL_READ_BYTES_V1
+                                    as u32,
+                                reserved: 0,
+                                secret: record.secret.mint(),
+                            },
+                        )
+                        .map_err(|_| ())?;
+                    if outcome.status != explorer_extension_api::VirtualProviderStatusV1::READY
+                        || outcome.container_generation != record.generation
+                        || outcome.next_offset <= offset
+                        || outcome.bytes.is_empty()
+                    {
+                        return Err(());
+                    }
+                    file.write_all(&outcome.bytes).map_err(|_| ())?;
+                    offset = outcome.next_offset;
+                    if outcome.end_of_entry {
+                        break;
+                    }
+                }
+                if offset != entry.size {
+                    return Err(());
+                }
+                file.flush().map_err(|_| ())?;
+                file.sync_all().map_err(|_| ())
+            })();
+            drop(file);
+            if result.is_err() {
+                let _ = std::fs::remove_dir_all(&root);
+                if !context.cancellation.is_cancelled() {
+                    fail("Unable to extract the archive item.");
+                }
+                return;
+            }
+            if retained
+                .0
+                .lock()
+                .map(|mut paths| paths.push(root.clone()))
+                .is_err()
+            {
+                let _ = std::fs::remove_dir_all(&root);
+                fail("Unable to retain the temporary archive item.");
+                return;
+            }
+            let materialized = explorer_model::ItemDescriptor {
+                id: item.id,
+                location: explorer_model::LocationDescriptor::file_system(target),
+            };
+            if ExplorerService::submit(
+                shell.as_ref(),
+                ExplorerCommand::OpenItem {
+                    context: context.clone(),
+                    item: materialized,
+                    disposition,
+                },
+            )
+            .is_err()
+            {
+                fail("Unable to open the extracted archive item.");
+            }
+        });
+        Ok(())
+    }
+
+    fn submit_virtual_begin_drag(
+        &self,
+        context: explorer_model::RequestContext,
+        request: &explorer_model::DataTransferRequest,
+    ) -> Option<Result<(), ExplorerServiceError>> {
+        let explorer_model::DataTransferRequest::BeginDrag {
+            items,
+            allowed_effects,
+            button,
+        } = request
+        else {
+            return None;
+        };
+        let [item] = items.as_slice() else {
+            return items.iter().any(|item| {
+                matches!(item.location, explorer_model::LocationDescriptor::Virtual(_))
+            }).then_some(Err(ExplorerServiceError::Internal));
+        };
+        let (record, entry) = self.virtual_entry(&item.location)?;
+        if entry.is_container || entry.size > MAX_VIRTUAL_MATERIALIZATION_BYTES_V1 {
+            return Some(Err(ExplorerServiceError::Internal));
+        }
+        let runtime = self.virtual_folder.as_ref()?.clone();
+        let shell = Arc::clone(&self.shell);
+        let sender = self.sender.clone();
+        let retained = Arc::clone(&self.virtual_materializations);
+        let item = item.clone();
+        let _requested_effects = *allowed_effects;
+        // A virtual archive entry is extracted to a retained temporary file.
+        // Moving that implementation detail must never be offered to the drop
+        // target; Explorer treats drag-out from an archive as a copy.
+        let allowed_effects = explorer_model::TransferEffects {
+            copy: true,
+            move_item: false,
+            link: false,
+        };
+        let button = *button;
+        std::thread::spawn(move || {
+            let result = (|| -> Result<(PathBuf, PathBuf), String> {
+                use std::io::Write as _;
+                let nonce = VIRTUAL_MATERIALIZATION_NONCE_V1.fetch_add(1, Ordering::Relaxed);
+                let root = std::env::temp_dir()
+                    .join("SuperExplorer")
+                    .join(format!(
+                        "virtual-drag-{}-{nonce:016x}",
+                        std::process::id()
+                    ));
+                std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+                let target = root.join(&entry.name);
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&target)
+                    .map_err(|error| error.to_string())?;
+                let mut offset = 0_u64;
+                while offset < entry.size {
+                    if context.cancellation.is_cancelled() {
+                        return Err("virtual drag cancelled".to_owned());
+                    }
+                    let input = explorer_extension_host::open_virtual_container_input_with_cancellation_v1(
+                        &record.path,
+                        record.generation,
+                        Some(context.cancellation.clone()),
+                    )
+                    .map_err(|error| error.to_string())?;
+                    let outcome = runtime
+                        .lock()
+                        .map_err(|_| "virtual provider closed".to_owned())?
+                        .read(
+                            SEVEN_Z_PROVIDER_V1,
+                            explorer_extension_api::VirtualReadRequestV1 {
+                                container: input,
+                                container_generation: record.generation,
+                                source_generation: record.generation,
+                                entry_id: entry.id,
+                                offset,
+                                maximum_bytes: explorer_extension_api::MAX_VIRTUAL_READ_BYTES_V1 as u32,
+                                reserved: 0,
+                                secret: record.secret.mint(),
+                            },
+                        )
+                        .map_err(|error| error.to_string())?;
+                    if outcome.status != explorer_extension_api::VirtualProviderStatusV1::READY
+                        || outcome.container_generation != record.generation
+                        || outcome.next_offset <= offset
+                        || outcome.bytes.is_empty()
+                    {
+                        return Err("virtual provider returned an invalid drag stream".to_owned());
+                    }
+                    file.write_all(&outcome.bytes)
+                        .map_err(|error| error.to_string())?;
+                    offset = outcome.next_offset;
+                    if outcome.end_of_entry {
+                        break;
+                    }
+                }
+                if offset != entry.size {
+                    return Err("virtual drag stream length mismatch".to_owned());
+                }
+                file.flush().map_err(|error| error.to_string())?;
+                file.sync_all().map_err(|error| error.to_string())?;
+                Ok((root, target))
+            })();
+            let Ok((root, target)) = result else {
+                let _ = sender.send(virtual_failed(&context, "Unable to prepare the archive item for dragging."));
+                return;
+            };
+            if retained.0.lock().map(|mut roots| roots.push(root.clone())).is_err() {
+                let _ = std::fs::remove_dir_all(root);
+                let _ = sender.send(virtual_failed(&context, "Unable to retain the dragged archive item."));
+                return;
+            }
+            let materialized = explorer_model::ItemDescriptor {
+                id: item.id,
+                location: explorer_model::LocationDescriptor::file_system(target),
+            };
+            if ExplorerService::submit(
+                shell.as_ref(),
+                ExplorerCommand::DataTransfer {
+                    context: context.clone(),
+                    request: explorer_model::DataTransferRequest::BeginDrag {
+                        items: vec![materialized],
+                        allowed_effects,
+                        button,
+                    },
+                },
+            )
+            .is_err()
+            {
+                let _ = sender.send(virtual_failed(&context, "Unable to start the archive item drag."));
+            }
+        });
+        Some(Ok(()))
+    }
+
+    fn submit_virtual_navigation(
+        &self,
+        context: explorer_model::RequestContext,
+        requested: explorer_model::LocationDescriptor,
+    ) -> Option<Result<(), ExplorerServiceError>> {
+        let runtime = self.virtual_folder.as_ref()?.clone();
+        let (location, record) = match &requested {
+            explorer_model::LocationDescriptor::FileSystem(path) if is_7z_path(path) => {
+                let (identity, record) = match virtual_container_record(path) {
+                    Ok(value) => value,
+                    Err(_) => return Some(Err(ExplorerServiceError::Internal)),
+                };
+                let location = match explorer_model::LocationDescriptor::try_virtual(
+                    SEVEN_Z_PROVIDER_V1,
+                    identity,
+                    record.generation,
+                    None,
+                    Vec::new(),
+                ) {
+                    Ok(location) => location,
+                    Err(_) => return Some(Err(ExplorerServiceError::Internal)),
+                };
+                if let Ok(mut containers) = self.virtual_containers.lock() {
+                    containers.insert(identity, record.clone());
+                } else {
+                    return Some(Err(ExplorerServiceError::Internal));
+                }
+                (location, record)
+            }
+            explorer_model::LocationDescriptor::Virtual(virtual_location)
+                if virtual_location.provider_id == SEVEN_Z_PROVIDER_V1 =>
+            {
+                let record = match self.virtual_containers.lock().ok().and_then(|containers| {
+                    containers
+                        .get(&virtual_location.container_identity)
+                        .cloned()
+                }) {
+                    Some(record) if record.generation == virtual_location.container_generation => record,
+                    Some(record)
+                        if self
+                            .virtual_refresh_remaps
+                            .lock()
+                            .ok()
+                            .and_then(|remaps| {
+                                let mut generation = virtual_location.container_generation;
+                                for _ in 0..=remaps.len() {
+                                    if generation == record.generation {
+                                        return Some(generation);
+                                    }
+                                    generation = *remaps.get(&(
+                                        virtual_location.container_identity,
+                                        generation,
+                                    ))?;
+                                }
+                                None
+                            })
+                            == Some(record.generation) =>
+                    {
+                        record
+                    }
+                    _ => return Some(Err(ExplorerServiceError::Internal)),
+                };
+                let location = if record.generation == virtual_location.container_generation {
+                    requested
+                } else {
+                    match explorer_model::LocationDescriptor::try_virtual(
+                        SEVEN_Z_PROVIDER_V1,
+                        virtual_location.container_identity,
+                        record.generation,
+                        virtual_location.entry_id,
+                        virtual_location.components.clone(),
+                    ) {
+                        Ok(location) => location,
+                        Err(_) => return Some(Err(ExplorerServiceError::Internal)),
+                    }
+                };
+                (location, record)
+            }
+            _ => return None,
+        };
+        let sender = self.sender.clone();
+        std::thread::spawn(move || {
+            if context.cancellation.is_cancelled() {
+                return;
+            }
+            let explorer_model::LocationDescriptor::Virtual(virtual_location) = &location else {
+                return;
+            };
+            let mut incorrect = false;
+            let mut outcome = None;
+            for attempt in 0..=3 {
+                let input =
+                    match explorer_extension_host::open_virtual_container_input_with_cancellation_v1(
+                        &record.path,
+                        record.generation,
+                        Some(context.cancellation.clone()),
+                    ) {
+                        Ok(input) => input,
+                        Err(_) => {
+                            let _ = sender
+                                .send(virtual_failed(&context, "Unable to open the archive."));
+                            return;
+                        }
+                    };
+                let secret = record.secret.mint();
+                let supplied_secret = secret.is_some();
+                let request = explorer_extension_api::VirtualEnumerateRequestV1 {
+                    container: input,
+                    container_generation: record.generation,
+                    source_generation: record.generation,
+                    parent_components: virtual_location
+                        .components
+                        .iter()
+                        .cloned()
+                        .map(abi_stable::std_types::RString::from)
+                        .collect::<Vec<_>>()
+                        .into(),
+                    maximum_entries: explorer_extension_api::MAX_VIRTUAL_ENTRIES_V1 as u32,
+                    reserved: 0,
+                    secret,
+                };
+                outcome = runtime
+                    .lock()
+                    .ok()
+                    .and_then(|runtime| runtime.enumerate(SEVEN_Z_PROVIDER_V1, request).ok());
+                let needs_password = outcome.as_ref().is_some_and(|outcome| {
+                    outcome.status
+                        == explorer_extension_api::VirtualProviderStatusV1::PASSWORD_REQUIRED
+                        || (supplied_secret
+                            && outcome.status
+                                == explorer_extension_api::VirtualProviderStatusV1::FAILED)
+                });
+                if !needs_password || attempt == 3 {
+                    break;
+                }
+                let Some(secret) = prompt_archive_password(&record.title, incorrect) else {
+                    return;
+                };
+                record.secret.replace(secret);
+                incorrect = true;
+            }
+            let Some(outcome) = outcome.filter(|outcome| {
+                outcome.status == explorer_extension_api::VirtualProviderStatusV1::READY
+                    && outcome.container_generation == record.generation
+            }) else {
+                let _ = sender.send(virtual_failed(&context, "Unable to read the archive."));
+                return;
+            };
+            if context.cancellation.is_cancelled() {
+                return;
+            }
+            let metadata = explorer_model::LocationMetadata {
+                descriptor: location.clone(),
+                display_title: if virtual_location.components.is_empty() {
+                    record.title.clone()
+                } else {
+                    virtual_location
+                        .components
+                        .last()
+                        .cloned()
+                        .unwrap_or(record.title.clone())
+                },
+                can_go_up: true,
+                can_write: true,
+            };
+            if sender
+                .send(ExplorerEvent::LocationResolved {
+                    context: context.clone(),
+                    metadata,
+                })
+                .is_err()
+            {
+                return;
+            }
+            let entry_records = Arc::clone(&record.entries);
+            let entries = outcome
+                .entries
+                .into_iter()
+                .filter_map(|entry| {
+                    let name = entry.name.into_string();
+                    let is_container =
+                        entry.kind == explorer_extension_api::VirtualEntryKindV1::DIRECTORY;
+                    entry_records.lock().ok()?.insert(
+                        entry.id.value,
+                        VirtualEntryRecordV1 {
+                            id: entry.id,
+                            is_container,
+                            size: entry.uncompressed_size,
+                            name: name.clone(),
+                            components: entry
+                                .components
+                                .iter()
+                                .map(|component| component.to_string())
+                                .collect(),
+                        },
+                    );
+                    let components = entry
+                        .components
+                        .into_iter()
+                        .map(|component| component.into_string())
+                        .collect::<Vec<_>>();
+                    let location = explorer_model::LocationDescriptor::try_virtual(
+                        SEVEN_Z_PROVIDER_V1,
+                        virtual_location.container_identity,
+                        record.generation,
+                        Some(entry.id.value),
+                        components,
+                    )
+                    .ok()?;
+                    let mut id = Vec::with_capacity(28);
+                    id.extend_from_slice(&virtual_location.container_identity);
+                    id.extend_from_slice(&entry.id.namespace.into_raw().to_le_bytes());
+                    id.extend_from_slice(&entry.id.value.to_le_bytes());
+                    Some(explorer_model::FileEntry {
+                        id: explorer_model::ShellItemId::from_provider_bytes(id)?,
+                        display_name: name,
+                        location,
+                        is_container,
+                        metadata: explorer_model::FileEntryMetadata {
+                            size_bytes: (entry.kind
+                                == explorer_extension_api::VirtualEntryKindV1::FILE)
+                                .then_some(entry.uncompressed_size),
+                            type_display: Some(
+                                if entry.kind
+                                    == explorer_extension_api::VirtualEntryKindV1::DIRECTORY
+                                {
+                                    "File folder".to_owned()
+                                } else {
+                                    "7z archive entry".to_owned()
+                                },
+                            ),
+                            namespace_capabilities:
+                                explorer_model::NamespaceCapabilities::from_public_bits(
+                                    explorer_model::NamespaceCapabilities::OPEN
+                                        | explorer_model::NamespaceCapabilities::COPY
+                                        | explorer_model::NamespaceCapabilities::RENAME
+                                        | explorer_model::NamespaceCapabilities::DELETE,
+                                ),
+                            ..Default::default()
+                        },
+                    })
+                })
+                .collect::<Vec<_>>();
+            if !entries.is_empty() {
+                let _ = sender.send(ExplorerEvent::DirectoryBatch {
+                    context: context.clone(),
+                    entries,
+                });
+            }
+            let _ = sender.send(ExplorerEvent::DirectoryFinished { context });
+        });
+        Some(Ok(()))
+    }
+
+    fn submit_virtual_mutation_steps(
+        &self,
+        context: explorer_model::RequestContext,
+        identity: [u8; 16],
+        record: VirtualContainerRecordV1,
+        steps: Vec<explorer_extension_api::VirtualMutationStepV1>,
+    ) -> Option<Result<(), ExplorerServiceError>> {
+        let runtime = self.virtual_folder.as_ref()?.clone();
+        let sender = self.sender.clone();
+        let containers = Arc::clone(&self.virtual_containers);
+        let refresh_remaps = Arc::clone(&self.virtual_refresh_remaps);
+        let undo = Arc::clone(&self.virtual_mutation_undo);
+        std::thread::spawn(move || {
+            let maximum_staging = std::fs::metadata(&record.path)
+                .map(|metadata| metadata.len().saturating_mul(4).max(1024 * 1024))
+                .unwrap_or(1024 * 1024);
+            let result = runtime
+                .lock()
+                .map_err(|_| "virtual provider closed".to_owned())
+                .and_then(|runtime| {
+                    explorer_extension_host::commit_virtual_container_mutation_v1(
+                        &runtime,
+                        SEVEN_Z_PROVIDER_V1,
+                        &record.path,
+                        record.generation,
+                        steps,
+                        maximum_staging,
+                        Some(context.cancellation.clone()),
+                        record.secret.snapshot(),
+                    )
+                });
+            match result {
+                Ok(commit) => {
+                    if let Ok(mut remaps) = refresh_remaps.lock() {
+                        remaps.retain(|(container, _), _| *container != identity);
+                        remaps.insert((identity, record.generation), commit.new_generation);
+                    }
+                    if let Ok(mut undo) = undo.lock() {
+                        if let Some((old_backup, _)) =
+                            undo.insert(identity, (commit.backup.clone(), commit.new_generation))
+                        {
+                            let _ = std::fs::remove_file(old_backup);
+                        }
+                    }
+                    if let Ok(mut containers) = containers.lock()
+                        && let Some(current) = containers.get_mut(&identity)
+                    {
+                        current.generation = commit.new_generation;
+                        if let Ok(mut entries) = current.entries.lock() {
+                            entries.clear();
+                        }
+                    }
+                    let _ = sender.send(ExplorerEvent::OperationFinished {
+                        context,
+                        outcome: explorer_model::OperationTerminal::Finished,
+                    });
+                }
+                Err(message) => {
+                    tracing::warn!(
+                        operation = "virtual archive mutation",
+                        error = %message,
+                        "virtual archive mutation failed"
+                    );
+                    let _ = sender.send(ExplorerEvent::OperationFinished {
+                        context,
+                        outcome: explorer_model::OperationTerminal::Failed(
+                            explorer_common::ExplorerError::new(
+                                explorer_common::ExplorerErrorKind::Extension,
+                                "virtual archive mutation",
+                                true,
+                                "The archive could not be updated.",
+                                message,
+                            ),
+                        ),
+                    });
+                }
+            }
+        });
+        Some(Ok(()))
+    }
+
+    fn submit_virtual_file_operation(
+        &self,
+        context: explorer_model::RequestContext,
+        request: explorer_model::FileOperationRequest,
+    ) -> Option<Result<(), ExplorerServiceError>> {
+        let (items, step_kind, rename, move_parent) = match &request.kind {
+            explorer_model::FileOperationKind::Rename { item, new_name } => (
+                vec![item.clone()],
+                explorer_extension_api::VirtualMutationKindV1::RENAME,
+                Some(new_name.clone()),
+                None,
+            ),
+            explorer_model::FileOperationKind::RecycleDelete { items }
+            | explorer_model::FileOperationKind::PermanentDelete { items, .. } => (
+                items.clone(),
+                explorer_extension_api::VirtualMutationKindV1::DELETE,
+                None,
+                None,
+            ),
+            explorer_model::FileOperationKind::Move { items, destination } => {
+                let explorer_model::LocationDescriptor::Virtual(destination) = destination else {
+                    return None;
+                };
+                (
+                    items.clone(),
+                    explorer_extension_api::VirtualMutationKindV1::MOVE,
+                    None,
+                    Some(destination.clone()),
+                )
+            }
+            _ => return None,
+        };
+        let first = items.first()?;
+        let explorer_model::LocationDescriptor::Virtual(first_location) = &first.location else {
+            return None;
+        };
+        let identity = first_location.container_identity;
+        let record = self
+            .virtual_containers
+            .lock()
+            .ok()?
+            .get(&identity)
+            .cloned()?;
+        if record.generation != first_location.container_generation {
+            return Some(Err(ExplorerServiceError::Internal));
+        }
+        let mut steps = Vec::with_capacity(items.len());
+        for item in &items {
+            let explorer_model::LocationDescriptor::Virtual(location) = &item.location else {
+                return Some(Err(ExplorerServiceError::Internal));
+            };
+            if location.container_identity != identity
+                || location.container_generation != record.generation
+            {
+                return Some(Err(ExplorerServiceError::Internal));
+            }
+            let Some(entry_id) = location.entry_id else {
+                return Some(Err(ExplorerServiceError::Internal));
+            };
+            let Some(entry) = record.entries.lock().ok()?.get(&entry_id).cloned() else {
+                return Some(Err(ExplorerServiceError::Internal));
+            };
+            if entry.is_container {
+                return Some(Err(ExplorerServiceError::Internal));
+            }
+            let destination_components = if let Some(new_name) = rename.as_ref() {
+                if new_name.is_empty() || new_name.contains(['/', '\\', '\0']) {
+                    return Some(Err(ExplorerServiceError::Internal));
+                }
+                let mut components = entry.components.clone();
+                let Some(last) = components.last_mut() else {
+                    return Some(Err(ExplorerServiceError::Internal));
+                };
+                *last = new_name.clone();
+                components
+                    .into_iter()
+                    .map(Into::into)
+                    .collect::<Vec<_>>()
+                    .into()
+            } else if let Some(parent) = move_parent.as_ref() {
+                if parent.container_identity != identity
+                    || parent.container_generation != record.generation
+                {
+                    return Some(Err(ExplorerServiceError::Internal));
+                }
+                let mut components = parent.components.clone();
+                components.push(entry.name.clone());
+                components
+                    .into_iter()
+                    .map(Into::into)
+                    .collect::<Vec<_>>()
+                    .into()
+            } else {
+                RVec::new()
+            };
+            steps.push(explorer_extension_api::VirtualMutationStepV1 {
+                kind: step_kind,
+                entry_id: entry.id,
+                destination_components,
+                source: abi_stable::std_types::ROption::RNone,
+                source_generation: 0,
+            });
+        }
+        self.submit_virtual_mutation_steps(context, identity, record, steps)
+    }
+
+    fn submit_virtual_create_operation(
+        &self,
+        context: explorer_model::RequestContext,
+        request: &explorer_model::FileOperationRequest,
+    ) -> Option<Result<(), ExplorerServiceError>> {
+        use abi_stable::std_types::ROption;
+        use explorer_model::{FileOperationKind, LocationDescriptor, ShellNewItemRecipe};
+
+        let (parent, additions) = match &request.kind {
+            FileOperationKind::CreateFolder { parent, name } => {
+                (parent, vec![(name.clone(), true, ROption::RNone, 0)])
+            }
+            FileOperationKind::CreateItem {
+                parent,
+                name,
+                recipe,
+            } => {
+                let (directory, source, generation) = match recipe {
+                    ShellNewItemRecipe::Folder => (true, ROption::RNone, 0),
+                    ShellNewItemRecipe::EmptyFile => (false, ROption::RNone, 0),
+                    ShellNewItemRecipe::Data(bytes) => (
+                        false,
+                        explorer_extension_host::open_virtual_memory_input_v1(bytes.clone(), 1)
+                            .map(ROption::RSome)
+                            .unwrap_or(ROption::RNone),
+                        1,
+                    ),
+                    ShellNewItemRecipe::TemplateFile(path) => (
+                        false,
+                        explorer_extension_host::open_virtual_container_input_v1(path, 1)
+                            .ok()
+                            .map(ROption::RSome)
+                            .unwrap_or(ROption::RNone),
+                        1,
+                    ),
+                };
+                (parent, vec![(name.clone(), directory, source, generation)])
+            }
+            FileOperationKind::Copy { items, destination } => {
+                let LocationDescriptor::Virtual(_) = destination else {
+                    return None;
+                };
+                let mut additions = Vec::with_capacity(items.len());
+                for item in items {
+                    let LocationDescriptor::FileSystem(path) = &item.location else {
+                        return Some(Err(ExplorerServiceError::Internal));
+                    };
+                    if !path.is_file() {
+                        return Some(Err(ExplorerServiceError::Internal));
+                    }
+                    let name = path.file_name()?.to_str()?.to_owned();
+                    let generation = std::fs::metadata(path)
+                        .map(|metadata| metadata.len().max(1))
+                        .ok()?;
+                    let source =
+                        explorer_extension_host::open_virtual_container_input_v1(path, generation)
+                            .ok()?;
+                    additions.push((name, false, ROption::RSome(source), generation));
+                }
+                (destination, additions)
+            }
+            _ => return None,
+        };
+        let LocationDescriptor::Virtual(parent) = parent else {
+            return None;
+        };
+        let identity = parent.container_identity;
+        let record = self
+            .virtual_containers
+            .lock()
+            .ok()?
+            .get(&identity)
+            .cloned()?;
+        if record.generation != parent.container_generation {
+            return Some(Err(ExplorerServiceError::Internal));
+        }
+        let mut steps = Vec::with_capacity(additions.len());
+        for (name, directory, source, source_generation) in additions {
+            if explorer_model::validate_windows_file_name(&name).is_err() {
+                return Some(Err(ExplorerServiceError::Internal));
+            }
+            let mut components = parent.components.clone();
+            components.push(name);
+            steps.push(explorer_extension_api::VirtualMutationStepV1 {
+                kind: if directory {
+                    explorer_extension_api::VirtualMutationKindV1::CREATE_DIRECTORY
+                } else {
+                    explorer_extension_api::VirtualMutationKindV1::ADD_FILE
+                },
+                entry_id: explorer_extension_api::StableIdV1::new(
+                    explorer_extension_api::EXTENSION_ID_NAMESPACE_V1,
+                    1,
+                ),
+                destination_components: components
+                    .into_iter()
+                    .map(Into::into)
+                    .collect::<Vec<_>>()
+                    .into(),
+                source,
+                source_generation,
+            });
+        }
+        self.submit_virtual_mutation_steps(context, identity, record, steps)
+    }
+
+    fn submit_virtual_extract_operation(
+        &self,
+        context: explorer_model::RequestContext,
+        request: &explorer_model::FileOperationRequest,
+    ) -> Option<Result<(), ExplorerServiceError>> {
+        let explorer_model::FileOperationKind::Copy { items, destination } = &request.kind else {
+            return None;
+        };
+        let explorer_model::LocationDescriptor::FileSystem(destination) = destination else {
+            return None;
+        };
+        let first = items.first()?;
+        let explorer_model::LocationDescriptor::Virtual(first_location) = &first.location else {
+            return None;
+        };
+        let identity = first_location.container_identity;
+        let record = self
+            .virtual_containers
+            .lock()
+            .ok()?
+            .get(&identity)
+            .cloned()?;
+        let mut entries = Vec::with_capacity(items.len());
+        let mut total = 0_u64;
+        for item in items {
+            let explorer_model::LocationDescriptor::Virtual(location) = &item.location else {
+                return Some(Err(ExplorerServiceError::Internal));
+            };
+            if location.container_identity != identity
+                || location.container_generation != record.generation
+            {
+                return Some(Err(ExplorerServiceError::Internal));
+            }
+            let entry = record
+                .entries
+                .lock()
+                .ok()?
+                .get(&location.entry_id?)
+                .cloned()?;
+            if entry.is_container || entry.name.contains(['/', '\\', '\0']) {
+                return Some(Err(ExplorerServiceError::Internal));
+            }
+            total = total.checked_add(entry.size)?;
+            if total > MAX_VIRTUAL_MATERIALIZATION_BYTES_V1 {
+                return Some(Err(ExplorerServiceError::Internal));
+            }
+            entries.push(entry);
+        }
+        let runtime = self.virtual_folder.as_ref()?.clone();
+        let sender = self.sender.clone();
+        let destination = destination.clone();
+        std::thread::spawn(move || {
+            let result = (|| -> Result<(), String> {
+                use std::io::Write as _;
+                let metadata =
+                    std::fs::metadata(&destination).map_err(|error| error.to_string())?;
+                if !metadata.is_dir() {
+                    return Err("extract destination is not a directory".to_owned());
+                }
+                for entry in &entries {
+                    if context.cancellation.is_cancelled() {
+                        return Err("extract cancelled".to_owned());
+                    }
+                    let target = destination.join(&entry.name);
+                    if target.exists() {
+                        return Err("extract destination already exists".to_owned());
+                    }
+                    let partial = destination.join(format!(
+                        ".{}.superexplorer-{:016x}.partial",
+                        entry.name,
+                        VIRTUAL_MATERIALIZATION_NONCE_V1.fetch_add(1, Ordering::Relaxed)
+                    ));
+                    let mut file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&partial)
+                        .map_err(|error| error.to_string())?;
+                    let write_result = (|| -> Result<(), String> {
+                        let mut offset = 0_u64;
+                        while offset < entry.size {
+                            let input = explorer_extension_host::open_virtual_container_input_with_cancellation_v1(
+                                &record.path,
+                                record.generation,
+                                Some(context.cancellation.clone()),
+                            )
+                            .map_err(|error| error.to_string())?;
+                            let outcome =
+                                runtime
+                                    .lock()
+                                    .map_err(|_| "virtual provider closed".to_owned())?
+                                    .read(
+                                        SEVEN_Z_PROVIDER_V1,
+                                        explorer_extension_api::VirtualReadRequestV1 {
+                                            container: input,
+                                            container_generation: record.generation,
+                                            source_generation: record.generation,
+                                            entry_id: entry.id,
+                                            offset,
+                                            maximum_bytes:
+                                                explorer_extension_api::MAX_VIRTUAL_READ_BYTES_V1
+                                                    as u32,
+                                            reserved: 0,
+                                            secret: record.secret.mint(),
+                                        },
+                                    )
+                                    .map_err(|error| error.to_string())?;
+                            if outcome.status
+                                != explorer_extension_api::VirtualProviderStatusV1::READY
+                                || outcome.next_offset <= offset
+                                || outcome.bytes.is_empty()
+                            {
+                                return Err("archive entry read failed".to_owned());
+                            }
+                            file.write_all(&outcome.bytes)
+                                .map_err(|error| error.to_string())?;
+                            offset = outcome.next_offset;
+                            if outcome.end_of_entry {
+                                break;
+                            }
+                        }
+                        if offset != entry.size {
+                            return Err("archive entry size mismatch".to_owned());
+                        }
+                        file.flush()
+                            .and_then(|()| file.sync_all())
+                            .map_err(|error| error.to_string())
+                    })();
+                    drop(file);
+                    if let Err(error) = write_result {
+                        let _ = std::fs::remove_file(&partial);
+                        return Err(error);
+                    }
+                    if let Err(error) = std::fs::rename(&partial, &target) {
+                        let _ = std::fs::remove_file(&partial);
+                        return Err(error.to_string());
+                    }
+                }
+                Ok(())
+            })();
+            let outcome = match result {
+                Ok(()) => explorer_model::OperationTerminal::Finished,
+                Err(_) if context.cancellation.is_cancelled() => {
+                    explorer_model::OperationTerminal::Cancelled
+                }
+                Err(message) => {
+                    explorer_model::OperationTerminal::Failed(explorer_common::ExplorerError::new(
+                        explorer_common::ExplorerErrorKind::Extension,
+                        "virtual archive extract",
+                        true,
+                        "The archive item could not be extracted.",
+                        message,
+                    ))
+                }
+            };
+            let _ = sender.send(ExplorerEvent::OperationFinished { context, outcome });
+        });
+        Some(Ok(()))
+    }
+
+    fn submit_virtual_undo(
+        &self,
+        context: explorer_model::RequestContext,
+        request: &explorer_model::ContextMenuRequest,
+    ) -> Option<Result<(), ExplorerServiceError>> {
+        if !request
+            .requested_verb
+            .as_deref()
+            .is_some_and(|verb| verb.eq_ignore_ascii_case("undo"))
+        {
+            return None;
+        }
+        let explorer_model::ShellContextMenuTarget::Background { parent } = &request.target else {
+            return None;
+        };
+        let explorer_model::LocationDescriptor::Virtual(location) = parent else {
+            return None;
+        };
+        let identity = location.container_identity;
+        let record = self
+            .virtual_containers
+            .lock()
+            .ok()?
+            .get(&identity)
+            .cloned()?;
+        let (backup, generation) = self
+            .virtual_mutation_undo
+            .lock()
+            .ok()?
+            .get(&identity)
+            .cloned()?;
+        let runtime = self.virtual_folder.as_ref()?.clone();
+        let sender = self.sender.clone();
+        let containers = Arc::clone(&self.virtual_containers);
+        let refresh_remaps = Arc::clone(&self.virtual_refresh_remaps);
+        let undo = Arc::clone(&self.virtual_mutation_undo);
+        std::thread::spawn(move || {
+            let result = runtime
+                .lock()
+                .map_err(|_| "virtual provider closed".to_owned())
+                .and_then(|runtime| {
+                    explorer_extension_host::undo_virtual_container_mutation_v1(
+                        &runtime,
+                        SEVEN_Z_PROVIDER_V1,
+                        &record.path,
+                        &backup,
+                        generation,
+                        record.secret.snapshot(),
+                    )
+                });
+            let outcome = match result {
+                Ok(new_generation) => {
+                    if let Ok(mut remaps) = refresh_remaps.lock() {
+                        remaps.retain(|(container, _), _| *container != identity);
+                        remaps.insert((identity, record.generation), new_generation);
+                    }
+                    if let Ok(mut undo) = undo.lock() {
+                        undo.remove(&identity);
+                    }
+                    if let Ok(mut containers) = containers.lock()
+                        && let Some(current) = containers.get_mut(&identity)
+                    {
+                        current.generation = new_generation;
+                        if let Ok(mut entries) = current.entries.lock() {
+                            entries.clear();
+                        }
+                    }
+                    explorer_model::ContextMenuOutcome::Invoked { command_offset: 0 }
+                }
+                Err(message) => explorer_model::ContextMenuOutcome::Failed {
+                    error: explorer_common::ExplorerError::new(
+                        explorer_common::ExplorerErrorKind::Extension,
+                        "virtual archive undo",
+                        true,
+                        "The archive change could not be undone.",
+                        message,
+                    ),
+                },
+            };
+            let _ = sender.send(ExplorerEvent::ContextMenuFinished { context, outcome });
+        });
+        Some(Ok(()))
     }
 
     fn submit_context_menu(
@@ -335,7 +1717,127 @@ impl BrokeredExplorerService {
 
 impl ExplorerService for BrokeredExplorerService {
     fn submit(&self, command: ExplorerCommand) -> Result<(), ExplorerServiceError> {
+        match &command {
+            ExplorerCommand::Navigate { context, location }
+            | ExplorerCommand::Refresh { context, location } => {
+                if let Some(result) =
+                    self.submit_virtual_navigation(context.clone(), location.clone())
+                {
+                    return result;
+                }
+            }
+            ExplorerCommand::OpenItem {
+                context,
+                item,
+                disposition,
+            } => {
+                if let Some((record, entry)) = self.virtual_entry(&item.location) {
+                    if entry.is_container {
+                        if let Some(result) =
+                            self.submit_virtual_navigation(context.clone(), item.location.clone())
+                        {
+                            return result;
+                        }
+                    } else {
+                        return self.submit_virtual_file_open(
+                            context.clone(),
+                            item.clone(),
+                            *disposition,
+                            record,
+                            entry,
+                        );
+                    }
+                } else if let Some(result) =
+                    self.submit_virtual_navigation(context.clone(), item.location.clone())
+                {
+                    return result;
+                }
+            }
+            ExplorerCommand::ResolveAncestry { context, location }
+                if matches!(location, explorer_model::LocationDescriptor::Virtual(_)) =>
+            {
+                let segments =
+                    if let explorer_model::LocationDescriptor::Virtual(virtual_location) = location
+                    {
+                        self.virtual_containers
+                            .lock()
+                            .ok()
+                            .and_then(|containers| {
+                                containers
+                                    .get(&virtual_location.container_identity)
+                                    .cloned()
+                            })
+                            .map_or_else(
+                                || explorer_model::location_breadcrumbs(location),
+                                |record| {
+                                    let mut segments = explorer_model::location_breadcrumbs(
+                                        &explorer_model::LocationDescriptor::file_system(
+                                            record.path,
+                                        ),
+                                    );
+                                    segments.extend(
+                                        explorer_model::location_breadcrumbs(location)
+                                            .into_iter()
+                                            .skip(1),
+                                    );
+                                    segments
+                                },
+                            )
+                    } else {
+                        Vec::new()
+                    };
+                let sender = self.sender.clone();
+                let context = context.clone();
+                std::thread::spawn(move || {
+                    if sender
+                        .send(ExplorerEvent::AncestryBatch {
+                            context: context.clone(),
+                            segments,
+                        })
+                        .is_ok()
+                    {
+                        let _ = sender.send(ExplorerEvent::AncestryFinished {
+                            context,
+                            outcome: explorer_model::BreadcrumbTerminal::Finished,
+                        });
+                    }
+                });
+                return Ok(());
+            }
+            ExplorerCommand::ExecuteFileOperation { context, request } => {
+                if let Some(result) = self.submit_virtual_create_operation(context.clone(), request)
+                {
+                    return result;
+                }
+                if let Some(result) =
+                    self.submit_virtual_extract_operation(context.clone(), request)
+                {
+                    return result;
+                }
+                if let Some(result) =
+                    self.submit_virtual_file_operation(context.clone(), request.clone())
+                {
+                    return result;
+                }
+            }
+            ExplorerCommand::ShowContextMenu { context, request } => {
+                if let Some(result) = self.submit_virtual_undo(context.clone(), request) {
+                    return result;
+                }
+            }
+            ExplorerCommand::DataTransfer { context, request } => {
+                if let Some(result) = self.submit_virtual_begin_drag(context.clone(), request) {
+                    return result;
+                }
+            }
+            _ => {}
+        }
         match command {
+            ExplorerCommand::LoadShellIcon { context, key }
+                if matches!(key.location, explorer_model::LocationDescriptor::Virtual(_)) =>
+            {
+                self.submit_virtual_icon(context, key)
+            }
             ExplorerCommand::ShowContextMenu { context, request } => {
                 if is_host_owned_context_verb(request.requested_verb.as_deref()) {
                     ExplorerService::submit(
@@ -402,7 +1904,8 @@ impl ExplorerService for BrokeredExplorerService {
             .try_recv()
         {
             Ok(event) => Ok(Some(event)),
-            Err(TryRecvError::Empty) => ExplorerService::try_recv(self.shell.as_ref()),
+            Err(TryRecvError::Empty) => ExplorerService::try_recv(self.shell.as_ref())
+                .map(|event| event.map(|event| self.restore_virtual_icon_key(event))),
             Err(TryRecvError::Disconnected) => Err(ExplorerServiceError::Disconnected),
         }
     }
@@ -410,7 +1913,28 @@ impl ExplorerService for BrokeredExplorerService {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_trusted_raster, is_dedicated_raster_preview, is_host_owned_context_verb};
+    use super::{
+        decode_trusted_raster, is_dedicated_raster_preview, is_host_owned_context_verb,
+        virtual_container_record,
+    };
+
+    #[test]
+    fn virtual_container_identity_survives_content_change_while_generation_advances() {
+        let root = std::env::temp_dir().join(format!(
+            "superexplorer-container-identity-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let archive = root.join("fixture.7z");
+        std::fs::write(&archive, b"first").unwrap();
+        let (first_identity, first) = virtual_container_record(&archive).unwrap();
+        std::fs::write(&archive, b"second-generation").unwrap();
+        let (second_identity, second) = virtual_container_record(&archive).unwrap();
+        assert_eq!(first_identity, second_identity);
+        assert_ne!(first.generation, second.generation);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn host_owned_system_commands_use_the_long_lived_shell_sta() {

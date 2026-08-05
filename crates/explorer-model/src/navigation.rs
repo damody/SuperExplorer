@@ -1400,6 +1400,39 @@ impl OrderedColumnLayout {
         &self.entries
     }
 
+    /// Restores a validated, canonical persisted layout, including currently
+    /// unavailable extension IDs. The caller owns schema validation; this
+    /// constructor still fail-closes on invalid IDs, duplicate IDs, or widths.
+    pub fn restore_entries(
+        entries: impl IntoIterator<Item = (String, u16, bool)>,
+    ) -> Result<Self, ColumnIdError> {
+        let mut restored = Vec::new();
+        for (stable_id, width, visible) in entries {
+            let id = ColumnId::parse(stable_id)?;
+            if restored
+                .iter()
+                .any(|entry: &ColumnLayoutEntry| entry.id == id)
+            {
+                return Err(ColumnIdError::InvalidCharacter(':'));
+            }
+            if !(Self::MINIMUM_WIDTH..=Self::MAXIMUM_WIDTH).contains(&width) {
+                return Err(ColumnIdError::TooLong {
+                    length: usize::from(width),
+                    maximum: usize::from(Self::MAXIMUM_WIDTH),
+                });
+            }
+            restored.push(ColumnLayoutEntry {
+                visible: visible || id == ColumnId::Name,
+                id,
+                width,
+            });
+        }
+        if !restored.iter().any(|entry| entry.id == ColumnId::Name) {
+            return Err(ColumnIdError::MissingNamespace);
+        }
+        Ok(Self { entries: restored })
+    }
+
     pub fn entry(&self, id: &ColumnId) -> Option<&ColumnLayoutEntry> {
         self.entries.iter().find(|entry| entry.id == *id)
     }
@@ -1829,7 +1862,7 @@ impl AddressBarState {
         Self {
             mode: AddressBarMode::Browsing,
             draft: parsing_text(&entry.location),
-            resolved_ancestry: filesystem_breadcrumbs(&entry.location),
+            resolved_ancestry: location_breadcrumbs(&entry.location),
             error: None,
             menu_children: Vec::new(),
             menu_error: None,
@@ -2082,12 +2115,60 @@ fn parsing_text(location: &LocationDescriptor) -> String {
         LocationDescriptor::FileSystem(path) => path.to_string_lossy().into_owned(),
         LocationDescriptor::ParsingName(name) => name.clone(),
         LocationDescriptor::ShellNamespace(_) | LocationDescriptor::KnownFolder(_) => String::new(),
+        LocationDescriptor::Virtual(location) => {
+            let identity = location
+                .container_identity
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            let suffix = location.components.join("/");
+            if suffix.is_empty() {
+                format!(
+                    "{}://{identity}/{}",
+                    location.provider_id, location.container_generation
+                )
+            } else {
+                format!(
+                    "{}://{identity}/{}/{suffix}",
+                    location.provider_id, location.container_generation
+                )
+            }
+        }
     }
 }
 
-fn filesystem_breadcrumbs(location: &LocationDescriptor) -> Vec<BreadcrumbSegment> {
+/// Builds deterministic host-owned breadcrumbs for filesystem and virtual locations.
+#[must_use]
+pub fn location_breadcrumbs(location: &LocationDescriptor) -> Vec<BreadcrumbSegment> {
     use std::hash::{Hash, Hasher};
 
+    if let LocationDescriptor::Virtual(virtual_location) = location {
+        let mut segments = Vec::with_capacity(virtual_location.components.len() + 1);
+        for depth in 0..=virtual_location.components.len() {
+            let mut descriptor = virtual_location.clone();
+            descriptor.components.truncate(depth);
+            descriptor.entry_id = None;
+            let descriptor = LocationDescriptor::Virtual(descriptor);
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            descriptor.hash(&mut hasher);
+            segments.push(BreadcrumbSegment {
+                id: BreadcrumbSegmentId(hasher.finish()),
+                display_name: if depth == 0 {
+                    virtual_location.provider_id.clone()
+                } else {
+                    virtual_location.components[depth - 1].clone()
+                },
+                location: descriptor,
+                icon_hint: if depth == 0 {
+                    BreadcrumbIconHint::Archive
+                } else {
+                    BreadcrumbIconHint::Folder
+                },
+                is_container: true,
+            });
+        }
+        return segments;
+    }
     let Some(path) = location.path() else {
         return Vec::new();
     };
@@ -2502,6 +2583,43 @@ mod tests {
             is_container: false,
             metadata: FileEntryMetadata::default(),
         }
+    }
+
+    #[test]
+    fn virtual_location_has_address_breadcrumb_parent_and_history_semantics() {
+        let root =
+            LocationDescriptor::try_virtual("rust-7z", [9; 16], 5, None, vec![]).expect("root");
+        let nested = LocationDescriptor::try_virtual(
+            "rust-7z",
+            [9; 16],
+            5,
+            Some(81),
+            vec!["資料".to_owned(), "nested".to_owned()],
+        )
+        .expect("nested");
+        let address = AddressBarState::for_entry(&HistoryEntry::new(nested.clone(), "nested"));
+        assert_eq!(
+            address.draft,
+            "rust-7z://09090909090909090909090909090909/5/資料/nested"
+        );
+        assert_eq!(address.resolved_ancestry.len(), 3);
+        assert_eq!(address.resolved_ancestry[0].location, root);
+        assert_eq!(
+            address.resolved_ancestry[0].icon_hint,
+            BreadcrumbIconHint::Archive
+        );
+        assert_eq!(
+            nested.virtual_parent(),
+            Some(address.resolved_ancestry[1].location.clone())
+        );
+
+        let mut history = NavigationHistory::with_initial(HistoryEntry::new(root.clone(), "root"));
+        history.commit_navigation(HistoryEntry::new(nested.clone(), "nested"));
+        assert_eq!(history.go_back().map(|entry| &entry.location), Some(&root));
+        assert_eq!(
+            history.go_forward().map(|entry| &entry.location),
+            Some(&nested)
+        );
     }
 
     #[test]
@@ -3077,5 +3195,29 @@ mod tests {
             ..healthy
         };
         assert_eq!(invalid.used_fraction(), None);
+    }
+
+    #[test]
+    fn unavailable_extension_view_falls_back_without_forgetting_or_auto_reactivating() {
+        let mut settings = ViewSettings {
+            mode: ViewMode::Details,
+            extension_view_id: Some("extension:org.example:size-map".to_owned()),
+            ..ViewSettings::default()
+        };
+        assert_eq!(settings.effective_extension_view_id(|_| false), None);
+        assert_eq!(settings.mode, ViewMode::Details);
+        assert_eq!(
+            settings.extension_view_id.as_deref(),
+            Some("extension:org.example:size-map")
+        );
+        // Merely becoming available does not mutate current model state. The
+        // UI must still receive an explicit user action before switching.
+        assert_eq!(
+            settings.effective_extension_view_id(|id| id.ends_with("size-map")),
+            Some("extension:org.example:size-map")
+        );
+        assert_eq!(settings.mode, ViewMode::Details);
+        settings.extension_view_id = None;
+        assert_eq!(settings.effective_extension_view_id(|_| true), None);
     }
 }

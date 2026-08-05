@@ -19,30 +19,50 @@ pub fn command_form() -> CommandFormV1 {
                 label: "Prefix".into(),
                 value: "Folder-".into(),
                 required: false,
+                kind: FormFieldKindV1::TEXT,
+                choices: Vec::new().into(),
+                minimum: ROption::RNone,
+                maximum: ROption::RNone,
             },
             FormFieldV1 {
                 id: "start".into(),
                 label: "Start".into(),
                 value: "1".into(),
                 required: true,
+                kind: FormFieldKindV1::INTEGER,
+                choices: Vec::new().into(),
+                minimum: ROption::RSome(0),
+                maximum: ROption::RSome(i64::from(u32::MAX)),
             },
             FormFieldV1 {
                 id: "count".into(),
                 label: "Count (1-100000)".into(),
                 value: "10".into(),
                 required: true,
+                kind: FormFieldKindV1::INTEGER,
+                choices: Vec::new().into(),
+                minimum: ROption::RSome(1),
+                maximum: ROption::RSome(100_000),
             },
             FormFieldV1 {
                 id: "padding".into(),
                 label: "Zero padding (0-16)".into(),
                 value: "3".into(),
                 required: true,
+                kind: FormFieldKindV1::INTEGER,
+                choices: Vec::new().into(),
+                minimum: ROption::RSome(0),
+                maximum: ROption::RSome(16),
             },
             FormFieldV1 {
                 id: "suffix".into(),
                 label: "Suffix".into(),
                 value: "".into(),
                 required: false,
+                kind: FormFieldKindV1::TEXT,
+                choices: Vec::new().into(),
+                minimum: ROption::RNone,
+                maximum: ROption::RNone,
             },
         ]
         .into(),
@@ -113,6 +133,7 @@ pub fn generate_names(
 }
 
 pub fn build_plan(
+    parent: OperationObjectHandleV1,
     prefix: &str,
     start: u32,
     count: u32,
@@ -124,12 +145,14 @@ pub fn build_plan(
         .map(|name| OperationStepV1 {
             kind: OperationKindV1::CREATE_DIRECTORY,
             source: ROption::RNone,
-            destination: name.into(),
+            destination_parent: ROption::RSome(parent),
+            destination_name: ROption::RSome(name.into()),
             expected_source: ROption::RNone,
         })
         .collect::<Vec<_>>();
     Ok(OperationPlanV1 {
         title: format!("Create {count} folders").into(),
+        root: parent,
         steps: steps.into(),
         confirmation_threshold: 1_000,
         undo_requested: true,
@@ -169,6 +192,7 @@ impl ExtensionRegistrarImplementationV1 for Registrar {
                     provider: ROption::RNone,
                     visual_column: ROption::RNone,
                     size_map_view: ROption::RNone,
+                    virtual_folder_provider: ROption::RNone,
                     batch_column_provider: ROption::RNone,
                 })
                 .collect::<Vec<_>>()
@@ -193,18 +217,23 @@ mod tests {
     use super::*;
     #[test]
     fn bounds_padding_and_confirmation() {
+        let parent = OperationObjectHandleV1::new([1; 16], 1);
         assert_eq!(
             generate_names("Album-", 8, 2, 3, "").unwrap(),
             ["Album-008", "Album-009"]
         );
         assert!(generate_names("", 0, 100_001, 0, "").is_err());
-        assert!(!build_plan("F", 1, 1000, 0, "").unwrap().steps.is_empty());
-        assert!(build_plan("F", 1, 1001, 0, "").unwrap().steps.len() > 1000);
+        assert!(!build_plan(parent, "F", 1, 1000, 0, "")
+            .unwrap()
+            .steps
+            .is_empty());
+        assert!(build_plan(parent, "F", 1, 1001, 0, "").unwrap().steps.len() > 1000);
     }
     #[test]
     fn unsafe_names_are_blocked_before_plan() {
-        assert!(build_plan("../", 1, 1, 0, "").is_err());
-        assert!(build_plan("CON", 0, 1, 0, "").is_ok());
-        assert!(build_plan("", 0, 1, 0, ".").is_err());
+        let parent = OperationObjectHandleV1::new([1; 16], 1);
+        assert!(build_plan(parent, "../", 1, 1, 0, "").is_err());
+        assert!(build_plan(parent, "CON", 0, 1, 0, "").is_ok());
+        assert!(build_plan(parent, "", 0, 1, 0, ".").is_err());
     }
 }

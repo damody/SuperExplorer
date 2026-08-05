@@ -224,12 +224,14 @@ pub fn render_pattern(pattern: &str, metadata: &ExifMetadata) -> Result<String, 
 
 /// Produces only typed relative rename intents. The host owns preview, identity recheck and commit.
 pub fn build_rename_plan(
-    files: &[(&Path, ExifMetadata)],
+    root: OperationObjectHandleV1,
+    destination_parent: OperationObjectHandleV1,
+    files: &[(OperationObjectHandleV1, ExifMetadata)],
     pattern: &str,
 ) -> Result<OperationPlanV1, String> {
     let mut destinations = BTreeSet::new();
     let mut steps = Vec::with_capacity(files.len());
-    for (path, metadata) in files {
+    for (source, metadata) in files {
         let basename = render_pattern(pattern, metadata)?;
         let destination = if metadata.extension.is_empty() {
             basename
@@ -239,19 +241,17 @@ pub fn build_rename_plan(
         if !destinations.insert(destination.to_lowercase()) {
             return Err(format!("case-insensitive target collision: {destination}"));
         }
-        let source = path
-            .file_name()
-            .and_then(|v| v.to_str())
-            .ok_or_else(|| "non-Unicode source name".to_owned())?;
         steps.push(OperationStepV1 {
             kind: OperationKindV1::RENAME,
-            source: ROption::RSome(source.into()),
-            destination: destination.into(),
+            source: ROption::RSome(*source),
+            destination_parent: ROption::RSome(destination_parent),
+            destination_name: ROption::RSome(destination.into()),
             expected_source: ROption::RNone,
         });
     }
     Ok(OperationPlanV1 {
         title: "Rename from EXIF".into(),
+        root,
         steps: steps.into(),
         confirmation_threshold: 1_000,
         undo_requested: true,
@@ -294,6 +294,7 @@ impl ExtensionRegistrarImplementationV1 for Registrar {
                     provider: ROption::RNone,
                     visual_column: ROption::RNone,
                     size_map_view: ROption::RNone,
+                    virtual_folder_provider: ROption::RNone,
                     batch_column_provider: ROption::RNone,
                 })
                 .collect::<Vec<_>>()
@@ -352,8 +353,14 @@ mod tests {
     fn plan_rejects_case_insensitive_collisions() {
         let a = metadata("same");
         let b = metadata("SAME");
+        let root = OperationObjectHandleV1::new([1; 16], 1);
         assert!(build_rename_plan(
-            &[(Path::new("a.jpg"), a), (Path::new("b.jpg"), b)],
+            root,
+            root,
+            &[
+                (OperationObjectHandleV1::new([2; 16], 1), a),
+                (OperationObjectHandleV1::new([3; 16], 1), b)
+            ],
             "{rawname}"
         )
         .is_err());

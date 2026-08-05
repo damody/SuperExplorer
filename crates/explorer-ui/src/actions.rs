@@ -191,6 +191,12 @@ pub enum ExplorerAction {
         row_index: usize,
         new_tab: bool,
     },
+    OpenExtensionViewItem {
+        item_id: explorer_model::ShellItemId,
+        location: explorer_model::LocationDescriptor,
+        is_container: bool,
+        new_tab: bool,
+    },
     OpenFocused,
     SelectItem {
         row_index: usize,
@@ -281,6 +287,13 @@ pub enum ExplorerAction {
     },
     InvokeExtensionCommand {
         contribution_id: String,
+    },
+    CloseExtensionCommandPanel,
+    RunBulkFolderPreset {
+        count: u32,
+    },
+    RunExifRenamePreset {
+        preset: crate::extension_commands::ExifRenamePreset,
     },
     ToggleFolderOptionItemCheckBoxes,
     ToggleFolderOptionFileNameExtensions,
@@ -514,6 +527,7 @@ impl ExplorerAction {
             Self::NextTab => "NextTab",
             Self::PreviousTab => "PreviousTab",
             Self::OpenItem { .. } => "OpenItem",
+            Self::OpenExtensionViewItem { .. } => "OpenExtensionViewItem",
             Self::OpenFocused => "OpenFocused",
             Self::SelectItem { .. } => "SelectItem",
             Self::SelectAdditionalItem { .. } => "SelectAdditionalItem",
@@ -567,6 +581,9 @@ impl ExplorerAction {
             Self::OpenExtensionAuthorWebsite { .. } => "OpenExtensionAuthorWebsite",
             Self::OpenExtensionCommunityWebsite { .. } => "OpenExtensionCommunityWebsite",
             Self::InvokeExtensionCommand { .. } => "InvokeExtensionCommand",
+            Self::CloseExtensionCommandPanel => "CloseExtensionCommandPanel",
+            Self::RunBulkFolderPreset { .. } => "RunBulkFolderPreset",
+            Self::RunExifRenamePreset { .. } => "RunExifRenamePreset",
             Self::ToggleFolderOptionItemCheckBoxes => "ToggleFolderOptionItemCheckBoxes",
             Self::ToggleFolderOptionFileNameExtensions => "ToggleFolderOptionFileNameExtensions",
             Self::ToggleFolderOptionHiddenItems => "ToggleFolderOptionHiddenItems",
@@ -954,7 +971,12 @@ pub fn dispatch_action(
             | ExplorerAction::SetViewMenuFocus { .. }
             | ExplorerAction::ToggleViewShowSubmenu
     );
-    let preserve_extensions_menu = matches!(&action, ExplorerAction::ToggleExtensionsMenu);
+    let preserve_extensions_menu = matches!(
+        &action,
+        ExplorerAction::ToggleExtensionsMenu
+            | ExplorerAction::InvokeExtensionCommand { .. }
+            | ExplorerAction::CloseExtensionCommandPanel
+    );
     let preserve_details_column_menu = matches!(
         &action,
         ExplorerAction::OpenDetailsColumnMenu { .. }
@@ -1099,6 +1121,7 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         ExplorerAction::OpenItem { row_index, .. } => {
             state.row_namespace_command_enabled(*row_index, explorer_model::NamespaceCommand::Open)
         }
+        ExplorerAction::OpenExtensionViewItem { .. } => true,
         ExplorerAction::OpenFocused => state.focused_row_index().is_some_and(|row_index| {
             state.row_namespace_command_enabled(row_index, explorer_model::NamespaceCommand::Open)
         }),
@@ -1255,6 +1278,9 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::OpenExtensionAuthorWebsite { .. }
         | ExplorerAction::OpenExtensionCommunityWebsite { .. }
         | ExplorerAction::InvokeExtensionCommand { .. }
+        | ExplorerAction::CloseExtensionCommandPanel
+        | ExplorerAction::RunBulkFolderPreset { .. }
+        | ExplorerAction::RunExifRenamePreset { .. }
         | ExplorerAction::ToggleFolderOptionItemCheckBoxes
         | ExplorerAction::ToggleFolderOptionFileNameExtensions
         | ExplorerAction::ToggleFolderOptionHiddenItems
@@ -1482,6 +1508,7 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             FocusSurface::TabStrip
         }
         ExplorerAction::OpenItem { .. }
+        | ExplorerAction::OpenExtensionViewItem { .. }
         | ExplorerAction::OpenFocused
         | ExplorerAction::CreateFolder
         | ExplorerAction::CreateNewItem { .. }
@@ -1757,7 +1784,15 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         }
         ExplorerAction::OpenExtensionAuthorWebsite { .. } => FocusSurface::CommandBar,
         ExplorerAction::OpenExtensionCommunityWebsite { .. } => FocusSurface::CommandBar,
-        ExplorerAction::InvokeExtensionCommand { .. } => {
+        ExplorerAction::InvokeExtensionCommand { contribution_id } => {
+            state.open_extension_command_panel(&contribution_id);
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::CloseExtensionCommandPanel => {
+            state.close_extension_command_panel();
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::RunBulkFolderPreset { .. } | ExplorerAction::RunExifRenamePreset { .. } => {
             state.close_extensions_menu();
             FocusSurface::CommandBar
         }
@@ -2306,6 +2341,58 @@ mod tests {
         );
         assert!(!state.extensions_menu_open());
         assert!(state.view_menu_open());
+    }
+
+    #[test]
+    fn extension_commands_open_a_panel_and_cancel_before_execution() {
+        let mut state = AppViewState::default();
+        dispatch_action(
+            &mut state,
+            ExplorerAction::ToggleExtensionsMenu,
+            ActionSource::Mouse,
+        );
+
+        dispatch_action(
+            &mut state,
+            ExplorerAction::InvokeExtensionCommand {
+                contribution_id: "lua-bulk-folder:button".to_owned(),
+            },
+            ActionSource::Mouse,
+        );
+        assert!(state.extensions_menu_open());
+        assert_eq!(
+            state.extension_command_panel(),
+            Some(crate::extension_commands::ExtensionCommandPanel::BulkFolder)
+        );
+
+        dispatch_action(
+            &mut state,
+            ExplorerAction::CloseExtensionCommandPanel,
+            ActionSource::Keyboard,
+        );
+        assert!(state.extensions_menu_open());
+        assert_eq!(state.extension_command_panel(), None);
+
+        dispatch_action(
+            &mut state,
+            ExplorerAction::InvokeExtensionCommand {
+                contribution_id: "rust-exif-rename:button".to_owned(),
+            },
+            ActionSource::Mouse,
+        );
+        assert_eq!(
+            state.extension_command_panel(),
+            Some(crate::extension_commands::ExtensionCommandPanel::ExifRename)
+        );
+        dispatch_action(
+            &mut state,
+            ExplorerAction::RunExifRenamePreset {
+                preset: crate::extension_commands::ExifRenamePreset::DateTime,
+            },
+            ActionSource::Mouse,
+        );
+        assert!(!state.extensions_menu_open());
+        assert_eq!(state.extension_command_panel(), None);
     }
 
     #[test]

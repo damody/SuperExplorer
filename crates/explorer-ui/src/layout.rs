@@ -51,7 +51,7 @@ pub mod folder_options {
     use super::LogicalPx;
 
     pub const DIALOG_WIDTH: LogicalPx = LogicalPx::new(730.0);
-    pub const DIALOG_MIN_HEIGHT: LogicalPx = LogicalPx::new(610.0);
+    pub const DIALOG_HEIGHT: LogicalPx = LogicalPx::new(610.0);
     pub const PAGE_PADDING: LogicalPx = LogicalPx::new(28.0);
     pub const FOOTER_HEIGHT: LogicalPx = LogicalPx::new(64.0);
     pub const TAB_MIN_WIDTH: LogicalPx = LogicalPx::new(84.0);

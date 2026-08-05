@@ -3,6 +3,7 @@
 use std::{
     collections::HashMap,
     fmt,
+    mem::size_of,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, Weak,
@@ -120,6 +121,16 @@ impl SyntheticRoot {
 }
 
 /// Resolvable location data; it is a descriptor and never an item identity.
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VirtualLocationDescriptor {
+    pub provider_id: String,
+    pub container_identity: [u8; 16],
+    pub container_generation: u64,
+    pub entry_id: Option<u64>,
+    pub components: Vec<String>,
+}
+
 #[derive(Clone, Eq, Hash, PartialEq, Serialize)]
 pub enum LocationDescriptor {
     /// A local or UNC filesystem path.
@@ -130,6 +141,8 @@ pub enum LocationDescriptor {
     ParsingName(String),
     /// A `KNOWNFOLDERID` encoded in its canonical big-endian UUID representation.
     KnownFolder([u8; 16]),
+    /// A host-resolved entry inside one generation of an opaque virtual container.
+    Virtual(VirtualLocationDescriptor),
 }
 
 impl LocationDescriptor {
@@ -176,11 +189,46 @@ impl LocationDescriptor {
         Self::ParsingName(root.parsing_name().to_owned())
     }
 
+    /// Creates a validated virtual-container location without exposing its filesystem path.
+    pub fn try_virtual(
+        provider_id: impl Into<String>,
+        container_identity: [u8; 16],
+        container_generation: u64,
+        entry_id: Option<u64>,
+        components: Vec<String>,
+    ) -> Result<Self, LocationDescriptorValidationError> {
+        Self::Virtual(VirtualLocationDescriptor {
+            provider_id: provider_id.into(),
+            container_identity,
+            container_generation,
+            entry_id,
+            components,
+        })
+        .validated()
+    }
+
+    /// Returns the immediate virtual parent, or `None` for a virtual root/non-virtual location.
+    pub fn virtual_parent(&self) -> Option<Self> {
+        let Self::Virtual(location) = self else {
+            return None;
+        };
+        if location.components.is_empty() {
+            return None;
+        }
+        let mut parent = location.clone();
+        parent.components.pop();
+        parent.entry_id = None;
+        Some(Self::Virtual(parent))
+    }
+
     /// Returns the typed synthetic root represented by this descriptor.
     pub fn synthetic_root(&self) -> Option<SyntheticRoot> {
         match self {
             Self::ParsingName(value) => SyntheticRoot::from_parsing_name(value),
-            Self::FileSystem(_) | Self::ShellNamespace(_) | Self::KnownFolder(_) => None,
+            Self::FileSystem(_)
+            | Self::ShellNamespace(_)
+            | Self::KnownFolder(_)
+            | Self::Virtual(_) => None,
         }
     }
 
@@ -191,6 +239,12 @@ impl LocationDescriptor {
             Self::ShellNamespace(bytes) => bytes.len(),
             Self::ParsingName(value) => value.len(),
             Self::KnownFolder(bytes) => bytes.len(),
+            Self::Virtual(location) => {
+                location.provider_id.len()
+                    + location.container_identity.len()
+                    + size_of::<u64>() * 2
+                    + location.components.iter().map(String::len).sum::<usize>()
+            }
         }
     }
 
@@ -205,9 +259,22 @@ impl LocationDescriptor {
             Self::ShellNamespace(bytes) => bytes.is_empty(),
             Self::ParsingName(value) => value.is_empty(),
             Self::KnownFolder(_) => false,
+            Self::Virtual(location) => {
+                location.provider_id.is_empty()
+                    || location.container_generation == 0
+                    || location.container_identity == [0; 16]
+                    || location.components.iter().any(|component| {
+                        component.is_empty()
+                            || matches!(component.as_str(), "." | "..")
+                            || component.contains(['/', '\\', '\0'])
+                    })
+            }
         };
         if empty {
-            return Err(LocationDescriptorValidationError::Empty);
+            return Err(match self {
+                Self::Virtual(_) => LocationDescriptorValidationError::InvalidVirtual,
+                _ => LocationDescriptorValidationError::Empty,
+            });
         }
         let bytes = self.encoded_payload_len();
         if bytes > MAX_LOCATION_DESCRIPTOR_BYTES {
@@ -228,7 +295,10 @@ impl LocationDescriptor {
     pub fn path(&self) -> Option<&Path> {
         match self {
             Self::FileSystem(path) => Some(path),
-            Self::ShellNamespace(_) | Self::ParsingName(_) | Self::KnownFolder(_) => None,
+            Self::ShellNamespace(_)
+            | Self::ParsingName(_)
+            | Self::KnownFolder(_)
+            | Self::Virtual(_) => None,
         }
     }
 }
@@ -239,6 +309,7 @@ enum LocationDescriptorWire {
     ShellNamespace(Vec<u8>),
     ParsingName(String),
     KnownFolder([u8; 16]),
+    Virtual(VirtualLocationDescriptor),
 }
 
 impl<'de> Deserialize<'de> for LocationDescriptor {
@@ -254,6 +325,7 @@ impl<'de> Deserialize<'de> for LocationDescriptor {
             LocationDescriptorWire::ShellNamespace(bytes) => Self::ShellNamespace(bytes),
             LocationDescriptorWire::ParsingName(value) => Self::ParsingName(value),
             LocationDescriptorWire::KnownFolder(bytes) => Self::KnownFolder(bytes),
+            LocationDescriptorWire::Virtual(location) => Self::Virtual(location),
         };
         descriptor.validated().map_err(de::Error::custom)
     }
@@ -264,6 +336,7 @@ impl<'de> Deserialize<'de> for LocationDescriptor {
 pub enum LocationDescriptorValidationError {
     Empty,
     TooLarge { bytes: usize, maximum: usize },
+    InvalidVirtual,
 }
 
 impl fmt::Display for LocationDescriptorValidationError {
@@ -273,6 +346,9 @@ impl fmt::Display for LocationDescriptorValidationError {
             Self::TooLarge { bytes, maximum } => write!(
                 formatter,
                 "location descriptor payload is {bytes} bytes; maximum is {maximum}"
+            ),
+            Self::InvalidVirtual => formatter.write_str(
+                "virtual location requires a provider, nonzero container identity/generation, and normalized components",
             ),
         }
     }
@@ -296,6 +372,13 @@ impl fmt::Debug for LocationDescriptor {
             Self::KnownFolder(_) => {
                 formatter.write_str("LocationDescriptor::KnownFolder(<opaque-guid>)")
             }
+            Self::Virtual(location) => formatter
+                .debug_struct("LocationDescriptor::Virtual")
+                .field("provider_id", &location.provider_id)
+                .field("container_generation", &location.container_generation)
+                .field("entry_id", &location.entry_id)
+                .field("components", &location.components)
+                .finish_non_exhaustive(),
         }
     }
 }
@@ -307,6 +390,7 @@ impl fmt::Display for LocationDescriptor {
             Self::ShellNamespace(_) => formatter.write_str("<shell-namespace-location>"),
             Self::ParsingName(_) => formatter.write_str("<shell-parsing-name>"),
             Self::KnownFolder(_) => formatter.write_str("<known-folder>"),
+            Self::Virtual(_) => formatter.write_str("<virtual-location>"),
         }
     }
 }
@@ -544,6 +628,35 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn virtual_location_is_canonical_persistent_and_generation_bound() {
+        let root = LocationDescriptor::try_virtual("rust-7z", [7; 16], 3, None, vec![]).unwrap();
+        let nested = LocationDescriptor::try_virtual(
+            "rust-7z",
+            [7; 16],
+            3,
+            Some(42),
+            vec!["docs".into(), "api".into()],
+        )
+        .unwrap();
+        assert_eq!(
+            nested.virtual_parent().unwrap().virtual_parent(),
+            Some(root)
+        );
+        let json = serde_json::to_string(&nested).unwrap();
+        assert_eq!(
+            serde_json::from_str::<LocationDescriptor>(&json).unwrap(),
+            nested
+        );
+        assert!(LocationDescriptor::try_virtual("", [7; 16], 3, None, vec![]).is_err());
+        assert!(LocationDescriptor::try_virtual("rust-7z", [0; 16], 3, None, vec![]).is_err());
+        assert!(LocationDescriptor::try_virtual("rust-7z", [7; 16], 0, None, vec![]).is_err());
+        assert!(
+            LocationDescriptor::try_virtual("rust-7z", [7; 16], 3, None, vec!["..".into()])
+                .is_err()
+        );
+    }
 
     #[test]
     fn typed_ids_preserve_equality_hash_and_serialization_contracts() {

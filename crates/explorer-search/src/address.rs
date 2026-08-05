@@ -17,6 +17,51 @@ pub fn parse_address(input: &str) -> Result<LocationDescriptor, AddressParseErro
     if value.starts_with("shell:") {
         return Ok(LocationDescriptor::ParsingName(value.to_owned()));
     }
+    if let Some((provider, remainder)) = value.split_once("://") {
+        let valid_provider = !provider.is_empty()
+            && provider.len() <= 64
+            && provider.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+            });
+        let mut parts = remainder.split('/');
+        let identity_text = parts.next().unwrap_or_default();
+        let generation_text = parts.next().unwrap_or_default();
+        let mut identity = [0_u8; 16];
+        let valid_identity = identity_text.len() == 32
+            && identity_text
+                .as_bytes()
+                .chunks_exact(2)
+                .enumerate()
+                .all(|(index, pair)| {
+                    let Ok(text) = std::str::from_utf8(pair) else {
+                        return false;
+                    };
+                    let Ok(byte) = u8::from_str_radix(text, 16) else {
+                        return false;
+                    };
+                    identity[index] = byte;
+                    true
+                });
+        let generation = generation_text
+            .parse::<u64>()
+            .ok()
+            .filter(|value| *value != 0);
+        let components = parts.map(str::to_owned).collect::<Vec<_>>();
+        if valid_provider
+            && valid_identity
+            && let Some(generation) = generation
+        {
+            return LocationDescriptor::try_virtual(
+                provider, identity, generation, None, components,
+            )
+            .map_err(|_| AddressParseError {
+                message: "Invalid virtual location".to_owned(),
+            });
+        }
+        return Err(AddressParseError {
+            message: "Invalid virtual location".to_owned(),
+        });
+    }
     let bytes = value.as_bytes();
     let drive_absolute = bytes.len() >= 3
         && bytes[0].is_ascii_alphabetic()
@@ -48,6 +93,20 @@ mod tests {
         assert!(parse_address(r"C:\Users\fixture").is_ok());
         assert!(parse_address(r"\\server\share\folder").is_ok());
         assert!(parse_address("shell:Downloads").is_ok());
+        assert_eq!(
+            parse_address("rust-7z://09090909090909090909090909090909/5/src/nested").unwrap(),
+            LocationDescriptor::try_virtual(
+                "rust-7z",
+                [9; 16],
+                5,
+                None,
+                vec!["src".to_owned(), "nested".to_owned()],
+            )
+            .unwrap()
+        );
+        assert!(parse_address("rust-7z://0909/5/src").is_err());
+        assert!(parse_address("rust-7z://09090909090909090909090909090909/0/src").is_err());
+        assert!(parse_address("rust-7z://09090909090909090909090909090909/5/../src").is_err());
         assert!(parse_address("name:report type:pdf").is_err());
         assert!(parse_address("relative folder").is_err());
 

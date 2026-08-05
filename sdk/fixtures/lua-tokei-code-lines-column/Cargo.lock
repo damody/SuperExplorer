@@ -650,6 +650,7 @@ dependencies = [
  "abi_stable",
  "explorer-extension-api",
  "explorer-extension-ui-api",
+ "serde",
  "serde_json",
  "tokei",
 ]

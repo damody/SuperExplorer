@@ -100,7 +100,12 @@ impl IconInvalidationEpochs {
 
 /// Classifies a row without filesystem or Shell I/O.
 pub fn classify_base_icon(entry: &FileEntry) -> BaseIconClass {
-    let identity_specific_location = !matches!(entry.location, LocationDescriptor::FileSystem(_));
+    let identity_specific_location = matches!(
+        entry.location,
+        LocationDescriptor::ShellNamespace(_)
+            | LocationDescriptor::ParsingName(_)
+            | LocationDescriptor::KnownFolder(_)
+    );
     let filesystem_root = entry
         .location
         .path()
@@ -116,7 +121,16 @@ pub fn classify_base_icon(entry: &FileEntry) -> BaseIconClass {
         .path()
         .and_then(std::path::Path::extension)
         .and_then(std::ffi::OsStr::to_str)
-        .map(str::to_ascii_lowercase);
+        .map(str::to_ascii_lowercase)
+        .or_else(|| {
+            let LocationDescriptor::Virtual(location) = &entry.location else {
+                return None;
+            };
+            std::path::Path::new(location.components.last()?)
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .map(str::to_ascii_lowercase)
+        });
     match extension.as_deref() {
         Some("exe" | "dll" | "ico" | "lnk" | "url" | "cpl") => {
             BaseIconClass::Identity(entry.id.clone())
@@ -999,6 +1013,26 @@ mod tests {
                 BaseIconClass::Identity(_)
             ));
         }
+
+        let virtual_location = |entry_id, components: Vec<&str>| {
+            LocationDescriptor::try_virtual(
+                "archive",
+                [7; 16],
+                1,
+                Some(entry_id),
+                components.into_iter().map(str::to_owned).collect(),
+            )
+            .expect("virtual location")
+        };
+        let mut folder = icon_entry(60, "folder", true);
+        folder.location = virtual_location(1, vec!["nested"]);
+        assert_eq!(classify_base_icon(&folder), BaseIconClass::Folder);
+        let mut text = icon_entry(61, "hello.TXT", false);
+        text.location = virtual_location(2, vec!["nested", "hello.TXT"]);
+        assert_eq!(
+            classify_base_icon(&text),
+            BaseIconClass::Extension("txt".to_owned())
+        );
     }
 
     #[test]

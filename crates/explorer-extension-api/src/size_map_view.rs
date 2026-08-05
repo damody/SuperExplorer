@@ -18,7 +18,7 @@ use abi_stable::{
 
 use crate::{
     AbiErrorCodeV1, AbiErrorV1, AbiResultV1, CellColorV1, CellThemeV1, ROOT_MODULE_CONTRACT_ID_V1,
-    StableIdV1, dispose_caught_panic_payload_v1,
+    StableIdV1, ViewSnapshotIdentityV1, dispose_caught_panic_payload_v1,
 };
 
 /// Maximum rectangles accepted from one Size Map renderer invocation.
@@ -60,6 +60,8 @@ impl SizeMapNodeStatusV1 {
     pub const PARTIAL: Self = Self(2);
     pub const UNAVAILABLE: Self = Self(3);
     pub const FAILED: Self = Self(4);
+    pub const CANCELLED: Self = Self(5);
+    pub const RESOURCE_LIMITED: Self = Self(6);
 
     #[must_use]
     pub const fn into_raw(self) -> u32 {
@@ -96,15 +98,24 @@ pub struct SizeMapViewportV1 {
 /// Immutable, data-only input for one worker-safe Size Map render/layout
 /// callback. The host owns GPUI painting and invokes this synchronous ABI call
 /// only on a bounded worker; no GPUI object or render context crosses the ABI.
+/// Data-only worker callback input. Enumeration, filesystem/network access,
+/// blocking I/O, and GPUI painting remain host-owned phases.
+///
+/// ```compile_fail
+/// fn renderer_cannot_reach_host_services(
+///     context: explorer_extension_api::SizeMapRenderContextV1,
+/// ) {
+///     let _ = context.filesystem_path;
+///     let _ = context.input_stream;
+///     let _ = context.gpui_context;
+/// }
+/// ```
 #[repr(C)]
 #[derive(Clone, Debug, StableAbi)]
 pub struct SizeMapRenderContextV1 {
-    /// Host location/refresh generation.  A renderer must echo this value in
-    /// its plan; the host rejects plans for another generation.
-    pub generation: u64,
-    /// Host-minted revision for this complete copied snapshot (nodes, status,
-    /// viewport, theme, selection, and settings). A plan must echo it exactly.
-    pub render_revision: u64,
+    /// Separate host location/refresh generations plus the full immutable
+    /// render revision. A renderer must echo this identity exactly.
+    pub snapshot: ViewSnapshotIdentityV1,
     pub nodes: RVec<SizeMapNodeV1>,
     pub viewport: SizeMapViewportV1,
     pub theme: CellThemeV1,
@@ -112,6 +123,59 @@ pub struct SizeMapRenderContextV1 {
     pub selected_node_ids: RVec<StableIdV1>,
     /// Extension-owned UTF-8 display settings selected by the host.
     pub settings: RString,
+}
+
+impl SizeMapRenderContextV1 {
+    fn validate(&self) -> bool {
+        if !self.snapshot.is_valid()
+            || self.nodes.len() > MAX_SIZE_MAP_RECTANGLES_V1
+            || self.viewport.width_milli == 0
+            || self.viewport.height_milli == 0
+            || !(500..=8_000).contains(&self.viewport.dpi_milli)
+        {
+            return false;
+        }
+        let known = self
+            .nodes
+            .iter()
+            .map(|node| node.node_id)
+            .collect::<HashSet<_>>();
+        if known.len() != self.nodes.len() {
+            return false;
+        }
+        if self.nodes.iter().any(|node| {
+            !node.node_id.is_valid()
+                || node.name.len() > MAX_SIZE_MAP_LABEL_BYTES_V1
+                || node
+                    .parent_id
+                    .into_option()
+                    .is_some_and(|parent| !known.contains(&parent))
+        }) {
+            return false;
+        }
+        let parents = self
+            .nodes
+            .iter()
+            .map(|node| (node.node_id, node.parent_id.into_option()))
+            .collect::<std::collections::HashMap<_, _>>();
+        for node in &self.nodes {
+            let mut cursor = Some(node.node_id);
+            let mut ancestry = HashSet::new();
+            while let Some(node_id) = cursor {
+                if !ancestry.insert(node_id) {
+                    return false;
+                }
+                cursor = parents.get(&node_id).copied().flatten();
+            }
+        }
+        let selected = self
+            .selected_node_ids
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        selected.len() == self.selected_node_ids.len()
+            && selected.iter().all(|node_id| known.contains(node_id))
+    }
 }
 
 /// A normalized treemap rectangle.  Coordinates and extents are fractions of
@@ -144,19 +208,17 @@ impl SizeMapRectangleV1 {
 #[repr(C)]
 #[derive(Clone, Debug, StableAbi)]
 pub struct SizeMapRenderPlanV1 {
-    pub generation: u64,
-    /// Echo of [`SizeMapRenderContextV1::render_revision`].
-    pub render_revision: u64,
+    /// Echo of [`SizeMapRenderContextV1::snapshot`].
+    pub snapshot: ViewSnapshotIdentityV1,
     pub rectangles: RVec<SizeMapRectangleV1>,
     pub status: RString,
 }
 
 impl SizeMapRenderPlanV1 {
     #[must_use]
-    pub fn empty(generation: u64, render_revision: u64, status: impl Into<RString>) -> Self {
+    pub fn empty(snapshot: ViewSnapshotIdentityV1, status: impl Into<RString>) -> Self {
         Self {
-            generation,
-            render_revision,
+            snapshot,
             rectangles: RVec::new(),
             status: status.into(),
         }
@@ -171,8 +233,7 @@ impl SizeMapRenderPlanV1 {
     }
 
     fn validate_for_context(&self, context: &SizeMapRenderContextV1) -> bool {
-        if self.generation != context.generation
-            || self.render_revision != context.render_revision
+        if self.snapshot != context.snapshot
             || self.rectangles.len() > context.nodes.len().min(MAX_SIZE_MAP_RECTANGLES_V1)
             || self.status.len() > MAX_SIZE_MAP_STATUS_BYTES_V1
         {
@@ -255,6 +316,13 @@ impl<T: SizeMapViewImplementationV1> SizeMapViewAdapterV1<T> {
 
 impl<T: SizeMapViewImplementationV1> AbiSizeMapViewObjectV1 for SizeMapViewAdapterV1<T> {
     fn render_size_map(&self, context: SizeMapRenderContextV1) -> AbiResultV1<SizeMapRenderPlanV1> {
+        if !context.validate() {
+            return RResult::RErr(AbiErrorV1::new(
+                AbiErrorCodeV1::MALFORMED_CALLBACK_OUTPUT,
+                ROOT_MODULE_CONTRACT_ID_V1,
+                3,
+            ));
+        }
         if !self.enter() {
             return RResult::RErr(AbiErrorV1::new(
                 AbiErrorCodeV1::CALLBACK_UNAVAILABLE,
@@ -334,6 +402,11 @@ impl SizeMapViewObjectV1 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
     use super::*;
     use crate::EXTENSION_ID_NAMESPACE_V1;
 
@@ -342,8 +415,7 @@ mod tests {
     impl SizeMapViewImplementationV1 for Example {
         fn render_size_map(&self, context: SizeMapRenderContextV1) -> SizeMapRenderPlanV1 {
             SizeMapRenderPlanV1 {
-                generation: context.generation,
-                render_revision: context.render_revision,
+                snapshot: context.snapshot,
                 rectangles: RVec::from(vec![SizeMapRectangleV1 {
                     node_id: StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 1),
                     x_millionths: 1_500_000,
@@ -365,8 +437,11 @@ mod tests {
         let object = SizeMapViewObjectV1::new(Example);
         let plan = object
             .render_size_map(SizeMapRenderContextV1 {
-                generation: 41,
-                render_revision: 99,
+                snapshot: ViewSnapshotIdentityV1 {
+                    location_generation: 41,
+                    refresh_generation: 42,
+                    render_revision: 99,
+                },
                 nodes: RVec::from(vec![SizeMapNodeV1 {
                     node_id: StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 1),
                     parent_id: ROption::RNone,
@@ -392,9 +467,128 @@ mod tests {
             })
             .into_result()
             .expect("valid bounded plan");
-        assert_eq!(plan.generation, 41);
-        assert_eq!(plan.render_revision, 99);
+        assert_eq!(plan.snapshot.location_generation, 41);
+        assert_eq!(plan.snapshot.refresh_generation, 42);
+        assert_eq!(plan.snapshot.render_revision, 99);
         assert_eq!(plan.rectangles[0].x_millionths, 1_000_000);
         assert_eq!(plan.rectangles[0].width_millionths, 1_000_000);
+    }
+
+    #[test]
+    fn unknown_duplicate_or_stale_selection_ids_are_rejected_before_callback() {
+        let color = CellColorV1::rgba(1, 2, 3, 255);
+        let context = |selected_node_ids| SizeMapRenderContextV1 {
+            snapshot: ViewSnapshotIdentityV1 {
+                location_generation: 1,
+                refresh_generation: 1,
+                render_revision: 1,
+            },
+            nodes: RVec::from(vec![SizeMapNodeV1 {
+                node_id: StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 1),
+                parent_id: ROption::RNone,
+                name: "known".into(),
+                kind: SizeMapNodeKindV1::FILE,
+                exact_bytes: ROption::RSome(1),
+                status: SizeMapNodeStatusV1::COMPLETE,
+            }]),
+            viewport: SizeMapViewportV1 {
+                width_milli: 100_000,
+                height_milli: 100_000,
+                dpi_milli: 1_000,
+            },
+            theme: CellThemeV1 {
+                foreground: color,
+                muted_foreground: color,
+                background: color,
+                selection_background: color,
+                accent: color,
+            },
+            selected_node_ids,
+            settings: RString::new(),
+        };
+        let object = SizeMapViewObjectV1::new(Example);
+        let unknown = StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 99);
+        assert!(
+            object
+                .render_size_map(context(RVec::from(vec![unknown])))
+                .is_err()
+        );
+        let known = StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 1);
+        assert!(
+            object
+                .render_size_map(context(RVec::from(vec![known, known])))
+                .is_err()
+        );
+        let mut cyclic = context(RVec::new());
+        cyclic.nodes[0].parent_id = ROption::RSome(known);
+        assert!(object.render_size_map(cyclic).is_err());
+    }
+
+    struct PanicsOnRender;
+
+    impl SizeMapViewImplementationV1 for PanicsOnRender {
+        fn render_size_map(&self, _context: SizeMapRenderContextV1) -> SizeMapRenderPlanV1 {
+            panic!("renderer panic must be contained")
+        }
+    }
+
+    struct PanicsOnDrop(Arc<AtomicBool>);
+
+    impl SizeMapViewImplementationV1 for PanicsOnDrop {
+        fn render_size_map(&self, context: SizeMapRenderContextV1) -> SizeMapRenderPlanV1 {
+            SizeMapRenderPlanV1::empty(context.snapshot, "unused")
+        }
+    }
+
+    impl Drop for PanicsOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+            panic!("drop panic must be contained")
+        }
+    }
+
+    #[test]
+    fn callback_and_cross_thread_drop_never_unwind_through_the_abi() {
+        let object = SizeMapViewObjectV1::new(PanicsOnRender);
+        let color = CellColorV1::rgba(1, 2, 3, 255);
+        let context = SizeMapRenderContextV1 {
+            snapshot: ViewSnapshotIdentityV1 {
+                location_generation: 1,
+                refresh_generation: 1,
+                render_revision: 1,
+            },
+            nodes: RVec::from(vec![SizeMapNodeV1 {
+                node_id: StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 1),
+                parent_id: ROption::RNone,
+                name: "known".into(),
+                kind: SizeMapNodeKindV1::FILE,
+                exact_bytes: ROption::RSome(1),
+                status: SizeMapNodeStatusV1::COMPLETE,
+            }]),
+            viewport: SizeMapViewportV1 {
+                width_milli: 1_000,
+                height_milli: 1_000,
+                dpi_milli: 1_000,
+            },
+            theme: CellThemeV1 {
+                foreground: color,
+                muted_foreground: color,
+                background: color,
+                selection_background: color,
+                accent: color,
+            },
+            selected_node_ids: RVec::new(),
+            settings: RString::new(),
+        };
+        assert!(object.render_size_map(context).is_err());
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        let cross_thread = SizeMapViewObjectV1::new(PanicsOnDrop(Arc::clone(&dropped)));
+        assert!(
+            std::thread::spawn(move || drop(cross_thread))
+                .join()
+                .is_ok()
+        );
+        assert!(dropped.load(Ordering::Acquire));
     }
 }
