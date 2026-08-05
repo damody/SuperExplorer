@@ -18,6 +18,24 @@ $Executable = (Resolve-Path -LiteralPath $Executable).Path
 $PluginDll = (Resolve-Path -LiteralPath $PluginDll).Path
 $InitialPath = (Resolve-Path -LiteralPath $InitialPath).Path
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
+$aggregateFixture = Join-Path $OutputDirectory 'aggregate-fixture'
+if (Test-Path -LiteralPath $aggregateFixture) {
+    throw "UITEST output must be fresh; aggregate fixture already exists: $aggregateFixture"
+}
+Copy-Item -LiteralPath $InitialPath -Destination $aggregateFixture -Recurse
+foreach ($index in 0..249) {
+    [IO.File]::WriteAllText(
+        (Join-Path $aggregateFixture ('tiny-{0:D4}.txt' -f $index)),
+        'x',
+        [Text.UTF8Encoding]::new($false))
+}
+foreach ($index in 0..9) {
+    [IO.File]::WriteAllText(
+        (Join-Path $aggregateFixture ('aaa-omitted-{0:D4}.txt' -f $index)),
+        '',
+        [Text.UTF8Encoding]::new($false))
+}
+$InitialPath = (Resolve-Path -LiteralPath $aggregateFixture).Path
 $profileRoot = Join-Path $OutputDirectory 'profile'
 $localAppData = Join-Path $profileRoot 'LocalAppData'
 $roamingAppData = Join-Path $profileRoot 'AppData'
@@ -81,6 +99,18 @@ function Find-NamedElement($Root, [string]$Name) {
     $Root.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
 }
 
+function Find-ControlTypeName($Root, $ControlType, [string]$Name) {
+    $condition = [Windows.Automation.AndCondition]::new(@(
+        [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::ControlTypeProperty,
+            $ControlType),
+        [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::NameProperty,
+            $Name)
+    ))
+    $Root.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
+}
+
 function Find-AutomationId($Root, [string]$Id) {
     $condition = [Windows.Automation.PropertyCondition]::new(
         [Windows.Automation.AutomationElement]::AutomationIdProperty,
@@ -88,12 +118,11 @@ function Find-AutomationId($Root, [string]$Id) {
     $Root.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
 }
 
-function Invoke-NamedElement($Root, [string]$Name, [switch]$PointerOnly) {
-    $element = Find-NamedElement $Root $Name
-    if ($null -eq $element) { throw "UI element '$Name' was not found" }
+function Invoke-Element($Root, $Element, [string]$Description, [switch]$PointerOnly) {
+    if ($null -eq $Element) { throw "UI element '$Description' was not found" }
     if (-not $PointerOnly) {
         try {
-            $pattern = $element.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern)
+            $pattern = $Element.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern)
             $pattern.Invoke()
             return
         } catch [InvalidOperationException] {
@@ -101,7 +130,7 @@ function Invoke-NamedElement($Root, [string]$Name, [switch]$PointerOnly) {
         }
     }
     & {
-        $bounds = $element.Current.BoundingRectangle
+        $bounds = $Element.Current.BoundingRectangle
         $rootBounds = $Root.Current.BoundingRectangle
         $windowRect = [SizeMapSmoke.Native+Rect]::new()
         if (-not [SizeMapSmoke.Native]::GetWindowRect($window, [ref]$windowRect)) {
@@ -121,6 +150,54 @@ function Invoke-NamedElement($Root, [string]$Name, [switch]$PointerOnly) {
     }
 }
 
+function Invoke-NamedElement($Root, [string]$Name, [switch]$PointerOnly) {
+    Invoke-Element $Root (Find-NamedElement $Root $Name) $Name -PointerOnly:$PointerOnly
+}
+
+function Invoke-AutomationId($Root, [string]$Id, [switch]$PointerOnly) {
+    Invoke-Element $Root (Find-AutomationId $Root $Id) $Id -PointerOnly:$PointerOnly
+}
+
+function Find-DetailsViewElement($Root) {
+    $extensionEntry = Find-NamedElement $Root 'Size Map'
+    if ($null -eq $extensionEntry) { return $null }
+    $extensionBounds = $extensionEntry.Current.BoundingRectangle
+    $buttons = $Root.FindAll(
+        [Windows.Automation.TreeScope]::Descendants,
+        [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::ControlTypeProperty,
+            [Windows.Automation.ControlType]::Button))
+    $builtInModes = @(0..($buttons.Count - 1) |
+        ForEach-Object { $buttons.Item($_) } |
+        Where-Object {
+            $bounds = $_.Current.BoundingRectangle
+            $bounds.Top -lt $extensionBounds.Top -and
+            [Math]::Abs($bounds.Left - $extensionBounds.Left) -lt 4 -and
+            [Math]::Abs($bounds.Width - $extensionBounds.Width) -lt 4
+        } |
+        Sort-Object { $_.Current.BoundingRectangle.Top })
+    if ($builtInModes.Count -lt 8) { return $null }
+    # The host's public view-mode order is ExtraLarge, Large, Medium, Small,
+    # List, Details, Tiles, Content. Select the actual sixth UIA element so
+    # menu focus and unrelated toolbar buttons cannot affect activation.
+    $builtInModes[$builtInModes.Count - 8 + 5]
+}
+
+function Find-MoreOptionsElement($Root) {
+    $items = $Root.FindAll(
+        [Windows.Automation.TreeScope]::Descendants,
+        [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::ControlTypeProperty,
+            [Windows.Automation.ControlType]::MenuItem))
+    $ordered = @(0..($items.Count - 1) |
+        ForEach-Object { $items.Item($_) } |
+        Where-Object { $_.Current.BoundingRectangle.Height -gt 0 } |
+        Sort-Object { $_.Current.BoundingRectangle.Top })
+    if ($ordered.Count -lt 2) { return $null }
+    # Options and About are the final two commands in the production More menu.
+    $ordered[$ordered.Count - 2]
+}
+
 function Invoke-NamedElementDoubleClick($Root, [string]$Name) {
     $element = Find-NamedElement $Root $Name
     if ($null -eq $element) { throw "UI element '$Name' was not found for double-click" }
@@ -134,11 +211,13 @@ function Invoke-NamedElementDoubleClick($Root, [string]$Name) {
     $scaleY = ($windowRect.Bottom - $windowRect.Top) / $rootBounds.Height
     $screenX = [int]($windowRect.Left + (($bounds.Left + $bounds.Width / 2) - $rootBounds.Left) * $scaleX)
     $screenY = [int]($windowRect.Top + (($bounds.Top + $bounds.Height / 2) - $rootBounds.Top) * $scaleY)
+    [void][SizeMapSmoke.Native]::SetForegroundWindow($window)
     [void][SizeMapSmoke.Native]::SetCursorPos($screenX, $screenY)
+    Start-Sleep -Milliseconds 150
     foreach ($click in 1..2) {
         [SizeMapSmoke.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
         [SizeMapSmoke.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
-        Start-Sleep -Milliseconds 70
+        Start-Sleep -Milliseconds 120
     }
 }
 
@@ -191,18 +270,28 @@ try {
     [void][SizeMapSmoke.Native]::SetForegroundWindow($window)
     $root = [Windows.Automation.AutomationElement]::FromHandle($window)
 
-    $rows = $root.FindAll(
-        [Windows.Automation.TreeScope]::Descendants,
-        [Windows.Automation.PropertyCondition]::new(
-            [Windows.Automation.AutomationElement]::ControlTypeProperty,
-            [Windows.Automation.ControlType]::ListItem))
+    $rows = $null
+    $rowsDeadline = [DateTime]::UtcNow.AddSeconds(15)
+    do {
+        Start-Sleep -Milliseconds 100
+        $rows = $root.FindAll(
+            [Windows.Automation.TreeScope]::Descendants,
+            [Windows.Automation.PropertyCondition]::new(
+                [Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [Windows.Automation.ControlType]::ListItem))
+    } while ($rows.Count -eq 0 -and [DateTime]::UtcNow -lt $rowsDeadline)
     if ($rows.Count -eq 0) { throw 'Real folder contents did not load in Details view' }
     Capture-Window $window $beforePath
 
     Invoke-NamedElement $root 'View'
-    Start-Sleep -Milliseconds 250
+    $viewEntry = $null
+    $viewDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        Start-Sleep -Milliseconds 100
+        $viewEntry = Find-NamedElement $root 'Size Map'
+    } while ($null -eq $viewEntry -and [DateTime]::UtcNow -lt $viewDeadline)
     Capture-Window $window (Join-Path $OutputDirectory 'view-menu.png')
-    if ($null -eq (Find-NamedElement $root 'Size Map')) {
+    if ($null -eq $viewEntry) {
         throw "View menu did not expose the loaded plugin's Size Map entry"
     }
     if ($UsePointerActivation) {
@@ -256,26 +345,51 @@ try {
         }
     }
     $nodeName = $node.Current.Name
+    $other = $root.FindAll(
+        [Windows.Automation.TreeScope]::Descendants,
+        [Windows.Automation.Condition]::TrueCondition) |
+        ForEach-Object { $_ } |
+        Where-Object { $_.Current.Name -match '^Other \(\d+ items\): .*Aggregated$' } |
+        Select-Object -First 1
+    if ($null -eq $other) { throw 'Size Map did not expose the aggregated Other accessibility group' }
     Capture-Window $window $sizeMapPath
     Invoke-NamedElement $root $nodeName -PointerOnly
-    Start-Sleep -Milliseconds 200
-    Capture-Window $window $selectedPath
-    if ((Get-FileHash -LiteralPath $sizeMapPath).Hash -eq (Get-FileHash -LiteralPath $selectedPath).Hash) {
+    $selectionChanged = $false
+    $selectionDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        Start-Sleep -Milliseconds 100
+        Capture-Window $window $selectedPath
+        $selectionChanged = (Get-FileHash -LiteralPath $sizeMapPath).Hash -ne (Get-FileHash -LiteralPath $selectedPath).Hash
+    } while (-not $selectionChanged -and [DateTime]::UtcNow -lt $selectionDeadline)
+    if (-not $selectionChanged) {
         throw 'Selecting a Size Map node did not update its host-owned GPUI surface'
     }
 
-    $selectedLabel = ($nodeName -split ':', 2)[0]
-    Invoke-NamedElement $root 'View'
+    $aggregateItemName = 'aaa-omitted-0009.txt: 0 bytes. Complete'
+    $aggregateItem = Find-NamedElement $root $aggregateItemName
+    if ($null -eq $aggregateItem) { throw 'Aggregated item was not retained in the UIA/search tree' }
+    if (-not $aggregateItem.Current.IsKeyboardFocusable) { throw 'Aggregated item is not keyboard focusable' }
+    Invoke-NamedElement $root $aggregateItemName
     Start-Sleep -Milliseconds 150
-    Send-Key 0x24 # Home: first built-in view mode.
-    foreach ($step in 1..5) { Send-Key 0x28 } # Details is the sixth built-in mode.
-    Send-Key 0x0D
-    Start-Sleep -Milliseconds 250
-    $detailsRows = $root.FindAll(
-        [Windows.Automation.TreeScope]::Descendants,
-        [Windows.Automation.PropertyCondition]::new(
-            [Windows.Automation.AutomationElement]::ControlTypeProperty,
-            [Windows.Automation.ControlType]::ListItem))
+    $selectedLabel = 'aaa-omitted-0009.txt'
+    Invoke-NamedElement $root 'View'
+    $detailsEntry = $null
+    $detailsEntryDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        Start-Sleep -Milliseconds 100
+        $detailsEntry = Find-DetailsViewElement $root
+    } while ($null -eq $detailsEntry -and [DateTime]::UtcNow -lt $detailsEntryDeadline)
+    Invoke-Element $root $detailsEntry 'Details view choice' -PointerOnly
+    $detailsRows = $null
+    $detailsDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        Start-Sleep -Milliseconds 100
+        $detailsRows = $root.FindAll(
+            [Windows.Automation.TreeScope]::Descendants,
+            [Windows.Automation.PropertyCondition]::new(
+                [Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [Windows.Automation.ControlType]::ListItem))
+    } while ($detailsRows.Count -eq 0 -and [DateTime]::UtcNow -lt $detailsDeadline)
     @($detailsRows | ForEach-Object {
         [pscustomobject]@{
             name = $_.Current.Name
@@ -294,18 +408,27 @@ try {
         throw "Size Map selection for '$selectedLabel' was not shared with Details"
     }
     Invoke-NamedElement $root 'View'
-    Start-Sleep -Milliseconds 150
-    Invoke-NamedElement $root 'Size Map'
-    Start-Sleep -Milliseconds 250
+    $sizeMapEntry = $null
+    $sizeMapEntryDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        Start-Sleep -Milliseconds 100
+        $sizeMapEntry = Find-NamedElement $root 'Size Map'
+    } while ($null -eq $sizeMapEntry -and [DateTime]::UtcNow -lt $sizeMapEntryDeadline)
+    Invoke-Element $root $sizeMapEntry 'Size Map' -PointerOnly
 
-    $largeNode = $root.FindAll(
-        [Windows.Automation.TreeScope]::Descendants,
-        [Windows.Automation.PropertyCondition]::new(
-            [Windows.Automation.AutomationElement]::ControlTypeProperty,
-            [Windows.Automation.ControlType]::Button)) |
-        ForEach-Object { $_ } |
-        Where-Object { $_.Current.Name -match '^large: .*Complete$' } |
-        Select-Object -First 1
+    $largeNode = $null
+    $largeDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        Start-Sleep -Milliseconds 100
+        $largeNode = $root.FindAll(
+            [Windows.Automation.TreeScope]::Descendants,
+            [Windows.Automation.PropertyCondition]::new(
+                [Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [Windows.Automation.ControlType]::Button)) |
+            ForEach-Object { $_ } |
+            Where-Object { $_.Current.Name -match '^large: .*Complete$' } |
+            Select-Object -First 1
+    } while ($null -eq $largeNode -and [DateTime]::UtcNow -lt $largeDeadline)
     if ($null -eq $largeNode) { throw 'Deterministic large folder node was not available for navigation' }
     Invoke-NamedElementDoubleClick $root $largeNode.Current.Name
     $navigationDeadline = [DateTime]::UtcNow.AddSeconds(8)
@@ -341,6 +464,68 @@ try {
     if ($null -eq $hasRefreshedNode) { throw 'Size Map did not recover after F5' }
     Capture-Window $window $afterRefreshPath
 
+    # Disable the active extension through the production Folder Options UI.
+    # The active custom view must immediately fall back to Details and the
+    # disabled contribution must disappear from View.
+    $moreButton = Find-AutomationId $root 'command-more-menu'
+    if ($null -eq $moreButton) {
+        $moreName = [string]([char]0x5176) + [char]0x5B83
+        $moreButton = Find-NamedElement $root $moreName
+    }
+    Invoke-Element $root $moreButton 'command-more-menu'
+    $optionsEntry = $null
+    $optionsDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        Start-Sleep -Milliseconds 100
+        $optionsEntry = Find-AutomationId $root 'more-options'
+        if ($null -eq $optionsEntry) { $optionsEntry = Find-MoreOptionsElement $root }
+    } while ($null -eq $optionsEntry -and [DateTime]::UtcNow -lt $optionsDeadline)
+    Invoke-Element $root $optionsEntry 'more-options'
+    $extensionsTab = $null
+    $extensionsDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        Start-Sleep -Milliseconds 100
+        $extensionsTab = Find-AutomationId $root 'folder-options-extensions-tab'
+        if ($null -eq $extensionsTab) { $extensionsTab = Find-NamedElement $root 'Extensions' }
+    } while ($null -eq $extensionsTab -and [DateTime]::UtcNow -lt $extensionsDeadline)
+    Invoke-Element $root $extensionsTab 'folder-options-extensions-tab'
+    $sizeMapToggle = $null
+    $toggleDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        Start-Sleep -Milliseconds 100
+        $sizeMapToggle = Find-ControlTypeName $root ([Windows.Automation.ControlType]::CheckBox) 'Size Map'
+    } while ($null -eq $sizeMapToggle -and [DateTime]::UtcNow -lt $toggleDeadline)
+    Invoke-Element $root $sizeMapToggle 'Size Map extension toggle'
+    $applyButton = Find-AutomationId $root 'folder-options-apply'
+    if ($null -eq $applyButton) {
+        $applyName = [string]([char]0x5957) + [char]0x7528
+        $applyButton = Find-NamedElement $root $applyName
+    }
+    Invoke-Element $root $applyButton 'folder-options-apply'
+    Start-Sleep -Milliseconds 200
+    $okName = [string]([char]0x78BA) + [char]0x5B9A
+    $okButton = Find-NamedElement $root $okName
+    Invoke-Element $root $okButton 'folder-options-ok'
+    $fallbackRows = $null
+    $fallbackDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        Start-Sleep -Milliseconds 100
+        $fallbackRows = $root.FindAll(
+            [Windows.Automation.TreeScope]::Descendants,
+            [Windows.Automation.PropertyCondition]::new(
+                [Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [Windows.Automation.ControlType]::ListItem))
+    } while (($fallbackRows.Count -eq 0 -or $null -ne (Find-NamedElement $root 'Extensions')) -and [DateTime]::UtcNow -lt $fallbackDeadline)
+    if ($fallbackRows.Count -eq 0 -or $null -ne (Find-NamedElement $root 'Extensions')) {
+        throw 'Disabling the active Size Map did not close Folder Options and fall back to Details'
+    }
+    Invoke-NamedElement $root 'View'
+    Start-Sleep -Milliseconds 200
+    if ($null -ne (Find-NamedElement $root 'Size Map')) {
+        throw 'Disabled Size Map contribution remained visible in View'
+    }
+    Send-Key 0x1B
+
     $report = [pscustomobject]@{
         status = 'passed'
         initial_path = $InitialPath
@@ -348,7 +533,11 @@ try {
         size_map_node = $nodeName
         exact_nodes = @($expectedNodes)
         selection_shared_with_details = $true
+        aggregated_other_accessible = $true
+        aggregated_item_keyboard_focusable = $true
         folder_navigation_and_back = $true
+        disable_active_falls_back_to_details = $true
+        disabled_contribution_hidden = $true
         screenshots = @($beforePath, $sizeMapPath, $selectedPath, $afterRefreshPath)
     }
     $json = $report | ConvertTo-Json -Depth 3

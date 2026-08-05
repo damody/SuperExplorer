@@ -22,11 +22,15 @@ New-Item -ItemType Directory -Force -Path $extensionState | Out-Null
 if ([string]::IsNullOrWhiteSpace($InitialPath)) {
     $InitialPath = Join-Path $OutputDirectory 'sample'
     New-Item -ItemType Directory -Force -Path $InitialPath | Out-Null
-    foreach ($pair in @(@('small',1024),@('large',8192),@('medium',4096))) {
-        $dir = Join-Path $InitialPath $pair[0]; New-Item -ItemType Directory -Force -Path $dir | Out-Null
-        [IO.File]::WriteAllBytes((Join-Path $dir 'payload.bin'), [byte[]]::new([int]$pair[1]))
+    foreach ($index in 0..999) {
+        $dir = Join-Path $InitialPath ("item-{0:D4}" -f $index)
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        $size = 256 + (($index % 64) * 128)
+        [IO.File]::WriteAllBytes((Join-Path $dir 'payload.bin'), [byte[]]::new($size))
     }
 } else { $InitialPath = (Resolve-Path $InitialPath).Path }
+$fixtureItemCount = @(Get-ChildItem -LiteralPath $InitialPath -Directory).Count
+if ($fixtureItemCount -ne 1000) { throw "folder-size final slice requires exactly 1,000 fixture items, found $fixtureItemCount" }
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -59,6 +63,7 @@ function Click($root,$element,[switch]$Right) {
     [FolderSizeHeadful.Native]::SetCursorPos($x,$y); if ($Right) {$down=8;$up=16} else {$down=2;$up=4}; [FolderSizeHeadful.Native]::mouse_event($down,0,0,0,[UIntPtr]::Zero); [FolderSizeHeadful.Native]::mouse_event($up,0,0,0,[UIntPtr]::Zero)
 }
 function Key([byte]$key) { [FolderSizeHeadful.Native]::keybd_event($key,0,0,[UIntPtr]::Zero); [FolderSizeHeadful.Native]::keybd_event($key,0,2,[UIntPtr]::Zero) }
+function Chord([byte]$modifier,[byte]$key) { [FolderSizeHeadful.Native]::keybd_event($modifier,0,0,[UIntPtr]::Zero); Key $key; [FolderSizeHeadful.Native]::keybd_event($modifier,0,2,[UIntPtr]::Zero) }
 
 $diag=Join-Path $OutputDirectory 'diagnostics.json'; $psi=[Diagnostics.ProcessStartInfo]::new(); $psi.FileName=$Executable; $psi.Arguments="--plugin-dll `"$PluginDll`""; $psi.WorkingDirectory=$workspace; $psi.UseShellExecute=$false; $psi.EnvironmentVariables['EXPLORER_VISUAL_FIXTURE']='1'; $psi.EnvironmentVariables['EXPLORER_VISUAL_REAL_SHELL']='1'; $psi.EnvironmentVariables['EXPLORER_VISUAL_STATE']='populated'; $psi.EnvironmentVariables['EXPLORER_VISUAL_DIAGNOSTICS']=$diag; $psi.EnvironmentVariables['EXPLORER_INITIAL_PATH']=$InitialPath; $psi.EnvironmentVariables['EXPLORER_LOG_DIR']=$OutputDirectory; $psi.EnvironmentVariables['EXPLORER_UITEST_EXTENSION_STATE_ROOT']=$extensionState
 $process=[Diagnostics.Process]::Start($psi); try {
@@ -79,5 +84,10 @@ $process=[Diagnostics.Process]::Start($psi); try {
     $before=Join-Path $OutputDirectory 'folder-size-bar-on.png'; Capture $window $before; Click $root $toggle; Start-Sleep -Milliseconds 400; $after=Join-Path $OutputDirectory 'folder-size-bar-off.png'; Capture $window $after
     if ((Get-FileHash $before).Hash -eq (Get-FileHash $after).Hash) { throw 'Toggling proportional bar did not change the rendered surface' }
     Key 0x74; Start-Sleep -Milliseconds 1200; if ($null -eq (Find-Prefix $root 'Folder size: ')) { throw 'F5 lost the completed folder-size values' }
-    [pscustomobject]@{status='passed';case_id='rust-folder-size-visual-column-headful';exact_value=$exactValue;data_items=$rows.Count;decorative_bar_automation_nodes=$tracks.Count;proportional_bar_visual_delta=$true;numeric_sort=$true;proportional_bar_toggle=$true;f5_generation_recovery=$true;screenshots=@('folder-size-column.png','folder-size-bar-on.png','folder-size-bar-off.png')} | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $OutputDirectory 'report.json') -Encoding utf8
+    Chord 0x12 0x26; Start-Sleep -Milliseconds 600
+    $cacheTimer=[Diagnostics.Stopwatch]::StartNew(); Chord 0x12 0x25
+    $until=[DateTime]::UtcNow.AddSeconds(3); $cachedCell=$null
+    do { Start-Sleep -Milliseconds 50; $cachedCell=Find-Prefix $root 'Folder size: ' } while (($null -eq $cachedCell -or $cachedCell.Current.Name -match 'Loading|Calculating') -and [DateTime]::UtcNow -lt $until)
+    $cacheTimer.Stop(); if ($null -eq $cachedCell -or $cachedCell.Current.Name -match 'Loading|Calculating') { throw 'Returning to an unchanged folder did not reuse the host cache' }
+    [pscustomobject]@{status='passed';case_id='rust-folder-size-visual-column-headful';fixture_items=$fixtureItemCount;exact_value=$exactValue;data_items=$rows.Count;decorative_bar_automation_nodes=$tracks.Count;proportional_bar_visual_delta=$true;numeric_sort=$true;proportional_bar_toggle=$true;f5_generation_recovery=$true;unchanged_folder_host_cache=$true;cache_roundtrip_millis=$cacheTimer.ElapsedMilliseconds;screenshots=@('folder-size-column.png','folder-size-bar-on.png','folder-size-bar-off.png')} | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $OutputDirectory 'report.json') -Encoding utf8
 } finally { if ($process -and -not $process.HasExited) {$process.Kill();$process.WaitForExit()} }

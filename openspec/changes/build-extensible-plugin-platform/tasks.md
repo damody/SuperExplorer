@@ -383,17 +383,17 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** runtime-authority named test selectors；records `3.7.*`。
 **完成門檻：** envelope綁package/feature/interface/incarnation/capability/authorized root與resource generations；dispatch/use/commit重驗；disable/update/generation change revoke；tamper/TOCTOU零side effect。
 
-- [deferred] 3.7.1 定義package、feature、interface、incarnation、capability、authorized-root與location/item/refresh/container/job generation envelope。
-- [deferred] 3.7.2 實作authority issue與每次dispatch/use revalidation，registration validation不能直接當runtime grant。
-- [deferred] 3.7.3 實作feature disable、package update、folder/view/F5、container mutation時revoke/stale semantics。
-- [deferred] 3.7.4 驗證tampered package欄位fail closed。
-- [deferred] 3.7.5 驗證stream/tool/lock/navigation/plan/virtual/renderer adapters只能消費已授權 envelope。
-- [deferred] 3.7.6 模擬授權後 identity race，確認use/commit前recheck拒絕替換資源。
-- [deferred] 3.7.7 驗證tampered feature欄位fail closed。
-- [deferred] 3.7.8 驗證tampered interface欄位fail closed。
-- [deferred] 3.7.9 驗證tampered capability欄位fail closed。
-- [deferred] 3.7.10 驗證tampered authorized-root欄位fail closed。
-- [deferred] 3.7.11 驗證tampered resource-generation欄位fail closed。
+- [x] 3.7.1 定義package、feature、interface、incarnation、capability、authorized-root與location/item/refresh/container/job generation envelope。
+- [x] 3.7.2 實作authority issue與每次dispatch/use revalidation，registration validation不能直接當runtime grant。（production native stream 於 prepare/callback/terminal commit 各自重驗，disable 立即 revoke。）
+- [x] 3.7.3 實作feature disable、package update、folder/view/F5、container mutation時revoke/stale semantics。
+- [x] 3.7.4 驗證tampered package欄位fail closed。
+- [x] 3.7.5 驗證stream/tool/lock/navigation/plan/virtual/renderer adapters只能消費已授權 envelope。（production consumers：native stream、attested tool、LockOwner query、view navigation、operation-plan、bounded virtual read、direct renderer；`every_adapter_consumes_only_its_capability_bound_envelope` 與各 adapter revoke/stale/zero-side-effect tests 通過。）
+- [x] 3.7.6 模擬授權後 identity race，確認use/commit前recheck拒絕替換資源。（`identity_race_and_every_tampered_field_fail_before_use` 以 replacement generation 使舊 envelope stale；production stream callback/terminal commit 與 LockOwner use 均於副作用前重驗。）
+- [x] 3.7.7 驗證tampered feature欄位fail closed。
+- [x] 3.7.8 驗證tampered interface欄位fail closed。
+- [x] 3.7.9 驗證tampered capability欄位fail closed。
+- [x] 3.7.10 驗證tampered authorized-root欄位fail closed。
+- [x] 3.7.11 驗證tampered resource-generation欄位fail closed。
 
 ### 3.8 Dispatch barrier、call leases 與 core drain primitive
 
@@ -405,16 +405,16 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** concurrent/nested/disable race selectors；records `3.8.*`。
 **完成門檻：** close dispatch→cancel resources→request GPUI detach/virtual redirect→drain leases→disabled/pending-restart；nested/concurrent records獨立；late registration/sink/cache/invalidation一律reject；never unload。
 
-- [deferred] 3.8.1 實作atomic new-dispatch barrier與correlation-scoped active call lease acquire/release。
-- [deferred] 3.8.2 驗證nested/concurrent callback return只清除matching record/lease。
-- [deferred] 3.8.3 在barrier後關閉incremental sinks並拒絕late registration/cache publish/invalidation。
-- [deferred] 3.8.4 提供jobs/streams/processes cancellation與GPUI detach/virtual redirect的ordered coordinator hooks。
-- [deferred] 3.8.5 實作bounded lease drain與timeout/fault→pending-restart，禁止unsafe interrupt/force unload。
-- [deferred] 3.8.6 驗證callback-start與disable barrier race。
-- [deferred] 3.8.7 驗證callback-return與drain-timeout race。
-- [deferred] 3.8.8 驗證rapid enable/disable toggle race。
-- [deferred] 3.8.9 驗證package update與active lease race。
-- [deferred] 3.8.10 驗證late result在barrier後被拒絕。
+- [x] 3.8.1 實作atomic new-dispatch barrier與correlation-scoped active call lease acquire/release。
+- [x] 3.8.2 驗證nested/concurrent callback return只清除matching record/lease。
+- [x] 3.8.3 在barrier後關閉incremental sinks並拒絕late registration/cache publish/invalidation。
+- [x] 3.8.4 提供jobs/streams/processes cancellation與GPUI detach/virtual redirect的ordered coordinator hooks。
+- [x] 3.8.5 實作bounded lease drain與timeout/fault→pending-restart，禁止unsafe interrupt/force unload。
+- [x] 3.8.6 驗證callback-start與disable barrier race。
+- [x] 3.8.7 驗證callback-return與drain-timeout race。
+- [x] 3.8.8 驗證rapid enable/disable toggle race。
+- [x] 3.8.9 驗證package update與active lease race。
+- [x] 3.8.10 驗證late result在barrier後被拒絕。
 
 ## 4. Extension Jobs、Values、Streams 與 Cache
 
@@ -428,14 +428,14 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** scheduler unit/stress tests；records `4.1.*`。
 **完成門檻：** queues/limits 不可繞過；visible work 優先但不 starvation；cancel/deadline/disable 產生 typed terminal；Future/runtime handle 不跨 ABI。
 
-- [deferred] 4.1.1 記錄並核准 CPU/I/O global/per-package queue/concurrency/aging/default quota 數值與校準 evidence。
-- [deferred] 4.1.2 驗證 CPU 與 I/O queues 的 bounded admission、fairness、visible-row priority 與 starvation prevention。
-- [deferred] 4.1.3 驗證explicit cancellation terminal state。
-- [deferred] 4.1.4 驗證 synchronous provider callback 僅在 host worker 執行，無 Future/runtime handle 跨 ABI。
-- [deferred] 4.1.5 以多 package overload fixture 證明 global/per-package limits、progress 與 diagnostic counters 正確。
-- [deferred] 4.1.6 驗證deadline terminal state與cooperative stuck-callback policy。
-- [deferred] 4.1.7 驗證package disable terminal state與sink closure。
-- [deferred] 4.1.8 驗證queue shutdown terminal state與pending work disposition。
+- [x] 4.1.1 記錄並核准 CPU/I/O global/per-package queue/concurrency/aging/default quota 數值與校準 evidence。
+- [x] 4.1.2 驗證 CPU 與 I/O queues 的 bounded admission、fairness、visible-row priority 與 starvation prevention。
+- [x] 4.1.3 驗證explicit cancellation terminal state。
+- [x] 4.1.4 驗證 synchronous provider callback 僅在 host worker 執行，無 Future/runtime handle 跨 ABI。
+- [x] 4.1.5 以多 package overload fixture 證明 global/per-package limits、progress 與 diagnostic counters 正確。
+- [x] 4.1.6 驗證deadline terminal state與cooperative stuck-callback policy。
+- [x] 4.1.7 驗證package disable terminal state與sink closure。
+- [x] 4.1.8 驗證queue shutdown terminal state與pending work disposition。
 
 ### 4.2 ABI job context、incremental sink 與 typed values
 
@@ -447,12 +447,12 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** ABI round-trip/backpressure/value sorting contracts；records `4.2.*`。
 **完成門檻：** every batch bounded/tagged；bool/int/float/bytes/time/duration/text/localized/structured/opaque round-trip；sort independent from display；unsupported 不冒充 0；opaque 僅回原 renderer。
 
-- [deferred] 4.2.1 凍結 `JobContextV1`、generation-safe handles、incremental sink 與 terminal records 的 ABI layout。
-- [deferred] 4.2.2 驗證 incremental batch size/backpressure/closed-sink/cancel race 的 typed outcomes。
-- [deferred] 4.2.3 對每個 `PluginValueV1` variant 執行 ABI round-trip 與 malformed/unknown-value policy。
-- [deferred] 4.2.4 驗證 `StableSortValueV1` 對 bytes/time/integer/text 的 exact deterministic ordering 與 missing-last policy。
-- [deferred] 4.2.5 驗證 unsupported、unavailable、cancelled、plugin-error、incompatible 在 cache/UI/diagnostics 不互相混淆。
-- [deferred] 4.2.6 驗證 opaque payload 只能由相同 package/interface/generation renderer 解讀。
+- [x] 4.2.1 凍結 `JobContextV1`、generation-safe handles、incremental sink 與 terminal records 的 ABI layout。
+- [x] 4.2.2 驗證 incremental batch size/backpressure/closed-sink/cancel race 的 typed outcomes。
+- [x] 4.2.3 對每個 `PluginValueV1` variant 執行 ABI round-trip 與 malformed/unknown-value policy。
+- [x] 4.2.4 驗證 `StableSortValueV1` 對 bytes/time/integer/text 的 exact deterministic ordering 與 missing-last policy。
+- [x] 4.2.5 驗證 unsupported、unavailable、cancelled、plugin-error、incompatible 在 cache/UI/diagnostics 不互相混淆。
+- [x] 4.2.6 驗證 opaque payload 只能由相同 package/interface/generation renderer 解讀。
 
 ### 4.3 UI batching、generation cache 與 InputStream
 
@@ -464,17 +464,17 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** batching/cache/stream contract suites；records `4.3.*`。
 **完成門檻：** invalidation window 16–50 ms；1,000 results 不造成 1,000 redraw；cache key 完整；navigation/F5/watcher/data-version stale results 不更新；stream bounded/cancellable/generation-safe。
 
-- [deferred] 4.3.1 校準並驗證 16–50 ms coalescing window、max batch 與 overload recovery。
-- [deferred] 4.3.2 驗證 1,000 rapid results 的 redraw/invalidation count 有界且結果增量可見。
-- [deferred] 4.3.3 驗證 cache key 含 package/interface/data version/file identity/metadata/options，recursive scan 再含 watcher/TTL/manual generation。
-- [deferred] 4.3.4 驗證navigation generation change的stale result rejection。
-- [deferred] 4.3.5 驗證 `filesystem.read` capability 缺失時不發 stream handle。
-- [deferred] 4.3.6 驗證 bounded read/seek/length/deadline/cancel/source-generation 且 source change 不回填 current metadata。
-- [deferred] 4.3.7 驗證tab switch的stale result rejection。
-- [deferred] 4.3.8 驗證F5 refresh generation的stale result rejection。
-- [deferred] 4.3.9 驗證watcher invalidation generation的stale result rejection。
-- [deferred] 4.3.10 驗證feature disable的stale result rejection。
-- [deferred] 4.3.11 驗證package generation change的stale result rejection。
+- [x] 4.3.1 校準並驗證 16–50 ms coalescing window、max batch 與 overload recovery。
+- [x] 4.3.2 驗證 1,000 rapid results 的 redraw/invalidation count 有界且結果增量可見。
+- [x] 4.3.3 驗證 cache key 含 package/interface/data version/file identity/metadata/options，recursive scan 再含 watcher/TTL/manual generation。
+- [x] 4.3.4 驗證navigation generation change的stale result rejection。
+- [x] 4.3.5 驗證 `filesystem.read` capability 缺失時不發 stream handle。
+- [x] 4.3.6 驗證 bounded read/seek/length/deadline/cancel/source-generation 且 source change 不回填 current metadata。
+- [x] 4.3.7 驗證tab switch的stale result rejection。
+- [x] 4.3.8 驗證F5 refresh generation的stale result rejection。
+- [x] 4.3.9 驗證watcher invalidation generation的stale result rejection。
+- [x] 4.3.10 驗證feature disable的stale result rejection。
+- [x] 4.3.11 驗證package generation change的stale result rejection。
 
 ### 4.4 1,000-item integration、diagnostics 與文件
 
@@ -486,12 +486,12 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** named 1,000-item contract/performance and docs reproduction；records `4.4.*`。
 **完成門檻：** basic list interactive before extensions complete；visible-first/cancel latency/redraw bounds pass twice；diagnostics identify package/interface without private data；docs commands clean-run offline。
 
-- [deferred] 4.4.1 固定 1,000-item fixture inventory、expected generations、supported/unsupported/partial outcomes 與 hash。
-- [deferred] 4.4.2 測量 basic list readiness 與 extension completion，證明列表先可互動。
-- [deferred] 4.4.3 測量 visible-row priority、cancel latency、queue bounds、redraw/invalidation counts 並保存 raw samples。
-- [deferred] 4.4.4 驗證 slow callback/backpressure/cache diagnostics 只含 package/interface/timing/typed terminal。
-- [deferred] 4.4.5 定義 future UI selector/artifact mapping（僅登記，不執行 headful tests）。
-- [deferred] 4.4.6 依公開 jobs/value/stream/cache 文件在 clean fixture 重現並由 docs reviewer 簽核。
+- [x] 4.4.1 固定 1,000-item fixture inventory、expected generations、supported/unsupported/partial outcomes 與 hash。
+- [x] 4.4.2 測量 basic list readiness 與 extension completion，證明列表先可互動。
+- [x] 4.4.3 測量 visible-row priority、cancel latency、queue bounds、redraw/invalidation counts 並保存 raw samples。
+- [x] 4.4.4 驗證 slow callback/backpressure/cache diagnostics 只含 package/interface/timing/typed terminal。
+- [x] 4.4.5 定義 future UI selector/artifact mapping（僅登記，不執行 headful tests）。
+- [x] 4.4.6 依公開 jobs/value/stream/cache 文件在 clean fixture 重現並由 docs reviewer 簽核。
 
 ## 5. 動態欄位與 GPUI Contribution
 
@@ -505,19 +505,19 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** column-ui-abi exact selectors；records `5.1.*`。
 **完成門檻：** stable ID/descriptor/value/applicability/cost/sort/aggregate/renderer context/factory/ownership/drop/non-exhaustive policy完整；no private/std/future/raw callback；current/unknown/malformed fixtures與independent ABI review pass。
 
-- [deferred] 5.1.1 凍結built-in/extension `ColumnId` namespace/grammar與column descriptor value/width/alignment/applicability/sort/cost records。
-- [deferred] 5.1.2 凍結single provider descriptor/callback、authorized item input與typed result/terminal records。
-- [deferred] 5.1.3 凍結batch provider descriptor、bounded batch-to-item mapping、cost/partial/unsupported semantics。
-- [deferred] 5.1.4 凍結aggregate provider request/result/generation、dependency inputs與bounded output semantics。
-- [deferred] 5.1.5 凍結renderer descriptor/factory/context的value/aggregate/loading/error/geometry/DPI/theme/action/invalidation records。
-- [deferred] 5.1.6 定義所有ABI objects的allocation/drop thread/DLL lifetime/no-unwind policy。
-- [deferred] 5.1.7 執行public column/provider/renderer ABI layout hash fixture。
+- [x] 5.1.1 凍結built-in/extension `ColumnId` namespace/grammar與column descriptor value/width/alignment/applicability/sort/cost records。
+- [x] 5.1.2 凍結single provider descriptor/callback、authorized item input與typed result/terminal records。
+- [x] 5.1.3 凍結batch provider descriptor、bounded batch-to-item mapping、cost/partial/unsupported semantics。
+- [x] 5.1.4 凍結aggregate provider request/result/generation、dependency inputs與bounded output semantics。
+- [x] 5.1.5 凍結renderer descriptor/factory/context的value/aggregate/loading/error/geometry/DPI/theme/action/invalidation records。
+- [x] 5.1.6 定義所有ABI objects的allocation/drop thread/DLL lifetime/no-unwind policy。
+- [x] 5.1.7 執行public column/provider/renderer ABI layout hash fixture。
 - [deferred] 5.1.8 取得contract-owner與independent ABI reviewer簽核；任何後續contract change令5.2–16 dependent evidence stale。
-- [deferred] 5.1.9 定義unknown non-exhaustive value preserve/reject policy。
-- [deferred] 5.1.10 執行forbidden public type scan。
-- [deferred] 5.1.11 執行handwritten raw author ABI compile-fail fixture。
-- [deferred] 5.1.12 執行malformed column/provider/renderer descriptor fixture。
-- [deferred] 5.1.13 執行unknown non-exhaustive value compatibility fixture。
+- [x] 5.1.9 定義unknown non-exhaustive value preserve/reject policy。
+- [x] 5.1.10 執行forbidden public type scan。
+- [x] 5.1.11 執行handwritten raw author ABI compile-fail fixture。
+- [x] 5.1.12 執行malformed column/provider/renderer descriptor fixture。
+- [x] 5.1.13 執行unknown non-exhaustive value compatibility fixture。
 
 ### 5.2 Host authority registry 與 immutable model snapshot
 
@@ -529,20 +529,20 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** registry/lifecycle integration tests、architecture review；records `5.2.*`。
 **完成門檻：** validation/gate 後才 replace package；duplicate/ownership failure atomic；disable/revoke/fault/drain 不可 dispatch；reverse registration permutation 產生相同 catalog order。
 
-- [deferred] 5.2.1 消費並驗證frozen 5.1 `ColumnId`/descriptor contract對host snapshot projection的相容性，回填legacy 5.1 evidence。
-- [deferred] 5.2.2 在extension-host定義package/feature/interface/incarnation/generation scoped authority與sealed registration input。
-- [deferred] 5.2.3 實作atomic package descriptor validation與replace，任何failure不改舊snapshot。
-- [deferred] 5.2.4 實作package unregister並驗證visibility撤銷但layout intent保留。
-- [deferred] 5.2.5 實作deterministic snapshot reconciliation，按stable package/descriptor order而非callback arrival order。
-- [deferred] 5.2.6 以正反package registration permutation驗證snapshot/order/hash相同。
-- [deferred] 5.2.7 驗證disabled feature snapshot/dispatch。
-- [deferred] 5.2.8 architecture reviewer確認model `ColumnRegistry`只是projection/layout helper，不能繞過host authority。
-- [deferred] 5.2.9 實作package revoke並驗證dispatch撤銷但layout intent保留。
-- [deferred] 5.2.10 驗證blocked feature snapshot/dispatch。
-- [deferred] 5.2.11 驗證faulted feature snapshot/dispatch。
-- [deferred] 5.2.12 驗證Safe Mode suppressed feature snapshot/dispatch。
-- [deferred] 5.2.13 驗證draining feature snapshot/dispatch。
-- [deferred] 5.2.14 驗證package-update generation snapshot/dispatch。
+- [x] 5.2.1 消費並驗證frozen 5.1 `ColumnId`/descriptor contract對host snapshot projection的相容性，回填legacy 5.1 evidence。
+- [x] 5.2.2 在extension-host定義package/feature/interface/incarnation/generation scoped authority與sealed registration input。
+- [x] 5.2.3 實作atomic package descriptor validation與replace，任何failure不改舊snapshot。
+- [x] 5.2.4 實作package unregister並驗證visibility撤銷但layout intent保留。
+- [x] 5.2.5 實作deterministic snapshot reconciliation，按stable package/descriptor order而非callback arrival order。
+- [x] 5.2.6 以正反package registration permutation驗證snapshot/order/hash相同。
+- [x] 5.2.7 驗證disabled feature snapshot/dispatch。
+- [x] 5.2.8 architecture reviewer確認model `ColumnRegistry`只是projection/layout helper，不能繞過host authority。
+- [x] 5.2.9 實作package revoke並驗證dispatch撤銷但layout intent保留。
+- [x] 5.2.10 驗證blocked feature snapshot/dispatch。
+- [x] 5.2.11 驗證faulted feature snapshot/dispatch。
+- [x] 5.2.12 驗證Safe Mode suppressed feature snapshot/dispatch。
+- [x] 5.2.13 驗證draining feature snapshot/dispatch。
+- [x] 5.2.14 驗證package-update generation snapshot/dispatch。
 
 ### 5.3 Provider、typed sort 與 renderer binding
 
@@ -554,17 +554,17 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** provider/sort/aggregate integration matrix；records `5.3.*`。
 **完成門檻：** provider selection deterministic；unsupported/unavailable/missing stable；aggregate generation-safe；renderer 只綁相同 package/feature/value contract；disabled/faulted 不 dispatch。
 
-- [deferred] 5.3.1 實作single/batch/aggregate descriptor compatibility與cost/applicability validation。
-- [deferred] 5.3.2 將provider dispatch接到scheduler與已授權 authority envelope。
-- [deferred] 5.3.3 將provider dispatch接到generation/cache/cancellation與closed-sink late-result rejection。
-- [deferred] 5.3.4 實作display value與stable sort key分離的typed ordering及missing/unsupported policy。
-- [deferred] 5.3.5 實作aggregate request/result generation與bounded aggregate routing。
-- [deferred] 5.3.6 驗證renderer package/feature/value-type binding，跨package opaque renderer被拒絕。
-- [deferred] 5.3.7 驗證feature disable後無新provider/renderer callback。
-- [deferred] 5.3.8 驗證plugin fault後無新provider/renderer callback。
-- [deferred] 5.3.9 驗證feature draining期間無新provider/renderer callback。
-- [deferred] 5.3.10 驗證barrier後late provider result被拒絕。
-- [deferred] 5.3.11 驗證barrier後late renderer invalidation被拒絕。
+- [x] 5.3.1 實作single/batch/aggregate descriptor compatibility與cost/applicability validation。
+- [x] 5.3.2 將provider dispatch接到scheduler與已授權 authority envelope。
+- [x] 5.3.3 將provider dispatch接到generation/cache/cancellation與closed-sink late-result rejection。
+- [x] 5.3.4 實作display value與stable sort key分離的typed ordering及missing/unsupported policy。
+- [x] 5.3.5 實作aggregate request/result generation與bounded aggregate routing。
+- [x] 5.3.6 驗證renderer package/feature/value-type binding，跨package opaque renderer被拒絕。
+- [x] 5.3.7 驗證feature disable後無新provider/renderer callback。
+- [x] 5.3.8 驗證plugin fault後無新provider/renderer callback。
+- [x] 5.3.9 驗證feature draining期間無新provider/renderer callback。
+- [x] 5.3.10 驗證barrier後late provider result被拒絕。
+- [x] 5.3.11 驗證barrier後late renderer invalidation被拒絕。
 
 ### 5.4 Details UI 全動態化
 
@@ -576,17 +576,17 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** model/UI unit+integration；records `5.4.*`。
 **完成門檻：** built-in 與 extension descriptors 共用 header/row path；resize/reorder/visibility/sort/horizontal overflow/keyboard/UIA/session restore 可觀察且 virtualization 有界。
 
-- [deferred] 5.4.1 將details header/order/width/visibility完全改由registry-effective ordered layout產生。
-- [deferred] 5.4.2 將column chooser與feature unavailable/unknown hidden states接到immutable catalog snapshot。
-- [deferred] 5.4.3 將virtual rows、horizontal extent、cell selection/hit testing與resize bounds改為descriptor-driven。
-- [deferred] 5.4.4 將keyboard focus/sort commands/accessibility names/UIA grid semantics改為stable dynamic IDs。
-- [deferred] 5.4.5 將session restore只消費5.5已遷移schema，未知ID不可在UI路徑被刪除。
-- [deferred] 5.4.6 驗證built-in名稱/日期/類型/大小排序與既有UI文案/virtualization無回歸。
-- [deferred] 5.4.7 以至少兩packages同local ID驗證column chooser不碰撞。
-- [deferred] 5.4.8 以至少兩packages同local ID驗證ordered layout不碰撞。
-- [deferred] 5.4.9 以至少兩packages同local ID驗證resize state不碰撞。
-- [deferred] 5.4.10 以至少兩packages同local ID驗證typed sort不碰撞。
-- [deferred] 5.4.11 以至少兩packages同local ID驗證UIA identities不碰撞。
+- [x] 5.4.1 將details header/order/width/visibility完全改由registry-effective ordered layout產生。
+- [x] 5.4.2 將column chooser與feature unavailable/unknown hidden states接到immutable catalog snapshot。
+- [x] 5.4.3 將virtual rows、horizontal extent、cell selection/hit testing與resize bounds改為descriptor-driven。
+- [x] 5.4.4 將keyboard focus/sort commands/accessibility names/UIA grid semantics改為stable dynamic IDs。
+- [x] 5.4.5 將session restore只消費5.5已遷移schema，未知ID不可在UI路徑被刪除。
+- [x] 5.4.6 驗證built-in名稱/日期/類型/大小排序與既有UI文案/virtualization無回歸。
+- [x] 5.4.7 以至少兩packages同local ID驗證column chooser不碰撞。
+- [x] 5.4.8 以至少兩packages同local ID驗證ordered layout不碰撞。
+- [x] 5.4.9 以至少兩packages同local ID驗證resize state不碰撞。
+- [x] 5.4.10 以至少兩packages同local ID驗證typed sort不碰撞。
+- [x] 5.4.11 以至少兩packages同local ID驗證UIA identities不碰撞。
 
 ### 5.5 Persistence migration 與 unknown-ID round-trip
 
@@ -598,15 +598,15 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** migration golden/round-trip/reinstall tests；records `5.5.*`。
 **完成門檻：** legacy built-ins 一次遷移；extension sort/layout/width/visibility/order 保存；unknown hidden 不丟失；same ID reinstall 恢復；corrupt/over-limit data safe fallback。
 
-- [deferred] 5.5.1 定義新session schema/version與built-in/extension column ID canonical encoding。
-- [deferred] 5.5.2 實作舊fixed widths/visibility/order/sort到新schema的一次性migration golden fixture。
-- [deferred] 5.5.3 實作unknown extension IDs的load/save semantic round-trip，UI hidden但persisted intent不刪除。
-- [deferred] 5.5.4 驗證extension sort未安裝時safe fallback、重裝後可再次選取/恢復layout。
-- [deferred] 5.5.5 驗證remove/reinstall同ID恢復width/order/visibility，換ID不錯誤繼承。
-- [deferred] 5.5.6 驗證corrupt persisted entry bounded fallback且不破壞其他session state。
-- [deferred] 5.5.7 驗證duplicate persisted ID deterministic reconciliation且保留其他entries。
-- [deferred] 5.5.8 驗證over-length persisted ID bounded rejection/fallback。
-- [deferred] 5.5.9 驗證over-count persisted entries有界截斷/diagnostic且不OOM。
+- [x] 5.5.1 定義新session schema/version與built-in/extension column ID canonical encoding。
+- [x] 5.5.2 實作舊fixed widths/visibility/order/sort到新schema的一次性migration golden fixture。
+- [x] 5.5.3 實作unknown extension IDs的load/save semantic round-trip，UI hidden但persisted intent不刪除。
+- [x] 5.5.4 驗證extension sort未安裝時safe fallback、重裝後可再次選取/恢復layout。
+- [x] 5.5.5 驗證remove/reinstall同ID恢復width/order/visibility，換ID不錯誤繼承。
+- [x] 5.5.6 驗證corrupt persisted entry bounded fallback且不破壞其他session state。
+- [x] 5.5.7 驗證duplicate persisted ID deterministic reconciliation且保留其他entries。
+- [x] 5.5.8 驗證over-length persisted ID bounded rejection/fallback。
+- [x] 5.5.9 驗證over-count persisted entries有界截斷/diagnostic且不OOM。
 
 ### 5.6 GPUI renderer context、安全與 SDK 文件
 
@@ -618,12 +618,12 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** compile forbidden-surface、GPUI thread/panic/slow/I/O fixtures；records `5.6.*`。
 **完成門檻：** context 僅含 public value/loading/error/aggregate/selection/hover/DPI/theme/action/invalidation；wrong thread/forbidden I/O/panic/slow callback 可診斷且不破壞 host state。
 
-- [deferred] 5.6.1 實作immutable value/aggregate/loading/error、selection/hover geometry、DPI/theme facade projection。
-- [deferred] 5.6.2 實作scoped action sink/invalidation handle，拒絕stale/cross-package/retained-after-close use。
-- [deferred] 5.6.3 加入GPUI-thread assertion與renderer filesystem/network/blocking-I/O negative fixture。
-- [deferred] 5.6.4 加入renderer panic marker、slow threshold、invalidation throttling與typed fallback integration fixtures；UI execution deferred to the example final slice.
-- [deferred] 5.6.5 驗證renderer create/drop遵守5.1 ownership/drop/no-unwind與DLL lifetime。
-- [deferred] 5.6.6 完成dynamic column/renderer雙語SDK guide與clean consumer sample。
+- [x] 5.6.1 實作immutable value/aggregate/loading/error、selection/hover geometry、DPI/theme facade projection。
+- [x] 5.6.2 實作scoped action sink/invalidation handle，拒絕stale/cross-package/retained-after-close use。（依目前 frozen worker-safe render-plan spec，handles 僅存在 host UI facade、不跨 ABI；`scoped_handles_reject_cross_package_stale_and_retained_after_close` 通過。）
+- [x] 5.6.3 加入GPUI-thread assertion與renderer filesystem/network/blocking-I/O negative fixture。（現行 frozen spec 已修正為 bounded worker callback、GPUI paint-only；direct renderer 首次呼叫綁定唯一 worker thread，跨 thread typed reject；兩個 public render context 的 compile-fail fixtures 證明不提供 path/stream/network/GPUI surface，3 個 doctests 與 wrong-thread selector 通過。）
+- [x] 5.6.4 加入renderer panic marker、slow threshold、invalidation throttling與typed fallback integration fixtures；UI execution deferred to the example final slice。（visual/SizeMap panic no-unwind、direct render marker recovery、slow timing、bounded global invalidation fallback selectors 通過；production async render bridge 對 callback error/stale revision 回傳 typed host fallback。）
+- [x] 5.6.5 驗證renderer create/drop遵守5.1 ownership/drop/no-unwind與DLL lifetime。
+- [x] 5.6.6 完成dynamic column/renderer雙語SDK guide與clean consumer sample。
 
 ## 6. 第一垂直切片：Rust 資料夾大小欄位
 
@@ -637,11 +637,11 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** example-validator positive/negative selectors；records `6.1.*`。
 **完成門檻：** 每 example 必須有 source/manifest/locales/zh-TW+en README/license/NOTICE/provenance/fixtures/unit/integration/UITEST/screenshots/package/modify guide；private/unwired/缺項各自 fail。
 
-- [deferred] 6.1.1 建立 independent consumer workspace 與 Rust/Lua templates、directory/manifest/localization/license conventions。
-- [deferred] 6.1.2 實作 private workspace dependency、path dependency、composition bypass 與 protected closure drift rejection。
-- [deferred] 6.1.3 實作每 example required artifact/locale/doc/test/screenshot/package inventory validation。
-- [deferred] 6.1.4 實作 public interface 必須有 production composition-root registration＋official example use，trait/mock-only fail。
-- [deferred] 6.1.5 驗證八個 project metadata 互相獨立且不成為 root workspace members。
+- [x] 6.1.1 建立 independent consumer workspace 與 Rust/Lua templates、directory/manifest/localization/license conventions。
+- [x] 6.1.2 實作 private workspace dependency、path dependency、composition bypass 與 protected closure drift rejection。
+- [x] 6.1.3 實作每 example required artifact/locale/doc/test/screenshot/package inventory validation。
+- [x] 6.1.4 實作 public interface 必須有 production composition-root registration＋official example use，trait/mock-only fail。
+- [x] 6.1.5 驗證八個 project metadata 互相獨立且不成為 root workspace members。
 
 ### 6.2 獨立 consumer 與 feature contract
 
@@ -653,11 +653,11 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** example validator、clean consumer metadata/build；records `6.2.*`。
 **完成門檻：** 專案不在主 workspace、不引用 private crates；三個 features/capabilities/contacts/locales/licensing 完整；README 可在 published bundle clean-run。
 
-- [deferred] 6.2.1 建立獨立 project、locked dependencies、manifest 與 column/recalculate/settings 三個 stable feature IDs。
-- [deferred] 6.2.2 宣告最小 capabilities、publisher contacts、zh-TW/en locales 與 package entry points。
-- [deferred] 6.2.3 建立 LICENSE/NOTICE/SBOM/provenance，分類所有 static Rust dependencies。
-- [deferred] 6.2.4 撰寫 zh-TW/en README 的 build/test/modify/package/install 步驟。
-- [deferred] 6.2.5 執行 private-crate/composition-bypass/unlocked-dependency validator negative fixtures。
+- [x] 6.2.1 建立獨立 project、locked dependencies、manifest 與 column/recalculate/settings 三個 stable feature IDs。
+- [x] 6.2.2 宣告最小 capabilities、publisher contacts、zh-TW/en locales 與 package entry points。
+- [x] 6.2.3 建立 LICENSE/NOTICE/SBOM/provenance，分類所有 static Rust dependencies。
+- [x] 6.2.4 撰寫 zh-TW/en README 的 build/test/modify/package/install 步驟。
+- [x] 6.2.5 執行 private-crate/composition-bypass/unlocked-dependency validator negative fixtures。
 
 ### 6.3 Recursive provider、aggregation 與 cache
 
@@ -669,11 +669,11 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** 1,000-item/cycle/partial/cancel/cache tests；records `6.3.*`。
 **完成門檻：** no renderer I/O；symlink/junction cycle bounded；inaccessible subtree partial；exact bytes sorting；watcher/F5/manual/data-version invalidation generation-safe。
 
-- [deferred] 6.3.1 實作 authorized recursive byte scan、deadline/cancel 與 bounded incremental results。
-- [deferred] 6.3.2 實作 symlink/junction no-follow default、identity cycle prevention 與 inaccessible partial outcomes。
-- [deferred] 6.3.3 實作 exact byte `StableSortValueV1`、loading/unsupported/unavailable/cancelled/error states。
-- [deferred] 6.3.4 實作 largest-sibling aggregate，對 missing/partial/generation mismatch 不產生錯誤比例。
-- [deferred] 6.3.5 驗證 watcher、TTL、manual recalculate、F5 與 plugin data version cache invalidation。
+- [x] 6.3.1 實作 authorized recursive byte scan、deadline/cancel 與 bounded incremental results。
+- [x] 6.3.2 實作 symlink/junction no-follow default、identity cycle prevention 與 inaccessible partial outcomes。
+- [x] 6.3.3 實作 exact byte `StableSortValueV1`、loading/unsupported/unavailable/cancelled/error states。
+- [x] 6.3.4 實作 largest-sibling aggregate，對 missing/partial/generation mismatch 不產生錯誤比例。
+- [x] 6.3.5 驗證 watcher、TTL、manual recalculate、F5 與 plugin data version cache invalidation。
 
 ### 6.4 GPUI cell/settings 與完整 example gate
 
@@ -685,13 +685,13 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** renderer thread/I/O tests、integration/performance、README reproduction、package validation、inventory/composition GO，最後才是 1,000-item UITEST；records `6.4.*`。
 **完成門檻：** valid rows exact sort、partial states truthful、renderer only consumes background results；所有共同 artifacts/測試/雙語 docs/screenshots/clean package 個別通過。
 
-- [deferred] 6.4.1 實作 DPI/theme/selection-aware proportional cell，設定可調且無 filesystem/network I/O。
-- [deferred] 6.4.2 實作 recalculate command/settings feature，驗證 disable/re-enable 與 stale invalidation。
-- [deferred] 6.4.3 執行 unit tests：bytes/cycle/partial/cache/aggregate/sort/renderer states。
-- [deferred] 6.4.4 執行 integration/performance tests，保存 raw timing。
-- [deferred] 6.4.5 在空 consumer 執行 README build/test/package 並驗證 deterministic `.sepack` hash。
-- [deferred] 6.4.6 執行 `common_artifact_inventory`、記錄 production composition-root registration 與 interface coverage，取得 provisional slice GO。
-- [deferred] 6.4.7 在 Task 6 除本 leaf 外的全部 leaves（6.1.1–6.4.6）均完成後，首次且唯一地執行 Task 6 的 1,000-item UITEST，保存 screenshots 與 accessibility evidence。
+- [x] 6.4.1 實作 DPI/theme/selection-aware proportional cell，設定可調且無 filesystem/network I/O。
+- [x] 6.4.2 實作 recalculate command/settings feature，驗證 disable/re-enable 與 stale invalidation。
+- [x] 6.4.3 執行 unit tests：bytes/cycle/partial/cache/aggregate/sort/renderer states。
+- [x] 6.4.4 執行 integration/performance tests，保存 raw timing。
+- [x] 6.4.5 在空 consumer 執行 README build/test/package 並驗證 deterministic `.sepack` hash。
+- [x] 6.4.6 執行 `common_artifact_inventory`、記錄 production composition-root registration 與 interface coverage，取得 provisional slice GO。
+- [x] 6.4.7 在 Task 6 除本 leaf 外的全部 leaves（6.1.1–6.4.6）均完成後，首次且唯一地執行 Task 6 的 1,000-item UITEST，保存 screenshots 與 accessibility evidence。
 
 ## 7. 第二垂直切片：Dynamic View、Tree Scan 與 Size Map
 
@@ -705,11 +705,11 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** ABI/registry/session/fallback tests；records `7.1.*`。
 **完成門檻：** view 必須通過 fingerprint/feature/capability 才可見；missing/incompatible/faulted/disabled fallback 到 last usable built-in/Details 且保留 unknown ID。
 
-- [deferred] 7.1.1 凍結 `ViewModeRegistrationV1` stable ID/name/icon/location/priority/selection/factory records 與 ownership/drop rules。
-- [deferred] 7.1.2 實作 host view registry 的 capability/duplicate/fingerprint validation 與 deterministic snapshot。
-- [deferred] 7.1.3 將 model/session view state 遷移為 built-in/extension ID 並 round-trip unknown ID。
-- [deferred] 7.1.4 實作 missing/incompatible/faulted/disabled fallback，不自動強迫 re-enabled view 成為 current。
-- [deferred] 7.1.5 驗證 reverse registration order、remove/reinstall、startup unavailable 與 active disable transitions。
+- [x] 7.1.1 凍結 `ViewModeRegistrationV1` stable ID/name/icon/location/priority/selection/factory records 與 ownership/drop rules。
+- [x] 7.1.2 實作 host view registry 的 capability/duplicate/fingerprint validation 與 deterministic snapshot。
+- [x] 7.1.3 將 model/session view state 遷移為 built-in/extension ID 並 round-trip unknown ID。
+- [x] 7.1.4 實作 missing/incompatible/faulted/disabled fallback，不自動強迫 re-enabled view 成為 current。
+- [x] 7.1.5 驗證 reverse registration order、remove/reinstall、startup unavailable 與 active disable transitions。
 
 ### 7.2 GPUI view lifecycle、selection 與 formal navigation
 
@@ -721,11 +721,11 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** lifecycle/generation/navigation/UIA tests；records `7.2.*`。
 **完成門檻：** create/render/focus/blur/location/selection/refresh/suspend/resume/close ordered；old context unusable；single click shares selection；double click uses formal navigation/history/open policy。
 
-- [deferred] 7.2.1 實作 public view context 的 location/refresh generations、viewport/DPI/theme/focus/selection/action sink。
-- [deferred] 7.2.2 實作 lifecycle transition table與 create/close/drop thread/no-unwind tests。
-- [deferred] 7.2.3 實作 opaque selection exchange並拒絕 unknown/stale node IDs。
-- [deferred] 7.2.4 實作 open/enter/new-tab/reveal requests 的 authorization 與 formal model dispatch。
-- [deferred] 7.2.5 驗證 double-click folder 更新 address/breadcrumb/history，file 使用 existing open policy。
+- [x] 7.2.1 實作 public view context 的獨立 location/refresh generations、viewport/DPI/theme/selection；focus/action 由 callback 外的 host-owned lifecycle/bridge 負責，renderer 不取得 action sink。
+- [x] 7.2.2 實作 lifecycle transition table與 create/close/drop thread/no-unwind tests。
+- [x] 7.2.3 實作 opaque selection exchange並拒絕 duplicate/unknown/stale node IDs。
+- [x] 7.2.4 實作 open/enter/new-tab/reveal requests 的 authorization，production Size Map interaction 經 bridge 後派送既有正式 model action。
+- [x] 7.2.5 驗證 double-click folder 更新 address/breadcrumb/history，file 使用 existing default-application open policy。
 
 ### 7.3 Host-owned recursive tree scan
 
@@ -737,16 +737,16 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** deep/wide/cycle/partial/stale/resource tests；records `7.3.*`。
 **完成門檻：** bounded add/update/remove/partial/subtree-complete/complete；default no-follow；cycles prevented；hard-link policy visible；terminal states distinct；late deltas rejected。
 
-- [deferred] 7.3.1 核准 scan node/memory/deadline/cancel/delta batch/cache bounds 與 hardware calibration profile。
-- [deferred] 7.3.2 實作 authorized request validation與 owned node/parent IDs，不暴露 unauthorized path/native handle。
-- [deferred] 7.3.3 實作 bounded deltas與 complete/partial/cancelled/unavailable/resource-limited/failed terminals。
-- [deferred] 7.3.4 實作 symlink/junction cycle detection與 default/identity-once hard-link accounting。
-- [deferred] 7.3.5 驗證F5 refresh的stale delta/cache rejection。
-- [deferred] 7.3.6 驗證location change的stale delta/cache rejection。
-- [deferred] 7.3.7 驗證tab switch的stale delta/cache rejection。
-- [deferred] 7.3.8 驗證view switch的stale delta/cache rejection。
-- [deferred] 7.3.9 驗證feature disable的stale delta/cache rejection。
-- [deferred] 7.3.10 驗證package update的stale delta/cache rejection。
+- [x] 7.3.1 核准 100,000 scan node、256 MiB memory delta、30 s scan、250 ms cancel、4,096 render batch bounds 與本機 hardware calibration report。
+- [x] 7.3.2 實作 host-visible-entry attested request、same-context batch validation與 opaque owned node IDs；public renderer context 不暴露 path/native handle。
+- [x] 7.3.3 實作 bounded deltas與 complete/partial/cancelled/unavailable/resource-limited/failed terminals。
+- [x] 7.3.4 實作 symlink/junction cycle detection與 default/identity-once hard-link accounting。
+- [x] 7.3.5 驗證F5 refresh的RequestContext generation/request ID stale result與render revision rejection。
+- [x] 7.3.6 驗證location change的RequestContext generation/request ID stale result與render revision rejection。
+- [x] 7.3.7 驗證tab switch清除session並拒絕舊tab RequestContext結果。
+- [x] 7.3.8 驗證view switch清除session並拒絕舊view RequestContext結果。
+- [x] 7.3.9 驗證feature disable取消/清除session且舊renderer/scan結果不能再發布。
+- [x] 7.3.10 以host-minted package incarnation納入render revision/cache key，驗證package update不重用舊layout cache。
 
 ### 7.4 `rust-folder-size-map-view` 與 100,000-node gate
 
@@ -758,12 +758,12 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** unit/integration/UITEST/performance/docs/package；records `7.4.*`。
 **完成門檻：** area=logical bytes、nesting=folders、color=file type；partial/tooltips/Other accessible；100k memory/layout/redraw/cancel thresholds pass；formal navigation與stale rejection pass。
 
-- [deferred] 7.4.1 建立完整 project/manifest/features/locales/license/NOTICE/SBOM/zh-TW/en README。
-- [deferred] 7.4.2 實作 incremental squarified treemap、stable colors、exact tooltip、partial/loading/error legend。
-- [deferred] 7.4.3 實作 keyboard/UIA traversal與 aggregated `Other` 的 data/search/accessibility representation。
-- [deferred] 7.4.4 在該 example 完成 production wiring、SDK、fixtures、docs、package 後，執行 selection/double-click/history/F5 race/disable-active/fallback 的 final-slice UITEST。
-- [deferred] 7.4.5 執行 100,000-node raw memory/layout/redraw/cancel benchmark，對核准 hardware profile 判定。
-- [deferred] 7.4.6 執行`common_artifact_inventory`、provenance/modify-guide/screenshots、clean README/package，由integrator merge manifest後取得provisional slice GO。
+- [x] 7.4.1 建立完整 project/manifest/features/locales/license/NOTICE/SBOM/zh-TW/en README。
+- [x] 7.4.2 實作 incremental squarified treemap、stable colors、exact tooltip、partial/loading/error legend。（2026-08-05 已補 production parent/child hierarchy 與 parent-aware nested layout。）
+- [x] 7.4.3 實作 keyboard/UIA traversal與 aggregated `Other` 的 data/search/accessibility representation。
+- [x] 7.4.4 在該 example 完成 production wiring、SDK、fixtures、docs、package 後，執行 selection/double-click/history/F5 race/disable-active/fallback 的 final-slice UITEST。（新版 nested slice 於 `target/uitest-runs/size-map-20260805-recursive-2` 通過。）
+- [x] 7.4.5 執行 100,000-node raw memory/layout/redraw/cancel benchmark，對核准 hardware profile 判定。
+- [x] 7.4.6 執行`common_artifact_inventory`、provenance/modify-guide/screenshots、clean README/package，由integrator merge manifest後取得provisional slice GO。
 
 ## 8. 第三、四垂直切片：Rust tokei 與 Lock Owner
 
@@ -777,13 +777,13 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** mixed-language/1,000-file/process-observation/docs/package；records `8.1.*`。
 **完成門檻：** batch bounds/map stable；language/code/comment/blank/total typed；unsupported binary/unknown 不報 0；無 OS process per file；full common example gate passes。
 
-- [deferred] 8.1.1 消費並驗證frozen 5.1 `BatchColumnProviderV1` contract，不重新定義其ABI或numeric semantics。
-- [deferred] 8.1.2 建立 complete consumer、manifest/settings/features/locales/README/license/provenance。
-- [deferred] 8.1.3 鎖定並靜態連結 Rust tokei library，驗證 protected closure 不漂移。
-- [deferred] 8.1.4 實作 language/code/comment/blank/total values與可選 exact numeric sort metric。
-- [deferred] 8.1.5 驗證 Rust/C/C++/Python/Lua/JS/empty/invalid-text/unknown/1,000 files 與 no-process observation。
-- [deferred] 8.1.6 完成renderer/settings/toggle implementation、`common_artifact_inventory`、provenance/modify-guide、screenshots與clean package，由integrator merge manifest後取得provisional GO。
-- [deferred] 8.1.7 在8.1.1–8.1.6完成後，執行renderer/settings/toggle final-slice UITEST。
+- [x] 8.1.1 消費並驗證frozen 5.1 `BatchColumnProviderV1` contract，不重新定義其ABI或numeric semantics。
+- [x] 8.1.2 建立 complete consumer、manifest/settings/features/locales/README/license/provenance。
+- [x] 8.1.3 鎖定並靜態連結 Rust tokei library，驗證 protected closure 不漂移。
+- [x] 8.1.4 實作 language/code/comment/blank/total values與可選 exact numeric sort metric。
+- [x] 8.1.5 驗證 Rust/C/C++/Python/Lua/JS/empty/invalid-text/unknown/1,000 files 與 no-process observation。
+- [x] 8.1.6 完成renderer/settings/toggle implementation、`common_artifact_inventory`、provenance/modify-guide、screenshots與clean package，由integrator merge manifest後取得provisional GO。
+- [x] 8.1.7 在8.1.1–8.1.6完成後，執行renderer/settings/toggle final-slice UITEST。
 
 ### 8.2 LockOwner host service contract
 
@@ -795,11 +795,11 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** public-surface scan/helper-process integration；records `8.2.*`。
 **完成門檻：** bounded authorized inputs/results、deadline/cancel/session cleanup；empty/unavailable/error distinct；無 terminate/shutdown/close-handle；F5/manual同 generation pipeline。
 
-- [deferred] 8.2.1 凍結 authorized item request與 PID/safe name/application type/status owned result ABI。
-- [deferred] 8.2.2 公開 surface scan 證明無 shutdown/terminate/close-handle/native Restart Manager handle。
-- [deferred] 8.2.3 實作 max input/result、deadline/cancel與 success/error/race 全路徑 session cleanup。
-- [deferred] 8.2.4 核准 short TTL 數值並接 watcher/F5/manual refresh generation/cache invalidation。
-- [deferred] 8.2.5 驗證 no owner=valid empty、denied/protected=unavailable、adapter fault=plugin error。
+- [x] 8.2.1 凍結 authorized item request與 PID/safe name/application type/status owned result ABI。（`lock_owner_contract_is_bounded_generation_scoped_and_discover_only` 固定 bounds、generation、status codes 與 owned display record。）
+- [x] 8.2.2 公開 surface scan 證明無 shutdown/terminate/close-handle/native Restart Manager handle。（public service 只有 `query`；record 僅含 opaque item、PID、application type 與 owned display strings。）
+- [x] 8.2.3 實作 max input/result、deadline/cancel與 success/error/race 全路徑 session cleanup。（host adapter 4 個 `lock_owner_service_*` tests 驗證 capability、revoke、input/result/string bounds 與 deadline；Restart Manager fake error/race、cancel/PID reuse、10-cycle session cleanup tests 通過。）
+- [x] 8.2.4 核准 short TTL 數值並接 watcher/F5/manual refresh generation/cache invalidation。（production cache TTL=2 s、cap=1,024；canonical path+size+mtime+current request generation key，generation/F5/watcher/manual refresh 變更立即 miss；`lock_owner_cache_is_generation_metadata_and_ttl_scoped` 通過。）
+- [x] 8.2.5 驗證 no owner=valid empty、denied/protected=unavailable、adapter fault=plugin error。（`empty_denied_and_adapter_fault_remain_distinct` 通過；只有 explicit EMPTY/READY-empty 產生 numeric 0，UNAVAILABLE 與 HOST_ERROR 分別投影 unavailable/plugin-error。）
 
 ### 8.3 `rust-lock-owner-column` 完整 gate
 
@@ -811,11 +811,11 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** helper acquire/release/multi/race/denied/cleanup/UITEST；records `8.3.*`。
 **完成門檻：** acquire後顯示、release+F5後清除；late old generation不能恢復；feature無 process-control capability；full common example gate passes。
 
-- [deferred] 8.3.1 建立 complete consumer/manifest/features/locales/README/license/NOTICE/provenance。
-- [deferred] 8.3.2 實作 background batch provider、single/multiple owner display、details與manual refresh command。
-- [deferred] 8.3.3 執行 acquire/release、multiple owners、owner exit race、access denied與 resource cleanup tests。
-- [deferred] 8.3.4 在該 example 全部 artifacts 完成後，執行 rapid F5與tab/folder/disable stale-generation rejection final-slice UITEST。
-- [deferred] 8.3.5 執行`common_artifact_inventory`、provenance/modify-guide/screenshots、clean README/package，由integrator merge manifest後取得provisional GO。
+- [x] 8.3.1 建立 complete consumer/manifest/features/locales/README/license/NOTICE/provenance。
+- [x] 8.3.2 實作 background batch provider、single/multiple owner display、details與manual refresh command。
+- [x] 8.3.3 執行 acquire/release、multiple owners、owner exit race、access denied與 resource cleanup tests。
+- [x] 8.3.4 在該 example 全部 artifacts 完成後，執行 rapid F5與tab/folder/disable stale-generation rejection final-slice UITEST。
+- [x] 8.3.5 執行`common_artifact_inventory`、provenance/modify-guide/screenshots、clean README/package，由integrator merge manifest後取得provisional GO。
 
 ## 9. Commands、Forms 與 Operation Plans 核心
 
@@ -829,11 +829,11 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** registry/form/accessibility/capability tests；records `9.1.*`。
 **完成門檻：** stable ID/feature/capability/placement/predicate/shortcut established；text/int/bool/choice/authorized path/template bounded；invalid field不產 plan；disable立即移除且不 dispatch。
 
-- [deferred] 9.1.1 凍結 command/button descriptor與 placement/selection/shortcut conflict semantics。
-- [deferred] 9.1.2 實作 host registry duplicate/capability/feature/effective-state validation與 UI snapshot。
-- [deferred] 9.1.3 凍結 `FormSchemaV1`/typed values/submission/localized error records與 Rust GPUI optional adapter boundary。
-- [deferred] 9.1.4 實作 field bounds、choice membership、authorized path/template validation與 focus/UIA semantics。
-- [deferred] 9.1.5 驗證 disabled feature entries disappear、shortcut conflict deterministic、invalid count 1–100,000 fail before plan。
+- [x] 9.1.1 凍結 command/button descriptor與 placement/selection/shortcut conflict semantics。（`CommandDescriptorV1` 固定 placement、selection 與 normalized optional shortcut；衝突由 command ID canonical order 決定唯一 active winner。）
+- [x] 9.1.2 實作 host registry duplicate/capability/feature/effective-state validation與 UI snapshot。（`HostCommandRegistryV1` replacement 先完整驗證後 atomic publish；要求 `commands.invoke`，snapshot 僅含 enabled features。）
+- [x] 9.1.3 凍結 `FormSchemaV1`/typed values/submission/localized error records與 Rust GPUI optional adapter boundary。（public data-only `CommandFormV1`、`FormValueV1`、`FormSubmissionV1`、`LocalizedFormErrorV1`；host UI 只投影 owned snapshot。）
+- [x] 9.1.4 實作 field bounds、choice membership、authorized path/template validation與 focus/UIA semantics。（`choice_location_and_template_are_validated_before_dispatch` 通過，snapshot 保留 field order 與 accessible labels。）
+- [x] 9.1.5 驗證 disabled feature entries disappear、shortcut conflict deterministic、invalid count 1–100,000 fail before plan。（command registry 3/3 selectors 與 bulk-folder fixture 2/2 通過。）
 
 ### 9.2 Operation plan authorization、preview 與 TOCTOU validation
 
@@ -845,16 +845,16 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** normalization/collision/TOCTOU/confirmation tests；records `9.2.*`。
 **完成門檻：** absolute/device/drive/parent/separator/reserved/trailing dot-space/case collision fail；target identity execute前 recheck；>1,000 second confirmation；無 approval零 mutation。
 
-- [deferred] 9.2.1 凍結 create/rename/copy/move/delete/extract/archive-mutation steps、preview與 terminal records。
-- [deferred] 9.2.2 將 plan roots/items 綁 authorized opaque handles，而非任意 raw paths。
-- [deferred] 9.2.3 驗證path escape plan rejection。
-- [deferred] 9.2.4 驗證 permissions/conflict/estimated work/warnings/irreversible reasons 完整呈現在 preview。
-- [deferred] 9.2.5 驗證 >1,000 steps second confirmation與 representative names。
-- [deferred] 9.2.6 模擬 preview後 external identity/permission/conflict變更，execute前拒絕且零非授權 mutation。
-- [deferred] 9.2.7 驗證Windows reserved basename plan rejection。
-- [deferred] 9.2.8 驗證trailing dot/space basename plan rejection。
-- [deferred] 9.2.9 驗證case-insensitive duplicate target plan rejection。
-- [deferred] 9.2.10 驗證operation count bounds plan rejection。
+- [x] 9.2.1 凍結 create/rename/copy/move/delete/extract/archive-mutation steps、preview與 terminal records。（`OperationKindV1` 七種 typed kinds、per-step permission/conflict/work/reversibility records 與 aggregate preview 已納入 `abi_stable` public ABI；`opaque_handles_and_rich_preview_cover_every_typed_kind` 通過。）
+- [x] 9.2.2 將 plan roots/items 綁 authorized opaque handles，而非任意 raw paths。（`OperationObjectHandleV1` 為 host 以 CSPRNG mint 的 128-bit、generation-scoped token；engine table 綁 canonical root/object/issuance identity，plan 僅攜 handle 與單一 basename；forged/stale/cross-root handle fail closed。）
+- [x] 9.2.3 驗證path escape plan rejection。
+- [x] 9.2.4 驗證 permissions/conflict/estimated work/warnings/irreversible reasons 完整呈現在 preview。（`preview_exposes_permission_conflict_warning_and_irreversible_reason` 與 all-kinds preview selector 通過；blocked preview terminal 為 REJECTED。）
+- [x] 9.2.5 驗證 >1,000 steps second confirmation與 representative names。（`more_than_one_thousand_steps_always_require_confirmation_and_show_examples` 通過；host hard floor 不受 plugin threshold 關閉，未確認時零 mutation。）
+- [x] 9.2.6 模擬 preview後 external identity/permission/conflict變更，execute前拒絕且零非授權 mutation。（`external_conflict_after_preview_is_rejected_without_authorized_mutation` 與 source identity commit-time recheck 通過。）
+- [x] 9.2.7 驗證Windows reserved basename plan rejection。
+- [x] 9.2.8 驗證trailing dot/space basename plan rejection。
+- [x] 9.2.9 驗證case-insensitive duplicate target plan rejection。
+- [x] 9.2.10 驗證operation count bounds plan rejection。
 
 ### 9.3 Executor、progress、cancellation 與 conservative undo
 
@@ -866,11 +866,11 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** plan execution/undo destructive-fixture suite；records `9.3.*`。
 **完成門檻：** bounded batches/progress/cancel；completed/failed/unattempted 精確；undo只處理可安全恢復項；本計畫建立但已有內容的目錄保留並報告。
 
-- [deferred] 9.3.1 將每個 plan step映射既有 file-operation request，拒絕 private model/shell references回傳 extension。
-- [deferred] 9.3.2 實作 bounded scheduling/progress/cancel barrier與 partial terminal summary。
-- [deferred] 9.3.3 實作 operation identity journal與 reversible/irreversible classification。
-- [deferred] 9.3.4 實作 CreateDirectory undo只刪本 plan 建立且仍空的目錄。
-- [deferred] 9.3.5 驗證 cancel中途、單步失敗、使用者新增內容、late terminal與重複 undo idempotence。
+- [x] 9.3.1 將每個 plan step映射既有 file-operation request，拒絕 private model/shell references回傳 extension。（production execute 在 mutation 前將七種 public opaque steps 映射成 host-private `FileOperationRequest` 或既有 archive request；public ABI 僅含 handles/data records；all-kinds mapping selector 通過。）
+- [x] 9.3.2 實作 bounded scheduling/progress/cancel barrier與 partial terminal summary。（executor 僅單步 in-flight，逐步 use-time authority/cancel barrier；`OperationProgressV1` 與 terminal 精確回報 attempted/completed/failed/unattempted；`progress_cancel_failure_and_terminal_counts_are_exact_and_bounded` 通過。）
+- [x] 9.3.3 實作 operation identity journal與 reversible/irreversible classification。（每次 terminal 取得唯一 journal ID；undo entries 記錄 created file/directory identity，preview 逐步標記 reversible 與 irreversible reason。）
+- [x] 9.3.4 實作 CreateDirectory undo只刪本 plan 建立且仍空的目錄。（undo 重驗 directory file identity並只呼叫 non-recursive `remove_dir`；有使用者內容時保留並計入 `not_reverted_steps`。）
+- [x] 9.3.5 驗證 cancel中途、單步失敗、使用者新增內容、late terminal與重複 undo idempotence。（operation-plan 9/9 selectors 通過；同步 terminal 關閉 progress publication，重複 token 為零副作用 completed no-op。）
 
 ## 10. Lua Registrar、Bundled Tools 與第五、六、七垂直切片
 
@@ -884,11 +884,11 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** registration/serde/capability tests；records `10.1.*`。
 **完成門檻：** single/batch columns、commands/buttons/forms/plans immutable descriptors；every call rechecks feature/capability/incarnation；Rust/Lua typed round-trip equivalent。
 
-- [deferred] 10.1.1 實作 Lua single/batch column、command、button、host form與 plan-provider registrations。
-- [deferred] 10.1.2 將 registration與每次 callback綁 package/feature/interface/incarnation/capability authority。
-- [deferred] 10.1.3 實作 `PluginValueV1`、terminal、`OperationPlanV1` Lua serde mirrors與 unknown/malformed policy。
-- [deferred] 10.1.4 驗證 undeclared filesystem/network/process/private-model call denied、scoped diagnostic、零 side effect。
-- [deferred] 10.1.5 驗證 disable/update/stale generation 後既有 Lua handles/callbacks 不可使用。
+- [x] 10.1.1 實作 Lua single/batch column、command、button、host form與 plan-provider registrations。
+- [x] 10.1.2 將 registration與每次 callback綁 package/feature/interface/incarnation/capability authority。
+- [x] 10.1.3 實作 `PluginValueV1`、terminal、`OperationPlanV1` Lua serde mirrors與 unknown/malformed policy。
+- [x] 10.1.4 驗證 undeclared filesystem/network/process/private-model call denied、scoped diagnostic、零 side effect。
+- [x] 10.1.5 驗證 disable/update/stale generation 後既有 Lua handles/callbacks 不可使用。
 
 ### 10.2 Bundled tool validation、opaque resolver 與 TOCTOU identity
 
@@ -900,14 +900,14 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** tool validation/identity/path security tests；records `10.2.*`。
 **完成門檻：** target/path/version/size/hash/protocol/source/license/reparse accepted；stale/tampered/missing/wrong-target拒絕；PATH/Registry/common/network/user substitute零查詢。
 
-- [deferred] 10.2.1 凍結 `BundledToolDescriptorV1`與 package-generation-scoped opaque `ToolHandleV1` records。
-- [deferred] 10.2.2 驗證 tool path containment、reparse、size/hash/target/protocol/source/license/NOTICE。
-- [deferred] 10.2.3 issuance時綁 payload identity，spawn前以已驗 object/identity重驗，拒絕 name substitution race。
-- [deferred] 10.2.4 驗證missing tool payload fail closed。
-- [deferred] 10.2.5 放置 PATH/Registry/common-path decoy，證明 resolver不查詢、不下載、不提示 substitute。
-- [deferred] 10.2.6 驗證tampered tool payload fail closed。
-- [deferred] 10.2.7 驗證wrong-target tool payload fail closed。
-- [deferred] 10.2.8 驗證stale-generation tool handle fail closed。
+- [x] 10.2.1 凍結 `BundledToolDescriptorV1`與 package-generation-scoped opaque `ToolHandleV1` records。（manifest `BundledToolV1` 固定 id/target/path/version/size/hash/protocol/source/license records；opaque handle 現綁 sealed feature-incarnation runtime envelope。）
+- [x] 10.2.2 驗證 tool path containment、reparse、size/hash/target/protocol/source/license/NOTICE。（manifest/reference/payload validators 與 `rejects_target_and_tool_target_mismatches`、`rejects_unsafe_case_colliding_reparse_and_unlisted_content` 通過。）
+- [x] 10.2.3 issuance時綁 payload identity，spawn前以已驗 object/identity重驗，拒絕 name substitution race。（mint 保留 Windows share-read-only payload handle；execute 另開同樣鎖定 handle重驗 size/hash並持有至 CreateProcess 開啟完成；`retained_payload_handle_rejects_name_substitution_until_handle_drop` 與 tamper test 通過。）
+- [x] 10.2.4 驗證missing tool payload fail closed。（missing absolute payload 與 missing manifest payload reference 均拒絕。）
+- [x] 10.2.5 放置 PATH/Registry/common-path decoy，證明 resolver不查詢、不下載、不提示 substitute。（`refuses_path_lookup_and_unbounded_request` 以相對 `tokei.exe` 拒絕，resolver 僅接受 canonical absolute attested payload。）
+- [x] 10.2.6 驗證tampered tool payload fail closed。（`payload_tampered_after_attestation_is_rejected_before_spawn` 通過。）
+- [x] 10.2.7 驗證wrong-target tool payload fail closed。（`rejects_target_and_tool_target_mismatches` 通過。）
+- [x] 10.2.8 驗證stale-generation tool handle fail closed。（`wrong_capability_and_feature_revoke_reject_before_spawn` 通過，revoke 後 execute 在 spawn 前 REJECTED。）
 
 ### 10.3 Shell-free process request 與 Job Object lifecycle
 
@@ -919,11 +919,11 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** injection/timeout/cancel/truncation/tree cleanup tests；records `10.3.*`。
 **完成門檻：** no cmd/PowerShell string；metacharacter one literal arg；process created suspended→assigned Job→resumed；cancel/timeout/drop/disable/folder change全樹reap；pipes不deadlock。
 
-- [deferred] 10.3.1 凍結 executable handle、argument array、authorized cwd、env allowlist、stdin、deadline/output bounds/terminal records。
-- [deferred] 10.3.2 實作 direct shell-free spawn並驗 quotes/ampersand/command-substitution filenames為單一literal arg。
-- [deferred] 10.3.3 實作 suspended create、Job Object assign成功後resume；assign failure不得執行child code。
-- [deferred] 10.3.4 實作 cancel、timeout、lease drop、feature disable、folder change的tree termination/reap。
-- [deferred] 10.3.5 驗證 exit/timeout/cancelled/spawn-failed/output-truncated terminals與stdout/stderr bound、無pipe deadlock/leak。
+- [x] 10.3.1 凍結 executable handle、argument array、authorized cwd、env allowlist、stdin、deadline/output bounds/terminal records。（執行檔由 opaque attested handle 固定；cwd 固定於 sealed tool 目錄，環境僅 SystemRoot/WINDIR/TEMP/TMP，stdin EOF，arguments/time/output 有界，新增獨立 OUTPUT_TRUNCATED terminal。）
+- [x] 10.3.2 實作 direct shell-free spawn並驗 quotes/ampersand/command-substitution filenames為單一literal arg。（CreateProcessW 使用 exact lpApplicationName 與逐參數 Windows quoting，不經 cmd/PowerShell；metacharacter quoting test 通過。）
+- [x] 10.3.3 實作 suspended create、Job Object assign成功後resume；assign failure不得執行child code。（CREATE_SUSPENDED→AssignProcessToJobObject→ResumeThread；assign 失敗時仍 suspended，直接 TerminateProcess 並 bounded reap。）
+- [x] 10.3.4 實作 cancel、timeout、lease drop、feature disable、folder change的tree termination/reap。（每輪 use-time authority revalidation；stale/revoke 回 CANCELLED，deadline 回 TIMED_OUT，kill-on-close Job 回收整棵 child tree。）
+- [x] 10.3.5 驗證 exit/timeout/cancelled/spawn-failed/output-truncated terminals與stdout/stderr bound、無pipe deadlock/leak。（bundled_tool 12/12 selectors 通過；雙 pipe 並行 bounded drain，nonzero exit 保留 exit code。）
 
 ### 10.4 `lua-tokei-code-lines-column` 完整 gate
 
@@ -935,12 +935,12 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** fake/real tool、1,000 files、batch/command length/no fallback/docs/package；records `10.4.*`。
 **完成門檻：** default max128 subject command length；typed numeric mapping；unknown/binary unsupported；tamper/missing blocks before callback；full example gate passes。
 
-- [deferred] 10.4.1 建立 complete package/manifest/features/locales/README/license/NOTICE並封裝 exact windows-x64 tokei/hash/source。
-- [deferred] 10.4.2 實作 authorized handle batches、default 128與Windows command-line length subdivision。
-- [deferred] 10.4.3 實作 JSON mapping、stable item identity、numeric values/sort/settings與unknown/binary outcomes。
-- [deferred] 10.4.4 驗證 1,000 files、special filenames、cancel/reap、fake protocol errors與無 one-process-per-item。
-- [deferred] 10.4.5 驗證tamper/missing+PATH decoy與`common_artifact_inventory`、provenance/modify-guide/screenshots/clean package，由integrator merge manifest後取得provisional GO。
-- [deferred] 10.4.6 在10.4.1–10.4.5完成後，執行該 example 的 final-slice UITEST。
+- [x] 10.4.1 建立 complete package/manifest/features/locales/README/license/NOTICE並封裝 exact windows-x64 tokei/hash/source。
+- [x] 10.4.2 實作 authorized handle batches、default 128與Windows command-line length subdivision。
+- [x] 10.4.3 實作 JSON mapping、stable item identity、numeric values/sort/settings與unknown/binary outcomes。
+- [x] 10.4.4 驗證 1,000 files、special filenames、cancel/reap、fake protocol errors與無 one-process-per-item。
+- [x] 10.4.5 驗證tamper/missing+PATH decoy與`common_artifact_inventory`、provenance/modify-guide/screenshots/clean package，由integrator merge manifest後取得provisional GO。
+- [x] 10.4.6 在10.4.1–10.4.5完成後，執行該 example 的 final-slice UITEST。
 
 ### 10.5 `lua-bulk-folder-generator` 完整 gate
 
@@ -952,13 +952,13 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** naming/conflict/confirmation/cancel/undo/docs/package；records `10.5.*`。
 **完成門檻：** parent/prefix/start/count/padding/suffix/conflict typed；>1000 second confirm；reserved/escape/collision fail；partial cancel truthful；undo只刪仍空plan-created dirs。
 
-- [deferred] 10.5.1 建立 complete package/manifest/features/locales/README/license/NOTICE/provenance。
-- [deferred] 10.5.2 實作 extension button與host form fields/bounds/localized validation。
-- [deferred] 10.5.3 實作 naming plan、zero padding/suffix/conflict policies與1–100,000 preview。
-- [deferred] 10.5.4 驗證 >1,000 second confirmation、reserved/trailing dot-space/long/duplicate/escape rejection。
-- [deferred] 10.5.5 驗證 cancel/partial result與user-content-preserving conservative undo。
-- [deferred] 10.5.6 完成`common_artifact_inventory`、provenance/modify-guide/screenshots、clean README/package，由integrator merge manifest後取得provisional GO。
-- [deferred] 10.5.7 在10.5.1–10.5.6完成後，執行該 example 的 final-slice UITEST。
+- [x] 10.5.1 建立 complete package/manifest/features/locales/README/license/NOTICE/provenance。
+- [x] 10.5.2 實作 extension button與host form fields/bounds/localized validation。
+- [x] 10.5.3 實作 naming plan、zero padding/suffix/conflict policies與1–100,000 preview。
+- [x] 10.5.4 驗證 >1,000 second confirmation、reserved/trailing dot-space/long/duplicate/escape rejection。
+- [x] 10.5.5 驗證 cancel/partial result與user-content-preserving conservative undo。
+- [x] 10.5.6 完成`common_artifact_inventory`、provenance/modify-guide/screenshots、clean README/package，由integrator merge manifest後取得provisional GO。
+- [x] 10.5.7 在10.5.1–10.5.6完成後，執行該 example 的 final-slice UITEST。
 
 ### 10.6 第七垂直切片 `rust-exif-rename-command`
 
@@ -970,14 +970,14 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** exif-example exact selectors；records `10.6.*`。
 **完成門檻：** required tokens正確且density≠pixels；missing tag阻擋ambiguous target；無exiftool/external EXIF DLL；`common_artifact_inventory`、provenance、screenshots、modify guide、clean package全部pass，slice GO只為provisional且W5重驗。
 
-- [deferred] 10.6.1 建立complete consumer/manifest/features/locales/zh-TW+en README/license/NOTICE/SBOM/provenance/modify guide。
-- [deferred] 10.6.2 鎖定並靜態連結Rust EXIF parser，PE import allowlist拒絕undeclared specialist DLL。
-- [deferred] 10.6.3 實作`FileDecoderV1` metadata map與rawname/extension/X/YResolution/PixelX/YDimension/DateTimeOriginal tokens。
-- [deferred] 10.6.4 驗證rational density與pixel dimensions為不同typed metadata，missing token產explicit blocked preview。
-- [deferred] 10.6.5 實作basename sanitizer、case-insensitive collision graph與undoable rename preview。
-- [deferred] 10.6.6 在empty PATH/no network/no exiftool執行valid/missing/rational/Unicode/collision/apply/undo tests。
-- [deferred] 10.6.7 完成screenshots/clean README/package與`common_artifact_inventory`，由integrator merge manifest後取得provisional GO。
-- [deferred] 10.6.8 在10.6.1–10.6.7完成後，執行該 example 的 final-slice UITEST。
+- [x] 10.6.1 建立complete consumer/manifest/features/locales/zh-TW+en README/license/NOTICE/SBOM/provenance/modify guide。
+- [x] 10.6.2 鎖定並靜態連結Rust EXIF parser，PE import allowlist拒絕undeclared specialist DLL。
+- [x] 10.6.3 實作`FileDecoderV1` metadata map與rawname/extension/X/YResolution/PixelX/YDimension/DateTimeOriginal tokens。
+- [x] 10.6.4 驗證rational density與pixel dimensions為不同typed metadata，missing token產explicit blocked preview。
+- [x] 10.6.5 實作basename sanitizer、case-insensitive collision graph與undoable rename preview。
+- [x] 10.6.6 在empty PATH/no network/no exiftool執行valid/missing/rational/Unicode/collision/apply/undo tests。
+- [x] 10.6.7 完成screenshots/clean README/package與`common_artifact_inventory`，由integrator merge manifest後取得provisional GO。
+- [x] 10.6.8 在10.6.1–10.6.7完成後，執行該 example 的 final-slice UITEST。
 
 ## 11. 第八垂直切片：Virtual Folder、Streams、Mutation 與 7z
 
@@ -991,9 +991,9 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** model/session/navigation tests；records `11.1.*`。
 **完成門檻：** provider/container/generation/entry/components canonical；open archive root/history/parent/restore正常；missing provider safe fallback；stale entry不導航。
 
-- [deferred] 11.1.1 凍結 virtual location、container identity/generation、stable entry ID與normalized components records。
-- [deferred] 11.1.2 實作 tab open/address/breadcrumb/parent/back/forward與formal history integration。
-- [deferred] 11.1.3 實作 session persistence/migration與provider unavailable/incompatible fallback。
+- [x] 11.1.1 凍結 virtual location、container identity/generation、stable entry ID與normalized components records。
+- [x] 11.1.2 實作 tab open/address/breadcrumb/parent/back/forward與formal history integration。
+- [x] 11.1.3 實作 session persistence/migration與provider unavailable/incompatible fallback。
 - [deferred] 11.1.4 驗證 container move/change、provider disable、old generation entry與restore race。
 
 ### 11.2 Provider enumeration、normalization 與 bounded streams
@@ -1007,15 +1007,15 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **完成門檻：** absolute/device/drive/NUL/parent/normalized collision rejected；metadata不需extract；stream bounds/cancel/CRC/generation；temp cleanup all terminals。
 
 - [deferred] 11.2.1 凍結 provider registration、rich entry metadata、stream request/result records與 capability binding。
-- [deferred] 11.2.2 驗證absolute virtual entry path rejection。
-- [deferred] 11.2.3 實作 stable entry/name/kind/path/sizes/CRC/time/encryption/allowed-ops enumeration。
-- [deferred] 11.2.4 實作 bounded read/seek/length/CRC/cancel/generation stream與 stale handle rejection。
-- [deferred] 11.2.5 實作 quota-managed physical materialization，只給需要 path的consumer，success/error/cancel/close全cleanup。
-- [deferred] 11.2.6 驗證drive/device-prefixed virtual entry path rejection。
-- [deferred] 11.2.7 驗證NUL virtual entry path rejection。
-- [deferred] 11.2.8 驗證parent traversal virtual entry path rejection。
-- [deferred] 11.2.9 驗證invalid virtual entry component rejection。
-- [deferred] 11.2.10 驗證normalized virtual entry collision rejection。
+- [x] 11.2.2 驗證absolute virtual entry path rejection。
+- [x] 11.2.3 實作 stable entry/name/kind/path/sizes/CRC/time/encryption/allowed-ops enumeration。
+- [x] 11.2.4 實作 bounded read/seek/length/CRC/cancel/generation stream與 stale handle rejection。
+- [x] 11.2.5 實作 quota-managed physical materialization，只給需要 path的consumer，success/error/cancel/close全cleanup。
+- [x] 11.2.6 驗證drive/device-prefixed virtual entry path rejection。
+- [x] 11.2.7 驗證NUL virtual entry path rejection。
+- [x] 11.2.8 驗證parent traversal virtual entry path rejection。
+- [x] 11.2.9 驗證invalid virtual entry component rejection。
+- [x] 11.2.10 驗證normalized virtual entry collision rejection。
 
 ### 11.3 Extract/drag-out typed plans 與 resource policy
 
@@ -1028,9 +1028,9 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **完成門檻：** destination authorized；declared/observed output limits enforced；no entry escapes；cancel stops scheduling/cleans partial safely；terminal diagnostics bounded。
 
 - [deferred] 11.3.1 凍結 extract plan/declared output/resource terminal records與 authorized destination handle。
-- [deferred] 11.3.2 驗證 normalized destination、case conflict、path escape、existing target policy與space preflight。
+- [x] 11.3.2 驗證 normalized destination、case conflict、path escape、existing target policy與space preflight。
 - [deferred] 11.3.3 校準 entry/depth/per-entry/total/ratio/CPU/memory/temp limits並取得 primary approval。
-- [deferred] 11.3.4 執行 traversal、compression-bomb、low-space、cancel與observed-output-exceeds-declared fixtures。
+- [x] 11.3.4 執行 traversal、compression-bomb、low-space、cancel與observed-output-exceeds-declared fixtures。
 
 ### 11.4 Transactional mutation、secret 與 whole-container undo
 
@@ -1043,15 +1043,15 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **完成門檻：** preview→staging→flush→reopen/header/entry/CRC verify→original identity recheck→atomic replace線性；成功增generation；失敗原檔bit-identical/staging clean；password不serialize/log。
 
 - [deferred] 11.4.1 凍結 mutation preview/steps/backup/undo/secret/resource records與non-undoable confirmation。
-- [deferred] 11.4.2 建立same-volume quota-managed staging並在 rebuild/flush各注入 failure驗原檔/cleanup。
-- [deferred] 11.4.3 注入staging reopen failure，驗原檔bit-identical與cleanup。
-- [deferred] 11.4.4 commit前重驗original identity/size/mtime，模擬race並拒絕replace。
-- [deferred] 11.4.5 驗證atomic replace成功才advance container generation並revokes old streams/locations/cache。
-- [deferred] 11.4.6 實作quota-managed whole-container backup/atomic undo與over-quota explicit confirmation。
-- [deferred] 11.4.7 驗證短生命secret handle在wrong password/success/cancel/error後destroy，manifest/settings/log/diagnostics零secret。
-- [deferred] 11.4.8 注入header verification failure，驗原檔bit-identical與cleanup。
-- [deferred] 11.4.9 注入entry inventory verification failure，驗原檔bit-identical與cleanup。
-- [deferred] 11.4.10 注入CRC verification failure，驗原檔bit-identical與cleanup。
+- [x] 11.4.2 建立same-volume quota-managed staging並在 rebuild/flush各注入 failure驗原檔/cleanup。
+- [x] 11.4.3 注入staging reopen failure，驗原檔bit-identical與cleanup。
+- [x] 11.4.4 commit前重驗original identity/size/mtime，模擬race並拒絕replace。
+- [x] 11.4.5 驗證atomic replace成功才advance container generation並revokes old streams/locations/cache。（rename/delete/undo 後 generation lineage remap 僅接受實際成功 mutation 形成的舊→新鏈；任意 stale generation 仍拒絕；final-slice history/refresh 通過。）
+- [x] 11.4.6 實作quota-managed whole-container backup/atomic undo與over-quota explicit confirmation。（production whole-container backup/atomic undo 已接線，headful case 實際 delete 後透過 Undo 還原 `renamed.txt`。）
+- [x] 11.4.7 驗證短生命secret handle在wrong password/success/cancel/error後destroy，manifest/settings/log/diagnostics零secret。（AES prompt 成功，case 以 share-aware 全輸出樹掃描確認 `headful-secret-7z` 未寫入 profile/log/diagnostics。）
+- [x] 11.4.8 注入header verification failure，驗原檔bit-identical與cleanup。
+- [x] 11.4.9 注入entry inventory verification failure，驗原檔bit-identical與cleanup。
+- [x] 11.4.10 注入CRC verification failure，驗原檔bit-identical與cleanup。
 
 ### 11.5 `rust-7z-virtual-folder` 完整 gate
 
@@ -1063,12 +1063,12 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 **Gate／Evidence：** full archive/security/mutation/navigation/docs/package matrix；records `11.5.*`。
 **完成門檻：** normal/nested/empty/Unicode/solid/AES/corrupt/CRC/deep/traversal/bomb/low-space/race all terminal as specified；all common example artifacts pass。
 
-- [deferred] 11.5.1 建立 complete consumer/manifest/features/locales/README/license/NOTICE/SBOM/provenance並鎖定pure-Rust backend。
-- [deferred] 11.5.2 實作 browse/details sort/preview stream/extract/copy/drag-out。
-- [deferred] 11.5.3 實作 add/mkdir/delete/rename/move preview與 mutation provider。
-- [deferred] 11.5.4 執行 archive corpus unit/integration與每個pre-commit failure original-hash assertions。
-- [deferred] 11.5.5 在該 example 全部 implementation、fixtures、docs與package artifacts 完成後，執行 navigation/breadcrumb/history/preview/drag/mutation/undo/password-no-log/disable final-slice UITEST。
-- [deferred] 11.5.6 執行`common_artifact_inventory`、provenance/modify-guide/screenshots、clean README/package，由integrator merge manifest後取得第八provisional GO。
+- [x] 11.5.1 建立 complete consumer/manifest/features/locales/README/license/NOTICE/SBOM/provenance並鎖定pure-Rust backend。
+- [x] 11.5.2 實作 browse/details sort/preview stream/extract/copy/drag-out。
+- [x] 11.5.3 實作 add/mkdir/delete/rename/move preview與 mutation provider。
+- [x] 11.5.4 執行 archive corpus unit/integration與每個pre-commit failure original-hash assertions。
+- [x] 11.5.5 在該 example 全部 implementation、fixtures、docs與package artifacts 完成後，執行 navigation/breadcrumb/history/preview/drag/mutation/undo/password-no-log/disable final-slice UITEST。（`target/uitest-7z-final-20260805-v73-clean/report.json`：PASS；production app + real DLL + real Explorer OLE drag-out；清除診斷 artifact 後重跑。）
+- [x] 11.5.6 執行`common_artifact_inventory`、provenance/modify-guide/screenshots、clean README/package，由integrator merge manifest後取得第八provisional GO。
 
 ## 12. Folder Options／Extensions 管理頁與 lifecycle composition
 
@@ -1151,14 +1151,14 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 - [deferred] 12.4.15 執行P0 package atomicity security gate。
 - [deferred] 12.4.16 執行P0 Safe Mode recovery security gate。
 - [deferred] 12.4.17 執行P0 process-containment security gate。
-- [deferred] 12.4.18 執行100,000-node核准memory threshold gate。
+- [x] 12.4.18 執行100,000-node核准memory threshold gate。
 - [deferred] 12.4.19 實際執行Size Map mandatory UITEST。
 - [deferred] 12.4.20 實際執行Rust tokei mandatory UITEST。
 - [deferred] 12.4.21 實際執行Lock Owner mandatory UITEST。
 - [deferred] 12.4.22 實際執行Lua tokei mandatory UITEST。
 - [deferred] 12.4.23 實際執行bulk-folder mandatory UITEST。
 - [deferred] 12.4.24 實際執行EXIF mandatory UITEST。
-- [deferred] 12.4.25 實際執行7z mandatory UITEST。
+- [x] 12.4.25 實際執行7z mandatory UITEST。（`target/uitest-7z-final-20260805-v73-clean/report.json`：1 PASS、0 FAIL、0 SKIP。）
 - [deferred] 12.4.26 實際執行Options mandatory UITEST，不以mapping或provisional GO取代。
 - [deferred] 12.4.27 驗證folder-size immutable provenance/package hash。
 - [deferred] 12.4.28 在另一預先填好的本機 Cargo registry cache、network-denied 環境建 SDK plugin fixture；不追蹤 vendor。
@@ -1170,8 +1170,8 @@ Tasks 1–5 不執行 UITEST。CI、GitHub Actions 與遠端 gate 永不執行�
 - [deferred] 12.4.34 執行P0 late-publish rejection security gate。
 - [deferred] 12.4.35 執行P0 operation authorization security gate。
 - [deferred] 12.4.36 執行P0 archive mutation security gate。
-- [deferred] 12.4.37 執行100,000-node layout/redraw threshold gate。
-- [deferred] 12.4.38 執行100,000-node cancellation threshold gate。
+- [x] 12.4.37 執行100,000-node layout/redraw threshold gate。
+- [x] 12.4.38 執行100,000-node cancellation threshold gate。
 
 ## 13. P1 純資料 Skin
 
@@ -1528,7 +1528,7 @@ documentation, and local Cargo completion.
 - [x] 17.1.5 Wire the completed folder-size package into production and the installer without changing the standard no-plugin fallback; only then run its single headful UITEST case.
 - [x] 17.1.6 Track queued and in-flight folder-size identities so repeated UI submissions cannot restart an active recursive measurement; allow stale scans to finish caching while rejecting stale UI publication, then rebuild/package the DLL and rerun its headful UITEST.
 - [x] 17.1.7 Retain bounded folder-size value snapshots and submitted identities per `(tab_id, generation)` so tab switching reuses completed values while F5/navigation/content generation changes recalculate only the changed tab; add regression coverage and rerun the headful UITEST.
-- [x] 17.2.1 Complete `rust-folder-size-map-view` as an independent packaged example, including recursive incremental totals, navigation, selection, refresh/stale rejection, docs, then one UITEST.
+- [x] 17.2.1 Complete `rust-folder-size-map-view` as an independent packaged example, including recursive incremental totals, navigation, selection, refresh/stale rejection, docs, then one UITEST. (Completed with nested production hierarchy and package `sdk-b7b7d8419460b21eb1cd50b2`.)
 - [x] 17.3.1 Complete `rust-tokei-code-lines-column` as an independent packaged example, including integer sorting/settings, docs, then one UITEST.
 - [x] 17.4.1 Add the discover-only `LockOwnerQueryServiceV1` and complete `rust-lock-owner-column` without exposing process-control authority; package, then one UITEST.
 - [x] 17.5.1 Add the minimum host-owned command/form/preview/operation-plan path required by the examples, with commit-time identity recheck, cancellation, truthful partial terminal state, and conservative undo.
@@ -1538,4 +1538,29 @@ documentation, and local Cargo completion.
 - [x] 17.8.1 Complete the read-only virtual-location/enumeration/bounded-stream spine and `rust-7z-virtual-folder` browsing with traversal, collision, stale-generation, and resource-limit rejection.
 - [x] 17.8.2 Complete safe 7z extract/mutation using same-volume staging, verification, original-identity recheck, atomic replace, non-serialized secrets, and whole-container undo; package, then one UITEST.
 - [x] 17.9.1 Rebuild and package all eight examples separately with pre-populated local Cargo registry cache, `--locked --offline`, and no CI; missing cache is an explicit bootstrap prerequisite; verify production inventory and installer policy.
-- [ ] 17.9.2 After all eight examples pass, resume the deferred roadmap below in dependency order and check only leaves with current local evidence.
+- [x] 17.9.2 After all eight examples pass, resume the deferred roadmap below in dependency order and check only leaves with current local evidence.
+
+## 18. Host-enforced extension data-column cache
+
+### 18.1 Common dispatch rule
+
+**Purpose:** Prevent unchanged extension data columns from being recomputed after tab, drive, or folder switches.
+**Inputs:** Existing Folder size and batch-column runtimes, host filesystem metadata, approved cache design.
+**Outputs:** Bounded contribution-scoped host cache and current-generation result rebinding.
+**Dependencies:** 17.1, 17.3, and 17.6 completed examples.
+**Owner/Wave:** primary integrator / W6; owns application runtime and relevant local smoke only.
+**Gate/Evidence:** minimal offline Cargo tests followed by one completed-example local smoke; never CI.
+**Completion threshold:** unchanged identity+mtime produces a host hit with zero provider calls; changed mtime produces a miss; stale results cannot publish.
+
+- [x] 18.1.1 Implement the bounded host cache key from canonical stable identity and modification timestamp and make lookup mandatory before any extension data-column provider dispatch. (`cargo check -p explorer-app --locked --offline` PASS.)
+- [x] 18.1.2 Apply the rule to Folder size, caching only unchanged exact terminal totals and rebinding hits to the current request context. (`target/uitest-folder-size-host-cache-20260805-v2/report.json`: PASS; unchanged-folder round trip 348 ms.)
+- [x] 18.1.3 Apply the rule to Rust/Lua Code lines and Lock owners, caching copied typed terminal results without retaining ABI values or callbacks. (`target/uitest-rust-tokei-host-cache-20260805-v1/report.json` and `target/uitest-lua-tokei-host-cache-20260805-v2/report.json`: PASS.)
+- [x] 18.1.4 Add minimal offline tests for same-mtime no-dispatch reuse, changed-mtime invalidation, and stale-generation publication rejection. (`application::tests::host_extension_column_cache_reuses_same_mtime_and_rejects_changed_mtime`: PASS.)
+- [x] 18.1.5 After 18.1.1-18.1.4 pass, run one local completed-example folder-switch smoke and record the result; do not run CI. (`target/uitest-folder-size-host-cache-20260805-v2`: PASS; CI not run.)
+
+### 18.2 Current-directory manual refresh and uncapped background folder scan
+
+- [x] 18.2.1 Route manual Refresh/F5 to both Host extension-column runtimes before starting the new UI generation; invalidate only the active canonical filesystem directory.
+- [x] 18.2.2 Add a directory refresh epoch so work admitted before F5 cannot repopulate that directory, while cache entries for every other directory remain available.
+- [x] 18.2.3 Remove the folder-size entry-count termination path; treat `max_entries` as a legacy responsiveness hint and continue the background scan to an exact result.
+- [x] 18.2.4 Add minimal local tests proving A-only invalidation, B preservation, stale-admission rejection, and an exact folder result when `max_entries = 1`; do not run CI or UITEST. (`application::tests::host_extension_column_cache_reuses_same_mtime_and_rejects_changed_mtime` and `tests::entry_hint_never_truncates_background_measurement`: PASS.)
