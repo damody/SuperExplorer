@@ -1180,6 +1180,37 @@
       "required_artifacts": ["report.json", "toolbar-extensions.png", "uia-buttons.txt"]
     },
     {
+      "id": "folder-options-extensions-scroll-escape",
+      "description": "Open Folder Options, keep its footer reachable, genuinely wheel-scroll the Extensions list, and close the modal with Escape.",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_folder_options_extensions_scroll_escape.ps1", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
+      "timeout_seconds": 180,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor"],
+      "required_artifacts": ["report.json", "folder-options-before-scroll.png", "folder-options-after-scroll.png", "folder-options-after-escape.png"]
+    },
+    {
+      "id": "extension-command-interaction-headful",
+      "description": "Verify bounded extension labels, command subpanels, two-stage Escape cancellation, and confirmed bulk-folder execution.",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_extension_command_interaction.ps1", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
+      "timeout_seconds": 180,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "explorer"],
+      "covers": ["build-extensible-plugin-platform/extension-commands-forms-and-operation-plans/*"],
+      "required_artifacts": ["report.json", "bulk-folder-panel.png", "exif-rename-panel.png"]
+    },
+    {
       "id": "host-built-in-context-command-contracts",
       "description": "Verify Open, Cut, Copy, Copy path, Create shortcut, Delete, Rename, Share, Quick access pin, and Properties are returned as typed host commands where applicable and routed through long-lived Explorer actions.",
       "suites": ["quick", "full", "interop"],
@@ -1654,6 +1685,8 @@
         "{workspace_root}\\target\\debug\\SuperExplorer.exe",
         "-PluginDll",
         "{workspace_root}\\sdk\\fixtures\\rust-folder-size-visual-column\\target\\x86_64-pc-windows-msvc\\debug\\rust_folder_size_visual_column.dll",
+        "-InitialPath",
+        "",
         "-OutputDirectory",
         "{evidence_dir}"
       ],
@@ -1677,7 +1710,7 @@
     },
     {
       "id": "rust-tokei-code-lines-headful",
-      "description": "Load the independent public-SDK Rust tokei plugin and verify exact Code lines values, numeric sorting, public-render-context bars/details, and ordinary shell icons.",
+      "description": "Load the independent public-SDK Rust tokei plugin and verify exact Code lines values, numeric sorting, text-only cells without progress bars, optional details, and ordinary shell icons.",
       "suites": ["full", "visual"],
       "program": "powershell.exe",
       "arguments": [
@@ -1714,8 +1747,46 @@
       ]
     },
     {
+      "id": "rust-tokei-superexplorer-directories-headful",
+      "description": "Open the real workspace root and verify first-level directories receive recursive tokei code counts without blank lines or progress bars.",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": [
+        "-Sta",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "{workspace_root}\\scripts\\smoke_tokei_plugin_headful.ps1",
+        "-Executable",
+        "{workspace_root}\\target\\debug\\SuperExplorer.exe",
+        "-PluginDll",
+        "{workspace_root}\\sdk\\fixtures\\rust-tokei-code-lines-column\\target\\x86_64-pc-windows-msvc\\debug\\rust_tokei_code_lines_column.dll",
+        "-InitialPath",
+        "{workspace_root}",
+        "-OutputDirectory",
+        "{evidence_dir}",
+        "-DirectoryAggregateMode"
+      ],
+      "timeout_seconds": 180,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"},
+        {"kind": "path", "path": "{workspace_root}\\sdk\\fixtures\\rust-tokei-code-lines-column\\target\\x86_64-pc-windows-msvc\\debug\\rust_tokei_code_lines_column.dll"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "explorer"],
+      "covers": [
+        "build-extensible-plugin-platform/source-example-plugin-suite/rust-tokei-column-example"
+      ],
+      "required_artifacts": [
+        "report.json",
+        "code-lines.png"
+      ]
+    },
+    {
       "id": "rust-lock-owner-headful",
-      "description": "Load the discover-only Lock Owner column, observe a controlled holder, release it, refresh, and prove stale owner data clears.",
+      "description": "Load the discover-only Lock Owner column and reject delayed results across rapid refresh, tab and folder changes, and production Folder Options disable.",
       "suites": ["full", "visual"],
       "program": "powershell.exe",
       "arguments": [
@@ -1737,10 +1808,10 @@
       "required_artifacts": ["report.json", "lock-owner-present.png", "lock-owner-cleared.png"]
     },
     {
-      "id":"lua-tokei-code-lines-headful","description":"Run the Lua tokei functional suite, load its real DLL in the production app, and verify its registered column is present in the Extensions UI.","suites":["full","visual"],"program":"powershell.exe",
-      "arguments":["-Sta","-NoProfile","-ExecutionPolicy","Bypass","-File","{workspace_root}\\scripts\\smoke_new_plugin_headful.ps1","-PluginRoot","{workspace_root}\\sdk\\fixtures\\lua-tokei-code-lines-column","-PluginDll","{workspace_root}\\sdk\\fixtures\\lua-tokei-code-lines-column\\target\\x86_64-pc-windows-msvc\\debug\\lua_tokei_code_lines_column.dll","-ExpectedContribution","lua-tokei:column","-InitialPath","{workspace_root}\\sdk\\fixtures\\lua-tokei-code-lines-column\\samples","-OutputDirectory","{evidence_dir}"],
+      "id":"lua-tokei-code-lines-headful","description":"Load the Lua tokei plugin in the production app and verify exact Code lines values, numeric sorting, settings, text-only cells, and ordinary shell icons.","suites":["full","visual"],"program":"powershell.exe",
+      "arguments":["-Sta","-NoProfile","-ExecutionPolicy","Bypass","-File","{workspace_root}\\scripts\\smoke_tokei_plugin_headful.ps1","-PluginRoot","{workspace_root}\\sdk\\fixtures\\lua-tokei-code-lines-column","-PluginDll","{workspace_root}\\sdk\\fixtures\\lua-tokei-code-lines-column\\target\\x86_64-pc-windows-msvc\\debug\\lua_tokei_code_lines_column.dll","-InitialPath","{workspace_root}\\sdk\\fixtures\\lua-tokei-code-lines-column\\samples","-OutputDirectory","{evidence_dir}"],
       "timeout_seconds":240,"prerequisites":[{"kind":"windows"},{"kind":"interactive_desktop"},{"kind":"command","name":"cargo.exe"}],"exclusive_resources":["gui","cursor","explorer"],
-      "covers":["build-extensible-plugin-platform/source-example-plugin-suite/lua-tokei-column-example"],"required_artifacts":["report.json","extensions-contribution.png"]
+      "covers":["build-extensible-plugin-platform/source-example-plugin-suite/lua-tokei-column-example"],"required_artifacts":["report.json","code-lines.png","code-lines-detail.png"]
     },
     {
       "id":"lua-bulk-folder-headful","description":"Run bulk-folder plan tests, load the real DLL, and verify its command contribution is present in the production Extensions UI.","suites":["full","visual"],"program":"powershell.exe",
@@ -1761,10 +1832,10 @@
       "covers":["build-extensible-plugin-platform/source-example-plugin-suite/folder-size-map-view-example","build-extensible-plugin-platform/source-example-plugin-suite/lua-bulk-folder-example"]
     },
     {
-      "id":"rust-7z-virtual-folder-headful","description":"Run real 7z enumerate/read/extract/mutation tests, load the real DLL, and verify its resource contribution in the production Extensions UI.","suites":["full","visual"],"program":"powershell.exe",
-      "arguments":["-Sta","-NoProfile","-ExecutionPolicy","Bypass","-File","{workspace_root}\\scripts\\smoke_new_plugin_headful.ps1","-PluginRoot","{workspace_root}\\sdk\\fixtures\\rust-7z-virtual-folder","-PluginDll","{workspace_root}\\sdk\\fixtures\\rust-7z-virtual-folder\\target\\x86_64-pc-windows-msvc\\debug\\rust_7z_virtual_folder.dll","-ExpectedContribution","rust-7z:resource","-InitialPath","{workspace_root}","-OutputDirectory","{evidence_dir}"],
+      "id":"rust-7z-virtual-folder-headful","description":"Open plain and AES 7z containers in the production app and verify navigation, breadcrumb/history, preview, drag-out, rename, delete, whole-container undo, and password non-persistence.","suites":["full","visual"],"program":"powershell.exe",
+      "arguments":["-Sta","-NoProfile","-ExecutionPolicy","Bypass","-File","{workspace_root}\\scripts\\smoke_7z_plugin_headful.ps1","-PluginDll","{workspace_root}\\sdk\\fixtures\\rust-7z-virtual-folder\\target\\x86_64-pc-windows-msvc\\debug\\rust_7z_virtual_folder.dll","-OutputDirectory","{evidence_dir}"],
       "timeout_seconds":240,"prerequisites":[{"kind":"windows"},{"kind":"interactive_desktop"},{"kind":"command","name":"cargo.exe"}],"exclusive_resources":["gui","cursor","explorer"],
-      "covers":["build-extensible-plugin-platform/source-example-plugin-suite/editable-7z-virtual-folder-example"],"required_artifacts":["report.json","extensions-contribution.png"]
+      "covers":["build-extensible-plugin-platform/source-example-plugin-suite/editable-7z-virtual-folder-example"],"required_artifacts":["report.json","archive-preview.png","encrypted-archive.png"]
     }
   ]
 }

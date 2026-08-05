@@ -8,11 +8,11 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Condvar, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
         mpsc,
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context as _, Error};
@@ -37,14 +37,22 @@ const FOLDER_SIZE_CONTRIBUTION_ID_V1: &str = "folder-size";
 const FOLDER_SIZE_RENDERER_CONTRIBUTION_ID_V1: &str = "folder-size-renderer";
 const SIZE_MAP_VIEW_CONTRIBUTION_ID_V1: &str = "size-map";
 const SIZE_MAP_REQUEST_QUEUE_CAP_V1: usize = 1_024;
+const SIZE_MAP_TREE_DELTA_BATCH_CAP_V1: usize = 256;
 const CODE_LINES_CONTRIBUTION_ID_V1: &str = "rust-tokei:code-lines";
+const LUA_CODE_LINES_CONTRIBUTION_ID_V1: &str = "lua-tokei:column";
+const LUA_CODE_LINES_RENDERER_CONTRIBUTION_ID_V1: &str = "lua-tokei:renderer";
+const SEVEN_Z_RESOURCE_CONTRIBUTION_ID_V1: &str = "rust-7z:resource";
 const CODE_LINES_RENDERER_CONTRIBUTION_ID_V1: &str = "rust-tokei:code-lines-renderer";
 const LOCK_OWNER_CONTRIBUTION_ID_V1: &str = "rust-lock-owner:owners";
 const LOCK_OWNER_RENDERER_CONTRIBUTION_ID_V1: &str = "rust-lock-owner:owners-renderer";
 const CODE_LINES_BATCH_ITEMS_V1: usize = 128;
+const CODE_LINES_DIRECTORY_CACHE_SCHEMA_V1: u32 = 1;
+const CODE_LINES_DIRECTORY_CACHE_MAX_RECORD_BYTES_V1: u64 = 8 * 1024;
+const CODE_LINES_DIRECTORY_CACHE_MAX_FILES_V1: usize = 1_024;
 const DIRECT_RENDER_QUEUE_CAP_V1: usize = 256;
 const DIRECT_RENDER_CACHE_CAP_V1: usize = 512;
 const SIZE_MAP_RENDER_QUEUE_CAP_V1: usize = 8;
+static NEXT_SIZE_MAP_RUNTIME_INCARNATION_V1: AtomicU64 = AtomicU64::new(1);
 const SIZE_MAP_RENDER_CACHE_CAP_V1: usize = 4;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -153,8 +161,9 @@ fn revision_for(bytes: &[u8]) -> u64 {
 
 fn size_map_snapshot_bytes(context: &explorer_extension_ui_api::SizeMapRenderContextV1) -> Vec<u8> {
     let mut bytes = Vec::new();
-    bytes.extend_from_slice(&context.generation.to_le_bytes());
-    bytes.extend_from_slice(&context.render_revision.to_le_bytes());
+    bytes.extend_from_slice(&context.snapshot.location_generation.to_le_bytes());
+    bytes.extend_from_slice(&context.snapshot.refresh_generation.to_le_bytes());
+    bytes.extend_from_slice(&context.snapshot.render_revision.to_le_bytes());
     bytes.extend_from_slice(&(context.nodes.len() as u64).to_le_bytes());
     for node in &context.nodes {
         append_id(&mut bytes, node.node_id);
@@ -194,6 +203,105 @@ fn size_map_node_id(
     )
 }
 
+fn partition_size_map_projection(
+    nodes: &[explorer_ui::size_map_view::SizeMapNodeV1],
+) -> (Vec<usize>, Vec<usize>) {
+    const MAX_INDIVIDUAL_SIZE_MAP_NODES_V1: usize = 255;
+    let mut roots = nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, node)| node.parent_item_id.is_none().then_some(index))
+        .collect::<Vec<_>>();
+    // Retain the most useful visible siblings first. The stable sort keeps
+    // deterministic source order for equal totals, while zero-byte siblings
+    // naturally move into the accessible `Other` tail.
+    roots.sort_by(|left, right| {
+        nodes[*right]
+            .exact_bytes
+            .unwrap_or_default()
+            .cmp(&nodes[*left].exact_bytes.unwrap_or_default())
+    });
+    let mut projected = roots
+        .into_iter()
+        .take(MAX_INDIVIDUAL_SIZE_MAP_NODES_V1)
+        .collect::<Vec<_>>();
+    let mut projected_ids = projected
+        .iter()
+        .map(|index| nodes[*index].item_id.clone())
+        .collect::<HashSet<_>>();
+    // `recursive_nodes_for` emits descendants parent-before-child. Admit a
+    // descendant only when its parent is already projected, so the public
+    // hierarchy can never contain an orphan.
+    for (index, node) in nodes.iter().enumerate() {
+        if projected.len() == MAX_INDIVIDUAL_SIZE_MAP_NODES_V1 {
+            break;
+        }
+        if node
+            .parent_item_id
+            .as_ref()
+            .is_some_and(|parent| projected_ids.contains(parent))
+        {
+            projected.push(index);
+            projected_ids.insert(node.item_id.clone());
+        }
+    }
+    let projected_indexes = projected.iter().copied().collect::<HashSet<_>>();
+    let omitted = (0..nodes.len())
+        .filter(|index| !projected_indexes.contains(index))
+        .collect();
+    (projected, omitted)
+}
+
+fn aggregate_size_map_items(
+    nodes: &[explorer_ui::size_map_view::SizeMapNodeV1],
+    omitted: &[usize],
+) -> Vec<explorer_ui::size_map_view::SizeMapAggregateItemV1> {
+    omitted
+        .iter()
+        .map(|index| {
+            let node = &nodes[*index];
+            explorer_ui::size_map_view::SizeMapAggregateItemV1 {
+                item_id: node.item_id.clone(),
+                label: node.display_name.clone(),
+                detail: if node.partial {
+                    "Partial".to_owned()
+                } else if let Some(error) = &node.error {
+                    format!("Failed: {error}")
+                } else if let Some(bytes) = node.exact_bytes {
+                    format!("{bytes} bytes. Complete")
+                } else {
+                    "Unavailable".to_owned()
+                },
+            }
+        })
+        .collect()
+}
+
+fn size_map_node_status_v1(
+    node: &explorer_ui::size_map_view::SizeMapNodeV1,
+) -> explorer_extension_ui_api::SizeMapNodeStatusV1 {
+    use explorer_extension_ui_api::SizeMapNodeStatusV1;
+    let diagnostic = node.error.as_deref().unwrap_or_default();
+    if diagnostic.starts_with("cancelled:") {
+        SizeMapNodeStatusV1::CANCELLED
+    } else if diagnostic.starts_with("resource-limited:")
+        || diagnostic.contains("resource limit")
+        || diagnostic.contains("depth limit")
+    {
+        SizeMapNodeStatusV1::RESOURCE_LIMITED
+    } else if diagnostic.starts_with("unavailable:") {
+        SizeMapNodeStatusV1::UNAVAILABLE
+    } else if node.partial {
+        SizeMapNodeStatusV1::PARTIAL
+    } else if node.error.is_some() {
+        SizeMapNodeStatusV1::FAILED
+    } else if node.exact_bytes.is_some() {
+        SizeMapNodeStatusV1::COMPLETE
+    } else {
+        SizeMapNodeStatusV1::UNAVAILABLE
+    }
+}
+
 fn append_size_map_host_scope(
     target: &mut Vec<u8>,
     request_context: &explorer_model::RequestContext,
@@ -218,14 +326,17 @@ fn size_map_render_key(
     context: &mut explorer_extension_ui_api::SizeMapRenderContextV1,
     request_context: &explorer_model::RequestContext,
     item_ids: &[explorer_model::ShellItemId],
+    package_incarnation: u64,
 ) -> SizeMapRenderKeyV1 {
-    context.render_revision = 0;
+    context.snapshot.render_revision = 1;
     let mut revision_input = size_map_snapshot_bytes(context);
     append_size_map_host_scope(&mut revision_input, request_context, item_ids);
-    context.render_revision = revision_for(&revision_input);
+    revision_input.extend_from_slice(&package_incarnation.to_le_bytes());
+    context.snapshot.render_revision = revision_for(&revision_input);
 
     let mut key = size_map_snapshot_bytes(context);
     append_size_map_host_scope(&mut key, request_context, item_ids);
+    key.extend_from_slice(&package_incarnation.to_le_bytes());
     SizeMapRenderKeyV1(key)
 }
 
@@ -234,12 +345,7 @@ fn size_map_render_key(
 /// durable call marker) always run on this worker thread.
 struct AsyncCellRendererV1 {
     requests: mpsc::SyncSender<explorer_extension_ui_api::CellRenderContextV1>,
-    results: Mutex<
-        mpsc::Receiver<(
-            CellRenderKeyV1,
-            Option<explorer_extension_ui_api::CellRenderPlanV1>,
-        )>,
-    >,
+    results: Mutex<mpsc::Receiver<(CellRenderKeyV1, explorer_extension_ui_api::CellRenderPlanV1)>>,
     pending: Mutex<HashSet<CellRenderKeyV1>>,
     cache: Mutex<HashMap<CellRenderKeyV1, explorer_extension_ui_api::CellRenderPlanV1>>,
 }
@@ -261,7 +367,15 @@ impl AsyncCellRendererV1 {
             .spawn(move || {
                 while let Ok(context) = request_rx.recv() {
                     let key = cell_render_key(&context);
-                    let plan = renderer.render(contribution_id, context).ok();
+                    let fallback_color = context.theme.muted_foreground;
+                    let plan = renderer
+                        .render(contribution_id, context)
+                        .unwrap_or_else(|error| {
+                            explorer_extension_ui_api::CellRenderPlanV1::text_only(
+                                format!("Renderer unavailable: {error}"),
+                                fallback_color,
+                            )
+                        });
                     if result_tx.send((key, plan)).is_err() {
                         return;
                     }
@@ -283,9 +397,7 @@ impl AsyncCellRendererV1 {
                 if let Ok(mut pending) = self.pending.lock() {
                     pending.remove(&ready_key);
                 }
-                if let Some(plan) = plan
-                    && let Ok(mut cache) = self.cache.lock()
-                {
+                if let Ok(mut cache) = self.cache.lock() {
                     if cache.len() >= DIRECT_RENDER_CACHE_CAP_V1 {
                         cache.clear();
                     }
@@ -329,9 +441,17 @@ impl AsyncCellRendererV1 {
 struct SizeMapRenderRequestV1 {
     key: SizeMapRenderKeyV1,
     context: explorer_extension_ui_api::SizeMapRenderContextV1,
-    mappings: HashMap<explorer_extension_ui_api::StableIdV1, (explorer_model::ShellItemId, String)>,
+    mappings: HashMap<explorer_extension_ui_api::StableIdV1, SizeMapProjectionV1>,
     width: f32,
     height: f32,
+}
+
+enum SizeMapProjectionV1 {
+    Item(
+        explorer_ui::size_map_view::SizeMapInteractionTargetV1,
+        String,
+    ),
+    Aggregate(Vec<explorer_ui::size_map_view::SizeMapAggregateItemV1>),
 }
 
 struct AsyncSizeMapRendererV1 {
@@ -364,13 +484,9 @@ impl AsyncSizeMapRendererV1 {
                         width,
                         height,
                     } = request;
-                    let generation = context.generation;
-                    let render_revision = context.render_revision;
+                    let snapshot = context.snapshot;
                     let plan = match renderer.render(SIZE_MAP_VIEW_CONTRIBUTION_ID_V1, context) {
-                        Ok(plan)
-                            if plan.generation == generation
-                                && plan.render_revision == render_revision =>
-                        {
+                        Ok(plan) if plan.snapshot == snapshot => {
                             project_size_map_plan(plan, mappings, width, height)
                         }
                         Ok(_) => {
@@ -440,6 +556,7 @@ impl AsyncSizeMapRendererV1 {
 
 fn size_map_render_fallback(status: &str) -> explorer_ui::size_map_view::SizeMapRenderPlanV1 {
     explorer_ui::size_map_view::SizeMapRenderPlanV1 {
+        snapshot: None,
         rectangles: Vec::new(),
         status: Some(status.to_owned()),
         available: false,
@@ -448,18 +565,33 @@ fn size_map_render_fallback(status: &str) -> explorer_ui::size_map_view::SizeMap
 
 fn project_size_map_plan(
     plan: explorer_extension_ui_api::SizeMapRenderPlanV1,
-    mappings: HashMap<explorer_extension_ui_api::StableIdV1, (explorer_model::ShellItemId, String)>,
+    mappings: HashMap<explorer_extension_ui_api::StableIdV1, SizeMapProjectionV1>,
     width: f32,
     height: f32,
 ) -> explorer_ui::size_map_view::SizeMapRenderPlanV1 {
+    let snapshot = plan.snapshot;
     explorer_ui::size_map_view::SizeMapRenderPlanV1 {
+        snapshot: Some(snapshot),
         rectangles: plan
             .rectangles
             .into_iter()
             .filter_map(|rectangle| {
-                let (item_id, status) = mappings.get(&rectangle.node_id)?.clone();
+                let mapping = mappings.get(&rectangle.node_id)?;
+                let (item_id, interaction_target, status, aggregate_items) = match mapping {
+                    SizeMapProjectionV1::Item(target, status) => (
+                        Some(target.item_id.clone()),
+                        Some(target.clone()),
+                        status.clone(),
+                        Vec::new(),
+                    ),
+                    SizeMapProjectionV1::Aggregate(items) => {
+                        (None, None, "Aggregated".to_owned(), items.clone())
+                    }
+                };
                 Some(explorer_ui::size_map_view::SizeMapRectangleV1 {
+                    node_id: Some(rectangle.node_id),
                     item_id,
+                    interaction_target,
                     x: width * rectangle.x_millionths as f32 / 1_000_000.0,
                     y: height * rectangle.y_millionths as f32 / 1_000_000.0,
                     width: width * rectangle.width_millionths as f32 / 1_000_000.0,
@@ -473,6 +605,7 @@ fn project_size_map_plan(
                         alpha: rectangle.color.alpha,
                     },
                     status,
+                    aggregate_items,
                 })
             })
             .collect(),
@@ -584,7 +717,136 @@ impl explorer_ui::ExtensionUiPumpPortV1 for ApplicationExtensionUiPumpV1 {
 struct ApplicationVisualColumnRuntimeV1 {
     pending: Arc<(Mutex<PendingFolderSizeWorkV1>, Condvar)>,
     results: Mutex<mpsc::Receiver<explorer_ui::folder_size_column::FolderSizeResultV1>>,
+    cached_results: Mutex<Vec<explorer_ui::folder_size_column::FolderSizeResultV1>>,
+    cache: Arc<Mutex<HostExtensionColumnCacheV1<FolderSizeCachedValueV1>>>,
     renderer: AsyncCellRendererV1,
+}
+
+const HOST_EXTENSION_COLUMN_CACHE_CAPACITY_V1: usize = 16_384;
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct HostExtensionColumnCacheKeyV1 {
+    canonical_path: PathBuf,
+    modified_seconds: u64,
+    modified_nanos: u32,
+}
+
+fn host_extension_column_cache_key(path: &Path) -> Option<HostExtensionColumnCacheKeyV1> {
+    let canonical_path = fs::canonicalize(path).ok()?;
+    let modified = fs::metadata(&canonical_path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()?;
+    Some(HostExtensionColumnCacheKeyV1 {
+        canonical_path,
+        modified_seconds: modified.as_secs(),
+        modified_nanos: modified.subsec_nanos(),
+    })
+}
+
+#[derive(Debug)]
+struct HostExtensionColumnCacheV1<T> {
+    values: HashMap<HostExtensionColumnCacheKeyV1, (PathBuf, u64, T)>,
+    directory_epochs: HashMap<PathBuf, u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct HostExtensionColumnCacheAdmissionV1 {
+    key: HostExtensionColumnCacheKeyV1,
+    directory: PathBuf,
+    directory_epoch: u64,
+}
+
+impl<T> Default for HostExtensionColumnCacheV1<T> {
+    fn default() -> Self {
+        Self {
+            values: HashMap::new(),
+            directory_epochs: HashMap::new(),
+        }
+    }
+}
+
+impl<T: Clone> HostExtensionColumnCacheV1<T> {
+    fn admission(&self, path: &Path) -> Option<HostExtensionColumnCacheAdmissionV1> {
+        let key = host_extension_column_cache_key(path)?;
+        let directory = key.canonical_path.parent()?.to_path_buf();
+        let directory_epoch = self.directory_epochs.get(&directory).copied().unwrap_or(0);
+        Some(HostExtensionColumnCacheAdmissionV1 {
+            key,
+            directory,
+            directory_epoch,
+        })
+    }
+
+    fn get(&self, admission: &HostExtensionColumnCacheAdmissionV1) -> Option<T> {
+        self.values.get(&admission.key).and_then(|(directory, epoch, value)| {
+            (directory == &admission.directory && *epoch == admission.directory_epoch)
+                .then(|| value.clone())
+        })
+    }
+
+    fn insert(&mut self, admission: HostExtensionColumnCacheAdmissionV1, value: T) -> bool {
+        if self.directory_epochs.get(&admission.directory).copied().unwrap_or(0)
+            != admission.directory_epoch
+        {
+            return false;
+        }
+        if self.values.len() >= HOST_EXTENSION_COLUMN_CACHE_CAPACITY_V1
+            && !self.values.contains_key(&admission.key)
+        {
+            self.values.clear();
+        }
+        self.values.insert(
+            admission.key,
+            (admission.directory, admission.directory_epoch, value),
+        );
+        true
+    }
+
+    fn invalidate_directory(&mut self, directory: &Path) {
+        let Ok(directory) = fs::canonicalize(directory) else {
+            return;
+        };
+        let epoch = self.directory_epochs.entry(directory.clone()).or_insert(0);
+        *epoch = epoch.wrapping_add(1);
+        self.values.retain(|_, (scope, _, _)| scope != &directory);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FolderSizeCachedValueV1 {
+    exact_bytes: u64,
+}
+
+fn partition_folder_size_cache_hits(
+    cache: &Mutex<HostExtensionColumnCacheV1<FolderSizeCachedValueV1>>,
+    requests: Vec<explorer_ui::folder_size_column::FolderSizeRequestV1>,
+) -> (
+    Vec<explorer_ui::folder_size_column::FolderSizeResultV1>,
+    Vec<explorer_ui::folder_size_column::FolderSizeRequestV1>,
+) {
+    let mut hits = Vec::new();
+    let mut misses = Vec::new();
+    for request in requests {
+        let cached = cache.lock().ok().and_then(|cache| {
+            let admission = cache.admission(&request.path)?;
+            cache.get(&admission)
+        });
+        if let Some(cached) = cached {
+            hits.push(explorer_ui::folder_size_column::FolderSizeResultV1 {
+                context: request.context,
+                item_id: request.item_id,
+                exact_bytes: Some(cached.exact_bytes),
+                partial: false,
+                error: None,
+            });
+        } else {
+            misses.push(request);
+        }
+    }
+    (hits, misses)
 }
 
 #[derive(Default)]
@@ -696,6 +958,10 @@ impl ApplicationVisualColumnRuntimeV1 {
             Condvar::new(),
         ));
         let worker_pending = pending.clone();
+        let cache = Arc::new(Mutex::new(HostExtensionColumnCacheV1::<
+            FolderSizeCachedValueV1,
+        >::default()));
+        let worker_cache = Arc::clone(&cache);
         let (result_tx, result_rx) =
             mpsc::sync_channel::<explorer_ui::folder_size_column::FolderSizeResultV1>(1_024);
         std::thread::Builder::new()
@@ -722,7 +988,20 @@ impl ApplicationVisualColumnRuntimeV1 {
                             finish_folder_size_request(&worker_pending, &request);
                             continue;
                         }
-                        let measured = measure.measure_folder_size(
+                        let cache_admission = worker_cache.lock().ok().and_then(|cache| {
+                            cache.admission(&request.path)
+                        });
+                        let cached = cache_admission.as_ref().and_then(|admission| {
+                            worker_cache.lock().ok().and_then(|cache| cache.get(admission))
+                        });
+                        let measured = if let Some(cached) = cached {
+                            Ok(explorer_extension_ui_api::FolderSizeMeasureResultV1 {
+                                exact_bytes: cached.exact_bytes,
+                                partial: false,
+                                error: None.into(),
+                            })
+                        } else {
+                            measure.measure_folder_size(
                             FOLDER_SIZE_CONTRIBUTION_ID_V1,
                             explorer_extension_ui_api::FolderSizeMeasureRequestV1 {
                                 filesystem_path: request.path.to_string_lossy().into_owned().into(),
@@ -734,7 +1013,8 @@ impl ApplicationVisualColumnRuntimeV1 {
                                 // when navigation makes its UI result stale.
                                 deadline_millis: 0,
                             },
-                        );
+                            )
+                        };
                         finish_folder_size_request(&worker_pending, &request);
                         if folder_size_request_cancelled(&worker_pending, &request) {
                             continue;
@@ -747,6 +1027,15 @@ impl ApplicationVisualColumnRuntimeV1 {
                             ),
                             Err(error) => (None, true, Some(error.to_string())),
                         };
+                        if let (Some(admission), Some(exact_bytes)) = (cache_admission, exact_bytes)
+                            && !partial
+                            && error.is_none()
+                            && host_extension_column_cache_key(&request.path).as_ref()
+                                == Some(&admission.key)
+                            && let Ok(mut cache) = worker_cache.lock()
+                        {
+                            cache.insert(admission, FolderSizeCachedValueV1 { exact_bytes });
+                        }
                         if result_tx
                             .send(explorer_ui::folder_size_column::FolderSizeResultV1 {
                                 context: request.context,
@@ -766,6 +1055,8 @@ impl ApplicationVisualColumnRuntimeV1 {
         Ok(Arc::new(Self {
             pending,
             results: Mutex::new(result_rx),
+            cached_results: Mutex::new(Vec::new()),
+            cache,
             renderer: AsyncCellRendererV1::start(
                 renderer,
                 FOLDER_SIZE_RENDERER_CONTRIBUTION_ID_V1,
@@ -785,11 +1076,18 @@ impl explorer_ui::folder_size_column::VisualColumnRuntimePortV1
         &self,
         requests: Vec<explorer_ui::folder_size_column::FolderSizeRequestV1>,
     ) {
+        let (hits, misses) = partition_folder_size_cache_hits(&self.cache, requests);
+        if let Ok(mut cached_results) = self.cached_results.lock() {
+            cached_results.extend(hits);
+        }
+        if misses.is_empty() {
+            return;
+        }
         let (lock, ready) = &*self.pending;
         let mut state = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        enqueue_folder_size_requests(&mut state, requests);
+        enqueue_folder_size_requests(&mut state, misses);
         ready.notify_one();
     }
 
@@ -802,13 +1100,24 @@ impl explorer_ui::folder_size_column::VisualColumnRuntimePortV1
         ready.notify_one();
     }
 
+    fn invalidate_directory_cache(&self, directory: &Path) {
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.invalidate_directory(directory);
+        }
+    }
+
     fn drain_folder_size_results(
         &self,
     ) -> Vec<explorer_ui::folder_size_column::FolderSizeResultV1> {
+        let mut ready = self
+            .cached_results
+            .lock()
+            .map_or_else(|_| Vec::new(), |mut results| std::mem::take(&mut *results));
         let Ok(results) = self.results.lock() else {
-            return Vec::new();
+            return ready;
         };
-        results.try_iter().collect()
+        ready.extend(results.try_iter());
+        ready
     }
 
     fn drain_render_results(&self) -> bool {
@@ -840,13 +1149,51 @@ struct ApplicationCodeLinesRuntimeV1 {
     pending: Arc<(Mutex<PendingCodeLinesWorkV1>, Condvar)>,
     request_epoch: Arc<AtomicU64>,
     results: Mutex<mpsc::Receiver<explorer_ui::code_lines_column::CodeLinesResultV1>>,
+    cached_results: Mutex<Vec<explorer_ui::code_lines_column::CodeLinesResultV1>>,
+    cache: Arc<Mutex<HostExtensionColumnCacheV1<CodeLinesCachedValueV1>>>,
     renderer: AsyncCellRendererV1,
     mode: BatchDetailsColumnModeV1,
+    option_package_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CodeLinesCachedValueV1 {
+    value: Option<explorer_ui::code_lines_column::CodeLinesValueV1>,
+    error: Option<String>,
+}
+
+fn partition_code_lines_cache_hits(
+    cache: &Mutex<HostExtensionColumnCacheV1<CodeLinesCachedValueV1>>,
+    requests: Vec<explorer_ui::code_lines_column::CodeLinesRequestV1>,
+) -> (
+    Vec<explorer_ui::code_lines_column::CodeLinesResultV1>,
+    Vec<explorer_ui::code_lines_column::CodeLinesRequestV1>,
+) {
+    let mut hits = Vec::new();
+    let mut misses = Vec::new();
+    for request in requests {
+        let cached = cache.lock().ok().and_then(|cache| {
+            let admission = cache.admission(&request.path)?;
+            cache.get(&admission)
+        });
+        if let Some(cached) = cached {
+            hits.push(explorer_ui::code_lines_column::CodeLinesResultV1 {
+                context: request.context,
+                item_id: request.item_id,
+                value: cached.value,
+                error: cached.error,
+            });
+        } else {
+            misses.push(request);
+        }
+    }
+    (hits, misses)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BatchDetailsColumnModeV1 {
     CodeLines,
+    LuaCodeLines,
     LockOwner,
 }
 
@@ -865,12 +1212,17 @@ impl ApplicationCodeLinesRuntimeV1 {
         provider: explorer_extension_host::SinglePluginBatchColumnRuntimeV1,
         renderer: explorer_extension_host::SinglePluginVisualRenderRuntimeV1,
         mode: BatchDetailsColumnModeV1,
+        option_package_id: String,
     ) -> Result<explorer_ui::code_lines_column::CodeLinesRuntimeHandleV1, Error> {
         let pending = Arc::new((
             Mutex::new(PendingCodeLinesWorkV1::default()),
             Condvar::new(),
         ));
         let worker_pending = pending.clone();
+        let cache = Arc::new(Mutex::new(HostExtensionColumnCacheV1::<
+            CodeLinesCachedValueV1,
+        >::default()));
+        let worker_cache = Arc::clone(&cache);
         let request_epoch = Arc::new(AtomicU64::new(0));
         let worker_epoch = request_epoch.clone();
         let (result_tx, result_rx) =
@@ -917,8 +1269,81 @@ impl ApplicationCodeLinesRuntimeV1 {
                         if worker_epoch.load(Ordering::Acquire) != epoch {
                             break;
                         }
+                        let cache_admission = worker_cache.lock().ok().and_then(|cache| {
+                            cache.admission(&request.path)
+                        });
+                        let cached = cache_admission.as_ref().and_then(|admission| {
+                            worker_cache.lock().ok().and_then(|cache| cache.get(admission))
+                        });
+                        if let Some(cached) = cached {
+                            if current_code_lines_epoch(&worker_epoch, epoch)
+                                && !publish_code_lines_result(
+                                    &result_tx,
+                                    explorer_ui::code_lines_column::CodeLinesResultV1 {
+                                        context: request.context,
+                                        item_id: request.item_id,
+                                        value: cached.value,
+                                        error: cached.error,
+                                    },
+                                )
+                            {
+                                return;
+                            }
+                            continue;
+                        }
+                        if mode != BatchDetailsColumnModeV1::LockOwner {
+                            match measure_code_lines_directory(&request.path) {
+                                Ok(Some(value)) => {
+                                    if let Some(admission) = cache_admission.as_ref()
+                                        && host_extension_column_cache_key(&request.path).as_ref()
+                                            == Some(&admission.key)
+                                        && let Ok(mut cache) = worker_cache.lock()
+                                    {
+                                        cache.insert(
+                                            admission.clone(),
+                                            CodeLinesCachedValueV1 {
+                                                value: Some(value.clone()),
+                                                error: None,
+                                            },
+                                        );
+                                    }
+                                    if current_code_lines_epoch(&worker_epoch, epoch)
+                                        && !publish_code_lines_result(
+                                            &result_tx,
+                                            explorer_ui::code_lines_column::CodeLinesResultV1 {
+                                                context: request.context,
+                                                item_id: request.item_id,
+                                                value: Some(value),
+                                                error: None,
+                                            },
+                                        )
+                                    {
+                                        return;
+                                    }
+                                    continue;
+                                }
+                                Ok(None) => {}
+                                Err(error) => {
+                                    if current_code_lines_epoch(&worker_epoch, epoch)
+                                        && !publish_code_lines_result(
+                                            &result_tx,
+                                            explorer_ui::code_lines_column::CodeLinesResultV1 {
+                                                context: request.context,
+                                                item_id: request.item_id,
+                                                value: None,
+                                                error: Some(error),
+                                            },
+                                        )
+                                    {
+                                        return;
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
                         let bytes = match mode {
-                            BatchDetailsColumnModeV1::CodeLines => {
+                            BatchDetailsColumnModeV1::CodeLines
+                            | BatchDetailsColumnModeV1::LuaCodeLines => {
                                 read_code_lines_path_bounded(&request.path)
                             }
                             BatchDetailsColumnModeV1::LockOwner => Ok(Some(Vec::new())),
@@ -974,11 +1399,12 @@ impl ApplicationCodeLinesRuntimeV1 {
                                 &worker_epoch,
                                 &result_tx,
                                 mode,
+                                &worker_cache,
                             );
                             prepared_bytes = 0;
                         }
                         prepared_bytes = prepared_bytes.saturating_add(bytes.len());
-                        prepared.push((request, bytes));
+                        prepared.push((request, bytes, cache_admission));
                     }
                     if !prepared.is_empty() && worker_epoch.load(Ordering::Acquire) == epoch {
                         process_code_lines_batch(
@@ -989,6 +1415,7 @@ impl ApplicationCodeLinesRuntimeV1 {
                             &worker_epoch,
                             &result_tx,
                             mode,
+                            &worker_cache,
                         );
                     }
                 }
@@ -998,14 +1425,20 @@ impl ApplicationCodeLinesRuntimeV1 {
             pending,
             request_epoch,
             results: Mutex::new(result_rx),
+            cached_results: Mutex::new(Vec::new()),
+            cache,
             renderer: AsyncCellRendererV1::start(
                 renderer,
                 match mode {
                     BatchDetailsColumnModeV1::CodeLines => CODE_LINES_RENDERER_CONTRIBUTION_ID_V1,
+                    BatchDetailsColumnModeV1::LuaCodeLines => {
+                        LUA_CODE_LINES_RENDERER_CONTRIBUTION_ID_V1
+                    }
                     BatchDetailsColumnModeV1::LockOwner => LOCK_OWNER_RENDERER_CONTRIBUTION_ID_V1,
                 },
             )?,
             mode,
+            option_package_id,
         }))
     }
 }
@@ -1013,11 +1446,16 @@ impl ApplicationCodeLinesRuntimeV1 {
 fn process_code_lines_batch(
     provider: &explorer_extension_host::SinglePluginBatchColumnRuntimeV1,
     runtime: &explorer_extension_host::ExtensionJobRuntimeV1,
-    requests: Vec<(explorer_ui::code_lines_column::CodeLinesRequestV1, Vec<u8>)>,
+    requests: Vec<(
+        explorer_ui::code_lines_column::CodeLinesRequestV1,
+        Vec<u8>,
+        Option<HostExtensionColumnCacheAdmissionV1>,
+    )>,
     epoch: u64,
     current_epoch: &AtomicU64,
     results: &mpsc::SyncSender<explorer_ui::code_lines_column::CodeLinesResultV1>,
     mode: BatchDetailsColumnModeV1,
+    cache: &Mutex<HostExtensionColumnCacheV1<CodeLinesCachedValueV1>>,
 ) {
     let Some(first) = requests.first() else {
         return;
@@ -1025,7 +1463,18 @@ fn process_code_lines_batch(
     let generation = first.0.context.generation.value().max(1);
     let inputs = requests
         .iter()
-        .filter_map(|(request, bytes)| {
+        .filter_map(|(request, bytes, _)| {
+            let metadata = std::fs::metadata(&request.path).ok();
+            let modified = metadata
+                .as_ref()
+                .and_then(|metadata| metadata.modified().ok())
+                .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok());
+            let canonical = std::fs::canonicalize(&request.path).ok()?;
+            let mut identity = 0xcbf2_9ce4_8422_2325_u64;
+            for byte in canonical.to_string_lossy().as_bytes() {
+                identity ^= u64::from(*byte);
+                identity = identity.wrapping_mul(0x0000_0100_0000_01b3);
+            }
             Some(explorer_extension_host::HostBatchColumnItemV1 {
                 file_name: request
                     .path
@@ -1038,6 +1487,10 @@ fn process_code_lines_batch(
                     generation,
                     true,
                 )?,
+                cache_identity: format!("fs-v1-{identity:016x}").into(),
+                modified_unix_seconds: modified.map(|duration| duration.as_secs()).into(),
+                modified_subsec_nanos: modified.map_or(0, |duration| duration.subsec_nanos()),
+                source_size: metadata.map(|metadata| metadata.len()).into(),
                 lock_owner_resource: (mode == BatchDetailsColumnModeV1::LockOwner)
                     .then(|| request.path.clone()),
             })
@@ -1052,10 +1505,11 @@ fn process_code_lines_batch(
     }
     let contribution_id = match mode {
         BatchDetailsColumnModeV1::CodeLines => CODE_LINES_CONTRIBUTION_ID_V1,
+        BatchDetailsColumnModeV1::LuaCodeLines => LUA_CODE_LINES_CONTRIBUTION_ID_V1,
         BatchDetailsColumnModeV1::LockOwner => LOCK_OWNER_CONTRIBUTION_ID_V1,
     };
     let lock_owner_query =
-        (mode == BatchDetailsColumnModeV1::LockOwner).then(lock_owner_query_service);
+        (mode == BatchDetailsColumnModeV1::LockOwner).then(|| lock_owner_query_service(generation));
     let Ok(mut ticket) = provider.prepare_dispatch_with_lock_owner_query(
         runtime,
         contribution_id,
@@ -1083,14 +1537,14 @@ fn process_code_lines_batch(
         let Some(rows) = runtime.apply_accepted_batch(&batch, |index| {
             let display = requests
                 .get(index)
-                .and_then(|(request, _)| request.path.file_name())
+                .and_then(|(request, _, _)| request.path.file_name())
                 .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
             (display, index as u128 + 1)
         }) else {
             continue;
         };
         for row in rows {
-            let Some((request, _)) = requests.get(emitted) else {
+            let Some((request, _, cache_admission)) = requests.get(emitted) else {
                 break;
             };
             let value = match row.value() {
@@ -1104,6 +1558,19 @@ fn process_code_lines_batch(
                 3 => "Source unavailable".to_owned(),
                 _ => "Code lines provider returned no value".to_owned(),
             });
+            if let Some(admission) = cache_admission.as_ref()
+                && host_extension_column_cache_key(&request.path).as_ref()
+                    == Some(&admission.key)
+                && let Ok(mut cache) = cache.lock()
+            {
+                cache.insert(
+                    admission.clone(),
+                    CodeLinesCachedValueV1 {
+                        value: value.clone(),
+                        error: error.clone(),
+                    },
+                );
+            }
             if current_epoch.load(Ordering::Acquire) == epoch {
                 if !publish_code_lines_result(
                     results,
@@ -1131,11 +1598,15 @@ fn process_code_lines_batch(
 }
 
 fn emit_code_lines_batch_error(
-    requests: Vec<(explorer_ui::code_lines_column::CodeLinesRequestV1, Vec<u8>)>,
+    requests: Vec<(
+        explorer_ui::code_lines_column::CodeLinesRequestV1,
+        Vec<u8>,
+        Option<HostExtensionColumnCacheAdmissionV1>,
+    )>,
     message: &str,
     results: &mpsc::SyncSender<explorer_ui::code_lines_column::CodeLinesResultV1>,
 ) {
-    for (request, _) in requests {
+    for (request, _, _) in requests {
         if !publish_code_lines_result(
             results,
             explorer_ui::code_lines_column::CodeLinesResultV1 {
@@ -1180,6 +1651,255 @@ fn read_code_lines_file_bounded(path: &Path) -> Result<Option<Vec<u8>>, String> 
 }
 
 const CODE_LINES_DIRECTORY_MAGIC_V1: &[u8; 8] = b"SECLDIR1";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CodeLinesDirectoryCacheKeyV1 {
+    canonical_path: String,
+    modified_seconds: u64,
+    modified_nanos: u32,
+}
+
+fn code_lines_directory_cache_directory() -> Option<PathBuf> {
+    std::env::var_os("SUPEREXPLORER_CODE_LINES_CACHE")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("LOCALAPPDATA")
+                .or_else(|| std::env::var_os("APPDATA"))
+                .map(|root| {
+                    PathBuf::from(root)
+                        .join("RustGpuiExplorer")
+                        .join("cache")
+                        .join("code-lines")
+                        .join("directories")
+                        .join("v1")
+                })
+        })
+}
+
+fn code_lines_directory_cache_key(path: &Path) -> Option<CodeLinesDirectoryCacheKeyV1> {
+    let canonical = fs::canonicalize(path).ok()?;
+    let metadata = fs::metadata(&canonical).ok()?;
+    if !metadata.is_dir() {
+        return None;
+    }
+    let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
+    let mut canonical_path = canonical.to_string_lossy().into_owned();
+    #[cfg(windows)]
+    canonical_path.make_ascii_lowercase();
+    Some(CodeLinesDirectoryCacheKeyV1 {
+        canonical_path,
+        modified_seconds: modified.as_secs(),
+        modified_nanos: modified.subsec_nanos(),
+    })
+}
+
+fn persistent_code_lines_hash_v1(input: &str) -> u64 {
+    input
+        .as_bytes()
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
+}
+
+fn code_lines_directory_cache_path(
+    directory: &Path,
+    key: &CodeLinesDirectoryCacheKeyV1,
+) -> PathBuf {
+    directory.join(format!(
+        "{:016x}.code-lines-directory-cache",
+        persistent_code_lines_hash_v1(&key.canonical_path)
+    ))
+}
+
+fn read_code_lines_directory_cache(
+    directory: Option<&Path>,
+    key: &CodeLinesDirectoryCacheKeyV1,
+) -> Option<explorer_ui::code_lines_column::CodeLinesValueV1> {
+    let path = code_lines_directory_cache_path(directory?, key);
+    let metadata = fs::symlink_metadata(&path).ok()?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() > CODE_LINES_DIRECTORY_CACHE_MAX_RECORD_BYTES_V1
+    {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).ok()?);
+    fs::File::open(path)
+        .ok()?
+        .take(CODE_LINES_DIRECTORY_CACHE_MAX_RECORD_BYTES_V1 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > CODE_LINES_DIRECTORY_CACHE_MAX_RECORD_BYTES_V1 {
+        return None;
+    }
+    let record: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    if record.get("schema")?.as_u64()? != u64::from(CODE_LINES_DIRECTORY_CACHE_SCHEMA_V1)
+        || record.get("canonical_path")?.as_str()? != key.canonical_path
+        || record.get("modified_seconds")?.as_u64()? != key.modified_seconds
+        || record.get("modified_nanos")?.as_u64()? != u64::from(key.modified_nanos)
+    {
+        return None;
+    }
+    Some(explorer_ui::code_lines_column::CodeLinesValueV1 {
+        language: record.get("language")?.as_str()?.to_owned(),
+        code: record.get("code")?.as_u64()?,
+        comments: record.get("comments")?.as_u64()?,
+        blanks: record.get("blanks")?.as_u64()?,
+        total: record.get("total")?.as_u64()?,
+    })
+}
+
+fn prune_code_lines_directory_cache(directory: &Path) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    let mut entries = entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".code-lines-directory-cache")
+        })
+        .map(|entry| {
+            (
+                entry
+                    .metadata()
+                    .ok()
+                    .and_then(|value| value.modified().ok())
+                    .unwrap_or(UNIX_EPOCH),
+                entry.path(),
+            )
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.0);
+    let excess = entries
+        .len()
+        .saturating_sub(CODE_LINES_DIRECTORY_CACHE_MAX_FILES_V1.saturating_sub(1));
+    for (_, path) in entries.into_iter().take(excess) {
+        let _ = fs::remove_file(path);
+    }
+}
+
+fn store_code_lines_directory_cache(
+    directory: Option<&Path>,
+    key: &CodeLinesDirectoryCacheKeyV1,
+    value: &explorer_ui::code_lines_column::CodeLinesValueV1,
+) {
+    let Some(directory) = directory else { return };
+    if fs::create_dir_all(directory).is_err() {
+        return;
+    }
+    prune_code_lines_directory_cache(directory);
+    let Ok(bytes) = serde_json::to_vec(&serde_json::json!({
+        "schema": CODE_LINES_DIRECTORY_CACHE_SCHEMA_V1,
+        "canonical_path": key.canonical_path,
+        "modified_seconds": key.modified_seconds,
+        "modified_nanos": key.modified_nanos,
+        "language": value.language,
+        "code": value.code,
+        "comments": value.comments,
+        "blanks": value.blanks,
+        "total": value.total,
+    })) else {
+        return;
+    };
+    if bytes.len() as u64 > CODE_LINES_DIRECTORY_CACHE_MAX_RECORD_BYTES_V1 {
+        return;
+    }
+    let destination = code_lines_directory_cache_path(directory, key);
+    let temporary = directory.join(format!(
+        ".{:016x}.{}-{}.tmp",
+        persistent_code_lines_hash_v1(&key.canonical_path),
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |value| value.as_nanos())
+    ));
+    if fs::write(&temporary, bytes).is_ok()
+        && replace_code_lines_cache_file(&temporary, &destination).is_err()
+    {
+        let _ = fs::remove_file(temporary);
+    }
+}
+
+#[cfg(windows)]
+fn replace_code_lines_cache_file(temporary: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::{iter, os::windows::ffi::OsStrExt as _};
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
+    }
+    let temporary = temporary
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect::<Vec<_>>();
+    if unsafe { MoveFileExW(temporary.as_ptr(), destination.as_ptr(), 0x1 | 0x8) } == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_code_lines_cache_file(temporary: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(temporary, destination)
+}
+
+/// Uses the same locked tokei library as the Code Lines plugin for directories.
+/// Directory contents are intentionally not copied into the bounded plugin input
+/// stream: large source trees such as `D:\SuperExplorer\vendor` can exceed that
+/// transport limit even though their aggregate result is only five integers.
+fn measure_code_lines_directory(
+    path: &Path,
+) -> Result<Option<explorer_ui::code_lines_column::CodeLinesValueV1>, String> {
+    measure_code_lines_directory_with_cache(path, code_lines_directory_cache_directory().as_deref())
+}
+
+fn measure_code_lines_directory_with_cache(
+    path: &Path,
+    cache_directory: Option<&Path>,
+) -> Result<Option<explorer_ui::code_lines_column::CodeLinesValueV1>, String> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| "Source unavailable".to_owned())?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Ok(None);
+    }
+
+    let key =
+        code_lines_directory_cache_key(path).ok_or_else(|| "Source unavailable".to_owned())?;
+    if let Some(value) = read_code_lines_directory_cache(cache_directory, &key) {
+        return Ok(Some(value));
+    }
+    let mut languages = tokei::Languages::new();
+    languages.get_statistics(&[path], &[], &tokei::Config::default());
+    let total = languages.total();
+    let language = if languages.len() == 1 {
+        languages
+            .keys()
+            .next()
+            .map_or_else(|| "Folder".to_owned(), |kind| kind.name().to_owned())
+    } else {
+        "Mixed folder".to_owned()
+    };
+    let value = explorer_ui::code_lines_column::CodeLinesValueV1 {
+        language,
+        code: total.code as u64,
+        comments: total.comments as u64,
+        blanks: total.blanks as u64,
+        total: total.lines() as u64,
+    };
+    if code_lines_directory_cache_key(path).as_ref() == Some(&key) {
+        store_code_lines_directory_cache(cache_directory, &key, &value);
+    }
+    Ok(Some(value))
+}
 
 fn read_code_lines_path_bounded(path: &Path) -> Result<Option<Vec<u8>>, String> {
     let metadata = fs::symlink_metadata(path).map_err(|_| "Source unavailable".to_owned())?;
@@ -1245,8 +1965,106 @@ fn read_code_lines_path_bounded(path: &Path) -> Result<Option<Vec<u8>>, String> 
     Ok(Some(packed))
 }
 
-fn lock_owner_query_service() -> explorer_extension_host::HostLockOwnerQueryServiceV1 {
-    explorer_extension_host::HostLockOwnerQueryServiceV1::new(|path, _deadline_millis| {
+const LOCK_OWNER_CACHE_TTL_V1: Duration = Duration::from_secs(2);
+const LOCK_OWNER_CACHE_CAP_V1: usize = 1_024;
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct LockOwnerCacheKeyV1 {
+    canonical_path: PathBuf,
+    source_size: u64,
+    modified_seconds: u64,
+    modified_nanos: u32,
+}
+
+#[derive(Clone)]
+struct LockOwnerCacheEntryV1 {
+    generation: u64,
+    stored_at: Instant,
+    status: explorer_extension_api::LockOwnerQueryStatusV1,
+    owners: Vec<explorer_extension_api::LockOwnerRecordV1>,
+}
+
+static LOCK_OWNER_CACHE_V1: OnceLock<Mutex<HashMap<LockOwnerCacheKeyV1, LockOwnerCacheEntryV1>>> =
+    OnceLock::new();
+
+fn lock_owner_cache_key(path: &Path) -> Option<LockOwnerCacheKeyV1> {
+    let canonical_path = fs::canonicalize(path).ok()?;
+    let metadata = fs::metadata(&canonical_path).ok()?;
+    let modified = metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    Some(LockOwnerCacheKeyV1 {
+        canonical_path,
+        source_size: metadata.len(),
+        modified_seconds: modified.as_secs(),
+        modified_nanos: modified.subsec_nanos(),
+    })
+}
+
+fn lock_owner_cache_lookup(
+    key: &LockOwnerCacheKeyV1,
+    generation: u64,
+    now: Instant,
+) -> Option<(
+    explorer_extension_api::LockOwnerQueryStatusV1,
+    Vec<explorer_extension_api::LockOwnerRecordV1>,
+)> {
+    let cache = LOCK_OWNER_CACHE_V1
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .ok()?;
+    let entry = cache.get(key)?;
+    (entry.generation == generation
+        && now.saturating_duration_since(entry.stored_at) <= LOCK_OWNER_CACHE_TTL_V1)
+        .then(|| (entry.status, entry.owners.clone()))
+}
+
+fn lock_owner_cache_store(
+    key: LockOwnerCacheKeyV1,
+    generation: u64,
+    status: explorer_extension_api::LockOwnerQueryStatusV1,
+    owners: Vec<explorer_extension_api::LockOwnerRecordV1>,
+    now: Instant,
+) {
+    if status != explorer_extension_api::LockOwnerQueryStatusV1::READY
+        && status != explorer_extension_api::LockOwnerQueryStatusV1::EMPTY
+    {
+        return;
+    }
+    let Ok(mut cache) = LOCK_OWNER_CACHE_V1
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    else {
+        return;
+    };
+    if cache.len() >= LOCK_OWNER_CACHE_CAP_V1 && !cache.contains_key(&key) {
+        cache.clear();
+    }
+    cache.insert(
+        key,
+        LockOwnerCacheEntryV1 {
+            generation,
+            stored_at: now,
+            status,
+            owners,
+        },
+    );
+}
+
+fn lock_owner_query_service(
+    generation: u64,
+) -> explorer_extension_host::HostLockOwnerQueryServiceV1 {
+    explorer_extension_host::HostLockOwnerQueryServiceV1::new(move |path, _deadline_millis| {
+        let cache_key = lock_owner_cache_key(path);
+        let now = Instant::now();
+        if let Some(hit) = cache_key
+            .as_ref()
+            .and_then(|key| lock_owner_cache_lookup(key, generation, now))
+        {
+            return hit;
+        }
         let request = explorer_model::LockOwnerDiscoveryRequest {
             resources: vec![explorer_model::LocationDescriptor::file_system(
                 path.clone(),
@@ -1256,7 +2074,7 @@ fn lock_owner_query_service() -> explorer_extension_host::HostLockOwnerQueryServ
             &request,
             &explorer_model::CancellationToken::new(),
         );
-        match outcome {
+        let projected = match outcome {
             explorer_model::LockOwnerDiscoveryTerminal::Ready(owners) => (
                 explorer_extension_api::LockOwnerQueryStatusV1::READY,
                 owners
@@ -1297,7 +2115,11 @@ fn lock_owner_query_service() -> explorer_extension_host::HostLockOwnerQueryServ
                 explorer_extension_api::LockOwnerQueryStatusV1::HOST_ERROR,
                 Vec::new(),
             ),
+        };
+        if let Some(cache_key) = cache_key {
+            lock_owner_cache_store(cache_key, generation, projected.0, projected.1.clone(), now);
         }
+        projected
     })
 }
 
@@ -1305,7 +2127,7 @@ fn parse_batch_details_value(
     bytes: &[u8],
     mode: BatchDetailsColumnModeV1,
 ) -> Option<explorer_ui::code_lines_column::CodeLinesValueV1> {
-    if mode == BatchDetailsColumnModeV1::CodeLines {
+    if mode != BatchDetailsColumnModeV1::LockOwner {
         return parse_code_lines_value(bytes);
     }
     let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
@@ -1335,8 +2157,14 @@ fn parse_code_lines_value(
 impl explorer_ui::code_lines_column::CodeLinesRuntimePortV1 for ApplicationCodeLinesRuntimeV1 {
     fn config(&self) -> explorer_ui::code_lines_column::CodeLinesColumnConfigV1 {
         let mut config = explorer_ui::code_lines_column::CodeLinesColumnConfigV1::default();
+        config.option_package_id.clone_from(&self.option_package_id);
         if self.mode == BatchDetailsColumnModeV1::LockOwner {
             config.descriptor = explorer_ui::code_lines_column::lock_owner_column_descriptor();
+        } else if self.mode == BatchDetailsColumnModeV1::LuaCodeLines {
+            config.descriptor.id = explorer_model::ColumnId::Extension {
+                package_id: "lua-tokei-code-lines-column".to_owned(),
+                column_id: explorer_ui::code_lines_column::CODE_LINES_COLUMN_ID.to_owned(),
+            };
         }
         config
     }
@@ -1345,7 +2173,11 @@ impl explorer_ui::code_lines_column::CodeLinesRuntimePortV1 for ApplicationCodeL
         &self,
         requests: Vec<explorer_ui::code_lines_column::CodeLinesRequestV1>,
     ) {
-        let Some(first) = requests.first() else {
+        let (hits, misses) = partition_code_lines_cache_hits(&self.cache, requests);
+        if let Ok(mut cached_results) = self.cached_results.lock() {
+            cached_results.extend(hits);
+        }
+        let Some(first) = misses.first() else {
             return;
         };
         let active = (first.context.tab_id, first.context.generation);
@@ -1356,10 +2188,10 @@ impl explorer_ui::code_lines_column::CodeLinesRuntimePortV1 for ApplicationCodeL
         if state.active != Some(active) {
             self.request_epoch.fetch_add(1, Ordering::AcqRel);
             state.active = Some(active);
-            state.requests = Some(requests);
+            state.requests = Some(misses);
         } else {
             let queued = state.requests.get_or_insert_with(Vec::new);
-            for request in requests {
+            for request in misses {
                 if request.context.tab_id == active.0
                     && request.context.generation == active.1
                     && !queued.iter().any(|queued_request| {
@@ -1387,10 +2219,21 @@ impl explorer_ui::code_lines_column::CodeLinesRuntimePortV1 for ApplicationCodeL
         }
     }
 
+    fn invalidate_directory_cache(&self, directory: &Path) {
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.invalidate_directory(directory);
+        }
+    }
+
     fn drain_code_lines_results(&self) -> Vec<explorer_ui::code_lines_column::CodeLinesResultV1> {
-        self.results
+        let mut ready = self
+            .cached_results
             .lock()
-            .map_or_else(|_| Vec::new(), |results| results.try_iter().collect())
+            .map_or_else(|_| Vec::new(), |mut results| std::mem::take(&mut *results));
+        if let Ok(results) = self.results.lock() {
+            ready.extend(results.try_iter());
+        }
+        ready
     }
 
     fn drain_render_results(&self) -> bool {
@@ -1430,6 +2273,7 @@ struct ApplicationSizeMapRuntimeV1 {
     results: Mutex<mpsc::Receiver<explorer_ui::size_map_view::SizeMapMeasureResultV1>>,
     result_tx: mpsc::Sender<explorer_ui::size_map_view::SizeMapMeasureResultV1>,
     renderer: AsyncSizeMapRendererV1,
+    package_incarnation: u64,
 }
 
 #[derive(Default)]
@@ -1496,20 +2340,60 @@ impl ApplicationSizeMapRuntimeV1 {
                         if worker_epoch.load(Ordering::Acquire) != batch_epoch {
                             break;
                         }
-                        let (bytes, partial, error, cancelled) =
-                            measure_size_map_path(&request.path, 100_000, 128, || {
-                                worker_epoch.load(Ordering::Acquire) != batch_epoch
-                            });
-                        if cancelled || worker_epoch.load(Ordering::Acquire) != batch_epoch {
+                        let scan = measure_size_map_tree(
+                            &request.path,
+                            &request.item_id,
+                            100_000,
+                            128,
+                            SizeMapHardLinkPolicyV1::PerEntry,
+                            || worker_epoch.load(Ordering::Acquire) != batch_epoch,
+                        );
+                        if scan.outcome.terminal == SizeMapScanTerminalV1::Cancelled
+                            || worker_epoch.load(Ordering::Acquire) != batch_epoch
+                        {
+                            break;
+                        }
+                        for nodes in scan.nodes.chunks(SIZE_MAP_TREE_DELTA_BATCH_CAP_V1) {
+                            if worker_epoch.load(Ordering::Acquire) != batch_epoch {
+                                break;
+                            }
+                            if worker_result_tx
+                                .send(explorer_ui::size_map_view::SizeMapMeasureResultV1 {
+                                    context: request.context.clone(),
+                                    item_id: request.item_id.clone(),
+                                    exact_bytes: None,
+                                    partial: true,
+                                    error: Some("Scanning recursively".to_owned()),
+                                    tree_nodes: nodes.to_vec(),
+                                })
+                                .is_err()
+                            {
+                                return;
+                            }
+                        }
+                        if worker_epoch.load(Ordering::Acquire) != batch_epoch {
                             break;
                         }
                         if worker_result_tx
                             .send(explorer_ui::size_map_view::SizeMapMeasureResultV1 {
                                 context: request.context,
                                 item_id: request.item_id,
-                                exact_bytes: (!partial).then_some(bytes),
-                                partial,
-                                error,
+                                exact_bytes: (scan.outcome.terminal
+                                    == SizeMapScanTerminalV1::Complete)
+                                    .then_some(scan.outcome.bytes),
+                                partial: scan.outcome.terminal != SizeMapScanTerminalV1::Complete,
+                                error: (scan.outcome.terminal != SizeMapScanTerminalV1::Complete)
+                                    .then(|| {
+                                        format!(
+                                            "{}: {}",
+                                            scan.outcome.terminal.label(),
+                                            scan.outcome
+                                                .diagnostic
+                                                .as_deref()
+                                                .unwrap_or("Size Map scan did not complete")
+                                        )
+                                    }),
+                                tree_nodes: Vec::new(),
                             })
                             .is_err()
                         {
@@ -1525,6 +2409,9 @@ impl ApplicationSizeMapRuntimeV1 {
             results: Mutex::new(result_rx),
             result_tx,
             renderer: AsyncSizeMapRendererV1::start(renderer)?,
+            package_incarnation: NEXT_SIZE_MAP_RUNTIME_INCARNATION_V1
+                .fetch_add(1, Ordering::AcqRel)
+                .max(1),
         }))
     }
 }
@@ -1538,6 +2425,7 @@ fn size_map_scanning_result(
         exact_bytes: None,
         partial: true,
         error: Some("Scanning recursively".to_owned()),
+        tree_nodes: Vec::new(),
     }
 }
 
@@ -1551,6 +2439,7 @@ fn size_map_terminal_result(
         exact_bytes: None,
         partial: true,
         error: Some(message.into()),
+        tree_nodes: Vec::new(),
     }
 }
 
@@ -1601,28 +2490,332 @@ fn enqueue_size_map_requests(
     rejected
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SizeMapScanTerminalV1 {
+    Complete,
+    Partial,
+    Cancelled,
+    Unavailable,
+    ResourceLimited,
+    Failed,
+}
+
+impl SizeMapScanTerminalV1 {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Partial => "partial",
+            Self::Cancelled => "cancelled",
+            Self::Unavailable => "unavailable",
+            Self::ResourceLimited => "resource-limited",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SizeMapHardLinkPolicyV1 {
+    PerEntry,
+    IdentityOnce,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SizeMapScanOutcomeV1 {
+    bytes: u64,
+    terminal: SizeMapScanTerminalV1,
+    diagnostic: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SizeMapTreeScanV1 {
+    outcome: SizeMapScanOutcomeV1,
+    nodes: Vec<explorer_ui::size_map_view::SizeMapTreeNodeV1>,
+}
+
+#[derive(Clone, Debug)]
+struct PendingSizeMapTreeNodeV1 {
+    path: PathBuf,
+    parent: Option<usize>,
+    is_container: bool,
+    bytes: u64,
+    partial: bool,
+    error: Option<String>,
+}
+
+fn size_map_tree_item_id(
+    root_item_id: &explorer_model::ShellItemId,
+    relative: &Path,
+    salt: u64,
+) -> explorer_model::ShellItemId {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    b"superexplorer:size-map-tree-node:v1".hash(&mut hasher);
+    root_item_id.provider_bytes().hash(&mut hasher);
+    relative.to_string_lossy().to_lowercase().hash(&mut hasher);
+    salt.hash(&mut hasher);
+    explorer_model::ShellItemId::from_provider_bytes(hasher.finish().to_le_bytes())
+        .unwrap_or_else(|| root_item_id.clone())
+}
+
+#[cfg(windows)]
+fn filesystem_file_identity_v1(path: &Path) -> Option<Vec<u8>> {
+    use std::{mem::size_of, os::windows::io::AsRawHandle};
+    use windows::Win32::{
+        Foundation::HANDLE,
+        Storage::FileSystem::{FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx},
+    };
+
+    let file = fs::File::open(path).ok()?;
+    let handle = HANDLE(file.as_raw_handle());
+    let mut info = FILE_ID_INFO::default();
+    let size = u32::try_from(size_of::<FILE_ID_INFO>()).ok()?;
+    // SAFETY: `file` owns a live handle for the duration of this call and
+    // `info` is writable storage of exactly the advertised FILE_ID_INFO size.
+    unsafe {
+        GetFileInformationByHandleEx(handle, FileIdInfo, (&raw mut info).cast(), size).ok()?;
+    }
+    let mut identity = Vec::with_capacity(24);
+    identity.extend_from_slice(&info.VolumeSerialNumber.to_le_bytes());
+    identity.extend_from_slice(&info.FileId.Identifier);
+    Some(identity)
+}
+
+#[cfg(not(windows))]
+fn filesystem_file_identity_v1(_path: &Path) -> Option<Vec<u8>> {
+    None
+}
+
+fn measure_size_map_tree(
+    root: &Path,
+    root_item_id: &explorer_model::ShellItemId,
+    max_entries: u32,
+    max_depth: u16,
+    hard_link_policy: SizeMapHardLinkPolicyV1,
+    mut cancelled: impl FnMut() -> bool,
+) -> SizeMapTreeScanV1 {
+    let mut pending: Vec<(PathBuf, Option<usize>, u16)> = vec![(root.to_path_buf(), None, 0_u16)];
+    let mut nodes = Vec::<PendingSizeMapTreeNodeV1>::new();
+    let mut terminal = SizeMapScanTerminalV1::Complete;
+    let mut diagnostic = None;
+    let mut counted_file_identities = HashSet::<Vec<u8>>::new();
+    while let Some((path, parent, depth)) = pending.pop() {
+        if cancelled() {
+            terminal = SizeMapScanTerminalV1::Cancelled;
+            diagnostic = Some("Size Map scan cancelled".to_owned());
+            break;
+        }
+        if nodes.len() >= usize::try_from(max_entries).unwrap_or(usize::MAX) {
+            terminal = SizeMapScanTerminalV1::ResourceLimited;
+            diagnostic = Some("Size Map scan resource limit reached".to_owned());
+            break;
+        }
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(cause) => {
+                if parent.is_none() {
+                    terminal = SizeMapScanTerminalV1::Unavailable;
+                    diagnostic = Some(cause.to_string());
+                    break;
+                }
+                if let Some(parent) = parent.and_then(|index| nodes.get_mut(index)) {
+                    parent.partial = true;
+                    parent.error.get_or_insert_with(|| cause.to_string());
+                }
+                continue;
+            }
+        };
+        // Default policy is no-follow for symlinks, junctions and reparse-like
+        // entries. They do not receive a child node and cannot form a cycle.
+        if metadata.file_type().is_symlink() {
+            if parent.is_none() {
+                terminal = SizeMapScanTerminalV1::Unavailable;
+                diagnostic = Some("Size Map root is a symbolic link or reparse point".to_owned());
+                break;
+            }
+            continue;
+        }
+        if !metadata.is_file() && !metadata.is_dir() {
+            if parent.is_none() {
+                terminal = SizeMapScanTerminalV1::Failed;
+                diagnostic = Some("Size Map root is not a file or directory".to_owned());
+                break;
+            }
+            continue;
+        }
+        let is_container = metadata.is_dir();
+        let file_bytes =
+            if metadata.is_file() && hard_link_policy == SizeMapHardLinkPolicyV1::IdentityOnce {
+                filesystem_file_identity_v1(&path).map_or(metadata.len(), |identity| {
+                    if counted_file_identities.insert(identity) {
+                        metadata.len()
+                    } else {
+                        0
+                    }
+                })
+            } else {
+                metadata
+                    .is_file()
+                    .then_some(metadata.len())
+                    .unwrap_or_default()
+            };
+        let index = nodes.len();
+        nodes.push(PendingSizeMapTreeNodeV1 {
+            path: path.clone(),
+            parent,
+            is_container,
+            bytes: file_bytes,
+            partial: false,
+            error: None,
+        });
+        if !is_container {
+            continue;
+        }
+        if depth >= max_depth {
+            nodes[index].partial = true;
+            nodes[index].error = Some("Size Map scan depth limit reached".to_owned());
+            terminal = SizeMapScanTerminalV1::ResourceLimited;
+            diagnostic.get_or_insert_with(|| "Size Map scan depth limit reached".to_owned());
+            continue;
+        }
+        match fs::read_dir(&path) {
+            Ok(entries) => {
+                for entry in entries {
+                    if cancelled() {
+                        terminal = SizeMapScanTerminalV1::Cancelled;
+                        diagnostic = Some("Size Map scan cancelled".to_owned());
+                        break;
+                    }
+                    match entry {
+                        Ok(entry) => pending.push((entry.path(), Some(index), depth + 1)),
+                        Err(cause) => {
+                            nodes[index].partial = true;
+                            nodes[index].error.get_or_insert_with(|| cause.to_string());
+                        }
+                    }
+                }
+            }
+            Err(cause) => {
+                nodes[index].partial = true;
+                nodes[index].error = Some(cause.to_string());
+            }
+        }
+        if terminal == SizeMapScanTerminalV1::Cancelled {
+            break;
+        }
+    }
+
+    for index in (0..nodes.len()).rev() {
+        let Some(parent_index) = nodes[index].parent else {
+            continue;
+        };
+        let child_bytes = nodes[index].bytes;
+        let child_partial = nodes[index].partial;
+        let child_error = nodes[index].error.clone();
+        nodes[parent_index].bytes = nodes[parent_index].bytes.saturating_add(child_bytes);
+        if child_partial {
+            nodes[parent_index].partial = true;
+            if nodes[parent_index].error.is_none() {
+                nodes[parent_index].error = child_error;
+            }
+        }
+    }
+
+    if terminal == SizeMapScanTerminalV1::Complete && nodes.first().is_some_and(|node| node.partial)
+    {
+        terminal = SizeMapScanTerminalV1::Partial;
+        diagnostic = nodes.first().and_then(|node| node.error.clone());
+    }
+    let outcome = SizeMapScanOutcomeV1 {
+        bytes: nodes.first().map_or(0, |node| node.bytes),
+        terminal,
+        diagnostic,
+    };
+    let mut ids = Vec::with_capacity(nodes.len());
+    let mut used = HashSet::new();
+    for node in &nodes {
+        if node.parent.is_none() {
+            ids.push(root_item_id.clone());
+            used.insert(root_item_id.clone());
+            continue;
+        }
+        let relative = node.path.strip_prefix(root).unwrap_or(&node.path);
+        let mut salt = 0_u64;
+        let id = loop {
+            let candidate = size_map_tree_item_id(root_item_id, relative, salt);
+            if used.insert(candidate.clone()) {
+                break candidate;
+            }
+            salt = salt.saturating_add(1);
+        };
+        ids.push(id);
+    }
+    let public_nodes = nodes
+        .iter()
+        .enumerate()
+        .skip(1)
+        .filter_map(|(index, node)| {
+            let parent_item_id = ids.get(node.parent?)?.clone();
+            let item_id = ids[index].clone();
+            let display_name = node.path.file_name().map_or_else(
+                || node.path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            Some(explorer_ui::size_map_view::SizeMapTreeNodeV1 {
+                item_id,
+                root_item_id: root_item_id.clone(),
+                parent_item_id,
+                location: explorer_model::LocationDescriptor::file_system(&node.path),
+                display_name,
+                type_name: if node.is_container { "Folder" } else { "File" }.to_owned(),
+                is_container: node.is_container,
+                exact_bytes: (!node.partial).then_some(node.bytes),
+                partial: node.partial,
+                error: node.error.clone(),
+            })
+        })
+        .collect();
+    SizeMapTreeScanV1 {
+        outcome,
+        nodes: public_nodes,
+    }
+}
+
 fn measure_size_map_path(
     root: &Path,
     max_entries: u32,
     max_depth: u16,
     mut cancelled: impl FnMut() -> bool,
-) -> (u64, bool, Option<String>, bool) {
+) -> SizeMapScanOutcomeV1 {
     let mut pending = vec![(root.to_path_buf(), 0_u16)];
     let mut visited = 0_u32;
     let mut bytes = 0_u64;
     let mut error = None;
     while let Some((path, depth)) = pending.pop() {
         if cancelled() {
-            return (bytes, true, None, true);
+            return SizeMapScanOutcomeV1 {
+                bytes,
+                terminal: SizeMapScanTerminalV1::Cancelled,
+                diagnostic: Some("Size Map scan cancelled".to_owned()),
+            };
         }
         if visited >= max_entries {
             error.get_or_insert_with(|| "Size Map scan resource limit reached".to_owned());
-            break;
+            return SizeMapScanOutcomeV1 {
+                bytes,
+                terminal: SizeMapScanTerminalV1::ResourceLimited,
+                diagnostic: error,
+            };
         }
         visited = visited.saturating_add(1);
         let metadata = match fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(cause) => {
+                if visited == 1 {
+                    return SizeMapScanOutcomeV1 {
+                        bytes,
+                        terminal: SizeMapScanTerminalV1::Unavailable,
+                        diagnostic: Some(cause.to_string()),
+                    };
+                }
                 error.get_or_insert_with(|| cause.to_string());
                 continue;
             }
@@ -1635,6 +2828,13 @@ fn measure_size_map_path(
             continue;
         }
         if !metadata.is_dir() {
+            if visited == 1 {
+                return SizeMapScanOutcomeV1 {
+                    bytes,
+                    terminal: SizeMapScanTerminalV1::Failed,
+                    diagnostic: Some("Size Map root is not a file or directory".to_owned()),
+                };
+            }
             continue;
         }
         if depth >= max_depth {
@@ -1645,14 +2845,19 @@ fn measure_size_map_path(
             Ok(entries) => {
                 for entry in entries {
                     if cancelled() {
-                        return (bytes, true, None, true);
+                        return SizeMapScanOutcomeV1 {
+                            bytes,
+                            terminal: SizeMapScanTerminalV1::Cancelled,
+                            diagnostic: Some("Size Map scan cancelled".to_owned()),
+                        };
                     }
                     let queued = u32::try_from(pending.len()).unwrap_or(u32::MAX);
                     if visited.saturating_add(queued) >= max_entries {
-                        error.get_or_insert_with(|| {
-                            "Size Map scan resource limit reached".to_owned()
-                        });
-                        break;
+                        return SizeMapScanOutcomeV1 {
+                            bytes,
+                            terminal: SizeMapScanTerminalV1::ResourceLimited,
+                            diagnostic: Some("Size Map scan resource limit reached".to_owned()),
+                        };
                     }
                     match entry {
                         Ok(entry) => pending.push((entry.path(), depth.saturating_add(1))),
@@ -1667,7 +2872,15 @@ fn measure_size_map_path(
             }
         }
     }
-    (bytes, error.is_some(), error, false)
+    SizeMapScanOutcomeV1 {
+        bytes,
+        terminal: if error.is_some() {
+            SizeMapScanTerminalV1::Partial
+        } else {
+            SizeMapScanTerminalV1::Complete
+        },
+        diagnostic: error,
+    }
 }
 
 impl explorer_ui::size_map_view::ExtensionSizeMapRuntimePortV1 for ApplicationSizeMapRuntimeV1 {
@@ -1747,48 +2960,122 @@ impl explorer_ui::size_map_view::ExtensionSizeMapRuntimePortV1 for ApplicationSi
         if node_ids.iter().collect::<HashSet<_>>().len() != node_ids.len() {
             return size_map_render_fallback("Size Map item identity collision");
         }
-        let mappings = context
-            .nodes
+        let (projected_indexes, omitted_indexes) = partition_size_map_projection(&context.nodes);
+        let mut mappings = projected_indexes
             .iter()
-            .zip(&node_ids)
-            .map(|(node, node_id)| {
-                let status = if node.partial {
-                    "Partial"
-                } else if node.error.is_some() {
-                    "Failed"
-                } else if node.exact_bytes.is_some() {
-                    "Complete"
-                } else {
-                    "Unavailable"
+            .map(|index| {
+                let node = &context.nodes[*index];
+                let node_id = node_ids[*index];
+                let public_status = size_map_node_status_v1(node);
+                let status = match public_status.into_raw() {
+                    1 => "Complete",
+                    2 => "Partial",
+                    3 => "Unavailable",
+                    4 => "Failed",
+                    5 => "Cancelled",
+                    6 => "Resource limited",
+                    _ => "Unavailable",
                 };
-                (*node_id, (node.item_id.clone(), status.to_owned()))
+                (
+                    node_id,
+                    SizeMapProjectionV1::Item(
+                        explorer_ui::size_map_view::SizeMapInteractionTargetV1 {
+                            item_id: node.item_id.clone(),
+                            selection_item_id: node.selection_item_id.clone(),
+                            location: node.location.clone(),
+                            is_container: node.is_container,
+                        },
+                        status.to_owned(),
+                    ),
+                )
             })
             .collect::<HashMap<_, _>>();
-        let public_nodes = context
-            .nodes
+        let mut public_nodes = projected_indexes
             .iter()
-            .zip(&node_ids)
-            .map(|(node, node_id)| explorer_extension_ui_api::SizeMapNodeV1 {
-                node_id: *node_id,
-                parent_id: None.into(),
-                name: node.display_name.clone().into(),
-                kind: if node.is_container {
-                    SizeMapNodeKindV1::DIRECTORY
-                } else {
-                    SizeMapNodeKindV1::FILE
-                },
-                exact_bytes: node.exact_bytes.into(),
-                status: if node.partial {
-                    SizeMapNodeStatusV1::PARTIAL
-                } else if node.error.is_some() {
-                    SizeMapNodeStatusV1::FAILED
-                } else if node.exact_bytes.is_some() {
-                    SizeMapNodeStatusV1::COMPLETE
-                } else {
-                    SizeMapNodeStatusV1::UNAVAILABLE
-                },
+            .map(|index| {
+                let node = &context.nodes[*index];
+                explorer_extension_ui_api::SizeMapNodeV1 {
+                    node_id: node_ids[*index],
+                    parent_id: node
+                        .parent_item_id
+                        .as_ref()
+                        .and_then(|parent| {
+                            item_ids
+                                .iter()
+                                .position(|item_id| item_id == parent)
+                                .map(|parent_index| node_ids[parent_index])
+                        })
+                        .into(),
+                    name: node.display_name.clone().into(),
+                    kind: if node.is_container {
+                        SizeMapNodeKindV1::DIRECTORY
+                    } else {
+                        SizeMapNodeKindV1::FILE
+                    },
+                    exact_bytes: node.exact_bytes.into(),
+                    status: size_map_node_status_v1(node),
+                }
             })
             .collect::<Vec<_>>();
+        if !omitted_indexes.is_empty() {
+            let mut identity = Vec::with_capacity(omitted_indexes.len() * 16);
+            identity.extend_from_slice(b"superexplorer:size-map:other:v1");
+            identity.extend_from_slice(&generation.to_le_bytes());
+            for index in &omitted_indexes {
+                identity.extend_from_slice(context.nodes[*index].item_id.provider_bytes());
+            }
+            let mut other_id = explorer_extension_ui_api::StableIdV1::new(
+                explorer_extension_ui_api::EXTENSION_ID_NAMESPACE_V1,
+                revision_for(&identity),
+            );
+            if node_ids.contains(&other_id) {
+                other_id = explorer_extension_ui_api::StableIdV1::new(
+                    explorer_extension_ui_api::EXTENSION_ID_NAMESPACE_V1,
+                    other_id.value ^ 0xa5a5_a5a5_a5a5_a5a5,
+                );
+            }
+            let complete = omitted_indexes.iter().all(|index| {
+                let node = &context.nodes[*index];
+                !node.partial && node.error.is_none() && node.exact_bytes.is_some()
+            });
+            let omitted_ids = omitted_indexes
+                .iter()
+                .map(|index| context.nodes[*index].item_id.clone())
+                .collect::<HashSet<_>>();
+            let bytes = complete.then(|| {
+                omitted_indexes.iter().fold(0_u64, |total, index| {
+                    let node = &context.nodes[*index];
+                    if node
+                        .parent_item_id
+                        .as_ref()
+                        .is_some_and(|parent| omitted_ids.contains(parent))
+                    {
+                        total
+                    } else {
+                        total.saturating_add(node.exact_bytes.unwrap_or_default())
+                    }
+                })
+            });
+            mappings.insert(
+                other_id,
+                SizeMapProjectionV1::Aggregate(aggregate_size_map_items(
+                    &context.nodes,
+                    &omitted_indexes,
+                )),
+            );
+            public_nodes.push(explorer_extension_ui_api::SizeMapNodeV1 {
+                node_id: other_id,
+                parent_id: None.into(),
+                name: format!("Other ({} items)", omitted_indexes.len()).into(),
+                kind: SizeMapNodeKindV1::OTHER,
+                exact_bytes: bytes.into(),
+                status: if complete {
+                    SizeMapNodeStatusV1::COMPLETE
+                } else {
+                    SizeMapNodeStatusV1::PARTIAL
+                },
+            });
+        }
         let foreground = if context.dark_theme {
             CellColorV1::rgba(245, 245, 245, 255)
         } else {
@@ -1803,15 +3090,18 @@ impl explorer_ui::size_map_view::ExtensionSizeMapRuntimePortV1 for ApplicationSi
             .selected
             .iter()
             .filter_map(|selected| {
-                item_ids
+                projected_indexes
                     .iter()
-                    .position(|item_id| item_id == selected)
-                    .map(|index| node_ids[index])
+                    .find(|index| context.nodes[**index].item_id == *selected)
+                    .map(|index| node_ids[*index])
             })
             .collect();
         let mut public_context = explorer_extension_ui_api::SizeMapRenderContextV1 {
-            generation,
-            render_revision: 0,
+            snapshot: explorer_extension_ui_api::ViewSnapshotIdentityV1 {
+                location_generation: generation,
+                refresh_generation: generation,
+                render_revision: 1,
+            },
             nodes: public_nodes.into(),
             viewport: explorer_extension_ui_api::SizeMapViewportV1 {
                 width_milli: context.viewport_width_milli,
@@ -1828,7 +3118,12 @@ impl explorer_ui::size_map_view::ExtensionSizeMapRuntimePortV1 for ApplicationSi
             selected_node_ids,
             settings: "default".into(),
         };
-        let key = size_map_render_key(&mut public_context, &context.request_context, &item_ids);
+        let key = size_map_render_key(
+            &mut public_context,
+            &context.request_context,
+            &item_ids,
+            self.package_incarnation,
+        );
         let width = context.viewport_width_milli as f32 / 1_000.0;
         let height = context.viewport_height_milli as f32 / 1_000.0;
         self.renderer.render_or_enqueue(SizeMapRenderRequestV1 {
@@ -2143,6 +3438,7 @@ struct ShutdownResources {
     visual_column_runtime: Option<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1>,
     code_lines_runtime: Option<explorer_ui::code_lines_column::CodeLinesRuntimeHandleV1>,
     size_map_runtime: Option<explorer_ui::size_map_view::SizeMapRuntimeHandleV1>,
+    virtual_folder_runtime: Option<explorer_extension_host::SinglePluginVirtualFolderRuntimeV1>,
     extension_job_ui_inbox: Option<explorer_extension_host::ExtensionJobUiInboxV1>,
     extension_job_ui_ingress: Option<explorer_extension_host::ExtensionJobUiIngressV1>,
     safe_mode_incident_offers: Vec<SafeModeIncidentOffer>,
@@ -2223,17 +3519,23 @@ impl ApplicationLifecycle {
         let mut visual_column_runtime = None;
         let mut code_lines_runtime = None;
         let mut size_map_runtime = None;
+        let mut virtual_folder_runtime = None;
         for (path, loaded) in direct_loaded {
-            let (summary, measure, renderer, size_map_renderer, batch_columns) =
-                loaded.into_parts_with_batch_columns();
+            let (summary, measure, renderer, size_map_renderer, batch_columns, virtual_folders) =
+                loaded.into_parts_with_virtual_folders();
             let supports_folder_size = summary.contributions().iter().any(|contribution| {
                 contribution.contribution_id() == FOLDER_SIZE_CONTRIBUTION_ID_V1
             }) && summary.contributions().iter().any(|contribution| {
                 contribution.contribution_id() == FOLDER_SIZE_RENDERER_CONTRIBUTION_ID_V1
             });
             let supports_code_lines = batch_columns.contains(CODE_LINES_CONTRIBUTION_ID_V1);
+            let supports_lua_code_lines =
+                batch_columns.contains(LUA_CODE_LINES_CONTRIBUTION_ID_V1);
             let supports_lock_owner = batch_columns.contains(LOCK_OWNER_CONTRIBUTION_ID_V1);
-            let (visual_runtime, code_runtime) = if supports_code_lines || supports_lock_owner {
+            let (visual_runtime, code_runtime) = if supports_code_lines
+                || supports_lua_code_lines
+                || supports_lock_owner
+            {
                 (
                     None,
                     Some(ApplicationCodeLinesRuntimeV1::start(
@@ -2241,8 +3543,21 @@ impl ApplicationLifecycle {
                         renderer,
                         if supports_lock_owner {
                             BatchDetailsColumnModeV1::LockOwner
+                        } else if supports_lua_code_lines {
+                            BatchDetailsColumnModeV1::LuaCodeLines
                         } else {
                             BatchDetailsColumnModeV1::CodeLines
+                        },
+                        if supports_lock_owner {
+                            "rust-lock-owner-column".to_owned()
+                        } else if path
+                            .to_string_lossy()
+                            .to_ascii_lowercase()
+                            .contains("lua-tokei-code-lines-column")
+                        {
+                            "lua-tokei-code-lines-column".to_owned()
+                        } else {
+                            "rust-tokei-code-lines-column".to_owned()
                         },
                     )?),
                 )
@@ -2273,6 +3588,11 @@ impl ApplicationLifecycle {
             }
             if size_map_runtime.is_none() {
                 size_map_runtime = map_runtime;
+            }
+            if virtual_folder_runtime.is_none()
+                && virtual_folders.contains(SEVEN_Z_RESOURCE_CONTRIBUTION_ID_V1)
+            {
+                virtual_folder_runtime = Some(virtual_folders);
             }
         }
         let loaded_extension_summary = (!summaries.is_empty()).then(|| summaries.join(" | "));
@@ -2366,6 +3686,7 @@ impl ApplicationLifecycle {
                 visual_column_runtime,
                 code_lines_runtime,
                 size_map_runtime,
+                virtual_folder_runtime,
                 extension_job_ui_inbox,
                 extension_job_ui_ingress,
                 safe_mode_incident_offers,
@@ -2422,6 +3743,7 @@ impl ApplicationLifecycle {
             Arc::new(crate::brokered_service::BrokeredExplorerService::new(
                 Arc::clone(&shell_sta),
                 broker_client,
+                self.take_virtual_folder_runtime()?,
             ));
         let shutdown_resources = Arc::clone(&self.resources);
         let folder_scripts = self.automation_handle()?;
@@ -2772,6 +4094,15 @@ impl ApplicationLifecycle {
             .map_err(|_| anyhow::anyhow!("application lifecycle mutex was poisoned"))
     }
 
+    fn take_virtual_folder_runtime(
+        &self,
+    ) -> Result<Option<explorer_extension_host::SinglePluginVirtualFolderRuntimeV1>, Error> {
+        self.resources
+            .lock()
+            .map_err(|_| anyhow::anyhow!("application lifecycle mutex was poisoned"))
+            .map(|mut resources| resources.virtual_folder_runtime.take())
+    }
+
     fn shell_service(&self) -> Result<Arc<ShellStaHandle>, Error> {
         self.resources
             .lock()
@@ -2844,6 +4175,10 @@ fn create_explorer_root(
     root.configure_restore_previous_session(restore_preference);
     root.configure_quick_access(quick_access);
     root.configure_broker_health(broker_health, broker_retry);
+    root.attach_command_prompt_launcher(Arc::new(|working_directory| {
+        explorer_shell_win::launch_command_prompt(working_directory.as_deref())
+            .map_err(|error| format!("Unable to open Command Prompt: {error}"))
+    }));
     if let Some(runtime) = visual_column_runtime {
         root.attach_visual_column_runtime(runtime);
     }
@@ -3332,11 +4667,12 @@ impl Drop for ApplicationLifecycle {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::HashMap,
         fs,
         path::PathBuf,
         sync::atomic::{AtomicU64, AtomicUsize, Ordering},
         sync::{Arc, Mutex},
-        time::{Instant, SystemTime, UNIX_EPOCH},
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
     use abi_stable::std_types::{ROption, RVec};
@@ -3356,13 +4692,23 @@ mod tests {
 
     use super::{
         ApplicationExtensionReadyProjectorV1, ApplicationExtensionUiPumpV1,
-        PendingFolderSizeWorkV1, PendingSizeMapWorkV1, SIZE_MAP_REQUEST_QUEUE_CAP_V1,
-        SafeModeIncidentOfferV1, SafeModeIncidentPortV1, cancel_folder_size_context,
-        cell_render_key, confirm_offered_safe_mode_incident_v1,
-        confirm_presented_safe_mode_incident_v1, emit_post_commit_safe_mode_telemetry_v1,
-        enqueue_folder_size_requests, enqueue_size_map_requests, measure_size_map_path,
-        read_code_lines_file_bounded, read_code_lines_path_bounded, should_restore_saved_tabs,
-        size_map_node_id, size_map_render_key, take_folder_size_requests,
+        CodeLinesCachedValueV1, FolderSizeCachedValueV1, HostExtensionColumnCacheV1,
+        LockOwnerCacheKeyV1,
+        PendingFolderSizeWorkV1, PendingSizeMapWorkV1,
+        SIZE_MAP_REQUEST_QUEUE_CAP_V1,
+        SafeModeIncidentOfferV1, SafeModeIncidentPortV1, SizeMapHardLinkPolicyV1,
+        SizeMapProjectionV1, SizeMapScanOutcomeV1, SizeMapScanTerminalV1, aggregate_size_map_items,
+        cancel_folder_size_context, cell_render_key, code_lines_directory_cache_key,
+        confirm_offered_safe_mode_incident_v1, confirm_presented_safe_mode_incident_v1,
+        emit_post_commit_safe_mode_telemetry_v1, enqueue_folder_size_requests,
+        enqueue_size_map_requests, lock_owner_cache_lookup, lock_owner_cache_store,
+        measure_code_lines_directory,
+        measure_code_lines_directory_with_cache,
+        measure_size_map_path, measure_size_map_tree, partition_size_map_projection,
+        partition_code_lines_cache_hits, partition_folder_size_cache_hits, project_size_map_plan,
+        read_code_lines_directory_cache, read_code_lines_file_bounded,
+        read_code_lines_path_bounded, should_restore_saved_tabs, size_map_node_id,
+        size_map_render_key, take_folder_size_requests,
     };
 
     struct FakeSafeModePortV1 {
@@ -3371,7 +4717,144 @@ mod tests {
     }
 
     #[test]
-    fn cell_render_key_covers_request_theme_and_value_snapshot() {
+    fn host_extension_column_cache_reuses_same_mtime_and_rejects_changed_mtime() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("superexplorer-column-cache-{nonce}"));
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("value.rs");
+        fs::write(&source, "fn main() {}\n").unwrap();
+        let file = fs::OpenOptions::new().write(true).open(&source).unwrap();
+        file.set_times(
+            fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(10)),
+        )
+        .unwrap();
+
+        let mut cache = HostExtensionColumnCacheV1::<u64>::default();
+        let original = cache.admission(&source).expect("host metadata admission");
+        assert!(cache.insert(original.clone(), 41));
+        assert_eq!(cache.get(&original), Some(41));
+
+        let folder_cache = Mutex::new(HostExtensionColumnCacheV1::default());
+        let folder_admission = folder_cache.lock().unwrap().admission(&source).unwrap();
+        folder_cache.lock().unwrap().insert(
+            folder_admission,
+            FolderSizeCachedValueV1 { exact_bytes: 41 },
+        );
+        let request = explorer_ui::folder_size_column::FolderSizeRequestV1 {
+            context: RequestContext::new(TabId::new(), Generation::new(1)),
+            item_id: ShellItemId::from_provider_bytes(b"cached-folder".to_vec()).unwrap(),
+            path: source.clone(),
+        };
+        let (hits, misses) = partition_folder_size_cache_hits(&folder_cache, vec![request.clone()]);
+        assert_eq!(hits.len(), 1, "a host hit is rebound without provider work");
+        assert!(misses.is_empty(), "a host hit must not reach provider dispatch");
+
+        let code_cache = Mutex::new(HostExtensionColumnCacheV1::default());
+        let code_value = explorer_ui::code_lines_column::CodeLinesValueV1 {
+            language: "Rust".to_owned(),
+            code: 1,
+            comments: 0,
+            blanks: 0,
+            total: 1,
+        };
+        let code_admission = code_cache.lock().unwrap().admission(&source).unwrap();
+        code_cache.lock().unwrap().insert(
+            code_admission,
+            CodeLinesCachedValueV1 {
+                value: Some(code_value.clone()),
+                error: None,
+            },
+        );
+        let code_request = explorer_ui::code_lines_column::CodeLinesRequestV1 {
+            context: RequestContext::new(TabId::new(), Generation::new(1)),
+            item_id: ShellItemId::from_provider_bytes(b"cached-code".to_vec()).unwrap(),
+            path: source.clone(),
+        };
+        let (hits, misses) =
+            partition_code_lines_cache_hits(&code_cache, vec![code_request.clone()]);
+        assert_eq!(hits.first().and_then(|hit| hit.value.as_ref()), Some(&code_value));
+        assert!(misses.is_empty(), "Rust/Lua cache hits must bypass provider dispatch");
+
+        file.set_times(
+            fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(20)),
+        )
+        .unwrap();
+        let changed = cache.admission(&source).expect("changed metadata admission");
+        assert_ne!(changed.key, original.key);
+        assert_eq!(cache.get(&changed), None);
+        let (hits, misses) = partition_folder_size_cache_hits(&folder_cache, vec![request]);
+        assert!(hits.is_empty());
+        assert_eq!(misses.len(), 1, "changed mtime must invoke the provider");
+        let (hits, misses) = partition_code_lines_cache_hits(&code_cache, vec![code_request]);
+        assert!(hits.is_empty());
+        assert_eq!(misses.len(), 1, "changed mtime must invoke Rust/Lua providers");
+
+        let other_root = root.join("other");
+        fs::create_dir(&other_root).unwrap();
+        let other = other_root.join("other.rs");
+        fs::write(&other, "fn other() {}\n").unwrap();
+        let current = cache.admission(&source).unwrap();
+        let other_admission = cache.admission(&other).unwrap();
+        assert!(cache.insert(current.clone(), 7));
+        assert!(cache.insert(other_admission.clone(), 9));
+        cache.invalidate_directory(&root);
+        assert_eq!(cache.get(&current), None, "F5 invalidates current directory");
+        assert_eq!(cache.get(&other_admission), Some(9), "other directories survive F5");
+        assert!(!cache.insert(current, 11), "pre-F5 work cannot repopulate the scope");
+        let refreshed = cache.admission(&source).unwrap();
+        assert!(cache.insert(refreshed.clone(), 12));
+        assert_eq!(cache.get(&refreshed), Some(12));
+
+        drop(file);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn lock_owner_cache_is_generation_metadata_and_ttl_scoped() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let key = LockOwnerCacheKeyV1 {
+            canonical_path: PathBuf::from(format!(r"C:\lock-owner-cache-{nonce}")),
+            source_size: 7,
+            modified_seconds: 11,
+            modified_nanos: 13,
+        };
+        let now = Instant::now();
+        lock_owner_cache_store(
+            key.clone(),
+            17,
+            explorer_extension_api::LockOwnerQueryStatusV1::EMPTY,
+            Vec::new(),
+            now,
+        );
+        assert_eq!(
+            lock_owner_cache_lookup(&key, 17, now).map(|value| value.0),
+            Some(explorer_extension_api::LockOwnerQueryStatusV1::EMPTY)
+        );
+        assert!(lock_owner_cache_lookup(&key, 18, now).is_none());
+        assert!(lock_owner_cache_lookup(&key, 17, now + Duration::from_secs(3)).is_none());
+
+        let unavailable = LockOwnerCacheKeyV1 {
+            canonical_path: PathBuf::from(format!(r"C:\lock-owner-unavailable-{nonce}")),
+            ..key
+        };
+        lock_owner_cache_store(
+            unavailable.clone(),
+            17,
+            explorer_extension_api::LockOwnerQueryStatusV1::UNAVAILABLE,
+            Vec::new(),
+            now,
+        );
+        assert!(lock_owner_cache_lookup(&unavailable, 17, now).is_none());
+    }
+
+    #[test]
+    fn cell_render_key_covers_every_public_immutable_render_input() {
         let color = explorer_extension_ui_api::CellColorV1::rgba(1, 2, 3, 255);
         let context = explorer_extension_ui_api::CellRenderContextV1 {
             value: ROption::RSome(PluginValueV1::integer(7)),
@@ -3411,11 +4894,62 @@ mod tests {
         };
         let changed_value = explorer_extension_ui_api::CellRenderContextV1 {
             value: ROption::RSome(PluginValueV1::integer(8)),
-            ..context
+            ..context.clone()
         };
-        assert_ne!(baseline, cell_render_key(&changed_request));
-        assert_ne!(baseline, cell_render_key(&changed_theme));
-        assert_ne!(baseline, cell_render_key(&changed_value));
+        let variants = [
+            changed_request,
+            changed_theme,
+            changed_value,
+            explorer_extension_ui_api::CellRenderContextV1 {
+                exact_bytes: ROption::RSome(8),
+                ..context.clone()
+            },
+            explorer_extension_ui_api::CellRenderContextV1 {
+                aggregate: ROption::RSome(explorer_extension_ui_api::CellAggregateV1 {
+                    largest_sibling_value: ROption::RSome(PluginValueV1::integer(8)),
+                    largest_sibling_bytes: ROption::RSome(8),
+                }),
+                ..context.clone()
+            },
+            explorer_extension_ui_api::CellRenderContextV1 {
+                loading: true,
+                ..context.clone()
+            },
+            explorer_extension_ui_api::CellRenderContextV1 {
+                error: ROption::RSome("failed".into()),
+                ..context.clone()
+            },
+            explorer_extension_ui_api::CellRenderContextV1 {
+                selected: true,
+                ..context.clone()
+            },
+            explorer_extension_ui_api::CellRenderContextV1 {
+                hovered: true,
+                ..context.clone()
+            },
+            explorer_extension_ui_api::CellRenderContextV1 {
+                dpi_milli: 1_250,
+                ..context.clone()
+            },
+            explorer_extension_ui_api::CellRenderContextV1 {
+                settings: "text-only".into(),
+                ..context.clone()
+            },
+            explorer_extension_ui_api::CellRenderContextV1 {
+                item_id: explorer_extension_ui_api::StableIdV1::new(
+                    explorer_extension_ui_api::EXTENSION_ID_NAMESPACE_V1,
+                    2,
+                ),
+                ..context.clone()
+            },
+            explorer_extension_ui_api::CellRenderContextV1 {
+                render_generation: 2,
+                ..context
+            },
+        ];
+        for variant in variants {
+            assert_ne!(baseline, cell_render_key(&variant));
+        }
     }
 
     #[test]
@@ -3466,11 +5000,67 @@ mod tests {
     }
 
     #[test]
+    fn code_lines_directory_uses_tokei_code_total_without_blank_lines() {
+        let root = std::env::temp_dir().join(format!(
+            "superexplorer-tokei-directory-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/main.rs"),
+            b"fn main() {\n    println!(\"ok\");\n}\n\n// comment\n",
+        )
+        .unwrap();
+        fs::write(root.join("script.py"), b"print('ok')\n\n").unwrap();
+
+        let value = measure_code_lines_directory(&root)
+            .unwrap()
+            .expect("directory value");
+        assert_eq!(value.code, 4);
+        assert_eq!(value.comments, 1);
+        assert_eq!(value.blanks, 2);
+        assert_eq!(value.total, 7);
+        assert_ne!(value.code, value.total);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn code_lines_directory_persists_a_same_modified_date_global_cache_result() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("superexplorer-code-lines-root-{nonce}"));
+        let cache = std::env::temp_dir().join(format!("superexplorer-code-lines-cache-{nonce}"));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("main.rs"), b"fn main() {}\n").unwrap();
+
+        let measured = measure_code_lines_directory_with_cache(&root, Some(&cache))
+            .unwrap()
+            .expect("directory code-lines value");
+        let key = code_lines_directory_cache_key(&root).expect("stable directory key");
+        assert_eq!(
+            read_code_lines_directory_cache(Some(&cache), &key),
+            Some(measured)
+        );
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(cache).unwrap();
+    }
+
+    #[test]
     fn size_map_render_key_covers_measurements_viewport_and_selection() {
         let color = explorer_extension_ui_api::CellColorV1::rgba(1, 2, 3, 255);
         let mut context = explorer_extension_ui_api::SizeMapRenderContextV1 {
-            generation: 1,
-            render_revision: 0,
+            snapshot: explorer_extension_ui_api::ViewSnapshotIdentityV1 {
+                location_generation: 1,
+                refresh_generation: 1,
+                render_revision: 1,
+            },
             nodes: RVec::from(vec![explorer_extension_ui_api::SizeMapNodeV1 {
                 node_id: explorer_extension_ui_api::StableIdV1::new(
                     explorer_extension_ui_api::EXTENSION_ID_NAMESPACE_V1,
@@ -3499,7 +5089,7 @@ mod tests {
         };
         let request_context = RequestContext::new(TabId::new(), Generation::new(1));
         let item_ids = vec![ShellItemId::from_provider_bytes([1_u8]).unwrap()];
-        let baseline = size_map_render_key(&mut context, &request_context, &item_ids);
+        let baseline = size_map_render_key(&mut context, &request_context, &item_ids, 1);
         let mut changed_viewport = context.clone();
         changed_viewport.viewport.width_milli = 1_001;
         let mut changed_selection = context.clone();
@@ -3512,16 +5102,63 @@ mod tests {
         changed_measurement.nodes[0].exact_bytes = ROption::RSome(11);
         assert_ne!(
             baseline,
-            size_map_render_key(&mut changed_viewport, &request_context, &item_ids)
+            size_map_render_key(&mut changed_viewport, &request_context, &item_ids, 1)
         );
         assert_ne!(
             baseline,
-            size_map_render_key(&mut changed_selection, &request_context, &item_ids)
+            size_map_render_key(&mut changed_selection, &request_context, &item_ids, 1)
         );
         assert_ne!(
             baseline,
-            size_map_render_key(&mut changed_measurement, &request_context, &item_ids)
+            size_map_render_key(&mut changed_measurement, &request_context, &item_ids, 1)
         );
+    }
+
+    #[test]
+    fn size_map_projection_retains_aggregated_items_for_search_and_uia() {
+        let node_id = explorer_extension_ui_api::StableIdV1::new(
+            explorer_extension_ui_api::EXTENSION_ID_NAMESPACE_V1,
+            900,
+        );
+        let item_id = ShellItemId::from_provider_bytes(b"tiny-item".to_vec()).unwrap();
+        let plan = explorer_extension_ui_api::SizeMapRenderPlanV1 {
+            snapshot: explorer_extension_ui_api::ViewSnapshotIdentityV1 {
+                location_generation: 1,
+                refresh_generation: 1,
+                render_revision: 2,
+            },
+            rectangles: RVec::from(vec![explorer_extension_ui_api::SizeMapRectangleV1 {
+                node_id,
+                x_millionths: 0,
+                y_millionths: 0,
+                width_millionths: 1_000_000,
+                height_millionths: 1_000_000,
+                color: explorer_extension_ui_api::CellColorV1::rgba(1, 2, 3, 255),
+                label: "Other (1 item)".into(),
+                detail: "10 bytes".into(),
+            }]),
+            status: "Exact sizes".into(),
+        };
+        let projected = project_size_map_plan(
+            plan,
+            HashMap::from([(
+                node_id,
+                SizeMapProjectionV1::Aggregate(vec![
+                    explorer_ui::size_map_view::SizeMapAggregateItemV1 {
+                        item_id: item_id.clone(),
+                        label: "tiny.rs".to_owned(),
+                        detail: "10 bytes".to_owned(),
+                    },
+                ]),
+            )]),
+            800.0,
+            600.0,
+        );
+        assert_eq!(projected.rectangles.len(), 1);
+        assert_eq!(projected.rectangles[0].item_id, None);
+        assert_eq!(projected.rectangles[0].aggregate_items.len(), 1);
+        assert_eq!(projected.rectangles[0].aggregate_items[0].item_id, item_id);
+        assert_eq!(projected.rectangles[0].aggregate_items[0].label, "tiny.rs");
     }
 
     #[test]
@@ -3529,8 +5166,11 @@ mod tests {
         let color = explorer_extension_ui_api::CellColorV1::rgba(1, 2, 3, 255);
         let item_ids = vec![ShellItemId::from_provider_bytes([7_u8]).unwrap()];
         let mut first = explorer_extension_ui_api::SizeMapRenderContextV1 {
-            generation: 1,
-            render_revision: 0,
+            snapshot: explorer_extension_ui_api::ViewSnapshotIdentityV1 {
+                location_generation: 1,
+                refresh_generation: 1,
+                render_revision: 1,
+            },
             nodes: RVec::from(vec![explorer_extension_ui_api::SizeMapNodeV1 {
                 node_id: size_map_node_id(&item_ids[0]),
                 parent_id: ROption::RNone,
@@ -3557,13 +5197,25 @@ mod tests {
         let second_tab = TabId::new();
         let first_context = RequestContext::new(TabId::new(), Generation::new(1));
         let second_context = RequestContext::new(second_tab, Generation::new(1));
-        let first_key = size_map_render_key(&mut first, &first_context, &item_ids);
-        let first_revision = first.render_revision;
+        let first_key = size_map_render_key(&mut first, &first_context, &item_ids, 1);
+        let first_revision = first.snapshot.render_revision;
         let mut second = first.clone();
-        let second_key = size_map_render_key(&mut second, &second_context, &item_ids);
+        let second_key = size_map_render_key(&mut second, &second_context, &item_ids, 1);
+
+        let mut updated_package = first.clone();
+        let updated_package_key =
+            size_map_render_key(&mut updated_package, &first_context, &item_ids, 2);
 
         assert_ne!(first_key, second_key);
-        assert_ne!(first_revision, second.render_revision);
+        assert_ne!(first_revision, second.snapshot.render_revision);
+        assert_ne!(
+            first_key, updated_package_key,
+            "a new package incarnation must not reuse the old renderer cache"
+        );
+        assert_ne!(
+            first_revision, updated_package.snapshot.render_revision,
+            "a package update must mint a new host render revision"
+        );
         assert_ne!(
             size_map_node_id(&item_ids[0]),
             size_map_node_id(&ShellItemId::from_provider_bytes([8_u8]).unwrap()),
@@ -4066,6 +5718,236 @@ mod tests {
         let result = measure_size_map_path(&root, 100, 16, || false);
         fs::remove_dir_all(&root).unwrap();
 
-        assert_eq!(result, (18, false, None, false));
+        assert_eq!(
+            result,
+            SizeMapScanOutcomeV1 {
+                bytes: 18,
+                terminal: SizeMapScanTerminalV1::Complete,
+                diagnostic: None,
+            }
+        );
+    }
+
+    #[test]
+    fn size_map_tree_scan_preserves_owned_parent_hierarchy_and_exact_totals() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "superexplorer-size-map-tree-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(root.join("nested")).unwrap();
+        fs::write(root.join("nested/child.bin"), [0_u8; 11]).unwrap();
+        fs::write(root.join("root.bin"), [0_u8; 7]).unwrap();
+        let root_id = ShellItemId::from_provider_bytes(b"root-tree".to_vec()).unwrap();
+
+        let scan = measure_size_map_tree(
+            &root,
+            &root_id,
+            100,
+            16,
+            SizeMapHardLinkPolicyV1::PerEntry,
+            || false,
+        );
+        fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(scan.outcome.terminal, SizeMapScanTerminalV1::Complete);
+        assert_eq!(scan.outcome.bytes, 18);
+        assert_eq!(scan.nodes.len(), 3);
+        let nested = scan
+            .nodes
+            .iter()
+            .find(|node| node.display_name == "nested")
+            .unwrap();
+        assert_eq!(nested.parent_item_id, root_id);
+        assert_eq!(nested.exact_bytes, Some(11));
+        let child = scan
+            .nodes
+            .iter()
+            .find(|node| node.display_name == "child.bin")
+            .unwrap();
+        assert_eq!(child.parent_item_id, nested.item_id);
+        assert_eq!(child.exact_bytes, Some(11));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn size_map_hard_links_default_to_per_entry_and_support_identity_once() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "superexplorer-size-map-hardlink-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let first = root.join("first.bin");
+        fs::write(&first, [0_u8; 5]).unwrap();
+        fs::hard_link(&first, root.join("second.bin")).unwrap();
+        let root_id = ShellItemId::from_provider_bytes(b"hardlink-root".to_vec()).unwrap();
+
+        let per_entry = measure_size_map_tree(
+            &root,
+            &root_id,
+            100,
+            16,
+            SizeMapHardLinkPolicyV1::PerEntry,
+            || false,
+        );
+        let identity_once = measure_size_map_tree(
+            &root,
+            &root_id,
+            100,
+            16,
+            SizeMapHardLinkPolicyV1::IdentityOnce,
+            || false,
+        );
+        fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(per_entry.outcome.bytes, 10);
+        assert_eq!(identity_once.outcome.bytes, 5);
+    }
+
+    #[test]
+    fn size_map_scan_distinguishes_unavailable_resource_limited_and_cancelled() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "superexplorer-size-map-terminal-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("child.bin"), [1_u8]).unwrap();
+
+        assert_eq!(
+            measure_size_map_path(&root, 1, 16, || false).terminal,
+            SizeMapScanTerminalV1::ResourceLimited
+        );
+        assert_eq!(
+            measure_size_map_path(&root, 100, 16, || true).terminal,
+            SizeMapScanTerminalV1::Cancelled
+        );
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            measure_size_map_path(&root, 100, 16, || false).terminal,
+            SizeMapScanTerminalV1::Unavailable
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn size_map_scan_does_not_follow_directory_symlinks_by_default() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "superexplorer-size-map-link-{}-{unique}",
+            std::process::id()
+        ));
+        let outside = root.with_extension("outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("outside.bin"), [0_u8; 17]).unwrap();
+        let link = root.join("cycle");
+        if std::os::windows::fs::symlink_dir(&outside, &link).is_ok() {
+            let scan = measure_size_map_path(&root, 100, 16, || false);
+            assert_eq!(scan.terminal, SizeMapScanTerminalV1::Complete);
+            assert_eq!(scan.bytes, 0, "the linked subtree must not be counted");
+        }
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&outside).unwrap();
+    }
+
+    #[test]
+    #[ignore = "explicit release-only 100,000-node Size Map production-path benchmark"]
+    fn size_map_100k_memory_projection_scan_and_cancel_gate() {
+        use std::mem::{MaybeUninit, size_of};
+        use windows::Win32::System::{
+            ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
+            Threading::GetCurrentProcess,
+        };
+
+        fn working_set_bytes() -> usize {
+            let mut counters = MaybeUninit::<PROCESS_MEMORY_COUNTERS>::zeroed();
+            // SAFETY: the current process pseudo-handle is valid and counters
+            // points to writable storage of the exact advertised size.
+            let read = unsafe {
+                GetProcessMemoryInfo(
+                    GetCurrentProcess(),
+                    counters.as_mut_ptr(),
+                    u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS>()).unwrap(),
+                )
+            };
+            assert!(read.is_ok());
+            // SAFETY: GetProcessMemoryInfo succeeded and initialized counters.
+            unsafe { counters.assume_init().WorkingSetSize }
+        }
+
+        const NODE_COUNT: usize = 100_000;
+        const MAX_MEMORY_DELTA_BYTES: usize = 256 * 1024 * 1024;
+        const MAX_PROJECTION_MILLIS: u128 = 2_000;
+        const MAX_SCAN_MILLIS: u128 = 30_000;
+        const MAX_CANCEL_MILLIS: u128 = 250;
+
+        let memory_before = working_set_bytes();
+        let entries = explorer_test_support::synthetic_directory_entries(NODE_COUNT);
+        let nodes = entries
+            .iter()
+            .map(|entry| explorer_ui::size_map_view::SizeMapNodeV1 {
+                item_id: entry.id.clone(),
+                selection_item_id: entry.id.clone(),
+                parent_item_id: None,
+                location: entry.location.clone(),
+                display_name: entry.display_name.clone(),
+                type_name: entry.metadata.type_display.clone().unwrap_or_default(),
+                is_container: entry.is_container,
+                exact_bytes: Some(entry.metadata.size_bytes.unwrap_or_default()),
+                partial: false,
+                error: None,
+            })
+            .collect::<Vec<_>>();
+        let projection_started = Instant::now();
+        let (projected, omitted) = partition_size_map_projection(&nodes);
+        let aggregate = aggregate_size_map_items(&nodes, &omitted);
+        let projection_millis = projection_started.elapsed().as_millis();
+        let memory_after_projection = working_set_bytes();
+        let memory_delta = memory_after_projection.saturating_sub(memory_before);
+
+        assert_eq!(projected.len(), 255);
+        assert_eq!(aggregate.len(), NODE_COUNT - 255);
+        assert!(projection_millis <= MAX_PROJECTION_MILLIS);
+        assert!(memory_delta <= MAX_MEMORY_DELTA_BYTES);
+
+        let fixture = explorer_test_support::OwnedTempFixture::new().unwrap();
+        // The production scanner counts the root as one node, so 99,999 flat
+        // children exercise exactly the configured 100,000-node ceiling.
+        let corpus = fixture.generate_large_dataset(NODE_COUNT - 1).unwrap();
+        let scan_started = Instant::now();
+        let scan = measure_size_map_path(&corpus.root, NODE_COUNT as u32, 128, || false);
+        let scan_millis = scan_started.elapsed().as_millis();
+        assert_eq!(scan.terminal, SizeMapScanTerminalV1::Complete);
+        assert_eq!(scan.bytes, 0);
+        assert!(scan_millis <= MAX_SCAN_MILLIS);
+
+        let cancel_polls = AtomicUsize::new(0);
+        let cancel_started = Instant::now();
+        let cancelled = measure_size_map_path(&corpus.root, NODE_COUNT as u32, 128, || {
+            cancel_polls.fetch_add(1, Ordering::Relaxed) >= 4_096
+        });
+        let cancel_millis = cancel_started.elapsed().as_millis();
+        assert_eq!(cancelled.terminal, SizeMapScanTerminalV1::Cancelled);
+        assert!(cancel_millis <= MAX_CANCEL_MILLIS);
+
+        eprintln!(
+            "size-map-100k nodes={NODE_COUNT} memory_delta_bytes={memory_delta} projection_ms={projection_millis} projected_rectangles={} redraw_upper_bound=1 scan_ms={scan_millis} cancel_ms={cancel_millis} cancel_polls={}",
+            projected.len() + 1,
+            cancel_polls.load(Ordering::Relaxed),
+        );
     }
 }

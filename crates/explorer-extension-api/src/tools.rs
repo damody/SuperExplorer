@@ -25,6 +25,7 @@ impl ToolExecuteStatusV1 {
     pub const TIMED_OUT: Self = Self(3);
     pub const REJECTED: Self = Self(4);
     pub const FAILED: Self = Self(5);
+    pub const OUTPUT_TRUNCATED: Self = Self(6);
     #[must_use]
     pub const fn into_raw(self) -> u32 {
         self.0

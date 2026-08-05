@@ -141,6 +141,7 @@ impl ExtensionRegistrarImplementationV1 for FixtureRegistrar {
                 provider: ROption::RSome(JobProviderObjectV1::new(TransportProvider)),
                 visual_column: ROption::RNone,
                 size_map_view: ROption::RNone,
+                virtual_folder_provider: ROption::RNone,
                 batch_column_provider: ROption::RNone,
             }]),
         })

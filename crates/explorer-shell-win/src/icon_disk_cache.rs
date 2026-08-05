@@ -317,6 +317,17 @@ fn key_digest_for_build(key: &ShellIconKey, build: &str) -> u64 {
             bytes.push(4);
             bytes.extend_from_slice(value);
         }
+        LocationDescriptor::Virtual(value) => {
+            bytes.push(5);
+            bytes.extend_from_slice(value.provider_id.as_bytes());
+            bytes.extend_from_slice(&value.container_identity);
+            bytes.extend_from_slice(&value.container_generation.to_le_bytes());
+            bytes.extend_from_slice(&value.entry_id.unwrap_or_default().to_le_bytes());
+            for component in &value.components {
+                bytes.extend_from_slice(&(component.len() as u64).to_le_bytes());
+                bytes.extend_from_slice(component.as_bytes());
+            }
+        }
     }
     bytes.extend_from_slice(&key.size_bucket.to_le_bytes());
     bytes.extend_from_slice(&key.dpi.to_le_bytes());

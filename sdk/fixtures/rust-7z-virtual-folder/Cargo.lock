@@ -535,6 +535,7 @@ dependencies = [
  "explorer-extension-api",
  "explorer-extension-ui-api",
  "sevenz-rust",
+ "windows-sys",
 ]
 
 [[package]]

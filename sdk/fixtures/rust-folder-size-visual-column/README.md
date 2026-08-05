@@ -43,7 +43,7 @@ The foreground measurement hint never cancels an in-flight folder walk. The
 background worker publishes an exact value once the scan has completed; partial
 or error results are never used for numeric sorting or stored as exact values.
 Completed values are cached by this plugin under
-`%LOCALAPPDATA%\RustGpuiExplorer\plugins\rust-folder-size-visual-column\folder-size\v1` (at most
+`%LOCALAPPDATA%\RustGpuiExplorer\cache\folder-size\v1` (at most
 256 records). A cache entry is reused only when its canonical directory identity,
 directory modified timestamp, recursive limits, and cache schema match. Changing
 the directory timestamp or settings causes a fresh background scan.

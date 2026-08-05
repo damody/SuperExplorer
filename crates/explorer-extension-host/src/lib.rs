@@ -15,6 +15,9 @@
 //! bounded result transport, cache, and UI-ingress composition.
 
 mod bundled_tool;
+mod column_aggregate_router;
+mod column_authority_registry;
+mod command_registry;
 mod contribution_gate;
 mod dll_loader;
 mod extension_job_runtime;
@@ -30,17 +33,37 @@ mod package_resolver;
 mod package_source;
 mod package_validation;
 mod plugin_call_guard;
+mod renderer_scope;
 mod runtime_authority;
 mod sepack_import;
 mod ui_invalidation_batcher;
+mod view_registry;
+mod virtual_container_input;
+mod virtual_container_mutation;
+mod virtual_container_output;
+mod virtual_location;
+mod virtual_secret;
 
 pub use dll_loader::{
     SinglePluginBatchColumnRuntimeV1, SinglePluginSizeMapViewRuntimeV1,
-    SinglePluginVisualColumnRuntimeV1, SinglePluginVisualMeasureRuntimeV1,
-    SinglePluginVisualRenderRuntimeV1,
+    SinglePluginVirtualFolderRuntimeV1, SinglePluginVisualColumnRuntimeV1,
+    SinglePluginVisualMeasureRuntimeV1, SinglePluginVisualRenderRuntimeV1,
 };
+pub use virtual_container_input::open_virtual_memory_input_v1;
+pub use virtual_secret::mint_virtual_secret_v1;
 
-pub use bundled_tool::mint_attested_tool_handle_v1;
+pub use bundled_tool::{BundledToolAuthorityV1, mint_attested_tool_handle_v1};
+pub use column_aggregate_router::{
+    ColumnAggregateRequestV1, ColumnAggregateResultV1, ColumnAggregateRouteErrorV1,
+    MAX_AGGREGATE_INPUT_BYTES_V1, MAX_AGGREGATE_INPUT_VALUES_V1, route_column_aggregate_v1,
+};
+pub use column_authority_registry::{
+    ColumnAuthorityRegistryErrorV1, ColumnCatalogSnapshotV1, ColumnFeatureRuntimeStateV1,
+    HostColumnAuthorityRegistryV1, SealedColumnRegistrationV1,
+};
+pub use command_registry::{
+    CommandRegistrationV1, CommandRegistryErrorV1, CommandUiSnapshotV1, HostCommandRegistryV1,
+};
 pub use contribution_gate::{
     ContributionGateErrorV1, ContributionGateV1, ContributionJobContractV1, ContributionKindV1,
     ContributionRegistrationV1, MAX_CAPABILITIES_PER_CONTRIBUTION_V1,
@@ -79,8 +102,10 @@ pub use feature_state::{
     FeatureStateStoreErrorV1, FeatureStateStoreV1,
 };
 pub use lua_registrar::{
-    LuaContributionV1, LuaRegistrarErrorV1, MAX_LUA_CONTRIBUTIONS_V1,
-    run_restricted_lua_registrar_v1,
+    AuthorizedLuaContributionV1, LuaContributionV1, LuaDiagnosticCodeV1, LuaDiagnosticV1,
+    LuaPackageAuthorityV1, LuaRegistrarErrorV1, MAX_LUA_CONTRIBUTIONS_V1,
+    decode_lua_item_outcome_v1, decode_lua_operation_plan_v1, decode_lua_operation_terminal_v1,
+    decode_lua_plugin_value_v1, run_restricted_lua_registrar_v1,
 };
 pub use manifest::{
     BundledToolV1, ContactPurposeV1, LocaleResourceV1, LuaEntrypointV1,
@@ -96,8 +121,8 @@ pub use native_lifecycle::{
     NativeLoaderDiagnosticCodeV1, NativeRestartReasonV1, NativeStartupAdmissionV1, StartupSession,
 };
 pub use operation_plan::{
-    HostOperationPlanEngineV1, OperationCancellationV1, OperationPlanErrorV1,
-    identity as operation_file_identity_v1,
+    HostOperationPlanEngineV1, OperationCancellationV1, OperationPlanAuthorityV1,
+    OperationPlanErrorV1, identity as operation_file_identity_v1,
 };
 pub use package_resolver::{
     BlockedPackageV1, PackageResolutionDiagnosticCodeV1, PackageResolutionDiagnosticV1,
@@ -119,11 +144,35 @@ pub use plugin_call_guard::{
     NativeCallOperationV1, NativeCallTerminalV1, NativeCallTimingV1, NativeSafeModeIncidentIdV1,
     NativeSafeModeIncidentKindV1, NativeSafeModeIncidentV1,
 };
+pub use renderer_scope::{
+    MAX_RENDERER_SCOPED_ACTIONS_V1, MAX_RENDERER_SCOPED_INVALIDATIONS_V1,
+    RendererScopeSubmitErrorV1, RendererScopeV1, RendererScopedActionSinkV1,
+    RendererScopedActionV1, RendererScopedInvalidationHandleV1, RendererScopedInvalidationV1,
+};
 pub use sepack_import::SePackImportErrorV1;
 pub use ui_invalidation_batcher::{
     MAX_UI_INVALIDATION_RECORDS_V1, MAX_UI_INVALIDATION_SCOPES_V1, MAX_UI_INVALIDATION_WINDOW_V1,
     MIN_UI_INVALIDATION_WINDOW_V1, UiInvalidationBatchV1, UiInvalidationBatcherConfigErrorV1,
     UiInvalidationBatcherConfigV1, UiInvalidationBatcherV1, UiInvalidationScopeV1,
+};
+pub use view_registry::{
+    HostViewNavigationAdapterV1, HostViewRegistryV1, NavigationAuthorityV1, SealedViewPackageV1,
+    ViewCatalogSnapshotV1, ViewNavigationRouteErrorV1, ViewRegistryErrorV1,
+};
+pub use virtual_container_input::{
+    open_virtual_container_input_v1, open_virtual_container_input_with_cancellation_v1,
+};
+pub use virtual_container_mutation::{
+    VirtualMutationCommitV1, commit_virtual_container_mutation_v1,
+    undo_virtual_container_mutation_v1,
+};
+pub use virtual_container_output::{
+    VirtualContainerStagingV1, create_virtual_container_staging_v1,
+};
+pub use virtual_location::{
+    HostVirtualLocationAdapterV1, MAX_VIRTUAL_LOCATION_READ_BYTES_V1, MaterializedVirtualFileV1,
+    VirtualEntryMetadataV1, VirtualLocationAuthorityV1, VirtualLocationReadOutcomeV1,
+    VirtualLocationReadStatusV1, VirtualLocationStreamV1, VirtualProviderRegistrationV1,
 };
 
 /// Copied, read-only information about one contribution registered by the
@@ -188,6 +237,8 @@ pub enum SinglePluginVisualColumnCallErrorV1 {
     UnknownMeasureContribution(String),
     #[error("no retained visual renderer contribution named {0:?}")]
     UnknownRenderContribution(String),
+    #[error("visual renderer was invoked from a thread other than its bound host worker")]
+    WrongRenderThread,
 }
 
 /// A requested direct bounded batch-column contribution is unavailable.
@@ -199,6 +250,17 @@ pub enum SinglePluginBatchColumnCallErrorV1 {
     Runtime(ExtensionJobRuntimeErrorV1),
 }
 
+/// A requested direct virtual-folder contribution is unavailable or blocked.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+pub enum SinglePluginVirtualFolderCallErrorV1 {
+    #[error("no retained virtual-folder contribution named {0:?}")]
+    MissingContribution(String),
+    #[error("virtual-folder callback is blocked by recovered Safe Mode incident")]
+    BlockedBySafeMode,
+    #[error("virtual-folder callback marker could not be cleared")]
+    MarkerClearFailed,
+}
+
 /// A requested direct Size Map view contribution is unavailable.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum SinglePluginSizeMapViewCallErrorV1 {
@@ -206,6 +268,8 @@ pub enum SinglePluginSizeMapViewCallErrorV1 {
     UnknownViewContribution(String),
     #[error("Size Map renderer failed with ABI error {0:?}")]
     Plugin(AbiErrorV1),
+    #[error("Size Map renderer was invoked from a thread other than its bound host worker")]
+    WrongRenderThread,
 }
 
 use explorer_extension_api::{

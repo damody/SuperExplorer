@@ -18,6 +18,7 @@ path = "src/main.rs"
 uitest-support = ["explorer-extension-host/integration-test-support"]
 
 [dependencies]
+abi_stable.workspace = true
 anyhow.workspace = true
 explorer-common = { path = "../explorer-common" }
 explorer-extension-broker = { path = "../explorer-extension-broker" }
@@ -39,9 +40,9 @@ serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 thiserror.workspace = true
+tokei.workspace = true
 
 [dev-dependencies]
-abi_stable.workspace = true
 explorer-extension-host = { path = "../explorer-extension-host", features = ["integration-test-support"] }
 explorer-test-support = { path = "../explorer-test-support" }
 tempfile.workspace = true

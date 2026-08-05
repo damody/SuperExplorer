@@ -20,14 +20,21 @@ use crate::{
     ExtensionJobRuntimeRequestV1, ExtensionJobRuntimeV1, FeatureKeyV1, FeatureRuntimeFactV1,
     HostInputStreamSourceV1, HostRegistrationErrorV1, ResolvedPackageV1,
     ValidatedContributionSetV1,
+    bundled_tool::BundledToolAuthorityV1,
     dll_loader::{
         ExtensionDllLoaderV1, LoadedExtensionRootV1, LoadedPackageRootsV1, invoke_guarded_registrar,
     },
     extension_job_runtime::{PreparedProviderDispatchTicketV1, ProviderDispatchControlV1},
+    operation_plan::OperationPlanAuthorityV1,
     plugin_call_guard::{
         self, GuardErrorV1, MarkerV1, NativeCallOperationV1, NativeCallTerminalV1,
         NativeCallTimingV1, NativeSafeModeIncidentV1, PluginCallGuardStoreV1, PluginCallGuardV1,
     },
+    runtime_authority::{
+        AuthorityAdapterV1, AuthorityClaimsV1, AuthorityEnvelopeV1, RuntimeAuthorityV1,
+    },
+    view_registry::NavigationAuthorityV1,
+    virtual_location::VirtualLocationAuthorityV1,
 };
 use explorer_extension_api::{
     JobHandleV1, JobProviderObjectV1, JobTerminalV1, ROOT_MODULE_CONTRACT_ID_V1,
@@ -54,6 +61,8 @@ pub struct PreparedNativeJobV1 {
     permit: Option<PluginCallGuardV1>,
     callback_started: bool,
     callback_elapsed: Option<Duration>,
+    runtime_authority: Option<Arc<RuntimeAuthorityV1>>,
+    stream_authority: Option<AuthorityEnvelopeV1>,
 }
 
 impl PreparedNativeJobV1 {
@@ -142,6 +151,7 @@ impl PreparedNativeJobV1 {
         if self.callback_started {
             return Err(ExtensionJobRuntimeErrorV1::ProviderAlreadyInvoked);
         }
+        self.revalidate_stream_authority()?;
         let permit = self
             .markers
             .begin(&self.marker)
@@ -191,6 +201,12 @@ impl PreparedNativeJobV1 {
                 .record_timing(&self.marker, elapsed, NativeCallTerminalV1::MarkerFailure);
             return Err(ExtensionJobRuntimeErrorV1::MarkerClearFailed);
         }
+        if self.revalidate_stream_authority().is_err() {
+            self.ticket.fail_marker_clear();
+            self.markers
+                .record_timing(&self.marker, elapsed, NativeCallTerminalV1::Incompatible);
+            return Err(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority);
+        }
         let finish = self.ticket.publish_terminal_after_marker_clear(terminal)?;
         self.markers.record_timing(
             &self.marker,
@@ -198,6 +214,17 @@ impl PreparedNativeJobV1 {
             timing_terminal_for_job_terminal(terminal),
         );
         Ok(finish)
+    }
+
+    fn revalidate_stream_authority(&self) -> Result<(), ExtensionJobRuntimeErrorV1> {
+        match (&self.runtime_authority, &self.stream_authority) {
+            (Some(authority), Some(envelope)) => authority
+                .revalidate(envelope, AuthorityAdapterV1::Stream)
+                .map(|_| ())
+                .map_err(|_| ExtensionJobRuntimeErrorV1::UnauthorizedAuthority),
+            (None, None) => Ok(()),
+            _ => Err(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority),
+        }
     }
 }
 
@@ -827,6 +854,7 @@ pub struct NativeExtensionLifecycleV1 {
     drain_timeout: Duration,
     markers: Option<Arc<PluginCallGuardStoreV1>>,
     job_runtimes: Arc<Mutex<Vec<Weak<ExtensionJobRuntimeV1>>>>,
+    runtime_authority: Option<Arc<RuntimeAuthorityV1>>,
 }
 
 impl fmt::Debug for NativeExtensionLifecycleV1 {
@@ -856,8 +884,10 @@ impl NativeExtensionLifecycleV1 {
             application_state_dir.join("native-call-markers-v1"),
             slow_callback_threshold,
         )?;
-        *acquired = true;
         let job_runtimes = Arc::new(Mutex::new(Vec::new()));
+        let runtime_authority =
+            Arc::new(RuntimeAuthorityV1::new().map_err(|_| NativeLifecycleErrorV1::StatePoisoned)?);
+        *acquired = true;
         Ok(Self::with_ports_and_markers(
             Arc::new(GuardedNativeActivationExecutorV1::new(Arc::clone(&markers))),
             Arc::new(RuntimeDrainPortV1 {
@@ -875,6 +905,7 @@ impl NativeExtensionLifecycleV1 {
             },
             Some(markers),
             job_runtimes,
+            Some(runtime_authority),
         ))
     }
 
@@ -884,6 +915,7 @@ impl NativeExtensionLifecycleV1 {
         drain_timeout: Duration,
         markers: Option<Arc<PluginCallGuardStoreV1>>,
         job_runtimes: Arc<Mutex<Vec<Weak<ExtensionJobRuntimeV1>>>>,
+        runtime_authority: Option<Arc<RuntimeAuthorityV1>>,
     ) -> Self {
         Self {
             shared: Arc::new(SharedRuntimeV1 {
@@ -898,6 +930,7 @@ impl NativeExtensionLifecycleV1 {
             drain_timeout,
             markers,
             job_runtimes,
+            runtime_authority,
         }
     }
 
@@ -1073,6 +1106,280 @@ impl NativeExtensionLifecycleV1 {
         ExtensionJobAuthorityV1::mint_sealed(&validated, contribution_id, lease)
     }
 
+    /// Mints the opaque use-time grant required by one package-attested tool.
+    /// The capability and feature identity come only from the sealed
+    /// contribution set; callers cannot upgrade a validated registration by
+    /// supplying a capability string.
+    #[allow(clippy::too_many_arguments)]
+    pub fn mint_bundled_tool_authority(
+        &self,
+        identity: &NativeRootIdentityV1,
+        contribution_id: &str,
+        job_generation: u64,
+        item_generation: u64,
+        location_generation: u64,
+        refresh_generation: u64,
+        container_generation: u64,
+    ) -> Result<BundledToolAuthorityV1, ExtensionJobRuntimeErrorV1> {
+        let lease = self
+            .try_enter(identity)
+            .map_err(|_| ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?
+            .ok_or(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        let generation = (
+            identity.package_id().to_owned(),
+            identity.sealed_manifest_digest().to_owned(),
+        );
+        let validated = self
+            .lock()
+            .map_err(|_| ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?
+            .sealed_contributions
+            .get(&generation)
+            .cloned()
+            .ok_or(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        let contribution = validated
+            .contributions()
+            .iter()
+            .find(|entry| {
+                entry.contribution_id == contribution_id
+                    && entry.feature_id == identity.feature_id()
+                    && entry
+                        .required_capabilities
+                        .iter()
+                        .any(|capability| capability == "tools.execute_bundled")
+            })
+            .ok_or(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        let runtime = self
+            .runtime_authority
+            .as_ref()
+            .cloned()
+            .ok_or(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        let envelope = runtime
+            .issue(AuthorityClaimsV1 {
+                package_id: identity.package_id().to_owned(),
+                feature_id: contribution.feature_id.clone(),
+                interface_id: contribution.contribution_id.clone(),
+                incarnation: lease.epoch(),
+                capability: "tools.execute_bundled".to_owned(),
+                authorized_root_sha256: identity.sealed_manifest_digest().to_owned(),
+                location_generation,
+                item_generation,
+                refresh_generation,
+                container_generation,
+                job_generation,
+            })
+            .map_err(|_| ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        runtime
+            .revalidate(&envelope, AuthorityAdapterV1::Tool)
+            .map_err(|_| ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        drop(lease);
+        Ok(BundledToolAuthorityV1::from_host(runtime, envelope))
+    }
+
+    /// Mints a generation-bound grant for one sealed operation-plan
+    /// contribution. Preview alone never becomes commit authority: the engine
+    /// revalidates this envelope again before each filesystem mutation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn mint_operation_plan_authority(
+        &self,
+        identity: &NativeRootIdentityV1,
+        contribution_id: &str,
+        job_generation: u64,
+        item_generation: u64,
+        location_generation: u64,
+        refresh_generation: u64,
+        container_generation: u64,
+    ) -> Result<OperationPlanAuthorityV1, ExtensionJobRuntimeErrorV1> {
+        let lease = self
+            .try_enter(identity)
+            .map_err(|_| ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?
+            .ok_or(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        let generation = (
+            identity.package_id().to_owned(),
+            identity.sealed_manifest_digest().to_owned(),
+        );
+        let validated = self
+            .lock()
+            .map_err(|_| ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?
+            .sealed_contributions
+            .get(&generation)
+            .cloned()
+            .ok_or(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        let contribution = validated
+            .contributions()
+            .iter()
+            .find(|entry| {
+                entry.contribution_id == contribution_id
+                    && entry.feature_id == identity.feature_id()
+                    && entry.kind == ContributionKindV1::OperationPlan
+                    && entry
+                        .required_capabilities
+                        .iter()
+                        .any(|capability| capability == "operations.submit")
+            })
+            .ok_or(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        let runtime = self
+            .runtime_authority
+            .as_ref()
+            .cloned()
+            .ok_or(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        let envelope = runtime
+            .issue(AuthorityClaimsV1 {
+                package_id: identity.package_id().to_owned(),
+                feature_id: contribution.feature_id.clone(),
+                interface_id: contribution.contribution_id.clone(),
+                incarnation: lease.epoch(),
+                capability: "operations.submit".to_owned(),
+                authorized_root_sha256: identity.sealed_manifest_digest().to_owned(),
+                location_generation,
+                item_generation,
+                refresh_generation,
+                container_generation,
+                job_generation,
+            })
+            .map_err(|_| ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        runtime
+            .revalidate(&envelope, AuthorityAdapterV1::OperationPlan)
+            .map_err(|_| ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        drop(lease);
+        Ok(OperationPlanAuthorityV1::from_host(runtime, envelope))
+    }
+
+    /// Mints the use-time navigation grant for one sealed view contribution.
+    /// Opaque node authorization remains snapshot-local in the navigation
+    /// adapter and is rechecked immediately before model dispatch.
+    #[allow(clippy::too_many_arguments)]
+    pub fn mint_navigation_authority(
+        &self,
+        identity: &NativeRootIdentityV1,
+        contribution_id: &str,
+        job_generation: u64,
+        item_generation: u64,
+        location_generation: u64,
+        refresh_generation: u64,
+        container_generation: u64,
+    ) -> Result<NavigationAuthorityV1, ExtensionJobRuntimeErrorV1> {
+        let lease = self
+            .try_enter(identity)
+            .map_err(|_| ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?
+            .ok_or(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        let generation = (
+            identity.package_id().to_owned(),
+            identity.sealed_manifest_digest().to_owned(),
+        );
+        let validated = self
+            .lock()
+            .map_err(|_| ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?
+            .sealed_contributions
+            .get(&generation)
+            .cloned()
+            .ok_or(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        let contribution = validated
+            .contributions()
+            .iter()
+            .find(|entry| {
+                entry.contribution_id == contribution_id
+                    && entry.feature_id == identity.feature_id()
+                    && entry.kind == ContributionKindV1::ViewMode
+                    && entry
+                        .required_capabilities
+                        .iter()
+                        .any(|capability| capability == "navigation.request")
+            })
+            .ok_or(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        let runtime = self
+            .runtime_authority
+            .as_ref()
+            .cloned()
+            .ok_or(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        let envelope = runtime
+            .issue(AuthorityClaimsV1 {
+                package_id: identity.package_id().to_owned(),
+                feature_id: contribution.feature_id.clone(),
+                interface_id: contribution.contribution_id.clone(),
+                incarnation: lease.epoch(),
+                capability: "navigation.request".to_owned(),
+                authorized_root_sha256: identity.sealed_manifest_digest().to_owned(),
+                location_generation,
+                item_generation,
+                refresh_generation,
+                container_generation,
+                job_generation,
+            })
+            .map_err(|_| ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        runtime
+            .revalidate(&envelope, AuthorityAdapterV1::Navigation)
+            .map_err(|_| ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        drop(lease);
+        Ok(NavigationAuthorityV1::from_host(runtime, envelope))
+    }
+
+    /// Mints the bounded-read grant for one sealed virtual-folder resource.
+    #[allow(clippy::too_many_arguments)]
+    pub fn mint_virtual_location_authority(
+        &self,
+        identity: &NativeRootIdentityV1,
+        contribution_id: &str,
+        job_generation: u64,
+        item_generation: u64,
+        location_generation: u64,
+        refresh_generation: u64,
+        container_generation: u64,
+    ) -> Result<VirtualLocationAuthorityV1, ExtensionJobRuntimeErrorV1> {
+        let lease = self
+            .try_enter(identity)
+            .map_err(|_| ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?
+            .ok_or(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        let generation = (
+            identity.package_id().to_owned(),
+            identity.sealed_manifest_digest().to_owned(),
+        );
+        let validated = self
+            .lock()
+            .map_err(|_| ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?
+            .sealed_contributions
+            .get(&generation)
+            .cloned()
+            .ok_or(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        let contribution = validated
+            .contributions()
+            .iter()
+            .find(|entry| {
+                entry.contribution_id == contribution_id
+                    && entry.feature_id == identity.feature_id()
+                    && entry.kind == ContributionKindV1::Resource
+                    && entry
+                        .required_capabilities
+                        .iter()
+                        .any(|capability| capability == "virtual_folder.read")
+            })
+            .ok_or(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        let runtime = self
+            .runtime_authority
+            .as_ref()
+            .cloned()
+            .ok_or(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        let envelope = runtime
+            .issue(AuthorityClaimsV1 {
+                package_id: identity.package_id().to_owned(),
+                feature_id: contribution.feature_id.clone(),
+                interface_id: contribution.contribution_id.clone(),
+                incarnation: lease.epoch(),
+                capability: "virtual_folder.read".to_owned(),
+                authorized_root_sha256: identity.sealed_manifest_digest().to_owned(),
+                location_generation,
+                item_generation,
+                refresh_generation,
+                container_generation,
+                job_generation,
+            })
+            .map_err(|_| ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        runtime
+            .revalidate(&envelope, AuthorityAdapterV1::VirtualLocation)
+            .map_err(|_| ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+        drop(lease);
+        Ok(VirtualLocationAuthorityV1::from_host(runtime, envelope))
+    }
+
     /// Prepares one production provider route before any ABI callback enters.
     /// The returned transaction exposes only host control/result operations and
     /// retains the linear lease until it publishes or fail-closes.
@@ -1136,6 +1443,32 @@ impl NativeExtensionLifecycleV1 {
             .cloned()
             .ok_or(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
         let producer = authority.producer().clone();
+        let stream_authority = if let Some(runtime_authority) = &self.runtime_authority
+            && input_stream.is_some()
+        {
+            let interface = producer.interface_id();
+            let envelope = runtime_authority
+                .issue(AuthorityClaimsV1 {
+                    package_id: producer.package_id().to_owned(),
+                    feature_id: producer.feature_id().to_owned(),
+                    interface_id: format!("{}:{}", interface.namespace.into_raw(), interface.value),
+                    incarnation: producer.feature_epoch(),
+                    capability: "filesystem.read".to_owned(),
+                    authorized_root_sha256: producer.sealed_manifest_digest().to_owned(),
+                    location_generation,
+                    item_generation,
+                    refresh_generation: source_generation,
+                    container_generation: source_generation,
+                    job_generation,
+                })
+                .map_err(|_| ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+            runtime_authority
+                .revalidate(&envelope, AuthorityAdapterV1::Stream)
+                .map_err(|_| ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)?;
+            Some(envelope)
+        } else {
+            None
+        };
         let Some(markers) = self.markers.as_ref() else {
             return Err(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority);
         };
@@ -1166,6 +1499,8 @@ impl NativeExtensionLifecycleV1 {
             permit: None,
             callback_started: false,
             callback_elapsed: None,
+            runtime_authority: self.runtime_authority.clone(),
+            stream_authority,
         })
     }
 
@@ -1227,6 +1562,11 @@ impl NativeExtensionLifecycleV1 {
                 other => return Ok(other),
             }
         };
+        if let Some(runtime_authority) = &self.runtime_authority {
+            runtime_authority
+                .revoke_feature(identity.package_id(), identity.feature_id())
+                .map_err(|_| NativeLifecycleErrorV1::StatePoisoned)?;
+        }
         let drained = self.drain(identity, deadline)?;
         let mut state = self.lock()?;
         let running = state.phase == Some(LifecyclePhaseV1::Running);
@@ -2016,6 +2356,7 @@ impl NativeExtensionLifecycleV1 {
             timeout,
             None,
             Arc::new(Mutex::new(Vec::new())),
+            None,
         )
     }
 
@@ -2729,6 +3070,9 @@ mod tests {
             Duration::from_millis(10),
             Some(markers),
             Arc::new(Mutex::new(Vec::new())),
+            Some(Arc::new(
+                RuntimeAuthorityV1::new().expect("runtime authority"),
+            )),
         );
         let startup = lifecycle.begin_startup().expect("startup session");
         let permit = startup
@@ -2821,6 +3165,73 @@ mod tests {
         );
     }
 
+    #[test]
+    fn prepared_stream_revalidates_after_disable_before_callback_and_commit() {
+        with_registered_input_lifecycle(
+            vec!["filesystem.read".to_owned()],
+            |lifecycle, identity, runtime, observed_status| {
+                let source =
+                    HostInputStreamSourceV1::from_host_snapshot(vec![1, 2, 3], 1, true).unwrap();
+                let mut prepared = lifecycle
+                    .prepare_registered_provider_with_input(
+                        identity,
+                        "input-provider",
+                        runtime,
+                        1,
+                        1,
+                        1,
+                        1,
+                        true,
+                        Some(source),
+                    )
+                    .expect("prepared stream");
+                assert!(matches!(
+                    lifecycle.disable(identity),
+                    Ok(NativeFeatureStateV1::PendingRestart { .. })
+                ));
+                assert_eq!(
+                    prepared.call_provider(),
+                    Err(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)
+                );
+                assert_eq!(*observed_status.lock().unwrap(), None);
+            },
+        );
+
+        with_registered_input_lifecycle(
+            vec!["filesystem.read".to_owned()],
+            |lifecycle, identity, runtime, observed_status| {
+                let source =
+                    HostInputStreamSourceV1::from_host_snapshot(vec![1, 2, 3], 1, true).unwrap();
+                let mut prepared = lifecycle
+                    .prepare_registered_provider_with_input(
+                        identity,
+                        "input-provider",
+                        runtime,
+                        1,
+                        1,
+                        1,
+                        1,
+                        true,
+                        Some(source),
+                    )
+                    .expect("prepared stream");
+                let terminal = prepared.call_provider().expect("callback terminal");
+                assert_eq!(
+                    *observed_status.lock().unwrap(),
+                    Some(InputStreamStatusV1::OK)
+                );
+                assert!(matches!(
+                    lifecycle.disable(identity),
+                    Ok(NativeFeatureStateV1::PendingRestart { .. })
+                ));
+                assert_eq!(
+                    prepared.publish_terminal_after_marker_clear(terminal),
+                    Err(ExtensionJobRuntimeErrorV1::UnauthorizedAuthority)
+                );
+            },
+        );
+    }
+
     fn prepared_provider_for_timing(
         state: &std::path::Path,
         threshold: Duration,
@@ -2863,6 +3274,8 @@ mod tests {
                 permit: None,
                 callback_started: false,
                 callback_elapsed: None,
+                runtime_authority: None,
+                stream_authority: None,
             },
             markers,
         )

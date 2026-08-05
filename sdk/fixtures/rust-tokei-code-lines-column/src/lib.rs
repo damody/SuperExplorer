@@ -3,7 +3,12 @@
 //! The provider receives only host-attested basenames and bounded input
 //! streams. It never opens a path or starts a child process.
 
-use std::path::Path;
+use std::{
+    env, fs,
+    io::Read,
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use abi_stable::{
     export_root_module,
@@ -11,14 +16,14 @@ use abi_stable::{
     std_types::{ROption, RResult, RString, RVec},
 };
 use explorer_extension_api::{
-    AbiErrorCodeV1, AbiErrorV1, BatchColumnContextV1, BatchColumnProviderImplementationV1,
-    BatchColumnProviderObjectV1, ExtensionRegistrarImplementationV1, ExtensionRootModuleV1,
-    ExtensionRootModuleV1_Ref, IncrementalResultBatchV1, IncrementalResultEntryV1,
-    InputStreamReadRequestV1, InputStreamStatusV1, JobTerminalV1, PluginItemOutcomeV1,
-    PluginItemResultV1, PluginMetadataV1, PluginValueV1, RegisteredContributionKindV1,
-    RegisteredContributionV1, RegistrarOutputResultV1, RegistrarOutputV1, RegistrationOutcomeV1,
-    StableIdV1, StableSortValueV1, ABI_SCHEMA_V1, EXTENSION_ID_NAMESPACE_V1,
-    MAX_INPUT_STREAM_READ_BYTES_V1, ROOT_MODULE_CONTRACT_ID_V1, SDK_MAJOR_VERSION_V1,
+    ABI_SCHEMA_V1, AbiErrorCodeV1, AbiErrorV1, BatchColumnContextV1,
+    BatchColumnProviderImplementationV1, BatchColumnProviderObjectV1, EXTENSION_ID_NAMESPACE_V1,
+    ExtensionRegistrarImplementationV1, ExtensionRootModuleV1, ExtensionRootModuleV1_Ref,
+    IncrementalResultBatchV1, IncrementalResultEntryV1, InputStreamReadRequestV1,
+    InputStreamStatusV1, JobTerminalV1, MAX_INPUT_STREAM_READ_BYTES_V1, PluginItemOutcomeV1,
+    PluginItemResultV1, PluginMetadataV1, PluginValueV1, ROOT_MODULE_CONTRACT_ID_V1,
+    RegisteredContributionKindV1, RegisteredContributionV1, RegistrarOutputResultV1,
+    RegistrarOutputV1, RegistrationOutcomeV1, SDK_MAJOR_VERSION_V1, StableIdV1, StableSortValueV1,
 };
 use explorer_extension_ui_api::{
     CellColorV1, CellRenderContextV1, CellRenderPlanV1, FolderSizeMeasureRequestV1,
@@ -32,17 +37,203 @@ const CONTRIBUTION_ID: &str = "rust-tokei:code-lines";
 const MAX_FILE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_DIRECTORY_PACK_BYTES: usize = 64 * 1024 * 1024;
 const DIRECTORY_MAGIC_V1: &[u8; 8] = b"SECLDIR1";
+const CACHE_SCHEMA_VERSION: u32 = 1;
+const CACHE_MAX_RECORD_BYTES: u64 = 8 * 1024;
+const CACHE_MAX_FILES: usize = 256;
 
 struct TokeiRegistrar;
 struct TokeiCodeLinesProvider;
 
-#[derive(serde::Deserialize)]
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
 struct CodeLinesPayload {
     blanks: u64,
     code: u64,
     comments: u64,
     language: String,
     total: u64,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct CacheRecord {
+    schema: u32,
+    identity: String,
+    modified_seconds: u64,
+    modified_nanos: u32,
+    source_size: u64,
+    value: CodeLinesPayload,
+}
+
+impl CacheRecord {
+    fn matches(
+        &self,
+        identity: &str,
+        modified_seconds: u64,
+        modified_nanos: u32,
+        source_size: u64,
+    ) -> bool {
+        self.schema == CACHE_SCHEMA_VERSION
+            && self.identity == identity
+            && self.modified_seconds == modified_seconds
+            && self.modified_nanos == modified_nanos
+            && self.source_size == source_size
+    }
+}
+
+fn cache_directory() -> Option<PathBuf> {
+    env::var_os("RUST_TOKEI_CODE_LINES_CACHE")
+        .map(PathBuf::from)
+        .or_else(|| {
+            env::var_os("LOCALAPPDATA")
+                .or_else(|| env::var_os("APPDATA"))
+                .map(|root| {
+                    PathBuf::from(root)
+                        .join("RustGpuiExplorer")
+                        .join("cache")
+                        .join("code-lines")
+                        .join("rust-tokei-code-lines-column")
+                        .join("v1")
+                })
+        })
+}
+
+fn persistent_hash(input: &str) -> u64 {
+    input
+        .as_bytes()
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
+}
+
+fn cache_path(directory: &Path, identity: &str) -> PathBuf {
+    directory.join(format!(
+        "{:016x}.code-lines-cache",
+        persistent_hash(identity)
+    ))
+}
+
+fn prune_cache(directory: &Path) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    let mut entries = entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".code-lines-cache")
+        })
+        .map(|entry| {
+            (
+                entry
+                    .metadata()
+                    .ok()
+                    .and_then(|metadata| metadata.modified().ok())
+                    .unwrap_or(UNIX_EPOCH),
+                entry.path(),
+            )
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.0);
+    let excess = entries
+        .len()
+        .saturating_sub(CACHE_MAX_FILES.saturating_sub(1));
+    for (_, path) in entries.into_iter().take(excess) {
+        let _ = fs::remove_file(path);
+    }
+}
+
+fn cache_facts(item: &explorer_extension_api::BatchColumnItemV1) -> Option<(&str, u64, u32, u64)> {
+    let modified = item.modified_unix_seconds.into_option()?;
+    let size = item.source_size.into_option()?;
+    (!item.cache_identity.is_empty()).then_some((
+        item.cache_identity.as_str(),
+        modified,
+        item.modified_subsec_nanos,
+        size,
+    ))
+}
+
+fn read_cache(item: &explorer_extension_api::BatchColumnItemV1) -> Option<CodeLinesPayload> {
+    let (identity, modified_seconds, modified_nanos, source_size) = cache_facts(item)?;
+    let path = cache_path(&cache_directory()?, identity);
+    let metadata = fs::symlink_metadata(&path).ok()?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() > CACHE_MAX_RECORD_BYTES
+    {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    fs::File::open(path)
+        .ok()?
+        .take(CACHE_MAX_RECORD_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > CACHE_MAX_RECORD_BYTES {
+        return None;
+    }
+    let record: CacheRecord = serde_json::from_slice(&bytes).ok()?;
+    record
+        .matches(identity, modified_seconds, modified_nanos, source_size)
+        .then_some(record.value)
+}
+
+fn store_cache(item: &explorer_extension_api::BatchColumnItemV1, value: &CodeLinesPayload) {
+    let Some((identity, modified_seconds, modified_nanos, source_size)) = cache_facts(item) else {
+        return;
+    };
+    let Some(directory) = cache_directory() else {
+        return;
+    };
+    if fs::create_dir_all(&directory).is_err() {
+        return;
+    }
+    prune_cache(&directory);
+    let record = CacheRecord {
+        schema: CACHE_SCHEMA_VERSION,
+        identity: identity.to_owned(),
+        modified_seconds,
+        modified_nanos,
+        source_size,
+        value: value.clone(),
+    };
+    let Ok(bytes) = serde_json::to_vec(&record) else {
+        return;
+    };
+    if bytes.len() as u64 > CACHE_MAX_RECORD_BYTES {
+        return;
+    }
+    let destination = cache_path(&directory, identity);
+    let temporary = directory.join(format!(
+        ".{}.{}.tmp",
+        persistent_hash(identity),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos())
+    ));
+    if fs::write(&temporary, bytes).is_ok() {
+        #[cfg(windows)]
+        {
+            let _ = fs::remove_file(&destination);
+        }
+        if fs::rename(&temporary, &destination).is_err() {
+            let _ = fs::remove_file(temporary);
+        }
+    }
+}
+
+fn plugin_value(payload: &CodeLinesPayload) -> Option<PluginValueV1> {
+    let json = format!(
+        "{{\"blanks\":{},\"code\":{},\"comments\":{},\"language\":{},\"total\":{}}}",
+        payload.blanks,
+        payload.code,
+        payload.comments,
+        serde_json::to_string(&payload.language).ok()?,
+        payload.total
+    );
+    PluginValueV1::structured_canonical_json(RVec::from(json.into_bytes())).ok()
 }
 
 fn read_stream(input: &explorer_extension_api::InputStreamV1) -> Option<Vec<u8>> {
@@ -121,26 +312,9 @@ fn classify_directory_pack(bytes: &[u8]) -> Option<(String, tokei::CodeStats)> {
     (supported > 0).then(|| ("Mixed folder".to_owned(), aggregate))
 }
 
-fn json_value(language: &str, stats: &tokei::CodeStats) -> Option<PluginValueV1> {
-    // Canonical object order is required by the public transport validator.
-    let json = format!(
-        "{{\"blanks\":{},\"code\":{},\"comments\":{},\"language\":\"{}\",\"total\":{}}}",
-        stats.blanks,
-        stats.code,
-        stats.comments,
-        language,
-        stats.lines()
-    );
-    PluginValueV1::structured_canonical_json(RVec::from(json.into_bytes())).ok()
-}
-
 fn payload(value: &PluginValueV1) -> Option<CodeLinesPayload> {
     (value.kind == explorer_extension_api::PluginValueKindV1::STRUCTURED)
         .then(|| serde_json::from_slice(value.payload.as_slice()).ok())?
-}
-
-fn code_from_value(value: &PluginValueV1) -> Option<u64> {
-    payload(value).map(|value| value.code)
 }
 
 impl VisualColumnImplementationV1 for TokeiCodeLinesProvider {
@@ -160,19 +334,6 @@ impl VisualColumnImplementationV1 for TokeiCodeLinesProvider {
                 muted,
             );
         };
-        let largest = context
-            .aggregate
-            .into_option()
-            .and_then(|aggregate| aggregate.largest_sibling_value.into_option())
-            .and_then(|value| code_from_value(&value))
-            .unwrap_or(value.code);
-        let proportional = if largest == 0 {
-            0
-        } else {
-            u32::try_from((u128::from(value.code) * 1_000_000) / u128::from(largest))
-                .unwrap_or(1_000_000)
-                .min(1_000_000)
-        };
         // The host owns the setting token. It deliberately carries no private
         // UI state across the ABI boundary.
         let detail = if context.settings.contains("with-detail") {
@@ -186,18 +347,13 @@ impl VisualColumnImplementationV1 for TokeiCodeLinesProvider {
         CellRenderPlanV1 {
             label: RString::from(value.code.to_string()),
             detail,
-            proportional_bar_millionths: proportional,
+            proportional_bar_millionths: 0,
             text_color: if context.selected {
                 context.theme.selection_background
             } else {
                 context.theme.foreground
             },
-            bar_color: CellColorV1::rgba(
-                context.theme.accent.red,
-                context.theme.accent.green,
-                context.theme.accent.blue,
-                128,
-            ),
+            bar_color: CellColorV1::rgba(0, 0, 0, 0),
         }
     }
 }
@@ -212,6 +368,21 @@ impl BatchColumnProviderImplementationV1 for TokeiCodeLinesProvider {
             if context.poll_control().into_raw() != 1 {
                 return JobTerminalV1::CANCELLED;
             }
+            if let Some(cached) = read_cache(item) {
+                let sort = cached.code;
+                if let Some(value) = plugin_value(&cached) {
+                    entries.push(IncrementalResultEntryV1 {
+                        item: item.item,
+                        item_generation: item.item_generation,
+                        source_generation: context.source_generation,
+                        result: PluginItemResultV1::value(
+                            value,
+                            ROption::RSome(StableSortValueV1::unsigned(sort)),
+                        ),
+                    });
+                    continue;
+                }
+            }
             let Some(bytes) = read_stream(&item.input) else {
                 entries.push(IncrementalResultEntryV1 {
                     item: item.item,
@@ -223,7 +394,15 @@ impl BatchColumnProviderImplementationV1 for TokeiCodeLinesProvider {
             };
             let result = classify(item.file_name.as_str(), &bytes)
                 .and_then(|(language, stats)| {
-                    json_value(&language, &stats).map(|value| {
+                    let payload = CodeLinesPayload {
+                        blanks: stats.blanks as u64,
+                        code: stats.code as u64,
+                        comments: stats.comments as u64,
+                        language,
+                        total: stats.lines() as u64,
+                    };
+                    plugin_value(&payload).map(|value| {
+                        store_cache(item, &payload);
                         PluginItemResultV1::value(
                             value,
                             ROption::RSome(StableSortValueV1::unsigned(stats.code as u64)),
@@ -309,6 +488,7 @@ impl ExtensionRegistrarImplementationV1 for TokeiRegistrar {
                     provider: ROption::RNone,
                     visual_column: ROption::RNone,
                     size_map_view: ROption::RNone,
+                    virtual_folder_provider: ROption::RNone,
                     batch_column_provider: ROption::RSome(BatchColumnProviderObjectV1::new(
                         TokeiCodeLinesProvider,
                     )),
@@ -327,6 +507,7 @@ impl ExtensionRegistrarImplementationV1 for TokeiRegistrar {
                         explorer_extension_api::VisualColumnObjectV1::new(TokeiCodeLinesProvider),
                     ),
                     size_map_view: ROption::RNone,
+                    virtual_folder_provider: ROption::RNone,
                     batch_column_provider: ROption::RNone,
                 },
             ]),
@@ -454,7 +635,7 @@ mod tests {
     }
 
     #[test]
-    fn renderer_draws_exact_label_bar_and_optional_detail() {
+    fn renderer_draws_exact_label_without_bar_and_optional_detail() {
         let value = PluginValueV1::structured_canonical_json(RVec::from(
             br#"{"blanks":1,"code":25,"comments":2,"language":"Rust","total":28}"#.to_vec(),
         ))
@@ -491,12 +672,35 @@ mod tests {
             request_generation: 1,
         });
         assert_eq!(plan.label, "25");
-        assert_eq!(plan.proportional_bar_millionths, 250_000);
+        assert_eq!(plan.proportional_bar_millionths, 0);
+        assert_eq!(plan.bar_color.alpha, 0);
         assert!(plan.detail.contains("Rust"));
     }
 
     #[test]
     fn nul_bearing_known_extension_is_unsupported_not_zero() {
         assert!(classify("binary.rs", b"fn main() {}\0").is_none());
+    }
+
+    #[test]
+    fn persistent_cache_requires_unchanged_identity_mtime_and_size() {
+        let record = CacheRecord {
+            schema: CACHE_SCHEMA_VERSION,
+            identity: "opaque-1".into(),
+            modified_seconds: 10,
+            modified_nanos: 20,
+            source_size: 30,
+            value: CodeLinesPayload {
+                blanks: 1,
+                code: 2,
+                comments: 3,
+                language: "Rust".into(),
+                total: 6,
+            },
+        };
+        assert!(record.matches("opaque-1", 10, 20, 30));
+        assert!(!record.matches("opaque-1", 11, 20, 30));
+        assert!(!record.matches("opaque-1", 10, 20, 31));
+        assert!(!record.matches("opaque-2", 10, 20, 30));
     }
 }

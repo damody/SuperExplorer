@@ -31,6 +31,9 @@ impl CodeLinesDisplayMode {
 pub struct CodeLinesColumnConfigV1 {
     pub descriptor: ColumnDescriptor,
     pub display: CodeLinesDisplayMode,
+    /// Folder Options package that owns this runtime contribution. This is
+    /// host-minted while loading the one example and is never plugin input.
+    pub option_package_id: String,
 }
 
 impl Default for CodeLinesColumnConfigV1 {
@@ -38,6 +41,7 @@ impl Default for CodeLinesColumnConfigV1 {
         Self {
             descriptor: code_lines_column_descriptor(),
             display: CodeLinesDisplayMode::default(),
+            option_package_id: "rust-tokei-code-lines-column".to_owned(),
         }
     }
 }
@@ -70,6 +74,9 @@ pub trait CodeLinesRuntimePortV1: Send + Sync {
     fn config(&self) -> CodeLinesColumnConfigV1;
     fn submit_code_lines_requests(&self, requests: Vec<CodeLinesRequestV1>);
     fn cancel_code_lines_context(&self, context: &RequestContext);
+    /// Invalidates only values whose items belong directly to this directory.
+    /// In-flight work admitted before the refresh must not repopulate it.
+    fn invalidate_directory_cache(&self, directory: &std::path::Path);
     fn drain_code_lines_results(&self) -> Vec<CodeLinesResultV1>;
     /// Moves completed asynchronous render plans into the host cache. Returns
     /// true only when GPUI needs another frame to consume a newly-ready plan.
@@ -160,8 +167,11 @@ pub fn lock_owner_column_descriptor() -> ColumnDescriptor {
 }
 
 pub fn is_supported_code_lines_descriptor(descriptor: &ColumnDescriptor) -> bool {
-    (descriptor.id == code_lines_column_descriptor().id
-        || descriptor.id == lock_owner_column_descriptor().id)
+    let code_lines_extension = matches!(
+        &descriptor.id,
+        ColumnId::Extension { column_id, .. } if column_id == CODE_LINES_COLUMN_ID
+    );
+    (code_lines_extension || descriptor.id == lock_owner_column_descriptor().id)
         && descriptor.value_type == ColumnValueType::Integer
         && descriptor.sort_semantics == ColumnSortSemantics::Integer
         && descriptor.validate().is_ok()

@@ -36,7 +36,7 @@ pub use context_menu::{
 pub use domain::{
     CancellationRegistration, CancellationSignalReport, CancellationToken, Generation,
     LocationDescriptor, LocationDescriptorValidationError, MAX_LOCATION_DESCRIPTOR_BYTES,
-    RequestContext, RequestRejection, ShellItemId, SyntheticRoot, TabId,
+    RequestContext, RequestRejection, ShellItemId, SyntheticRoot, TabId, VirtualLocationDescriptor,
 };
 pub use drag_drop::{
     AutoScrollDirection, DragButton, DragEffect, DragModifiers, DragSession, DragSessionState,
@@ -64,7 +64,7 @@ pub use navigation::{
     DriveKind, DriveMetadata, FileEntry, FileEntryMetadata, HistoryEntry, MenuFocusMovement,
     NavigationHistory, OrderedColumnLayout, PresentationChange, SelectionModel, SortDescriptor,
     SortDirection, TabRequestScopes, TabSearchState, TabState, TabViewState, ViewAnchor, ViewMode,
-    ViewSettings, default_icon_size_for_mode, effective_icon_size,
+    ViewSettings, default_icon_size_for_mode, effective_icon_size, location_breadcrumbs,
 };
 pub use operation::{
     JournalEntry, JournalInverse, JournalPreimage, JournalValidation, OperationCenterState,
@@ -90,12 +90,12 @@ pub use protocol::{
     TransferEffects, base_icon_key, classify_base_icon,
 };
 pub use session::{
-    PersistedColumn, PersistedColumnWidths, PersistedHistoryEntry, PersistedQuickAccessPin,
-    PersistedRect, PersistedSessionEnvelope, PersistedSessionPayload, PersistedSort,
-    PersistedSortDirection, PersistedTab, PersistedViewMode, PersistedViewSettings,
-    PersistedWindowPlacement, RestorePlan, SESSION_SCHEMA_VERSION, SessionLoadOutcome,
-    SessionLoadSource, SessionProvenance, SessionResetScope, SessionStore, SessionStoreError,
-    SessionValidationError,
+    PersistedColumn, PersistedColumnLayoutEntry, PersistedColumnWidths, PersistedExtensionSort,
+    PersistedHistoryEntry, PersistedQuickAccessPin, PersistedRect, PersistedSessionEnvelope,
+    PersistedSessionPayload, PersistedSort, PersistedSortDirection, PersistedTab,
+    PersistedViewMode, PersistedViewSettings, PersistedWindowPlacement, RestorePlan,
+    SESSION_SCHEMA_VERSION, SessionLoadOutcome, SessionLoadSource, SessionProvenance,
+    SessionResetScope, SessionStore, SessionStoreError, SessionValidationError,
 };
 pub use thumbnail::{
     ThumbnailConsumer, ThumbnailFallbackReason, ThumbnailMode, ThumbnailPixelError,

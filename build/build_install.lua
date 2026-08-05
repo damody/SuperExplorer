@@ -102,7 +102,7 @@ local function find_makensis()
 end
 
 local function parse_options()
-    local options = { check = false, skip_build = false, no_launch = false }
+    local options = { check = false, skip_build = false, no_launch = false, allow_dirty = false }
     for index = 1, #arg do
         if arg[index] == "--check" then
             options.check = true
@@ -110,6 +110,8 @@ local function parse_options()
             options.skip_build = true
         elseif arg[index] == "--no-launch" then
             options.no_launch = true
+        elseif arg[index] == "--allow-dirty" then
+            options.allow_dirty = true
         else
             error("未知參數：" .. tostring(arg[index]), 0)
         end
@@ -140,7 +142,9 @@ local function main()
     print("Lua 執行環境：" .. tostring(arg[-1]))
 
     fs.mkdir_p(logs)
-    reject_uncommitted_rust(logs)
+    if not options.allow_dirty then
+        reject_uncommitted_rust(logs)
+    end
 
     local makensis = find_makensis()
     local finalizer = require_file(

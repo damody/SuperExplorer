@@ -42,6 +42,7 @@ pub enum NativeCallOperationV1 {
     Registrar,
     JobProvider,
     BatchColumnProvider,
+    VirtualFolderProvider,
     VisualMeasure,
     VisualRender,
 }

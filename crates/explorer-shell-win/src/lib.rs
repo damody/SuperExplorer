@@ -62,6 +62,19 @@ pub use sta::{
 };
 pub use thumbnail::{clear_thumbnail_disk_cache, load_shell_thumbnail};
 
+/// Opens a new Command Prompt, using the current Explorer folder when available.
+pub fn launch_command_prompt(working_directory: Option<&std::path::Path>) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt as _;
+
+    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+    let mut command = std::process::Command::new("cmd.exe");
+    command.creation_flags(CREATE_NEW_CONSOLE);
+    if let Some(directory) = working_directory.filter(|directory| directory.is_dir()) {
+        command.current_dir(directory);
+    }
+    command.spawn().map(|_| ())
+}
+
 /// Returns one bounded owned snapshot for a disposable namespace worker.
 /// No PIDL or COM interface leaves the caller's apartment.
 ///

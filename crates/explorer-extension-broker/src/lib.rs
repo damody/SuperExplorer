@@ -1051,6 +1051,25 @@ fn encode_location_descriptor(location: &explorer_model::LocationDescriptor) -> 
             bytes.extend_from_slice(value);
             return bytes;
         }
+        explorer_model::LocationDescriptor::Virtual(value) => {
+            let mut bytes = Vec::with_capacity(location.encoded_payload_len().saturating_add(42));
+            bytes.push(b'V');
+            push_bounded_bytes(&mut bytes, value.provider_id.as_bytes());
+            bytes.extend_from_slice(&value.container_identity);
+            bytes.extend_from_slice(&value.container_generation.to_le_bytes());
+            match value.entry_id {
+                Some(entry_id) => {
+                    bytes.push(1);
+                    bytes.extend_from_slice(&entry_id.to_le_bytes());
+                }
+                None => bytes.push(0),
+            }
+            bytes.extend_from_slice(&(value.components.len() as u32).to_le_bytes());
+            for component in &value.components {
+                push_bounded_bytes(&mut bytes, component.as_bytes());
+            }
+            return bytes;
+        }
     };
     let mut bytes = Vec::with_capacity(value.len().saturating_add(1));
     bytes.push(kind);
@@ -1082,8 +1101,79 @@ pub fn decode_location_descriptor(
         b'S' => Ok(explorer_model::LocationDescriptor::ShellNamespace(
             value.to_vec(),
         )),
+        b'V' => decode_virtual_location(value),
         _ => Err(BrokerClientError::Protocol),
     }
+}
+
+fn push_bounded_bytes(output: &mut Vec<u8>, value: &[u8]) {
+    output.extend_from_slice(&(value.len() as u32).to_le_bytes());
+    output.extend_from_slice(value);
+}
+
+fn take_bytes<'a>(input: &mut &'a [u8], length: usize) -> Result<&'a [u8], BrokerClientError> {
+    if input.len() < length {
+        return Err(BrokerClientError::Protocol);
+    }
+    let (value, remaining) = input.split_at(length);
+    *input = remaining;
+    Ok(value)
+}
+
+fn take_u32(input: &mut &[u8]) -> Result<u32, BrokerClientError> {
+    Ok(u32::from_le_bytes(
+        take_bytes(input, 4)?
+            .try_into()
+            .map_err(|_| BrokerClientError::Protocol)?,
+    ))
+}
+
+fn take_length_prefixed_string(input: &mut &[u8]) -> Result<String, BrokerClientError> {
+    let length = usize::try_from(take_u32(input)?).map_err(|_| BrokerClientError::Protocol)?;
+    String::from_utf8(take_bytes(input, length)?.to_vec()).map_err(|_| BrokerClientError::Protocol)
+}
+
+fn decode_virtual_location(
+    mut input: &[u8],
+) -> Result<explorer_model::LocationDescriptor, BrokerClientError> {
+    let provider_id = take_length_prefixed_string(&mut input)?;
+    let container_identity = take_bytes(&mut input, 16)?
+        .try_into()
+        .map_err(|_| BrokerClientError::Protocol)?;
+    let container_generation = u64::from_le_bytes(
+        take_bytes(&mut input, 8)?
+            .try_into()
+            .map_err(|_| BrokerClientError::Protocol)?,
+    );
+    let entry_id = match take_bytes(&mut input, 1)?[0] {
+        0 => None,
+        1 => Some(u64::from_le_bytes(
+            take_bytes(&mut input, 8)?
+                .try_into()
+                .map_err(|_| BrokerClientError::Protocol)?,
+        )),
+        _ => return Err(BrokerClientError::Protocol),
+    };
+    let component_count =
+        usize::try_from(take_u32(&mut input)?).map_err(|_| BrokerClientError::Protocol)?;
+    if component_count > 4_096 {
+        return Err(BrokerClientError::Protocol);
+    }
+    let mut components = Vec::with_capacity(component_count);
+    for _ in 0..component_count {
+        components.push(take_length_prefixed_string(&mut input)?);
+    }
+    if !input.is_empty() {
+        return Err(BrokerClientError::Protocol);
+    }
+    explorer_model::LocationDescriptor::try_virtual(
+        provider_id,
+        container_identity,
+        container_generation,
+        entry_id,
+        components,
+    )
+    .map_err(|_| BrokerClientError::Protocol)
 }
 
 fn encode_nonce(nonce: SessionNonce) -> String {
@@ -1191,6 +1281,21 @@ impl QuarantineRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn virtual_location_descriptor_round_trips_without_container_path() {
+        let location = explorer_model::LocationDescriptor::try_virtual(
+            "rust-7z",
+            [0xA5; 16],
+            17,
+            Some(29),
+            vec!["資料".to_owned(), "nested".to_owned()],
+        )
+        .expect("virtual location");
+        let encoded = encode_location_descriptor(&location);
+        assert_eq!(decode_location_descriptor(&encoded).unwrap(), location);
+        assert!(!String::from_utf8_lossy(&encoded).contains("C:\\"));
+    }
 
     #[test]
     fn shutdown_is_bounded_while_an_in_flight_request_owns_the_runtime() {

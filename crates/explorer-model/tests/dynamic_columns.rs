@@ -270,3 +270,70 @@ fn legacy_runtime_migration_preserves_custom_prefix_and_appends_built_ins() {
     assert!(runtime.details_layout.visible(&ColumnId::Title));
     assert!(!runtime.details_layout.visible(&ColumnId::Type));
 }
+
+#[test]
+fn extensible_session_layout_and_sort_round_trip_unknown_ids() {
+    let id = ColumnId::extension("org.example.missing", "value").unwrap();
+    let descriptor = extension_descriptor(id.clone());
+    let mut settings = explorer_model::ViewSettings::default();
+    settings.details_layout.ensure_descriptor(&descriptor, true);
+    assert!(settings.details_layout.set_width(&id, 377));
+    assert!(
+        settings
+            .details_layout
+            .move_before(&id, Some(&ColumnId::Size))
+    );
+    settings.sort = explorer_model::SortDescriptor {
+        column: id.clone(),
+        direction: explorer_model::SortDirection::Descending,
+    };
+
+    let persisted = PersistedViewSettings::from(settings);
+    let encoded = serde_json::to_string(&persisted).unwrap();
+    let decoded: PersistedViewSettings = serde_json::from_str(&encoded).unwrap();
+    let restored = decoded.to_runtime();
+    assert_eq!(restored.details_layout.width(&id), Some(377));
+    assert!(restored.details_layout.visible(&id));
+    assert_eq!(restored.sort.column, id);
+    assert_eq!(
+        restored.sort.direction,
+        explorer_model::SortDirection::Descending
+    );
+}
+
+#[test]
+fn corrupt_duplicate_and_oversized_extensible_layouts_fail_closed() {
+    let mut persisted = PersistedViewSettings::default();
+    persisted.extensible_column_layout = vec![
+        explorer_model::PersistedColumnLayoutEntry {
+            id: "builtin:name".to_owned(),
+            width: 280,
+            visible: true,
+        },
+        explorer_model::PersistedColumnLayoutEntry {
+            id: "Org.invalid:value".to_owned(),
+            width: 120,
+            visible: true,
+        },
+    ];
+    // Runtime conversion is deliberately safe even before the containing
+    // session envelope rejects the malformed canonical ID.
+    let restored = persisted.to_runtime();
+    assert_eq!(
+        restored.details_layout,
+        PersistedViewSettings::default().to_runtime().details_layout
+    );
+
+    persisted.extensible_column_layout = (0..300)
+        .map(|index| explorer_model::PersistedColumnLayoutEntry {
+            id: format!("org.example.p{index}:value"),
+            width: 120,
+            visible: false,
+        })
+        .collect();
+    let restored = persisted.to_runtime();
+    assert_eq!(
+        restored.details_layout,
+        PersistedViewSettings::default().to_runtime().details_layout
+    );
+}

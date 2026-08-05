@@ -1293,6 +1293,18 @@ pub struct BatchColumnItemV1 {
     /// Host-attested basename only. It never contains a directory path or
     /// native handle and lets a source parser select its language safely.
     pub file_name: RString,
+    /// Host-attested, opaque and persistent identity for plugin-owned caches.
+    /// It is stable for the same canonical filesystem object but does not
+    /// disclose the native path.
+    pub cache_identity: RString,
+    /// Nanoseconds since the Unix epoch for the source's last modification.
+    /// `RNone` disables persistent cache reuse for this item.
+    pub modified_unix_seconds: ROption<u64>,
+    /// Nanosecond fraction paired with `modified_unix_seconds`.
+    pub modified_subsec_nanos: u32,
+    /// Host-attested source length used together with modification time to
+    /// invalidate persistent plugin cache records.
+    pub source_size: ROption<u64>,
     pub input: InputStreamV1,
 }
 
@@ -1838,5 +1850,32 @@ mod tests {
         assert_eq!(exact.unsigned, (1_u64 << 53) + 1);
         assert!(StableSortValueV1::bytes(vec![0xff]).is_ok());
         assert!(StableSortValueV1::text("é").is_ok());
+    }
+
+    #[test]
+    fn lock_owner_contract_is_bounded_generation_scoped_and_discover_only() {
+        assert_eq!(MAX_LOCK_OWNER_QUERY_ITEMS_V1, 128);
+        assert_eq!(MAX_LOCK_OWNER_QUERY_RESULTS_V1, 256);
+        assert_eq!(MAX_LOCK_OWNER_DISPLAY_NAME_BYTES_V1, 512);
+        let request = LockOwnerQueryRequestV1 {
+            items: RVec::from(vec![ItemHandleV1::from_host([7; 16], 11)]),
+            item_generation: 11,
+            location_generation: 13,
+            deadline_millis: 2_000,
+            reserved: 0,
+        };
+        assert_eq!(request.items[0].generation(), request.item_generation);
+        assert_eq!(request.location_generation, 13);
+        assert_eq!(LockOwnerQueryStatusV1::READY.into_raw(), 1);
+        assert_eq!(LockOwnerQueryStatusV1::HOST_ERROR.into_raw(), 6);
+
+        let record = LockOwnerRecordV1 {
+            item: request.items[0],
+            process_id: 42,
+            application_type: LockOwnerApplicationTypeV1::SERVICE,
+            display_name: RString::from("service"),
+            service_name: RString::from("svc"),
+        };
+        assert_eq!(record.process_id, 42);
     }
 }

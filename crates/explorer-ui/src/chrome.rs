@@ -41,6 +41,7 @@ use crate::{
     UiTokens,
     actions::{ExplorerAction, NavigationHistoryDirection},
     diagnostics::{TypographyObservation, region_probe, typography_probe},
+    extension_commands::{ExifRenamePreset, ExtensionCommandPanel},
     focus::FocusSurface,
     icons::{
         ExplorerIcon, chrome_icon, navigation_history_icon, navigation_icon,
@@ -388,6 +389,7 @@ impl RenderOnce for ExplorerWindow {
         let navigation_icons = self.shell_icons.clone();
         let tab_icons = self.shell_icons.clone();
         let view_settings = self.state.view_settings();
+        let column_registry = self.state.column_registry().clone();
         let size_map_menu_view = self
             .size_map_runtime
             .as_ref()
@@ -521,6 +523,7 @@ impl RenderOnce for ExplorerWindow {
                                 file_origin_x,
                                 file_origin_y,
                                 self.state.view_settings(),
+                                column_registry.clone(),
                                 file_viewport_width,
                                 self.file_scroll.clone(),
                                 file_icons,
@@ -563,6 +566,7 @@ impl RenderOnce for ExplorerWindow {
                                             element.child(explorer_horizontal_scrollbar(
                                                 &handle,
                                                 view_settings.clone(),
+                                                column_registry.clone(),
                                                 file_viewport_width,
                                                 self.tokens,
                                                 self.on_action.clone(),
@@ -1057,7 +1061,7 @@ fn folder_options_dialog(
                 .role(Role::Dialog)
                 .aria_label("資料夾選項")
                 .w(px(crate::layout::folder_options::DIALOG_WIDTH.value()))
-                .min_h(px(crate::layout::folder_options::DIALOG_MIN_HEIGHT.value()))
+                .h(px(crate::layout::folder_options::DIALOG_HEIGHT.value()))
                 .flex()
                 .flex_col()
                 .rounded(px(tokens.layout.corner_radius.value()))
@@ -1067,6 +1071,7 @@ fn folder_options_dialog(
                 .child(
                     div()
                         .h(px(tokens.layout.address_bar_height.value()))
+                        .flex_none()
                         .flex()
                         .items_center()
                         .justify_between()
@@ -1084,6 +1089,7 @@ fn folder_options_dialog(
                 .child(
                     div()
                         .h(px(tokens.layout.title_tab_height.value()))
+                        .flex_none()
                         .flex()
                         .px(px(tokens.layout.control_padding_horizontal.value()))
                         .child(folder_option_tab(
@@ -1115,6 +1121,8 @@ fn folder_options_dialog(
                     div()
                         .id("folder-options-page")
                         .flex_1()
+                        .min_h_0()
+                        .overflow_hidden()
                         .p(px(crate::layout::folder_options::PAGE_PADDING.value()))
                         .when(page == FolderOptionsPage::General, |body| {
                             body.child(folder_options_general_page(
@@ -1142,6 +1150,7 @@ fn folder_options_dialog(
                 .child(
                     div()
                         .h(px(crate::layout::folder_options::FOOTER_HEIGHT.value()))
+                        .flex_none()
                         .flex()
                         .items_center()
                         .justify_end()
@@ -1245,9 +1254,17 @@ fn folder_options_extensions_page(
 ) -> impl IntoElement {
     div()
         .id("folder-options-extensions-page")
+        .role(Role::List)
+        .aria_label("Extensions")
+        .h_full()
+        .min_h_0()
         .flex()
         .flex_col()
         .overflow_y_scroll()
+        .on_scroll_wheel(|_, window, cx| {
+            cx.stop_propagation();
+            window.refresh();
+        })
         .gap(px(tokens.layout.maximum_visible_glyph.value()))
         .children(extensions.iter().enumerate().map(|(index, extension)| {
             let website_action = ExplorerAction::OpenExtensionAuthorWebsite { index };
@@ -1257,6 +1274,8 @@ fn folder_options_extensions_page(
                     "folder-option-extension-{}",
                     extension.package_id
                 )))
+                .role(Role::ListItem)
+                .aria_label(extension.display_name)
                 .flex()
                 .flex_col()
                 .p(px(tokens.layout.control_padding_horizontal.value()))
@@ -2275,6 +2294,8 @@ impl RenderOnce for CommandBar {
                         tortoise_git_available,
                         loaded_extension_summary,
                         extension_commands,
+                        self.state.extension_command_panel(),
+                        has_selection,
                         self.on_action.clone(),
                     )
                     .into_any_element()
@@ -2362,7 +2383,8 @@ fn new_item_menu(
     .with_priority(150)
 }
 
-fn command_extensions_menu(
+#[allow(dead_code)]
+fn command_extensions_menu_legacy(
     tokens: UiTokens,
     tortoise_git_available: bool,
     loaded_extension_summary: Option<String>,
@@ -2696,6 +2718,220 @@ fn command_more_menu(
     .with_priority(120)
 }
 
+fn command_extensions_menu(
+    tokens: UiTokens,
+    tortoise_git_available: bool,
+    loaded_extension_summary: Option<String>,
+    extension_commands: Vec<(&'static str, &'static str)>,
+    panel: Option<ExtensionCommandPanel>,
+    has_selection: bool,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let menu = div()
+        .id("command-extensions-popup-v2")
+        .role(Role::Menu)
+        .aria_label("擴充功能")
+        .occlude()
+        .w(px(tokens.layout.navigation_pane_min_width.value()
+            + tokens.layout.minimum_hit_target.value()))
+        .overflow_hidden()
+        .p(px(tokens.layout.content_spacing.value()))
+        .rounded(px(tokens.layout.corner_radius.value()))
+        .bg(tokens.theme.colors.menu_fill.to_gpui())
+        .border(px(1.0))
+        .border_color(tokens.theme.colors.divider.to_gpui())
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .when_some(loaded_extension_summary, |menu, summary| {
+            menu.child(
+                div()
+                    .id("extensions-loaded-development-plugin-v2")
+                    .role(Role::MenuItem)
+                    .aria_label(summary.clone())
+                    .h(px(tokens.layout.minimum_hit_target.value()))
+                    .flex()
+                    .min_w_0()
+                    .items_center()
+                    .px(px(tokens.layout.control_padding_horizontal.value()))
+                    .text_color(tokens.theme.colors.text_primary.to_gpui())
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(summary),
+                    ),
+            )
+        })
+        .when(panel.is_none(), |menu| {
+            menu.children(
+                extension_commands
+                    .into_iter()
+                    .map(|(contribution_id, label)| {
+                        let element_id = match contribution_id {
+                            "lua-bulk-folder:button" => {
+                                "extension-command-lua-bulk-folder-button-v2"
+                            }
+                            "rust-exif-rename:button" => {
+                                "extension-command-rust-exif-rename-button-v2"
+                            }
+                            _ => "extension-command-unknown-v2",
+                        };
+                        command_more_item(
+                            element_id,
+                            label,
+                            ExplorerAction::InvokeExtensionCommand {
+                                contribution_id: contribution_id.to_owned(),
+                            },
+                            true,
+                            false,
+                            None,
+                            tokens,
+                            on_action.clone(),
+                        )
+                    }),
+            )
+            .child(command_more_item(
+                "extensions-refresh-tortoisegit-v2",
+                if tortoise_git_available {
+                    "更新 TortoiseGit 狀態"
+                } else {
+                    "找不到 TortoiseGit"
+                },
+                ExplorerAction::RefreshTortoiseGitStatus,
+                tortoise_git_available,
+                false,
+                None,
+                tokens,
+                on_action.clone(),
+            ))
+        })
+        .when_some(panel, |menu, panel| {
+            menu.child(extension_command_panel(
+                panel,
+                has_selection,
+                tokens,
+                on_action.clone(),
+            ))
+        });
+    deferred(
+        div()
+            .absolute()
+            .top(px(tokens.layout.minimum_hit_target.value()))
+            .left_0()
+            .right_0()
+            .flex()
+            .justify_center()
+            .child(menu),
+    )
+    .with_priority(120)
+}
+
+fn extension_command_panel(
+    selected_panel: ExtensionCommandPanel,
+    has_selection: bool,
+    tokens: UiTokens,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let panel = div()
+        .id("extension-command-panel")
+        .role(Role::Menu)
+        .min_w_0()
+        .overflow_hidden();
+    match selected_panel {
+        ExtensionCommandPanel::ExifRename => panel
+            .child(command_panel_heading("Rename from EXIF", tokens))
+            .child(command_more_item(
+                "extension-exif-date-time",
+                "依拍攝日期改名（20260805_123456）",
+                ExplorerAction::RunExifRenamePreset {
+                    preset: ExifRenamePreset::DateTime,
+                },
+                has_selection,
+                false,
+                None,
+                tokens,
+                on_action.clone(),
+            ))
+            .child(command_more_item(
+                "extension-exif-date-original",
+                "拍攝日期 + 原檔名",
+                ExplorerAction::RunExifRenamePreset {
+                    preset: ExifRenamePreset::DateTimeAndOriginal,
+                },
+                has_selection,
+                false,
+                None,
+                tokens,
+                on_action.clone(),
+            ))
+            .child(command_more_item(
+                "extension-command-panel-cancel",
+                "取消",
+                ExplorerAction::CloseExtensionCommandPanel,
+                true,
+                false,
+                None,
+                tokens,
+                on_action,
+            )),
+        ExtensionCommandPanel::BulkFolder => panel
+            .child(command_panel_heading("Bulk folder generator", tokens))
+            .child(command_more_item(
+                "extension-bulk-create-10",
+                "建立 10 個資料夾（Folder-001…010）",
+                ExplorerAction::RunBulkFolderPreset { count: 10 },
+                true,
+                false,
+                None,
+                tokens,
+                on_action.clone(),
+            ))
+            .child(command_more_item(
+                "extension-bulk-create-100",
+                "建立 100 個資料夾（Folder-001…100）",
+                ExplorerAction::RunBulkFolderPreset { count: 100 },
+                true,
+                false,
+                None,
+                tokens,
+                on_action.clone(),
+            ))
+            .child(command_more_item(
+                "extension-command-panel-cancel",
+                "取消",
+                ExplorerAction::CloseExtensionCommandPanel,
+                true,
+                false,
+                None,
+                tokens,
+                on_action,
+            )),
+    }
+}
+
+fn command_panel_heading(label: &'static str, tokens: UiTokens) -> impl IntoElement {
+    div()
+        .id("extension-command-panel-heading")
+        .role(Role::MenuItem)
+        .h(px(tokens.layout.minimum_hit_target.value()))
+        .flex()
+        .min_w_0()
+        .items_center()
+        .px(px(tokens.layout.control_padding_horizontal.value()))
+        .text_color(tokens.theme.colors.text_primary.to_gpui())
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(label),
+        )
+}
+
 fn command_more_item(
     id: &'static str,
     label: &'static str,
@@ -2713,6 +2949,8 @@ fn command_more_item(
         .aria_selected(selected)
         .h(px(tokens.layout.minimum_hit_target.value()))
         .flex()
+        .min_w_0()
+        .overflow_hidden()
         .items_center()
         .px(px(tokens.layout.control_padding_horizontal.value()))
         .text_color(if enabled {
@@ -2747,7 +2985,15 @@ fn command_more_item(
                     )
                 })
         })
-        .child(label)
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(label),
+        )
 }
 
 fn sort_menu(
@@ -3078,19 +3324,17 @@ fn view_menu_item(
 ) -> gpui::AnyElement {
     let colors = tokens.theme.colors;
     // AccessKit's Windows provider currently exposes no InvokePattern for a
-    // custom MenuItem. The extension entry is an actionable button inside the
-    // menu so keyboard, UIA and pointer activation all reach the same callback.
-    let is_extension_item = id == "view-extension-size-map";
+    // custom MenuItem. Expose every actionable view choice as a focusable
+    // button so built-in and extension views share the same keyboard, UIA and
+    // pointer activation path.
     div()
         .id(id.clone())
         .debug_selector(move || id.clone())
-        .role(Role::MenuItem)
-        .when(is_extension_item, |element| element.role(Role::Button))
+        .role(Role::Button)
         .aria_label(label)
         .aria_selected(focused)
-        .when(is_extension_item, |element| {
-            element.focusable().tab_stop(true)
-        })
+        .focusable()
+        .tab_stop(true)
         .h(px(tokens.layout.menu_row_height.value()))
         .flex()
         .items_center()
@@ -5081,6 +5325,7 @@ pub struct FileViewHost {
     file_origin_x: f32,
     file_origin_y: f32,
     view_settings: explorer_model::ViewSettings,
+    column_registry: explorer_model::ColumnRegistry,
     viewport_width: f32,
     scroll_handle: Option<gpui::ScrollHandle>,
     shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
@@ -5125,6 +5370,7 @@ impl FileViewHost {
         file_origin_x: f32,
         file_origin_y: f32,
         view_settings: explorer_model::ViewSettings,
+        column_registry: explorer_model::ColumnRegistry,
         viewport_width: f32,
         scroll_handle: Option<gpui::ScrollHandle>,
         shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
@@ -5167,6 +5413,7 @@ impl FileViewHost {
             file_origin_x,
             file_origin_y,
             view_settings,
+            column_registry,
             viewport_width,
             scroll_handle,
             shell_icons,
@@ -5232,6 +5479,17 @@ fn marquee_content_rect(
     }
 }
 
+fn authorize_view_selection(
+    bridge: &crate::size_map_view::ViewSelectionBridgeV1,
+    node_id: explorer_extension_ui_api::StableIdV1,
+) -> Option<usize> {
+    bridge.authorize_selection(&explorer_extension_ui_api::ViewSelectionRequestV1 {
+        snapshot: bridge.snapshot(),
+        operation: explorer_extension_ui_api::ViewSelectionOperationV1::REPLACE,
+        node_ids: vec![node_id].into(),
+    })
+}
+
 fn size_map_surface(
     tokens: UiTokens,
     plan: crate::size_map_view::SizeMapRenderPlanV1,
@@ -5242,6 +5500,20 @@ fn size_map_surface(
     let colors = tokens.theme.colors;
     let layout = tokens.layout;
     let status = plan.status.clone();
+    let interaction_bridge = plan.snapshot.map(|snapshot| {
+        Arc::new(crate::size_map_view::ViewSelectionBridgeV1::new(
+            snapshot,
+            plan.rectangles
+                .iter()
+                .filter_map(|rectangle| {
+                    Some((
+                        rectangle.node_id?,
+                        *indexes.get(&rectangle.interaction_target.as_ref()?.selection_item_id)?,
+                    ))
+                })
+                .collect(),
+        ))
+    });
     div()
         .id("size-map-view")
         .debug_selector(|| "size-map-view".to_owned())
@@ -5256,62 +5528,193 @@ fn size_map_surface(
             "normal",
         )))
         .children(plan.rectangles.into_iter().filter_map(move |rectangle| {
-            let row_index = indexes.get(&rectangle.item_id).copied()?;
-            let callback = on_action.clone()?;
-            let select_callback = callback.clone();
-            let open_callback = callback.clone();
+            let row_index = rectangle
+                .item_id
+                .as_ref()
+                .and_then(|item_id| indexes.get(item_id).copied());
+            let public_node_id = rectangle.node_id;
             let item_id = rectangle.item_id.clone();
-            let is_selected = selected.contains(&item_id);
+            let interaction_target = rectangle.interaction_target.clone();
+            let is_selected = item_id
+                .as_ref()
+                .is_some_and(|item_id| selected.contains(item_id));
             let label = rectangle.label.clone();
             let detail = rectangle.detail.clone();
             let status = rectangle.status.clone();
-            Some(
-                div()
-                    .id(format!("size-map-node-{:02x?}", item_id.provider_bytes()))
-                    .role(Role::Button)
-                    .absolute()
-                    .left(px(rectangle.x.max(0.0)))
-                    .top(px(rectangle.y.max(0.0)))
-                    .w(px(rectangle.width.max(1.0)))
-                    .h(px(rectangle.height.max(1.0)))
-                    .overflow_hidden()
-                    .p(px(layout.content_spacing.value() / 2.0))
-                    .border(px(if is_selected { 3.0 } else { 1.0 }))
-                    .border_color(if is_selected {
-                        colors.selected_active.to_gpui()
-                    } else {
-                        colors.divider.to_gpui()
+            let aggregate_items = rectangle.aggregate_items;
+            let selector = item_id.as_ref().map_or_else(
+                || "size-map-node-other".to_owned(),
+                |item_id| format!("size-map-node-{:02x?}", item_id.provider_bytes()),
+            );
+            let node = div()
+                .id(selector)
+                .role(if item_id.is_some() {
+                    Role::Button
+                } else {
+                    Role::Group
+                })
+                .absolute()
+                .left(px(rectangle.x.max(0.0)))
+                .top(px(rectangle.y.max(0.0)))
+                .w(px(rectangle.width.max(1.0)))
+                .h(px(rectangle.height.max(1.0)))
+                .overflow_hidden()
+                .p(px(layout.content_spacing.value() / 2.0))
+                .border(px(if is_selected { 3.0 } else { 1.0 }))
+                .border_color(if is_selected {
+                    colors.selected_active.to_gpui()
+                } else {
+                    colors.divider.to_gpui()
+                })
+                .bg(rectangle.color.to_gpui())
+                .text_color(colors.text_primary.to_gpui())
+                .aria_label(format!("{label}: {detail}. {status}"))
+                // Every projected rectangle, including the synthetic `Other`
+                // group, participates in normal keyboard/UIA traversal. Only
+                // rectangles with a real ShellItemId receive select/open
+                // authority below.
+                .focusable()
+                .tab_stop(true)
+                .child(div().whitespace_nowrap().text_ellipsis().child(label))
+                .child(
+                    div()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_color(colors.text_secondary.to_gpui())
+                        .child(detail),
+                )
+                .children(aggregate_items.into_iter().filter_map(|aggregate| {
+                    let row_index = indexes.get(&aggregate.item_id).copied()?;
+                    let callback = on_action.clone()?;
+                    let focus_callback = callback.clone();
+                    let selector = format!(
+                        "size-map-other-item-{:02x?}",
+                        aggregate.item_id.provider_bytes()
+                    );
+                    Some(
+                        div()
+                            .id(selector)
+                            .role(Role::Button)
+                            .aria_label(format!("{}: {}", aggregate.label, aggregate.detail))
+                            .focusable()
+                            .tab_stop(true)
+                            .absolute()
+                            .left(px(0.0))
+                            .top(px(0.0))
+                            .size(px(1.0))
+                            .opacity(0.0)
+                            .overflow_hidden()
+                            .child(aggregate.label)
+                            .on_a11y_action(AccessibleAction::Focus, move |_, window, cx| {
+                                focus_callback(
+                                    &ExplorerAction::SelectItem { row_index },
+                                    window,
+                                    cx,
+                                );
+                            })
+                            .on_a11y_action(AccessibleAction::Click, move |_, window, cx| {
+                                callback(&ExplorerAction::SelectItem { row_index }, window, cx);
+                            }),
+                    )
+                }));
+            let node = node.when_some(
+                row_index
+                    .zip(item_id)
+                    .zip(public_node_id)
+                    .zip(interaction_bridge.clone())
+                    .zip(on_action.clone()),
+                |node, ((((_row_index, _), node_id), bridge), callback)| {
+                    let select_callback = callback.clone();
+                    let open_callback = callback.clone();
+                    let accessibility_select = callback.clone();
+                    let accessibility_focus = callback;
+                    let mouse_bridge = Arc::clone(&bridge);
+                    let click_bridge = Arc::clone(&bridge);
+                    let focus_bridge = bridge;
+                    node.on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                        cx.stop_propagation();
+                        if event.click_count == 2 {
+                            let request = explorer_extension_ui_api::NavigationRequestV1 {
+                                snapshot: mouse_bridge.snapshot(),
+                                operation: if event.modifiers.control {
+                                    explorer_extension_ui_api::ViewNavigationOperationV1::OPEN_NEW_TAB
+                                } else {
+                                    explorer_extension_ui_api::ViewNavigationOperationV1::ENTER
+                                },
+                                node_id,
+                            };
+                            if let Some(authorized) = mouse_bridge.authorize_navigation(&request) {
+                                open_callback(
+                                    &ExplorerAction::OpenItem {
+                                        row_index: authorized.row_index,
+                                        new_tab: authorized.new_tab,
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            }
+                        } else if let Some(row_index) =
+                            authorize_view_selection(&mouse_bridge, node_id)
+                        {
+                            select_callback(&ExplorerAction::SelectItem { row_index }, window, cx);
+                        }
                     })
-                    .bg(rectangle.color.to_gpui())
-                    .text_color(colors.text_primary.to_gpui())
-                    .aria_label(format!("{label}: {detail}. {status}"))
-                    .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                    .on_a11y_action(AccessibleAction::Click, move |_, window, cx| {
+                        if let Some(row_index) = authorize_view_selection(&click_bridge, node_id) {
+                            accessibility_select(
+                                &ExplorerAction::SelectItem { row_index },
+                                window,
+                                cx,
+                            );
+                        }
+                    })
+                    .on_a11y_action(
+                        AccessibleAction::Focus,
+                        move |_, window, cx| {
+                            if let Some(row_index) = authorize_view_selection(&focus_bridge, node_id) {
+                                accessibility_focus(
+                                    &ExplorerAction::SelectItem { row_index },
+                                    window,
+                                    cx,
+                                );
+                            }
+                        },
+                    )
+                },
+            );
+            Some(node.when_some(
+                row_index
+                    .is_none()
+                    .then_some(interaction_target)
+                    .flatten()
+                    .zip(public_node_id)
+                    .zip(interaction_bridge.clone())
+                    .zip(on_action.clone()),
+                |node, (((target, node_id), bridge), callback)| {
+                    let select_callback = callback.clone();
+                    let open_callback = callback.clone();
+                    let mouse_bridge = bridge;
+                    node.on_mouse_down(MouseButton::Left, move |event, window, cx| {
                         cx.stop_propagation();
                         if event.click_count == 2 {
                             open_callback(
-                                &ExplorerAction::OpenItem {
-                                    row_index,
+                                &ExplorerAction::OpenExtensionViewItem {
+                                    item_id: target.item_id.clone(),
+                                    location: target.location.clone(),
+                                    is_container: target.is_container,
                                     new_tab: event.modifiers.control,
                                 },
                                 window,
                                 cx,
                             );
-                        } else {
+                        } else if let Some(row_index) =
+                            authorize_view_selection(&mouse_bridge, node_id)
+                        {
                             select_callback(&ExplorerAction::SelectItem { row_index }, window, cx);
                         }
                     })
-                    .on_a11y_action(AccessibleAction::Click, move |_, window, cx| {
-                        callback(&ExplorerAction::SelectItem { row_index }, window, cx);
-                    })
-                    .child(div().whitespace_nowrap().text_ellipsis().child(label))
-                    .child(
-                        div()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .text_color(colors.text_secondary.to_gpui())
-                            .child(detail),
-                    ),
-            )
+                },
+            ))
         }))
         .when_some(status, |element, status| {
             element.child(
@@ -5379,6 +5782,7 @@ impl RenderOnce for FileViewHost {
         let file_origin_x = self.file_origin_x;
         let file_origin_y = self.file_origin_y;
         let view_settings = self.view_settings;
+        let column_registry = self.column_registry;
         let details_mode = view_settings.mode == explorer_model::ViewMode::Details;
         let details_name_width =
             view_settings.details_column_width(&explorer_model::ColumnId::Name);
@@ -5389,7 +5793,8 @@ impl RenderOnce for FileViewHost {
                     .is_some_and(|(_, entry)| entry.metadata.drive.is_some())
             })
         });
-        let spatial_metrics = spatial_grid_metrics(&view_settings, layout);
+        let spatial_metrics =
+            spatial_grid_metrics_with_registry(&view_settings, &column_registry, layout);
         let spatial_metrics = if drive_view {
             this_pc_spatial_grid_metrics(view_settings.mode, layout)
         } else {
@@ -5408,7 +5813,7 @@ impl RenderOnce for FileViewHost {
             if drive_view && view_settings.mode == explorer_model::ViewMode::Details {
                 this_pc_details_width()
             } else {
-                view_item_width(&view_settings)
+                view_item_width_with_registry(&view_settings, &column_registry)
             };
         let scroll_handle = self.scroll_handle;
         let marquee_scroll = scroll_handle.clone();
@@ -5417,7 +5822,11 @@ impl RenderOnce for FileViewHost {
         if view_settings.mode == explorer_model::ViewMode::Details
             && let Some(handle) = scroll_handle.as_ref()
         {
-            let maximum = details_horizontal_maximum(&view_settings, self.viewport_width);
+            let maximum = details_horizontal_maximum_with_registry(
+                &view_settings,
+                &column_registry,
+                self.viewport_width,
+            );
             let offset = handle.offset();
             let clamped_x = (-f32::from(offset.x)).clamp(0.0, maximum);
             if (f32::from(offset.x) + clamped_x).abs() > f32::EPSILON {
@@ -5445,13 +5854,12 @@ impl RenderOnce for FileViewHost {
             ) {
                 (Some(runtime), Some(visuals), Some(context)) => {
                     let nodes = presentation.as_ref().map_or_else(Vec::new, |presentation| {
-                        (0..presentation.len())
+                        let entries = (0..presentation.len())
                             .filter_map(|index| {
-                                presentation
-                                    .entry(index)
-                                    .map(|(_, entry)| visuals.node_for(entry))
+                                presentation.entry(index).map(|(_, entry)| entry.clone())
                             })
-                            .collect()
+                            .collect::<Vec<_>>();
+                        visuals.recursive_nodes_for(&entries)
                     });
                     let indexes = presentation
                         .as_ref()
@@ -5574,6 +5982,7 @@ impl RenderOnce for FileViewHost {
         );
         let scroll_performance = performance.clone();
         let row_settings = Arc::new(view_settings.clone());
+        let row_column_registry = column_registry.clone();
         let size_map_action = on_action.clone();
         let scroll_content = div()
             .id(FILE_VIEW_HOST_ID)
@@ -5839,6 +6248,7 @@ impl RenderOnce for FileViewHost {
                 let visual_column_runtime = row_visual_column_runtime.clone();
                 let code_lines_visuals = row_code_lines_visuals.clone();
                 let code_lines_runtime = row_code_lines_runtime.clone();
+                let row_column_registry = row_column_registry.clone();
                 let editor = rename_editor
                     .as_ref()
                     .filter(|editor| editor.item.id == entry.id)
@@ -6881,7 +7291,9 @@ impl RenderOnce for FileViewHost {
                                             },
                                         );
                                         element.when(
-                                            view_settings.details_column_visible(&descriptor.id),
+                                            row_column_registry.contains(&descriptor.id)
+                                                && view_settings
+                                                    .details_column_visible(&descriptor.id),
                                             |element| {
                                                 let width = f32::from(
                                                     view_settings.details_column_width(&descriptor.id),
@@ -7095,12 +7507,11 @@ impl RenderOnce for FileViewHost {
                             .child(details_header(
                                 self.tokens,
                                 view_settings.clone(),
+                                &column_registry,
                                 drive_view,
                                 details_filter_menu.clone(),
                                 &details_filters,
                                 &details_filter_options,
-                                folder_size_visuals.clone(),
-                                code_lines_visuals.clone(),
                                 header_action,
                             )),
                     )
@@ -7151,6 +7562,7 @@ impl RenderOnce for FileViewHost {
                     self.tokens,
                     target,
                     view_settings,
+                    &column_registry,
                     folder_size_visuals,
                     code_lines_visuals,
                     column_menu_action,
@@ -7242,6 +7654,18 @@ pub(crate) fn spatial_grid_metrics(
     settings: &explorer_model::ViewSettings,
     layout: crate::layout::LayoutTokens,
 ) -> SpatialGridMetrics {
+    spatial_grid_metrics_with_registry(
+        settings,
+        &explorer_model::ColumnRegistry::built_ins(),
+        layout,
+    )
+}
+
+pub(crate) fn spatial_grid_metrics_with_registry(
+    settings: &explorer_model::ViewSettings,
+    registry: &explorer_model::ColumnRegistry,
+    layout: crate::layout::LayoutTokens,
+) -> SpatialGridMetrics {
     let base_height = view_item_height(settings, layout);
     let cell_height = if settings.compact_view {
         base_height - layout.content_spacing.value()
@@ -7249,7 +7673,7 @@ pub(crate) fn spatial_grid_metrics(
         base_height
     };
     SpatialGridMetrics {
-        cell_width: view_item_width(settings),
+        cell_width: view_item_width_with_registry(settings, registry),
         cell_height,
         icon_size: view_icon_size(settings, layout),
         wrapped: matches!(
@@ -7441,6 +7865,13 @@ fn view_icon_size(
 }
 
 pub(crate) fn view_item_width(settings: &explorer_model::ViewSettings) -> f32 {
+    view_item_width_with_registry(settings, &explorer_model::ColumnRegistry::built_ins())
+}
+
+pub(crate) fn view_item_width_with_registry(
+    settings: &explorer_model::ViewSettings,
+    registry: &explorer_model::ColumnRegistry,
+) -> f32 {
     match settings.mode {
         explorer_model::ViewMode::ExtraLargeIcons
         | explorer_model::ViewMode::LargeIcons
@@ -7451,13 +7882,11 @@ pub(crate) fn view_item_width(settings: &explorer_model::ViewSettings) -> f32 {
             f32::from(explorer_model::effective_icon_size(settings)) + 192.0
         }
         explorer_model::ViewMode::List => 240.0,
-        explorer_model::ViewMode::Details | explorer_model::ViewMode::Content => {
-            explorer_model::ColumnId::BUILT_INS
-                .into_iter()
-                .filter(|column| settings.details_column_visible(column))
-                .map(|column| f32::from(settings.details_column_width(&column)))
-                .sum()
-        }
+        explorer_model::ViewMode::Details | explorer_model::ViewMode::Content => registry
+            .iter()
+            .filter(|descriptor| settings.details_column_visible(&descriptor.id))
+            .map(|descriptor| f32::from(settings.details_column_width(&descriptor.id)))
+            .sum(),
         explorer_model::ViewMode::Tiles => 280.0,
     }
 }
@@ -7467,6 +7896,14 @@ pub(crate) fn details_horizontal_maximum(
     viewport_width: f32,
 ) -> f32 {
     (view_item_width(settings) - viewport_width.max(0.0)).max(0.0)
+}
+
+pub(crate) fn details_horizontal_maximum_with_registry(
+    settings: &explorer_model::ViewSettings,
+    registry: &explorer_model::ColumnRegistry,
+    viewport_width: f32,
+) -> f32 {
+    (view_item_width_with_registry(settings, registry) - viewport_width.max(0.0)).max(0.0)
 }
 
 pub(crate) const fn details_header_overlay_position(scroll_offset: (f32, f32)) -> (f32, f32) {
@@ -7609,13 +8046,14 @@ fn explorer_vertical_scrollbar(
 fn explorer_horizontal_scrollbar(
     handle: &gpui::ScrollHandle,
     settings: explorer_model::ViewSettings,
+    registry: explorer_model::ColumnRegistry,
     viewport_width: f32,
     tokens: UiTokens,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     let colors = tokens.theme.colors;
     let viewport = viewport_width.max(0.0);
-    let maximum = details_horizontal_maximum(&settings, viewport_width);
+    let maximum = details_horizontal_maximum_with_registry(&settings, &registry, viewport_width);
     let current = (-f32::from(handle.offset().x)).clamp(0.0, maximum);
     let minimum_thumb = tokens.layout.minimum_hit_target.value();
     let track_height = tokens.layout.content_spacing.value() * 1.5;
@@ -7651,7 +8089,8 @@ fn explorer_horizontal_scrollbar(
         })
         .when_some(begin_callback, move |element, callback| {
             element.on_mouse_down(MouseButton::Left, move |event, window, cx| {
-                let maximum = details_horizontal_maximum(&settings, viewport_width);
+                let maximum =
+                    details_horizontal_maximum_with_registry(&settings, &registry, viewport_width);
                 let viewport = viewport_width.max(0.0);
                 if maximum <= 0.0 || viewport <= 0.0 {
                     return;
@@ -7708,12 +8147,11 @@ fn explorer_horizontal_scrollbar(
 fn details_header(
     tokens: UiTokens,
     settings: explorer_model::ViewSettings,
+    registry: &explorer_model::ColumnRegistry,
     this_pc: bool,
     filter_menu: Option<explorer_model::ColumnId>,
     filters: &crate::file_view::DetailsFilters,
     filter_options: &HashMap<explorer_model::ColumnId, Vec<crate::file_view::DetailsFilterOption>>,
-    folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
-    code_lines_visuals: Option<crate::code_lines_column::CodeLinesColumnVisuals>,
     on_action: Option<ActionCallback>,
 ) -> gpui::AnyElement {
     if this_pc {
@@ -7721,11 +8159,21 @@ fn details_header(
     }
     let layout = tokens.layout;
     let colors = tokens.theme.colors;
+    let visible_descriptors = registry
+        .iter()
+        .filter(|descriptor| settings.details_column_visible(&descriptor.id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let accessible_columns = visible_descriptors
+        .iter()
+        .map(|descriptor| descriptor.display_name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
     div()
         .id(DETAILS_HEADER_ID)
         .relative()
         .role(Role::Row)
-        .aria_label("Details columns: Name, Date modified, Type, Size")
+        .aria_label(format!("Details columns: {accessible_columns}"))
         .h(px(layout.details_header_height.value()))
         .flex_none()
         .flex()
@@ -7744,97 +8192,20 @@ fn details_header(
             DETAILS_HEADER_ID,
             typography_diagnostic(tokens, tokens.typography.details_header),
         ))
-        .children(
-            [
-                (
-                    "details-column-name",
-                    "名稱",
-                    explorer_model::ColumnId::Name,
-                ),
-                (
-                    "details-column-date-modified",
-                    "修改日期",
-                    explorer_model::ColumnId::DateModified,
-                ),
-                (
-                    "details-column-type",
-                    "類型",
-                    explorer_model::ColumnId::Type,
-                ),
-                (
-                    "details-column-size",
-                    "大小",
-                    explorer_model::ColumnId::Size,
-                ),
-                (
-                    "details-column-date-created",
-                    "建立日期",
-                    explorer_model::ColumnId::DateCreated,
-                ),
-                (
-                    "details-column-authors",
-                    "作者",
-                    explorer_model::ColumnId::Authors,
-                ),
-                (
-                    "details-column-tags",
-                    "標籤",
-                    explorer_model::ColumnId::Tags,
-                ),
-                (
-                    "details-column-title",
-                    "標題",
-                    explorer_model::ColumnId::Title,
-                ),
-            ]
-            .into_iter()
-            .filter(|(_, _, column)| settings.details_column_visible(column))
-            .map(|(id, label, column)| {
-                details_header_column(
-                    id.to_owned(),
-                    label.to_owned(),
-                    column.clone(),
-                    settings.clone(),
-                    filter_menu.clone(),
-                    filters,
-                    filter_options.get(&column).cloned().unwrap_or_default(),
-                    on_action.clone(),
-                    tokens,
-                )
-            }),
-        )
-        .when_some(folder_size_visuals, |element, visuals| {
-            let descriptor = &visuals.config.descriptor;
-            element.when(settings.details_column_visible(&descriptor.id), |element| {
-                element.child(details_header_column(
-                    "details-column-folder-size".to_owned(),
-                    descriptor.display_name.clone(),
-                    descriptor.id.clone(),
-                    settings.clone(),
-                    filter_menu.clone(),
-                    filters,
-                    Vec::new(),
-                    on_action.clone(),
-                    tokens,
-                ))
-            })
-        })
-        .when_some(code_lines_visuals, |element, visuals| {
-            let descriptor = &visuals.config.descriptor;
-            element.when(settings.details_column_visible(&descriptor.id), |element| {
-                element.child(details_header_column(
-                    "details-column-code-lines".to_owned(),
-                    descriptor.display_name.clone(),
-                    descriptor.id.clone(),
-                    settings.clone(),
-                    filter_menu.clone(),
-                    filters,
-                    Vec::new(),
-                    on_action.clone(),
-                    tokens,
-                ))
-            })
-        })
+        .children(visible_descriptors.into_iter().map(|descriptor| {
+            let column = descriptor.id;
+            details_header_column(
+                details_column_selector("details-column", &column),
+                descriptor.display_name,
+                column.clone(),
+                settings.clone(),
+                filter_menu.clone(),
+                filters,
+                filter_options.get(&column).cloned().unwrap_or_default(),
+                on_action.clone(),
+                tokens,
+            )
+        }))
         .into_any_element()
 }
 
@@ -7900,6 +8271,7 @@ fn details_column_menu(
     tokens: UiTokens,
     target: explorer_model::ColumnId,
     settings: explorer_model::ViewSettings,
+    registry: &explorer_model::ColumnRegistry,
     folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
     code_lines_visuals: Option<crate::code_lines_column::CodeLinesColumnVisuals>,
     on_action: Option<ActionCallback>,
@@ -7930,6 +8302,7 @@ fn details_column_menu(
         .when_some(current, move |element, callback| {
             element.child(column_menu_row(
                 tokens,
+                "details-column-menu-auto-size-current".to_owned(),
                 "Auto size this column".to_owned(),
                 false,
                 true,
@@ -7942,6 +8315,7 @@ fn details_column_menu(
         .when_some(all, move |element, callback| {
             element.child(column_menu_row(
                 tokens,
+                "details-column-menu-auto-size-all".to_owned(),
                 "Auto size all columns".to_owned(),
                 false,
                 true,
@@ -7959,38 +8333,27 @@ fn details_column_menu(
                 ))
                 .bg(colors.divider.to_gpui()),
         )
-        .children(
-            explorer_model::ColumnId::BUILT_INS
-                .into_iter()
-                .filter_map(|column| {
-                    on_action.clone().map(|callback| {
-                        column_menu_row(
-                            tokens,
-                            column_label(column.clone()).to_owned(),
-                            settings.details_column_visible(&column),
-                            column != explorer_model::ColumnId::Name,
-                            ExplorerAction::ToggleDetailsColumn(column.clone()),
-                            callback,
-                        )
-                    })
-                }),
-        )
+        .children(registry.iter().filter_map(|descriptor| {
+            let column = descriptor.id.clone();
+            on_action.clone().map(|callback| {
+                column_menu_row(
+                    tokens,
+                    details_column_selector("details-column-menu", &column),
+                    descriptor.display_name.clone(),
+                    settings.details_column_visible(&column),
+                    column != explorer_model::ColumnId::Name,
+                    ExplorerAction::ToggleDetailsColumn(column.clone()),
+                    callback,
+                )
+            })
+        }))
         .when_some(folder_size_visuals, |element, visuals| {
             let descriptor = &visuals.config.descriptor;
-            let element = element.when_some(on_action.clone(), |element, callback| {
-                element.child(column_menu_row(
-                    tokens,
-                    descriptor.display_name.clone(),
-                    settings.details_column_visible(&descriptor.id),
-                    true,
-                    ExplorerAction::ToggleDetailsColumn(descriptor.id.clone()),
-                    callback,
-                ))
-            });
             element.when(target == descriptor.id, |element| {
                 element.when_some(on_action.clone(), |element, callback| {
                     element.child(column_menu_row(
                         tokens,
+                        "details-column-menu-folder-size-bar".to_owned(),
                         "Show proportional bar".to_owned(),
                         visuals.config.folder_size_display.shows_bar(),
                         true,
@@ -8002,20 +8365,11 @@ fn details_column_menu(
         })
         .when_some(code_lines_visuals, |element, visuals| {
             let descriptor = &visuals.config.descriptor;
-            let element = element.when_some(on_action.clone(), |element, callback| {
-                element.child(column_menu_row(
-                    tokens,
-                    descriptor.display_name.clone(),
-                    settings.details_column_visible(&descriptor.id),
-                    true,
-                    ExplorerAction::ToggleDetailsColumn(descriptor.id.clone()),
-                    callback,
-                ))
-            });
             element.when(target == descriptor.id, |element| {
                 element.when_some(on_action.clone(), |element, callback| {
                     element.child(column_menu_row(
                         tokens,
+                        "details-column-menu-code-lines-detail".to_owned(),
                         "Show comment and blank detail".to_owned(),
                         visuals.config.display.shows_detail(),
                         true,
@@ -8029,6 +8383,7 @@ fn details_column_menu(
 
 fn column_menu_row(
     tokens: UiTokens,
+    id: String,
     label: String,
     checked: bool,
     enabled: bool,
@@ -8037,7 +8392,7 @@ fn column_menu_row(
 ) -> impl IntoElement {
     let colors = tokens.theme.colors;
     div()
-        .id(format!("details-column-menu-{label}"))
+        .id(id)
         .role(Role::MenuItem)
         .aria_label(format!(
             "{label}, {}",
@@ -8068,22 +8423,8 @@ fn column_menu_row(
         .child(label)
 }
 
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "details menu call sites intentionally own command-boundary column identities"
-)]
-fn column_label(column: explorer_model::ColumnId) -> &'static str {
-    match column {
-        explorer_model::ColumnId::Name => "Name",
-        explorer_model::ColumnId::DateModified => "Date modified",
-        explorer_model::ColumnId::Type => "Type",
-        explorer_model::ColumnId::Size => "Size",
-        explorer_model::ColumnId::DateCreated => "Date created",
-        explorer_model::ColumnId::Authors => "Authors",
-        explorer_model::ColumnId::Tags => "Tags",
-        explorer_model::ColumnId::Title => "Title",
-        explorer_model::ColumnId::Extension { .. } => "Extension",
-    }
+fn details_column_selector(prefix: &str, column: &explorer_model::ColumnId) -> String {
+    format!("{prefix}-{}", column.stable_id().replace(':', "-"))
 }
 
 #[allow(
@@ -8093,6 +8434,7 @@ fn column_label(column: explorer_model::ColumnId) -> &'static str {
 fn details_filter_menu(
     tokens: UiTokens,
     column: explorer_model::ColumnId,
+    column_label: String,
     options: Vec<crate::file_view::DetailsFilterOption>,
     filters: &crate::file_view::DetailsFilters,
     on_action: Option<ActionCallback>,
@@ -8141,7 +8483,7 @@ fn details_filter_menu(
         div()
             .id(format!("details-filter-menu-{column:?}"))
             .role(Role::Menu)
-            .aria_label(format!("Filter {}", column_label(column.clone())))
+            .aria_label(format!("Filter {column_label}"))
             .absolute()
             .top(px(tokens.layout.details_header_height.value()))
             .left_0()
@@ -8202,17 +8544,11 @@ fn details_header_column(
     let active = settings.sort.column == column;
     let filter_open = filter_menu == Some(column.clone());
     let filter_active = filters.is_active(&column);
-    let separator_id = match &column {
-        explorer_model::ColumnId::Name => "details-column-name-separator",
-        explorer_model::ColumnId::DateModified => "details-column-date-modified-separator",
-        explorer_model::ColumnId::Type => "details-column-type-separator",
-        explorer_model::ColumnId::Size => "details-column-size-separator",
-        explorer_model::ColumnId::DateCreated => "details-column-date-created-separator",
-        explorer_model::ColumnId::Authors => "details-column-authors-separator",
-        explorer_model::ColumnId::Tags => "details-column-tags-separator",
-        explorer_model::ColumnId::Title => "details-column-title-separator",
-        explorer_model::ColumnId::Extension { .. } => "details-column-extension-separator",
-    };
+    let separator_id = format!(
+        "{}-separator",
+        details_column_selector("details-column", &column)
+    );
+    let separator_debug_id = separator_id.clone();
     let indicator = if active {
         match settings.sort.direction {
             explorer_model::SortDirection::Ascending => "  ↑",
@@ -8228,10 +8564,14 @@ fn details_header_column(
     let decrement_callback = on_action.clone();
     let increment_callback = on_action.clone();
     let context_callback = on_action.clone();
+    let sort_context_callback = on_action.clone();
     let sort_callback = on_action.clone();
+    let sort_accessible_callback = on_action.clone();
     let filter_callback = on_action.clone();
     let context_column = column.clone();
+    let sort_context_column = column.clone();
     let sort_column = column.clone();
+    let accessible_sort_column = column.clone();
     let filter_column = column.clone();
     let decrement_column = column.clone();
     let increment_column = column.clone();
@@ -8261,7 +8601,6 @@ fn details_header_column(
         .flex()
         .items_center()
         .hover(move |style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .when_some(context_callback, move |element, callback| {
             element.on_mouse_down(MouseButton::Right, move |_, window, cx| {
                 cx.stop_propagation();
@@ -8290,9 +8629,31 @@ fn details_header_column(
                 .items_center()
                 .px(px(tokens.layout.content_spacing.value() / 2.0))
                 .when_some(sort_callback, move |element, callback| {
-                    element.on_click(move |_, window, cx| {
+                    element.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                        callback(
+                            &ExplorerAction::SetColumnId(accessible_sort_column.clone()),
+                            window,
+                            cx,
+                        );
+                        cx.stop_propagation();
+                    })
+                })
+                .when_some(sort_accessible_callback, move |element, callback| {
+                    element.on_a11y_action(AccessibleAction::Click, move |_, window, cx| {
                         callback(
                             &ExplorerAction::SetColumnId(sort_column.clone()),
+                            window,
+                            cx,
+                        );
+                        cx.stop_propagation();
+                    })
+                })
+                .when_some(sort_context_callback, move |element, callback| {
+                    element.on_mouse_down(MouseButton::Right, move |_, window, cx| {
+                        callback(
+                            &ExplorerAction::OpenDetailsColumnMenu {
+                                column: sort_context_column.clone(),
+                            },
                             window,
                             cx,
                         );
@@ -8339,6 +8700,7 @@ fn details_header_column(
             element.child(details_filter_menu(
                 tokens,
                 column.clone(),
+                label.clone(),
                 filter_options,
                 filters,
                 on_action.clone(),
@@ -8347,7 +8709,7 @@ fn details_header_column(
         .child(
             div()
                 .id(separator_id)
-                .debug_selector(move || separator_id.to_owned())
+                .debug_selector(move || separator_debug_id.clone())
                 .role(Role::Splitter)
                 .aria_label(format!("Resize {label} column"))
                 .aria_numeric_value(f64::from(settings.details_column_width(&column)))
@@ -9909,6 +10271,24 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_column_selectors_are_package_namespaced_and_stable() {
+        let first = explorer_model::ColumnId::extension("org.example.one", "value").unwrap();
+        let second = explorer_model::ColumnId::extension("org.example.two", "value").unwrap();
+        assert_eq!(
+            super::details_column_selector("details-column", &first),
+            "details-column-org.example.one-value"
+        );
+        assert_ne!(
+            super::details_column_selector("details-column", &first),
+            super::details_column_selector("details-column", &second)
+        );
+        assert_ne!(
+            super::details_column_selector("details-column-menu", &first),
+            super::details_column_selector("details-column", &first)
+        );
+    }
+
+    #[test]
     fn details_left_press_uses_only_the_name_column_for_item_activation() {
         let leading_padding = 12.0;
         let name_width = 320.0;
@@ -10592,6 +10972,41 @@ mod tests {
     }
 
     #[test]
+    fn details_horizontal_extent_includes_visible_extension_descriptors() {
+        let mut settings = explorer_model::ViewSettings {
+            mode: explorer_model::ViewMode::Details,
+            ..explorer_model::ViewSettings::default()
+        };
+        let id = explorer_model::ColumnId::extension("org.example.extent", "metric").unwrap();
+        let descriptor = explorer_model::ColumnDescriptor {
+            id: id.clone(),
+            display_name: "Metric".into(),
+            value_type: explorer_model::ColumnValueType::Integer,
+            default_width: 240,
+            minimum_width: 48,
+            maximum_width: 600,
+            alignment: explorer_model::ColumnAlignment::End,
+            applicability: explorer_model::ColumnApplicability::AllEntries,
+            sort_semantics: explorer_model::ColumnSortSemantics::Integer,
+            cost: explorer_model::ColumnCost::BackgroundBatch,
+        };
+        let mut registry = explorer_model::ColumnRegistry::built_ins();
+        registry
+            .replace_package("org.example.extent", [descriptor.clone()])
+            .unwrap();
+        assert!(settings.details_layout.ensure_descriptor(&descriptor, true));
+        let built_in_width = super::view_item_width(&settings);
+        assert_eq!(
+            super::view_item_width_with_registry(&settings, &registry),
+            built_in_width + 240.0
+        );
+        assert_eq!(
+            super::details_horizontal_maximum_with_registry(&settings, &registry, built_in_width),
+            240.0
+        );
+    }
+
+    #[test]
     fn details_header_is_pinned_vertically_for_every_scroll_offset() {
         for vertical_offset in [0.0_f32, -1.0, -24.0, -240.0, -10_000.0] {
             let (_, header_top) = super::details_header_overlay_position((-32.0, vertical_offset));
@@ -11139,6 +11554,34 @@ mod tests {
         assert!(production.contains("Release date："));
         assert!(production.contains("extension-command-lua-bulk-folder-button"));
         assert!(production.contains("view-extension-size-map"));
+    }
+
+    #[test]
+    fn folder_options_keeps_its_footer_visible_and_scrolls_only_the_extensions_page() {
+        let source = include_str!("chrome.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap();
+        let dialog = production
+            .split("fn folder_options_dialog(")
+            .nth(1)
+            .expect("folder options dialog exists")
+            .split("fn about_dialog(")
+            .next()
+            .expect("folder options dialog has a bounded renderer");
+        assert!(dialog.contains(".h(px(crate::layout::folder_options::DIALOG_HEIGHT.value()))"));
+        assert!(dialog.contains(".id(\"folder-options-page\")\n                        .flex_1()\n                        .min_h_0()\n                        .overflow_hidden()"));
+        assert!(dialog.contains(".h(px(crate::layout::folder_options::FOOTER_HEIGHT.value()))\n                        .flex_none()"));
+
+        let extensions_page = production
+            .split("fn folder_options_extensions_page(")
+            .nth(1)
+            .expect("extensions page exists")
+            .split("fn folder_options_general_page(")
+            .next()
+            .expect("extensions page has a bounded renderer");
+        assert!(extensions_page.contains(".h_full()"));
+        assert!(extensions_page.contains(".min_h_0()"));
+        assert!(extensions_page.contains(".overflow_y_scroll()"));
+        assert!(extensions_page.contains("cx.stop_propagation()"));
     }
 
     #[test]

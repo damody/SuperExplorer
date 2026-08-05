@@ -19,11 +19,11 @@ use abi_stable::{
     std_types::{ROption, RResult, RString, RVec},
 };
 use explorer_extension_api::{
-    AbiErrorCodeV1, AbiErrorV1, ExtensionRegistrarImplementationV1, ExtensionRootModuleV1,
-    ExtensionRootModuleV1_Ref, PluginMetadataV1, RegisteredContributionKindV1,
+    ABI_SCHEMA_V1, AbiErrorCodeV1, AbiErrorV1, EXTENSION_ID_NAMESPACE_V1,
+    ExtensionRegistrarImplementationV1, ExtensionRootModuleV1, ExtensionRootModuleV1_Ref,
+    PluginMetadataV1, ROOT_MODULE_CONTRACT_ID_V1, RegisteredContributionKindV1,
     RegisteredContributionV1, RegistrarOutputResultV1, RegistrarOutputV1, RegistrarRequestV1,
-    RegistrationOutcomeV1, StableIdV1, StableSortValueKindV1, ABI_SCHEMA_V1,
-    EXTENSION_ID_NAMESPACE_V1, ROOT_MODULE_CONTRACT_ID_V1, SDK_MAJOR_VERSION_V1,
+    RegistrationOutcomeV1, SDK_MAJOR_VERSION_V1, StableIdV1, StableSortValueKindV1,
 };
 use explorer_extension_ui_api::{
     CellColorV1, CellRenderContextV1, CellRenderPlanV1, FolderSizeMeasureRequestV1,
@@ -138,7 +138,9 @@ impl FolderSizeCacheKey {
         Some(Self {
             path_key: directory_identity(&canonical, &metadata),
             directory_modified_nanos,
-            max_entries: request.max_entries.max(1),
+            // Entry count is not a correctness limit. The host runs this scan
+            // in the background, so large folders must reach an exact result.
+            max_entries: u32::MAX,
             max_depth: request.max_depth,
         })
     }
@@ -342,8 +344,7 @@ fn plugin_cache_directory() -> Option<PathBuf> {
         .map(|root| {
             PathBuf::from(root)
                 .join("RustGpuiExplorer")
-                .join("plugins")
-                .join("rust-folder-size-visual-column")
+                .join("cache")
                 .join("folder-size")
                 .join("v1")
         })
@@ -516,8 +517,6 @@ fn measure_path_bytes(request: &FolderSizeMeasureRequestV1) -> (u64, Option<RStr
     if let Some(marker) = env::var_os("RUST_FOLDER_SIZE_SCAN_MARKER") {
         let _ = fs::write(marker, b"recursive scan entered");
     }
-    let max_entries = request.max_entries.max(1);
-    let mut visited = 0_u32;
     let mut total = 0_u64;
     let mut partial_error = None;
     let mut pending = vec![(
@@ -526,11 +525,6 @@ fn measure_path_bytes(request: &FolderSizeMeasureRequestV1) -> (u64, Option<RStr
     )];
 
     while let Some((path, depth)) = pending.pop() {
-        if visited >= max_entries {
-            partial_error = Some(RString::from("folder measurement entry limit reached"));
-            break;
-        }
-        visited = visited.saturating_add(1);
         let metadata = match fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(error) => {
@@ -560,12 +554,6 @@ fn measure_path_bytes(request: &FolderSizeMeasureRequestV1) -> (u64, Option<RStr
         match fs::read_dir(&path) {
             Ok(entries) => {
                 for entry in entries {
-                    let queued = u32::try_from(pending.len()).unwrap_or(u32::MAX);
-                    if visited.saturating_add(queued) >= max_entries {
-                        partial_error =
-                            Some(RString::from("folder measurement entry limit reached"));
-                        break;
-                    }
                     match entry {
                         Ok(entry) => pending.push((entry.path(), depth.saturating_add(1))),
                         Err(error) => {
@@ -657,6 +645,7 @@ impl ExtensionRegistrarImplementationV1 for P0ConsumerRegistrar {
                         FolderSizeMeasureColumn,
                     )),
                     size_map_view: ROption::RNone,
+                    virtual_folder_provider: ROption::RNone,
                     batch_column_provider: ROption::RNone,
                 },
                 RegisteredContributionV1 {
@@ -671,6 +660,7 @@ impl ExtensionRegistrarImplementationV1 for P0ConsumerRegistrar {
                     provider: ROption::RNone,
                     visual_column: ROption::RSome(VisualColumnObjectV1::new(FolderSizeRenderer)),
                     size_map_view: ROption::RNone,
+                    virtual_folder_provider: ROption::RNone,
                     batch_column_provider: ROption::RNone,
                 },
             ]),
@@ -716,7 +706,7 @@ mod tests {
         sync::atomic::{AtomicU64, Ordering},
     };
 
-    use explorer_extension_api::{registrar_request_v1, AbiSchemaIdV1, IdNamespaceV1};
+    use explorer_extension_api::{AbiSchemaIdV1, IdNamespaceV1, registrar_request_v1};
 
     use super::*;
 
@@ -889,6 +879,21 @@ mod tests {
     }
 
     #[test]
+    fn entry_hint_never_truncates_background_measurement() {
+        let root = temporary_directory("entry-hint");
+        fs::write(root.join("first.bin"), [1_u8; 7]).unwrap();
+        fs::write(root.join("second.bin"), [2_u8; 11]).unwrap();
+        let request = measurement_request(&root, 1);
+
+        assert_eq!(
+            measure_folder_size_with_cache(&request, None),
+            FolderSizeMeasureResultV1::complete(18)
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn ordinary_file_measurement_returns_its_exact_size() {
         let root = temporary_directory("file-measurement");
         let file = root.join("ordinary.bin");
@@ -949,15 +954,20 @@ mod tests {
     }
 
     #[test]
-    fn cache_key_rejects_different_measurement_settings() {
+    fn cache_key_ignores_entry_hint_but_rejects_depth_changes() {
         let root = temporary_directory("settings");
         let cache = temporary_directory("settings-cache");
         fs::write(root.join("entry.bin"), [7_u8; 3]).unwrap();
         let request = measurement_request(&root, 100);
         assert!(!measure_folder_size_with_cache(&request, Some(&cache)).partial);
 
-        let changed_settings = measurement_request(&root, 101);
-        let changed_key = FolderSizeCacheKey::from_request(&changed_settings).unwrap();
+        let changed_entry_hint = measurement_request(&root, 101);
+        let unchanged_key = FolderSizeCacheKey::from_request(&changed_entry_hint).unwrap();
+        assert_eq!(read_cached_exact(Some(&cache), &unchanged_key), Some(3));
+
+        let mut changed_depth = request.clone();
+        changed_depth.max_depth += 1;
+        let changed_key = FolderSizeCacheKey::from_request(&changed_depth).unwrap();
         assert_eq!(read_cached_exact(Some(&cache), &changed_key), None);
 
         fs::remove_dir_all(root).unwrap();
@@ -1030,10 +1040,12 @@ mod tests {
         let result =
             measure_folder_size_with_cache(&measurement_request(&missing, 100), Some(&cache));
         assert!(result.partial);
-        assert!(fs::read_dir(&cache).unwrap().flatten().all(|entry| !entry
-            .file_name()
-            .to_string_lossy()
-            .ends_with(".folder-size-cache")));
+        assert!(fs::read_dir(&cache).unwrap().flatten().all(|entry| {
+            !entry
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".folder-size-cache")
+        }));
         fs::remove_dir_all(cache).unwrap();
     }
 
@@ -1056,10 +1068,12 @@ mod tests {
 
         let result = measure_folder_size_with_cache(&measurement_request(&link, 100), Some(&cache));
         assert!(result.partial);
-        assert!(fs::read_dir(&cache).unwrap().flatten().all(|entry| !entry
-            .file_name()
-            .to_string_lossy()
-            .ends_with(".folder-size-cache")));
+        assert!(fs::read_dir(&cache).unwrap().flatten().all(|entry| {
+            !entry
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".folder-size-cache")
+        }));
 
         fs::remove_dir_all(parent).unwrap();
         fs::remove_dir_all(target).unwrap();
