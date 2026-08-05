@@ -270,6 +270,26 @@ pub enum ExplorerAction {
     UndoCurrentFolder,
     CompressSelectedToZip,
     AddSelectedToFavorites,
+    AddSelectedToBookmarks,
+    ToggleSelectedBookmark,
+    ActivateBookmark {
+        id: explorer_model::BookmarkId,
+    },
+    AddLuaBookmark,
+    EditBookmark {
+        id: explorer_model::BookmarkId,
+    },
+    SaveBookmarkEditor,
+    CancelBookmarkEditor,
+    ToggleBookmarkManager,
+    ToggleBookmarkOverflow,
+    RemoveBookmark {
+        id: explorer_model::BookmarkId,
+    },
+    MoveBookmark {
+        id: explorer_model::BookmarkId,
+        destination: usize,
+    },
     CopySelectedPaths,
     OpenAboutDialog,
     CloseAboutDialog,
@@ -300,6 +320,7 @@ pub enum ExplorerAction {
     ToggleFolderOptionHiddenItems,
     ToggleFolderOptionCompactView,
     ToggleFolderOptionAlwaysShowIcons,
+    SetFolderOptionIconCacheMemoryMb(u16),
     ClearThumbnailCache,
     ToggleFolderOptionDetailsPane,
     ToggleFolderOptionPreviewPane,
@@ -400,6 +421,16 @@ pub enum ExplorerAction {
     SetDetailsColumnWidth {
         column: explorer_model::ColumnId,
         width: u16,
+    },
+    MoveDetailsColumn {
+        column: explorer_model::ColumnId,
+        before: Option<explorer_model::ColumnId>,
+    },
+    BeginDetailsColumnDrag {
+        column: explorer_model::ColumnId,
+    },
+    DropDetailsColumn {
+        before: explorer_model::ColumnId,
     },
     AutoSizeDetailsColumn {
         column: explorer_model::ColumnId,
@@ -571,6 +602,17 @@ impl ExplorerAction {
             Self::UndoCurrentFolder => "UndoCurrentFolder",
             Self::CompressSelectedToZip => "CompressSelectedToZip",
             Self::AddSelectedToFavorites => "AddSelectedToFavorites",
+            Self::AddSelectedToBookmarks => "AddSelectedToBookmarks",
+            Self::ToggleSelectedBookmark => "ToggleSelectedBookmark",
+            Self::ActivateBookmark { .. } => "ActivateBookmark",
+            Self::AddLuaBookmark => "AddLuaBookmark",
+            Self::EditBookmark { .. } => "EditBookmark",
+            Self::SaveBookmarkEditor => "SaveBookmarkEditor",
+            Self::CancelBookmarkEditor => "CancelBookmarkEditor",
+            Self::ToggleBookmarkManager => "ToggleBookmarkManager",
+            Self::ToggleBookmarkOverflow => "ToggleBookmarkOverflow",
+            Self::RemoveBookmark { .. } => "RemoveBookmark",
+            Self::MoveBookmark { .. } => "MoveBookmark",
             Self::CopySelectedPaths => "CopySelectedPaths",
             Self::OpenAboutDialog => "OpenAboutDialog",
             Self::CloseAboutDialog => "CloseAboutDialog",
@@ -589,6 +631,7 @@ impl ExplorerAction {
             Self::ToggleFolderOptionHiddenItems => "ToggleFolderOptionHiddenItems",
             Self::ToggleFolderOptionCompactView => "ToggleFolderOptionCompactView",
             Self::ToggleFolderOptionAlwaysShowIcons => "ToggleFolderOptionAlwaysShowIcons",
+            Self::SetFolderOptionIconCacheMemoryMb(_) => "SetFolderOptionIconCacheMemoryMb",
             Self::ClearThumbnailCache => "ClearThumbnailCache",
             Self::ToggleFolderOptionDetailsPane => "ToggleFolderOptionDetailsPane",
             Self::ToggleFolderOptionPreviewPane => "ToggleFolderOptionPreviewPane",
@@ -635,6 +678,9 @@ impl ExplorerAction {
             Self::SetColumnId(_) => "SetColumnId",
             Self::SetSortDirection(_) => "SetSortDirection",
             Self::SetDetailsColumnWidth { .. } => "SetDetailsColumnWidth",
+            Self::MoveDetailsColumn { .. } => "MoveDetailsColumn",
+            Self::BeginDetailsColumnDrag { .. } => "BeginDetailsColumnDrag",
+            Self::DropDetailsColumn { .. } => "DropDetailsColumn",
             Self::AutoSizeDetailsColumn { .. } => "AutoSizeDetailsColumn",
             Self::OpenDetailsColumnMenu { .. } => "OpenDetailsColumnMenu",
             Self::CloseDetailsColumnMenu => "CloseDetailsColumnMenu",
@@ -1202,7 +1248,9 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
             state.selected_namespace_command_enabled(explorer_model::NamespaceCommand::Restore)
         }
         ExplorerAction::EmptyRecycleBin => state.active_is_recycle_bin(),
-        ExplorerAction::AddSelectedToFavorites => {
+        ExplorerAction::AddSelectedToFavorites
+        | ExplorerAction::AddSelectedToBookmarks
+        | ExplorerAction::ToggleSelectedBookmark => {
             state.selected_namespace_command_enabled(explorer_model::NamespaceCommand::Pin)
         }
         ExplorerAction::CopySelectedPaths => !state.tabs().active_tab().selection.is_empty(),
@@ -1255,6 +1303,9 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::ZoomView { .. }
         | ExplorerAction::SetSortDirection(_)
         | ExplorerAction::SetDetailsColumnWidth { .. }
+        | ExplorerAction::MoveDetailsColumn { .. }
+        | ExplorerAction::BeginDetailsColumnDrag { .. }
+        | ExplorerAction::DropDetailsColumn { .. }
         | ExplorerAction::AutoSizeDetailsColumn { .. }
         | ExplorerAction::OpenDetailsColumnMenu { .. }
         | ExplorerAction::CloseDetailsColumnMenu
@@ -1286,6 +1337,7 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::ToggleFolderOptionHiddenItems
         | ExplorerAction::ToggleFolderOptionCompactView
         | ExplorerAction::ToggleFolderOptionAlwaysShowIcons
+        | ExplorerAction::SetFolderOptionIconCacheMemoryMb(_)
         | ExplorerAction::ClearThumbnailCache
         | ExplorerAction::ToggleFolderOptionDetailsPane
         | ExplorerAction::ToggleFolderOptionPreviewPane
@@ -1318,6 +1370,15 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
             state.scrollbar_drag_session().is_some()
         }
         ExplorerAction::ToggleTheme => availability.is_enabled(CommandKind::ToggleTheme),
+        ExplorerAction::ActivateBookmark { .. }
+        | ExplorerAction::AddLuaBookmark
+        | ExplorerAction::EditBookmark { .. }
+        | ExplorerAction::SaveBookmarkEditor
+        | ExplorerAction::CancelBookmarkEditor
+        | ExplorerAction::ToggleBookmarkManager
+        | ExplorerAction::ToggleBookmarkOverflow
+        | ExplorerAction::RemoveBookmark { .. }
+        | ExplorerAction::MoveBookmark { .. } => true,
         ExplorerAction::CloseWindow => availability.is_enabled(CommandKind::CloseWindow),
         ExplorerAction::ResizeNavigationPane { .. }
         | ExplorerAction::BeginNavigationPaneResize { .. }
@@ -1525,6 +1586,8 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         | ExplorerAction::UndoCurrentFolder
         | ExplorerAction::CompressSelectedToZip
         | ExplorerAction::AddSelectedToFavorites
+        | ExplorerAction::AddSelectedToBookmarks
+        | ExplorerAction::ToggleSelectedBookmark
         | ExplorerAction::CopySelectedPaths
         | ExplorerAction::CancelOperation { .. } => FocusSurface::FileView,
         ExplorerAction::BeginFileDrag { x, y, button } => {
@@ -1762,6 +1825,15 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             state.open_folder_options();
             FocusSurface::CommandBar
         }
+        ExplorerAction::ActivateBookmark { .. }
+        | ExplorerAction::AddLuaBookmark
+        | ExplorerAction::EditBookmark { .. }
+        | ExplorerAction::SaveBookmarkEditor
+        | ExplorerAction::CancelBookmarkEditor
+        | ExplorerAction::ToggleBookmarkManager
+        | ExplorerAction::ToggleBookmarkOverflow
+        | ExplorerAction::RemoveBookmark { .. }
+        | ExplorerAction::MoveBookmark { .. } => FocusSurface::CommandBar,
         ExplorerAction::OpenAboutDialog => {
             state.open_about_dialog();
             FocusSurface::CommandBar
@@ -1823,6 +1895,13 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         ExplorerAction::ToggleFolderOptionAlwaysShowIcons => {
             state.update_folder_options(|settings| {
                 settings.always_show_icons = !settings.always_show_icons;
+            });
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::SetFolderOptionIconCacheMemoryMb(value) => {
+            state.update_folder_options(|settings| {
+                settings.icon_cache_memory_mb =
+                    explorer_model::normalized_icon_cache_memory_mb(value);
             });
             FocusSurface::CommandBar
         }
@@ -1929,6 +2008,18 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         }
         ExplorerAction::SetDetailsColumnWidth { column, width } => {
             state.set_details_column_width(column, width);
+            FocusSurface::FileView
+        }
+        ExplorerAction::MoveDetailsColumn { column, before } => {
+            state.move_details_column_before(column, before);
+            FocusSurface::FileView
+        }
+        ExplorerAction::BeginDetailsColumnDrag { column } => {
+            state.begin_details_column_drag(column);
+            FocusSurface::FileView
+        }
+        ExplorerAction::DropDetailsColumn { before } => {
+            state.drop_details_column_before(before);
             FocusSurface::FileView
         }
         ExplorerAction::AutoSizeDetailsColumn { column } => {

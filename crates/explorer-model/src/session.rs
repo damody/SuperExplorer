@@ -10,8 +10,12 @@ use crate::{
     SortDescriptor, SortDirection, TabId, ViewMode, ViewSettings,
 };
 
+const fn default_icon_cache_memory_mb() -> u16 {
+    crate::DEFAULT_ICON_CACHE_MEMORY_MB
+}
+
 /// Current durable session schema.
-pub const SESSION_SCHEMA_VERSION: u16 = 2;
+pub const SESSION_SCHEMA_VERSION: u16 = 3;
 const MAX_PROVENANCE_BYTES: usize = 256;
 const MAX_DISPLAY_TITLE_BYTES: usize = 4 * 1024;
 const MAX_PIN_NAME_BYTES: usize = 4 * 1024;
@@ -207,6 +211,8 @@ pub struct PersistedViewSettings {
     pub compact_view: bool,
     #[serde(default)]
     pub always_show_icons: bool,
+    #[serde(default = "default_icon_cache_memory_mb")]
+    pub icon_cache_memory_mb: u16,
     pub sort: PersistedSort,
     pub group_by: Option<PersistedColumn>,
     pub details_column_order: Vec<PersistedColumn>,
@@ -236,6 +242,7 @@ impl Default for PersistedViewSettings {
             hidden_items: false,
             compact_view: false,
             always_show_icons: false,
+            icon_cache_memory_mb: crate::DEFAULT_ICON_CACHE_MEMORY_MB,
             sort: PersistedSort {
                 column: PersistedColumn::Name,
                 direction: PersistedSortDirection::Ascending,
@@ -291,6 +298,8 @@ pub struct PersistedSessionPayload {
     pub tabs: Vec<PersistedTab>,
     pub active_tab_id: TabId,
     pub quick_access: Vec<PersistedQuickAccessPin>,
+    #[serde(default)]
+    pub bookmarks: crate::Bookmarks,
 }
 
 /// Versioned top-level envelope stored atomically by the app adapter.
@@ -311,6 +320,7 @@ pub struct RestorePlan {
     pub tabs: Vec<PersistedTab>,
     pub active_tab_id: TabId,
     pub quick_access: Vec<PersistedQuickAccessPin>,
+    pub bookmarks: crate::Bookmarks,
 }
 
 /// Origin selected by a session store after validation and recovery.
@@ -407,6 +417,28 @@ impl PersistedSessionEnvelope {
         provenance: SessionProvenance,
         limits: RoadmapLimits,
     ) -> Result<Self, SessionValidationError> {
+        Self::project_with_bookmarks(
+            window,
+            placement,
+            quick_access,
+            &crate::Bookmarks::default(),
+            restore_enabled,
+            write_generation,
+            provenance,
+            limits,
+        )
+    }
+
+    pub fn project_with_bookmarks(
+        window: &ExplorerWindowState,
+        placement: PersistedWindowPlacement,
+        quick_access: &[PersistedQuickAccessPin],
+        bookmarks: &crate::Bookmarks,
+        restore_enabled: bool,
+        write_generation: u64,
+        provenance: SessionProvenance,
+        limits: RoadmapLimits,
+    ) -> Result<Self, SessionValidationError> {
         let tabs = window
             .tabs()
             .iter()
@@ -439,6 +471,7 @@ impl PersistedSessionEnvelope {
             tabs,
             active_tab_id: window.active_tab_id(),
             quick_access: quick_access.to_vec(),
+            bookmarks: bookmarks.clone(),
         };
         Self::new(write_generation, provenance, payload, limits)
     }
@@ -519,6 +552,25 @@ impl PersistedSessionEnvelope {
             serde_json::from_slice(bytes).map_err(SessionValidationError::json)?;
         match header.schema_version {
             SESSION_SCHEMA_VERSION => Self::decode(bytes, limits).map(|value| (value, false)),
+            2 => {
+                let legacy: LegacySessionV2 =
+                    serde_json::from_slice(bytes).map_err(SessionValidationError::json)?;
+                let payload = PersistedSessionPayload {
+                    restore_enabled: legacy.payload.restore_enabled,
+                    window: legacy.payload.window,
+                    tabs: legacy.payload.tabs,
+                    active_tab_id: legacy.payload.active_tab_id,
+                    quick_access: legacy.payload.quick_access,
+                    bookmarks: crate::Bookmarks::default(),
+                };
+                let migrated = Self::new(
+                    legacy.write_generation.saturating_add(1),
+                    legacy.provenance,
+                    payload,
+                    limits,
+                )?;
+                Ok((migrated, true))
+            }
             1 => {
                 let legacy: LegacySessionV1 =
                     serde_json::from_slice(bytes).map_err(SessionValidationError::json)?;
@@ -565,6 +617,7 @@ impl PersistedSessionEnvelope {
             tabs: self.payload.tabs.clone(),
             active_tab_id: self.payload.active_tab_id,
             quick_access: self.payload.quick_access.clone(),
+            bookmarks: self.payload.bookmarks.clone(),
         })
     }
 
@@ -654,6 +707,29 @@ impl PersistedSessionEnvelope {
                 return Err(SessionValidationError::Invariant(
                     "Quick Access contains duplicate location or order".to_owned(),
                 ));
+            }
+        }
+        let mut bookmark_ids = HashSet::new();
+        let mut bookmark_orders = HashSet::new();
+        for (index, bookmark) in self.payload.bookmarks.entries().iter().enumerate() {
+            validate_text(
+                &bookmark.name,
+                &format!("bookmarks[{index}].name"),
+                MAX_PIN_NAME_BYTES,
+            )?;
+            if !bookmark_ids.insert(bookmark.id) || !bookmark_orders.insert(bookmark.order) {
+                return Err(SessionValidationError::Invariant(
+                    "bookmarks contain duplicate identity or order".to_owned(),
+                ));
+            }
+            match &bookmark.target {
+                crate::BookmarkTarget::Folder { location }
+                | crate::BookmarkTarget::File { location } => {
+                    validate_location(location, &format!("bookmarks[{index}].location"), limits)?
+                }
+                crate::BookmarkTarget::LuaScript { source } => {
+                    validate_text(source, &format!("bookmarks[{index}].source"), 256 * 1024)?
+                }
             }
         }
         Ok(())
@@ -774,6 +850,7 @@ impl PersistedViewSettings {
             hidden_items: self.hidden_items,
             compact_view: self.compact_view,
             always_show_icons: self.always_show_icons,
+            icon_cache_memory_mb: crate::normalized_icon_cache_memory_mb(self.icon_cache_memory_mb),
             sort,
             details_layout,
             details_pane_width: self.details_pane_width,
@@ -927,6 +1004,28 @@ struct LegacySessionV1 {
     payload: PersistedSessionPayload,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacySessionPayloadV2 {
+    restore_enabled: bool,
+    window: PersistedWindowPlacement,
+    tabs: Vec<PersistedTab>,
+    active_tab_id: TabId,
+    quick_access: Vec<PersistedQuickAccessPin>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacySessionV2 {
+    #[serde(rename = "schema_version")]
+    _schema_version: u16,
+    #[serde(rename = "checksum")]
+    _checksum: u64,
+    write_generation: u64,
+    provenance: SessionProvenance,
+    payload: LegacySessionPayloadV2,
+}
+
 impl From<&HistoryEntry> for PersistedHistoryEntry {
     fn from(entry: &HistoryEntry) -> Self {
         Self {
@@ -972,6 +1071,9 @@ impl From<ViewSettings> for PersistedViewSettings {
             hidden_items: settings.hidden_items,
             compact_view: settings.compact_view,
             always_show_icons: settings.always_show_icons,
+            icon_cache_memory_mb: crate::normalized_icon_cache_memory_mb(
+                settings.icon_cache_memory_mb,
+            ),
             sort: settings.sort.into(),
             group_by: None,
             details_column_order: settings
@@ -1561,6 +1663,24 @@ mod tests {
             PersistedSessionEnvelope::decode(&bytes, limits),
             Err(SessionValidationError::PayloadTooLarge { .. })
         ));
+    }
+
+    #[test]
+    fn schema_two_migrates_with_an_empty_bookmark_collection() {
+        let envelope = projected();
+        let mut value = serde_json::to_value(envelope).expect("value");
+        value["schema_version"] = serde_json::json!(2);
+        value["payload"]
+            .as_object_mut()
+            .expect("payload")
+            .remove("bookmarks");
+        let bytes = serde_json::to_vec(&value).expect("bytes");
+        let (migrated, performed) =
+            PersistedSessionEnvelope::decode_or_migrate(&bytes, RoadmapLimits::default())
+                .expect("migration");
+        assert!(performed);
+        assert!(migrated.payload.bookmarks.entries().is_empty());
+        assert_eq!(migrated.schema_version, SESSION_SCHEMA_VERSION);
     }
 
     #[test]

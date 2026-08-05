@@ -89,6 +89,31 @@ fn shared_visual_column_theme(
 }
 
 pub const EXPLORER_WINDOW_ID: &str = "explorer-window";
+
+#[derive(Clone)]
+struct DetailsColumnDrag {
+    column: explorer_model::ColumnId,
+    label: String,
+}
+
+struct DetailsColumnDragPreview {
+    label: String,
+}
+
+impl Render for DetailsColumnDragPreview {
+    fn render(
+        &mut self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .px(px(10.0))
+            .py(px(6.0))
+            .rounded(px(4.0))
+            .border(px(1.0))
+            .child(self.label.clone())
+    }
+}
 pub const WINDOW_CHROME_ID: &str = "window-chrome";
 pub const WINDOW_DRAG_REGION_ID: &str = "window-drag-region";
 pub const TAB_STRIP_ID: &str = "tab-strip";
@@ -173,8 +198,11 @@ pub(crate) fn explorer_file_viewport_width(
 pub(crate) fn explorer_file_origin_y(tokens: UiTokens) -> f32 {
     tokens.layout.title_tab_height.value()
         + tokens.layout.address_bar_height.value()
+        + BOOKMARK_BAR_HEIGHT
         + tokens.layout.command_bar_height.value()
 }
+
+const BOOKMARK_BAR_HEIGHT: f32 = 32.0;
 
 pub(crate) fn explorer_file_viewport_height(window: &Window, tokens: UiTokens) -> f32 {
     explorer_file_viewport_height_for_window(f32::from(window.viewport_size().height), tokens)
@@ -199,9 +227,12 @@ pub struct ExplorerWindow {
     address_input: Option<gpui::WeakEntity<EditableTextState>>,
     search_input: Option<gpui::WeakEntity<EditableTextState>>,
     rename_input: Option<gpui::WeakEntity<EditableTextState>>,
+    bookmark_name_input: Option<gpui::WeakEntity<EditableTextState>>,
+    bookmark_payload_input: Option<gpui::WeakEntity<EditableTextState>>,
     breadcrumb_menu_focus: Option<gpui::FocusHandle>,
     command_menu_focus: Option<gpui::FocusHandle>,
     shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+    thumbnail_icon_keys: HashSet<explorer_model::ShellIconKey>,
     shell_icon_dpi: u16,
     file_presentation: Option<crate::file_view::DirectoryPresentation>,
     file_performance: Option<Arc<crate::performance::FileViewPerformanceCounters>>,
@@ -209,8 +240,8 @@ pub struct ExplorerWindow {
     preview_thumbnail_failed: bool,
     folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
     visual_column_runtime: Option<crate::folder_size_column::VisualColumnRuntimeHandleV1>,
-    code_lines_visuals: Option<crate::code_lines_column::CodeLinesColumnVisuals>,
-    code_lines_runtime: Option<crate::code_lines_column::CodeLinesRuntimeHandleV1>,
+    code_lines_visuals: Vec<crate::code_lines_column::CodeLinesColumnVisuals>,
+    code_lines_runtimes: Vec<crate::code_lines_column::CodeLinesRuntimeHandleV1>,
     size_map_active: bool,
     size_map_visuals: Option<crate::size_map_view::SizeMapVisualsV1>,
     size_map_runtime: Option<crate::size_map_view::SizeMapRuntimeHandleV1>,
@@ -228,9 +259,12 @@ impl ExplorerWindow {
             address_input: None,
             search_input: None,
             rename_input: None,
+            bookmark_name_input: None,
+            bookmark_payload_input: None,
             breadcrumb_menu_focus: None,
             command_menu_focus: None,
             shell_icons: HashMap::new(),
+            thumbnail_icon_keys: HashSet::new(),
             shell_icon_dpi: 96,
             file_presentation: None,
             file_performance: None,
@@ -238,8 +272,8 @@ impl ExplorerWindow {
             preview_thumbnail_failed: false,
             folder_size_visuals: None,
             visual_column_runtime: None,
-            code_lines_visuals: None,
-            code_lines_runtime: None,
+            code_lines_visuals: Vec::new(),
+            code_lines_runtimes: Vec::new(),
             size_map_active: false,
             size_map_visuals: None,
             size_map_runtime: None,
@@ -279,6 +313,17 @@ impl ExplorerWindow {
     }
 
     #[must_use]
+    pub fn with_bookmark_editor_inputs(
+        mut self,
+        name: Option<gpui::WeakEntity<EditableTextState>>,
+        payload: Option<gpui::WeakEntity<EditableTextState>>,
+    ) -> Self {
+        self.bookmark_name_input = name;
+        self.bookmark_payload_input = payload;
+        self
+    }
+
+    #[must_use]
     pub fn with_breadcrumb_menu_focus(mut self, handle: Option<gpui::FocusHandle>) -> Self {
         self.breadcrumb_menu_focus = handle;
         self
@@ -294,9 +339,11 @@ impl ExplorerWindow {
     pub fn with_shell_icons(
         mut self,
         shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+        thumbnail_icon_keys: HashSet<explorer_model::ShellIconKey>,
         shell_icon_dpi: u16,
     ) -> Self {
         self.shell_icons = shell_icons;
+        self.thumbnail_icon_keys = thumbnail_icon_keys;
         self.shell_icon_dpi = shell_icon_dpi;
         self
     }
@@ -349,20 +396,13 @@ impl ExplorerWindow {
     }
 
     #[must_use]
-    pub fn with_code_lines_visuals(
+    pub fn with_code_lines_columns(
         mut self,
-        visuals: Option<crate::code_lines_column::CodeLinesColumnVisuals>,
+        visuals: Vec<crate::code_lines_column::CodeLinesColumnVisuals>,
+        runtimes: Vec<crate::code_lines_column::CodeLinesRuntimeHandleV1>,
     ) -> Self {
         self.code_lines_visuals = visuals;
-        self
-    }
-
-    #[must_use]
-    pub fn with_code_lines_runtime(
-        mut self,
-        runtime: Option<crate::code_lines_column::CodeLinesRuntimeHandleV1>,
-    ) -> Self {
-        self.code_lines_runtime = runtime;
+        self.code_lines_runtimes = runtimes;
         self
     }
 
@@ -386,6 +426,7 @@ impl RenderOnce for ExplorerWindow {
     fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let window_active = window.is_window_active();
         let file_icons = self.shell_icons.clone();
+        let thumbnail_icon_keys = self.thumbnail_icon_keys;
         let navigation_icons = self.shell_icons.clone();
         let tab_icons = self.shell_icons.clone();
         let view_settings = self.state.view_settings();
@@ -411,8 +452,6 @@ impl RenderOnce for ExplorerWindow {
         let side_pane_resizing = self.state.side_pane_resize_active();
         let marquee = self.state.marquee_session().cloned();
         let marquee_active = marquee.is_some();
-        let folder_options = self.state.folder_options();
-        let folder_option_extensions = self.state.extensions().to_vec();
         let about_dialog_info = self.state.about_dialog().cloned();
         let session_reset_confirmation = self.state.session_reset_confirmation();
         let permanent_delete_count = self.state.permanent_delete_confirmation_count();
@@ -453,6 +492,12 @@ impl RenderOnce for ExplorerWindow {
                 self.breadcrumb_menu_focus,
                 navigation_icons,
                 self.shell_icon_dpi,
+                self.on_action.clone(),
+            ))
+            .child(bookmark_bar(
+                self.tokens,
+                &self.state,
+                f32::from(window.bounds().size.width),
                 self.on_action.clone(),
             ))
             .child(
@@ -527,6 +572,7 @@ impl RenderOnce for ExplorerWindow {
                                 file_viewport_width,
                                 self.file_scroll.clone(),
                                 file_icons,
+                                thumbnail_icon_keys,
                                 self.shell_icon_dpi,
                                 self.state.details_column_menu(),
                                 self.state.details_filter_menu(),
@@ -540,7 +586,7 @@ impl RenderOnce for ExplorerWindow {
                                 self.folder_size_visuals,
                                 self.visual_column_runtime,
                                 self.code_lines_visuals,
-                                self.code_lines_runtime,
+                                self.code_lines_runtimes,
                                 self.size_map_active,
                                 self.size_map_visuals,
                                 self.size_map_runtime,
@@ -612,14 +658,22 @@ impl RenderOnce for ExplorerWindow {
             ))
             .child(StatusBar::new(
                 self.tokens,
-                self.state,
+                self.state.clone(),
                 self.on_action.clone(),
             ))
-            .when_some(folder_options, |element, draft| {
-                element.child(folder_options_dialog(
+            .when(self.state.bookmark_manager_open(), |element| {
+                element.child(bookmark_manager(
                     self.tokens,
-                    draft,
-                    folder_option_extensions,
+                    &self.state,
+                    self.on_action.clone(),
+                ))
+            })
+            .when(self.state.bookmark_editor().is_some(), |element| {
+                element.child(bookmark_editor(
+                    self.tokens,
+                    &self.state,
+                    self.bookmark_name_input,
+                    self.bookmark_payload_input,
                     self.on_action.clone(),
                 ))
             })
@@ -669,6 +723,404 @@ impl RenderOnce for ExplorerWindow {
                 },
             )
     }
+}
+
+fn bookmark_bar(
+    tokens: UiTokens,
+    state: &AppViewState,
+    width: f32,
+    callback: Option<ActionCallback>,
+) -> impl IntoElement {
+    let entries = state.bookmarks().entries();
+    let visible_limit = bookmark_visible_count(entries.len(), width);
+    let visible = entries
+        .iter()
+        .take(visible_limit)
+        .cloned()
+        .collect::<Vec<_>>();
+    let overflow_entries = entries
+        .iter()
+        .skip(visible.len())
+        .cloned()
+        .collect::<Vec<_>>();
+    let overflow = overflow_entries.len();
+    div()
+        .id("bookmark-toolbar")
+        .debug_selector(|| "bookmark-toolbar".to_owned())
+        .relative()
+        .h(px(BOOKMARK_BAR_HEIGHT))
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(4.0))
+        .px(px(tokens.layout.control_padding_horizontal.value()))
+        .border_b(px(tokens.layout.focus_stroke.value()))
+        .border_color(tokens.theme.colors.divider.to_gpui())
+        .bg(tokens.theme.colors.surface.to_gpui())
+        .child({
+            let selected = state.selected_bookmark_target_and_id();
+            let enabled = selected.is_some();
+            let bookmarked = selected.is_some_and(|(_, id)| id.is_some());
+            let label = if bookmarked {
+                "Remove selected item from bookmarks"
+            } else if enabled {
+                "Add selected item to bookmarks"
+            } else {
+                "Select one file or folder to bookmark"
+            };
+            let action = ExplorerAction::ToggleSelectedBookmark;
+            div()
+                .id("bookmark-star-toggle")
+                .role(Role::Button)
+                .aria_label(label)
+                .flex_none()
+                .px(px(8.0))
+                .py(px(4.0))
+                .rounded(px(4.0))
+                .text_color(if enabled {
+                    tokens.theme.colors.text_primary.to_gpui()
+                } else {
+                    tokens.theme.colors.text_disabled.to_gpui()
+                })
+                .child(if bookmarked { "★" } else { "☆" })
+                .when(enabled, |element| {
+                    element
+                        .cursor_pointer()
+                        .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
+                        .when_some(callback.clone(), move |element, callback| {
+                            element.on_click(move |_, window, cx| callback(&action, window, cx))
+                        })
+                })
+        })
+        .children(visible.into_iter().map(|bookmark| {
+            let id = bookmark.id;
+            let icon = match bookmark.target {
+                explorer_model::BookmarkTarget::Folder { .. } => "📁",
+                explorer_model::BookmarkTarget::File { .. } => "📄",
+                explorer_model::BookmarkTarget::LuaScript { .. } => "⚡",
+            };
+            let action = ExplorerAction::ActivateBookmark { id };
+            let callback = callback.clone();
+            div()
+                .id(("bookmark", id.as_u128() as u64))
+                .role(Role::Button)
+                .aria_label(format!("{icon} Bookmark: {}", bookmark.name))
+                .cursor_pointer()
+                .px(px(8.0))
+                .py(px(4.0))
+                .rounded(px(4.0))
+                .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
+                .child(format!("{icon} {}", bookmark.name))
+                .when_some(callback, move |element, callback| {
+                    element.on_click(move |_, window, cx| callback(&action, window, cx))
+                })
+        }))
+        .when(overflow > 0, |element| {
+            let toggle = ExplorerAction::ToggleBookmarkOverflow;
+            let toggle_callback = callback.clone();
+            element.child(
+                div()
+                    .id("bookmark-overflow-toggle")
+                    .role(Role::Button)
+                    .aria_label(format!("More Bookmarks, {overflow} items"))
+                    .cursor_pointer()
+                    .px(px(8.0))
+                    .py(px(4.0))
+                    .child(format!("More Bookmarks ({overflow})"))
+                    .when_some(toggle_callback, move |element, callback| {
+                        element.on_click(move |_, window, cx| callback(&toggle, window, cx))
+                    }),
+            )
+        })
+        .child({
+            let callback = callback.clone();
+            let action = ExplorerAction::AddLuaBookmark;
+            div()
+                .id("bookmark-add-lua")
+                .role(Role::Button)
+                .aria_label("Add Lua bookmark")
+                .cursor_pointer()
+                .px(px(8.0))
+                .child("＋")
+                .when_some(callback, move |element, callback| {
+                    element.on_click(move |_, window, cx| callback(&action, window, cx))
+                })
+        })
+        .child({
+            let callback = callback.clone();
+            let action = ExplorerAction::ToggleBookmarkManager;
+            div()
+                .id("bookmark-manage")
+                .role(Role::Button)
+                .aria_label("Manage bookmarks")
+                .cursor_pointer()
+                .px(px(8.0))
+                .child("管理")
+                .when_some(callback, move |element, callback| {
+                    element.on_click(move |_, window, cx| callback(&action, window, cx))
+                })
+        })
+        .when(state.bookmark_overflow_open() && overflow > 0, |element| {
+            element.child(
+                deferred(
+                    div()
+                        .id("bookmark-overflow-menu")
+                        .absolute()
+                        .top(px(BOOKMARK_BAR_HEIGHT - 1.0))
+                        .right(px(80.0))
+                        .min_w(px(260.0))
+                        .max_w(px(520.0))
+                        .p(px(6.0))
+                        .rounded(px(6.0))
+                        .border(px(1.0))
+                        .border_color(tokens.theme.colors.divider.to_gpui())
+                        .bg(tokens.theme.colors.menu_fill.to_gpui())
+                        .children(overflow_entries.into_iter().map(|bookmark| {
+                            let id = bookmark.id;
+                            let icon = match bookmark.target {
+                                explorer_model::BookmarkTarget::Folder { .. } => "📁",
+                                explorer_model::BookmarkTarget::File { .. } => "📄",
+                                explorer_model::BookmarkTarget::LuaScript { .. } => "⚡",
+                            };
+                            let action = ExplorerAction::ActivateBookmark { id };
+                            let callback = callback.clone();
+                            div()
+                                .id(("bookmark-overflow", id.as_u128() as u64))
+                                .role(Role::Button)
+                                .aria_label(format!("{icon} Bookmark: {}", bookmark.name))
+                                .cursor_pointer()
+                                .px(px(8.0))
+                                .py(px(6.0))
+                                .rounded(px(4.0))
+                                .hover(|style| {
+                                    style.bg(tokens.theme.colors.control_hover.to_gpui())
+                                })
+                                .child(format!("{icon} {}", bookmark.name))
+                                .when_some(callback, move |element, callback| {
+                                    element.on_click(move |_, window, cx| {
+                                        callback(&action, window, cx)
+                                    })
+                                })
+                        })),
+                )
+                .with_priority(150),
+            )
+        })
+}
+
+fn bookmark_visible_count(entry_count: usize, width: f32) -> usize {
+    entry_count.min(((width - 120.0) / 150.0).floor().max(1.0) as usize)
+}
+
+fn bookmark_manager(
+    tokens: UiTokens,
+    state: &AppViewState,
+    callback: Option<ActionCallback>,
+) -> impl IntoElement {
+    let rows = state
+        .bookmarks()
+        .entries()
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, bookmark)| {
+            let icon = match bookmark.target {
+                explorer_model::BookmarkTarget::Folder { .. } => "📁",
+                explorer_model::BookmarkTarget::File { .. } => "📄",
+                explorer_model::BookmarkTarget::LuaScript { .. } => "⚡",
+            };
+            let id = bookmark.id;
+            let up = ExplorerAction::MoveBookmark {
+                id,
+                destination: index.saturating_sub(1),
+            };
+            let down = ExplorerAction::MoveBookmark {
+                id,
+                destination: index
+                    .saturating_add(1)
+                    .min(state.bookmarks().entries().len().saturating_sub(1)),
+            };
+            let remove = ExplorerAction::RemoveBookmark { id };
+            let edit = ExplorerAction::EditBookmark { id };
+            let up_cb = callback.clone();
+            let down_cb = callback.clone();
+            let remove_cb = callback.clone();
+            let edit_cb = callback.clone();
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .py(px(5.0))
+                .child(format!("{icon} {}", bookmark.name))
+                .child(
+                    div()
+                        .id(("bookmark-edit", id.as_u128() as u64))
+                        .role(Role::Button)
+                        .aria_label(format!("Edit bookmark {}", bookmark.name))
+                        .cursor_pointer()
+                        .child("編輯")
+                        .when_some(edit_cb, move |e, cb| {
+                            e.on_click(move |_, w, cx| cb(&edit, w, cx))
+                        }),
+                )
+                .child(
+                    div()
+                        .id(("bookmark-up", id.as_u128() as u64))
+                        .cursor_pointer()
+                        .child("↑")
+                        .when_some(up_cb, move |e, cb| {
+                            e.on_click(move |_, w, cx| cb(&up, w, cx))
+                        }),
+                )
+                .child(
+                    div()
+                        .id(("bookmark-down", id.as_u128() as u64))
+                        .cursor_pointer()
+                        .child("↓")
+                        .when_some(down_cb, move |e, cb| {
+                            e.on_click(move |_, w, cx| cb(&down, w, cx))
+                        }),
+                )
+                .child(
+                    div()
+                        .id(("bookmark-remove", id.as_u128() as u64))
+                        .cursor_pointer()
+                        .text_color(tokens.theme.colors.danger.to_gpui())
+                        .child("刪除")
+                        .when_some(remove_cb, move |e, cb| {
+                            e.on_click(move |_, w, cx| cb(&remove, w, cx))
+                        }),
+                )
+        })
+        .collect::<Vec<_>>();
+    let close = ExplorerAction::ToggleBookmarkManager;
+    div()
+        .id("bookmark-manager-overlay")
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(tokens.theme.colors.subtle_surface.to_gpui())
+        .child(
+            div()
+                .id("bookmark-manager")
+                .w(px(520.0))
+                .max_h(px(520.0))
+                .overflow_y_scroll()
+                .p(px(18.0))
+                .rounded(px(8.0))
+                .bg(tokens.theme.colors.surface.to_gpui())
+                .child(
+                    div().flex().justify_between().child("書籤管理員").child(
+                        div()
+                            .id("bookmark-manager-close")
+                            .role(Role::Button)
+                            .aria_label("Close bookmark manager")
+                            .cursor_pointer()
+                            .child("關閉")
+                            .when_some(callback, move |e, cb| {
+                                e.on_click(move |_, w, cx| cb(&close, w, cx))
+                            }),
+                    ),
+                )
+                .children(rows),
+        )
+}
+
+fn bookmark_editor(
+    tokens: UiTokens,
+    state: &AppViewState,
+    name_input: Option<gpui::WeakEntity<EditableTextState>>,
+    payload_input: Option<gpui::WeakEntity<EditableTextState>>,
+    callback: Option<ActionCallback>,
+) -> impl IntoElement {
+    let editor = state.bookmark_editor().expect("editor is open");
+    let payload_label = match editor.target {
+        explorer_model::BookmarkTarget::LuaScript { .. } => {
+            "Lua 原始碼（僅可使用唯讀 current_folder）"
+        }
+        explorer_model::BookmarkTarget::Folder { .. } => "資料夾路徑",
+        explorer_model::BookmarkTarget::File { .. } => "檔案路徑",
+    };
+    let save = ExplorerAction::SaveBookmarkEditor;
+    let cancel = ExplorerAction::CancelBookmarkEditor;
+    let save_cb = callback.clone();
+    div()
+        .id("bookmark-editor-overlay")
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(tokens.theme.colors.subtle_surface.to_gpui())
+        .child(
+            div()
+                .id("bookmark-editor")
+                .role(Role::Dialog)
+                .aria_label("Bookmark editor")
+                .w(px(620.0))
+                .p(px(18.0))
+                .flex()
+                .flex_col()
+                .gap(px(10.0))
+                .rounded(px(8.0))
+                .bg(tokens.theme.colors.surface.to_gpui())
+                .child("編輯書籤")
+                .child("名稱")
+                .when_some(name_input, |e, input| {
+                    e.child(
+                        text_input("bookmark-name-input")
+                            .state(input)
+                            .multiline(false)
+                            .w_full()
+                            .h(px(34.0)),
+                    )
+                })
+                .child(payload_label)
+                .when_some(payload_input, |e, input| {
+                    e.child(
+                        text_input("bookmark-payload-input")
+                            .state(input)
+                            .multiline(true)
+                            .w_full()
+                            .h(px(220.0)),
+                    )
+                })
+                .child(
+                    div()
+                        .flex()
+                        .justify_end()
+                        .gap(px(8.0))
+                        .child(
+                            div()
+                                .id("bookmark-editor-cancel")
+                                .role(Role::Button)
+                                .aria_label("Cancel bookmark edit")
+                                .cursor_pointer()
+                                .px(px(12.0))
+                                .py(px(6.0))
+                                .child("取消")
+                                .when_some(callback, move |e, cb| {
+                                    e.on_click(move |_, w, cx| cb(&cancel, w, cx))
+                                }),
+                        )
+                        .child(
+                            div()
+                                .id("bookmark-editor-save")
+                                .role(Role::Button)
+                                .aria_label("Save bookmark")
+                                .cursor_pointer()
+                                .px(px(12.0))
+                                .py(px(6.0))
+                                .bg(tokens.theme.colors.accent.to_gpui())
+                                .child("儲存")
+                                .when_some(save_cb, move |e, cb| {
+                                    e.on_click(move |_, w, cx| cb(&save, w, cx))
+                                }),
+                        ),
+                ),
+        )
 }
 
 fn session_reset_confirmation_dialog(
@@ -1033,10 +1485,12 @@ fn lock_dialog_button(
         .child(label)
 }
 
-fn folder_options_dialog(
+pub(crate) fn folder_options_window_content(
     tokens: UiTokens,
     draft: crate::state::FolderOptionsDraft,
     extensions: Vec<crate::state::ExtensionOptionV1>,
+    scroll: gpui::ScrollHandle,
+    scrollbar: gpui::AnyElement,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     use crate::actions::FolderOptionsPage;
@@ -1044,24 +1498,22 @@ fn folder_options_dialog(
     let page = draft.page;
     let settings = draft.settings;
     div()
-        .id("folder-options-overlay")
+        .id("folder-options-window-content")
         .absolute()
         .top_0()
         .right_0()
         .bottom_0()
         .left_0()
         .flex()
-        .items_center()
-        .justify_center()
-        .bg(crate::theme::MODAL_BACKDROP.to_gpui())
+        .bg(tokens.theme.colors.menu_fill.to_gpui())
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(
             div()
                 .id("folder-options-dialog")
                 .role(Role::Dialog)
                 .aria_label("資料夾選項")
-                .w(px(crate::layout::folder_options::DIALOG_WIDTH.value()))
-                .h(px(crate::layout::folder_options::DIALOG_HEIGHT.value()))
+                .w_full()
+                .h_full()
                 .flex()
                 .flex_col()
                 .rounded(px(tokens.layout.corner_radius.value()))
@@ -1120,10 +1572,22 @@ fn folder_options_dialog(
                 .child(
                     div()
                         .id("folder-options-page")
+                        .role(Role::List)
+                        .aria_label(match page {
+                            FolderOptionsPage::General => "一般",
+                            FolderOptionsPage::View => "檢視",
+                            FolderOptionsPage::Extensions => "Extensions",
+                        })
                         .flex_1()
                         .min_h_0()
-                        .overflow_hidden()
+                        .overflow_y_scroll()
+                        .track_scroll(&scroll)
+                        .pr(px(tokens.layout.content_spacing.value() * 1.5))
                         .p(px(crate::layout::folder_options::PAGE_PADDING.value()))
+                        .on_scroll_wheel(|_, window, cx| {
+                            window.refresh();
+                            cx.refresh_windows();
+                        })
                         .when(page == FolderOptionsPage::General, |body| {
                             body.child(folder_options_general_page(
                                 tokens,
@@ -1181,6 +1645,7 @@ fn folder_options_dialog(
                         )),
                 ),
         )
+        .child(scrollbar)
 }
 
 fn about_dialog(
@@ -1256,15 +1721,8 @@ fn folder_options_extensions_page(
         .id("folder-options-extensions-page")
         .role(Role::List)
         .aria_label("Extensions")
-        .h_full()
-        .min_h_0()
         .flex()
         .flex_col()
-        .overflow_y_scroll()
-        .on_scroll_wheel(|_, window, cx| {
-            cx.stop_propagation();
-            window.refresh();
-        })
         .gap(px(tokens.layout.maximum_visible_glyph.value()))
         .children(extensions.iter().enumerate().map(|(index, extension)| {
             let website_action = ExplorerAction::OpenExtensionAuthorWebsite { index };
@@ -1504,6 +1962,44 @@ fn folder_options_view_page(
             tokens,
             on_action.clone(),
         ))
+        .child(
+            div()
+                .id("folder-option-icon-cache-memory")
+                .role(Role::Group)
+                .aria_label("Icon and thumbnail display cache limit")
+                .flex()
+                .flex_col()
+                .gap(px(tokens.layout.content_spacing.value()))
+                .child("Icon and thumbnail display cache limit")
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(tokens.layout.content_spacing.value()))
+                        .children(
+                            [
+                                (64_u16, "64 MB"),
+                                (128, "128 MB"),
+                                (256, "256 MB"),
+                                (512, "512 MB"),
+                                (1_024, "1 GB"),
+                            ]
+                            .into_iter()
+                            .map(|(value, label)| {
+                                folder_option_checkbox(
+                                    SharedString::from(format!("folder-option-icon-cache-{value}")),
+                                    label,
+                                    explorer_model::normalized_icon_cache_memory_mb(
+                                        settings.icon_cache_memory_mb,
+                                    ) == value,
+                                    ExplorerAction::SetFolderOptionIconCacheMemoryMb(value),
+                                    tokens,
+                                    on_action.clone(),
+                                )
+                            }),
+                        ),
+                ),
+        )
         .child(folder_option_button(
             "folder-option-clear-thumbnail-cache",
             "清除縮圖快取",
@@ -2543,6 +3039,14 @@ fn command_more_menu_v2(
             on_action.clone(),
         ))
         .child(item(
+            "more-add-bookmark",
+            "加入書籤",
+            ExplorerAction::AddSelectedToBookmarks,
+            has_selection,
+            3,
+            on_action.clone(),
+        ))
+        .child(item(
             "more-copy-path",
             "複製路徑",
             ExplorerAction::CopySelectedPaths,
@@ -2732,8 +3236,7 @@ fn command_extensions_menu(
         .role(Role::Menu)
         .aria_label("擴充功能")
         .occlude()
-        .w(px(tokens.layout.navigation_pane_min_width.value()
-            + tokens.layout.minimum_hit_target.value()))
+        .w(px(400.0))
         .overflow_hidden()
         .p(px(tokens.layout.content_spacing.value()))
         .rounded(px(tokens.layout.corner_radius.value()))
@@ -5329,6 +5832,7 @@ pub struct FileViewHost {
     viewport_width: f32,
     scroll_handle: Option<gpui::ScrollHandle>,
     shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+    thumbnail_icon_keys: HashSet<explorer_model::ShellIconKey>,
     shell_icon_dpi: u16,
     details_column_menu: Option<explorer_model::ColumnId>,
     details_filter_menu: Option<explorer_model::ColumnId>,
@@ -5337,8 +5841,8 @@ pub struct FileViewHost {
         HashMap<explorer_model::ColumnId, Vec<crate::file_view::DetailsFilterOption>>,
     folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
     visual_column_runtime: Option<crate::folder_size_column::VisualColumnRuntimeHandleV1>,
-    code_lines_visuals: Option<crate::code_lines_column::CodeLinesColumnVisuals>,
-    code_lines_runtime: Option<crate::code_lines_column::CodeLinesRuntimeHandleV1>,
+    code_lines_visuals: Vec<crate::code_lines_column::CodeLinesColumnVisuals>,
+    code_lines_runtimes: Vec<crate::code_lines_column::CodeLinesRuntimeHandleV1>,
     size_map_active: bool,
     size_map_visuals: Option<crate::size_map_view::SizeMapVisualsV1>,
     size_map_runtime: Option<crate::size_map_view::SizeMapRuntimeHandleV1>,
@@ -5374,6 +5878,7 @@ impl FileViewHost {
         viewport_width: f32,
         scroll_handle: Option<gpui::ScrollHandle>,
         shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+        thumbnail_icon_keys: HashSet<explorer_model::ShellIconKey>,
         shell_icon_dpi: u16,
         details_column_menu: Option<explorer_model::ColumnId>,
         details_filter_menu: Option<explorer_model::ColumnId>,
@@ -5384,8 +5889,8 @@ impl FileViewHost {
         >,
         folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
         visual_column_runtime: Option<crate::folder_size_column::VisualColumnRuntimeHandleV1>,
-        code_lines_visuals: Option<crate::code_lines_column::CodeLinesColumnVisuals>,
-        code_lines_runtime: Option<crate::code_lines_column::CodeLinesRuntimeHandleV1>,
+        code_lines_visuals: Vec<crate::code_lines_column::CodeLinesColumnVisuals>,
+        code_lines_runtimes: Vec<crate::code_lines_column::CodeLinesRuntimeHandleV1>,
         size_map_active: bool,
         size_map_visuals: Option<crate::size_map_view::SizeMapVisualsV1>,
         size_map_runtime: Option<crate::size_map_view::SizeMapRuntimeHandleV1>,
@@ -5417,6 +5922,7 @@ impl FileViewHost {
             viewport_width,
             scroll_handle,
             shell_icons,
+            thumbnail_icon_keys,
             shell_icon_dpi,
             details_column_menu,
             details_filter_menu,
@@ -5425,7 +5931,7 @@ impl FileViewHost {
             folder_size_visuals,
             visual_column_runtime,
             code_lines_visuals,
-            code_lines_runtime,
+            code_lines_runtimes,
             size_map_active,
             size_map_visuals,
             size_map_runtime,
@@ -5499,6 +6005,9 @@ fn size_map_surface(
 ) -> impl IntoElement {
     let colors = tokens.theme.colors;
     let layout = tokens.layout;
+    let map_background = crate::theme::Rgba8::opaque(24, 24, 27).to_gpui();
+    let map_divider = crate::theme::Rgba8::opaque(12, 12, 14).to_gpui();
+    let map_text = crate::theme::Rgba8::opaque(255, 255, 255).to_gpui();
     let status = plan.status.clone();
     let interaction_bridge = plan.snapshot.map(|snapshot| {
         Arc::new(crate::size_map_view::ViewSelectionBridgeV1::new(
@@ -5521,7 +6030,7 @@ fn size_map_surface(
         .absolute()
         .inset_0()
         .overflow_hidden()
-        .bg(colors.surface.to_gpui())
+        .bg(map_background)
         .child(div().absolute().inset_0().child(region_probe(
             "size-map-view",
             Some(FILE_VIEW_HOST_ID),
@@ -5540,6 +6049,13 @@ fn size_map_surface(
                 .is_some_and(|item_id| selected.contains(item_id));
             let label = rectangle.label.clone();
             let detail = rectangle.detail.clone();
+            let visible_label = detail
+                .split_once(" bytes")
+                .and_then(|(bytes, _)| bytes.trim().parse::<u64>().ok())
+                .map_or_else(
+                    || label.clone(),
+                    |bytes| format!("{label} ({})", crate::format_file_size(bytes)),
+                );
             let status = rectangle.status.clone();
             let aggregate_items = rectangle.aggregate_items;
             let selector = item_id.as_ref().map_or_else(
@@ -5562,12 +6078,13 @@ fn size_map_surface(
                 .p(px(layout.content_spacing.value() / 2.0))
                 .border(px(if is_selected { 3.0 } else { 1.0 }))
                 .border_color(if is_selected {
-                    colors.selected_active.to_gpui()
+                    map_text
                 } else {
-                    colors.divider.to_gpui()
+                    map_divider
                 })
                 .bg(rectangle.color.to_gpui())
-                .text_color(colors.text_primary.to_gpui())
+                .text_color(map_text)
+                .hover(move |style| style.border_color(map_text))
                 .aria_label(format!("{label}: {detail}. {status}"))
                 // Every projected rectangle, including the synthetic `Other`
                 // group, participates in normal keyboard/UIA traversal. Only
@@ -5575,13 +6092,11 @@ fn size_map_surface(
                 // authority below.
                 .focusable()
                 .tab_stop(true)
-                .child(div().whitespace_nowrap().text_ellipsis().child(label))
                 .child(
                     div()
                         .whitespace_nowrap()
                         .text_ellipsis()
-                        .text_color(colors.text_secondary.to_gpui())
-                        .child(detail),
+                        .child(visible_label),
                 )
                 .children(aggregate_items.into_iter().filter_map(|aggregate| {
                     let row_index = indexes.get(&aggregate.item_id).copied()?;
@@ -5753,7 +6268,22 @@ impl RenderOnce for FileViewHost {
         let folder_size_visuals = self.folder_size_visuals;
         let visual_column_runtime = self.visual_column_runtime;
         let code_lines_visuals = self.code_lines_visuals;
-        let code_lines_runtime = self.code_lines_runtime;
+        let code_lines_runtimes = self.code_lines_runtimes;
+        let mut code_lines_columns = code_lines_visuals
+            .iter()
+            .cloned()
+            .map(|visuals| {
+                match code_lines_runtimes
+                    .iter()
+                    .find(|runtime| runtime.config().descriptor.id == visuals.config.descriptor.id)
+                    .cloned()
+                {
+                    Some(runtime) => CodeLinesDetailColumn::Ready(visuals, runtime),
+                    None => CodeLinesDetailColumn::Unavailable(visuals.config.descriptor.clone()),
+                }
+            })
+            .collect::<Vec<_>>();
+        code_lines_columns.sort_by(|left, right| left.id().cmp(right.id()));
         let size_map_active = self.size_map_active;
         let size_map_visuals = self.size_map_visuals;
         let size_map_runtime = self.size_map_runtime;
@@ -5761,8 +6291,7 @@ impl RenderOnce for FileViewHost {
         let cell_request_generation = self.active_request_context.generation.value();
         let row_folder_size_visuals = folder_size_visuals.clone();
         let row_visual_column_runtime = visual_column_runtime.clone();
-        let row_code_lines_visuals = code_lines_visuals.clone();
-        let row_code_lines_runtime = code_lines_runtime.clone();
+        let row_code_lines_columns = code_lines_columns;
         let background_drop = on_action.clone();
         let zoom_action = on_action.clone();
         let rename_editor = self.rename_editor;
@@ -5894,6 +6423,7 @@ impl RenderOnce for FileViewHost {
         } else {
             None
         };
+        let has_size_map_plan = size_map_plan.is_some();
         let (realized_range, leading_space, trailing_space) =
             presentation.as_ref().map_or((0..0, 0, 0), |presentation| {
                 if wrapped_view {
@@ -5965,6 +6495,7 @@ impl RenderOnce for FileViewHost {
         let filter_menu_dismiss = on_action.clone();
         let column_menu_dismiss = on_action.clone();
         let shell_icons = self.shell_icons;
+        let thumbnail_icon_keys = self.thumbnail_icon_keys;
         let shell_icon_dpi = self.shell_icon_dpi;
         let shell_icon_theme = match self.tokens.theme.mode {
             crate::theme::ThemeMode::Light => explorer_model::ShellIconTheme::Light,
@@ -5998,7 +6529,7 @@ impl RenderOnce for FileViewHost {
                 element.flex_row().flex_wrap().items_start().content_start()
             })
             .when(
-                view_settings.mode == explorer_model::ViewMode::Details,
+                view_settings.mode == explorer_model::ViewMode::Details && !has_size_map_plan,
                 StatefulInteractiveElement::overflow_scroll,
             )
             .when(
@@ -6197,7 +6728,7 @@ impl RenderOnce for FileViewHost {
                     })
             })
             .when(
-                view_settings.mode == explorer_model::ViewMode::Details,
+                view_settings.mode == explorer_model::ViewMode::Details && !has_size_map_plan,
                 |element| {
                     element.child(
                         div()
@@ -6244,11 +6775,16 @@ impl RenderOnce for FileViewHost {
             .children(entries.into_iter().map(move |item| {
                 let view_settings = Arc::clone(&row_settings);
                 let (visible_index, _snapshot_index, entry) = item;
-                let folder_size_visuals = row_folder_size_visuals.clone();
-                let visual_column_runtime = row_visual_column_runtime.clone();
-                let code_lines_visuals = row_code_lines_visuals.clone();
-                let code_lines_runtime = row_code_lines_runtime.clone();
+                let code_lines_columns = row_code_lines_columns.clone();
                 let row_column_registry = row_column_registry.clone();
+                let folder_size_visuals = row_folder_size_visuals.clone().filter(|visuals| {
+                    row_column_registry.contains(&visuals.config.descriptor.id)
+                });
+                let visual_column_runtime = row_visual_column_runtime.clone().filter(|runtime| {
+                    folder_size_visuals.as_ref().is_some_and(|visuals| {
+                        visuals.config.descriptor.id == runtime.config().descriptor.id
+                    })
+                });
                 let editor = rename_editor
                     .as_ref()
                     .filter(|editor| editor.item.id == entry.id)
@@ -6283,6 +6819,97 @@ impl RenderOnce for FileViewHost {
                 let authors = entry.metadata.authors_display.clone().unwrap_or_default();
                 let tags = entry.metadata.tags_display.clone().unwrap_or_default();
                 let title = entry.metadata.title_display.clone().unwrap_or_default();
+                let mut ordered_detail_cells = Vec::new();
+                if view_settings.mode == explorer_model::ViewMode::Details && !drive_view {
+                    for column_entry in view_settings
+                        .details_layout
+                        .visible_registered(&row_column_registry)
+                    {
+                        let column_id = &column_entry.id;
+                        if *column_id == explorer_model::ColumnId::Name {
+                            continue;
+                        }
+                        let builtin_text = match column_id {
+                            explorer_model::ColumnId::DateModified => Some(modified.clone()),
+                            explorer_model::ColumnId::Type => Some(type_display.clone()),
+                            explorer_model::ColumnId::Size => Some(size_display.clone()),
+                            explorer_model::ColumnId::DateCreated => Some(created.clone()),
+                            explorer_model::ColumnId::Authors => Some(authors.clone()),
+                            explorer_model::ColumnId::Tags => Some(tags.clone()),
+                            explorer_model::ColumnId::Title => Some(title.clone()),
+                            _ => None,
+                        };
+                        if let Some(text) = builtin_text {
+                            ordered_detail_cells.push(
+                                div()
+                                    .w(px(f32::from(
+                                        view_settings.details_column_width(column_id),
+                                    )))
+                                    .flex_none()
+                                    .child(text)
+                                    .into_any_element(),
+                            );
+                            continue;
+                        }
+                        if folder_size_visuals
+                            .as_ref()
+                            .is_some_and(|visuals| visuals.config.descriptor.id == *column_id)
+                        {
+                            ordered_detail_cells.push(match (
+                                folder_size_visuals.clone(),
+                                visual_column_runtime.clone(),
+                            ) {
+                                (Some(visuals), Some(runtime)) => folder_size_detail_cell(
+                                    visuals,
+                                    runtime,
+                                    &entry.id,
+                                    selected,
+                                    shell_icon_dpi,
+                                    visual_column_theme,
+                                    cell_request_generation,
+                                    &view_settings,
+                                    visible_index,
+                                    layout,
+                                    colors,
+                                ),
+                                (Some(visuals), None) => unavailable_detail_cell(
+                                    &visuals.config.descriptor,
+                                    &view_settings,
+                                    visible_index,
+                                    layout,
+                                ),
+                                _ => unreachable!(),
+                            });
+                            continue;
+                        }
+                        if let Some(column) = code_lines_columns
+                            .iter()
+                            .find(|column| column.id() == column_id)
+                            .cloned()
+                        {
+                            ordered_detail_cells.push(code_lines_detail_column_cell(
+                                column,
+                                &entry.id,
+                                selected,
+                                shell_icon_dpi,
+                                visual_column_theme,
+                                cell_request_generation,
+                                &view_settings,
+                                &row_column_registry,
+                                visible_index,
+                                layout,
+                                colors,
+                            ));
+                        } else if let Some(descriptor) = row_column_registry.get(column_id) {
+                            ordered_detail_cells.push(unavailable_detail_cell(
+                                descriptor,
+                                &view_settings,
+                                visible_index,
+                                layout,
+                            ));
+                        }
+                    }
+                }
                 let drive = entry.metadata.drive.clone();
                 let this_pc_type_display = if drive_view && drive.is_none() && entry.is_container {
                     "系統資料夾".to_owned()
@@ -6315,14 +6942,14 @@ impl RenderOnce for FileViewHost {
                 let accessibility_activate = on_action.clone();
                 let row_region_id = format!("file-row-{visible_index}");
                 let row_visual = file_row_visual(colors, selected, selection_active);
-                let file_icon = shell_icons
-                    .get(&crate::navigation_pane::file_icon_key_for_size(
-                        &entry,
-                        shell_icon_theme,
-                        shell_icon_dpi,
-                        crate::navigation_pane::view_icon_logical_size_for_settings(&view_settings),
-                    ))
-                    .cloned();
+                let file_icon_key = crate::navigation_pane::file_icon_key_for_size(
+                    &entry,
+                    shell_icon_theme,
+                    shell_icon_dpi,
+                    crate::navigation_pane::view_icon_logical_size_for_settings(&view_settings),
+                );
+                let file_icon_is_thumbnail = thumbnail_icon_keys.contains(&file_icon_key);
+                let file_icon = shell_icons.get(&file_icon_key).cloned();
                 div()
                     .id(row_id.clone())
                     .debug_selector(move || row_id.clone())
@@ -6698,18 +7325,24 @@ impl RenderOnce for FileViewHost {
                             .child(match file_icon {
                                 Some(texture) => {
                                     let source_size = texture.size(0);
+                                    let (host_width, host_height) = file_visual_host_size(
+                                        file_icon_is_thumbnail,
+                                        spatial_metrics.stacked,
+                                        item_width,
+                                        icon_size,
+                                    );
                                     let (render_width, render_height) = aspect_fit_size(
                                         u32::from(source_size.width),
                                         u32::from(source_size.height),
-                                        icon_size,
-                                        icon_size,
+                                        host_width,
+                                        host_height,
                                     );
                                     div()
                                         .id(format!("file-row-icon-{visible_index}"))
                                         .role(Role::Image)
                                         .aria_label(format!("{} icon", entry.display_name))
-                                        .w(px(icon_size))
-                                        .h(px(icon_size))
+                                        .w(px(host_width))
+                                        .h(px(host_height))
                                         .flex_none()
                                         .flex()
                                         .items_center()
@@ -6976,397 +7609,7 @@ impl RenderOnce for FileViewHost {
                     )
                     .when(
                         view_settings.mode == explorer_model::ViewMode::Details && !drive_view,
-                        |element| {
-                            element
-                                .when(
-                                    view_settings.details_column_visible(
-                                        &explorer_model::ColumnId::DateModified,
-                                    ),
-                                    |element| {
-                                        element.child(
-                                            div()
-                                                .w(px(f32::from(
-                                                    view_settings.details_column_width(
-                                                        &explorer_model::ColumnId::DateModified,
-                                                    ),
-                                                )))
-                                                .flex_none()
-                                                .child(modified.clone()),
-                                        )
-                                    },
-                                )
-                                .when(
-                                    view_settings.details_column_visible(&explorer_model::ColumnId::Type),
-                                    |element| {
-                                        element.child(
-                                            div()
-                                                .w(px(f32::from(
-                                                    view_settings.details_column_width(&explorer_model::ColumnId::Type),
-                                                )))
-                                                .flex_none()
-                                                .child(type_display.clone()),
-                                        )
-                                    },
-                                )
-                                .when(
-                                    view_settings.details_column_visible(&explorer_model::ColumnId::Size),
-                                    |element| {
-                                        element.child(
-                                            div()
-                                                .w(px(f32::from(
-                                                    view_settings.details_column_width(&explorer_model::ColumnId::Size),
-                                                )))
-                                                .flex_none()
-                                                .child(size_display.clone()),
-                                        )
-                                    },
-                                )
-                                .when(
-                                    view_settings.details_column_visible(
-                                        &explorer_model::ColumnId::DateCreated,
-                                    ),
-                                    |element| {
-                                        element.child(
-                                            div()
-                                                .w(px(f32::from(
-                                                    view_settings.details_column_width(
-                                                        &explorer_model::ColumnId::DateCreated,
-                                                    ),
-                                                )))
-                                                .flex_none()
-                                                .child(created.clone()),
-                                        )
-                                    },
-                                )
-                                .when(
-                                    view_settings.details_column_visible(&explorer_model::ColumnId::Authors),
-                                    |element| {
-                                        element.child(
-                                            div()
-                                                .w(px(f32::from(
-                                                    view_settings.details_column_width(&explorer_model::ColumnId::Authors),
-                                                )))
-                                                .flex_none()
-                                                .child(authors.clone()),
-                                        )
-                                    },
-                                )
-                                .when(
-                                    view_settings.details_column_visible(&explorer_model::ColumnId::Tags),
-                                    |element| {
-                                        element.child(
-                                            div()
-                                                .w(px(f32::from(
-                                                    view_settings.details_column_width(&explorer_model::ColumnId::Tags),
-                                                )))
-                                                .flex_none()
-                                                .child(tags.clone()),
-                                        )
-                                    },
-                                )
-                                .when(
-                                    view_settings.details_column_visible(&explorer_model::ColumnId::Title),
-                                    |element| {
-                                        element.child(
-                                            div()
-                                                .w(px(f32::from(
-                                                    view_settings.details_column_width(&explorer_model::ColumnId::Title),
-                                                )))
-                                                .flex_none()
-                                                .child(title.clone()),
-                                        )
-                                    },
-                                )
-                                .when_some(
-                                    folder_size_visuals.zip(visual_column_runtime),
-                                    |element, (visuals, runtime)| {
-                                    let descriptor = &visuals.config.descriptor;
-                                    let exact_bytes = visuals.value_for(&entry.id);
-                                    let measurement_error = visuals.error_for(&entry.id);
-                                    let maximum = visuals.maximum_value();
-                                    let item_id = extension_render_item_id(&entry.id);
-                                    let render_generation = extension_render_generation(
-                                        &entry.id,
-                                        format!(
-                                            "{exact_bytes:?}:{measurement_error:?}:{maximum}:{selected}:{:?}",
-                                            visuals.config.folder_size_display,
-                                        ),
-                                    );
-                                    let plan = runtime.render_cell(
-                                        crate::folder_size_column::CellRenderContextV1 {
-                                            value: ROption::RNone,
-                                            exact_bytes: exact_bytes
-                                                .map_or(ROption::RNone, ROption::RSome),
-                                            aggregate: ROption::RSome(
-                                                explorer_extension_ui_api::CellAggregateV1 {
-                                                    largest_sibling_value: ROption::RNone,
-                                                    largest_sibling_bytes: (maximum > 0)
-                                                        .then_some(maximum)
-                                                        .map_or(ROption::RNone, ROption::RSome),
-                                                },
-                                            ),
-                                            loading: exact_bytes.is_none()
-                                                && measurement_error.is_none(),
-                                            error: measurement_error
-                                                .map(|error| ROption::RSome(error.into()))
-                                                .unwrap_or(ROption::RNone),
-                                            selected,
-                                            // GPUI owns hover application for the row. The V1
-                                            // context reserves this public field without coupling
-                                            // the runtime to a widget handle.
-                                            hovered: false,
-                                            dpi_milli: u32::from(shell_icon_dpi)
-                                                .saturating_mul(1_000)
-                                                / 96,
-                                            theme: visual_column_theme,
-                                            settings: RString::from(
-                                                match visuals.config.folder_size_display {
-                                                    crate::folder_size_column::FolderSizeDisplayMode::BarAndText => "bar-and-text",
-                                                    crate::folder_size_column::FolderSizeDisplayMode::TextOnly => "text-only",
-                                                },
-                                            ),
-                                            item_id,
-                                            render_generation,
-                                            request_generation: cell_request_generation,
-                                        },
-                                    );
-                                    element.when(
-                                        view_settings.details_column_visible(&descriptor.id),
-                                        |element| {
-                                            let width = f32::from(
-                                                view_settings.details_column_width(&descriptor.id),
-                                            );
-                                            element.child(
-                                                div()
-                                                    .id(format!(
-                                                        "folder-size-column-{visible_index}"
-                                                    ))
-                                                    .role(Role::Status)
-                                                    .aria_label(format!(
-                                                        "{}: {}",
-                                                        descriptor.display_name, plan.label
-                                                    ))
-                                                    .w(px(width))
-                                                    .h_full()
-                                                    .flex_none()
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_end()
-                                                    .gap(px(layout.content_spacing.value() / 2.0))
-                                                    .px(px(layout.content_spacing.value() / 2.0))
-                                                    .when(
-                                                        plan.proportional_bar_millionths > 0,
-                                                        |cell| {
-                                                            let fill_color = crate::theme::Rgba8 {
-                                                                red: plan.bar_color.red,
-                                                                green: plan.bar_color.green,
-                                                                blue: plan.bar_color.blue,
-                                                                alpha: plan.bar_color.alpha,
-                                                            };
-                                                            cell.child(
-                                                                div()
-                                                                    .id(format!(
-                                                                        "folder-size-bar-track-{visible_index}"
-                                                                    ))
-                                                                    .w(px((width * 0.42).max(16.0)))
-                                                                    .h(px(6.0))
-                                                                    .rounded(px(3.0))
-                                                                    .border(px(1.0))
-                                                                    .border_color(colors.divider.to_gpui())
-                                                                    .bg(colors.control_fill.to_gpui())
-                                                                    .child(
-                                                                        div()
-                                                                            .h_full()
-                                                                            .w(px(
-                                                                                (width * 0.42
-                                                                                    * plan.proportional_bar_millionths
-                                                                                        as f32
-                                                                                    / 1_000_000.0)
-                                                                                    .max(1.0),
-                                                                            ))
-                                                                            .rounded(px(2.0))
-                                                                            .bg(fill_color.to_gpui()),
-                                                                    ),
-                                                            )
-                                                        },
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .min_w_0()
-                                                            .flex_1()
-                                                            .text_right()
-                                                            .overflow_hidden()
-                                                            .whitespace_nowrap()
-                                                            .text_ellipsis()
-                                                            .text_color(
-                                                                crate::theme::Rgba8 {
-                                                                    red: plan.text_color.red,
-                                                                    green: plan.text_color.green,
-                                                                    blue: plan.text_color.blue,
-                                                                    alpha: plan.text_color.alpha,
-                                                                }
-                                                                .to_gpui(),
-                                                            )
-                                                            .child(plan.label.to_string()),
-                                                    ),
-                                            )
-                                        },
-                                    )
-                                },
-                                )
-                                .when_some(
-                                    code_lines_visuals.zip(code_lines_runtime),
-                                    |element, (visuals, runtime)| {
-                                        let descriptor = &visuals.config.descriptor;
-                                        let value = visuals.values.get(&entry.id);
-                                        let error = visuals.errors.get(&entry.id);
-                                        let maximum = visuals.maximum_value();
-                                        let item_id = extension_render_item_id(&entry.id);
-                                        let render_generation = extension_render_generation(
-                                            &entry.id,
-                                            format!("{value:?}:{error:?}:{maximum}:{selected}:{:?}", visuals.config.display),
-                                        );
-                                        let plan = runtime.render_cell(
-                                            crate::code_lines_column::CellRenderContextV1 {
-                                                value: value
-                                                    .and_then(|value| {
-                                                        serde_json::to_vec(&serde_json::json!({
-                                                            "blanks": value.blanks,
-                                                            "code": value.code,
-                                                            "comments": value.comments,
-                                                            "language": value.language,
-                                                            "total": value.total,
-                                                        }))
-                                                        .ok()
-                                                        .and_then(|bytes| {
-                                                            explorer_extension_ui_api::PluginValueV1::structured_canonical_json(bytes).ok()
-                                                        })
-                                                    })
-                                                    .map_or(ROption::RNone, ROption::RSome),
-                                                exact_bytes: ROption::RNone,
-                                                aggregate: ROption::RSome(
-                                                    explorer_extension_ui_api::CellAggregateV1 {
-                                                        largest_sibling_value: (maximum > 0)
-                                                            .then(|| serde_json::to_vec(&serde_json::json!({
-                                                                "blanks": 0,
-                                                                "code": maximum,
-                                                                "comments": 0,
-                                                                "language": "aggregate",
-                                                                "total": maximum,
-                                                            })).ok())
-                                                            .flatten()
-                                                            .and_then(|bytes| explorer_extension_ui_api::PluginValueV1::structured_canonical_json(bytes).ok())
-                                                            .map_or(ROption::RNone, ROption::RSome),
-                                                        largest_sibling_bytes: ROption::RNone,
-                                                    },
-                                                ),
-                                                loading: value.is_none()
-                                                    && error.is_none(),
-                                                error: error
-                                                    .map(|error| ROption::RSome(error.as_str().into()))
-                                                    .unwrap_or(ROption::RNone),
-                                                selected,
-                                                hovered: false,
-                                                dpi_milli: u32::from(shell_icon_dpi)
-                                                    .saturating_mul(1_000)
-                                                    / 96,
-                                                theme: visual_column_theme,
-                                                settings: if visuals.config.display.shows_detail() {
-                                                    value.map_or_else(
-                                                        || RString::from("with-detail"),
-                                                        |value| RString::from(format!(
-                                                            "with-detail;language={};comments={};blanks={};total={}",
-                                                            value.language,
-                                                            value.comments,
-                                                            value.blanks,
-                                                            value.total
-                                                        )),
-                                                    )
-                                                } else {
-                                                    RString::from("code-only")
-                                                },
-                                                item_id,
-                                                render_generation,
-                                                request_generation: cell_request_generation,
-                                            },
-                                        );
-                                        element.when(
-                                            row_column_registry.contains(&descriptor.id)
-                                                && view_settings
-                                                    .details_column_visible(&descriptor.id),
-                                            |element| {
-                                                let width = f32::from(
-                                                    view_settings.details_column_width(&descriptor.id),
-                                                );
-                                                element.child(
-                                                    div()
-                                                        .id(format!("code-lines-column-{visible_index}"))
-                                                        .role(Role::Status)
-                                                        .aria_label(format!(
-                                                            "{}: {} {}",
-                                                            descriptor.display_name,
-                                                            plan.label,
-                                                            plan.detail
-                                                        ))
-                                                        .w(px(width))
-                                                        .h_full()
-                                                        .flex_none()
-                                                        .flex()
-                                                        .items_center()
-                                                        .justify_end()
-                                                        .gap(px(layout.content_spacing.value() / 2.0))
-                                                        .px(px(layout.content_spacing.value() / 2.0))
-                                                        .when(
-                                                            plan.proportional_bar_millionths > 0,
-                                                            |cell| {
-                                                                let fill_color = crate::theme::Rgba8 {
-                                                                    red: plan.bar_color.red,
-                                                                    green: plan.bar_color.green,
-                                                                    blue: plan.bar_color.blue,
-                                                                    alpha: plan.bar_color.alpha,
-                                                                };
-                                                                cell.child(
-                                                                    div()
-                                                                        .id(format!("code-lines-bar-track-{visible_index}"))
-                                                                        .w(px((width * 0.30).max(12.0)))
-                                                                        .h(px(6.0))
-                                                                        .rounded(px(3.0))
-                                                                        .border(px(1.0))
-                                                                        .border_color(colors.divider.to_gpui())
-                                                                        .bg(colors.control_fill.to_gpui())
-                                                                        .child(
-                                                                            div()
-                                                                                .h_full()
-                                                                                .w(px((width * 0.30
-                                                                                    * plan.proportional_bar_millionths as f32
-                                                                                    / 1_000_000.0)
-                                                                                    .max(1.0)))
-                                                                                .rounded(px(2.0))
-                                                                                .bg(fill_color.to_gpui()),
-                                                                        ),
-                                                                )
-                                                            },
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .min_w_0()
-                                                                .flex_1()
-                                                                .text_right()
-                                                                .overflow_hidden()
-                                                                .whitespace_nowrap()
-                                                                .text_ellipsis()
-                                                                .child(if plan.detail.is_empty() {
-                                                                    plan.label.to_string()
-                                                                } else {
-                                                                    format!("{}  {}", plan.label, plan.detail)
-                                                                }),
-                                                        ),
-                                                )
-                                            },
-                                        )
-                                    },
-                                )
-                        },
+                        |element| element.children(ordered_detail_cells),
                     )
                     .when(
                         view_settings.mode == explorer_model::ViewMode::Details && drive_view,
@@ -7460,7 +7703,7 @@ impl RenderOnce for FileViewHost {
                 )
             })
             .when(
-                view_settings.mode == explorer_model::ViewMode::Details,
+                view_settings.mode == explorer_model::ViewMode::Details && !has_size_map_plan,
                 |element| {
                     element.child(
                         div()
@@ -7490,7 +7733,7 @@ impl RenderOnce for FileViewHost {
                 ))
             })
             .when(
-                view_settings.mode == explorer_model::ViewMode::Details,
+                view_settings.mode == explorer_model::ViewMode::Details && !has_size_map_plan,
                 |element| {
                     element.child(
                         div()
@@ -7627,6 +7870,28 @@ fn aspect_fit_size(
     }
     let scale = (host_width / source_width as f32).min(host_height / source_height as f32);
     (source_width as f32 * scale, source_height as f32 * scale)
+}
+
+fn file_visual_host_size(
+    is_thumbnail: bool,
+    stacked: bool,
+    cell_width: f32,
+    icon_size: f32,
+) -> (f32, f32) {
+    let icon_size = if icon_size.is_finite() {
+        icon_size.max(0.0)
+    } else {
+        0.0
+    };
+    if !is_thumbnail || !stacked {
+        return (icon_size, icon_size);
+    }
+    let cell_width = if cell_width.is_finite() {
+        cell_width.max(0.0)
+    } else {
+        0.0
+    };
+    (cell_width, icon_size)
 }
 
 const fn stacked_icon_label_lines(selected: bool) -> usize {
@@ -8159,9 +8424,10 @@ fn details_header(
     }
     let layout = tokens.layout;
     let colors = tokens.theme.colors;
-    let visible_descriptors = registry
-        .iter()
-        .filter(|descriptor| settings.details_column_visible(&descriptor.id))
+    let visible_descriptors = settings
+        .details_layout
+        .visible_registered(registry)
+        .filter_map(|entry| registry.get(&entry.id))
         .cloned()
         .collect::<Vec<_>>();
     let accessible_columns = visible_descriptors
@@ -8192,7 +8458,8 @@ fn details_header(
             DETAILS_HEADER_ID,
             typography_diagnostic(tokens, tokens.typography.details_header),
         ))
-        .children(visible_descriptors.into_iter().map(|descriptor| {
+        .children(visible_descriptors.iter().map(|descriptor| {
+            let descriptor = descriptor.clone();
             let column = descriptor.id;
             details_header_column(
                 details_column_selector("details-column", &column),
@@ -8206,6 +8473,392 @@ fn details_header(
                 tokens,
             )
         }))
+        .into_any_element()
+}
+
+#[allow(dead_code, reason = "retained as the registry-order regression seam")]
+fn ordered_detail_extension_column_ids<'a>(
+    registry: &explorer_model::ColumnRegistry,
+    folder_size_id: Option<&'a explorer_model::ColumnId>,
+    code_lines_ids: impl IntoIterator<Item = &'a explorer_model::ColumnId>,
+) -> Vec<explorer_model::ColumnId> {
+    let code_lines_ids = code_lines_ids.into_iter().collect::<HashSet<_>>();
+    registry
+        .iter()
+        .filter(|descriptor| {
+            folder_size_id == Some(&descriptor.id) || code_lines_ids.contains(&descriptor.id)
+        })
+        .map(|descriptor| descriptor.id.clone())
+        .collect()
+}
+
+#[derive(Clone)]
+enum CodeLinesDetailColumn {
+    Ready(
+        crate::code_lines_column::CodeLinesColumnVisuals,
+        crate::code_lines_column::CodeLinesRuntimeHandleV1,
+    ),
+    Unavailable(explorer_model::ColumnDescriptor),
+}
+
+impl CodeLinesDetailColumn {
+    fn id(&self) -> &explorer_model::ColumnId {
+        match self {
+            Self::Ready(visuals, _) => &visuals.config.descriptor.id,
+            Self::Unavailable(descriptor) => &descriptor.id,
+        }
+    }
+}
+
+fn unavailable_detail_cell(
+    descriptor: &explorer_model::ColumnDescriptor,
+    view_settings: &explorer_model::ViewSettings,
+    visible_index: usize,
+    layout: crate::layout::LayoutTokens,
+) -> gpui::AnyElement {
+    let width = f32::from(view_settings.details_column_width(&descriptor.id));
+    div()
+        .id(format!(
+            "{}-{visible_index}",
+            details_column_selector("extension-column-unavailable", &descriptor.id)
+        ))
+        .role(Role::Status)
+        .aria_label(format!("{}: unavailable", descriptor.display_name))
+        .w(px(width))
+        .h_full()
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_end()
+        .px(px(layout.content_spacing.value() / 2.0))
+        .child("—")
+        .into_any_element()
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "details-cell rendering receives one immutable row snapshot"
+)]
+fn folder_size_detail_cell(
+    visuals: crate::folder_size_column::FolderSizeColumnVisuals,
+    runtime: crate::folder_size_column::VisualColumnRuntimeHandleV1,
+    entry_id: &explorer_model::ShellItemId,
+    selected: bool,
+    shell_icon_dpi: u16,
+    visual_column_theme: explorer_extension_ui_api::CellThemeV1,
+    cell_request_generation: u64,
+    view_settings: &explorer_model::ViewSettings,
+    visible_index: usize,
+    layout: crate::layout::LayoutTokens,
+    colors: crate::theme::SemanticColors,
+) -> gpui::AnyElement {
+    let descriptor = &visuals.config.descriptor;
+    let exact_bytes = visuals.value_for(entry_id);
+    let measurement_error = visuals.error_for(entry_id);
+    let maximum = visuals.maximum_value();
+    let item_id = extension_render_item_id(entry_id);
+    let render_generation = extension_render_generation(
+        entry_id,
+        format!(
+            "{exact_bytes:?}:{measurement_error:?}:{maximum}:{selected}:{:?}",
+            visuals.config.folder_size_display,
+        ),
+    );
+    let plan = runtime.render_cell(crate::folder_size_column::CellRenderContextV1 {
+        value: ROption::RNone,
+        exact_bytes: exact_bytes.map_or(ROption::RNone, ROption::RSome),
+        aggregate: ROption::RSome(explorer_extension_ui_api::CellAggregateV1 {
+            largest_sibling_value: ROption::RNone,
+            largest_sibling_bytes: (maximum > 0)
+                .then_some(maximum)
+                .map_or(ROption::RNone, ROption::RSome),
+        }),
+        loading: exact_bytes.is_none() && measurement_error.is_none(),
+        error: measurement_error
+            .map(|error| ROption::RSome(error.into()))
+            .unwrap_or(ROption::RNone),
+        selected,
+        hovered: false,
+        dpi_milli: u32::from(shell_icon_dpi).saturating_mul(1_000) / 96,
+        theme: visual_column_theme,
+        settings: RString::from(match visuals.config.folder_size_display {
+            crate::folder_size_column::FolderSizeDisplayMode::BarAndText => "bar-and-text",
+            crate::folder_size_column::FolderSizeDisplayMode::TextOnly => "text-only",
+        }),
+        item_id,
+        render_generation,
+        request_generation: cell_request_generation,
+    });
+    let width = f32::from(view_settings.details_column_width(&descriptor.id));
+    div()
+        .id(format!("folder-size-column-{visible_index}"))
+        .role(Role::Status)
+        .aria_label(format!("{}: {}", descriptor.display_name, plan.label))
+        .w(px(width))
+        .h_full()
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_end()
+        .gap(px(layout.content_spacing.value() / 2.0))
+        .px(px(layout.content_spacing.value() / 2.0))
+        .when(plan.proportional_bar_millionths > 0, |cell| {
+            let fill_color = crate::theme::Rgba8 {
+                red: plan.bar_color.red,
+                green: plan.bar_color.green,
+                blue: plan.bar_color.blue,
+                alpha: plan.bar_color.alpha,
+            };
+            cell.child(
+                div()
+                    .id(format!("folder-size-bar-track-{visible_index}"))
+                    .w(px((width * 0.42).max(16.0)))
+                    .h(px(6.0))
+                    .rounded(px(3.0))
+                    .border(px(1.0))
+                    .border_color(colors.divider.to_gpui())
+                    .bg(colors.control_fill.to_gpui())
+                    .child(
+                        div()
+                            .h_full()
+                            .w(px(
+                                (width * 0.42 * plan.proportional_bar_millionths as f32
+                                    / 1_000_000.0)
+                                    .max(1.0),
+                            ))
+                            .rounded(px(2.0))
+                            .bg(fill_color.to_gpui()),
+                    ),
+            )
+        })
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .text_right()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_color(
+                    crate::theme::Rgba8 {
+                        red: plan.text_color.red,
+                        green: plan.text_color.green,
+                        blue: plan.text_color.blue,
+                        alpha: plan.text_color.alpha,
+                    }
+                    .to_gpui(),
+                )
+                .child(plan.label.to_string()),
+        )
+        .into_any_element()
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "details-cell rendering receives one immutable row snapshot"
+)]
+fn code_lines_detail_column_cell(
+    column: CodeLinesDetailColumn,
+    entry_id: &explorer_model::ShellItemId,
+    selected: bool,
+    shell_icon_dpi: u16,
+    visual_column_theme: explorer_extension_ui_api::CellThemeV1,
+    cell_request_generation: u64,
+    view_settings: &explorer_model::ViewSettings,
+    row_column_registry: &explorer_model::ColumnRegistry,
+    visible_index: usize,
+    layout: crate::layout::LayoutTokens,
+    colors: crate::theme::SemanticColors,
+) -> gpui::AnyElement {
+    match column {
+        CodeLinesDetailColumn::Ready(visuals, runtime) => code_lines_detail_cell(
+            visuals,
+            runtime,
+            entry_id,
+            selected,
+            shell_icon_dpi,
+            visual_column_theme,
+            cell_request_generation,
+            view_settings,
+            row_column_registry,
+            visible_index,
+            layout,
+            colors,
+        ),
+        CodeLinesDetailColumn::Unavailable(descriptor) => {
+            unavailable_detail_cell(&descriptor, view_settings, visible_index, layout)
+        }
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "details-cell rendering receives one immutable row snapshot"
+)]
+fn code_lines_detail_cell(
+    visuals: crate::code_lines_column::CodeLinesColumnVisuals,
+    runtime: crate::code_lines_column::CodeLinesRuntimeHandleV1,
+    entry_id: &explorer_model::ShellItemId,
+    selected: bool,
+    shell_icon_dpi: u16,
+    visual_column_theme: explorer_extension_ui_api::CellThemeV1,
+    cell_request_generation: u64,
+    view_settings: &explorer_model::ViewSettings,
+    row_column_registry: &explorer_model::ColumnRegistry,
+    visible_index: usize,
+    layout: crate::layout::LayoutTokens,
+    colors: crate::theme::SemanticColors,
+) -> gpui::AnyElement {
+    let descriptor = &visuals.config.descriptor;
+    let value = visuals.values.get(entry_id);
+    let error = visuals.errors.get(entry_id);
+    let maximum = visuals.maximum_value();
+    let item_id = extension_render_item_id(entry_id);
+    let render_generation = extension_render_generation(
+        entry_id,
+        format!(
+            "{value:?}:{error:?}:{maximum}:{selected}:{:?}",
+            visuals.config.display
+        ),
+    );
+    let plan = runtime.render_cell(crate::code_lines_column::CellRenderContextV1 {
+        value: value
+            .and_then(|value| {
+                serde_json::to_vec(&serde_json::json!({
+                    "blanks": value.blanks,
+                    "code": value.code,
+                    "comments": value.comments,
+                    "language": value.language,
+                    "total": value.total,
+                }))
+                .ok()
+                .and_then(|bytes| {
+                    explorer_extension_ui_api::PluginValueV1::structured_canonical_json(bytes).ok()
+                })
+            })
+            .map_or(ROption::RNone, ROption::RSome),
+        exact_bytes: ROption::RNone,
+        aggregate: ROption::RSome(explorer_extension_ui_api::CellAggregateV1 {
+            largest_sibling_value: (maximum > 0)
+                .then(|| {
+                    serde_json::to_vec(&serde_json::json!({
+                        "blanks": 0,
+                        "code": maximum,
+                        "comments": 0,
+                        "language": "aggregate",
+                        "total": maximum,
+                    }))
+                    .ok()
+                })
+                .flatten()
+                .and_then(|bytes| {
+                    explorer_extension_ui_api::PluginValueV1::structured_canonical_json(bytes).ok()
+                })
+                .map_or(ROption::RNone, ROption::RSome),
+            largest_sibling_bytes: ROption::RNone,
+        }),
+        loading: value.is_none() && error.is_none(),
+        error: error
+            .map(|error| ROption::RSome(error.as_str().into()))
+            .unwrap_or(ROption::RNone),
+        selected,
+        hovered: false,
+        dpi_milli: u32::from(shell_icon_dpi).saturating_mul(1_000) / 96,
+        theme: visual_column_theme,
+        settings: if visuals.config.display.shows_detail() {
+            value.map_or_else(
+                || RString::from("with-detail"),
+                |value| {
+                    RString::from(format!(
+                        "with-detail;language={};comments={};blanks={};total={}",
+                        value.language, value.comments, value.blanks, value.total
+                    ))
+                },
+            )
+        } else {
+            RString::from("code-only")
+        },
+        item_id,
+        render_generation,
+        request_generation: cell_request_generation,
+    });
+    div()
+        .when(
+            row_column_registry.contains(&descriptor.id)
+                && view_settings.details_column_visible(&descriptor.id),
+            |element| {
+                let width = f32::from(view_settings.details_column_width(&descriptor.id));
+                element.child(
+                    div()
+                        .id(format!(
+                            "{}-{visible_index}",
+                            details_column_selector("code-lines-column", &descriptor.id)
+                        ))
+                        .role(Role::Status)
+                        .aria_label(format!(
+                            "{}: {} {}",
+                            descriptor.display_name, plan.label, plan.detail
+                        ))
+                        .w(px(width))
+                        .h_full()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .gap(px(layout.content_spacing.value() / 2.0))
+                        .px(px(layout.content_spacing.value() / 2.0))
+                        .when(plan.proportional_bar_millionths > 0, |cell| {
+                            let fill_color = crate::theme::Rgba8 {
+                                red: plan.bar_color.red,
+                                green: plan.bar_color.green,
+                                blue: plan.bar_color.blue,
+                                alpha: plan.bar_color.alpha,
+                            };
+                            cell.child(
+                                div()
+                                    .id(format!(
+                                        "{}-{visible_index}",
+                                        details_column_selector(
+                                            "code-lines-bar-track",
+                                            &descriptor.id,
+                                        )
+                                    ))
+                                    .w(px((width * 0.30).max(12.0)))
+                                    .h(px(6.0))
+                                    .rounded(px(3.0))
+                                    .border(px(1.0))
+                                    .border_color(colors.divider.to_gpui())
+                                    .bg(colors.control_fill.to_gpui())
+                                    .child(
+                                        div()
+                                            .h_full()
+                                            .w(px((width
+                                                * 0.30
+                                                * plan.proportional_bar_millionths as f32
+                                                / 1_000_000.0)
+                                                .max(1.0)))
+                                            .rounded(px(2.0))
+                                            .bg(fill_color.to_gpui()),
+                                    ),
+                            )
+                        })
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .text_right()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .child(if plan.detail.is_empty() {
+                                    plan.label.to_string()
+                                } else {
+                                    format!("{}  {}", plan.label, plan.detail)
+                                }),
+                        ),
+                )
+            },
+        )
         .into_any_element()
 }
 
@@ -8273,7 +8926,7 @@ fn details_column_menu(
     settings: explorer_model::ViewSettings,
     registry: &explorer_model::ColumnRegistry,
     folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
-    code_lines_visuals: Option<crate::code_lines_column::CodeLinesColumnVisuals>,
+    code_lines_visuals: Vec<crate::code_lines_column::CodeLinesColumnVisuals>,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     let colors = tokens.theme.colors;
@@ -8333,7 +8986,8 @@ fn details_column_menu(
                 ))
                 .bg(colors.divider.to_gpui()),
         )
-        .children(registry.iter().filter_map(|descriptor| {
+        .children(settings.details_layout.entries().iter().filter_map(|entry| {
+            let descriptor = registry.get(&entry.id)?;
             let column = descriptor.id.clone();
             on_action.clone().map(|callback| {
                 column_menu_row(
@@ -8363,10 +9017,10 @@ fn details_column_menu(
                 })
             })
         })
-        .when_some(code_lines_visuals, |element, visuals| {
+        .children(code_lines_visuals.into_iter().filter_map(|visuals| {
             let descriptor = &visuals.config.descriptor;
-            element.when(target == descriptor.id, |element| {
-                element.when_some(on_action.clone(), |element, callback| {
+            (target == descriptor.id).then(|| {
+                div().when_some(on_action.clone(), |element, callback| {
                     element.child(column_menu_row(
                         tokens,
                         "details-column-menu-code-lines-detail".to_owned(),
@@ -8378,7 +9032,7 @@ fn details_column_menu(
                     ))
                 })
             })
-        })
+        }))
 }
 
 fn column_menu_row(
@@ -8566,16 +9220,28 @@ fn details_header_column(
     let context_callback = on_action.clone();
     let sort_context_callback = on_action.clone();
     let sort_callback = on_action.clone();
+    let pointer_begin_callback = on_action.clone();
+    let pointer_drop_callback = on_action.clone();
     let sort_accessible_callback = on_action.clone();
     let filter_callback = on_action.clone();
     let context_column = column.clone();
     let sort_context_column = column.clone();
     let sort_column = column.clone();
+    let pointer_begin_column = column.clone();
+    let pointer_drop_column = column.clone();
     let accessible_sort_column = column.clone();
     let filter_column = column.clone();
     let decrement_column = column.clone();
     let increment_column = column.clone();
     let begin_column = column.clone();
+    let draggable_column = column.clone();
+    let sort_draggable_column = column.clone();
+    let drop_before_column = column.clone();
+    let drop_callback = on_action.clone();
+    let sort_drop_before_column = column.clone();
+    let sort_drop_callback = on_action.clone();
+    let drag_label = label.clone();
+    let sort_drag_label = label.clone();
     let decrement_settings = settings.clone();
     let increment_settings = settings.clone();
     div()
@@ -8600,6 +9266,32 @@ fn details_header_column(
         .flex_none()
         .flex()
         .items_center()
+        .when(column != explorer_model::ColumnId::Name, |element| {
+            element.cursor_move().on_drag(
+                DetailsColumnDrag {
+                    column: draggable_column,
+                    label: drag_label,
+                },
+                |drag, _, _, cx| {
+                    cx.new(|_| DetailsColumnDragPreview {
+                        label: drag.label.clone(),
+                    })
+                },
+            )
+        })
+        .when_some(drop_callback, move |element, callback| {
+            element.on_drop(move |drag: &DetailsColumnDrag, window, cx| {
+                callback(
+                    &ExplorerAction::MoveDetailsColumn {
+                        column: drag.column.clone(),
+                        before: Some(drop_before_column.clone()),
+                    },
+                    window,
+                    cx,
+                );
+                cx.stop_propagation();
+            })
+        })
         .hover(move |style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
         .when_some(context_callback, move |element, callback| {
             element.on_mouse_down(MouseButton::Right, move |_, window, cx| {
@@ -8628,8 +9320,61 @@ fn details_header_column(
                 .flex()
                 .items_center()
                 .px(px(tokens.layout.content_spacing.value() / 2.0))
+                .when(
+                    column != explorer_model::ColumnId::Name,
+                    |element| {
+                        element.when_some(pointer_begin_callback, move |element, callback| {
+                            element.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                callback(
+                                    &ExplorerAction::BeginDetailsColumnDrag {
+                                        column: pointer_begin_column.clone(),
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            })
+                        })
+                    },
+                )
+                .when_some(pointer_drop_callback, move |element, callback| {
+                    element.on_mouse_up(MouseButton::Left, move |_, window, cx| {
+                        callback(
+                            &ExplorerAction::DropDetailsColumn {
+                                before: pointer_drop_column.clone(),
+                            },
+                            window,
+                            cx,
+                        );
+                    })
+                })
+                .when(column != explorer_model::ColumnId::Name, |element| {
+                    element.cursor_move().on_drag(
+                        DetailsColumnDrag {
+                            column: sort_draggable_column,
+                            label: sort_drag_label,
+                        },
+                        |drag, _, _, cx| {
+                            cx.new(|_| DetailsColumnDragPreview {
+                                label: drag.label.clone(),
+                            })
+                        },
+                    )
+                })
+                .when_some(sort_drop_callback, move |element, callback| {
+                    element.on_drop(move |drag: &DetailsColumnDrag, window, cx| {
+                        callback(
+                            &ExplorerAction::MoveDetailsColumn {
+                                column: drag.column.clone(),
+                                before: Some(sort_drop_before_column.clone()),
+                            },
+                            window,
+                            cx,
+                        );
+                        cx.stop_propagation();
+                    })
+                })
                 .when_some(sort_callback, move |element, callback| {
-                    element.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    element.on_click(move |_, window, cx| {
                         callback(
                             &ExplorerAction::SetColumnId(accessible_sort_column.clone()),
                             window,
@@ -9009,7 +9754,7 @@ impl RenderOnce for StatusBar {
                 DirectoryState::Idle | DirectoryState::Ready(_) => "",
             },
         };
-        let status = if presentation.selected_count > 0 {
+        let mut status = if presentation.selected_count > 0 {
             format!(
                 "{} items — {} selected",
                 presentation.item_count, presentation.selected_count
@@ -9059,6 +9804,10 @@ impl RenderOnce for StatusBar {
         }
         if let Some(notice) = self.state.quick_access_notice() {
             full_status.push_str(" | ");
+            full_status.push_str(notice);
+        }
+        if let Some(notice) = self.state.bookmark_notice() {
+            full_status.push_str(" · ");
             full_status.push_str(notice);
         }
         if let Some(notice) = self.state.session_reset_notice() {
@@ -11140,6 +11889,40 @@ mod tests {
     }
 
     #[test]
+    fn thumbnail_edge_fit_uses_full_cell_while_shell_icons_remain_square() {
+        let thumbnail_host = super::file_visual_host_size(true, true, 568.0, 512.0);
+        assert_eq!(thumbnail_host, (568.0, 512.0));
+
+        let landscape = super::aspect_fit_size(1600, 900, thumbnail_host.0, thumbnail_host.1);
+        assert!((landscape.0 - thumbnail_host.0).abs() < f32::EPSILON);
+        assert!((landscape.1 - 319.5).abs() < f32::EPSILON);
+
+        let portrait = super::aspect_fit_size(900, 1600, thumbnail_host.0, thumbnail_host.1);
+        assert!((portrait.0 - 288.0).abs() < f32::EPSILON);
+        assert!((portrait.1 - thumbnail_host.1).abs() < f32::EPSILON);
+
+        let square = super::aspect_fit_size(512, 512, thumbnail_host.0, thumbnail_host.1);
+        assert_eq!(square, (512.0, 512.0));
+
+        assert_eq!(
+            super::file_visual_host_size(false, true, 568.0, 512.0),
+            (512.0, 512.0)
+        );
+        assert_eq!(
+            super::file_visual_host_size(true, false, 568.0, 512.0),
+            (512.0, 512.0)
+        );
+        assert_eq!(
+            super::file_visual_host_size(true, true, 20.0, 512.0),
+            (20.0, 512.0)
+        );
+        assert_eq!(
+            super::file_visual_host_size(true, true, f32::NAN, 512.0),
+            (0.0, 512.0)
+        );
+    }
+
+    #[test]
     fn this_pc_uses_explorer_specific_geometry_for_details_icons_and_content() {
         let layout = crate::layout::LayoutTokens::WINDOWS_11;
         let details =
@@ -11554,21 +12337,41 @@ mod tests {
         assert!(production.contains("Release date："));
         assert!(production.contains("extension-command-lua-bulk-folder-button"));
         assert!(production.contains("view-extension-size-map"));
+        assert!(
+            production
+                .matches(
+                    "view_settings.mode == explorer_model::ViewMode::Details && !has_size_map_plan"
+                )
+                .count()
+                >= 4,
+            "Size Map must suppress the Details header, spacer, scrolling, and row chrome"
+        );
+        let menu = production
+            .split("fn command_extensions_menu(")
+            .nth(1)
+            .expect("extensions menu exists")
+            .split("\nfn ")
+            .next()
+            .expect("extensions menu has a bounded renderer");
+        assert!(menu.contains(".w(px(400.0))"));
     }
 
     #[test]
-    fn folder_options_keeps_its_footer_visible_and_scrolls_only_the_extensions_page() {
+    fn folder_options_window_keeps_its_footer_visible_and_scrolls_the_active_page() {
         let source = include_str!("chrome.rs");
         let production = source.split("#[cfg(test)]").next().unwrap();
         let dialog = production
-            .split("fn folder_options_dialog(")
+            .split("fn folder_options_window_content(")
             .nth(1)
-            .expect("folder options dialog exists")
+            .expect("folder options window content exists")
             .split("fn about_dialog(")
             .next()
             .expect("folder options dialog has a bounded renderer");
-        assert!(dialog.contains(".h(px(crate::layout::folder_options::DIALOG_HEIGHT.value()))"));
-        assert!(dialog.contains(".id(\"folder-options-page\")\n                        .flex_1()\n                        .min_h_0()\n                        .overflow_hidden()"));
+        assert!(dialog.contains(".id(\"folder-options-window-content\")"));
+        assert!(dialog.contains(".id(\"folder-options-page\")"));
+        assert!(dialog.contains(".overflow_y_scroll()"));
+        assert!(dialog.contains(".track_scroll(&scroll)"));
+        assert!(dialog.contains("cx.stop_propagation()"));
         assert!(dialog.contains(".h(px(crate::layout::folder_options::FOOTER_HEIGHT.value()))\n                        .flex_none()"));
 
         let extensions_page = production
@@ -11578,17 +12381,17 @@ mod tests {
             .split("fn folder_options_general_page(")
             .next()
             .expect("extensions page has a bounded renderer");
-        assert!(extensions_page.contains(".h_full()"));
-        assert!(extensions_page.contains(".min_h_0()"));
-        assert!(extensions_page.contains(".overflow_y_scroll()"));
-        assert!(extensions_page.contains("cx.stop_propagation()"));
+        assert!(!extensions_page.contains(".overflow_y_scroll()"));
     }
 
     #[test]
     fn dynamic_numeric_columns_have_framed_progress_bars_and_aligned_values() {
         let source = include_str!("chrome.rs");
         let production = source.split("#[cfg(test)]").next().unwrap();
-        for selector in ["folder-size-column-", "code-lines-column-"] {
+        for selector in [
+            "folder-size-column-",
+            "details_column_selector(\"code-lines-column\"",
+        ] {
             let start = production.find(selector).expect("dynamic column cell");
             let local = &production[start..production.len().min(start + 4_500)];
             assert!(local.contains(".h_full()"), "{selector} height");
@@ -11597,7 +12400,10 @@ mod tests {
                 "{selector} numeric alignment"
             );
         }
-        for selector in ["folder-size-bar-track-", "code-lines-bar-track-"] {
+        for selector in [
+            "folder-size-bar-track-",
+            "\"code-lines-bar-track\"",
+        ] {
             let start = production.find(selector).expect("progress bar track");
             let local = &production[start..production.len().min(start + 1_500)];
             assert!(local.contains(".border(px(1.0))"), "{selector} frame");
@@ -11615,6 +12421,86 @@ mod tests {
             descriptor.applicability,
             explorer_model::ColumnApplicability::AllEntries
         );
+    }
+
+    #[test]
+    fn extension_detail_cells_follow_registry_identity_order() {
+        let folder = crate::folder_size_column::folder_size_column_descriptor();
+        let rust = crate::code_lines_column::code_lines_column_descriptor();
+        let lock = crate::code_lines_column::lock_owner_column_descriptor();
+        let mut lua = rust.clone();
+        lua.id = explorer_model::ColumnId::Extension {
+            package_id: "lua-tokei-code-lines-column".to_owned(),
+            column_id: crate::code_lines_column::CODE_LINES_COLUMN_ID.to_owned(),
+        };
+        lua.display_name = "Code lines".to_owned();
+
+        let mut registry = explorer_model::ColumnRegistry::built_ins();
+        for descriptor in [&rust, &folder, &lock, &lua] {
+            let (owner, _) = descriptor.id.extension_parts().expect("extension identity");
+            registry
+                .replace_package(owner, [descriptor.clone()])
+                .expect("register extension descriptor");
+        }
+
+        let ids = super::ordered_detail_extension_column_ids(
+            &registry,
+            Some(&folder.id),
+            [&rust.id, &lock.id, &lua.id],
+        );
+        assert_eq!(
+            ids,
+            vec![
+                lua.id.clone(),
+                folder.id.clone(),
+                lock.id.clone(),
+                rust.id.clone(),
+            ]
+        );
+
+        let lua_folder =
+            super::ordered_detail_extension_column_ids(&registry, Some(&folder.id), [&lua.id]);
+        assert_eq!(lua_folder, vec![lua.id.clone(), folder.id.clone()]);
+        let folder_rust =
+            super::ordered_detail_extension_column_ids(&registry, Some(&folder.id), [&rust.id]);
+        assert_eq!(folder_rust, vec![folder.id.clone(), rust.id.clone()]);
+
+        registry.unregister_package("lua-tokei-code-lines-column");
+        let disabled = super::ordered_detail_extension_column_ids(
+            &registry,
+            Some(&folder.id),
+            [&rust.id, &lock.id, &lua.id],
+        );
+        assert_eq!(
+            disabled,
+            vec![folder.id.clone(), lock.id.clone(), rust.id.clone()]
+        );
+        registry
+            .replace_package("lua-tokei-code-lines-column", [lua.clone()])
+            .expect("re-enable Lua descriptor");
+        let reenabled = super::ordered_detail_extension_column_ids(
+            &registry,
+            Some(&folder.id),
+            [&rust.id, &lock.id, &lua.id],
+        );
+        assert_eq!(reenabled, vec![lua.id, folder.id, lock.id, rust.id]);
+    }
+
+    #[test]
+    fn extension_detail_projection_ignores_removed_and_unknown_runtimes() {
+        let folder = crate::folder_size_column::folder_size_column_descriptor();
+        let rust = crate::code_lines_column::code_lines_column_descriptor();
+        let mut registry = explorer_model::ColumnRegistry::built_ins();
+        registry
+            .replace_package(
+                crate::folder_size_column::FOLDER_SIZE_COLUMN_PACKAGE_ID,
+                [folder.clone()],
+            )
+            .expect("register folder descriptor");
+
+        let ids =
+            super::ordered_detail_extension_column_ids(&registry, Some(&folder.id), [&rust.id]);
+        assert_eq!(ids, vec![folder.id]);
     }
 
     #[test]
@@ -11946,5 +12832,34 @@ mod tests {
             assert_eq!(unselected.hover_fill, Some(colors.row_hover));
             assert_eq!(unselected.selection_border, None);
         }
+    }
+
+    #[test]
+    fn bookmark_overflow_preserves_the_order_partition() {
+        assert_eq!(super::bookmark_visible_count(5, 420.0), 2);
+        let ordered = ["first", "second", "third", "fourth", "fifth"];
+        let visible_count = super::bookmark_visible_count(ordered.len(), 420.0);
+        assert_eq!(&ordered[..visible_count], &["first", "second"]);
+        assert_eq!(&ordered[visible_count..], &["third", "fourth", "fifth"]);
+    }
+
+    #[test]
+    fn bookmark_star_is_anchored_to_the_toolbar_left_edge() {
+        let source = include_str!("chrome.rs");
+        let toolbar = source
+            .split("fn bookmark_bar(")
+            .nth(1)
+            .expect("bookmark toolbar exists")
+            .split("fn bookmark_visible_count(")
+            .next()
+            .expect("bookmark toolbar has a bounded implementation");
+        let star = toolbar
+            .split(".id(\"bookmark-star-toggle\")")
+            .nth(1)
+            .expect("bookmark star exists");
+        assert!(star.contains(".absolute()\n                .left(px("));
+        assert!(
+            toolbar.contains(".pl(px(tokens.layout.control_padding_horizontal.value() + 40.0))")
+        );
     }
 }
