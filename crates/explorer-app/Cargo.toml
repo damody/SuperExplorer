@@ -12,6 +12,10 @@ publish.workspace = true
 name = "SuperExplorer"
 path = "src/main.rs"
 
+[[bin]]
+name = "superexplorer-mft-helper"
+path = "src/bin/mft_helper.rs"
+
 [features]
 # Deliberately non-default: enables only the isolated extension-state seam
 # used by the Windows headful Safe Mode gate.

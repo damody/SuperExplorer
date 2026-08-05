@@ -14,6 +14,9 @@
 !ifndef BROKER_EXE
     !error "BROKER_EXE must be provided by build_install.lua"
 !endif
+!ifndef MFT_HELPER_EXE
+    !error "MFT_HELPER_EXE must be provided by build_install.lua"
+!endif
 !ifndef WORKER_EXE
     !error "WORKER_EXE must be provided by build_install.lua"
 !endif
@@ -72,6 +75,7 @@ Section "SuperExplorer" SEC_MAIN
 
     File "${APP_EXE}"
     File /oname=explorer-extension-broker.exe "${BROKER_EXE}"
+    File /oname=superexplorer-mft-helper.exe "${MFT_HELPER_EXE}"
     File /oname=explorer-extension-worker.exe "${WORKER_EXE}"
     File /oname=Everything64.dll "${EVERYTHING_DLL}"
 
@@ -113,6 +117,7 @@ Section "Uninstall"
 
     Delete "$INSTDIR\SuperExplorer.exe"
     Delete "$INSTDIR\explorer-extension-broker.exe"
+    Delete "$INSTDIR\superexplorer-mft-helper.exe"
     Delete "$INSTDIR\explorer-extension-worker.exe"
     Delete "$INSTDIR\Everything64.dll"
     Delete "$INSTDIR\plugins\rust_folder_size_visual_column.dll"
