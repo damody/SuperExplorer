@@ -23,7 +23,7 @@ The UI snapshot must preserve whether a rendered texture came from the thumbnail
 
 The label remains a separate stacked child below the visual region. Selection borders, hit testing, drag behavior, virtualization, and cache admission are unchanged.
 
-The thumbnail host width is derived from the actual spatial cell content width after subtracting horizontal padding. This keeps the image inside the border across DPI scaling and across the grid's existing per-row width adjustment. The host height remains the configured icon size, so the change does not alter row height or scroll geometry.
+The thumbnail host width is the complete realized spatial cell width. It deliberately extends through the row's horizontal padding so the thumbnail can reach the selection border's inner edge; the item boundary remains the final clipping limit. This avoids a fixed visible gutter at every DPI while still following the grid's existing per-row width adjustment. The host height remains the configured icon size, so the change does not alter row height or scroll geometry.
 
 ## Data flow
 
@@ -45,8 +45,8 @@ If provenance is absent or uncertain, the renderer must use the Shell-icon geome
 
 - Unit-test landscape, portrait, and square aspect fitting against the full thumbnail visual region.
 - Unit-test that Shell icons retain the square icon host.
-- Unit-test that the thumbnail region subtracts horizontal cell padding and never exceeds the selection border.
-- Extend the maximum-icon UTIT scenario to assert that the real thumbnail approaches the available horizontal edge while the folder icon remains centered and bounded.
+- Unit-test that the thumbnail region consumes the complete realized cell width and remains bounded by the item border.
+- Extend the maximum-icon UTIT scenario to assert that the real thumbnail reaches the available horizontal edge without a padding-sized gutter while the folder icon remains centered and bounded.
 - Run formatting, focused tests, `cargo check -p explorer-ui`, `cargo build -p explorer-app`, manifest parsing, and strict OpenSpec validation.
 
 ## Out of scope
