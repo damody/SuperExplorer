@@ -13,6 +13,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+const DIRECTORY_MAGIC_V1: &[u8; 8] = b"SECLDIR1";
+
 const PLUGIN_ID: StableIdV1 = StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 6_101);
 const INTERFACE_ID: StableIdV1 = StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 6_102);
 pub const MAX_BATCH: usize = 128;
@@ -121,6 +123,12 @@ fn prune_cache(directory: &Path) {
 }
 
 fn read_cache_from(directory: &Path, path: &str) -> Option<CodeRow> {
+    // A directory's own mtime and size do not represent recursive descendant
+    // contents. Reusing that identity can therefore publish a stale all-language
+    // total after files are added or edited below it.
+    if fs::symlink_metadata(path).ok()?.is_dir() {
+        return None;
+    }
     let (identity, modified_seconds, modified_nanos, source_size) = file_facts(path)?;
     let cache_path = cache_path(directory, &identity);
     let metadata = fs::symlink_metadata(&cache_path).ok()?;
@@ -157,6 +165,9 @@ fn read_cache(path: &str) -> Option<CodeRow> {
 }
 
 fn store_cache_in(directory: &Path, path: &str, row: &CodeRow) {
+    if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir()) {
+        return;
+    }
     let Some((identity, modified_seconds, modified_nanos, source_size)) = file_facts(path) else {
         return;
     };
@@ -385,6 +396,49 @@ fn count_source(file_name: &str, bytes: &[u8]) -> Option<CodeRow> {
     Some(row)
 }
 
+fn count_input(file_name: &str, bytes: &[u8]) -> Option<CodeRow> {
+    if !bytes.starts_with(DIRECTORY_MAGIC_V1) {
+        return count_source(file_name, bytes);
+    }
+    let mut cursor = DIRECTORY_MAGIC_V1.len();
+    let mut aggregate = CodeRow {
+        path: file_name.to_owned(),
+        code: 0,
+        comments: 0,
+        blanks: 0,
+        total: 0,
+    };
+    let mut recognized = false;
+    while cursor < bytes.len() {
+        let name_end = cursor.checked_add(4)?;
+        let name_len = usize::try_from(u32::from_le_bytes(
+            bytes.get(cursor..name_end)?.try_into().ok()?,
+        ))
+        .ok()?;
+        cursor = name_end;
+        let length_end = cursor.checked_add(8)?;
+        let data_len = usize::try_from(u64::from_le_bytes(
+            bytes.get(cursor..length_end)?.try_into().ok()?,
+        ))
+        .ok()?;
+        cursor = length_end;
+        let name_end = cursor.checked_add(name_len)?;
+        let name = std::str::from_utf8(bytes.get(cursor..name_end)?).ok()?;
+        cursor = name_end;
+        let data_end = cursor.checked_add(data_len)?;
+        let data = bytes.get(cursor..data_end)?;
+        cursor = data_end;
+        if let Some(row) = count_source(name, data) {
+            recognized = true;
+            aggregate.code = aggregate.code.saturating_add(row.code);
+            aggregate.comments = aggregate.comments.saturating_add(row.comments);
+            aggregate.blanks = aggregate.blanks.saturating_add(row.blanks);
+            aggregate.total = aggregate.total.saturating_add(row.total);
+        }
+    }
+    recognized.then_some(aggregate)
+}
+
 fn row_value(row: &CodeRow) -> Option<PluginValueV1> {
     let json = format!(
         "{{\"blanks\":{},\"code\":{},\"comments\":{},\"language\":\"Lua/tokei\",\"total\":{}}}",
@@ -401,7 +455,7 @@ impl BatchColumnProviderImplementationV1 for LuaTokeiColumn {
         let mut entries = Vec::with_capacity(context.items.len());
         for item in &context.items {
             let result = read_host_input(&item.input)
-                .and_then(|bytes| count_source(item.file_name.as_str(), &bytes))
+                .and_then(|bytes| count_input(item.file_name.as_str(), &bytes))
                 .and_then(|row| {
                     let code = row.code;
                     row_value(&row).map(|value| {
@@ -561,6 +615,23 @@ mod tests {
     }
 
     #[test]
+    fn directory_pack_sums_every_recognized_language() {
+        let mut packed = DIRECTORY_MAGIC_V1.to_vec();
+        for (name, source) in [
+            ("main.rs", "fn main() {}\n".repeat(1_250)),
+            ("script.js", "const value = 1;\n".repeat(75)),
+        ] {
+            packed.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            packed.extend_from_slice(&(source.len() as u64).to_le_bytes());
+            packed.extend_from_slice(name.as_bytes());
+            packed.extend_from_slice(source.as_bytes());
+        }
+        let row = count_input("mixed-project", &packed).expect("directory aggregate");
+        assert_eq!(row.code, 1_325);
+        assert_eq!(row.total, 1_325);
+    }
+
+    #[test]
     fn persistent_cache_hits_until_file_metadata_changes() {
         let root = std::env::temp_dir().join(format!(
             "lua-tokei-cache-{}-{}",
@@ -586,6 +657,33 @@ mod tests {
         assert_eq!(read_cache_from(&cache, &source_text), Some(row));
         fs::write(&source, "fn main() { println!(\"changed\"); }\n").unwrap();
         assert!(read_cache_from(&cache, &source_text).is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn directory_totals_are_never_reused_from_non_recursive_metadata() {
+        let root = std::env::temp_dir().join(format!(
+            "lua-tokei-directory-cache-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source = root.join("mixed-project");
+        let cache = root.join("cache");
+        fs::create_dir_all(&source).unwrap();
+        let source_text = source.to_string_lossy().into_owned();
+        let row = CodeRow {
+            path: source_text.clone(),
+            code: 1_325,
+            comments: 0,
+            blanks: 0,
+            total: 1_325,
+        };
+        store_cache_in(&cache, &source_text, &row);
+        assert_eq!(read_cache_from(&cache, &source_text), None);
+        assert!(!cache.exists());
         let _ = fs::remove_dir_all(root);
     }
 }

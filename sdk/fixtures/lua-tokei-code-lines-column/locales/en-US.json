@@ -1,1 +1,1 @@
-{"plugin":"lua-tokei-code-lines-column","display_name":"Code lines (Lua/tokei)","description":"Counts language, code, comments and blanks with an attested bundled tool."}
+{"plugin":"lua-tokei-code-lines-column","display_name":"Code lines","description":"Counts language, code, comments and blanks with an attested bundled tool."}

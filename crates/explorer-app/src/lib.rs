@@ -15,9 +15,10 @@
 )]
 
 pub mod application;
-pub mod automation_service;
 pub mod branding;
 mod brokered_service;
+#[cfg(windows)]
+mod mft_size_map;
 mod pointer_capture;
 pub mod session_lifecycle;
 pub mod session_store;

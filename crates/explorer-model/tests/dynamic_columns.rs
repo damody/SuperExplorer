@@ -106,6 +106,25 @@ fn ordered_layout_preserves_width_visibility_and_deterministic_order() {
 }
 
 #[test]
+fn ordered_layout_keeps_name_first_through_restore_and_reorder() {
+    let mut restored = OrderedColumnLayout::restore_entries([
+        (ColumnId::Size.stable_id(), 120, true),
+        (ColumnId::Name.stable_id(), 240, true),
+        (ColumnId::Type.stable_id(), 160, true),
+    ])
+    .unwrap();
+    assert_eq!(restored.entries()[0].id, ColumnId::Name);
+    assert!(!restored.move_before(&ColumnId::Name, Some(&ColumnId::Type)));
+    assert!(restored.move_before(&ColumnId::Type, Some(&ColumnId::Name)));
+    assert_eq!(restored.entries()[0].id, ColumnId::Name);
+    assert_eq!(restored.entries()[1].id, ColumnId::Type);
+
+    restored.reorder_known([ColumnId::Size, ColumnId::Name, ColumnId::Type]);
+    assert_eq!(restored.entries()[0].id, ColumnId::Name);
+    assert_eq!(restored.entries()[1].id, ColumnId::Size);
+}
+
+#[test]
 fn descriptor_validation_rejects_invalid_width_range() {
     let id = ColumnId::extension("org.example.folder-size", "invalid").unwrap();
     let mut descriptor = extension_descriptor(id);
@@ -248,8 +267,8 @@ fn legacy_runtime_migration_preserves_custom_prefix_and_appends_built_ins() {
     assert_eq!(
         &ids[..4],
         &[
-            ColumnId::Size,
             ColumnId::Name,
+            ColumnId::Size,
             ColumnId::Title,
             ColumnId::Type
         ]

@@ -713,9 +713,15 @@ impl BrokeredExplorerService {
             return None;
         };
         let [item] = items.as_slice() else {
-            return items.iter().any(|item| {
-                matches!(item.location, explorer_model::LocationDescriptor::Virtual(_))
-            }).then_some(Err(ExplorerServiceError::Internal));
+            return items
+                .iter()
+                .any(|item| {
+                    matches!(
+                        item.location,
+                        explorer_model::LocationDescriptor::Virtual(_)
+                    )
+                })
+                .then_some(Err(ExplorerServiceError::Internal));
         };
         let (record, entry) = self.virtual_entry(&item.location)?;
         if entry.is_container || entry.size > MAX_VIRTUAL_MATERIALIZATION_BYTES_V1 {
@@ -742,10 +748,7 @@ impl BrokeredExplorerService {
                 let nonce = VIRTUAL_MATERIALIZATION_NONCE_V1.fetch_add(1, Ordering::Relaxed);
                 let root = std::env::temp_dir()
                     .join("SuperExplorer")
-                    .join(format!(
-                        "virtual-drag-{}-{nonce:016x}",
-                        std::process::id()
-                    ));
+                    .join(format!("virtual-drag-{}-{nonce:016x}", std::process::id()));
                 std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
                 let target = root.join(&entry.name);
                 let mut file = std::fs::OpenOptions::new()
@@ -758,12 +761,13 @@ impl BrokeredExplorerService {
                     if context.cancellation.is_cancelled() {
                         return Err("virtual drag cancelled".to_owned());
                     }
-                    let input = explorer_extension_host::open_virtual_container_input_with_cancellation_v1(
-                        &record.path,
-                        record.generation,
-                        Some(context.cancellation.clone()),
-                    )
-                    .map_err(|error| error.to_string())?;
+                    let input =
+                        explorer_extension_host::open_virtual_container_input_with_cancellation_v1(
+                            &record.path,
+                            record.generation,
+                            Some(context.cancellation.clone()),
+                        )
+                        .map_err(|error| error.to_string())?;
                     let outcome = runtime
                         .lock()
                         .map_err(|_| "virtual provider closed".to_owned())?
@@ -775,7 +779,8 @@ impl BrokeredExplorerService {
                                 source_generation: record.generation,
                                 entry_id: entry.id,
                                 offset,
-                                maximum_bytes: explorer_extension_api::MAX_VIRTUAL_READ_BYTES_V1 as u32,
+                                maximum_bytes: explorer_extension_api::MAX_VIRTUAL_READ_BYTES_V1
+                                    as u32,
                                 reserved: 0,
                                 secret: record.secret.mint(),
                             },
@@ -803,12 +808,23 @@ impl BrokeredExplorerService {
                 Ok((root, target))
             })();
             let Ok((root, target)) = result else {
-                let _ = sender.send(virtual_failed(&context, "Unable to prepare the archive item for dragging."));
+                let _ = sender.send(virtual_failed(
+                    &context,
+                    "Unable to prepare the archive item for dragging.",
+                ));
                 return;
             };
-            if retained.0.lock().map(|mut roots| roots.push(root.clone())).is_err() {
+            if retained
+                .0
+                .lock()
+                .map(|mut roots| roots.push(root.clone()))
+                .is_err()
+            {
                 let _ = std::fs::remove_dir_all(root);
-                let _ = sender.send(virtual_failed(&context, "Unable to retain the dragged archive item."));
+                let _ = sender.send(virtual_failed(
+                    &context,
+                    "Unable to retain the dragged archive item.",
+                ));
                 return;
             }
             let materialized = explorer_model::ItemDescriptor {
@@ -828,7 +844,10 @@ impl BrokeredExplorerService {
             )
             .is_err()
             {
-                let _ = sender.send(virtual_failed(&context, "Unable to start the archive item drag."));
+                let _ = sender.send(virtual_failed(
+                    &context,
+                    "Unable to start the archive item drag.",
+                ));
             }
         });
         Some(Ok(()))
@@ -871,26 +890,21 @@ impl BrokeredExplorerService {
                         .get(&virtual_location.container_identity)
                         .cloned()
                 }) {
-                    Some(record) if record.generation == virtual_location.container_generation => record,
+                    Some(record) if record.generation == virtual_location.container_generation => {
+                        record
+                    }
                     Some(record)
-                        if self
-                            .virtual_refresh_remaps
-                            .lock()
-                            .ok()
-                            .and_then(|remaps| {
-                                let mut generation = virtual_location.container_generation;
-                                for _ in 0..=remaps.len() {
-                                    if generation == record.generation {
-                                        return Some(generation);
-                                    }
-                                    generation = *remaps.get(&(
-                                        virtual_location.container_identity,
-                                        generation,
-                                    ))?;
+                        if self.virtual_refresh_remaps.lock().ok().and_then(|remaps| {
+                            let mut generation = virtual_location.container_generation;
+                            for _ in 0..=remaps.len() {
+                                if generation == record.generation {
+                                    return Some(generation);
                                 }
-                                None
-                            })
-                            == Some(record.generation) =>
+                                generation = *remaps
+                                    .get(&(virtual_location.container_identity, generation))?;
+                            }
+                            None
+                        }) == Some(record.generation) =>
                     {
                         record
                     }

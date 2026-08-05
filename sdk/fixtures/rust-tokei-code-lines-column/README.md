@@ -8,10 +8,12 @@ limited to 8 MiB and invalid UTF-8, unknown extensions, and oversized inputs
 return `UNSUPPORTED`, never a fake zero.
 
 The structured value contains `language`, `code`, `comments`, `blanks`, and
-`total`; the stable sort key is the exact unsigned `code` count.
+`total`; the stable sort key is the exact unsigned `code` count. Directory
+inputs aggregate all supported files by language, select the greatest code
+sum with an ascending-name tie break, and expose only that main language.
 
 Successful results are persisted globally under
-`%LOCALAPPDATA%/RustGpuiExplorer/cache/code-lines/rust-tokei-code-lines-column/v1`.
+`%LOCALAPPDATA%/RustGpuiExplorer/cache/code-lines/rust-tokei-code-lines-column/v2`.
 The host supplies an opaque canonical-file identity, modification timestamp,
 and file size. An exact metadata match returns the cached result before the
 plugin reads or analyzes the input stream; changed metadata, corrupt records,
@@ -19,10 +21,10 @@ unsupported files, and errors are cache misses and are never stored.
 
 The DLL registers two linked contributions: the `COLUMN` contribution owns the
 batch provider, while the `GPUI_RENDERER` contribution owns the public
-`VisualColumnImplementationV1` renderer. The renderer draws the exact code
-count, a bar proportional to the largest sibling U64 value, and (when the host
-setting contains `comments`) a detail line with language, comments, blanks,
-and total. Rendering is data-only and does not perform I/O.
+`VisualColumnImplementationV1` renderer. The `Main code lines` renderer draws
+`Language: N` with comma grouping, such as `Rust: 1,250`, without a
+proportional bar. Optional detail shows the selected language's comments,
+blanks, and total. Rendering is data-only and does not perform I/O.
 
 Build and test from this directory using Cargo's standard local registry cache.
 `Cargo.toml` is the dependency-version source of truth, and no third-party

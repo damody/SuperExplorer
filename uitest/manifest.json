@@ -401,6 +401,41 @@
       ]
     },
     {
+      "id": "icon-view-visual-loading-headful",
+      "description": "Switch through Explorer-style extra-large, large, medium, small, and tile views; require real Shell icons or image thumbnails and verify newly realized scrolled items load.",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_icon_view_visual_loading.ps1", "-SkipBuild", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 180,
+      "prerequisites": [{"kind": "windows"}, {"kind": "interactive_desktop"}],
+      "exclusive_resources": ["gui", "cursor"],
+      "required_artifacts": ["report.json", "extra-large.png", "maximum-folder.png", "large.png", "medium.png", "small.png", "tiles.png", "scrolled-icon.png"],
+      "covers": [
+        "fix-icon-view-shell-thumbnail-loading/icon-view-visual-loading/*",
+        "fit-maximum-thumbnails-to-cell-edges/thumbnail-edge-fit-presentation/*"
+      ]
+    },
+    {
+      "id": "maximum-folder-icon-fallback-regression",
+      "description": "Verify maximum folder zoom prefers exact or largest compatible Windows Shell pixels and keeps one bounded real-item recovery request after an exact shared-base failure.",
+      "suites": ["quick", "full", "visual"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-ui", "--lib", "maximum_folder_icon", "--locked", "--", "--nocapture", "--test-threads=1"],
+      "timeout_seconds": 300,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
+      "covers": ["fix-icon-view-shell-thumbnail-loading/icon-view-visual-loading/maximum-folder-zoom-prefers-compatible-shell-pixels"]
+    },
+    {
+      "id": "thumbnail-edge-fit-regression",
+      "description": "Verify thumbnail provenance and aspect-preserving landscape, portrait, square, DPI-adjusted, and Shell-icon geometry.",
+      "suites": ["quick", "full", "visual"],
+      "program": "cargo.exe",
+      "arguments": ["test", "-p", "explorer-ui", "--lib", "thumbnail_edge_fit", "--locked", "--", "--nocapture", "--test-threads=1"],
+      "timeout_seconds": 300,
+      "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
+      "covers": ["fit-maximum-thumbnails-to-cell-edges/thumbnail-edge-fit-presentation/*"]
+    },
+    {
       "id": "visual-reference-capture",
       "description": "擷取固定尺寸、明亮配色、真實資料夾的視覺證據。",
       "suites": ["visual"],
@@ -1181,7 +1216,7 @@
     },
     {
       "id": "folder-options-extensions-scroll-escape",
-      "description": "Open Folder Options, keep its footer reachable, genuinely wheel-scroll the Extensions list, and close the modal with Escape.",
+      "description": "Open Folder Options in one modeless native window, keep its owner interactive and draft stable on repeated open, wheel-scroll only its right-side scrollbar, and close it with Escape.",
       "suites": ["full", "visual"],
       "program": "powershell.exe",
       "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_folder_options_extensions_scroll_escape.ps1", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
@@ -1191,7 +1226,8 @@
         {"kind": "interactive_desktop"},
         {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
       ],
-      "exclusive_resources": ["gui", "cursor"],
+      "exclusive_resources": ["gui", "cursor", "explorer"],
+      "covers": ["folder-options-dedicated-window/folder-options-window/*"],
       "required_artifacts": ["report.json", "folder-options-before-scroll.png", "folder-options-after-scroll.png", "folder-options-after-escape.png"]
     },
     {
@@ -1830,6 +1866,13 @@
       "arguments":["-NoProfile","-ExecutionPolicy","Bypass","-File","{workspace_root}\\scripts\\run_extension_surfaces_contract.ps1"],
       "timeout_seconds":300,"prerequisites":[{"kind":"windows"},{"kind":"command","name":"cargo.exe"}],
       "covers":["build-extensible-plugin-platform/source-example-plugin-suite/folder-size-map-view-example","build-extensible-plugin-platform/source-example-plugin-suite/lua-bulk-folder-example"]
+    },
+    {
+      "id":"bookmark-toolbar-headful","description":"驗證正式程式的書籤星號切換、Lua 圖示、工具列、More Bookmarks 溢位與管理員，並保存實機截圖。","suites":["full","visual"],"program":"powershell.exe",
+      "arguments":["-Sta","-NoProfile","-ExecutionPolicy","Bypass","-File","{workspace_root}\\scripts\\smoke_bookmark_toolbar.ps1","-OutputDirectory","{evidence_dir}","-SkipBuild"],
+      "timeout_seconds":120,"prerequisites":[{"kind":"windows"},{"kind":"interactive_desktop"},{"kind":"path","path":"{workspace_root}\\target\\debug\\SuperExplorer.exe"}],"exclusive_resources":["gui","cursor","explorer"],
+      "covers":["add-bookmark-toolbar-lua-commands/bookmark-toolbar/型別化目標啟用","add-bookmark-toolbar-lua-commands/bookmark-toolbar/建立與管理書籤","add-bookmark-toolbar-lua-commands/bookmark-toolbar/持久化型別化書籤","add-bookmark-toolbar-lua-commands/bookmark-toolbar/書籤工具列與型別圖示","add-bookmark-toolbar-lua-commands/on-demand-lua-bookmarks/lua-書籤的受限-host-邊界","add-bookmark-toolbar-lua-commands/on-demand-lua-bookmarks/不再執行資料夾自動化腳本","add-bookmark-toolbar-lua-commands/on-demand-lua-bookmarks/受限的按需-lua-書籤執行"],
+      "required_artifacts":["report.json","bookmark-context-menu.png","bookmark-star-on.png","bookmark-star-off.png","bookmark-toolbar.png","bookmark-overflow.png","bookmark-manager.png"]
     },
     {
       "id":"rust-7z-virtual-folder-headful","description":"Open plain and AES 7z containers in the production app and verify navigation, breadcrumb/history, preview, drag-out, rename, delete, whole-container undo, and password non-persistence.","suites":["full","visual"],"program":"powershell.exe",
