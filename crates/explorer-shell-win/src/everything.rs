@@ -22,6 +22,14 @@ type GetDword = unsafe extern "system" fn() -> u32;
 type GetPath = unsafe extern "system" fn(u32, *mut u16, u32) -> u32;
 type IsResult = unsafe extern "system" fn(u32) -> i32;
 type Reset = unsafe extern "system" fn();
+type GetResultSize = unsafe extern "system" fn(u32, *mut i64) -> i32;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IndexedFolderEntryV1 {
+    pub path: PathBuf,
+    pub bytes: u64,
+    pub is_directory: bool,
+}
 
 pub(crate) struct EverythingProvider {
     _library: Library,
@@ -33,6 +41,7 @@ pub(crate) struct EverythingProvider {
     get_num_results: GetDword,
     get_result_path: GetPath,
     is_folder_result: IsResult,
+    get_result_size: GetResultSize,
     is_db_loaded: unsafe extern "system" fn() -> i32,
     get_target_machine: GetDword,
     get_last_error: GetDword,
@@ -78,6 +87,7 @@ impl EverythingProvider {
                 get_num_results: symbol!("Everything_GetNumResults", GetDword),
                 get_result_path: symbol!("Everything_GetResultFullPathNameW", GetPath),
                 is_folder_result: symbol!("Everything_IsFolderResult", IsResult),
+                get_result_size: symbol!("Everything_GetResultSize", GetResultSize),
                 is_db_loaded: symbol!("Everything_IsDBLoaded", unsafe extern "system" fn() -> i32),
                 get_target_machine: symbol!("Everything_GetTargetMachine", GetDword),
                 get_last_error: symbol!("Everything_GetLastError", GetDword),
@@ -103,6 +113,97 @@ impl EverythingProvider {
     ) -> Result<(), String> {
         query_provider(self, root, expression, cancellation, deliver)
     }
+}
+
+/// Reads the same bounded path/size/kind record shape consumed by the shared
+/// folder snapshot service. Results are validated against the live filesystem;
+/// any stale, escaped, or reparse entry rejects the entire accelerated result.
+pub fn query_folder_index(
+    root: &Path,
+    max_entries: usize,
+    cancelled: impl Fn() -> bool,
+) -> Result<Vec<IndexedFolderEntryV1>, String> {
+    let mut provider = EverythingProvider::open_adjacent()?;
+    query_folder_index_provider(&mut provider, root, max_entries, cancelled)
+}
+
+fn query_folder_index_provider(
+    provider: &mut impl EverythingApi,
+    root: &Path,
+    max_entries: usize,
+    cancelled: impl Fn() -> bool,
+) -> Result<Vec<IndexedFolderEntryV1>, String> {
+    const PAGE: u32 = 4_096;
+    const REQUEST_FULL_PATH_AND_SIZE: u32 = 0x0000_0004 | 0x0000_0010;
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|_| "Everything root is unavailable".to_owned())?;
+    let search = format!("path:\"{}\"", escape(&canonical_root.to_string_lossy()));
+    let wide = search.encode_utf16().chain([0]).collect::<Vec<_>>();
+    let mut offset = 0_u32;
+    let mut output = Vec::new();
+    loop {
+        if cancelled() {
+            return Err("cancelled".to_owned());
+        }
+        provider.reset();
+        provider.set_search(&wide);
+        provider.set_offset(offset);
+        provider.set_max(PAGE);
+        provider.set_request_flags(REQUEST_FULL_PATH_AND_SIZE);
+        if !EverythingApi::query(provider) {
+            return Err(format!(
+                "Everything IPC query failed ({})",
+                provider.last_error()
+            ));
+        }
+        let count = provider.result_count();
+        for index in 0..count {
+            if output.len() >= max_entries {
+                return Err("Everything result exceeds folder snapshot node limit".to_owned());
+            }
+            let path = provider
+                .result_path(index)
+                .ok_or_else(|| "Everything returned an invalid path".to_owned())?;
+            if !path_within_scope(&path, &canonical_root) || path == canonical_root {
+                continue;
+            }
+            let metadata = std::fs::symlink_metadata(&path)
+                .map_err(|_| "Everything result is stale".to_owned())?;
+            if metadata.file_type().is_symlink() || metadata_is_reparse(&metadata) {
+                return Err("Everything subtree contains a reparse point".to_owned());
+            }
+            let is_directory = provider.result_is_folder(index);
+            if is_directory != metadata.is_dir() {
+                return Err("Everything result kind is stale".to_owned());
+            }
+            let indexed_size = provider.result_size(index);
+            let bytes = if is_directory { 0 } else { metadata.len() };
+            if !is_directory && indexed_size != Some(bytes) {
+                return Err("Everything result size is stale".to_owned());
+            }
+            output.push(IndexedFolderEntryV1 {
+                path,
+                bytes,
+                is_directory,
+            });
+        }
+        if count < PAGE {
+            return Ok(output);
+        }
+        offset = offset.saturating_add(count);
+    }
+}
+
+#[cfg(windows)]
+fn metadata_is_reparse(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+    metadata.file_attributes() & 0x400 != 0
+}
+
+#[cfg(not(windows))]
+fn metadata_is_reparse(_: &std::fs::Metadata) -> bool {
+    false
 }
 
 #[cfg(test)]
@@ -134,6 +235,7 @@ trait EverythingApi {
     fn result_count(&self) -> u32;
     fn result_path(&self, index: u32) -> Option<PathBuf>;
     fn result_is_folder(&self, index: u32) -> bool;
+    fn result_size(&self, index: u32) -> Option<u64>;
     fn last_error(&self) -> u32;
 }
 
@@ -171,6 +273,11 @@ impl EverythingApi for EverythingProvider {
     }
     fn result_is_folder(&self, index: u32) -> bool {
         unsafe { (self.is_folder_result)(index) != 0 }
+    }
+    fn result_size(&self, index: u32) -> Option<u64> {
+        let mut size = 0_i64;
+        (unsafe { (self.get_result_size)(index, &raw mut size) != 0 } && size >= 0)
+            .then_some(size as u64)
     }
     fn last_error(&self) -> u32 {
         unsafe { (self.get_last_error)() }
@@ -403,6 +510,9 @@ mod tests {
         }
         fn result_is_folder(&self, _index: u32) -> bool {
             false
+        }
+        fn result_size(&self, _index: u32) -> Option<u64> {
+            Some(0)
         }
         fn last_error(&self) -> u32 {
             55

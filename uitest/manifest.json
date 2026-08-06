@@ -1337,6 +1337,22 @@
       "required_artifacts": ["report.json"]
     },
     {
+      "id": "address-edit-lifecycle-headful",
+      "description": "Use genuine Windows pointer and keyboard input to prove address editing survives its entry release, retains Explorer cancel/submit shortcuts, and coexists with outside-release details-column drag cleanup.",
+      "suites": ["quick", "full", "interop", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_address_edit_lifecycle.ps1", "-OutputDirectory", "{evidence_dir}", "-SkipBuild"],
+      "timeout_seconds": 120,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "explorer"],
+      "covers": ["restore-address-bar-edit-mode/address-bar-edit-lifecycle/*"],
+      "required_artifacts": ["report.json", "address-edit-lifecycle.png"]
+    },
+    {
       "id": "complete-shell-context-menu-direct",
       "description": "Capture every real ordinary and Shift menu entry for background, file, folder, and multi-selection targets; require unique bounded actionable IDs and classify each as application-owned or provider-owned.",
       "suites": ["quick", "full", "interop", "visual"],
@@ -1819,6 +1835,30 @@
         "report.json",
         "code-lines.png"
       ]
+    },
+    {
+      "id": "details-column-live-reorder-headful",
+      "description": "Use DPI-aware physical pointer input to prove an adjacent right/left Details-column drag updates both header and data cells before mouse-up, then commits on release.",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": [
+        "-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+        "{workspace_root}\\scripts\\smoke_tokei_plugin_headful.ps1",
+        "-Executable", "{workspace_root}\\target\\debug\\SuperExplorer.exe",
+        "-PluginDll", "{workspace_root}\\sdk\\fixtures\\rust-tokei-code-lines-column\\target\\x86_64-pc-windows-msvc\\debug\\rust_tokei_code_lines_column.dll",
+        "-InitialPath", "{workspace_root}\\sdk\\fixtures\\rust-tokei-code-lines-column\\samples",
+        "-OutputDirectory", "{evidence_dir}", "-DetailsColumnDragMode"
+      ],
+      "timeout_seconds": 120,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"},
+        {"kind": "path", "path": "{workspace_root}\\sdk\\fixtures\\rust-tokei-code-lines-column\\target\\x86_64-pc-windows-msvc\\debug\\rust_tokei_code_lines_column.dll"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "explorer"],
+      "covers": ["live-details-column-drag-preview/details-column-live-reordering/*"],
+      "required_artifacts": ["report.json", "column-drag-live-right.png", "column-drag-live-left.png"]
     },
     {
       "id": "rust-lock-owner-headful",

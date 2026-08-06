@@ -10,7 +10,7 @@ use std::{
     rc::Rc,
     sync::{
         Arc, Condvar, Mutex, OnceLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
         mpsc,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -719,6 +719,8 @@ struct ApplicationVisualColumnRuntimeV1 {
     cached_results: Mutex<Vec<explorer_ui::folder_size_column::FolderSizeResultV1>>,
     cache: Arc<Mutex<HostExtensionColumnCacheV1<FolderSizeCachedValueV1>>>,
     renderer: AsyncCellRendererV1,
+    backend_status: Arc<AtomicU8>,
+    backend_active: Arc<AtomicBool>,
 }
 
 const HOST_EXTENSION_COLUMN_CACHE_CAPACITY_V1: usize = 16_384;
@@ -749,6 +751,7 @@ fn host_extension_column_cache_key(path: &Path) -> Option<HostExtensionColumnCac
 struct HostExtensionColumnCacheV1<T> {
     values: HashMap<HostExtensionColumnCacheKeyV1, (PathBuf, u64, T)>,
     directory_epochs: HashMap<PathBuf, u64>,
+    persistent_namespace: Option<&'static str>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -763,11 +766,24 @@ impl<T> Default for HostExtensionColumnCacheV1<T> {
         Self {
             values: HashMap::new(),
             directory_epochs: HashMap::new(),
+            persistent_namespace: None,
         }
     }
 }
 
-impl<T: Clone> HostExtensionColumnCacheV1<T> {
+trait HostExtensionColumnCacheValueV1: Clone {
+    fn encode_cache_value(&self) -> serde_json::Value;
+    fn decode_cache_value(value: &serde_json::Value) -> Option<Self>;
+}
+
+impl<T: HostExtensionColumnCacheValueV1> HostExtensionColumnCacheV1<T> {
+    fn persistent(namespace: &'static str) -> Self {
+        Self {
+            persistent_namespace: Some(namespace),
+            ..Self::default()
+        }
+    }
+
     fn admission(&self, path: &Path) -> Option<HostExtensionColumnCacheAdmissionV1> {
         let key = host_extension_column_cache_key(path)?;
         let directory = key.canonical_path.parent()?.to_path_buf();
@@ -786,6 +802,7 @@ impl<T: Clone> HostExtensionColumnCacheV1<T> {
                 (directory == &admission.directory && *epoch == admission.directory_epoch)
                     .then(|| value.clone())
             })
+            .or_else(|| self.read_persistent(admission))
     }
 
     fn insert(&mut self, admission: HostExtensionColumnCacheAdmissionV1, value: T) -> bool {
@@ -804,9 +821,16 @@ impl<T: Clone> HostExtensionColumnCacheV1<T> {
             self.values.clear();
         }
         self.values.insert(
-            admission.key,
-            (admission.directory, admission.directory_epoch, value),
+            admission.key.clone(),
+            (
+                admission.directory.clone(),
+                admission.directory_epoch,
+                value,
+            ),
         );
+        if let Some((_, _, value)) = self.values.get(&admission.key) {
+            self.write_persistent(&admission, value);
+        }
         true
     }
 
@@ -818,11 +842,93 @@ impl<T: Clone> HostExtensionColumnCacheV1<T> {
         *epoch = epoch.wrapping_add(1);
         self.values.retain(|_, (scope, _, _)| scope != &directory);
     }
+
+    fn persistent_path(&self, key: &HostExtensionColumnCacheKeyV1) -> Option<PathBuf> {
+        let namespace = self.persistent_namespace?;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        let root = std::env::var_os("LOCALAPPDATA").map(PathBuf::from)?;
+        Some(
+            root.join("SuperExplorer")
+                .join("data-column-cache")
+                .join("v1")
+                .join(namespace)
+                .join(format!("{:016x}.json", hasher.finish())),
+        )
+    }
+
+    fn read_persistent(&self, admission: &HostExtensionColumnCacheAdmissionV1) -> Option<T> {
+        let path = self.persistent_path(&admission.key)?;
+        let metadata = fs::symlink_metadata(&path).ok()?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 16 * 1024 {
+            return None;
+        }
+        let record: serde_json::Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
+        (record.get("schema")?.as_u64()? == 1
+            && record.get("path")?.as_str()? == admission.key.canonical_path.to_string_lossy()
+            && record.get("modified_seconds")?.as_u64()? == admission.key.modified_seconds
+            && record.get("modified_nanos")?.as_u64()? == u64::from(admission.key.modified_nanos))
+        .then(|| T::decode_cache_value(record.get("value")?))?
+    }
+
+    fn write_persistent(&self, admission: &HostExtensionColumnCacheAdmissionV1, value: &T) {
+        let Some(destination) = self.persistent_path(&admission.key) else {
+            return;
+        };
+        let Some(directory) = destination.parent() else {
+            return;
+        };
+        if fs::create_dir_all(directory).is_err() {
+            return;
+        }
+        let record = serde_json::json!({
+            "schema": 1,
+            "path": admission.key.canonical_path.to_string_lossy(),
+            "modified_seconds": admission.key.modified_seconds,
+            "modified_nanos": admission.key.modified_nanos,
+            "value": value.encode_cache_value(),
+        });
+        let Ok(bytes) = serde_json::to_vec(&record) else {
+            return;
+        };
+        if bytes.len() > 16 * 1024 {
+            return;
+        }
+        let temporary = destination.with_extension(format!("{}.tmp", std::process::id()));
+        if fs::write(&temporary, bytes).is_ok() {
+            let _ = fs::remove_file(&destination);
+            if fs::rename(&temporary, &destination).is_err() {
+                let _ = fs::remove_file(temporary);
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct FolderSizeCachedValueV1 {
     exact_bytes: u64,
+}
+
+impl HostExtensionColumnCacheValueV1 for FolderSizeCachedValueV1 {
+    fn encode_cache_value(&self) -> serde_json::Value {
+        serde_json::json!({ "exact_bytes": self.exact_bytes })
+    }
+
+    fn decode_cache_value(value: &serde_json::Value) -> Option<Self> {
+        Some(Self {
+            exact_bytes: value.get("exact_bytes")?.as_u64()?,
+        })
+    }
+}
+
+impl HostExtensionColumnCacheValueV1 for u64 {
+    fn encode_cache_value(&self) -> serde_json::Value {
+        (*self).into()
+    }
+
+    fn decode_cache_value(value: &serde_json::Value) -> Option<Self> {
+        value.as_u64()
+    }
 }
 
 fn partition_folder_size_cache_hits(
@@ -955,8 +1061,9 @@ fn cancel_folder_size_context(
 
 impl ApplicationVisualColumnRuntimeV1 {
     fn start(
-        mut measure: explorer_extension_host::SinglePluginVisualMeasureRuntimeV1,
+        _measure: explorer_extension_host::SinglePluginVisualMeasureRuntimeV1,
         renderer: explorer_extension_host::SinglePluginVisualRenderRuntimeV1,
+        snapshot_service: Arc<Mutex<crate::folder_size_service::FolderSizeServiceV1>>,
     ) -> Result<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1, Error> {
         let pending = Arc::new((
             Mutex::new(PendingFolderSizeWorkV1::default()),
@@ -965,8 +1072,13 @@ impl ApplicationVisualColumnRuntimeV1 {
         let worker_pending = pending.clone();
         let cache = Arc::new(Mutex::new(HostExtensionColumnCacheV1::<
             FolderSizeCachedValueV1,
-        >::default()));
+        >::persistent("folder-size")));
         let worker_cache = Arc::clone(&cache);
+        let worker_snapshot_service = Arc::clone(&snapshot_service);
+        let backend_status = Arc::new(AtomicU8::new(0));
+        let backend_active = Arc::new(AtomicBool::new(false));
+        let worker_backend_status = Arc::clone(&backend_status);
+        let worker_backend_active = Arc::clone(&backend_active);
         let (result_tx, result_rx) =
             mpsc::sync_channel::<explorer_ui::folder_size_column::FolderSizeResultV1>(1_024);
         std::thread::Builder::new()
@@ -993,6 +1105,19 @@ impl ApplicationVisualColumnRuntimeV1 {
                             finish_folder_size_request(&worker_pending, &request);
                             continue;
                         }
+                        if !fs::metadata(&request.path).is_ok_and(folder_size_candidate) {
+                            finish_folder_size_request(&worker_pending, &request);
+                            let _ = result_tx.send(
+                                explorer_ui::folder_size_column::FolderSizeResultV1 {
+                                    context: request.context,
+                                    item_id: request.item_id,
+                                    exact_bytes: None,
+                                    partial: false,
+                                    error: None,
+                                },
+                            );
+                            continue;
+                        }
                         let cache_admission = worker_cache
                             .lock()
                             .ok()
@@ -1003,31 +1128,68 @@ impl ApplicationVisualColumnRuntimeV1 {
                                 .ok()
                                 .and_then(|cache| cache.get(admission))
                         });
+                        worker_backend_active.store(true, Ordering::Release);
                         let measured = if let Some(cached) = cached {
+                            worker_backend_status.store(1, Ordering::Release);
                             Ok(explorer_extension_ui_api::FolderSizeMeasureResultV1 {
                                 exact_bytes: cached.exact_bytes,
                                 partial: false,
                                 error: None.into(),
                             })
                         } else {
-                            measure.measure_folder_size(
-                                FOLDER_SIZE_CONTRIBUTION_ID_V1,
-                                explorer_extension_ui_api::FolderSizeMeasureRequestV1 {
-                                    filesystem_path: request
-                                        .path
-                                        .to_string_lossy()
-                                        .into_owned()
+                            worker_snapshot_service
+                                .lock()
+                                .map_err(|_| anyhow::anyhow!("folder snapshot service poisoned"))
+                                .and_then(|mut service| {
+                                    service
+                                        .aggregate_or_scan(
+                                            &request.path,
+                                            request.context.generation.value(),
+                                            || {
+                                                folder_size_request_cancelled(
+                                                    &worker_pending,
+                                                    &request,
+                                                )
+                                            },
+                                            |method| {
+                                                worker_backend_status.store(
+                                                    match method {
+                                                        crate::folder_size_service::SnapshotMethodV1::Mft => 2,
+                                                        crate::folder_size_service::SnapshotMethodV1::Recursive => 3,
+                                                        crate::folder_size_service::SnapshotMethodV1::Everything => 2,
+                                                    },
+                                                    Ordering::Release,
+                                                );
+                                            },
+                                        )
+                                        .map_err(Error::msg)
+                                })
+                                .map(|(snapshot, service_cache_hit)| {
+                                    if service_cache_hit {
+                                        worker_backend_status.store(1, Ordering::Release);
+                                    } else {
+                                        worker_backend_status.store(
+                                            match snapshot.method {
+                                                crate::folder_size_service::SnapshotMethodV1::Mft => 2,
+                                                crate::folder_size_service::SnapshotMethodV1::Recursive => 3,
+                                                crate::folder_size_service::SnapshotMethodV1::Everything => 2,
+                                            },
+                                            Ordering::Release,
+                                        );
+                                    }
+                                    explorer_extension_ui_api::FolderSizeMeasureResultV1 {
+                                    exact_bytes: snapshot.aggregate.recursive_bytes,
+                                    partial: snapshot.status
+                                        != crate::folder_size_service::SnapshotStatusV1::Complete,
+                                    error: snapshot
+                                        .diagnostic
+                                        .clone()
+                                        .map(abi_stable::std_types::RString::from)
                                         .into(),
-                                    max_entries: 100_000,
-                                    max_depth: 128,
-                                    // This callback already runs off the GPUI thread. A
-                                    // foreground budget must never terminate the scan:
-                                    // let it finish and populate the plugin cache even
-                                    // when navigation makes its UI result stale.
-                                    deadline_millis: 0,
-                                },
-                            )
+                                }
+                                })
                         };
+                        worker_backend_active.store(false, Ordering::Release);
                         finish_folder_size_request(&worker_pending, &request);
                         if folder_size_request_cancelled(&worker_pending, &request) {
                             continue;
@@ -1040,6 +1202,9 @@ impl ApplicationVisualColumnRuntimeV1 {
                             ),
                             Err(error) => (None, true, Some(error.to_string())),
                         };
+                        if exact_bytes.is_none() {
+                            worker_backend_status.store(4, Ordering::Release);
+                        }
                         if let (Some(admission), Some(exact_bytes)) = (cache_admission, exact_bytes)
                             && !partial
                             && error.is_none()
@@ -1070,12 +1235,28 @@ impl ApplicationVisualColumnRuntimeV1 {
             results: Mutex::new(result_rx),
             cached_results: Mutex::new(Vec::new()),
             cache,
+            backend_status,
+            backend_active,
             renderer: AsyncCellRendererV1::start(
                 renderer,
                 FOLDER_SIZE_RENDERER_CONTRIBUTION_ID_V1,
             )?,
         }))
     }
+}
+
+#[cfg(windows)]
+fn folder_size_candidate(metadata: fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+    const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+    const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
+    metadata.is_dir()
+        && metadata.file_attributes() & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM) == 0
+}
+
+#[cfg(not(windows))]
+fn folder_size_candidate(metadata: fs::Metadata) -> bool {
+    metadata.is_dir()
 }
 
 impl explorer_ui::folder_size_column::VisualColumnRuntimePortV1
@@ -1085,11 +1266,30 @@ impl explorer_ui::folder_size_column::VisualColumnRuntimePortV1
         explorer_ui::folder_size_column::VisualColumnConfigV1::default()
     }
 
+    fn backend_status(
+        &self,
+    ) -> (
+        explorer_ui::folder_size_column::FolderSizeBackendStatusV1,
+        bool,
+    ) {
+        let status = match self.backend_status.load(Ordering::Acquire) {
+            1 => explorer_ui::folder_size_column::FolderSizeBackendStatusV1::HostCache,
+            2 => explorer_ui::folder_size_column::FolderSizeBackendStatusV1::MftService,
+            4 => explorer_ui::folder_size_column::FolderSizeBackendStatusV1::MftUnavailable,
+            _ => explorer_ui::folder_size_column::FolderSizeBackendStatusV1::Idle,
+        };
+        (status, self.backend_active.load(Ordering::Acquire))
+    }
+
     fn submit_folder_size_requests(
         &self,
         requests: Vec<explorer_ui::folder_size_column::FolderSizeRequestV1>,
     ) {
         let (hits, misses) = partition_folder_size_cache_hits(&self.cache, requests);
+        if !hits.is_empty() {
+            self.backend_status.store(1, Ordering::Release);
+            self.backend_active.store(false, Ordering::Release);
+        }
         if let Ok(mut cached_results) = self.cached_results.lock() {
             cached_results.extend(hits);
         }
@@ -1175,6 +1375,43 @@ struct CodeLinesCachedValueV1 {
     error: Option<String>,
 }
 
+impl HostExtensionColumnCacheValueV1 for CodeLinesCachedValueV1 {
+    fn encode_cache_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "value": self.value.as_ref().map(|value| serde_json::json!({
+                "language": value.language,
+                "code": value.code,
+                "comments": value.comments,
+                "blanks": value.blanks,
+                "total": value.total,
+            })),
+            "error": self.error,
+        })
+    }
+
+    fn decode_cache_value(value: &serde_json::Value) -> Option<Self> {
+        let code = value.get("value")?;
+        let decoded = if code.is_null() {
+            None
+        } else {
+            Some(explorer_ui::code_lines_column::CodeLinesValueV1 {
+                language: code.get("language")?.as_str()?.to_owned(),
+                code: code.get("code")?.as_u64()?,
+                comments: code.get("comments")?.as_u64()?,
+                blanks: code.get("blanks")?.as_u64()?,
+                total: code.get("total")?.as_u64()?,
+            })
+        };
+        Some(Self {
+            value: decoded,
+            error: value
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+        })
+    }
+}
+
 fn partition_code_lines_cache_hits(
     cache: &Mutex<HostExtensionColumnCacheV1<CodeLinesCachedValueV1>>,
     requests: Vec<explorer_ui::code_lines_column::CodeLinesRequestV1>,
@@ -1232,9 +1469,14 @@ impl ApplicationCodeLinesRuntimeV1 {
             Condvar::new(),
         ));
         let worker_pending = pending.clone();
+        let cache_namespace = match mode {
+            BatchDetailsColumnModeV1::CodeLines => "rust-code-lines",
+            BatchDetailsColumnModeV1::LuaCodeLines => "lua-code-lines",
+            BatchDetailsColumnModeV1::LockOwner => "lock-owner",
+        };
         let cache = Arc::new(Mutex::new(HostExtensionColumnCacheV1::<
             CodeLinesCachedValueV1,
-        >::default()));
+        >::persistent(cache_namespace)));
         let worker_cache = Arc::clone(&cache);
         let request_epoch = Arc::new(AtomicU64::new(0));
         let worker_epoch = request_epoch.clone();
@@ -1309,7 +1551,8 @@ impl ApplicationCodeLinesRuntimeV1 {
                             continue;
                         }
                         if mode != BatchDetailsColumnModeV1::LockOwner {
-                            let directory_value = if mode == BatchDetailsColumnModeV1::LuaCodeLines {
+                            let directory_value = if mode == BatchDetailsColumnModeV1::LuaCodeLines
+                            {
                                 measure_all_code_lines_directory(&request.path)
                             } else {
                                 measure_code_lines_directory(&request.path)
@@ -2342,11 +2585,13 @@ struct PendingSizeMapWorkV1 {
 impl ApplicationSizeMapRuntimeV1 {
     fn start(
         renderer: explorer_extension_host::SinglePluginSizeMapViewRuntimeV1,
+        snapshot_service: Arc<Mutex<crate::folder_size_service::FolderSizeServiceV1>>,
     ) -> Result<explorer_ui::size_map_view::SizeMapRuntimeHandleV1, Error> {
         let pending = Arc::new((Mutex::new(PendingSizeMapWorkV1::default()), Condvar::new()));
         let worker_pending = pending.clone();
         let request_epoch = Arc::new(AtomicU64::new(0));
         let worker_epoch = request_epoch.clone();
+        let worker_snapshot_service = Arc::clone(&snapshot_service);
         // A bounded result channel used to drop the tail of a directory would
         // leave those nodes permanently loading: the UI deliberately submits
         // each item only once per generation. Keep the bounded input batch and
@@ -2394,23 +2639,7 @@ impl ApplicationSizeMapRuntimeV1 {
                             return;
                         }
                     }
-                    #[cfg(windows)]
-                    let mft_index = requests.first().and_then(|request| {
-                        match crate::mft_size_map::read_volume_index_with_helper(&request.path, || {
-                            worker_epoch.load(Ordering::Acquire) != batch_epoch
-                        }) {
-                            Ok(index) => Some(index),
-                            Err(error) => {
-                                tracing::debug!(%error, path = %request.path.display(), "Size Map MFT fast path unavailable; using breadth scan");
-                                None
-                            }
-                        }
-                    });
-                    let scan_method = if mft_index.is_some() {
-                        "NTFS MFT"
-                    } else {
-                        "Breadth-first fallback"
-                    };
+                    let scan_method = "Shared folder snapshot";
                     for request in requests.iter().cloned() {
                         if worker_result_tx
                             .send(size_map_scanning_result(request, scan_method))
@@ -2423,57 +2652,31 @@ impl ApplicationSizeMapRuntimeV1 {
                         if worker_epoch.load(Ordering::Acquire) != batch_epoch {
                             break;
                         }
-                        #[cfg(windows)]
-                        let mft_scan = mft_index.as_ref().and_then(|index| {
-                            measure_size_map_tree_from_mft(
-                                index,
-                                &request.path,
-                                &request.item_id,
-                                SIZE_MAP_VISIBLE_NODE_LIMIT_V1,
-                                || worker_epoch.load(Ordering::Acquire) != batch_epoch,
-                            )
-                            .ok()
-                        });
-                        #[cfg(not(windows))]
-                        let mft_scan: Option<SizeMapTreeScanV1> = None;
-                        let scan = mft_scan.unwrap_or_else(|| measure_size_map_tree(
-                            &request.path,
-                            &request.item_id,
-                            SIZE_MAP_VISIBLE_NODE_LIMIT_V1,
-                            128,
-                            SizeMapHardLinkPolicyV1::PerEntry,
-                            || worker_epoch.load(Ordering::Acquire) != batch_epoch,
-                            |progress| {
-                                let shallow_progress = progress
-                                    .outcome
-                                    .diagnostic
-                                    .as_deref()
-                                    .and_then(|message| message.strip_prefix("Scanning depth "))
-                                    .and_then(|depth| depth.parse::<u16>().ok())
-                                    .is_some_and(|depth| depth <= 3);
-                                if !shallow_progress {
-                                    return;
-                                }
-                                for nodes in progress.nodes.chunks(SIZE_MAP_TREE_DELTA_BATCH_CAP_V1)
-                                {
-                                    if worker_epoch.load(Ordering::Acquire) != batch_epoch {
-                                        return;
-                                    }
-                                    let _ = worker_result_tx.send(
-                                        explorer_ui::size_map_view::SizeMapMeasureResultV1 {
-                                            context: request.context.clone(),
-                                            item_id: request.item_id.clone(),
-                                            exact_bytes: Some(progress.outcome.bytes),
-                                            partial: true,
-                                            error: Some(
-                                                "Breadth-first fallback".to_owned(),
-                                            ),
-                                            tree_nodes: nodes.to_vec(),
-                                        },
-                                    );
-                                }
-                            },
-                        ));
+                        let scan = worker_snapshot_service
+                            .lock()
+                            .map_err(|_| "folder snapshot service poisoned".to_owned())
+                            .and_then(|mut service| {
+                                service.snapshot_or_scan(
+                                    &request.path,
+                                    request.context.generation.value(),
+                                    || worker_epoch.load(Ordering::Acquire) != batch_epoch,
+                                )
+                            })
+                            .map(|snapshot| {
+                                project_shared_snapshot_to_size_map(
+                                    &snapshot,
+                                    &request.path,
+                                    &request.item_id,
+                                )
+                            })
+                            .unwrap_or_else(|error| SizeMapTreeScanV1 {
+                                outcome: SizeMapScanOutcomeV1 {
+                                    bytes: 0,
+                                    terminal: SizeMapScanTerminalV1::Failed,
+                                    diagnostic: Some(error),
+                                },
+                                nodes: Vec::new(),
+                            });
                         if scan.outcome.terminal == SizeMapScanTerminalV1::Cancelled
                             || worker_epoch.load(Ordering::Acquire) != batch_epoch
                         {
@@ -2684,6 +2887,71 @@ struct PendingSizeMapTreeNodeV1 {
     bytes: u64,
     partial: bool,
     error: Option<String>,
+}
+
+fn project_shared_snapshot_to_size_map(
+    snapshot: &crate::folder_size_service::FolderSnapshotV1,
+    root: &Path,
+    root_item_id: &explorer_model::ShellItemId,
+) -> SizeMapTreeScanV1 {
+    use crate::folder_size_service::{SnapshotNodeKindV1, SnapshotStatusV1};
+
+    let mut identities =
+        HashMap::from([(snapshot.root_id, (root_item_id.clone(), root.to_path_buf()))]);
+    let mut nodes = Vec::new();
+    let visible_limit = usize::try_from(SIZE_MAP_VISIBLE_NODE_LIMIT_V1).unwrap_or(usize::MAX);
+    for node in snapshot
+        .nodes
+        .iter()
+        .filter(|node| node.id != snapshot.root_id)
+    {
+        let Some(parent) = node
+            .parent
+            .and_then(|parent| identities.get(&parent).cloned())
+        else {
+            continue;
+        };
+        let path = parent.1.join(&node.name);
+        let item_id = size_map_tree_item_id(
+            root_item_id,
+            path.strip_prefix(root).unwrap_or(&path),
+            node.id.0,
+        );
+        identities.insert(node.id, (item_id.clone(), path.clone()));
+        if nodes.len() >= visible_limit {
+            continue;
+        }
+        let is_container = node.kind == SnapshotNodeKindV1::Directory;
+        nodes.push(explorer_ui::size_map_view::SizeMapTreeNodeV1 {
+            item_id,
+            root_item_id: root_item_id.clone(),
+            parent_item_id: parent.0,
+            location: explorer_model::LocationDescriptor::file_system(&path),
+            display_name: node.name.clone(),
+            type_name: if is_container { "Folder" } else { "File" }.to_owned(),
+            is_container,
+            exact_bytes: Some(node.recursive_bytes),
+            partial: node.status != SnapshotStatusV1::Complete,
+            error: (node.status != SnapshotStatusV1::Complete)
+                .then(|| "Folder snapshot is partial".to_owned()),
+        });
+    }
+    let terminal = match snapshot.status {
+        SnapshotStatusV1::Complete => SizeMapScanTerminalV1::Complete,
+        SnapshotStatusV1::Partial => SizeMapScanTerminalV1::Partial,
+        SnapshotStatusV1::Cancelled => SizeMapScanTerminalV1::Cancelled,
+        SnapshotStatusV1::Unavailable => SizeMapScanTerminalV1::Unavailable,
+        SnapshotStatusV1::ResourceLimited => SizeMapScanTerminalV1::ResourceLimited,
+        SnapshotStatusV1::Failed => SizeMapScanTerminalV1::Failed,
+    };
+    SizeMapTreeScanV1 {
+        outcome: SizeMapScanOutcomeV1 {
+            bytes: snapshot.aggregate.recursive_bytes,
+            terminal,
+            diagnostic: snapshot.diagnostic.clone(),
+        },
+        nodes,
+    }
 }
 
 fn size_map_tree_item_id(
@@ -3847,6 +4115,9 @@ impl ApplicationLifecycle {
         let mut code_lines_runtimes = Vec::new();
         let mut size_map_runtime = None;
         let mut virtual_folder_runtime = None;
+        let folder_size_service = Arc::new(Mutex::new(
+            crate::folder_size_service::FolderSizeServiceV1::with_capacity(256),
+        ));
         for (path, loaded) in direct_loaded {
             let (summary, measure, renderer, size_map_renderer, batch_columns, virtual_folders) =
                 loaded.into_parts_with_virtual_folders();
@@ -3887,7 +4158,11 @@ impl ApplicationLifecycle {
                     )
                 } else if supports_folder_size {
                     (
-                        Some(ApplicationVisualColumnRuntimeV1::start(measure, renderer)?),
+                        Some(ApplicationVisualColumnRuntimeV1::start(
+                            measure,
+                            renderer,
+                            Arc::clone(&folder_size_service),
+                        )?),
                         None,
                     )
                 } else {
@@ -3899,7 +4174,10 @@ impl ApplicationLifecycle {
             let supports_size_map =
                 size_map_renderer.has_view_contribution(SIZE_MAP_VIEW_CONTRIBUTION_ID_V1);
             let map_runtime = if supports_size_map {
-                Some(ApplicationSizeMapRuntimeV1::start(size_map_renderer)?)
+                Some(ApplicationSizeMapRuntimeV1::start(
+                    size_map_renderer,
+                    Arc::clone(&folder_size_service),
+                )?)
             } else {
                 None
             };
@@ -5094,7 +5372,7 @@ mod tests {
     use std::{
         collections::HashMap,
         fs,
-        path::PathBuf,
+        path::{Path, PathBuf},
         sync::atomic::{AtomicU64, AtomicUsize, Ordering},
         sync::{Arc, Mutex},
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -5115,6 +5393,8 @@ mod tests {
     };
     use explorer_ui::ExtensionUiPumpPortV1 as _;
 
+    use super::preferred_size_map_scan_method;
+
     use super::{
         ApplicationExtensionReadyProjectorV1, ApplicationExtensionUiPumpV1, CodeLinesCachedValueV1,
         FolderSizeCachedValueV1, HostExtensionColumnCacheV1, LockOwnerCacheKeyV1,
@@ -5126,12 +5406,11 @@ mod tests {
         emit_post_commit_safe_mode_telemetry_v1, enqueue_folder_size_requests,
         enqueue_size_map_requests, lock_owner_cache_lookup, lock_owner_cache_store,
         measure_all_code_lines_directory, measure_code_lines_directory,
-        measure_code_lines_directory_with_cache,
-        measure_size_map_path, measure_size_map_tree, partition_code_lines_cache_hits,
-        partition_folder_size_cache_hits, partition_size_map_projection, project_size_map_plan,
-        read_code_lines_directory_cache, read_code_lines_file_bounded,
-        read_code_lines_path_bounded, should_restore_saved_tabs, size_map_node_id,
-        size_map_render_key, take_folder_size_requests,
+        measure_code_lines_directory_with_cache, measure_size_map_path, measure_size_map_tree,
+        partition_code_lines_cache_hits, partition_folder_size_cache_hits,
+        partition_size_map_projection, project_size_map_plan, read_code_lines_directory_cache,
+        read_code_lines_file_bounded, read_code_lines_path_bounded, should_restore_saved_tabs,
+        size_map_node_id, size_map_render_key, take_folder_size_requests,
     };
 
     struct FakeSafeModePortV1 {
