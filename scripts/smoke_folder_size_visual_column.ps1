@@ -58,8 +58,10 @@ function Capture([IntPtr]$window,[string]$path) {
 function Find-Name($root,[string]$name) { $root.FindFirst([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,$name)) }
 function Find-Prefix($root,[string]$prefix) { $a=$root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition); 0..($a.Count-1) | % {$a.Item($_)} | ? {$_.Current.Name -like "$prefix*"} | select -First 1 }
 function Click($root,$element,[switch]$Right) {
-    $b=$element.Current.BoundingRectangle; $rb=$root.Current.BoundingRectangle; $wr=[FolderSizeHeadful.Native+Rect]::new(); [FolderSizeHeadful.Native]::GetWindowRect($window,[ref]$wr) | Out-Null
-    $x=[int]($wr.Left+(($b.Left+$b.Width/2)-$rb.Left)*($wr.Right-$wr.Left)/$rb.Width); $y=[int]($wr.Top+(($b.Top+$b.Height/2)-$rb.Top)*($wr.Bottom-$wr.Top)/$rb.Height)
+    $b=$element.Current.BoundingRectangle
+    # UIA bounds are physical desktop pixels for this per-monitor-aware
+    # process. Scaling them by the HWND ratio a second time misses at 175%.
+    $x=[int]($b.Left+$b.Width/2); $y=[int]($b.Top+$b.Height/2)
     [FolderSizeHeadful.Native]::SetCursorPos($x,$y); if ($Right) {$down=8;$up=16} else {$down=2;$up=4}; [FolderSizeHeadful.Native]::mouse_event($down,0,0,0,[UIntPtr]::Zero); [FolderSizeHeadful.Native]::mouse_event($up,0,0,0,[UIntPtr]::Zero)
 }
 function Key([byte]$key) { [FolderSizeHeadful.Native]::keybd_event($key,0,0,[UIntPtr]::Zero); [FolderSizeHeadful.Native]::keybd_event($key,0,2,[UIntPtr]::Zero) }

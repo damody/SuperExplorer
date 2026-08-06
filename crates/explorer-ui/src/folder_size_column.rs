@@ -80,6 +80,29 @@ pub struct FolderSizeResultV1 {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum FolderSizeBackendStatusV1 {
+    #[default]
+    Idle,
+    HostCache,
+    MftService,
+    MftUnavailable,
+}
+
+impl FolderSizeBackendStatusV1 {
+    pub const fn label(self, active: bool) -> Option<&'static str> {
+        let label = match (self, active) {
+            (Self::Idle, _) => return None,
+            (Self::HostCache, false) => "Folder size: Host cache",
+            (Self::HostCache, true) => "Folder size: Host cache...",
+            (Self::MftService, false) => "Folder size: MFT service",
+            (Self::MftService, true) => "Folder size: MFT service...",
+            (Self::MftUnavailable, _) => "Folder size: MFT unavailable",
+        };
+        Some(label)
+    }
+}
+
 /// Typed cell state. Partial totals remain displayable diagnostics but never
 /// enter the exact-byte sort domain.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -103,6 +126,9 @@ pub trait VisualColumnRuntimePortV1: Send + Sync {
     /// true only when GPUI needs another frame to consume a newly-ready plan.
     fn drain_render_results(&self) -> bool {
         false
+    }
+    fn backend_status(&self) -> (FolderSizeBackendStatusV1, bool) {
+        (FolderSizeBackendStatusV1::Idle, false)
     }
     fn render_cell(&self, context: CellRenderContextV1) -> CellRenderPlanV1;
 }
@@ -239,9 +265,25 @@ pub fn folder_size_column_descriptor() -> ColumnDescriptor {
         minimum_width: 112,
         maximum_width: 360,
         alignment: ColumnAlignment::End,
-        applicability: ColumnApplicability::AllEntries,
+        applicability: ColumnApplicability::Containers,
         sort_semantics: ColumnSortSemantics::Bytes,
         cost: ColumnCost::BackgroundAggregate,
+    }
+}
+
+pub(crate) fn applies_to_shell_entry(is_container: bool, size_bytes: Option<u64>) -> bool {
+    is_container && size_bytes.is_none()
+}
+
+pub(crate) fn builtin_size_bytes(
+    is_container: bool,
+    ordinary_bytes: Option<u64>,
+    recursive_bytes: Option<u64>,
+) -> Option<u64> {
+    if applies_to_shell_entry(is_container, ordinary_bytes) {
+        recursive_bytes
+    } else {
+        ordinary_bytes
     }
 }
 
@@ -308,10 +350,38 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_applies_to_files_and_folders() {
+    fn descriptor_applies_only_to_containers() {
         assert_eq!(
             folder_size_column_descriptor().applicability,
-            ColumnApplicability::AllEntries
+            ColumnApplicability::Containers
         );
+    }
+
+    #[test]
+    fn shell_archives_are_not_treated_as_file_system_folders() {
+        assert!(applies_to_shell_entry(true, None));
+        assert!(!applies_to_shell_entry(true, Some(5_100_000_000)));
+        assert!(!applies_to_shell_entry(false, Some(42)));
+    }
+
+    #[test]
+    fn builtin_size_uses_recursive_folders_and_ordinary_files() {
+        assert_eq!(builtin_size_bytes(true, None, Some(1_250)), Some(1_250));
+        assert_eq!(builtin_size_bytes(true, None, None), None);
+        assert_eq!(builtin_size_bytes(false, Some(42), Some(99)), Some(42));
+        assert_eq!(builtin_size_bytes(true, Some(5_100), Some(99)), Some(5_100));
+    }
+
+    #[test]
+    fn backend_status_labels_include_active_work() {
+        assert_eq!(
+            FolderSizeBackendStatusV1::MftService.label(true),
+            Some("Folder size: MFT service...")
+        );
+        assert_eq!(
+            FolderSizeBackendStatusV1::MftUnavailable.label(true),
+            Some("Folder size: MFT unavailable")
+        );
+        assert_eq!(FolderSizeBackendStatusV1::Idle.label(true), None);
     }
 }

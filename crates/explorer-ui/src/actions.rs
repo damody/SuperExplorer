@@ -426,12 +426,15 @@ pub enum ExplorerAction {
         column: explorer_model::ColumnId,
         before: Option<explorer_model::ColumnId>,
     },
-    BeginDetailsColumnDrag {
+    UpdateDetailsColumnDragPreview {
         column: explorer_model::ColumnId,
+        target: explorer_model::ColumnId,
+        pointer_x: f32,
+        target_left: f32,
+        target_right: f32,
     },
-    DropDetailsColumn {
-        before: explorer_model::ColumnId,
-    },
+    CommitDetailsColumnDrag,
+    CancelDetailsColumnDrag,
     AutoSizeDetailsColumn {
         column: explorer_model::ColumnId,
     },
@@ -679,8 +682,9 @@ impl ExplorerAction {
             Self::SetSortDirection(_) => "SetSortDirection",
             Self::SetDetailsColumnWidth { .. } => "SetDetailsColumnWidth",
             Self::MoveDetailsColumn { .. } => "MoveDetailsColumn",
-            Self::BeginDetailsColumnDrag { .. } => "BeginDetailsColumnDrag",
-            Self::DropDetailsColumn { .. } => "DropDetailsColumn",
+            Self::UpdateDetailsColumnDragPreview { .. } => "UpdateDetailsColumnDragPreview",
+            Self::CommitDetailsColumnDrag => "CommitDetailsColumnDrag",
+            Self::CancelDetailsColumnDrag => "CancelDetailsColumnDrag",
             Self::AutoSizeDetailsColumn { .. } => "AutoSizeDetailsColumn",
             Self::OpenDetailsColumnMenu { .. } => "OpenDetailsColumnMenu",
             Self::CloseDetailsColumnMenu => "CloseDetailsColumnMenu",
@@ -1304,8 +1308,9 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::SetSortDirection(_)
         | ExplorerAction::SetDetailsColumnWidth { .. }
         | ExplorerAction::MoveDetailsColumn { .. }
-        | ExplorerAction::BeginDetailsColumnDrag { .. }
-        | ExplorerAction::DropDetailsColumn { .. }
+        | ExplorerAction::UpdateDetailsColumnDragPreview { .. }
+        | ExplorerAction::CommitDetailsColumnDrag
+        | ExplorerAction::CancelDetailsColumnDrag
         | ExplorerAction::AutoSizeDetailsColumn { .. }
         | ExplorerAction::OpenDetailsColumnMenu { .. }
         | ExplorerAction::CloseDetailsColumnMenu
@@ -2014,12 +2019,28 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             state.move_details_column_before(column, before);
             FocusSurface::FileView
         }
-        ExplorerAction::BeginDetailsColumnDrag { column } => {
-            state.begin_details_column_drag(column);
+        ExplorerAction::UpdateDetailsColumnDragPreview {
+            column,
+            target,
+            pointer_x,
+            target_left,
+            target_right,
+        } => {
+            state.update_details_column_drag_preview(
+                column,
+                target,
+                pointer_x,
+                target_left,
+                target_right,
+            );
             FocusSurface::FileView
         }
-        ExplorerAction::DropDetailsColumn { before } => {
-            state.drop_details_column_before(before);
+        ExplorerAction::CommitDetailsColumnDrag => {
+            state.commit_details_column_drag();
+            FocusSurface::FileView
+        }
+        ExplorerAction::CancelDetailsColumnDrag => {
+            state.cancel_details_column_drag();
             FocusSurface::FileView
         }
         ExplorerAction::AutoSizeDetailsColumn { column } => {

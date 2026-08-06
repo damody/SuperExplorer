@@ -19,8 +19,11 @@ const PLUGIN_ID: StableIdV1 = StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 6_101);
 const INTERFACE_ID: StableIdV1 = StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 6_102);
 pub const MAX_BATCH: usize = 128;
 pub const MAX_WINDOWS_ARGUMENT_CHARS: usize = 28_000;
+#[cfg(test)]
 const CACHE_SCHEMA_VERSION: u32 = 1;
+#[cfg(test)]
 const CACHE_MAX_RECORD_BYTES: u64 = 8 * 1024;
+#[cfg(test)]
 const CACHE_MAX_FILES: usize = 256;
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -33,6 +36,7 @@ pub struct CodeRow {
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
+#[cfg(test)]
 struct CacheRecord {
     schema: u32,
     identity: String,
@@ -42,6 +46,7 @@ struct CacheRecord {
     row: CodeRow,
 }
 
+#[cfg(test)]
 fn cache_directory() -> Option<PathBuf> {
     env::var_os("LUA_TOKEI_CODE_LINES_CACHE")
         .map(PathBuf::from)
@@ -59,6 +64,7 @@ fn cache_directory() -> Option<PathBuf> {
         })
 }
 
+#[cfg(test)]
 fn persistent_hash(input: &str) -> u64 {
     input
         .as_bytes()
@@ -68,6 +74,7 @@ fn persistent_hash(input: &str) -> u64 {
         })
 }
 
+#[cfg(test)]
 fn file_facts(path: &str) -> Option<(String, u64, u32, u64)> {
     let canonical = fs::canonicalize(path).ok()?;
     let metadata = fs::metadata(&canonical).ok()?;
@@ -83,6 +90,7 @@ fn file_facts(path: &str) -> Option<(String, u64, u32, u64)> {
     ))
 }
 
+#[cfg(test)]
 fn cache_path(directory: &Path, identity: &str) -> PathBuf {
     directory.join(format!(
         "{:016x}.code-lines-cache",
@@ -90,6 +98,7 @@ fn cache_path(directory: &Path, identity: &str) -> PathBuf {
     ))
 }
 
+#[cfg(test)]
 fn prune_cache(directory: &Path) {
     let Ok(entries) = fs::read_dir(directory) else {
         return;
@@ -122,6 +131,7 @@ fn prune_cache(directory: &Path) {
     }
 }
 
+#[cfg(test)]
 fn read_cache_from(directory: &Path, path: &str) -> Option<CodeRow> {
     // A directory's own mtime and size do not represent recursive descendant
     // contents. Reusing that identity can therefore publish a stale all-language
@@ -160,10 +170,12 @@ fn read_cache_from(directory: &Path, path: &str) -> Option<CodeRow> {
     })
 }
 
+#[cfg(test)]
 fn read_cache(path: &str) -> Option<CodeRow> {
     read_cache_from(&cache_directory()?, path)
 }
 
+#[cfg(test)]
 fn store_cache_in(directory: &Path, path: &str, row: &CodeRow) {
     if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir()) {
         return;
@@ -208,6 +220,7 @@ fn store_cache_in(directory: &Path, path: &str, row: &CodeRow) {
     }
 }
 
+#[cfg(test)]
 fn store_cache(path: &str, row: &CodeRow) {
     if let Some(directory) = cache_directory() {
         store_cache_in(&directory, path, row);
@@ -275,15 +288,10 @@ pub fn bounded_batches(paths: &[String]) -> Result<Vec<Vec<String>>, String> {
 }
 
 pub fn analyze_with_tool(handle: &ToolHandleV1, paths: &[String]) -> Result<Vec<CodeRow>, String> {
+    // Persistent lookup/admission belongs to the host. This plugin receives
+    // only cache misses and computes each requested path.
     let mut rows_by_path = HashMap::new();
-    let mut misses = Vec::new();
-    for path in paths {
-        if let Some(row) = read_cache(path) {
-            rows_by_path.insert(path.clone(), row);
-        } else {
-            misses.push(path.clone());
-        }
-    }
+    let misses = paths.to_vec();
     for batch in bounded_batches(&misses)? {
         let result = handle.execute(ToolExecuteRequestV1 {
             arguments: batch
@@ -312,7 +320,6 @@ pub fn analyze_with_tool(handle: &ToolHandleV1, paths: &[String]) -> Result<Vec<
             return Err("tool item mapping mismatch".into());
         }
         for row in rows {
-            store_cache(&row.path, &row);
             rows_by_path.insert(row.path.clone(), row);
         }
     }

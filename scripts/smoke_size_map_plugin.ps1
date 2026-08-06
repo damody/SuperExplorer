@@ -136,18 +136,17 @@ function Invoke-Element($Root, $Element, [string]$Description, [switch]$PointerO
     }
     & {
         $bounds = $Element.Current.BoundingRectangle
-        $rootBounds = $Root.Current.BoundingRectangle
         $windowRect = [SizeMapSmoke.Native+Rect]::new()
         if (-not [SizeMapSmoke.Native]::GetWindowRect($window, [ref]$windowRect)) {
             throw 'GetWindowRect failed while activating menu item'
         }
-        # UI Automation reports GPUI's logical coordinates while SetCursorPos
-        # consumes physical desktop pixels. Convert relative to the actual
-        # HWND bounds so the fallback remains correct at non-100% DPI.
-        $scaleX = ($windowRect.Right - $windowRect.Left) / $rootBounds.Width
-        $scaleY = ($windowRect.Bottom - $windowRect.Top) / $rootBounds.Height
-        $screenX = [int]($windowRect.Left + (($bounds.Left + $bounds.Width / 2) - $rootBounds.Left) * $scaleX)
-        $screenY = [int]($windowRect.Top + (($bounds.Top + $bounds.Height / 2) - $rootBounds.Top) * $scaleY)
+        # GPUI descendants currently expose logical coordinates even though
+        # the UIA root is physical. Use the deterministic fixture dimensions
+        # instead of deriving scale from the root bounds.
+        $scaleX = ($windowRect.Right - $windowRect.Left) / 1120.0
+        $scaleY = ($windowRect.Bottom - $windowRect.Top) / 720.0
+        $screenX = [int]($windowRect.Left + ($bounds.Left + $bounds.Width / 2) * $scaleX)
+        $screenY = [int]($windowRect.Top + ($bounds.Top + $bounds.Height / 2) * $scaleY)
         [void][SizeMapSmoke.Native]::SetCursorPos($screenX, $screenY)
         Start-Sleep -Milliseconds 50
         [SizeMapSmoke.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
@@ -288,7 +287,10 @@ try {
     if ($rows.Count -eq 0) { throw 'Real folder contents did not load in Details view' }
     Capture-Window $window $beforePath
 
-    Invoke-NamedElement $root 'View'
+    # GPUI exposes InvokePattern for the toolbar button, but invoking that
+    # pattern may only focus the control without opening its flyout.  Exercise
+    # the same pointer behavior a user relies on before asserting menu items.
+    Invoke-NamedElement $root 'View' -PointerOnly
     $viewEntry = $null
     $viewDeadline = [DateTime]::UtcNow.AddSeconds(5)
     do {

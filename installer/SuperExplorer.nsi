@@ -1,6 +1,9 @@
 ﻿Unicode True
 
 !include "MUI2.nsh"
+!include "LogicLib.nsh"
+!include "StrFunc.nsh"
+${Using:StrFunc} StrStr
 
 !ifndef APP_VERSION
     !error "APP_VERSION must be provided by build_install.lua"
@@ -16,6 +19,9 @@
 !endif
 !ifndef MFT_HELPER_EXE
     !error "MFT_HELPER_EXE must be provided by build_install.lua"
+!endif
+!ifndef MFT_SERVICE_EXE
+    !error "MFT_SERVICE_EXE must be provided by build_install.lua"
 !endif
 !ifndef WORKER_EXE
     !error "WORKER_EXE must be provided by build_install.lua"
@@ -33,11 +39,22 @@
 !define PRODUCT_REG_KEY "Software\SuperExplorer"
 !define PRODUCT_UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\SuperExplorer"
 
+!macro ExecServiceChecked COMMAND FAILURE_TEXT
+    nsExec::ExecToStack '${COMMAND}'
+    Pop $0
+    Pop $1
+    ${If} $0 != 0
+        DetailPrint "${FAILURE_TEXT}: exit=$0 $1"
+        MessageBox MB_ICONSTOP|MB_OK "${FAILURE_TEXT}$\r$\n$\r$\n$1"
+        Abort
+    ${EndIf}
+!macroend
+
 Name "${PRODUCT_NAME}"
 OutFile "${OUTPUT_FILE}"
-InstallDir "$LOCALAPPDATA\Programs\${PRODUCT_NAME}"
-InstallDirRegKey HKCU "${PRODUCT_REG_KEY}" "InstallDir"
-RequestExecutionLevel user
+InstallDir "$PROGRAMFILES64\${PRODUCT_NAME}"
+InstallDirRegKey HKLM "${PRODUCT_REG_KEY}" "InstallDir"
+RequestExecutionLevel admin
 SetCompressor /SOLID lzma
 SetCompressorDictSize 32
 ManifestDPIAware true
@@ -70,12 +87,14 @@ VIAddVersionKey /LANG=1033 "ProductVersion" "${APP_VERSION}"
 
 Section "SuperExplorer" SEC_MAIN
     SetShellVarContext current
+    nsExec::ExecToLog '"$SYSDIR\net.exe" stop SuperExplorerMft /y'
     SetOutPath "$INSTDIR"
     SetOverwrite on
 
     File "${APP_EXE}"
     File /oname=explorer-extension-broker.exe "${BROKER_EXE}"
     File /oname=superexplorer-mft-helper.exe "${MFT_HELPER_EXE}"
+    File /oname=superexplorer-mft-service.exe "${MFT_SERVICE_EXE}"
     File /oname=explorer-extension-worker.exe "${WORKER_EXE}"
     File /oname=Everything64.dll "${EVERYTHING_DLL}"
 
@@ -90,26 +109,63 @@ Section "SuperExplorer" SEC_MAIN
     File /oname=lua_bulk_folder_generator.dll "${PLUGIN_BULK_FOLDER}"
 
     SetOutPath "$INSTDIR"
+    nsExec::ExecToStack '"$SYSDIR\sc.exe" query SuperExplorerMft'
+    Pop $0
+    Pop $1
+    ${If} $0 != 0
+        !insertmacro ExecServiceChecked '"$SYSDIR\sc.exe" create SuperExplorerMft binPath= $\"$INSTDIR\superexplorer-mft-service.exe$\" start= auto obj= LocalSystem DisplayName= "SuperExplorer MFT Service"' "無法建立 SuperExplorer MFT Windows Service"
+    ${Else}
+        !insertmacro ExecServiceChecked '"$SYSDIR\sc.exe" config SuperExplorerMft binPath= $\"$INSTDIR\superexplorer-mft-service.exe$\" start= auto obj= LocalSystem DisplayName= "SuperExplorer MFT Service"' "無法設定 SuperExplorer MFT Windows Service"
+    ${EndIf}
+    !insertmacro ExecServiceChecked '"$SYSDIR\sc.exe" description SuperExplorerMft "Read-only NTFS metadata index for SuperExplorer folder snapshots"' "無法設定 SuperExplorer MFT Windows Service 描述"
+    !insertmacro ExecServiceChecked '"$SYSDIR\sc.exe" start SuperExplorerMft' "無法啟動 SuperExplorer MFT Windows Service"
+
+    StrCpy $2 0
+service_wait_running:
+    nsExec::ExecToStack '"$SYSDIR\sc.exe" query SuperExplorerMft'
+    Pop $0
+    Pop $1
+    ${If} $0 != 0
+        MessageBox MB_ICONSTOP|MB_OK "無法查詢 SuperExplorer MFT Windows Service 狀態。$\r$\n$\r$\n$1"
+        Abort
+    ${EndIf}
+    ${StrStr} $3 $1 "RUNNING"
+    StrCmp $3 "" service_not_running service_running
+service_not_running:
+    IntOp $2 $2 + 1
+    IntCmp $2 30 service_start_timeout service_retry_wait service_start_timeout
+service_retry_wait:
+    Sleep 500
+    Goto service_wait_running
+service_start_timeout:
+    MessageBox MB_ICONSTOP|MB_OK "SuperExplorer MFT Windows Service 未能在 15 秒內進入 RUNNING 狀態。"
+    Abort
+service_running:
+    DetailPrint "SuperExplorer MFT Windows Service is RUNNING as LocalSystem."
+
     WriteUninstaller "$INSTDIR\Uninstall.exe"
 
     CreateDirectory "$SMPROGRAMS\${PRODUCT_NAME}"
     CreateShortcut "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk" "$INSTDIR\SuperExplorer.exe" "${PLUGIN_ARGS}"
     CreateShortcut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\SuperExplorer.exe" "${PLUGIN_ARGS}"
 
-    WriteRegStr HKCU "${PRODUCT_REG_KEY}" "InstallDir" "$INSTDIR"
-    WriteRegStr HKCU "${PRODUCT_UNINSTALL_KEY}" "DisplayName" "${PRODUCT_NAME}"
-    WriteRegStr HKCU "${PRODUCT_UNINSTALL_KEY}" "DisplayVersion" "${APP_VERSION}"
-    WriteRegStr HKCU "${PRODUCT_UNINSTALL_KEY}" "Publisher" "${PRODUCT_PUBLISHER}"
-    WriteRegStr HKCU "${PRODUCT_UNINSTALL_KEY}" "URLInfoAbout" "${PRODUCT_URL}"
-    WriteRegStr HKCU "${PRODUCT_UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
-    WriteRegStr HKCU "${PRODUCT_UNINSTALL_KEY}" "DisplayIcon" "$INSTDIR\SuperExplorer.exe"
-    WriteRegStr HKCU "${PRODUCT_UNINSTALL_KEY}" "UninstallString" "$\"$INSTDIR\Uninstall.exe$\""
-    WriteRegDWORD HKCU "${PRODUCT_UNINSTALL_KEY}" "NoModify" 1
-    WriteRegDWORD HKCU "${PRODUCT_UNINSTALL_KEY}" "NoRepair" 1
+    WriteRegStr HKLM "${PRODUCT_REG_KEY}" "InstallDir" "$INSTDIR"
+    WriteRegStr HKLM "${PRODUCT_UNINSTALL_KEY}" "DisplayName" "${PRODUCT_NAME}"
+    WriteRegStr HKLM "${PRODUCT_UNINSTALL_KEY}" "DisplayVersion" "${APP_VERSION}"
+    WriteRegStr HKLM "${PRODUCT_UNINSTALL_KEY}" "Publisher" "${PRODUCT_PUBLISHER}"
+    WriteRegStr HKLM "${PRODUCT_UNINSTALL_KEY}" "URLInfoAbout" "${PRODUCT_URL}"
+    WriteRegStr HKLM "${PRODUCT_UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
+    WriteRegStr HKLM "${PRODUCT_UNINSTALL_KEY}" "DisplayIcon" "$INSTDIR\SuperExplorer.exe"
+    WriteRegStr HKLM "${PRODUCT_UNINSTALL_KEY}" "UninstallString" "$\"$INSTDIR\Uninstall.exe$\""
+    WriteRegDWORD HKLM "${PRODUCT_UNINSTALL_KEY}" "NoModify" 1
+    WriteRegDWORD HKLM "${PRODUCT_UNINSTALL_KEY}" "NoRepair" 1
 SectionEnd
 
 Section "Uninstall"
     SetShellVarContext current
+
+    nsExec::ExecToLog '"$SYSDIR\net.exe" stop SuperExplorerMft /y'
+    nsExec::ExecToLog '"$SYSDIR\sc.exe" delete SuperExplorerMft'
 
     Delete "$DESKTOP\${PRODUCT_NAME}.lnk"
     Delete "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk"
@@ -118,6 +174,7 @@ Section "Uninstall"
     Delete "$INSTDIR\SuperExplorer.exe"
     Delete "$INSTDIR\explorer-extension-broker.exe"
     Delete "$INSTDIR\superexplorer-mft-helper.exe"
+    Delete "$INSTDIR\superexplorer-mft-service.exe"
     Delete "$INSTDIR\explorer-extension-worker.exe"
     Delete "$INSTDIR\Everything64.dll"
     Delete "$INSTDIR\plugins\rust_folder_size_visual_column.dll"
@@ -132,6 +189,9 @@ Section "Uninstall"
     Delete "$INSTDIR\Uninstall.exe"
     RMDir "$INSTDIR"
 
-    DeleteRegKey HKCU "${PRODUCT_UNINSTALL_KEY}"
-    DeleteRegKey HKCU "${PRODUCT_REG_KEY}"
+    SetShellVarContext all
+    RMDir /r "$APPDATA\SuperExplorer\MftIndex"
+    RMDir "$APPDATA\SuperExplorer"
+    DeleteRegKey HKLM "${PRODUCT_UNINSTALL_KEY}"
+    DeleteRegKey HKLM "${PRODUCT_REG_KEY}"
 SectionEnd
