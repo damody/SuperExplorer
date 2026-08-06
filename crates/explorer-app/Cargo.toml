@@ -16,6 +16,10 @@ path = "src/main.rs"
 name = "superexplorer-mft-helper"
 path = "src/bin/mft_helper.rs"
 
+[[bin]]
+name = "superexplorer-mft-service"
+path = "src/bin/mft_service.rs"
+
 [features]
 # Deliberately non-default: enables only the isolated extension-state seam
 # used by the Windows headful Safe Mode gate.
@@ -40,6 +44,7 @@ gpui.workspace = true
 gpui_windows.workspace = true
 image.workspace = true
 raw-window-handle.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

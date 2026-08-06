@@ -1457,6 +1457,7 @@ dependencies = [
  "gpui_windows",
  "image",
  "raw-window-handle",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.19",

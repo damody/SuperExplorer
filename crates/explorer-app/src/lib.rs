@@ -17,6 +17,7 @@
 pub mod application;
 pub mod branding;
 mod brokered_service;
+mod folder_size_service;
 #[cfg(windows)]
 mod mft_size_map;
 mod pointer_capture;

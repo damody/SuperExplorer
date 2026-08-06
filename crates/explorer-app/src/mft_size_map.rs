@@ -3,7 +3,7 @@
 #![cfg(windows)]
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     ffi::c_void,
     io::{BufReader, BufWriter, Read as _, Write as _},
     mem::size_of,
@@ -55,6 +55,135 @@ pub(crate) struct MftProjectedNodeV1 {
     pub(crate) is_directory: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct MftAggregateV1 {
+    pub(crate) logical_bytes: u64,
+    pub(crate) allocated_bytes: u64,
+    pub(crate) file_count: u64,
+    pub(crate) directory_count: u64,
+}
+
+#[derive(Debug)]
+pub(crate) struct MftAggregateIndexV1 {
+    totals: HashMap<u64, MftAggregateV1>,
+    worker_count: usize,
+}
+
+impl MftAggregateIndexV1 {
+    pub(crate) fn build(index: &MftIndexV1, max_workers: usize) -> Result<Self, String> {
+        let roots = index
+            .entries
+            .values()
+            .filter(|entry| {
+                entry.reference == entry.parent_reference
+                    || !index.entries.contains_key(&entry.parent_reference)
+            })
+            .map(|entry| entry.reference)
+            .collect::<Vec<_>>();
+        if roots.is_empty() && !index.entries.is_empty() {
+            return Err("MFT aggregate index has no volume root".to_owned());
+        }
+        let mut tasks = VecDeque::new();
+        for root in &roots {
+            if let Some(children) = index.children.get(root) {
+                tasks.extend(children.iter().copied());
+            } else {
+                tasks.push_back(*root);
+            }
+        }
+        let worker_count = max_workers.clamp(1, 8).min(tasks.len().max(1));
+        let tasks = std::sync::Mutex::new(tasks);
+        let totals = std::sync::Mutex::new(HashMap::with_capacity(index.entries.len()));
+        std::thread::scope(|scope| {
+            for _ in 0..worker_count {
+                scope.spawn(|| {
+                    loop {
+                        let task = tasks.lock().ok().and_then(|mut tasks| tasks.pop_front());
+                        let Some(root) = task else { break };
+                        let local = aggregate_component(index, root);
+                        if let Ok(mut totals) = totals.lock() {
+                            totals.extend(local);
+                        }
+                    }
+                });
+            }
+        });
+        let mut totals = totals
+            .into_inner()
+            .map_err(|_| "MFT aggregate workers failed")?;
+        for root in roots {
+            let Some(entry) = index.entries.get(&root) else {
+                continue;
+            };
+            let mut total = direct_aggregate(entry);
+            if let Some(children) = index.children.get(&root) {
+                for child in children {
+                    add_aggregate(&mut total, totals.get(child).copied().unwrap_or_default());
+                }
+            }
+            totals.insert(root, total);
+        }
+        Ok(Self {
+            totals,
+            worker_count,
+        })
+    }
+
+    pub(crate) fn get(&self, reference: u64) -> Option<MftAggregateV1> {
+        self.totals.get(&reference).copied()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn worker_count(&self) -> usize {
+        self.worker_count
+    }
+}
+
+fn aggregate_component(index: &MftIndexV1, root: u64) -> HashMap<u64, MftAggregateV1> {
+    let mut traversal = Vec::new();
+    let mut pending = vec![root];
+    while let Some(reference) = pending.pop() {
+        traversal.push(reference);
+        if let Some(children) = index.children.get(&reference) {
+            pending.extend(children.iter().copied());
+        }
+    }
+    let mut totals = HashMap::with_capacity(traversal.len());
+    for reference in traversal.into_iter().rev() {
+        let Some(entry) = index.entries.get(&reference) else {
+            continue;
+        };
+        let mut total = direct_aggregate(entry);
+        if let Some(children) = index.children.get(&reference) {
+            for child in children {
+                add_aggregate(&mut total, totals.get(child).copied().unwrap_or_default());
+            }
+        }
+        totals.insert(reference, total);
+    }
+    totals
+}
+
+fn direct_aggregate(entry: &MftEntryV1) -> MftAggregateV1 {
+    MftAggregateV1 {
+        logical_bytes: entry.logical_bytes,
+        allocated_bytes: entry.allocated_bytes,
+        file_count: u64::from(!entry.is_directory),
+        directory_count: u64::from(entry.is_directory),
+    }
+}
+
+fn add_aggregate(target: &mut MftAggregateV1, source: MftAggregateV1) {
+    target.logical_bytes = target.logical_bytes.saturating_add(source.logical_bytes);
+    target.allocated_bytes = target
+        .allocated_bytes
+        .saturating_add(source.allocated_bytes);
+    target.file_count = target.file_count.saturating_add(source.file_count);
+    target.directory_count = target
+        .directory_count
+        .saturating_add(source.directory_count);
+}
+
 impl MftIndexV1 {
     pub(crate) fn project_subtree(
         &self,
@@ -75,6 +204,9 @@ impl MftIndexV1 {
             if let Some(children) = self.children.get(&reference) {
                 pending.extend(children.iter().copied());
             }
+        }
+        if traversal.len() > visible_limit {
+            return Err("MFT projection exceeds the complete-subtree node limit".to_owned());
         }
         let mut logical_totals = HashMap::<u64, u64>::new();
         let mut allocated_totals = HashMap::<u64, u64>::new();
@@ -106,9 +238,6 @@ impl MftIndexV1 {
         let mut projected = Vec::with_capacity(visible_limit.min(traversal.len()));
         let mut breadth = std::collections::VecDeque::from([(root_reference, None)]);
         while let Some((reference, parent_reference)) = breadth.pop_front() {
-            if projected.len() >= visible_limit {
-                break;
-            }
             let Some(entry) = self.entries.get(&reference) else {
                 continue;
             };
@@ -137,6 +266,25 @@ impl MftIndexV1 {
 
 pub(crate) fn write_index(path: &Path, index: &MftIndexV1) -> Result<(), String> {
     validate_helper_output_path(path)?;
+    write_index_record(path, index)
+}
+
+pub(crate) fn write_service_index(path: &Path, index: &MftIndexV1) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "MFT service cache path has no parent".to_owned())?;
+    let expected = std::env::var_os("ProgramData")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(r"C:\ProgramData"))
+        .join("SuperExplorer")
+        .join("MftIndex");
+    if parent != expected || path.extension().and_then(|value| value.to_str()) != Some("tmp") {
+        return Err("MFT service cache path is outside the fixed cache".to_owned());
+    }
+    write_index_record(path, index)
+}
+
+fn write_index_record(path: &Path, index: &MftIndexV1) -> Result<(), String> {
     let file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -204,8 +352,8 @@ pub(crate) fn read_index(path: &Path) -> Result<MftIndexV1, String> {
     let capacity = usize::try_from(count).map_err(|_| "MFT index is too large")?;
     let mut entries = HashMap::with_capacity(capacity);
     for _ in 0..count {
-        let reference = read_stream_u64(&mut reader)?;
-        let parent_reference = read_stream_u64(&mut reader)?;
+        let reference = normalize_ntfs_reference(read_stream_u64(&mut reader)?);
+        let parent_reference = normalize_ntfs_reference(read_stream_u64(&mut reader)?);
         let logical_bytes = read_stream_u64(&mut reader)?;
         let allocated_bytes = read_stream_u64(&mut reader)?;
         let mut directory = [0_u8; 1];
@@ -266,6 +414,24 @@ impl Drop for HandleGuard {
 }
 
 pub(crate) fn file_reference_number(path: &Path) -> Result<u64, String> {
+    let info = file_information(path)?;
+    // NTFS file IDs encode a 48-bit MFT record number plus a 16-bit sequence.
+    // FSCTL_ENUM_USN_DATA indexes records by the record-number component, so
+    // normalize handle-derived IDs to the same identity domain.
+    Ok(normalize_ntfs_reference(
+        (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+    ))
+}
+
+const fn normalize_ntfs_reference(reference: u64) -> u64 {
+    reference & 0x0000_FFFF_FFFF_FFFF
+}
+
+pub(crate) fn file_link_count(path: &Path) -> Result<u32, String> {
+    Ok(file_information(path)?.nNumberOfLinks)
+}
+
+fn file_information(path: &Path) -> Result<BY_HANDLE_FILE_INFORMATION, String> {
     let wide = path
         .as_os_str()
         .encode_wide()
@@ -289,7 +455,7 @@ pub(crate) fn file_reference_number(path: &Path) -> Result<u64, String> {
     // SAFETY: `info` is valid writable storage and the handle remains owned.
     unsafe { GetFileInformationByHandle(handle.0, &mut info) }
         .map_err(|error| error.to_string())?;
-    Ok((u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow))
+    Ok(info)
 }
 
 pub(crate) fn read_volume_index(
@@ -360,8 +526,10 @@ pub(crate) fn read_volume_index(
             }
             let major = read_u16(&output, offset + 4).unwrap_or_default();
             if major == 2 {
-                let reference = read_u64(&output, offset + 8).unwrap_or_default();
-                let parent_reference = read_u64(&output, offset + 16).unwrap_or_default();
+                let reference =
+                    normalize_ntfs_reference(read_u64(&output, offset + 8).unwrap_or_default());
+                let parent_reference =
+                    normalize_ntfs_reference(read_u64(&output, offset + 16).unwrap_or_default());
                 let attributes = read_u32(&output, offset + 52).unwrap_or_default();
                 let name_len = read_u16(&output, offset + 56).unwrap_or_default() as usize;
                 let name_offset = read_u16(&output, offset + 58).unwrap_or_default() as usize;
@@ -589,6 +757,60 @@ mod tests {
     }
 
     #[test]
+    fn opt_in_service_index_builds_requested_aggregate() {
+        let Ok(root) = std::env::var("SUPEREXPLORER_MFT_TEST_ROOT") else {
+            return;
+        };
+        let letter = root.chars().next().unwrap().to_ascii_uppercase();
+        let path = std::path::PathBuf::from(
+            std::env::var_os("ProgramData").unwrap_or_else(|| r"C:\ProgramData".into()),
+        )
+        .join("SuperExplorer")
+        .join("MftIndex")
+        .join(format!("{letter}.semftidx"));
+        let index = read_index(&path).unwrap();
+        let aggregate = MftAggregateIndexV1::build(&index, 8).unwrap();
+        let reference = file_reference_number(Path::new(&root)).unwrap();
+        assert!(
+            aggregate.get(reference).is_some(),
+            "requested FRN {reference} is absent from {} MFT records",
+            index.entries.len()
+        );
+    }
+
+    #[test]
+    fn opt_in_service_index_covers_visible_child_directories() {
+        let Ok(root) = std::env::var("SUPEREXPLORER_MFT_TEST_PARENT") else {
+            return;
+        };
+        let letter = root.chars().next().unwrap().to_ascii_uppercase();
+        let path = std::path::PathBuf::from(
+            std::env::var_os("ProgramData").unwrap_or_else(|| r"C:\ProgramData".into()),
+        )
+        .join("SuperExplorer/MftIndex")
+        .join(format!("{letter}.semftidx"));
+        let index = read_index(&path).unwrap();
+        let aggregate = MftAggregateIndexV1::build(&index, 8).unwrap();
+        let missing = std::fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                use std::os::windows::fs::MetadataExt as _;
+                entry.metadata().is_ok_and(|metadata| {
+                    metadata.is_dir() && metadata.file_attributes() & (0x2 | 0x4) == 0
+                })
+            })
+            .filter(|entry| {
+                file_reference_number(&entry.path())
+                    .ok()
+                    .is_none_or(|reference| aggregate.get(reference).is_none())
+            })
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(missing.is_empty(), "MFT aggregate missing: {missing:?}");
+    }
+
+    #[test]
     fn helper_index_round_trips_without_overwriting() {
         let path = std::env::temp_dir().join(format!(
             "superexplorer-mft-test-{}-{}.idx",
@@ -618,5 +840,84 @@ mod tests {
         let restored = read_index(&path).unwrap();
         std::fs::remove_file(path).unwrap();
         assert_eq!(restored.entries.get(&42), Some(&entry));
+    }
+
+    #[test]
+    fn projection_rejects_truncation_instead_of_publishing_incomplete_zero() {
+        let root = MftEntryV1 {
+            reference: 1,
+            parent_reference: 1,
+            name: "root".to_owned(),
+            logical_bytes: 0,
+            allocated_bytes: 0,
+            is_directory: true,
+        };
+        let file = MftEntryV1 {
+            reference: 2,
+            parent_reference: 1,
+            name: "data.bin".to_owned(),
+            logical_bytes: 4096,
+            allocated_bytes: 4096,
+            is_directory: false,
+        };
+        let index = MftIndexV1 {
+            entries: HashMap::from([(1, root), (2, file)]),
+            children: HashMap::from([(1, vec![2])]),
+        };
+
+        let error = index.project_subtree(1, 1, || false).unwrap_err();
+        assert!(error.contains("complete-subtree node limit"));
+    }
+
+    #[test]
+    fn aggregate_index_reuses_exact_totals_and_never_exceeds_eight_workers() {
+        let mut entries = HashMap::new();
+        let root = MftEntryV1 {
+            reference: 1,
+            parent_reference: 1,
+            name: "root".to_owned(),
+            logical_bytes: 0,
+            allocated_bytes: 0,
+            is_directory: true,
+        };
+        entries.insert(1, root);
+        let mut children = HashMap::from([(1, Vec::new())]);
+        for directory in 2_u64..=17 {
+            entries.insert(
+                directory,
+                MftEntryV1 {
+                    reference: directory,
+                    parent_reference: 1,
+                    name: format!("d{directory}"),
+                    logical_bytes: 0,
+                    allocated_bytes: 0,
+                    is_directory: true,
+                },
+            );
+            let file = directory + 100;
+            entries.insert(
+                file,
+                MftEntryV1 {
+                    reference: file,
+                    parent_reference: directory,
+                    name: format!("f{file}"),
+                    logical_bytes: directory,
+                    allocated_bytes: directory * 2,
+                    is_directory: false,
+                },
+            );
+            children.get_mut(&1).unwrap().push(directory);
+            children.insert(directory, vec![file]);
+        }
+        let index = MftIndexV1 { entries, children };
+        let aggregates = MftAggregateIndexV1::build(&index, 64).unwrap();
+        assert_eq!(aggregates.worker_count(), 8);
+        assert_eq!(aggregates.get(2).unwrap().logical_bytes, 2);
+        assert_eq!(aggregates.get(2).unwrap().file_count, 1);
+        assert_eq!(
+            aggregates.get(1).unwrap().logical_bytes,
+            (2_u64..=17).sum::<u64>()
+        );
+        assert_eq!(aggregates.get(1).unwrap().directory_count, 17);
     }
 }

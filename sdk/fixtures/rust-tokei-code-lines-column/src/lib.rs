@@ -38,8 +38,11 @@ const CONTRIBUTION_ID: &str = "rust-tokei:code-lines";
 const MAX_FILE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_DIRECTORY_PACK_BYTES: usize = 64 * 1024 * 1024;
 const DIRECTORY_MAGIC_V1: &[u8; 8] = b"SECLDIR1";
+#[cfg(test)]
 const CACHE_SCHEMA_VERSION: u32 = 2;
+#[cfg(test)]
 const CACHE_MAX_RECORD_BYTES: u64 = 8 * 1024;
+#[cfg(test)]
 const CACHE_MAX_FILES: usize = 256;
 
 struct TokeiRegistrar;
@@ -55,6 +58,7 @@ struct CodeLinesPayload {
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
+#[cfg(test)]
 struct CacheRecord {
     schema: u32,
     identity: String,
@@ -64,6 +68,7 @@ struct CacheRecord {
     value: CodeLinesPayload,
 }
 
+#[cfg(test)]
 impl CacheRecord {
     fn matches(
         &self,
@@ -80,6 +85,7 @@ impl CacheRecord {
     }
 }
 
+#[cfg(test)]
 fn cache_directory() -> Option<PathBuf> {
     env::var_os("RUST_TOKEI_CODE_LINES_CACHE")
         .map(PathBuf::from)
@@ -97,6 +103,7 @@ fn cache_directory() -> Option<PathBuf> {
         })
 }
 
+#[cfg(test)]
 fn persistent_hash(input: &str) -> u64 {
     input
         .as_bytes()
@@ -106,6 +113,7 @@ fn persistent_hash(input: &str) -> u64 {
         })
 }
 
+#[cfg(test)]
 fn cache_path(directory: &Path, identity: &str) -> PathBuf {
     directory.join(format!(
         "{:016x}.code-lines-cache",
@@ -113,6 +121,7 @@ fn cache_path(directory: &Path, identity: &str) -> PathBuf {
     ))
 }
 
+#[cfg(test)]
 fn prune_cache(directory: &Path) {
     let Ok(entries) = fs::read_dir(directory) else {
         return;
@@ -145,6 +154,7 @@ fn prune_cache(directory: &Path) {
     }
 }
 
+#[cfg(test)]
 fn cache_facts(item: &explorer_extension_api::BatchColumnItemV1) -> Option<(&str, u64, u32, u64)> {
     let modified = item.modified_unix_seconds.into_option()?;
     let size = item.source_size.into_option()?;
@@ -156,6 +166,7 @@ fn cache_facts(item: &explorer_extension_api::BatchColumnItemV1) -> Option<(&str
     ))
 }
 
+#[cfg(test)]
 fn read_cache(item: &explorer_extension_api::BatchColumnItemV1) -> Option<CodeLinesPayload> {
     let (identity, modified_seconds, modified_nanos, source_size) = cache_facts(item)?;
     let path = cache_path(&cache_directory()?, identity);
@@ -181,6 +192,7 @@ fn read_cache(item: &explorer_extension_api::BatchColumnItemV1) -> Option<CodeLi
         .then_some(record.value)
 }
 
+#[cfg(test)]
 fn store_cache(item: &explorer_extension_api::BatchColumnItemV1, value: &CodeLinesPayload) {
     let Some((identity, modified_seconds, modified_nanos, source_size)) = cache_facts(item) else {
         return;
@@ -404,21 +416,8 @@ impl BatchColumnProviderImplementationV1 for TokeiCodeLinesProvider {
             if context.poll_control().into_raw() != 1 {
                 return JobTerminalV1::CANCELLED;
             }
-            if let Some(cached) = read_cache(item) {
-                let sort = cached.code;
-                if let Some(value) = plugin_value(&cached) {
-                    entries.push(IncrementalResultEntryV1 {
-                        item: item.item,
-                        item_generation: item.item_generation,
-                        source_generation: context.source_generation,
-                        result: PluginItemResultV1::value(
-                            value,
-                            ROption::RSome(StableSortValueV1::unsigned(sort)),
-                        ),
-                    });
-                    continue;
-                }
-            }
+            // The host performs persistent lookup/admission before dispatch;
+            // plugins always compute misses and never choose cache policy.
             let Some(bytes) = read_stream(&item.input) else {
                 entries.push(IncrementalResultEntryV1 {
                     item: item.item,
@@ -438,7 +437,6 @@ impl BatchColumnProviderImplementationV1 for TokeiCodeLinesProvider {
                         total: stats.lines() as u64,
                     };
                     plugin_value(&payload).map(|value| {
-                        store_cache(item, &payload);
                         PluginItemResultV1::value(
                             value,
                             ROption::RSome(StableSortValueV1::unsigned(stats.code as u64)),

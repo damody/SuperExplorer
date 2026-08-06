@@ -1047,6 +1047,9 @@ fn is_passive_pointer_action(action: &ExplorerAction) -> bool {
             | ExplorerAction::UpdateExternalDrag { .. }
             | ExplorerAction::UpdateDetailsColumnResize { .. }
             | ExplorerAction::EndDetailsColumnResize
+            | ExplorerAction::UpdateDetailsColumnDragPreview { .. }
+            | ExplorerAction::CommitDetailsColumnDrag
+            | ExplorerAction::CancelDetailsColumnDrag
             | ExplorerAction::UpdateSidePaneResize { .. }
             | ExplorerAction::EndSidePaneResize
             | ExplorerAction::UpdateScrollbarDrag { .. }
@@ -1581,24 +1584,16 @@ impl ExplorerRoot {
             .expect("folder-size context initialized above");
         if let Some(visuals) = self.folder_size_visuals.as_mut() {
             visuals.begin_context(&request_context);
-            for entry in entries.iter().filter(|entry| !entry.is_container) {
-                let _ = visuals.insert_result(folder_size_column::FolderSizeResultV1 {
-                    context: request_context.clone(),
-                    item_id: entry.id.clone(),
-                    exact_bytes: entry.metadata.size_bytes,
-                    partial: false,
-                    error: entry
-                        .metadata
-                        .size_bytes
-                        .is_none()
-                        .then(|| "File size unavailable".to_owned()),
-                });
-            }
         }
         let visuals = self.folder_size_visuals.as_ref();
         let requests = entries
             .iter()
-            .filter(|entry| entry.is_container)
+            .filter(|entry| {
+                folder_size_column::applies_to_shell_entry(
+                    entry.is_container,
+                    entry.metadata.size_bytes,
+                )
+            })
             .filter(|entry| {
                 visuals.is_none_or(|visuals| {
                     !visuals.has_value_for_context(&request_context, &entry.id)
@@ -5682,6 +5677,9 @@ impl ExplorerRoot {
                 _ => None,
             };
         }
+        if self.state.details_column_drag_active() && event.keystroke.key == "escape" {
+            return Some(ExplorerAction::CancelDetailsColumnDrag);
+        }
         if self.state.marquee_session().is_some() && event.keystroke.key == "escape" {
             return Some(ExplorerAction::EndMarquee);
         }
@@ -8187,6 +8185,15 @@ mod tests {
                 effect: explorer_model::DragEffect::Copy,
             },
             ExplorerAction::UpdateDetailsColumnResize { pointer_x: 10.0 },
+            ExplorerAction::UpdateDetailsColumnDragPreview {
+                column: explorer_model::ColumnId::DateModified,
+                target: explorer_model::ColumnId::Type,
+                pointer_x: 10.0,
+                target_left: 0.0,
+                target_right: 100.0,
+            },
+            ExplorerAction::CommitDetailsColumnDrag,
+            ExplorerAction::CancelDetailsColumnDrag,
             ExplorerAction::UpdateSidePaneResize { pointer_x: 10.0 },
             ExplorerAction::UpdateScrollbarDrag { pointer_y: 10.0 },
             ExplorerAction::UpdateNavigationPaneResize { pointer_x: 10.0 },

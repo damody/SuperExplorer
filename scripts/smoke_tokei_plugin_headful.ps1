@@ -10,6 +10,7 @@ param(
     [switch]$DirectoryAggregateMode,
     [switch]$LockOwnerMode,
     [switch]$DualCodeLinesMode,
+    [switch]$DetailsColumnDragMode,
     [switch]$WideWindow
 )
 
@@ -439,6 +440,42 @@ function Drag-ElementToElement($Root,$Source,$Target) {
     Start-Sleep -Milliseconds 400
 }
 
+function Find-AutomationIdSuffix($Root,[string]$Suffix) {
+    $all=$Root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+    0..($all.Count-1) | ForEach-Object { $all.Item($_) } |
+        Where-Object { $_.Current.AutomationId -like "*$Suffix" } |
+        Sort-Object { $_.Current.BoundingRectangle.Top } | Select-Object -First 1
+}
+
+function Begin-DetailsColumnMidpointDrag($Root,$Source,$Target,[double]$TargetFraction) {
+    $sourceBounds=$Source.Current.BoundingRectangle; $targetBounds=$Target.Current.BoundingRectangle
+    $rootBounds=$Root.Current.BoundingRectangle
+    $windowRect=[TokeiHeadfulSmoke.Native+Rect]::new()
+    if (-not [TokeiHeadfulSmoke.Native]::GetWindowRect($window,[ref]$windowRect)) { throw 'GetWindowRect failed' }
+    $sx=($windowRect.Right-$windowRect.Left)/$rootBounds.Width; $sy=($windowRect.Bottom-$windowRect.Top)/$rootBounds.Height
+    $fromX=[int]($windowRect.Left+(($sourceBounds.Left+$sourceBounds.Width/2)-$rootBounds.Left)*$sx)
+    $fromY=[int]($windowRect.Top+(($sourceBounds.Top+$sourceBounds.Height/2)-$rootBounds.Top)*$sy)
+    $targetLogicalX=$targetBounds.Left+($targetBounds.Width*$TargetFraction)
+    $toX=[int]($windowRect.Left+($targetLogicalX-$rootBounds.Left)*$sx)
+    $toY=[int]($windowRect.Top+(($targetBounds.Top+$targetBounds.Height/2)-$rootBounds.Top)*$sy)
+    [void][TokeiHeadfulSmoke.Native]::SetCursorPos($fromX,$fromY); Start-Sleep -Milliseconds 100
+    [TokeiHeadfulSmoke.Native]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero)
+    foreach ($step in 1..12) {
+        $x=[int]($fromX+(($toX-$fromX)*$step/12.0)); $y=[int]($fromY+(($toY-$fromY)*$step/12.0))
+        [void][TokeiHeadfulSmoke.Native]::SetCursorPos($x,$y)
+        [TokeiHeadfulSmoke.Native]::mouse_event(0x0001,0,0,0,[UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 35
+    }
+    Start-Sleep -Milliseconds 300
+    [ordered]@{
+        from_x=$fromX; from_y=$fromY; to_x=$toX; to_y=$toY
+        target_fraction=$TargetFraction
+        source_left=$sourceBounds.Left; source_right=$sourceBounds.Right
+        target_left=$targetBounds.Left; target_right=$targetBounds.Right
+        target_midpoint=($targetBounds.Left+$targetBounds.Width/2.0)
+    }
+}
+
 $diagnostics=Join-Path $OutputDirectory 'diagnostics.json'
 $childEnvironment=[ordered]@{
     EXPLORER_VISUAL_FIXTURE='1'; EXPLORER_VISUAL_REAL_SHELL='1'; EXPLORER_VISUAL_WIDTH='1280'; EXPLORER_VISUAL_HEIGHT='760'
@@ -638,6 +675,66 @@ try {
         $loading=0..($all.Count-1) | ForEach-Object { $all.Item($_) } | Where-Object { $_.Current.Name -match 'Loading code lines' }
     } while (($null -eq $header -or $cells.Count -lt $(if($DirectoryAggregateMode){$directoryMinimum}else{3}) -or $loading.Count -ne 0) -and [DateTime]::UtcNow -lt $deadline)
     if ($null -eq $header) { throw "$codeLinesColumn header was not installed" }
+    if ($DetailsColumnDragMode) {
+        $dateHeader=Find-ButtonName $root 'Sort by Date modified'
+        $typeHeader=Find-ButtonName $root 'Sort by Type'
+        $dateCell=Find-NamePrefix $root 'Date modified:'
+        $typeCell=Find-NamePrefix $root 'Type:'
+        if ($null -eq $dateHeader -or $null -eq $typeHeader -or $null -eq $dateCell -or $null -eq $typeCell) {
+            Capture-Window $window (Join-Path $OutputDirectory 'column-drag-live-failure.png')
+            throw 'Adjacent Date modified/Type headers or stable representative cells were unavailable'
+        }
+
+        $rightEvidence=Begin-DetailsColumnMidpointDrag $root $dateHeader $typeHeader 0.75
+        try {
+            $dateHeader=Find-ButtonName $root 'Sort by Date modified'
+            $typeHeader=Find-ButtonName $root 'Sort by Type'
+            $dateCell=Find-NamePrefix $root 'Date modified:'
+            $typeCell=Find-NamePrefix $root 'Type:'
+            if ($dateHeader.Current.BoundingRectangle.Left -le $typeHeader.Current.BoundingRectangle.Left -or
+                $dateCell.Current.BoundingRectangle.Left -le $typeCell.Current.BoundingRectangle.Left) {
+                Capture-Window $window (Join-Path $OutputDirectory 'column-drag-live-failure.png')
+                throw "Rightward preview did not move header and data cell before mouse-up: pointer=$($rightEvidence | ConvertTo-Json -Compress)"
+            }
+            Capture-Window $window (Join-Path $OutputDirectory 'column-drag-live-right.png')
+        } finally {
+            [TokeiHeadfulSmoke.Native]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero)
+            Start-Sleep -Milliseconds 400
+        }
+        $dateHeader=Find-ButtonName $root 'Sort by Date modified'
+        $typeHeader=Find-ButtonName $root 'Sort by Type'
+        if ($dateHeader.Current.BoundingRectangle.Left -le $typeHeader.Current.BoundingRectangle.Left) {
+            throw 'Rightward preview order did not remain committed after mouse-up'
+        }
+
+        $leftEvidence=Begin-DetailsColumnMidpointDrag $root $dateHeader $typeHeader 0.25
+        try {
+            $dateHeader=Find-ButtonName $root 'Sort by Date modified'
+            $typeHeader=Find-ButtonName $root 'Sort by Type'
+            $dateCell=Find-NamePrefix $root 'Date modified:'
+            $typeCell=Find-NamePrefix $root 'Type:'
+            if ($dateHeader.Current.BoundingRectangle.Left -ge $typeHeader.Current.BoundingRectangle.Left -or
+                $dateCell.Current.BoundingRectangle.Left -ge $typeCell.Current.BoundingRectangle.Left) {
+                Capture-Window $window (Join-Path $OutputDirectory 'column-drag-live-failure.png')
+                throw "Leftward preview was not symmetric before mouse-up: pointer=$($leftEvidence | ConvertTo-Json -Compress)"
+            }
+            Capture-Window $window (Join-Path $OutputDirectory 'column-drag-live-left.png')
+        } finally {
+            [TokeiHeadfulSmoke.Native]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero)
+            Start-Sleep -Milliseconds 400
+        }
+
+        if (-not [TokeiHeadfulSmoke.Native]::PostMessage($window,0x0010,[UIntPtr]::Zero,[IntPtr]::Zero)) { throw 'Could not request clean app shutdown' }
+        if (-not $process.WaitForExit(10000)) { throw 'App did not complete clean shutdown' }
+        [pscustomobject]@{
+            status='passed'; live_before_mouse_up=$true; adjacent_right_midpoint=$true
+            adjacent_left_midpoint=$true; committed_after_release=$true
+            right_pointer_bounds=$rightEvidence; left_pointer_bounds=$leftEvidence
+            screenshots=@('column-drag-live-right.png','column-drag-live-left.png')
+        } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Encoding utf8
+        Get-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Raw
+        return
+    }
     if ($DualCodeLinesMode) {
         $luaHeader=Find-ButtonName $root 'Sort by Code lines'
         $rustHeader=Find-ButtonName $root 'Sort by Main code lines'

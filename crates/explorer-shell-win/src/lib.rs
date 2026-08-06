@@ -21,6 +21,7 @@ mod clipboard;
 mod context_menu;
 mod drag_drop;
 mod everything;
+pub use everything::{IndexedFolderEntryV1, query_folder_index};
 mod extension;
 mod file_operation;
 mod icon;

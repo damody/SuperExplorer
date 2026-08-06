@@ -101,11 +101,7 @@ struct DetailsColumnDragPreview {
 }
 
 impl Render for DetailsColumnDragPreview {
-    fn render(
-        &mut self,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .px(px(10.0))
             .py(px(6.0))
@@ -462,6 +458,11 @@ impl RenderOnce for ExplorerWindow {
             self.state.navigation_pane_width().value() + self.tokens.layout.divider_width.value();
         let file_origin_y = explorer_file_origin_y(self.tokens);
         let scrollbar_capture_action = self.on_action.clone();
+        let details_drag_cancel = self.on_action.clone();
+        let folder_size_backend_status = self.visual_column_runtime.as_ref().and_then(|runtime| {
+            let (status, active) = runtime.backend_status();
+            status.label(active).map(str::to_owned)
+        });
         div()
             .id(EXPLORER_WINDOW_ID)
             .debug_selector(|| EXPLORER_WINDOW_ID.to_owned())
@@ -474,6 +475,11 @@ impl RenderOnce for ExplorerWindow {
             .font_family(self.tokens.typography.family.primary)
             .text_size(px(self.tokens.typography.file_row.size.value()))
             .line_height(px(self.tokens.typography.file_row.line_height.value()))
+            .when_some(details_drag_cancel, |element, callback| {
+                element.on_mouse_up(MouseButton::Left, move |_, window, cx| {
+                    callback(&ExplorerAction::CancelDetailsColumnDrag, window, cx);
+                })
+            })
             .child(region_probe(EXPLORER_WINDOW_ID, None, "normal"))
             .child(
                 WindowChrome::new(
@@ -659,6 +665,7 @@ impl RenderOnce for ExplorerWindow {
             .child(StatusBar::new(
                 self.tokens,
                 self.state.clone(),
+                folder_size_backend_status,
                 self.on_action.clone(),
             ))
             .when(self.state.bookmark_manager_open(), |element| {
@@ -6810,9 +6817,14 @@ impl RenderOnce for FileViewHost {
                         "檔案".to_owned()
                     }
                 });
-                let size_display = entry
-                    .metadata
-                    .size_bytes
+                let size_bytes = crate::folder_size_column::builtin_size_bytes(
+                    entry.is_container,
+                    entry.metadata.size_bytes,
+                    folder_size_visuals
+                        .as_ref()
+                        .and_then(|visuals| visuals.value_for(&entry.id)),
+                );
+                let size_display = size_bytes
                     .map(format_explorer_size)
                     .unwrap_or_default();
                 let created = entry.metadata.created_display.clone().unwrap_or_default();
@@ -6821,15 +6833,13 @@ impl RenderOnce for FileViewHost {
                 let title = entry.metadata.title_display.clone().unwrap_or_default();
                 let mut ordered_detail_cells = Vec::new();
                 if view_settings.mode == explorer_model::ViewMode::Details && !drive_view {
-                    for column_entry in view_settings
-                        .details_layout
-                        .visible_registered(&row_column_registry)
+                    for column_id in
+                        visible_details_column_ids(&view_settings, &row_column_registry)
                     {
-                        let column_id = &column_entry.id;
-                        if *column_id == explorer_model::ColumnId::Name {
+                        if column_id == explorer_model::ColumnId::Name {
                             continue;
                         }
-                        let builtin_text = match column_id {
+                        let builtin_text = match &column_id {
                             explorer_model::ColumnId::DateModified => Some(modified.clone()),
                             explorer_model::ColumnId::Type => Some(type_display.clone()),
                             explorer_model::ColumnId::Size => Some(size_display.clone()),
@@ -6840,10 +6850,22 @@ impl RenderOnce for FileViewHost {
                             _ => None,
                         };
                         if let Some(text) = builtin_text {
+                            let cell_label = row_column_registry
+                                .get(&column_id)
+                                .map_or_else(|| column_id.stable_id(), |descriptor| {
+                                    descriptor.display_name.clone()
+                                });
+                            let accessible_value = format!("{cell_label}: {text}");
                             ordered_detail_cells.push(
                                 div()
+                                    .id(details_column_selector(
+                                        &format!("{row_id}-details-cell"),
+                                        &column_id,
+                                    ))
+                                    .role(Role::Cell)
+                                    .aria_label(accessible_value)
                                     .w(px(f32::from(
-                                        view_settings.details_column_width(column_id),
+                                        view_settings.details_column_width(&column_id),
                                     )))
                                     .flex_none()
                                     .child(text)
@@ -6853,8 +6875,40 @@ impl RenderOnce for FileViewHost {
                         }
                         if folder_size_visuals
                             .as_ref()
-                            .is_some_and(|visuals| visuals.config.descriptor.id == *column_id)
+                            .is_some_and(|visuals| visuals.config.descriptor.id == column_id)
                         {
+                            let is_file_system_directory =
+                                crate::folder_size_column::applies_to_shell_entry(
+                                    entry.is_container,
+                                    entry.metadata.size_bytes,
+                                );
+                            if !is_file_system_directory {
+                                ordered_detail_cells.push(
+                                    div()
+                                        .w(px(f32::from(
+                                            view_settings.details_column_width(&column_id),
+                                        )))
+                                        .h_full()
+                                        .flex_none()
+                                        .into_any_element(),
+                                );
+                                continue;
+                            }
+                            if folder_size_visuals
+                                .as_ref()
+                                .is_some_and(|visuals| visuals.error_for(&entry.id).is_some())
+                            {
+                                ordered_detail_cells.push(
+                                    div()
+                                        .w(px(f32::from(
+                                            view_settings.details_column_width(&column_id),
+                                        )))
+                                        .h_full()
+                                        .flex_none()
+                                        .into_any_element(),
+                                );
+                                continue;
+                            }
                             ordered_detail_cells.push(match (
                                 folder_size_visuals.clone(),
                                 visual_column_runtime.clone(),
@@ -6884,7 +6938,7 @@ impl RenderOnce for FileViewHost {
                         }
                         if let Some(column) = code_lines_columns
                             .iter()
-                            .find(|column| column.id() == column_id)
+                            .find(|column| column.id() == &column_id)
                             .cloned()
                         {
                             ordered_detail_cells.push(code_lines_detail_column_cell(
@@ -6900,7 +6954,7 @@ impl RenderOnce for FileViewHost {
                                 layout,
                                 colors,
                             ));
-                        } else if let Some(descriptor) = row_column_registry.get(column_id) {
+                        } else if let Some(descriptor) = row_column_registry.get(&column_id) {
                             ordered_detail_cells.push(unavailable_detail_cell(
                                 descriptor,
                                 &view_settings,
@@ -8409,6 +8463,17 @@ fn explorer_horizontal_scrollbar(
     clippy::needless_pass_by_value,
     reason = "render builders clone and move callbacks into independent GPUI handlers"
 )]
+pub(crate) fn visible_details_column_ids(
+    settings: &explorer_model::ViewSettings,
+    registry: &explorer_model::ColumnRegistry,
+) -> Vec<explorer_model::ColumnId> {
+    settings
+        .details_layout
+        .visible_registered(registry)
+        .map(|entry| entry.id.clone())
+        .collect()
+}
+
 fn details_header(
     tokens: UiTokens,
     settings: explorer_model::ViewSettings,
@@ -8424,10 +8489,9 @@ fn details_header(
     }
     let layout = tokens.layout;
     let colors = tokens.theme.colors;
-    let visible_descriptors = settings
-        .details_layout
-        .visible_registered(registry)
-        .filter_map(|entry| registry.get(&entry.id))
+    let visible_descriptors = visible_details_column_ids(&settings, registry)
+        .into_iter()
+        .filter_map(|column| registry.get(&column))
         .cloned()
         .collect::<Vec<_>>();
     let accessible_columns = visible_descriptors
@@ -8621,11 +8685,9 @@ fn folder_size_detail_cell(
                     .child(
                         div()
                             .h_full()
-                            .w(px(
-                                (width * 0.42 * plan.proportional_bar_millionths as f32
-                                    / 1_000_000.0)
-                                    .max(1.0),
-                            ))
+                            .w(px((width * 0.42 * plan.proportional_bar_millionths as f32
+                                / 1_000_000.0)
+                                .max(1.0)))
                             .rounded(px(2.0))
                             .bg(fill_color.to_gpui()),
                     ),
@@ -8986,21 +9048,27 @@ fn details_column_menu(
                 ))
                 .bg(colors.divider.to_gpui()),
         )
-        .children(settings.details_layout.entries().iter().filter_map(|entry| {
-            let descriptor = registry.get(&entry.id)?;
-            let column = descriptor.id.clone();
-            on_action.clone().map(|callback| {
-                column_menu_row(
-                    tokens,
-                    details_column_selector("details-column-menu", &column),
-                    descriptor.display_name.clone(),
-                    settings.details_column_visible(&column),
-                    column != explorer_model::ColumnId::Name,
-                    ExplorerAction::ToggleDetailsColumn(column.clone()),
-                    callback,
-                )
-            })
-        }))
+        .children(
+            settings
+                .details_layout
+                .entries()
+                .iter()
+                .filter_map(|entry| {
+                    let descriptor = registry.get(&entry.id)?;
+                    let column = descriptor.id.clone();
+                    on_action.clone().map(|callback| {
+                        column_menu_row(
+                            tokens,
+                            details_column_selector("details-column-menu", &column),
+                            descriptor.display_name.clone(),
+                            settings.details_column_visible(&column),
+                            column != explorer_model::ColumnId::Name,
+                            ExplorerAction::ToggleDetailsColumn(column.clone()),
+                            callback,
+                        )
+                    })
+                }),
+        )
         .when_some(folder_size_visuals, |element, visuals| {
             let descriptor = &visuals.config.descriptor;
             element.when(target == descriptor.id, |element| {
@@ -9220,15 +9288,15 @@ fn details_header_column(
     let context_callback = on_action.clone();
     let sort_context_callback = on_action.clone();
     let sort_callback = on_action.clone();
-    let pointer_begin_callback = on_action.clone();
-    let pointer_drop_callback = on_action.clone();
+    let drag_move_callback = on_action.clone();
+    let drag_outside_cancel_callback = on_action.clone();
+    let sort_drag_outside_cancel_callback = on_action.clone();
     let sort_accessible_callback = on_action.clone();
     let filter_callback = on_action.clone();
     let context_column = column.clone();
     let sort_context_column = column.clone();
     let sort_column = column.clone();
-    let pointer_begin_column = column.clone();
-    let pointer_drop_column = column.clone();
+    let drag_target_column = column.clone();
     let accessible_sort_column = column.clone();
     let filter_column = column.clone();
     let decrement_column = column.clone();
@@ -9236,9 +9304,7 @@ fn details_header_column(
     let begin_column = column.clone();
     let draggable_column = column.clone();
     let sort_draggable_column = column.clone();
-    let drop_before_column = column.clone();
     let drop_callback = on_action.clone();
-    let sort_drop_before_column = column.clone();
     let sort_drop_callback = on_action.clone();
     let drag_label = label.clone();
     let sort_drag_label = label.clone();
@@ -9279,16 +9345,37 @@ fn details_header_column(
                 },
             )
         })
-        .when_some(drop_callback, move |element, callback| {
-            element.on_drop(move |drag: &DetailsColumnDrag, window, cx| {
+        .when_some(drag_outside_cancel_callback, move |element, callback| {
+            element.on_mouse_up_out(MouseButton::Left, move |_, window, cx| {
+                if cx.has_active_drag() {
+                    callback(&ExplorerAction::CancelDetailsColumnDrag, window, cx);
+                }
+            })
+        })
+        .when_some(drag_move_callback, move |element, callback| {
+            element.on_drag_move::<DetailsColumnDrag>(move |event, window, cx| {
+                if !event.bounds.contains(&event.event.position) {
+                    return;
+                }
+                let drag = event.drag(cx);
                 callback(
-                    &ExplorerAction::MoveDetailsColumn {
+                    &ExplorerAction::UpdateDetailsColumnDragPreview {
                         column: drag.column.clone(),
-                        before: Some(drop_before_column.clone()),
+                        target: drag_target_column.clone(),
+                        pointer_x: f32::from(event.event.position.x),
+                        target_left: f32::from(event.bounds.left()),
+                        target_right: f32::from(event.bounds.right()),
                     },
                     window,
                     cx,
                 );
+                cx.stop_propagation();
+            })
+        })
+        .when_some(drop_callback, move |element, callback| {
+            element.on_drop(move |drag: &DetailsColumnDrag, window, cx| {
+                let _ = drag;
+                callback(&ExplorerAction::CommitDetailsColumnDrag, window, cx);
                 cx.stop_propagation();
             })
         })
@@ -9320,33 +9407,6 @@ fn details_header_column(
                 .flex()
                 .items_center()
                 .px(px(tokens.layout.content_spacing.value() / 2.0))
-                .when(
-                    column != explorer_model::ColumnId::Name,
-                    |element| {
-                        element.when_some(pointer_begin_callback, move |element, callback| {
-                            element.on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                                callback(
-                                    &ExplorerAction::BeginDetailsColumnDrag {
-                                        column: pointer_begin_column.clone(),
-                                    },
-                                    window,
-                                    cx,
-                                );
-                            })
-                        })
-                    },
-                )
-                .when_some(pointer_drop_callback, move |element, callback| {
-                    element.on_mouse_up(MouseButton::Left, move |_, window, cx| {
-                        callback(
-                            &ExplorerAction::DropDetailsColumn {
-                                before: pointer_drop_column.clone(),
-                            },
-                            window,
-                            cx,
-                        );
-                    })
-                })
                 .when(column != explorer_model::ColumnId::Name, |element| {
                     element.cursor_move().on_drag(
                         DetailsColumnDrag {
@@ -9360,16 +9420,20 @@ fn details_header_column(
                         },
                     )
                 })
+                .when_some(
+                    sort_drag_outside_cancel_callback,
+                    move |element, callback| {
+                        element.on_mouse_up_out(MouseButton::Left, move |_, window, cx| {
+                            if cx.has_active_drag() {
+                                callback(&ExplorerAction::CancelDetailsColumnDrag, window, cx);
+                            }
+                        })
+                    },
+                )
                 .when_some(sort_drop_callback, move |element, callback| {
                     element.on_drop(move |drag: &DetailsColumnDrag, window, cx| {
-                        callback(
-                            &ExplorerAction::MoveDetailsColumn {
-                                column: drag.column.clone(),
-                                before: Some(sort_drop_before_column.clone()),
-                            },
-                            window,
-                            cx,
-                        );
+                        let _ = drag;
+                        callback(&ExplorerAction::CommitDetailsColumnDrag, window, cx);
                         cx.stop_propagation();
                     })
                 })
@@ -9712,18 +9776,21 @@ impl RenderOnce for OperationCenter {
 pub struct StatusBar {
     tokens: UiTokens,
     state: StatusBarViewModel,
+    folder_size_backend_status: Option<String>,
     on_action: Option<ActionCallback>,
 }
 
 impl StatusBar {
-    pub const fn new(
+    pub fn new(
         tokens: UiTokens,
         state: StatusBarViewModel,
+        folder_size_backend_status: Option<String>,
         on_action: Option<ActionCallback>,
     ) -> Self {
         Self {
             tokens,
             state,
+            folder_size_backend_status,
             on_action,
         }
     }
@@ -9814,6 +9881,10 @@ impl RenderOnce for StatusBar {
             full_status.push_str(" · ");
             full_status.push_str(notice);
         }
+        if let Some(backend) = &self.folder_size_backend_status {
+            full_status.push_str(" | ");
+            full_status.push_str(backend);
+        }
         div()
             .id(STATUS_BAR_ID)
             .debug_selector(|| STATUS_BAR_ID.to_owned())
@@ -9852,6 +9923,9 @@ impl RenderOnce for StatusBar {
                     .flex()
                     .items_center()
                     .gap(px(layout.content_spacing.value()))
+                    .when_some(self.folder_size_backend_status, |element, status| {
+                        element.child(div().id("status-folder-size-backend").child(status))
+                    })
                     .child(status_view_button(
                         "status-details-view",
                         "Details view",
@@ -11756,6 +11830,38 @@ mod tests {
     }
 
     #[test]
+    fn live_details_preview_projects_stable_header_and_cell_id_order() {
+        use explorer_model::ColumnId::{DateModified, Name, Size, Type};
+
+        let mut state = crate::state::AppViewState::default();
+        state.set_details_column_width(DateModified, 111);
+        state.set_details_column_width(Type, 222);
+        assert!(state.update_details_column_drag_preview(DateModified, Type, 75.0, 0.0, 100.0,));
+        let settings = state.view_settings();
+        let projected = super::visible_details_column_ids(&settings, state.column_registry());
+        assert_eq!(projected[..4], [Name, Type, DateModified, Size]);
+        assert_eq!(settings.details_column_width(&Type), 222);
+        assert_eq!(settings.details_column_width(&DateModified), 111);
+
+        assert!(state.cancel_details_column_drag());
+        let restored = state.view_settings();
+        let projected = super::visible_details_column_ids(&restored, state.column_registry());
+        assert_eq!(projected[..4], [Name, DateModified, Type, Size]);
+    }
+
+    #[test]
+    fn root_drag_cancel_remains_a_capture_safe_terminal_path() {
+        let production = include_str!("chrome.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source");
+        assert!(production.contains(".when_some(details_drag_cancel, |element, callback|"));
+        assert!(
+            production.contains("callback(&ExplorerAction::CancelDetailsColumnDrag, window, cx);")
+        );
+    }
+
+    #[test]
     fn details_header_is_pinned_vertically_for_every_scroll_offset() {
         for vertical_offset in [0.0_f32, -1.0, -24.0, -240.0, -10_000.0] {
             let (_, header_top) = super::details_header_overlay_position((-32.0, vertical_offset));
@@ -12400,10 +12506,7 @@ mod tests {
                 "{selector} numeric alignment"
             );
         }
-        for selector in [
-            "folder-size-bar-track-",
-            "\"code-lines-bar-track\"",
-        ] {
+        for selector in ["folder-size-bar-track-", "\"code-lines-bar-track\""] {
             let start = production.find(selector).expect("progress bar track");
             let local = &production[start..production.len().min(start + 1_500)];
             assert!(local.contains(".border(px(1.0))"), "{selector} frame");
@@ -12773,10 +12876,14 @@ mod tests {
     #[test]
     fn details_size_uses_adaptive_binary_units() {
         assert_eq!(format_explorer_size(0), "0 KB");
-        assert_eq!(format_explorer_size(1), "1 KB");
-        assert_eq!(format_explorer_size(1024), "1 KB");
+        assert_eq!(format_explorer_size(1), "1.0 KB");
+        assert_eq!(format_explorer_size(1024), "1.0 KB");
         assert_eq!(format_explorer_size(1536), "1.5 KB");
         assert_eq!(format_explorer_size(5_427_537_920), "5.1 GB");
+        assert_eq!(
+            format_explorer_size(250 * 1024_u64.pow(3) + 512 * 1024_u64.pow(2)),
+            "250.5 GB"
+        );
     }
 
     #[test]

@@ -483,7 +483,7 @@ pub struct AppViewState {
     /// package descriptors in task 5.2; UI only reads this registry.
     column_registry: explorer_model::ColumnRegistry,
     details_column_resize: Option<DetailsColumnResizeSession>,
-    details_column_drag: Option<explorer_model::ColumnId>,
+    details_column_drag: Option<DetailsColumnDragPreviewSession>,
     details_column_menu: Option<explorer_model::ColumnId>,
     details_filter_menu: Option<explorer_model::ColumnId>,
     details_filters: HashMap<TabId, crate::file_view::DetailsFilters>,
@@ -523,6 +523,70 @@ struct DetailsColumnResizeSession {
     column: explorer_model::ColumnId,
     pointer_x: f32,
     width: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DetailsColumnDragPreviewSession {
+    tab_id: TabId,
+    column: explorer_model::ColumnId,
+    original_order: Vec<explorer_model::ColumnId>,
+    preview_order: Vec<explorer_model::ColumnId>,
+    before: Option<explorer_model::ColumnId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DetailsColumnInsertionPreview {
+    pub(crate) order: Vec<explorer_model::ColumnId>,
+    pub(crate) before: Option<explorer_model::ColumnId>,
+}
+
+pub(crate) fn resolve_details_column_insertion(
+    order: &[explorer_model::ColumnId],
+    dragged: &explorer_model::ColumnId,
+    target: &explorer_model::ColumnId,
+    pointer_x: f32,
+    target_left: f32,
+    target_right: f32,
+) -> Option<DetailsColumnInsertionPreview> {
+    if !pointer_x.is_finite()
+        || !target_left.is_finite()
+        || !target_right.is_finite()
+        || target_left >= target_right
+        || *dragged == explorer_model::ColumnId::Name
+        || !order.iter().any(|column| column == dragged)
+        || !order.iter().any(|column| column == target)
+    {
+        return None;
+    }
+
+    if dragged == target {
+        let source = order.iter().position(|column| column == dragged)?;
+        return Some(DetailsColumnInsertionPreview {
+            order: order.to_vec(),
+            before: order.get(source.saturating_add(1)).cloned(),
+        });
+    }
+
+    let mut prospective = order
+        .iter()
+        .filter(|column| *column != dragged)
+        .cloned()
+        .collect::<Vec<_>>();
+    let target_index = prospective.iter().position(|column| column == target)?;
+    let midpoint = target_left + (target_right - target_left) / 2.0;
+    let insertion = if pointer_x < midpoint {
+        target_index
+    } else {
+        target_index.saturating_add(1)
+    }
+    .max(1)
+    .min(prospective.len());
+    let before = prospective.get(insertion).cloned();
+    prospective.insert(insertion, dragged.clone());
+    Some(DetailsColumnInsertionPreview {
+        order: prospective,
+        before,
+    })
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1843,7 +1907,18 @@ impl AppViewState {
     }
 
     pub fn view_settings(&self) -> explorer_model::ViewSettings {
-        self.tabs.active_tab().view.settings.clone()
+        let mut settings = self.tabs.active_tab().view.settings.clone();
+        if let Some(preview) = self.details_column_drag.as_ref()
+            && preview.tab_id == self.tabs.active_tab_id()
+            && preview.preview_order.iter().all(|column| {
+                self.column_registry.contains(column) && settings.details_layout.visible(column)
+            })
+        {
+            settings
+                .details_layout
+                .reorder_known(preview.preview_order.iter().cloned());
+        }
+        settings
     }
 
     pub(crate) fn toggle_view_menu(&mut self) {
@@ -2327,18 +2402,85 @@ impl AppViewState {
             .move_before(&column, before.as_ref())
     }
 
-    pub(crate) fn begin_details_column_drag(&mut self, column: explorer_model::ColumnId) {
-        self.details_column_drag = (column != explorer_model::ColumnId::Name).then_some(column);
-    }
-
-    pub(crate) fn drop_details_column_before(
+    pub(crate) fn update_details_column_drag_preview(
         &mut self,
-        before: explorer_model::ColumnId,
+        column: explorer_model::ColumnId,
+        target: explorer_model::ColumnId,
+        pointer_x: f32,
+        target_left: f32,
+        target_right: f32,
     ) -> bool {
-        let Some(column) = self.details_column_drag.take() else {
+        if column == explorer_model::ColumnId::Name
+            || !self.column_registry.contains(&column)
+            || !self.column_registry.contains(&target)
+        {
+            return self.cancel_details_column_drag();
+        }
+        let tab_id = self.tabs.active_tab_id();
+        let persisted_order = self
+            .tabs
+            .active_tab()
+            .view
+            .settings
+            .details_layout
+            .visible_registered(&self.column_registry)
+            .map(|entry| entry.id.clone())
+            .collect::<Vec<_>>();
+        let original_order = self
+            .details_column_drag
+            .as_ref()
+            .filter(|session| session.tab_id == tab_id && session.column == column)
+            .map_or(persisted_order, |session| session.original_order.clone());
+        let base_order = self
+            .details_column_drag
+            .as_ref()
+            .filter(|session| session.tab_id == tab_id && session.column == column)
+            .map_or_else(
+                || original_order.clone(),
+                |session| session.preview_order.clone(),
+            );
+        let Some(resolved) = resolve_details_column_insertion(
+            &base_order,
+            &column,
+            &target,
+            pointer_x,
+            target_left,
+            target_right,
+        ) else {
             return false;
         };
-        self.move_details_column_before(column, Some(before))
+        let next = DetailsColumnDragPreviewSession {
+            tab_id,
+            column,
+            original_order,
+            preview_order: resolved.order,
+            before: resolved.before,
+        };
+        if self.details_column_drag.as_ref() == Some(&next) {
+            return false;
+        }
+        self.details_column_drag = Some(next);
+        true
+    }
+
+    pub(crate) fn commit_details_column_drag(&mut self) -> bool {
+        let Some(session) = self.details_column_drag.take() else {
+            return false;
+        };
+        if session.tab_id != self.tabs.active_tab_id()
+            || session.preview_order == session.original_order
+        {
+            return false;
+        }
+        self.move_details_column_before(session.column, session.before)
+    }
+
+    pub(crate) fn cancel_details_column_drag(&mut self) -> bool {
+        self.details_column_drag.take().is_some()
+    }
+
+    pub const fn details_column_drag_active(&self) -> bool {
+        self.details_column_drag.is_some()
     }
 
     pub(crate) fn toggle_details_pane(&mut self) {
@@ -3850,6 +3992,17 @@ impl AppViewState {
                 &self.folder_size_sort_values,
                 tab.view.settings.sort.direction,
             ))
+        } else if tab.view.settings.sort.column == explorer_model::ColumnId::Size {
+            let mut values = self.folder_size_sort_values.clone();
+            for entry in snapshot.entries() {
+                if !crate::folder_size_column::applies_to_shell_entry(
+                    entry.is_container,
+                    entry.metadata.size_bytes,
+                ) {
+                    values.insert(entry.id.clone(), entry.metadata.size_bytes);
+                }
+            }
+            Some(presentation.sorted_by_extension_bytes(&values, tab.view.settings.sort.direction))
         } else if let Some(values) = self
             .code_lines_sort_values
             .get(&tab.view.settings.sort.column)
@@ -5142,7 +5295,7 @@ fn navigation_locations_for_operation(request: &FileOperationRequest) -> Vec<Loc
 
 #[cfg(test)]
 mod tests {
-    use super::{AppViewState, CommandKind};
+    use super::{AppViewState, CommandKind, resolve_details_column_insertion};
     use crate::{focus::FocusSurface, layout::LayoutTokens, theme::ThemeMode};
     use std::time::{Duration, Instant};
 
@@ -5216,6 +5369,98 @@ mod tests {
         let _ =
             state.apply_service_event(explorer_model::ExplorerEvent::DirectoryFinished { context });
         state
+    }
+
+    fn visible_detail_order(state: &AppViewState) -> Vec<explorer_model::ColumnId> {
+        let settings = state.view_settings();
+        settings
+            .details_layout
+            .visible_registered(state.column_registry())
+            .map(|entry| entry.id.clone())
+            .collect()
+    }
+
+    #[test]
+    fn details_column_midpoints_resolve_symmetrically_after_removing_source() {
+        use explorer_model::ColumnId::{DateModified, Name, Size, Type};
+
+        let order = vec![Name, DateModified, Type, Size];
+        let right =
+            resolve_details_column_insertion(&order, &DateModified, &Type, 50.0, 0.0, 100.0)
+                .expect("exact midpoint uses the right insertion slot");
+        assert_eq!(right.order, vec![Name, Type, DateModified, Size]);
+        assert_eq!(right.before, Some(Size));
+
+        let left = resolve_details_column_insertion(&order, &Size, &Type, 49.0, 0.0, 100.0)
+            .expect("left insertion slot");
+        assert_eq!(left.order, vec![Name, DateModified, Size, Type]);
+        assert_eq!(left.before, Some(Type));
+
+        let terminal =
+            resolve_details_column_insertion(&order, &DateModified, &Size, 100.0, 0.0, 100.0)
+                .expect("terminal insertion slot");
+        assert_eq!(terminal.order, vec![Name, Type, Size, DateModified]);
+        assert_eq!(terminal.before, None);
+    }
+
+    #[test]
+    fn details_column_midpoint_rejects_invalid_input_and_name_drag() {
+        use explorer_model::ColumnId::{DateModified, Name, Type};
+
+        let order = vec![Name, DateModified, Type];
+        assert!(
+            resolve_details_column_insertion(&order, &DateModified, &Type, f32::NAN, 0.0, 1.0)
+                .is_none()
+        );
+        assert!(
+            resolve_details_column_insertion(&order, &DateModified, &Type, 0.5, 1.0, 1.0).is_none()
+        );
+        assert!(resolve_details_column_insertion(&order, &Name, &Type, 0.5, 0.0, 1.0).is_none());
+    }
+
+    #[test]
+    fn details_column_preview_is_transient_repeatable_and_cancellable() {
+        use explorer_model::ColumnId::{DateModified, Name, Size, Type};
+
+        let mut state = AppViewState::default();
+        let original = visible_detail_order(&state);
+        assert_eq!(original[..4], [Name, DateModified, Type, Size]);
+        assert!(state.update_details_column_drag_preview(DateModified, Type, 75.0, 0.0, 100.0,));
+        assert_eq!(
+            visible_detail_order(&state)[..4],
+            [Name, Type, DateModified, Size]
+        );
+        assert!(!state.update_details_column_drag_preview(DateModified, Type, 75.0, 0.0, 100.0,));
+        assert!(state.cancel_details_column_drag());
+        assert_eq!(visible_detail_order(&state), original);
+    }
+
+    #[test]
+    fn details_column_preview_commits_once_and_invalid_identity_cancels() {
+        use explorer_model::ColumnId::{DateModified, Name, Size, Type};
+
+        let mut state = AppViewState::default();
+        assert!(state.update_details_column_drag_preview(DateModified, Type, 75.0, 0.0, 100.0,));
+        assert!(state.commit_details_column_drag());
+        assert!(!state.commit_details_column_drag());
+        assert_eq!(
+            visible_detail_order(&state)[..4],
+            [Name, Type, DateModified, Size]
+        );
+
+        assert!(state.update_details_column_drag_preview(DateModified, Size, 75.0, 0.0, 100.0,));
+        let unavailable = explorer_model::ColumnId::Extension {
+            package_id: "missing-package".to_owned(),
+            column_id: "missing-column".to_owned(),
+        };
+        assert!(state.update_details_column_drag_preview(
+            DateModified,
+            unavailable,
+            75.0,
+            0.0,
+            100.0,
+        ));
+        assert!(!state.details_column_drag_active());
     }
 
     #[test]

@@ -47,7 +47,9 @@ impl VisualColumnImplementationV1 for FolderSizeMeasureColumn {
         &self,
         request: FolderSizeMeasureRequestV1,
     ) -> FolderSizeMeasureResultV1 {
-        measure_folder_size_with_cache(&request, plugin_cache_directory().as_deref())
+        // Persistent data-column caching is exclusively host-owned. The
+        // compatibility measure callback computes only the requested value.
+        measure_folder_size_with_cache(&request, None)
     }
 
     fn render(&self, context: CellRenderContextV1) -> CellRenderPlanV1 {

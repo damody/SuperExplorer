@@ -10,6 +10,7 @@ local fs = require("fs")
 local lfs = require("lfs")
 local path_util = require("path")
 local process = require("process")
+local publish = require("publish")
 local sdk_version = require("sdk_version")
 
 if script_dir == "build" then
@@ -57,7 +58,9 @@ local function reject_uncommitted_rust(logs)
         exe = "git.exe",
         args = {
             "status", "--porcelain=v1", "--untracked-files=all", "--",
-            "*.rs", ":(exclude)sdk/**",
+            "*.rs",
+            ":(exclude)sdk/**",
+            ":(exclude)openspec/**/evidence/**",
         },
         cwd = root,
         log_path = status_log,
@@ -172,10 +175,13 @@ local function main()
     local release_executable = path(root, "target", "release", "SuperExplorer.exe")
     local broker_executable = path(root, "target", "release", "explorer-extension-broker.exe")
     local mft_helper_executable = path(root, "target", "release", "superexplorer-mft-helper.exe")
+    local mft_service_executable = path(root, "target", "release", "superexplorer-mft-service.exe")
     local worker_executable = path(root, "target", "release", "explorer-extension-worker.exe")
     local everything_dll = path(root, "target", "release", "Everything64.dll")
     local dist = path(root, "dist")
     local output = path(dist, "SuperExplorer-Setup-" .. version .. "-x64.exe")
+    local temporary_name = assert(os.tmpname():match("[^\\/]+$"))
+    local temporary_output = path(dist, "." .. temporary_name .. "-SuperExplorer-Setup.exe")
 
     print("NSIS 執行環境：" .. makensis)
 
@@ -218,13 +224,14 @@ local function main()
     local application_size = validate_executable(release_executable, "發行版執行檔")
     validate_executable(broker_executable, "extension broker")
     validate_executable(mft_helper_executable, "MFT helper")
+    validate_executable(mft_service_executable, "MFT service")
     validate_executable(worker_executable, "extension worker")
     validate_executable(everything_dll, "Everything SDK DLL")
     local plugin_size = 0
     for _, plugin in ipairs(plugin_specs) do
         plugin_size = plugin_size + validate_executable(plugin.path, plugin.root .. " Plugin DLL")
     end
-    os.remove(output)
+    os.remove(temporary_output)
     process.run({
         stage = "編譯 NSIS 安裝程式",
         exe = makensis,
@@ -234,6 +241,7 @@ local function main()
             "/DAPP_EXE=" .. release_executable,
             "/DBROKER_EXE=" .. broker_executable,
             "/DMFT_HELPER_EXE=" .. mft_helper_executable,
+            "/DMFT_SERVICE_EXE=" .. mft_service_executable,
             "/DWORKER_EXE=" .. worker_executable,
             "/DEVERYTHING_DLL=" .. everything_dll,
             "/DPLUGIN_FOLDER_SIZE=" .. plugin_specs[1].path,
@@ -244,12 +252,14 @@ local function main()
             "/DPLUGIN_EXIF_RENAME=" .. plugin_specs[6].path,
             "/DPLUGIN_7Z=" .. plugin_specs[7].path,
             "/DPLUGIN_BULK_FOLDER=" .. plugin_specs[8].path,
-            "/DOUTPUT_FILE=" .. output,
+            "/DOUTPUT_FILE=" .. temporary_output,
             nsis_script,
         },
         cwd = root,
         log_path = path(logs, "installer-nsis.log"),
     })
+    validate_executable(temporary_output, "暫存安裝程式")
+    publish.apk(temporary_output, output)
     local installer_size = validate_executable(output, "安裝程式")
 
     if not options.no_launch then
