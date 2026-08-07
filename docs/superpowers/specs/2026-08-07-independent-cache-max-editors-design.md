@@ -6,7 +6,7 @@ Make every cache and MFT index component shown in Folder Options independently c
 
 ## User-visible behavior
 
-Each configurable telemetry row shows its current usage, effective maximum, and a whole-number MB textbox. The following rows are configurable:
+Each configurable telemetry row shows its current usage, effective maximum, a whole-number MB textbox, and a 400 px horizontal progress-slider. The following rows are configurable:
 
 | Row | Default | Minimum | Maximum | Enforcement owner |
 |---|---:|---:|---:|---|
@@ -26,6 +26,12 @@ Each configurable telemetry row shows its current usage, effective maximum, and 
 | MFT Service LRU | 512 MB | 128 MB | 16384 MB | MFT Service result LRU |
 
 The textbox accepts decimal integer MB values only. Apply and OK parse all fields as a single transaction. Empty or non-numeric fields restore their last valid committed value. Values outside their row-specific range are clamped and the textbox is rewritten to the effective value. Cancel discards every draft value.
+
+The progress-slider uses discrete logarithmic stops so small budgets remain adjustable even when a row supports 16384 MB. The shared stop sequence is:
+
+`8, 16, 32, 48, 64, 72, 84, 96, 128, 192, 256, 320, 384, 512, 640, 768, 1024, 1280, 1536, 2048, 2560, 3072, 4096, 5120, 6144, 8192, 10240, 12288, 16384` MB.
+
+Each row filters that sequence to its own minimum and maximum and always includes both endpoints. Clicking or dragging the 400 px bar selects the nearest valid stop. Left/Down and Right/Up move one stop; Home and End select the row minimum and maximum. The filled progress portion, thumb, textbox, draft value, and accessible numeric value update bidirectionally. A textbox may still accept any integer between the row bounds; a value between stops is displayed at its logarithmically interpolated position and the first subsequent slider movement snaps to the nearest stop.
 
 ## Settings model and persistence
 
@@ -56,7 +62,7 @@ The user selected strict per-structure trimming even when it can make folder-siz
 
 ## Telemetry UI
 
-Telemetry rows use a common component containing label, usage, effective maximum, and number editor. Subtotals remain read-only because they are derived values. `GPU (BC7): Available`, entry/hit/miss counters, and section headers also remain read-only. Every configurable row exposes an automation ID for UITEST.
+Telemetry rows use a common component containing label, usage, effective maximum, number editor, and a fixed 400 px progress-slider. At widths that cannot fit the label, values, editor, and bar on one line, the controls wrap beneath the label without horizontal clipping. Subtotals remain read-only because they are derived values. `GPU (BC7): Available`, entry/hit/miss counters, and section headers also remain read-only. Every editor and slider exposes a stable automation ID for UITEST.
 
 ## Verification
 
@@ -64,6 +70,7 @@ Unit and integration coverage must verify:
 
 - every default, minimum, maximum, and clamp;
 - editing multiple fields, Cancel, Apply, and OK semantics;
+- exact slider stop generation, logarithmic interpolation, pointer snapping, keyboard operation, and textbox/slider synchronization;
 - session persistence and legacy migration;
 - immediate MFT `SetCacheBudgets` IPC and returned effective values;
 - independent trimming of every MFT structure and partial-result propagation;
