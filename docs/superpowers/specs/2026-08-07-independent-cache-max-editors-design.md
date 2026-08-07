@@ -29,7 +29,7 @@ The textbox accepts decimal integer MB values only. Apply and OK parse all field
 
 The progress-slider uses discrete logarithmic stops so small budgets remain adjustable even when a row supports 16384 MB. The shared stop sequence is:
 
-`8, 16, 32, 48, 64, 72, 84, 96, 128, 192, 256, 320, 384, 512, 640, 768, 1024, 1280, 1536, 2048, 2560, 3072, 4096, 5120, 6144, 8192, 10240, 12288, 16384` MB.
+`8, 16, 24, 32, 48, 64, 72, 84, 96, 128, 192, 256, 320, 384, 512, 640, 768, 1024, 1280, 1536, 2048, 2560, 3072, 4096, 5120, 6144, 8192, 10240, 12288, 16384` MB.
 
 Each row filters that sequence to its own minimum and maximum and always includes both endpoints. Clicking or dragging the 400 px bar selects the nearest valid stop. Left/Down and Right/Up move one stop; Home and End select the row minimum and maximum. The filled progress portion, thumb, textbox, draft value, and accessible numeric value update bidirectionally. A textbox may still accept any integer between the row bounds; a value between stops is displayed at its logarithmically interpolated position and the first subsequent slider movement snaps to the nearest stop.
 
