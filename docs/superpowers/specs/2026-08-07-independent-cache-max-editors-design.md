@@ -20,10 +20,10 @@ Each configurable telemetry row shows its current usage, effective maximum, and 
 | Thumbnail BC7 disk | 1024 MB | 128 MB | 16384 MB | Shell thumbnail disk cache |
 | Extension data-column disk | 256 MB | 32 MB | 8192 MB | Host data-column disk cache |
 | Persisted MFT index | 1024 MB | 256 MB | 16384 MB | MFT Service persisted store |
-| Volume index memory | 512 MB | 128 MB | 4096 MB | MFT Service volume index |
-| File data memory | 256 MB | 64 MB | 4096 MB | MFT Service file data |
-| Folder aggregates memory | 512 MB | 128 MB | 4096 MB | MFT Service aggregates |
-| MFT Service LRU | 512 MB | 128 MB | 4096 MB | MFT Service result LRU |
+| Volume index memory | 512 MB | 128 MB | 16384 MB | MFT Service volume index |
+| File data memory | 256 MB | 64 MB | 16384 MB | MFT Service file data |
+| Folder aggregates memory | 512 MB | 128 MB | 16384 MB | MFT Service aggregates |
+| MFT Service LRU | 512 MB | 128 MB | 16384 MB | MFT Service result LRU |
 
 The textbox accepts decimal integer MB values only. Apply and OK parse all fields as a single transaction. Empty or non-numeric fields restore their last valid committed value. Values outside their row-specific range are clamped and the textbox is rewritten to the effective value. Cancel discards every draft value.
 
