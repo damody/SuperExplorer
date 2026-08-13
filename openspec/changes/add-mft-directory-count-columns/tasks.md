@@ -189,3 +189,17 @@
 - [x] 7.1.3 Add and pass focused request-spy and dispatch-spy tests for visible immediate start, restored-visible start, two-column deduplication, both-hidden zero-query, last-hidden suppression, and hidden File Count Code Lines non-dispatch/status.
 - [ ] 7.1.4 Run format, focused model/application/UI/extension tests, bundle verification, strict OpenSpec/task validation, and write indexed correction evidence.
 - [ ] 7.1.5 Rebuild and install through the standard path, then capture real headful evidence that enabling File Count/Folder Count populates MFT-backed values without refresh and that hiding both prevents new count activity.
+
+### 7.2 Compact Code Lines limit presentation
+
+**目的：** Replace long blocked-state text with a compact warning label while preserving the complete reason on hover and for assistive technology.
+**輸入：** Approved `2026-08-14-code-lines-limit-tooltip-design.md`, `FolderAdmissionStateV1`, Details admission cell renderer, GPUI tooltip API.
+**產出：** Red `Limit` cells for unavailable and over-limit states, reason-specific tooltip/accessibility text, and focused regression coverage.
+**依賴：** 3.3, 7.1.
+**Owner／Wave：** UI integration owner / Wave 5.
+**Evidence：** Focused state-model/renderer test output plus headful screenshot or accessibility probe.
+**完成門檻：** Both blocked states render only red `Limit`, expose their distinct complete reasons on hover and accessibility, and Pending remains unchanged.
+
+- [x] 7.2.1 Split admission presentation into short label, complete reason, and limit classification while preserving Pending semantics.
+- [x] 7.2.2 Attach the existing GPUI tooltip lifecycle and warning semantic color to blocked Details cells, with the full reason in the accessible name.
+- [ ] 7.2.3 Add focused tests and headful/accessibility evidence for unavailable, over-limit, and pending states.

@@ -29,10 +29,10 @@ fn extension_render_generation(item_id: &explorer_model::ShellItemId, snapshot: 
 use abi_stable::std_types::{ROption, RString};
 use explorer_model::{DirectoryState, TabId, TabSearchState};
 use gpui::{
-    AccessibleAction, Anchor, AnchoredPositionMode, App, DispatchPhase, Focusable, IntoElement,
-    MouseButton, MouseMoveEvent, MouseUpEvent, ObjectFit, RenderImage, RenderOnce, Role,
-    SharedString, Window, WindowControlArea, anchored, canvas, deferred, div, img, point,
-    prelude::*, px,
+    AccessibleAction, Anchor, AnchoredPositionMode, App, Context, DispatchPhase, Focusable,
+    IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent, ObjectFit, Render, RenderImage,
+    RenderOnce, Role, SharedString, Window, WindowControlArea, anchored, canvas, deferred, div,
+    img, point, prelude::*, px,
 };
 use gpui_elements::editable_text::{EditableTextState, text_input};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -9233,10 +9233,11 @@ fn code_lines_detail_column_cell(
             if let Some(admission) = visuals.admissions.get(entry_id) {
                 host_admission_detail_cell(
                     &visuals.config.descriptor,
-                    admission.label(),
+                    *admission,
                     view_settings,
                     visible_index,
                     layout,
+                    colors,
                 )
             } else {
                 code_lines_detail_cell(
@@ -9263,19 +9264,21 @@ fn code_lines_detail_column_cell(
 
 fn host_admission_detail_cell(
     descriptor: &explorer_model::ColumnDescriptor,
-    label: &str,
+    admission: crate::code_lines_column::FolderAdmissionStateV1,
     view_settings: &explorer_model::ViewSettings,
     visible_index: usize,
     layout: crate::layout::LayoutTokens,
+    colors: crate::theme::SemanticColors,
 ) -> gpui::AnyElement {
     let width = f32::from(view_settings.details_column_width(&descriptor.id));
+    let (label, reason, is_limit) = admission_cell_presentation(admission);
     div()
         .id(format!(
             "{}-{visible_index}",
             details_column_selector("extension-column-admission", &descriptor.id)
         ))
         .role(Role::Status)
-        .aria_label(format!("{}: {label}", descriptor.display_name))
+        .aria_label(format!("{}: {reason}", descriptor.display_name))
         .w(px(width))
         .h_full()
         .flex_none()
@@ -9283,8 +9286,48 @@ fn host_admission_detail_cell(
         .items_center()
         .justify_end()
         .px(px(layout.content_spacing.value() / 2.0))
+        .when(is_limit, |element| {
+            let reason = SharedString::from(reason);
+            element
+                .text_color(colors.danger.to_gpui())
+                .tooltip(move |_, cx| {
+                    cx.new(|_| AdmissionLimitTooltip {
+                        reason: reason.clone(),
+                        colors,
+                        layout,
+                    })
+                    .into()
+                })
+        })
         .child(label.to_owned())
         .into_any_element()
+}
+
+fn admission_cell_presentation(
+    admission: crate::code_lines_column::FolderAdmissionStateV1,
+) -> (&'static str, &'static str, bool) {
+    (admission.label(), admission.reason(), admission.is_limit())
+}
+
+struct AdmissionLimitTooltip {
+    reason: SharedString,
+    colors: crate::theme::SemanticColors,
+    layout: crate::layout::LayoutTokens,
+}
+
+impl Render for AdmissionLimitTooltip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(self.layout.control_padding_horizontal.value()))
+            .py(px(self.layout.content_spacing.value() / 2.0))
+            .rounded(px(self.layout.corner_radius.value()))
+            .border_1()
+            .border_color(self.colors.divider.to_gpui())
+            .bg(self.colors.menu_fill.to_gpui())
+            .text_color(self.colors.text_primary.to_gpui())
+            .shadow_md()
+            .child(self.reason.clone())
+    }
 }
 
 #[allow(
@@ -11621,16 +11664,34 @@ mod tests {
         ACTIVE_TAB_ID, CAPTION_CLOSE_ID, CAPTION_CONTROL_AREAS, CAPTION_MAXIMIZE_ID,
         CAPTION_MINIMIZE_ID, COMMAND_BAR_ID, EXPLORER_WINDOW_ID, FILE_VIEW_HOST_ID, FileViewState,
         NAVIGATION_BAR_ID, NAVIGATION_PANE_ID, NEW_TAB_BUTTON_ID, SEARCH_BOX_ID, STATUS_BAR_ID,
-        TAB_STRIP_ID, WINDOW_CHROME_ID, WINDOW_DRAG_REGION_ID, breadcrumb_ancestry_partition,
-        breadcrumb_location_shell_texture, builtin_count_display, client_to_screen_point,
-        details_name_column_contains, editable_input_colors, file_view_local_pointer,
-        format_explorer_size, localized_search_placeholder, marquee_content_rect,
-        navigation_item_shell_texture, navigation_shell_texture, new_tab_button_background,
-        tab_background,
+        TAB_STRIP_ID, WINDOW_CHROME_ID, WINDOW_DRAG_REGION_ID, admission_cell_presentation,
+        breadcrumb_ancestry_partition, breadcrumb_location_shell_texture, builtin_count_display,
+        client_to_screen_point, details_name_column_contains, editable_input_colors,
+        file_view_local_pointer, format_explorer_size, localized_search_placeholder,
+        marquee_content_rect, navigation_item_shell_texture, navigation_shell_texture,
+        new_tab_button_background, tab_background,
     };
     use crate::{UiTokens, theme::ThemeTokens};
     use gpui::WindowControlArea;
     use std::cmp::Ordering;
+
+    #[test]
+    fn code_lines_blocked_cells_share_limit_label_but_keep_distinct_reasons() {
+        use crate::code_lines_column::FolderAdmissionStateV1;
+
+        assert_eq!(
+            admission_cell_presentation(FolderAdmissionStateV1::Unavailable),
+            ("Limit", "依賴 File Count，因此未啟動", true)
+        );
+        assert_eq!(
+            admission_cell_presentation(FolderAdmissionStateV1::OverLimit),
+            ("Limit", "File Count 超過限制，因此未啟動", true)
+        );
+        assert_eq!(
+            admission_cell_presentation(FolderAdmissionStateV1::Pending),
+            ("等待 File Count…", "等待 File Count…", false)
+        );
+    }
 
     #[test]
     fn builtin_count_cells_distinguish_exact_unavailable_and_ineligible_rows() {

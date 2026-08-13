@@ -8,7 +8,7 @@ SuperExplorer's MFT pipeline already produces recursive file and directory count
 - Introduce a deduplicated Host directory-facts projection shared by both columns and dependent extension contributions.
 - Add optional inclusive `max_file_count` and `max_folder_count` admission limits to folder-applicable data-column contributions and enforce them before callback dispatch.
 - Configure the Rust and Lua Code Lines contributions with `max_file_count = 999`, preserving file-item analysis while gating folder analysis.
-- Show explicit Code Lines pending, over-limit, and unavailable-dependency states without adding localization resources.
+- Show pending Code Lines state normally; show both over-limit and unavailable-dependency states as a compact red `Limit` label whose hover tooltip and accessible name retain the complete reason, without adding localization resources.
 - Preserve existing extension behavior when no admission policy is declared and preserve legacy sessions with both new built-in columns hidden.
 - Make count acquisition strictly visibility-driven: showing either built-in count column immediately starts the shared MFT query, while hiding both columns prevents count-only queries even when an enabled extension declares count limits.
 - Require the corresponding built-in count column to be visible before a limited extension may consume that fact; Code Lines remains dependency-disabled while File Count is hidden.

@@ -60,7 +60,9 @@ Alternative: let enabled limited extensions acquire facts while the columns are 
 
 ### Code Lines uses the generic gate
 
-Both official Code Lines package contributions declare `max_file_count = 999`. Folder cells display `等待 File Count…` while visible File Count facts are pending, `File Count 超過限制，因此未啟動` when the exact count is at least 1000, and `依賴 File Count，因此未啟動` when File Count is hidden or exact facts cannot be obtained. File rows bypass the folder gate. Hidden File Count presentation suppresses both dependency acquisition and folder dispatch.
+Both official Code Lines package contributions declare `max_file_count = 999`. Folder cells display `等待 File Count…` while visible File Count facts are pending. When the exact count is at least 1000 or File Count is hidden/unavailable, the cell displays only a red `Limit`; its GPUI hover tooltip and accessible name retain the corresponding complete reason, `File Count 超過限制，因此未啟動` or `依賴 File Count，因此未啟動`. File rows bypass the folder gate. Hidden File Count presentation suppresses both dependency acquisition and folder dispatch.
+
+`FolderAdmissionStateV1` owns the short label, complete reason, and limit-state classification. The Details cell renderer owns warning color, tooltip attachment, and accessible naming. This keeps presentation policy separate from admission and MFT demand logic. Pending remains a normal non-limit state, and ordinary extension errors keep their existing renderer path.
 
 Alternative: special-case the threshold only in `ApplicationCodeLinesRuntimeV1`. Rejected because future extensions would not receive the requested reusable protection and manifest validation could not describe the behavior.
 
