@@ -1,0 +1,6 @@
+Gate: Everything indexed provider boundary
+Date: 2026-08-05 Asia/Taipei
+Command: cargo test -p explorer-shell-win --lib everything --locked --offline
+Result: 7 passed; 0 failed
+Contract: bounded full path + logical size + kind; live metadata, canonical scope,
+reparse, stale size/kind, missing parent, and node quota reject to recursive fallback.

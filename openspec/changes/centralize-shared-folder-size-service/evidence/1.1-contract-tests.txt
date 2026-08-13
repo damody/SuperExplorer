@@ -1,0 +1,8 @@
+Gate: G1 snapshot contract tests
+Date: 2026-08-05 Asia/Taipei
+Command: cargo test -p explorer-app --lib folder_size_service --locked --offline
+Result: PASS
+Tests: 8 passed; 0 failed; 60 filtered out
+Coverage: exact aggregate/tree, bounded codec corruption/schema/oversize, resource limit,
+cancellation, lease/stale generation, logical hard-link entries, mutation/deep tree,
+directory reparse non-traversal, and unavailable-subtree partial status.

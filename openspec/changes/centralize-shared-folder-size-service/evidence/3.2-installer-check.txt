@@ -1,0 +1,17 @@
+Gate: installer inputs and packaged tools
+Date: 2026-08-05 Asia/Taipei
+Command: build_install.bat --check --allow-dirty
+Result: PASS
+Resolved Lua: D:\SuperExplorer\build\tools\lua\lua.exe
+Resolved NSIS: C:\Program Files (x86)\NSIS\makensis.exe
+Note: --allow-dirty is required during implementation because the normal source-dirty
+release guard correctly rejects the active Rust changes.
+
+Release service build:
+  cargo build -p explorer-app --release --bin superexplorer-mft-service --locked --offline
+  PASS; target\release\superexplorer-mft-service.exe
+Installer build:
+  build_install.bat --skip-build --no-launch --allow-dirty
+  PASS; dist\SuperExplorer-Setup-1.2026.8.5-x64.exe (7,991,605 bytes)
+NSIS verified: admin installer, Program Files + HKLM, LocalSystem automatic service,
+upgrade stop/config/start, uninstall stop/delete, fixed ProgramData cache removal.

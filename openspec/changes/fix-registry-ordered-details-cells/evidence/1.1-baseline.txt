@@ -1,0 +1,25 @@
+Task 1.1.1 baseline inventory
+Date: 2026-08-05 Asia/Taipei
+
+Observed screenshot order
+- Header: Code lines, Folder size, Lock owners, Main code lines
+- Row: Folder size bar/byte label, Lua numeric line count, lock owner, Rust main-language label
+
+Root cause source paths
+- crates/explorer-model/src/navigation.rs: ColumnRegistry stores descriptors in BTreeMap<ColumnId, ...> and iterates values in stable ColumnId order.
+- crates/explorer-ui/src/chrome.rs: details_header iterates visible registry descriptors.
+- crates/explorer-ui/src/chrome.rs: details rows emit built-ins, then Folder size, then a separately sorted Code lines-family vector.
+
+Relevant stable extension identities
+- Folder size: package rust-folder-size-visual-column / column folder-size
+- Lua Code lines: Lua package descriptor / column code-lines
+- Lock owners: package rust-lock-owner / column owners
+- Rust Main code lines: Rust tokei package descriptor / column code-lines
+
+Owned implementation/evidence paths for this fix
+- crates/explorer-ui/src/chrome.rs
+- scripts/smoke_tokei_plugin_headful.ps1 (only if lifecycle assertions require extension)
+- openspec/changes/fix-registry-ordered-details-cells/**
+
+Worktree note
+The repository contains many pre-existing user-owned modifications. This change preserves them and only patches the relevant overlapping regions.

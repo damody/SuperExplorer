@@ -1,0 +1,21 @@
+﻿{
+    "schema_version":  1,
+    "status":  "PASS",
+    "scroll_delta":  {
+                         "options_page":  623.42999267578125,
+                         "first_card":  -1091,
+                         "last_card":  -1092,
+                         "background_file_view":  0
+                     },
+    "oracles":  {
+                    "separate_native_window":  true,
+                    "owner_remains_interactive":  true,
+                    "repeated_open_reuses_same_hwnd_and_draft":  true,
+                    "footer_button_reachable_before_scroll":  true,
+                    "genuine_mouse_wheel_scrolls_extension_list":  true,
+                    "right_side_scrollbar_visible_after_scroll":  true,
+                    "wheel_does_not_scroll_background_folder":  true,
+                    "footer_button_stays_fixed_after_scroll":  true,
+                    "escape_closes_without_requiring_footer":  true
+                }
+}

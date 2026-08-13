@@ -1,0 +1,6 @@
+Task ID: 1.1.2
+Command: cargo test -p explorer-ui --locked --offline code_lines -- --nocapture
+Expected: Existing focused tests pass; they do not yet assert cross-renderer-family horizontal ordering.
+Actual: Exit 0; 6 passed, 0 failed, 280 filtered out. The absence of an ordered header-versus-row identity assertion is the expected coverage gap.
+Gate: G1
+Date: 2026-08-05 Asia/Taipei

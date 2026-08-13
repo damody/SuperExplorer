@@ -1,0 +1,20 @@
+Recorded: 2026-08-05 Asia/Taipei
+
+PASS: PowerShell parser accepted scripts/smoke_tokei_plugin_headful.ps1 with zero parse errors.
+PASS: cargo check -p explorer-ui -p explorer-app --locked --offline.
+PASS: cargo test -p explorer-ui --locked --offline code_lines -- --nocapture (6 passed).
+PASS: cargo test -p explorer-ui --locked --offline extension_detail -- --nocapture (2 passed).
+PASS: detailed task validator (L1=3, L2=5, L3=19).
+PASS: openspec validate fix-registry-ordered-details-cells --strict.
+PASS: git diff --check for owned implementation, script, and change artifacts.
+PASS: four-extension wide headful run; UIA aligned Code lines, Folder size, and Main code lines; Lock owners retained its own empty column; clean shutdown; no unexpected descendants.
+PASS: screenshot review shows Code lines numeric counts, Folder size bars/bytes, Lock owners, Main code lines, and exact Rust: 1,250.
+PASS: final screenshot SHA-256 800873CA494BB658295A9F0FDAD0A001C8F4731AD6040FEC384B03615C1E3D91.
+
+Traceability
+- Dynamic registry shared ordering: tasks 1.2.1-1.2.5, G2, ordered projection tests and headful screenshot.
+- Disable/stale/missing/re-enable behavior: tasks 2.1.1-2.1.4, G3, lifecycle tests and fail-closed unavailable renderer.
+- Real semantic alignment: tasks 3.1.1-3.1.4, G4, report.json, screenshot, visual review, and iteration lineage.
+- Final evidence integrity: tasks 3.2.1-3.2.4, G5, evidence index, strict validation, and screenshot hashes.
+
+Relevant warnings are pre-existing lint warnings outside this change's behavior; all commands exited 0.

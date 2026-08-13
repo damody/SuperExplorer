@@ -1,0 +1,53 @@
+{
+  "schema_version": 2,
+  "run_id": "1785939239-7443200288344ea6a6b336d777dc4281",
+  "started_utc": "unix:1785939239",
+  "workspace": "D:\\SuperExplorer",
+  "git_revision": "86f8863a4502",
+  "git_dirty": true,
+  "host": {
+    "windows_build": "26200",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+    "architecture": "x86_64"
+  },
+  "selected_suites": [
+    "quick"
+  ],
+  "selected_cases": [
+    "thumbnail-edge-fit-regression"
+  ],
+  "counts": {
+    "PASS": 1
+  },
+  "results": [
+    {
+      "id": "thumbnail-edge-fit-regression",
+      "description": "Verify thumbnail provenance and aspect-preserving landscape, portrait, square, DPI-adjusted, and Shell-icon geometry.",
+      "status": "PASS",
+      "started_utc": "unix:1785939239",
+      "duration_ms": 13172,
+      "command": "cargo.exe test -p explorer-ui --lib thumbnail_edge_fit --locked -- --nocapture --test-threads=1",
+      "exit_code": 0,
+      "terminal_reason": null,
+      "stdout": "logs/thumbnail-edge-fit-regression.stdout.log",
+      "stderr": "logs/thumbnail-edge-fit-regression.stderr.log",
+      "evidence_directory": "evidence/thumbnail-edge-fit-regression",
+      "artifacts": [],
+      "requirements": [
+        "fit-maximum-thumbnails-to-cell-edges/thumbnail-edge-fit-presentation/real-thumbnails-use-the-complete-stacked-visual-region",
+        "fit-maximum-thumbnails-to-cell-edges/thumbnail-edge-fit-presentation/shell-and-fallback-icons-retain-bounded-icon-geometry",
+        "fit-maximum-thumbnails-to-cell-edges/thumbnail-edge-fit-presentation/thumbnail-edge-fit-has-automated-regression-coverage"
+      ],
+      "rerun_command": "cargo run -p explorer-uitest -- --manifest uitest/manifest.json --case thumbnail-edge-fit-regression",
+      "process": {
+        "launched_pid": 6848,
+        "before_count": 385,
+        "after_count": 380,
+        "detected_residual_pids": [],
+        "residual_pids": [],
+        "cleanup_attempted": false
+      }
+    }
+  ]
+}

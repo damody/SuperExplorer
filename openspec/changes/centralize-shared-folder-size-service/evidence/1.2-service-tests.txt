@@ -1,0 +1,10 @@
+Gate: shared folder snapshot service focused/full library tests
+Date: 2026-08-05 Asia/Taipei
+Commands:
+  cargo test -p explorer-app --lib folder_size_service --locked --offline
+  cargo test -p explorer-app --lib --locked --offline
+Results:
+  focused: 10 passed; 0 failed
+  full library: 69 passed; 0 failed; 1 release-only benchmark ignored
+Verified: aggregate/tree one physical scan, generation rejection, bounded LRU/leases,
+fallback counters, cancellation/resource statuses, indexed/reference equality.
