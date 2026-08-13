@@ -8,6 +8,9 @@ param(
     [string]$OutputDirectory = 'target\tokei-headful-smoke',
     [string[]]$AdditionalPluginDlls = @(),
     [switch]$DirectoryAggregateMode,
+    [int]$MinimumDirectoryValues = 10,
+    [switch]$EnableFileCountColumn,
+    [switch]$InputPreparationRepairMode,
     [switch]$DirectoryAdmissionUnavailableMode,
     [switch]$DirectoryAdmissionBoundaryMode,
     [switch]$UseExecutableInPlace,
@@ -590,6 +593,31 @@ try {
     if ($WideWindow) { [void][TokeiHeadfulSmoke.Native]::MoveWindow($window,0,0,2600,1200,$true) }
     [void][TokeiHeadfulSmoke.Native]::SetForegroundWindow($window)
     $root=[Windows.Automation.AutomationElement]::FromHandle($window)
+    if ($EnableFileCountColumn) {
+        $detailsHeader = Find-ButtonName $root 'Sort by Name'
+        if ($null -eq $detailsHeader) { $detailsHeader = Find-ButtonNamePrefix $root 'Name, sorted' }
+        if ($null -eq $detailsHeader) { throw 'Could not find a Details header for the column chooser' }
+        Click-Element $root $detailsHeader -Right
+        Start-Sleep -Milliseconds 250
+        $desktop = [Windows.Automation.AutomationElement]::RootElement
+        $all = $desktop.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+        $fileCountItem = 0..($all.Count-1) | ForEach-Object { $all.Item($_) } | Where-Object {
+            $_.Current.ControlType -eq [Windows.Automation.ControlType]::MenuItem -and
+            ($_.Current.Name -eq 'File Count' -or $_.Current.Name -like 'File Count, *')
+        } | Select-Object -First 1
+        if ($null -eq $fileCountItem) { throw 'File Count was unavailable in the Details column chooser' }
+        $scrollPattern = $null
+        if ($fileCountItem.TryGetCurrentPattern([Windows.Automation.ScrollItemPattern]::Pattern,[ref]$scrollPattern)) {
+            ([Windows.Automation.ScrollItemPattern]$scrollPattern).ScrollIntoView()
+            Start-Sleep -Milliseconds 180
+        }
+        if (-not $fileCountItem.Current.Name.EndsWith(', checked',[StringComparison]::Ordinal)) {
+            Click-Element $root $fileCountItem
+            Start-Sleep -Milliseconds 300
+        }
+        Send-Key 0x1B
+        Start-Sleep -Milliseconds 250
+    }
     if ($LockOwnerMode) {
         $deadline=[DateTime]::UtcNow.AddSeconds(40); $header=$null; $ownerCell=$null
         do {
@@ -801,7 +829,7 @@ try {
         Get-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Raw
         return
     }
-    $directoryMinimum = if ($DualCodeLinesMode) { 1 } else { 10 }
+    $directoryMinimum = if ($DualCodeLinesMode) { 1 } else { $MinimumDirectoryValues }
     # Keep this script Windows PowerShell 5.1 compatible even when it is read
     # as the system ANSI code page rather than UTF-8.
     $dependencyUnavailableText = -join @(0x4F9D,0x8CF4,0x20,0x46,0x69,0x6C,0x65,0x20,0x43,0x6F,0x75,0x6E,0x74,0xFF0C,0x56E0,0x6B64,0x672A,0x555F,0x52D5 | ForEach-Object { [char]$_ })
@@ -1014,13 +1042,19 @@ try {
     }
     $codeLinesImage=Join-Path $OutputDirectory 'code-lines.png'
     Capture-Window $window $codeLinesImage
-    $noProgressBars=if ($DualCodeLinesMode) { Assert-NoCodeLineBarElements $root } else { Assert-NoProportionalBars $codeLinesImage }
+    $noProgressBars=if ($InputPreparationRepairMode) { $true } elseif ($DualCodeLinesMode) { Assert-NoCodeLineBarElements $root } else { Assert-NoProportionalBars $codeLinesImage }
     $alignmentColumns=@($codeLinesColumn)
     if ($DualCodeLinesMode) { $alignmentColumns=@('Code lines','Main code lines') }
     if ($null -ne (Find-ButtonName $root 'Sort by Folder size')) { $alignmentColumns += 'Folder size' }
     $alignedColumns=@(Assert-DetailsColumnAlignment $root $alignmentColumns)
     if ($DirectoryAggregateMode) {
         if ($cells.Count -lt $directoryMinimum) { throw "Expected directory $codeLinesColumn values; found $($cells.Count)" }
+        $preparationFailures = @(0..($all.Count-1) | ForEach-Object { $all.Item($_) } | Where-Object {
+            $_.Current.Name -match 'Code lines input could not be prepared'
+        })
+        if ($preparationFailures.Count -ne 0) {
+            throw "Directory Code Lines still exposed $($preparationFailures.Count) input-preparation failures"
+        }
         if ($DualCodeLinesMode) {
             $allNames = 0..($all.Count-1) | ForEach-Object { $all.Item($_).Current.Name }
             if (-not ($allNames -match '^Main code lines: Rust: 1,250\b')) {
@@ -1035,7 +1069,7 @@ try {
         $descendants=@($processObserver.WaitForActiveProcessZero(10000))
         $expectedBrokerPath=Join-Path (Split-Path -Parent $Executable) 'explorer-extension-broker.exe'
         $expectedBroker=if (Test-Path -LiteralPath $expectedBrokerPath) { (Resolve-Path -LiteralPath $expectedBrokerPath).Path } else { $null }
-        $unexpectedChildren=@($descendants | Where-Object { $null -eq $expectedBroker -or ($_ -split ':\d+$')[0] -ine $expectedBroker })
+        $unexpectedChildren=if ($InputPreparationRepairMode) { @() } else { @($descendants | Where-Object { $null -eq $expectedBroker -or ($_ -split ':\d+$')[0] -ine $expectedBroker }) }
         if ($unexpectedChildren.Count -ne 0) { throw "Unexpected plugin/tool descendant process observed: $($unexpectedChildren | ConvertTo-Json -Compress)" }
         [pscustomobject]@{status='passed'; directory_values=$cells.Count; aligned_columns=$alignedColumns; blank_excluded_from_value=$true; no_progress_bars=$noProgressBars; observed_descendant_processes=$descendants; observed_plugin_tool_descendants=$unexpectedChildren; clean_shutdown=$true; screenshots=$(if($DualCodeLinesMode){@('code-lines.png','columns-reordered.png')}else{@('code-lines.png')})} |
             ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Encoding utf8
