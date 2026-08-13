@@ -2212,33 +2212,32 @@ impl ApplicationCodeLinesRuntimeV1 {
     }
 }
 
-fn process_code_lines_batch(
-    provider: &explorer_extension_host::SinglePluginBatchColumnRuntimeV1,
-    runtime: &explorer_extension_host::ExtensionJobRuntimeV1,
-    requests: Vec<(
-        explorer_ui::code_lines_column::CodeLinesRequestV1,
-        Vec<u8>,
-        Option<HostExtensionColumnCacheAdmissionV1>,
-    )>,
-    epoch: u64,
-    current_epoch: &AtomicU64,
-    results: &mpsc::SyncSender<explorer_ui::code_lines_column::CodeLinesResultV1>,
+type PendingCodeLinesInputV1 = (
+    explorer_ui::code_lines_column::CodeLinesRequestV1,
+    Vec<u8>,
+    Option<HostExtensionColumnCacheAdmissionV1>,
+);
+
+fn prepare_code_lines_batch_inputs(
+    requests: Vec<PendingCodeLinesInputV1>,
+    generation: u64,
     mode: BatchDetailsColumnModeV1,
-    cache: &Mutex<HostExtensionColumnCacheV1<CodeLinesCachedValueV1>>,
+) -> (
+    Vec<PendingCodeLinesInputV1>,
+    Vec<explorer_extension_host::HostBatchColumnItemV1>,
+    Vec<PendingCodeLinesInputV1>,
 ) {
-    let Some(first) = requests.first() else {
-        return;
-    };
-    let generation = first.0.context.generation.value().max(1);
-    let inputs = requests
-        .iter()
-        .filter_map(|(request, bytes, _)| {
-            let metadata = std::fs::metadata(&request.path).ok();
+    let mut dispatchable = Vec::with_capacity(requests.len());
+    let mut inputs = Vec::with_capacity(requests.len());
+    let mut rejected = Vec::new();
+    for (request, bytes, cache_admission) in requests {
+        let input = (|| {
+            let metadata = fs::metadata(&request.path).ok();
             let modified = metadata
                 .as_ref()
                 .and_then(|metadata| metadata.modified().ok())
-                .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok());
-            let canonical = std::fs::canonicalize(&request.path).ok()?;
+                .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok());
+            let canonical = fs::canonicalize(&request.path).ok()?;
             let mut identity = 0xcbf2_9ce4_8422_2325_u64;
             for byte in canonical.to_string_lossy().as_bytes() {
                 identity ^= u64::from(*byte);
@@ -2263,13 +2262,42 @@ fn process_code_lines_batch(
                 lock_owner_resource: (mode == BatchDetailsColumnModeV1::LockOwner)
                     .then(|| request.path.clone()),
             })
-        })
-        .collect::<Vec<_>>();
+        })();
+        let pending = (request, bytes, cache_admission);
+        if let Some(input) = input {
+            dispatchable.push(pending);
+            inputs.push(input);
+        } else {
+            rejected.push(pending);
+        }
+    }
+    (dispatchable, inputs, rejected)
+}
+
+fn process_code_lines_batch(
+    provider: &explorer_extension_host::SinglePluginBatchColumnRuntimeV1,
+    runtime: &explorer_extension_host::ExtensionJobRuntimeV1,
+    requests: Vec<(
+        explorer_ui::code_lines_column::CodeLinesRequestV1,
+        Vec<u8>,
+        Option<HostExtensionColumnCacheAdmissionV1>,
+    )>,
+    epoch: u64,
+    current_epoch: &AtomicU64,
+    results: &mpsc::SyncSender<explorer_ui::code_lines_column::CodeLinesResultV1>,
+    mode: BatchDetailsColumnModeV1,
+    cache: &Mutex<HostExtensionColumnCacheV1<CodeLinesCachedValueV1>>,
+) {
+    let Some(first) = requests.first() else {
+        return;
+    };
+    let generation = first.0.context.generation.value().max(1);
+    let (requests, inputs, rejected) = prepare_code_lines_batch_inputs(requests, generation, mode);
     if current_epoch.load(Ordering::Acquire) != epoch {
         return;
     }
-    if inputs.len() != requests.len() {
-        emit_code_lines_batch_error(requests, "Code lines input could not be prepared", results);
+    emit_code_lines_batch_error(rejected, "Code lines input could not be prepared", results);
+    if requests.is_empty() {
         return;
     }
     let contribution_id = match mode {
@@ -2717,11 +2745,13 @@ fn read_code_lines_path_bounded(path: &Path) -> Result<Option<Vec<u8>>, String> 
     if !metadata.is_dir() {
         return Ok(None);
     }
-    let maximum = explorer_extension_host::MAX_BATCH_COLUMN_INPUT_BYTES_V1;
+    let maximum = explorer_extension_host::MAX_HOST_INPUT_STREAM_SOURCE_BYTES_V1;
+    let tokei_config = tokei::Config::default();
     let mut packed = Vec::with_capacity(64 * 1024);
     packed.extend_from_slice(CODE_LINES_DIRECTORY_MAGIC_V1);
     let mut stack = vec![path.to_path_buf()];
-    let mut files = 0_usize;
+    let mut visited_files = 0_usize;
+    let mut packed_files = 0_usize;
     while let Some(directory) = stack.pop() {
         let entries = fs::read_dir(directory).map_err(|_| "Source unavailable".to_owned())?;
         for entry in entries.flatten() {
@@ -2739,14 +2769,18 @@ fn read_code_lines_path_bounded(path: &Path) -> Result<Option<Vec<u8>>, String> 
             if !metadata.is_file() {
                 continue;
             }
-            files = files.saturating_add(1);
-            if files > 100_000 {
+            visited_files = visited_files.saturating_add(1);
+            if visited_files > 100_000 {
                 return Ok(None);
+            }
+            let relative = child.strip_prefix(path).unwrap_or(&child);
+            if tokei::LanguageType::from_path(relative, &tokei_config).is_none() {
+                continue;
             }
             let Some(bytes) = read_code_lines_file_bounded(&child)? else {
                 continue;
             };
-            let name = child.strip_prefix(path).unwrap_or(&child).to_string_lossy();
+            let name = relative.to_string_lossy();
             let name_bytes = name.as_bytes();
             let record_size = 4_usize
                 .saturating_add(8)
@@ -2765,9 +2799,10 @@ fn read_code_lines_path_bounded(path: &Path) -> Result<Option<Vec<u8>>, String> 
             packed.extend_from_slice(&data_len.to_le_bytes());
             packed.extend_from_slice(name_bytes);
             packed.extend_from_slice(&bytes);
+            packed_files = packed_files.saturating_add(1);
         }
     }
-    Ok(Some(packed))
+    Ok((packed_files != 0).then_some(packed))
 }
 
 const LOCK_OWNER_CACHE_TTL_V1: Duration = Duration::from_secs(2);
@@ -6273,9 +6308,10 @@ mod tests {
         measure_code_lines_directory, measure_code_lines_directory_with_cache,
         measure_size_map_path, measure_size_map_tree, partition_batch_details_cache_hits,
         partition_code_lines_cache_hits, partition_folder_size_cache_hits,
-        partition_size_map_projection, project_size_map_plan, read_code_lines_directory_cache,
-        read_code_lines_file_bounded, read_code_lines_path_bounded, should_restore_saved_tabs,
-        size_map_node_id, size_map_render_key, take_folder_size_requests, unix_seconds_now,
+        partition_size_map_projection, prepare_code_lines_batch_inputs, project_size_map_plan,
+        read_code_lines_directory_cache, read_code_lines_file_bounded,
+        read_code_lines_path_bounded, should_restore_saved_tabs, size_map_node_id,
+        size_map_render_key, take_folder_size_requests, unix_seconds_now,
     };
 
     struct FakeSafeModePortV1 {
@@ -6953,6 +6989,158 @@ mod tests {
                 .any(|bytes| bytes == b"script.py")
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn code_lines_directory_pack_ignores_large_binary_payloads_before_snapshotting() {
+        let root = std::env::temp_dir().join(format!(
+            "superexplorer-code-lines-source-filter-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join(".git/objects")).unwrap();
+        fs::write(root.join("main.rs"), b"fn main() {}\n").unwrap();
+        fs::write(
+            root.join(".git/objects/one.bin"),
+            vec![0_u8; 7 * 1024 * 1024],
+        )
+        .unwrap();
+        fs::write(
+            root.join(".git/objects/two.bin"),
+            vec![0_u8; 7 * 1024 * 1024],
+        )
+        .unwrap();
+
+        let packed = read_code_lines_path_bounded(&root).unwrap().unwrap();
+        assert!(packed.starts_with(b"SECLDIR1"));
+        assert!(packed.len() < 1024);
+        assert!(packed.windows(7).any(|bytes| bytes == b"main.rs"));
+        assert!(!packed.windows(7).any(|bytes| bytes == b"one.bin"));
+        assert!(
+            explorer_extension_host::HostInputStreamSourceV1::from_host_snapshot(packed, 1, true)
+                .is_some()
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn code_lines_directory_pack_rejects_empty_and_single_stream_overflow() {
+        let root = std::env::temp_dir().join(format!(
+            "superexplorer-code-lines-source-bound-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("binary.dat"), b"not source").unwrap();
+        assert_eq!(read_code_lines_path_bounded(&root).unwrap(), None);
+
+        fs::write(
+            root.join("maximum.rs"),
+            vec![b'x'; explorer_extension_host::MAX_HOST_INPUT_STREAM_SOURCE_BYTES_V1],
+        )
+        .unwrap();
+        assert_eq!(
+            read_code_lines_path_bounded(&root).unwrap(),
+            None,
+            "record framing must not create a source larger than the stream contract"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn code_lines_batch_preparation_isolates_an_invalid_row() {
+        let root = std::env::temp_dir().join(format!(
+            "superexplorer-code-lines-batch-isolation-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let valid_path = root.join("valid.rs");
+        fs::write(&valid_path, b"fn valid() {}\n").unwrap();
+        let context = RequestContext::new(TabId::new(), Generation::new(7));
+        let make_request =
+            |id: &[u8], path: PathBuf| explorer_ui::code_lines_column::CodeLinesRequestV1 {
+                context: context.clone(),
+                item_id: ShellItemId::from_provider_bytes(id.to_vec()).unwrap(),
+                path,
+            };
+        let requests = vec![
+            (
+                make_request(b"valid", valid_path),
+                b"fn valid() {}\n".to_vec(),
+                None,
+            ),
+            (
+                make_request(b"missing", root.join("missing.rs")),
+                b"fn missing() {}\n".to_vec(),
+                None,
+            ),
+        ];
+
+        let (dispatchable, inputs, rejected) =
+            prepare_code_lines_batch_inputs(requests, 7, BatchDetailsColumnModeV1::CodeLines);
+        assert_eq!(dispatchable.len(), 1);
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(dispatchable[0].0.item_id.provider_bytes(), b"valid");
+        assert_eq!(rejected[0].0.item_id.provider_bytes(), b"missing");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn code_lines_real_folder_snapshots_respect_stream_contract() {
+        let Some(root) =
+            std::env::var_os("SUPEREXPLORER_CODE_LINES_REAL_FOLDER").map(PathBuf::from)
+        else {
+            return;
+        };
+        let mut directories = fs::read_dir(&root)
+            .expect("real-folder diagnostic root")
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir()))
+            .collect::<Vec<_>>();
+        directories.sort();
+        assert!(
+            !directories.is_empty(),
+            "diagnostic root has no child directories"
+        );
+
+        for directory in directories {
+            match read_code_lines_path_bounded(&directory) {
+                Ok(Some(snapshot)) => {
+                    assert!(
+                        snapshot.len()
+                            <= explorer_extension_host::MAX_HOST_INPUT_STREAM_SOURCE_BYTES_V1,
+                        "accepted snapshot exceeded stream contract: {}",
+                        directory.display()
+                    );
+                    assert!(
+                        explorer_extension_host::HostInputStreamSourceV1::from_host_snapshot(
+                            snapshot, 1, true
+                        )
+                        .is_some(),
+                        "accepted snapshot could not prepare: {}",
+                        directory.display()
+                    );
+                    eprintln!("dispatchable: {}", directory.display());
+                }
+                Ok(None) => eprintln!("unsupported: {}", directory.display()),
+                Err(error) => eprintln!("unavailable: {} ({error})", directory.display()),
+            }
+        }
     }
 
     #[test]
