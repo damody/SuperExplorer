@@ -47,6 +47,11 @@ $headful = Get-Content -Raw -Encoding UTF8 -LiteralPath $headfulPath | ConvertFr
 if ($headful.result -ne 'PASS' -or $headful.full_oracle_per_run -ne $true) {
     throw 'headful session validation did not pass its complete before/after oracle'
 }
+if ($headful.restored_active_auto_loaded -ne $true -or
+    $headful.restored_background_auto_loaded -ne $true -or
+    $headful.persistent_disconnected_seen -ne $false) {
+    throw 'restored tabs did not automatically connect to the directory service'
+}
 $report = [ordered]@{
     schema = 'roadmap-session-validation-v2'
     result = 'PASS'
@@ -58,8 +63,19 @@ $report = [ordered]@{
     mixed_locations = $headful.mixed_locations
     cross_volume = $headful.cross_volume
     full_oracle_per_run = $headful.full_oracle_per_run
+    restored_active_auto_loaded = $headful.restored_active_auto_loaded
+    restored_background_auto_loaded = $headful.restored_background_auto_loaded
+    persistent_disconnected_seen = $headful.persistent_disconnected_seen
     restart_results = $headful.results
-    artifacts = @('cargo-test.log', 'headful-report.json', 'before-uia.json', 'before.png', 'before-payload.json')
+    artifacts = @(
+        'cargo-test.log',
+        'headful-report.json',
+        'before-uia.json',
+        'before.png',
+        'before-payload.json',
+        'restored-active-loaded.png',
+        'restored-background-loaded.png'
+    )
 }
 $report | ConvertTo-Json -Depth 12 | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $OutputDirectory 'report.json')
 Write-Host "Session roadmap validation PASS: $OutputDirectory"

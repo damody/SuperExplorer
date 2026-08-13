@@ -847,6 +847,8 @@ pub enum ColumnId {
     Authors,
     Tags,
     Title,
+    FileCount,
+    FolderCount,
     Extension {
         package_id: String,
         column_id: String,
@@ -854,7 +856,7 @@ pub enum ColumnId {
 }
 
 impl ColumnId {
-    pub const BUILT_INS: [Self; 8] = [
+    pub const BUILT_INS: [Self; 10] = [
         Self::Name,
         Self::DateModified,
         Self::Type,
@@ -863,9 +865,11 @@ impl ColumnId {
         Self::Authors,
         Self::Tags,
         Self::Title,
+        Self::FileCount,
+        Self::FolderCount,
     ];
 
-    pub const ALL: [Self; 8] = Self::BUILT_INS;
+    pub const ALL: [Self; 10] = Self::BUILT_INS;
 
     /// Constructs a plugin-owned ID in the durable `package_id:column_id` namespace.
     ///
@@ -901,6 +905,8 @@ impl ColumnId {
             Self::Authors => "builtin:authors".to_owned(),
             Self::Tags => "builtin:tags".to_owned(),
             Self::Title => "builtin:title".to_owned(),
+            Self::FileCount => "builtin:file_count".to_owned(),
+            Self::FolderCount => "builtin:folder_count".to_owned(),
             Self::Extension {
                 package_id,
                 column_id,
@@ -925,6 +931,8 @@ impl ColumnId {
             "builtin:authors" => return Ok(Self::Authors),
             "builtin:tags" => return Ok(Self::Tags),
             "builtin:title" => return Ok(Self::Title),
+            "builtin:file_count" => return Ok(Self::FileCount),
+            "builtin:folder_count" => return Ok(Self::FolderCount),
             _ => {}
         }
         let Some((package_id, column_id)) = stable_id.split_once(':') else {
@@ -1403,6 +1411,11 @@ impl OrderedColumnLayout {
     /// Restores a validated, canonical persisted layout, including currently
     /// unavailable extension IDs. The caller owns schema validation; this
     /// constructor still fail-closes on invalid IDs, duplicate IDs, or widths.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ColumnIdError`] for invalid or duplicate IDs, invalid widths,
+    /// or a layout that does not contain the required Name column.
     pub fn restore_entries(
         entries: impl IntoIterator<Item = (String, u16, bool)>,
     ) -> Result<Self, ColumnIdError> {
@@ -1427,13 +1440,9 @@ impl OrderedColumnLayout {
                 width,
             });
         }
-        if !restored.iter().any(|entry| entry.id == ColumnId::Name) {
+        let Some(name_index) = restored.iter().position(|entry| entry.id == ColumnId::Name) else {
             return Err(ColumnIdError::MissingNamespace);
-        }
-        let name_index = restored
-            .iter()
-            .position(|entry| entry.id == ColumnId::Name)
-            .expect("validated Name entry");
+        };
         let name = restored.remove(name_index);
         restored.insert(0, name);
         Ok(Self { entries: restored })
@@ -1524,6 +1533,16 @@ impl OrderedColumnLayout {
         true
     }
 
+    /// Appends built-ins introduced after a persisted extensible layout was
+    /// written. Existing entries are deliberately left byte-for-byte
+    /// equivalent in order, width, and visibility; newly introduced columns
+    /// start hidden so an upgrade never changes the visible Details layout.
+    pub fn reconcile_current_built_ins(&mut self) {
+        for descriptor in builtin_column_descriptors() {
+            self.ensure_descriptor(&descriptor, false);
+        }
+    }
+
     pub fn move_before(&mut self, id: &ColumnId, before: Option<&ColumnId>) -> bool {
         if *id == ColumnId::Name {
             return false;
@@ -1609,7 +1628,7 @@ impl Default for OrderedColumnLayout {
     }
 }
 
-fn builtin_column_descriptors() -> [ColumnDescriptor; 8] {
+fn builtin_column_descriptors() -> [ColumnDescriptor; 10] {
     [
         builtin_descriptor(
             ColumnId::Name,
@@ -1675,7 +1694,24 @@ fn builtin_column_descriptors() -> [ColumnDescriptor; 8] {
             ColumnAlignment::Start,
             ColumnSortSemantics::Text,
         ),
+        builtin_aggregate_descriptor(ColumnId::FileCount, "File Count"),
+        builtin_aggregate_descriptor(ColumnId::FolderCount, "Folder Count"),
     ]
+}
+
+fn builtin_aggregate_descriptor(id: ColumnId, display_name: &str) -> ColumnDescriptor {
+    ColumnDescriptor {
+        id,
+        display_name: display_name.to_owned(),
+        value_type: ColumnValueType::Integer,
+        default_width: 104,
+        minimum_width: OrderedColumnLayout::MINIMUM_WIDTH,
+        maximum_width: OrderedColumnLayout::MAXIMUM_WIDTH,
+        alignment: ColumnAlignment::End,
+        applicability: ColumnApplicability::Containers,
+        sort_semantics: ColumnSortSemantics::Integer,
+        cost: ColumnCost::BackgroundAggregate,
+    }
 }
 
 fn builtin_descriptor(
@@ -1722,8 +1758,13 @@ pub struct ViewSettings {
     pub hidden_items: bool,
     pub compact_view: bool,
     pub always_show_icons: bool,
-    /// Shared in-process Shell icon and thumbnail presentation cache budget in MiB.
+    /// In-process Shell icon presentation cache budget in MiB.
     pub icon_cache_memory_mb: u16,
+    /// In-process decoded thumbnail cache budget in MiB.
+    pub thumbnail_cache_memory_mb: u16,
+    /// `SuperExplorer` MFT Service folder-aggregate LRU budget in MiB.
+    pub mft_folder_cache_memory_mb: u16,
+    pub cache_budgets: crate::CacheBudgetSettingsV1,
     pub sort: SortDescriptor,
     pub details_layout: OrderedColumnLayout,
     pub details_pane_width: u16,
@@ -1744,6 +1785,9 @@ impl Default for ViewSettings {
             compact_view: false,
             always_show_icons: false,
             icon_cache_memory_mb: DEFAULT_ICON_CACHE_MEMORY_MB,
+            thumbnail_cache_memory_mb: DEFAULT_THUMBNAIL_CACHE_MEMORY_MB,
+            mft_folder_cache_memory_mb: DEFAULT_MFT_FOLDER_CACHE_MEMORY_MB,
+            cache_budgets: crate::CacheBudgetSettingsV1::default(),
             sort: SortDescriptor::default(),
             details_layout: OrderedColumnLayout::default(),
             details_pane_width: 293,
@@ -1752,16 +1796,43 @@ impl Default for ViewSettings {
     }
 }
 
-pub const DEFAULT_ICON_CACHE_MEMORY_MB: u16 = 128;
+pub const DEFAULT_ICON_CACHE_MEMORY_MB: u16 = 32;
 pub const MAX_ICON_CACHE_MEMORY_MB: u16 = 1_024;
+pub const DEFAULT_THUMBNAIL_CACHE_MEMORY_MB: u16 = 128;
+pub const MAX_THUMBNAIL_CACHE_MEMORY_MB: u16 = 1_024;
+pub const MIN_MFT_FOLDER_CACHE_MEMORY_MB: u16 = 128;
+pub const DEFAULT_MFT_FOLDER_CACHE_MEMORY_MB: u16 = 512;
+pub const MAX_MFT_FOLDER_CACHE_MEMORY_MB: u16 = 16_384;
+
+pub const fn normalized_mft_folder_cache_memory_mb(value: u16) -> u16 {
+    if value < MIN_MFT_FOLDER_CACHE_MEMORY_MB {
+        MIN_MFT_FOLDER_CACHE_MEMORY_MB
+    } else if value > MAX_MFT_FOLDER_CACHE_MEMORY_MB {
+        MAX_MFT_FOLDER_CACHE_MEMORY_MB
+    } else {
+        value
+    }
+}
 
 pub const fn normalized_icon_cache_memory_mb(value: u16) -> u16 {
     match value {
-        0..=95 => 64,
+        0..=47 => 32,
+        48..=95 => 64,
         96..=191 => 128,
         192..=383 => 256,
         384..=767 => 512,
         _ => MAX_ICON_CACHE_MEMORY_MB,
+    }
+}
+
+pub const fn normalized_thumbnail_cache_memory_mb(value: u16) -> u16 {
+    match value {
+        0..=47 => 32,
+        48..=95 => 64,
+        96..=191 => 128,
+        192..=383 => 256,
+        384..=767 => 512,
+        _ => MAX_THUMBNAIL_CACHE_MEMORY_MB,
     }
 }
 
@@ -2162,11 +2233,12 @@ fn parsing_text(location: &LocationDescriptor) -> String {
         LocationDescriptor::ParsingName(name) => name.clone(),
         LocationDescriptor::ShellNamespace(_) | LocationDescriptor::KnownFolder(_) => String::new(),
         LocationDescriptor::Virtual(location) => {
-            let identity = location
-                .container_identity
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>();
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            let mut identity = String::with_capacity(location.container_identity.len() * 2);
+            for byte in location.container_identity {
+                identity.push(char::from(HEX[usize::from(byte >> 4)]));
+                identity.push(char::from(HEX[usize::from(byte & 0x0f)]));
+            }
             let suffix = location.components.join("/");
             if suffix.is_empty() {
                 format!(
@@ -3268,12 +3340,40 @@ mod tests {
     }
 
     #[test]
-    fn icon_cache_memory_presets_default_to_128_mib_and_cap_at_one_gib() {
-        assert_eq!(ViewSettings::default().icon_cache_memory_mb, 128);
+    fn icon_cache_memory_presets_default_to_32_mib_and_cap_at_one_gib() {
+        assert_eq!(ViewSettings::default().icon_cache_memory_mb, 32);
+        assert_eq!(normalized_icon_cache_memory_mb(31), 32);
         assert_eq!(normalized_icon_cache_memory_mb(64), 64);
         assert_eq!(normalized_icon_cache_memory_mb(127), 128);
         assert_eq!(normalized_icon_cache_memory_mb(300), 256);
         assert_eq!(normalized_icon_cache_memory_mb(900), 1_024);
         assert_eq!(normalized_icon_cache_memory_mb(u16::MAX), 1_024);
+    }
+
+    #[test]
+    fn thumbnail_cache_defaults_to_128_mib_and_is_independent_from_icons() {
+        let mut settings = ViewSettings::default();
+        assert_eq!(settings.icon_cache_memory_mb, 32);
+        assert_eq!(settings.thumbnail_cache_memory_mb, 128);
+        settings.icon_cache_memory_mb = normalized_icon_cache_memory_mb(512);
+        assert_eq!(settings.thumbnail_cache_memory_mb, 128);
+        settings.thumbnail_cache_memory_mb = normalized_thumbnail_cache_memory_mb(64);
+        assert_eq!(settings.icon_cache_memory_mb, 512);
+        assert_eq!(settings.thumbnail_cache_memory_mb, 64);
+        assert_eq!(normalized_thumbnail_cache_memory_mb(u16::MAX), 1_024);
+    }
+
+    #[test]
+    fn mft_folder_cache_is_numeric_clamped_and_defaults_to_512_mib() {
+        assert_eq!(ViewSettings::default().mft_folder_cache_memory_mb, 512);
+        assert_eq!(normalized_mft_folder_cache_memory_mb(0), 128);
+        assert_eq!(normalized_mft_folder_cache_memory_mb(127), 128);
+        assert_eq!(normalized_mft_folder_cache_memory_mb(333), 333);
+        assert_eq!(normalized_mft_folder_cache_memory_mb(2_048), 2_048);
+        assert_eq!(normalized_mft_folder_cache_memory_mb(4_096), 4_096);
+        assert_eq!(normalized_mft_folder_cache_memory_mb(4_097), 4_097);
+        assert_eq!(normalized_mft_folder_cache_memory_mb(16_384), 16_384);
+        assert_eq!(normalized_mft_folder_cache_memory_mb(16_385), 16_384);
+        assert_eq!(normalized_mft_folder_cache_memory_mb(u16::MAX), 16_384);
     }
 }

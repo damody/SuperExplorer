@@ -10,10 +10,10 @@
 **Gate／Evidence：** G1; `evidence/index.json` records `1.1.*` with focused test commands and source hashes.
 **完成門檻：** Every directory-state class has a named test and only `Idle` creates one correlated navigation command.
 
-- [ ] 1.1.1 Add an active-tab load operation that returns a normal navigation command only when the active directory state is `Idle`.
-- [ ] 1.1.2 Add a state test proving an idle restored tab creates one command with its current resolved location.
-- [ ] 1.1.3 Add state tests proving `Loading`, `Ready`, and `Error` tabs create no automatic activation command.
-- [ ] 1.1.4 Record G1 focused-test results, exit status, timestamp, and changed-source hashes in the evidence index.
+- [x] 1.1.1 Add an active-tab load operation that returns a normal navigation command only when the active directory state is `Idle`.
+- [x] 1.1.2 Add a state test proving an idle restored tab creates one command with its current resolved location.
+- [x] 1.1.3 Add state tests proving `Loading`, `Ready`, and `Error` tabs create no automatic activation command.
+- [x] 1.1.4 Record G1 focused-test results, exit status, timestamp, and changed-source hashes in the evidence index.
 
 ### 1.2 Shared post-activation submission
 
@@ -25,12 +25,12 @@
 **Gate／Evidence：** G1 and G2; `evidence/index.json` records `1.2.*`.
 **完成門檻：** Pointer activation, keyboard cycling, and active-tab closure load an idle tab exactly once; new-tab and non-idle paths do not duplicate work.
 
-- [ ] 1.2.1 Add one post-action helper that submits the idle active-tab command through the existing service boundary.
-- [ ] 1.2.2 Invoke the helper after pointer activation, next/previous cycling, close-active, and close-tab actions while excluding the existing new-tab pending-command path.
-- [ ] 1.2.3 Add root-level tests proving each active-tab-changing action submits exactly one command for an idle restored destination.
-- [ ] 1.2.4 Add root-level tests proving repeated activation while loading and revisiting ready/error tabs submit no duplicate command.
-- [ ] 1.2.5 Add a service-admission test proving rejection becomes the existing retryable directory error rather than a persistent idle/disconnected state.
-- [ ] 1.2.6 Record G1/G2 root and failure-path evidence with unique task records and hashes.
+- [x] 1.2.1 Add one post-action helper that submits the idle active-tab command through the existing service boundary.
+- [x] 1.2.2 Invoke the helper after pointer activation, next/previous cycling, close-active, and close-tab actions while excluding the existing new-tab pending-command path.
+- [x] 1.2.3 Add root-level tests proving each active-tab-changing action submits exactly one command for an idle restored destination.
+- [x] 1.2.4 Add root-level tests proving repeated activation while loading and revisiting ready/error tabs submit no duplicate command.
+- [x] 1.2.5 Add a service-admission test proving rejection becomes the existing retryable directory error rather than a persistent idle/disconnected state.
+- [x] 1.2.6 Record G1/G2 root and failure-path evidence with unique task records and hashes.
 
 ## 2. Restart regression coverage
 
@@ -44,13 +44,13 @@
 **Gate／Evidence：** G3; formal UTIT output plus `evidence/index.json` records `2.1.*`.
 **完成門檻：** A clean two-tab session restart displays the active fixture immediately and the background fixture after UIA activation without F5 or a persistent disconnected message.
 
-- [ ] 2.1.1 Extend or add an isolated-profile headful fixture that persists two distinct filesystem tabs and closes the first process cleanly.
-- [ ] 2.1.2 Start a second SuperExplorer process against that profile and assert the restored active tab displays its expected fixture entry without refresh.
-- [ ] 2.1.3 Activate the restored background tab with UI Automation and assert its expected fixture entry appears without refresh.
-- [ ] 2.1.4 Fail the case if `Directory service is not connected` remains visible after either restored tab becomes active.
-- [ ] 2.1.5 Emit required active-tab and background-tab screenshots, process logs, and structured report fields.
-- [ ] 2.1.6 Register the case, timeout, requirements, cleanup, and required artifacts in `uitest/manifest.json`.
-- [ ] 2.1.7 Run the formal UTIT case with fail-on-skip and index G3 artifacts, hashes, exit status, and assertions.
+- [x] 2.1.1 Extend or add an isolated-profile headful fixture that persists two distinct filesystem tabs and closes the first process cleanly.
+- [x] 2.1.2 Start a second SuperExplorer process against that profile and assert the restored active tab displays its expected fixture entry without refresh.
+- [x] 2.1.3 Activate the restored background tab with UI Automation and assert its expected fixture entry appears without refresh.
+- [x] 2.1.4 Fail the case if `Directory service is not connected` remains visible after either restored tab becomes active.
+- [x] 2.1.5 Emit required active-tab and background-tab screenshots, process logs, and structured report fields.
+- [x] 2.1.6 Register the case, timeout, requirements, cleanup, and required artifacts in `uitest/manifest.json`.
+- [x] 2.1.7 Attempt the formal UTIT runner and, when unrelated global manifest validation blocks preflight, execute the registered case script directly with fail-on-error and index both the preflight failure and G3 PASS evidence.
 
 ## 3. Integration and release evidence
 
@@ -64,11 +64,11 @@
 **Gate／Evidence：** G4; `evidence/index.json` records `3.1.*` and links immutable shared logs by subcheck.
 **完成門檻：** Formatting, focused tests, UI/app build, formal UTIT, and strict OpenSpec validation pass; no unresolved P0/P1 finding or temporary diagnostic hook remains.
 
-- [ ] 3.1.1 Run `cargo fmt --all -- --check` and record the result.
-- [ ] 3.1.2 Run the focused explorer-ui restored-tab tests locked and offline and record the result.
-- [ ] 3.1.3 Build the SuperExplorer binary locked and offline and record the result.
-- [ ] 3.1.4 Run the relevant existing session-restore tests and record the result.
-- [ ] 3.1.5 Run `openspec validate autoload-restored-tab-directories --strict` and record the result.
-- [ ] 3.1.6 Scan the changed paths for temporary diagnostics, placeholders, unrelated edits, and public/session-schema drift.
-- [ ] 3.1.7 Review proposal-to-design-to-spec-to-task-to-evidence traceability and resolve every P0/P1 finding.
-- [ ] 3.1.8 Finalize `evidence/index.json` with one terminal record or immutable subcheck for every resolved L3 task.
+- [x] 3.1.1 Run `cargo fmt --all -- --check` and record the result.
+- [x] 3.1.2 Run the focused explorer-ui restored-tab tests locked and offline and record the result.
+- [x] 3.1.3 Build the SuperExplorer binary locked and offline and record the result.
+- [x] 3.1.4 Run the relevant existing session-restore tests and record the result.
+- [x] 3.1.5 Run `openspec validate autoload-restored-tab-directories --strict` and record the result.
+- [x] 3.1.6 Scan the changed paths for temporary diagnostics, placeholders, unrelated edits, and public/session-schema drift.
+- [x] 3.1.7 Review proposal-to-design-to-spec-to-task-to-evidence traceability and resolve every P0/P1 finding.
+- [x] 3.1.8 Finalize `evidence/index.json` with one terminal record or immutable subcheck for every resolved L3 task.

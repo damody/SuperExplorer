@@ -14,6 +14,7 @@ using System.Text;
 namespace RustExplorerUitest {
     public static class Native {
         [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+        [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
         public delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
         [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
         [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
@@ -25,6 +26,7 @@ namespace RustExplorerUitest {
         [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
         [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int width, int height, uint flags);
         [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+        [DllImport("user32.dll")] public static extern bool ScreenToClient(IntPtr hwnd, ref POINT point);
         [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr hwnd, StringBuilder text, int count);
         [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
@@ -42,10 +44,12 @@ namespace RustExplorerUitest {
 
 function Start-UitestExplorer {
     param(
-        [Parameter(Mandatory)][string]$InitialPath,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$InitialPath,
         [Parameter(Mandatory)][string]$OutputDirectory,
         [ValidateSet('debug','release')][string]$Profile = 'debug',
+        [string]$Executable = '',
         [switch]$SkipBuild,
+        [switch]$UseCurrentProfile,
         [int]$TimeoutSeconds = 25,
         [string[]]$CargoFeatures = @(),
         [hashtable]$AdditionalEnvironment = @{}
@@ -59,14 +63,24 @@ function Start-UitestExplorer {
         else { & cargo.exe build -p explorer-app --locked @featureArguments }
         if ($LASTEXITCODE -ne 0) { throw "explorer-app build failed: $LASTEXITCODE" }
     }
-    $executable = Join-Path $workspace "target\$Profile\SuperExplorer.exe"
+    $executable = if ([string]::IsNullOrWhiteSpace($Executable)) {
+        Join-Path $workspace "target\$Profile\SuperExplorer.exe"
+    } else {
+        [IO.Path]::GetFullPath($Executable)
+    }
     if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) { throw "missing app executable: $executable" }
     New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
     $start = [Diagnostics.ProcessStartInfo]::new($executable)
     $start.WorkingDirectory = $workspace
     $start.UseShellExecute = $false
-    $start.Environment['LOCALAPPDATA'] = (Join-Path $OutputDirectory 'localappdata')
-    $start.Environment['EXPLORER_INITIAL_PATH'] = $InitialPath
+    if (-not $UseCurrentProfile) {
+        $start.Environment['LOCALAPPDATA'] = (Join-Path $OutputDirectory 'localappdata')
+    }
+    if (-not [string]::IsNullOrWhiteSpace($InitialPath)) {
+        $start.Environment['EXPLORER_INITIAL_PATH'] = $InitialPath
+    } else {
+        [void]$start.Environment.Remove('EXPLORER_INITIAL_PATH')
+    }
     $start.Environment['EXPLORER_LOG_DIR'] = $OutputDirectory
     foreach ($name in $AdditionalEnvironment.Keys) {
         $start.Environment[[string]$name] = [string]$AdditionalEnvironment[$name]
@@ -94,11 +108,23 @@ function Start-UitestExplorer {
 function Stop-UitestExplorer {
     param([Parameter(Mandatory)]$Context)
     $process = $Context.Process
-    if ($null -ne $process -and -not $process.HasExited) {
-        [void][RustExplorerUitest.Native]::PostMessage($process.MainWindowHandle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
-        if (-not $process.WaitForExit(5000)) { $process.Kill(); $process.WaitForExit() }
+    $running = $false
+    if ($null -ne $process) {
+        try { $running = -not $process.HasExited } catch [InvalidOperationException] { $running = $false }
     }
-    if ($null -ne $process) { $process.Dispose() }
+    if ($running) {
+        $mainHwnd = $process.MainWindowHandle
+        $hwnd = if ($null -ne $mainHwnd -and [IntPtr]$mainHwnd -ne [IntPtr]::Zero) {
+            [IntPtr]$mainHwnd
+        } else {
+            [IntPtr]$Context.Hwnd
+        }
+        [void][RustExplorerUitest.Native]::PostMessage($hwnd, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
+        try {
+            if (-not $process.WaitForExit(5000)) { $process.Kill(); $process.WaitForExit() }
+        } catch [InvalidOperationException] { }
+    }
+    if ($null -ne $process) { try { $process.Dispose() } catch [InvalidOperationException] { } }
 }
 
 function Find-UitestElement {

@@ -74,6 +74,7 @@ fn main() -> Result<()> {
         ],
         active_tab_id: active_id,
         quick_access: Vec::new(),
+        bookmarks: explorer_model::Bookmarks::default(),
     };
     let limits = RoadmapLimits::default();
     let envelope = PersistedSessionEnvelope::new(

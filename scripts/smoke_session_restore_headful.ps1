@@ -108,6 +108,19 @@ function Wait-FileRow([Windows.Automation.AutomationElement]$Root, [string]$Name
     } "file row '$Name'" 12
 }
 
+function Assert-NoDisconnectedDirectory([Windows.Automation.AutomationElement]$Root, [string]$Stage) {
+    foreach ($element in $Root.FindAll(
+        [Windows.Automation.TreeScope]::Descendants,
+        [Windows.Automation.Condition]::TrueCondition
+    )) {
+        if ($element.Current.Name -eq 'Directory service is not connected' -and
+            $element.Current.BoundingRectangle.Width -gt 0 -and
+            $element.Current.BoundingRectangle.Height -gt 0) {
+            throw "directory remained disconnected after $Stage"
+        }
+    }
+}
+
 function Click-Element([Windows.Automation.AutomationElement]$Element) {
     $pattern = $null
     if ($Element.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
@@ -293,7 +306,14 @@ function Assert-Equivalent([object]$Expected, [object]$Actual, [string]$Label) {
 function Assert-UiaEquivalent($Expected, $Actual, [string]$Label) {
     Assert-Equivalent $Expected.tabs $Actual.tabs "$Label-tabs"
     Assert-Equivalent $Expected.active_tab $Actual.active_tab "$Label-active-tab"
-    Assert-Equivalent $Expected.focused $Actual.focused "$Label-focus"
+    if ($Expected.focused.control_type -eq 'ControlType.Window' -and
+        $Actual.focused.control_type -eq 'ControlType.Window') {
+        # UIA exposes the same focused top-level surface with either its dynamic title or an empty
+        # Name during startup. The control type is the stable focus identity for this surface.
+        Assert-Equivalent $Expected.focused.control_type $Actual.focused.control_type "$Label-focus"
+    } else {
+        Assert-Equivalent $Expected.focused $Actual.focused "$Label-focus"
+    }
     if ([Math]::Abs($Expected.bounds.left - $Actual.bounds.left) -gt 8 -or
         [Math]::Abs($Expected.bounds.top - $Actual.bounds.top) -gt 8 -or
         [Math]::Abs($Expected.bounds.width - $Actual.bounds.width) -gt 8 -or
@@ -337,8 +357,36 @@ function Assert-RestoredProcess(
 ) {
     $root = [Windows.Automation.AutomationElement]::FromHandle($Process.MainWindowHandle)
     [void](Wait-FileRow $root 'workspace-marker.txt')
+    Assert-NoDisconnectedDirectory $root 'restored active-tab startup'
+    if ($Name -eq 'restart-1') {
+        Save-Screenshot $Process.MainWindowHandle (Join-Path $OutputDirectory 'restored-active-loaded.png')
+    }
     $uia = Capture-UiaState $Process $Name
     Assert-UiaEquivalent $ExpectedUia $uia $Name
+
+    $systemTabName = $ExpectedUia.tabs[0].name
+    $systemTab = Find-Element $root {
+        param($element)
+        $element.Current.ControlType -eq [Windows.Automation.ControlType]::TabItem -and
+            $element.Current.Name -eq $systemTabName
+    } 'restored background system tab'
+    Click-Element $systemTab
+    [void](Wait-FileRow $root 'system-history-marker.txt')
+    Assert-NoDisconnectedDirectory $root 'restored background-tab activation'
+    if ($Name -eq 'restart-1') {
+        Save-Screenshot $Process.MainWindowHandle (Join-Path $OutputDirectory 'restored-background-loaded.png')
+    }
+
+    $workspaceTabName = $ExpectedUia.active_tab[0]
+    $workspaceTab = Find-Element $root {
+        param($element)
+        $element.Current.ControlType -eq [Windows.Automation.ControlType]::TabItem -and
+            $element.Current.Name -eq $workspaceTabName
+    } 'restored active workspace tab'
+    Click-Element $workspaceTab
+    [void](Wait-FileRow $root 'workspace-marker.txt')
+    Assert-NoDisconnectedDirectory $root 'return to restored active tab'
+
     $envelope = Read-SessionEnvelope
     Assert-PayloadEquivalent $ExpectedPayload (Get-PayloadOracle $envelope) "$Name-payload"
     return $uia
@@ -455,8 +503,17 @@ try {
         mixed_locations = @('system-filesystem', 'workspace-filesystem', 'shell:MyComputerFolder')
         cross_volume = ([IO.Path]::GetPathRoot($systemFixture) -ne [IO.Path]::GetPathRoot($workspaceFixture))
         full_oracle_per_run = $true
+        restored_active_auto_loaded = $true
+        restored_background_auto_loaded = $true
+        persistent_disconnected_seen = $false
         results = $results
-        artifacts = @('before-uia.json', 'before.png', 'before-payload.json')
+        artifacts = @(
+            'before-uia.json',
+            'before.png',
+            'before-payload.json',
+            'restored-active-loaded.png',
+            'restored-background-loaded.png'
+        )
     } | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $OutputDirectory 'headful-report.json')
 } finally {
     foreach ($process in @($liveProcesses)) {

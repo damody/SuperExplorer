@@ -97,21 +97,44 @@ function Read-RangeValue([Windows.Automation.AutomationElement]$Element, [string
     [double]([Windows.Automation.RangeValuePattern]$pattern).Current.Value
 }
 
+$env:SUPEREXPLORER_UITEST_OPEN_FOLDER_OPTIONS = 'view'
 $context = Start-UitestExplorer -InitialPath $workspace -OutputDirectory $output -Profile $Profile -SkipBuild:$SkipBuild
 
 try {
     $mainRoot = $context.Root
     $script:dialogName = [string]([char]0x8CC7) + [char]0x6599 + [char]0x593E + [char]0x9078 + [char]0x9805
-    $more = Find-ById -Id 'command-more-menu' -Description 'More command button' -AccessibleName ([string]([char]0x5176) + [char]0x5B83)
-    Invoke-Control -Element $more
-    $options = Find-ById -Id 'more-options' -Description 'Options menu item' -AccessibleName ([string]([char]0x9078) + [char]0x9805)
-    Invoke-Control -Element $options
-
     $optionsRoot = Wait-FolderOptionsWindow
     $optionsHwnd = [IntPtr]$optionsRoot.Current.NativeWindowHandle
     if ($optionsHwnd -eq $context.Hwnd) { throw 'Folder Options reused the Explorer HWND instead of opening a separate native window' }
     $context.Root = $optionsRoot
     $dialog = Find-ById -Id 'folder-options-dialog' -Description 'Folder Options dialog' -AccessibleName $script:dialogName
+    $viewTab = Find-ById -Id 'folder-options-view-tab' -Description 'View tab' -AccessibleName ([string]([char]0x6AA2) + [char]0x8996)
+    Invoke-Control -Element $viewTab
+    $iconCacheControl = Find-ById -Id 'cache-budget-slider-IconMemory' -Description 'independent icon cache limit' -AccessibleName 'Icon memory limit'
+    [void](Find-ById -Id 'cache-budget-slider-ThumbnailMemory' -Description 'independent thumbnail cache limit' -AccessibleName 'Thumbnail memory limit')
+    Save-UitestScreenshot -Root $optionsRoot -Path (Join-Path $output 'folder-options-cache-controls.png')
+    $viewBounds = $iconCacheControl.Current.BoundingRectangle
+    [void][RustExplorerUitest.Native]::SetForegroundWindow($optionsHwnd)
+    if (-not [RustExplorerUitest.Native]::SetCursorPosDpiAware(
+        [int]($viewBounds.Left + $viewBounds.Width / 2),
+        [int]($viewBounds.Top + [Math]::Min($viewBounds.Height / 2, 300)))) { throw 'could not position pointer over View page' }
+    $viewWheelDown = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int32]-120), 0)
+    foreach ($step in 1..24) {
+        [RustExplorerUitest.Native]::mouse_event(0x0800, 0, 0, $viewWheelDown, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 25
+    }
+    Start-Sleep -Milliseconds 500
+    [void](Find-ById -Id 'folder-options-cache-usage' -Description 'Host cache usage section' -AccessibleName 'Cache usage')
+    # The unavailable MFT pipe has a bounded two-second timeout; allow the same
+    # single-flight Host snapshot to publish the remaining cache reporters.
+    Start-Sleep -Seconds 3
+    Save-UitestScreenshot -Root $optionsRoot -Path (Join-Path $output 'folder-options-cache-telemetry.png')
+    foreach ($step in 1..12) {
+        [RustExplorerUitest.Native]::mouse_event(0x0800, 0, 0, $viewWheelDown, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 25
+    }
+    Start-Sleep -Milliseconds 350
+    Save-UitestScreenshot -Root $optionsRoot -Path (Join-Path $output 'folder-options-cache-mft.png')
     $extensionsTab = Find-ById -Id 'folder-options-extensions-tab' -Description 'Extensions tab' -AccessibleName 'Extensions'
     Invoke-Control -Element $extensionsTab
 
@@ -122,8 +145,11 @@ try {
     $scrollbarName = [string]([char]0x8CC7) + [char]0x6599 + [char]0x593E + [char]0x9078 + [char]0x9805 + [char]0x5782 + [char]0x76F4 + [char]0x6372 + [char]0x52D5 + [char]0x5217
     $scrollbar = Find-RoleName -Type ([Windows.Automation.ControlType]::ScrollBar) -Name $scrollbarName -Description 'Folder Options right-side scrollbar'
     $context.Root = $mainRoot
-    $backgroundScrollbar = Find-RoleName -Type ([Windows.Automation.ControlType]::ScrollBar) -Name 'File view vertical scroll bar' -Description 'background file-view scrollbar'
-    $backgroundScrollBefore = Read-RangeValue -Element $backgroundScrollbar -Description 'background file-view scrollbar'
+    $backgroundScrollbar = Find-OptionalById -Id 'file-view-scrollbar'
+    $backgroundScrollBefore = if ($null -ne $backgroundScrollbar) {
+        Read-RangeValue -Element $backgroundScrollbar -Description 'background file-view scrollbar'
+    } else { $null }
+    $backgroundScrollAfter = $backgroundScrollBefore
     $context.Root = $optionsRoot
 
     $first = Find-RoleName -Type ([Windows.Automation.ControlType]::ListItem) -Name 'Folder size column' -Description 'first extension card'
@@ -165,9 +191,11 @@ try {
         $firstTopAfter -ge ($firstTopBefore - 20) -or $lastTopAfter -ge ($lastTopBefore - 20)) {
         throw "Extensions list did not scroll: offset $optionsScrollBefore->$optionsScrollAfter, first $firstTopBefore->$firstTopAfter, last $lastTopBefore->$lastTopAfter"
     }
-    $backgroundScrollAfter = Read-RangeValue -Element $backgroundScrollbar -Description 'background file-view scrollbar'
-    if ([Math]::Abs($backgroundScrollAfter - $backgroundScrollBefore) -gt 0.01) {
-        throw "wheel input leaked through the modal: background $backgroundScrollBefore->$backgroundScrollAfter"
+    if ($null -ne $backgroundScrollbar) {
+        $backgroundScrollAfter = Read-RangeValue -Element $backgroundScrollbar -Description 'background file-view scrollbar'
+        if ([Math]::Abs($backgroundScrollAfter - $backgroundScrollBefore) -gt 0.01) {
+            throw "wheel input leaked through the modal: background $backgroundScrollBefore->$backgroundScrollAfter"
+        }
     }
     Assert-Inside -Child $cancel -Parent $dialog -Description 'Cancel button after scrolling'
     if ($scrollbar.Current.BoundingRectangle.Right -lt ($dialog.Current.BoundingRectangle.Right - 24)) {
@@ -227,6 +255,7 @@ try {
     } | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 -LiteralPath (Join-Path $output 'report.json')
 } finally {
     if ($null -ne $context) { Stop-UitestExplorer -Context $context }
+    Remove-Item Env:SUPEREXPLORER_UITEST_OPEN_FOLDER_OPTIONS -ErrorAction SilentlyContinue
 }
 
 Write-Output "Folder Options extension scrolling and Escape smoke passed: $OutputDirectory"
