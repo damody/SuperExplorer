@@ -7,6 +7,10 @@ The Host SHALL prepare Rust and Lua Code Lines directory snapshots only from reg
 - **WHEN** an admitted folder contains supported source files together with repository metadata, images, executables, archives, or other unrecognized files
 - **THEN** the Host packs only recognized source files and both official Code Lines providers receive a dispatchable snapshot whose counts exclude unsupported payloads
 
+#### Scenario: All-language Code Lines uses the Host classifier
+- **WHEN** the Lua Code Lines provider receives a file or directory snapshot containing any language recognized by the workspace-locked tokei classifier
+- **THEN** it uses tokei parsing for that language and includes its exact code, comment, and blank counts in the all-language total
+
 #### Scenario: Supported source exceeds the single-stream limit
 - **WHEN** the complete framed snapshot of recognized source would exceed `MAX_HOST_INPUT_STREAM_SOURCE_BYTES_V1`
 - **THEN** that folder is reported as `Unsupported source` and no oversized stream is submitted

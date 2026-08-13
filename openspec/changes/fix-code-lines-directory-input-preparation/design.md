@@ -39,6 +39,10 @@ The pack builder will use `MAX_HOST_INPUT_STREAM_SOURCE_BYTES_V1`, including mag
 
 Batch preparation will retain each successfully prepared `(request, input, cache admission)` row and emit a terminal error only for the specific request that cannot be canonicalized, named, or converted into a Host stream. A bad row will no longer cause `inputs.len() != requests.len()` to fail the entire batch.
 
+### Use the locked tokei parser in the all-language provider
+
+The Lua Code Lines provider will replace its small hand-written extension table and line classifier with `tokei::LanguageType::from_path` plus `parse_from_slice`. This keeps its accepted-language set and code/comment/blank semantics identical to the Host snapshot filter and ensures the all-language total cannot omit a language that the Host deliberately packed.
+
 ## Risks / Trade-offs
 
 - [Host and provider tokei versions could diverge] → Both use the workspace-locked dependency; tests assert representative recognition and the existing wire format remains provider-validated.
