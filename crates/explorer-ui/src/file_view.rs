@@ -117,7 +117,9 @@ fn filter_value(entry: &FileEntry, column: &ColumnId) -> (String, String) {
         }
         ColumnId::Tags => text_filter_value(entry.metadata.tags_display.as_deref(), "tags"),
         ColumnId::Title => text_filter_value(entry.metadata.title_display.as_deref(), "title"),
-        ColumnId::Extension { .. } => ("extension:unavailable".into(), "無法使用".into()),
+        ColumnId::FileCount | ColumnId::FolderCount | ColumnId::Extension { .. } => {
+            ("extension:unavailable".into(), "無法使用".into())
+        }
     }
 }
 
@@ -383,7 +385,7 @@ fn compare_file_entries(
             right.metadata.title_display.as_deref(),
             sort.direction,
         ),
-        ColumnId::Extension { .. } => Ordering::Equal,
+        ColumnId::FileCount | ColumnId::FolderCount | ColumnId::Extension { .. } => Ordering::Equal,
     };
     ordering
         .then_with(|| left_keys.display_name().cmp(right_keys.display_name()))

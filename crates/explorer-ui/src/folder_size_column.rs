@@ -3,7 +3,14 @@
 //! The application owns the asynchronous folder walk.  This module owns only
 //! the copied descriptor/value projection consumed by GPUI.
 
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+const PARTIAL_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
 pub use explorer_extension_ui_api::{CellRenderContextV1, CellRenderPlanV1};
 
@@ -67,6 +74,15 @@ pub struct FolderSizeRequestV1 {
     pub context: explorer_model::RequestContext,
     pub item_id: ShellItemId,
     pub path: PathBuf,
+    pub mft_cache_memory_mb: u16,
+    pub require_directory_facts: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DirectoryFactsV1 {
+    pub mft_generation: u64,
+    pub file_count: u64,
+    pub folder_count: u64,
 }
 
 /// One exact-byte folder-size result returned by the app-owned worker.
@@ -76,6 +92,7 @@ pub struct FolderSizeResultV1 {
     pub item_id: ShellItemId,
     /// `None` means that the provider completed without a displayable value.
     pub exact_bytes: Option<u64>,
+    pub directory_facts: Option<DirectoryFactsV1>,
     pub partial: bool,
     pub error: Option<String>,
 }
@@ -108,14 +125,20 @@ impl FolderSizeBackendStatusV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FolderSizeValueV1 {
     pub exact_bytes: Option<u64>,
+    pub directory_facts: Option<DirectoryFactsV1>,
     pub partial: bool,
     pub error: Option<String>,
+    pub(crate) retry_after: Option<Instant>,
 }
 
 /// Application-owned async bridge. Calls occur only on the UI thread; the
 /// implementation owns worker scheduling, deduplication, and cancellation.
 pub trait VisualColumnRuntimePortV1: Send + Sync {
     fn config(&self) -> VisualColumnConfigV1;
+    fn configure_cache_budgets(&self, _budgets: explorer_model::CacheBudgetSettingsV1) {}
+    /// Keeps the privileged MFT index active only while a built-in count
+    /// column is visible. Implementations should make this transition-safe.
+    fn set_directory_facts_active(&self, _active: bool) {}
     fn submit_folder_size_requests(&self, requests: Vec<FolderSizeRequestV1>);
     fn cancel_folder_size_context(&self, context: &explorer_model::RequestContext);
     /// Invalidates only values whose items belong directly to this directory.
@@ -182,8 +205,14 @@ impl FolderSizeColumnVisuals {
         let key = FolderSizeSnapshotKeyV1::from(&result.context);
         let value = FolderSizeValueV1 {
             exact_bytes: result.exact_bytes,
+            directory_facts: (!result.partial)
+                .then_some(result.directory_facts)
+                .flatten(),
             partial: result.partial,
             error: result.error,
+            retry_after: result
+                .partial
+                .then(|| Instant::now() + PARTIAL_RETRY_INTERVAL),
         };
         if self
             .context
@@ -203,22 +232,110 @@ impl FolderSizeColumnVisuals {
             .and_then(|value| value.exact_bytes)
     }
 
+    pub fn directory_facts_for(&self, item_id: &ShellItemId) -> Option<DirectoryFactsV1> {
+        self.values
+            .get(item_id)
+            .filter(|value| !value.partial)
+            .and_then(|value| value.directory_facts)
+    }
+
+    pub fn file_count_for(&self, item_id: &ShellItemId) -> Option<u64> {
+        self.directory_facts_for(item_id)
+            .map(|facts| facts.file_count)
+    }
+
+    pub fn folder_count_for(&self, item_id: &ShellItemId) -> Option<u64> {
+        self.directory_facts_for(item_id)
+            .map(|facts| facts.folder_count)
+    }
+
+    pub fn exact_file_count_sort_values(&self) -> HashMap<ShellItemId, Option<u64>> {
+        self.values
+            .iter()
+            .map(|(id, value)| {
+                (
+                    id.clone(),
+                    (!value.partial)
+                        .then_some(value.directory_facts.map(|facts| facts.file_count))
+                        .flatten(),
+                )
+            })
+            .collect()
+    }
+
+    pub fn exact_folder_count_sort_values(&self) -> HashMap<ShellItemId, Option<u64>> {
+        self.values
+            .iter()
+            .map(|(id, value)| {
+                (
+                    id.clone(),
+                    (!value.partial)
+                        .then_some(value.directory_facts.map(|facts| facts.folder_count))
+                        .flatten(),
+                )
+            })
+            .collect()
+    }
+
+    pub fn partial_value_for(&self, item_id: &ShellItemId) -> Option<u64> {
+        self.values
+            .get(item_id)
+            .filter(|value| value.partial)
+            .and_then(|value| value.exact_bytes)
+            .filter(|bytes| *bytes > 0)
+    }
+
+    pub fn partial_pending_for(&self, item_id: &ShellItemId) -> bool {
+        self.values.get(item_id).is_some_and(|value| {
+            value.partial
+                && value.error.is_none()
+                && value.exact_bytes.is_none_or(|bytes| bytes == 0)
+        })
+    }
+
+    pub fn take_due_retries(&mut self, now: Instant) -> Vec<(TabId, Generation, ShellItemId)> {
+        let Some(context) = self.context.as_ref() else {
+            return Vec::new();
+        };
+        let tab_id = context.tab_id;
+        let generation = context.generation;
+        self.values
+            .iter_mut()
+            .filter_map(|(item_id, value)| {
+                value
+                    .retry_after
+                    .is_some_and(|retry_after| retry_after <= now)
+                    .then(|| {
+                        value.retry_after = None;
+                        (tab_id, generation, item_id.clone())
+                    })
+            })
+            .collect()
+    }
+
     pub fn has_value_for_context(
         &self,
         context: &explorer_model::RequestContext,
         item_id: &ShellItemId,
     ) -> bool {
         let key = FolderSizeSnapshotKeyV1::from(context);
+        let is_terminal_or_waiting = |value: &FolderSizeValueV1| {
+            !value.partial
+                || value
+                    .retry_after
+                    .is_some_and(|retry_after| retry_after > Instant::now())
+        };
         if self
             .context
             .as_ref()
             .is_some_and(|current| FolderSizeSnapshotKeyV1::from(current) == key)
         {
-            self.values.contains_key(item_id)
+            self.values.get(item_id).is_some_and(is_terminal_or_waiting)
         } else {
             self.snapshots
                 .get(&key)
-                .is_some_and(|values| values.contains_key(item_id))
+                .and_then(|values| values.get(item_id))
+                .is_some_and(is_terminal_or_waiting)
         }
     }
 
@@ -325,6 +442,7 @@ mod tests {
             context: context_a.clone(),
             item_id: item(1),
             exact_bytes: Some(10),
+            directory_facts: None,
             partial: false,
             error: None,
         });
@@ -335,6 +453,7 @@ mod tests {
             context: context_b.clone(),
             item_id: item(2),
             exact_bytes: Some(20),
+            directory_facts: None,
             partial: false,
             error: None,
         });
@@ -347,6 +466,90 @@ mod tests {
 
         assert!(visuals.begin_context(&context(tab_b, 2)));
         assert!(visuals.values.is_empty());
+    }
+
+    #[test]
+    fn complete_mft_facts_feed_both_count_domains_but_partial_facts_do_not() {
+        let current = context(TabId::new(), 1);
+        let exact = item(90);
+        let partial = item(91);
+        let mut visuals = FolderSizeColumnVisuals::new(VisualColumnConfigV1::default());
+        visuals.begin_context(&current);
+        visuals.insert_result(FolderSizeResultV1 {
+            context: current.clone(),
+            item_id: exact.clone(),
+            exact_bytes: Some(10),
+            directory_facts: Some(DirectoryFactsV1 {
+                mft_generation: 4,
+                file_count: 999,
+                folder_count: 2,
+            }),
+            partial: false,
+            error: None,
+        });
+        visuals.insert_result(FolderSizeResultV1 {
+            context: current,
+            item_id: partial.clone(),
+            exact_bytes: Some(5),
+            directory_facts: Some(DirectoryFactsV1 {
+                mft_generation: 4,
+                file_count: 3,
+                folder_count: 1,
+            }),
+            partial: true,
+            error: None,
+        });
+        assert_eq!(visuals.file_count_for(&exact), Some(999));
+        assert_eq!(visuals.folder_count_for(&exact), Some(2));
+        assert_eq!(visuals.file_count_for(&partial), None);
+        assert_eq!(visuals.exact_file_count_sort_values()[&partial], None);
+    }
+
+    #[test]
+    fn partial_value_is_displayable_but_excluded_from_exact_sort_domain() {
+        let current = context(TabId::new(), 1);
+        let id = item(77);
+        let mut visuals = FolderSizeColumnVisuals::new(VisualColumnConfigV1::default());
+        visuals.begin_context(&current);
+        visuals.insert_result(FolderSizeResultV1 {
+            context: current,
+            item_id: id.clone(),
+            exact_bytes: Some(1_250),
+            directory_facts: None,
+            partial: true,
+            error: None,
+        });
+        assert_eq!(visuals.partial_value_for(&id), Some(1_250));
+        assert_eq!(visuals.value_for(&id), None);
+        assert_eq!(visuals.exact_sort_values().get(&id), Some(&None));
+    }
+
+    #[test]
+    fn zero_partial_is_pending_and_becomes_retryable_without_entering_sort_domain() {
+        let current = context(TabId::new(), 1);
+        let id = item(78);
+        let mut visuals = FolderSizeColumnVisuals::new(VisualColumnConfigV1::default());
+        visuals.begin_context(&current);
+        visuals.insert_result(FolderSizeResultV1 {
+            context: current.clone(),
+            item_id: id.clone(),
+            exact_bytes: Some(0),
+            directory_facts: None,
+            partial: true,
+            error: None,
+        });
+
+        assert!(visuals.partial_pending_for(&id));
+        assert_eq!(visuals.partial_value_for(&id), None);
+        assert_eq!(visuals.exact_sort_values().get(&id), Some(&None));
+        assert!(visuals.take_due_retries(Instant::now()).is_empty());
+        assert_eq!(
+            visuals
+                .take_due_retries(Instant::now() + PARTIAL_RETRY_INTERVAL)
+                .as_slice(),
+            &[(current.tab_id, current.generation, id)]
+        );
+        assert!(!visuals.has_value_for_context(&current, &item(78)));
     }
 
     #[test]

@@ -31,6 +31,12 @@ pub trait ExplorerService: Send + Sync {
     ///
     /// Returns disconnect or internal endpoint status; an empty live queue is `Ok(None)`.
     fn try_recv(&self) -> Result<Option<ExplorerEvent>, ExplorerServiceError>;
+
+    /// Returns a bounded Host-owned snapshot. Implementations may perform local IPC, so callers
+    /// must invoke this from a background worker rather than the UI thread.
+    fn cache_telemetry_snapshot(&self) -> crate::CacheTelemetrySnapshotV1 {
+        crate::CacheTelemetrySnapshotV1::default()
+    }
 }
 
 /// Stable identity plus a resolvable descriptor for one operation item.
@@ -185,6 +191,50 @@ pub enum ShellIconPayloadError {
     InvalidBufferLength,
 }
 
+/// Validated BC7 block rows owned by the Host and suitable for direct GPU upload.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum CompressedRasterKind {
+    Icon,
+    Thumbnail,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct Bc7RasterPayload {
+    pub kind: CompressedRasterKind,
+    pub width: u32,
+    pub height: u32,
+    pub padded_width: u32,
+    pub padded_height: u32,
+    pub row_pitch: u32,
+    pub blocks: Vec<u8>,
+}
+
+impl Bc7RasterPayload {
+    pub fn validate(&self, maximum_bytes: usize) -> bool {
+        let Some(padded_width) = self.width.checked_add(3).map(|value| value & !3) else {
+            return false;
+        };
+        let Some(padded_height) = self.height.checked_add(3).map(|value| value & !3) else {
+            return false;
+        };
+        let Some(row_pitch) = (padded_width / 4).checked_mul(16) else {
+            return false;
+        };
+        let expected = usize::try_from(row_pitch).ok().and_then(|pitch| {
+            usize::try_from(padded_height / 4)
+                .ok()
+                .and_then(|rows| pitch.checked_mul(rows))
+        });
+        self.width > 0
+            && self.height > 0
+            && self.padded_width == padded_width
+            && self.padded_height == padded_height
+            && self.row_pitch == row_pitch
+            && expected == Some(self.blocks.len())
+            && self.blocks.len() <= maximum_bytes
+    }
+}
+
 /// Owned RGBA8 pixels crossing the STA boundary. No apartment-affine value is
 /// allowed in this payload.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -194,6 +244,7 @@ pub struct ShellIconPayload {
     pub height: u16,
     pub stride: u32,
     pub rgba: Vec<u8>,
+    pub bc7: Option<Bc7RasterPayload>,
     pub fallback_reason: Option<ShellIconFallbackReason>,
 }
 
@@ -227,6 +278,36 @@ impl ShellIconPayload {
             height,
             stride,
             rgba,
+            bc7: None,
+            fallback_reason,
+        })
+    }
+
+    /// Builds an icon payload from a validated BC7 raster.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShellIconPayloadError`] when dimensions or encoded bytes do
+    /// not satisfy the bounded raster contract.
+    pub fn new_bc7(
+        key: ShellIconKey,
+        raster: Bc7RasterPayload,
+        fallback_reason: Option<ShellIconFallbackReason>,
+    ) -> Result<Self, ShellIconPayloadError> {
+        if !raster.validate(64 * 1024 * 1024) {
+            return Err(ShellIconPayloadError::InvalidBufferLength);
+        }
+        let width =
+            u16::try_from(raster.width).map_err(|_| ShellIconPayloadError::ZeroDimension)?;
+        let height =
+            u16::try_from(raster.height).map_err(|_| ShellIconPayloadError::ZeroDimension)?;
+        Ok(Self {
+            key,
+            width,
+            height,
+            stride: 0,
+            rgba: Vec::new(),
+            bc7: Some(raster),
             fallback_reason,
         })
     }
@@ -1097,6 +1178,24 @@ mod tests {
             ShellIconPayload::new(key, 20, 20, 80, vec![0; 1_599], None),
             Err(ShellIconPayloadError::InvalidBufferLength)
         );
+    }
+
+    #[test]
+    fn bc7_payload_rejects_incomplete_rows_and_preserves_kind() {
+        let valid = Bc7RasterPayload {
+            kind: CompressedRasterKind::Icon,
+            width: 5,
+            height: 7,
+            padded_width: 8,
+            padded_height: 8,
+            row_pitch: 32,
+            blocks: vec![0; 64],
+        };
+        assert!(valid.validate(64));
+        let mut truncated = valid.clone();
+        truncated.blocks.pop();
+        assert!(!truncated.validate(64));
+        assert_eq!(valid.kind, CompressedRasterKind::Icon);
     }
 
     #[test]

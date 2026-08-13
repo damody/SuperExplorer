@@ -67,6 +67,30 @@ fn stable_ids_and_descriptor_registry_reject_collisions_and_bad_ownership() {
 }
 
 #[test]
+fn directory_count_built_ins_are_stable_default_hidden_aggregate_integers() {
+    let registry = ColumnRegistry::built_ins();
+    let layout = OrderedColumnLayout::default();
+    for (column, stable_id, display_name) in [
+        (ColumnId::FileCount, "builtin:file_count", "File Count"),
+        (
+            ColumnId::FolderCount,
+            "builtin:folder_count",
+            "Folder Count",
+        ),
+    ] {
+        assert_eq!(column.stable_id(), stable_id);
+        assert_eq!(ColumnId::parse(stable_id).unwrap(), column);
+        assert!(!layout.visible(&column));
+        let descriptor = registry.get(&column).expect("built-in descriptor");
+        assert_eq!(descriptor.display_name, display_name);
+        assert_eq!(descriptor.value_type, ColumnValueType::Integer);
+        assert_eq!(descriptor.applicability, ColumnApplicability::Containers);
+        assert_eq!(descriptor.sort_semantics, ColumnSortSemantics::Integer);
+        assert_eq!(descriptor.cost, ColumnCost::BackgroundAggregate);
+    }
+}
+
+#[test]
 fn ordered_layout_preserves_width_visibility_and_deterministic_order() {
     let mut registry = ColumnRegistry::built_ins();
     let id = ColumnId::extension("org.example.folder-size", "bytes").unwrap();
@@ -279,7 +303,9 @@ fn legacy_runtime_migration_preserves_custom_prefix_and_appends_built_ins() {
             ColumnId::DateModified,
             ColumnId::DateCreated,
             ColumnId::Authors,
-            ColumnId::Tags
+            ColumnId::Tags,
+            ColumnId::FileCount,
+            ColumnId::FolderCount,
         ]
     );
     assert_eq!(runtime.details_layout.width(&ColumnId::Size), Some(233));
@@ -318,6 +344,116 @@ fn extensible_session_layout_and_sort_round_trip_unknown_ids() {
         restored.sort.direction,
         explorer_model::SortDirection::Descending
     );
+}
+
+#[test]
+fn count_column_visibility_width_order_and_sort_round_trip() {
+    let mut settings = explorer_model::ViewSettings::default();
+    assert!(
+        settings
+            .details_layout
+            .set_visible(&ColumnId::FileCount, true)
+    );
+    assert!(settings.details_layout.set_width(&ColumnId::FileCount, 222));
+    assert!(
+        settings
+            .details_layout
+            .move_before(&ColumnId::FileCount, Some(&ColumnId::Size))
+    );
+    settings.sort = explorer_model::SortDescriptor {
+        column: ColumnId::FolderCount,
+        direction: explorer_model::SortDirection::Descending,
+    };
+
+    let restored = PersistedViewSettings::from(settings).to_runtime();
+    assert!(restored.details_layout.visible(&ColumnId::FileCount));
+    assert_eq!(
+        restored.details_layout.width(&ColumnId::FileCount),
+        Some(222)
+    );
+    assert!(
+        restored
+            .details_layout
+            .entries()
+            .iter()
+            .position(|entry| entry.id == ColumnId::FileCount)
+            < restored
+                .details_layout
+                .entries()
+                .iter()
+                .position(|entry| entry.id == ColumnId::Size)
+    );
+    assert_eq!(restored.sort.column, ColumnId::FolderCount);
+    assert_eq!(
+        restored.sort.direction,
+        explorer_model::SortDirection::Descending
+    );
+}
+
+#[test]
+fn pre_count_extensible_layout_appends_hidden_count_columns_without_losing_preferences() {
+    let saved = [
+        ("builtin:name", 333, true),
+        ("builtin:size", 211, true),
+        ("builtin:title", 244, false),
+        ("builtin:type", 155, true),
+        ("builtin:date_modified", 166, true),
+        ("builtin:date_created", 177, false),
+        ("builtin:authors", 188, false),
+        ("builtin:tags", 199, false),
+    ];
+    let mut persisted = PersistedViewSettings::default();
+    persisted.extensible_column_layout = saved
+        .iter()
+        .map(
+            |(id, width, visible)| explorer_model::PersistedColumnLayoutEntry {
+                id: (*id).to_owned(),
+                width: *width,
+                visible: *visible,
+            },
+        )
+        .collect();
+
+    let runtime = persisted.to_runtime();
+    let entries = runtime.details_layout.entries();
+    assert_eq!(entries.len(), 10);
+    for (entry, (id, width, visible)) in entries.iter().zip(saved) {
+        assert_eq!(entry.id.stable_id(), id);
+        assert_eq!(entry.width, width);
+        assert_eq!(entry.visible, visible);
+    }
+    assert_eq!(entries[8].id, ColumnId::FileCount);
+    assert_eq!(entries[8].width, 104);
+    assert!(!entries[8].visible);
+    assert_eq!(entries[9].id, ColumnId::FolderCount);
+    assert_eq!(entries[9].width, 104);
+    assert!(!entries[9].visible);
+}
+
+#[test]
+fn current_extensible_layout_reconciliation_is_idempotent() {
+    let mut settings = explorer_model::ViewSettings::default();
+    assert!(
+        settings
+            .details_layout
+            .set_visible(&ColumnId::FileCount, true)
+    );
+    assert!(
+        settings
+            .details_layout
+            .set_width(&ColumnId::FolderCount, 237)
+    );
+    assert!(
+        settings
+            .details_layout
+            .move_before(&ColumnId::FolderCount, Some(&ColumnId::Size))
+    );
+    let expected = settings.details_layout.clone();
+
+    let mut restored = PersistedViewSettings::from(settings).to_runtime();
+    restored.details_layout.reconcile_current_built_ins();
+    restored.details_layout.reconcile_current_built_ins();
+    assert_eq!(restored.details_layout, expected);
 }
 
 #[test]

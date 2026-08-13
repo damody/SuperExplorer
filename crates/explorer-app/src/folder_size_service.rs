@@ -1,7 +1,7 @@
 //! Host-owned folder aggregate/tree snapshots shared by every consumer.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     fs,
     hash::{Hash, Hasher},
     io::Read,
@@ -69,6 +69,8 @@ pub(crate) struct FolderSnapshotV1 {
     pub schema: u32,
     pub root_id: SnapshotNodeIdV1,
     pub refresh_generation: u64,
+    #[serde(default)]
+    pub mft_generation: Option<u64>,
     pub method: SnapshotMethodV1,
     pub status: SnapshotStatusV1,
     pub diagnostic: Option<String>,
@@ -391,6 +393,7 @@ pub(crate) fn snapshot_from_indexed_entries(
         schema: SNAPSHOT_SCHEMA_V2,
         root_id,
         refresh_generation,
+        mft_generation: None,
         method,
         status: SnapshotStatusV1::Complete,
         diagnostic: None,
@@ -411,6 +414,7 @@ fn finish_snapshot(
         schema: SNAPSHOT_SCHEMA_V2,
         root_id,
         refresh_generation,
+        mft_generation: None,
         method: SnapshotMethodV1::Recursive,
         status,
         diagnostic: diagnostic.map(|value| truncate_diagnostic(&value)),
@@ -478,22 +482,31 @@ pub(crate) struct FolderSizeServiceCountersV1 {
 pub(crate) struct FolderSizeServiceV1 {
     snapshots: HashMap<SnapshotLeaseKeyV1, Arc<FolderSnapshotV1>>,
     modified_snapshots: HashMap<PathBuf, (u128, Arc<FolderSnapshotV1>)>,
+    aggregate_snapshot_roots: HashSet<PathBuf>,
     leases: HashMap<SnapshotLeaseKeyV1, usize>,
     lru: VecDeque<SnapshotLeaseKeyV1>,
     capacity: usize,
     counters: FolderSizeServiceCountersV1,
+    mft_cache_memory_mb: u16,
     #[cfg(windows)]
     mft_indexes: HashMap<String, Arc<crate::mft_size_map::MftIndexV1>>,
     #[cfg(windows)]
     mft_aggregates: HashMap<String, Arc<crate::mft_size_map::MftAggregateIndexV1>>,
+    #[cfg(windows)]
+    mft_checkpoints: HashMap<String, crate::mft_journal::MftCheckpointV2>,
 }
 
 impl FolderSizeServiceV1 {
     pub(crate) fn with_capacity(capacity: usize) -> Self {
         Self {
             capacity: capacity.max(1),
+            mft_cache_memory_mb: explorer_model::DEFAULT_MFT_FOLDER_CACHE_MEMORY_MB,
             ..Self::default()
         }
+    }
+
+    pub(crate) fn set_mft_cache_memory_mb(&mut self, value: u16) {
+        self.mft_cache_memory_mb = explorer_model::normalized_mft_folder_cache_memory_mb(value);
     }
 
     pub(crate) fn subscribe(&mut self, key: SnapshotLeaseKeyV1) -> Option<Arc<FolderSnapshotV1>> {
@@ -513,23 +526,26 @@ impl FolderSizeServiceV1 {
         &mut self,
         root: &Path,
         refresh_generation: u64,
+        require_current_mft: bool,
         cancelled: impl Fn() -> bool,
         method_changed: impl Fn(SnapshotMethodV1),
     ) -> Result<(Arc<FolderSnapshotV1>, bool), String> {
         let canonical_root = root
             .canonicalize()
             .map_err(|_| "folder snapshot root is unavailable".to_owned())?;
+        self.aggregate_snapshot_roots.insert(canonical_root.clone());
         let key = SnapshotLeaseKeyV1 {
             canonical_root: canonical_root.clone(),
             refresh_generation,
         };
         let modified_stamp = folder_modified_stamp(&canonical_root)?;
         self.counters.subscribers = self.counters.subscribers.saturating_add(1);
-        if let Some(snapshot) = self.snapshots.get(&key).cloned() {
+        if !require_current_mft && let Some(snapshot) = self.snapshots.get(&key).cloned() {
             self.counters.cache_hits = self.counters.cache_hits.saturating_add(1);
             return Ok((snapshot, true));
         }
-        if let Some((cached_stamp, cached)) = self.modified_snapshots.get(&canonical_root)
+        if !require_current_mft
+            && let Some((cached_stamp, cached)) = self.modified_snapshots.get(&canonical_root)
             && *cached_stamp == modified_stamp
             && cached.status == SnapshotStatusV1::Complete
         {
@@ -542,7 +558,9 @@ impl FolderSizeServiceV1 {
             self.evict();
             return Ok((reused, true));
         }
-        if let Some(mut reused) = read_persistent_snapshot(&canonical_root, modified_stamp) {
+        if !require_current_mft
+            && let Some(mut reused) = read_persistent_snapshot(&canonical_root, modified_stamp)
+        {
             reused.refresh_generation = refresh_generation;
             let reused = Arc::new(reused);
             self.modified_snapshots.insert(
@@ -566,6 +584,9 @@ impl FolderSizeServiceV1 {
         let snapshot = match accelerated {
             Ok(snapshot) => snapshot,
             Err(error) => {
+                if require_current_mft {
+                    return Err(format!("MFT unavailable: {error}"));
+                }
                 #[cfg(test)]
                 {
                     method_changed(SnapshotMethodV1::Recursive);
@@ -583,6 +604,13 @@ impl FolderSizeServiceV1 {
                 }
             }
         };
+        // A partial MFT aggregate is a moment-in-time lower bound while the
+        // service is rebuilding or enforcing a budget. Do not make it a
+        // terminal per-generation snapshot: the Details column must retry and
+        // replace it with the later exact service result.
+        if snapshot.status != SnapshotStatusV1::Complete {
+            return Ok((Arc::new(snapshot), false));
+        }
         let _ = self.publish_with_modified_stamp(key.clone(), modified_stamp, snapshot);
         self.snapshots
             .get(&key)
@@ -608,13 +636,19 @@ impl FolderSizeServiceV1 {
         };
         let modified_stamp = folder_modified_stamp(&canonical_root)?;
         self.counters.subscribers = self.counters.subscribers.saturating_add(1);
-        if let Some(snapshot) = self.snapshots.get(&key).cloned() {
+        if let Some(snapshot) = self
+            .snapshots
+            .get(&key)
+            .filter(|snapshot| snapshot_has_complete_tree(snapshot))
+            .cloned()
+        {
             self.counters.cache_hits = self.counters.cache_hits.saturating_add(1);
             return Ok(snapshot);
         }
         if let Some((cached_stamp, cached)) = self.modified_snapshots.get(&canonical_root)
             && *cached_stamp == modified_stamp
             && cached.status == SnapshotStatusV1::Complete
+            && snapshot_has_complete_tree(cached)
         {
             let mut reused = cached.as_ref().clone();
             reused.refresh_generation = refresh_generation;
@@ -626,7 +660,9 @@ impl FolderSizeServiceV1 {
             self.evict();
             return Ok(reused);
         }
-        if let Some(mut reused) = read_persistent_snapshot(&canonical_root, modified_stamp) {
+        if let Some(mut reused) = read_persistent_snapshot(&canonical_root, modified_stamp)
+            && snapshot_has_complete_tree(&reused)
+        {
             reused.refresh_generation = refresh_generation;
             let reused = Arc::new(reused);
             self.modified_snapshots.insert(
@@ -639,6 +675,9 @@ impl FolderSizeServiceV1 {
             self.evict();
             return Ok(reused);
         }
+        // Installed Windows builds keep MFT ownership in the LocalSystem
+        // service. The interactive process consumes only the service-computed
+        // aggregate and projects it into the host-owned UI snapshot.
         #[cfg(all(windows, not(test)))]
         let accelerated = self.try_mft_snapshot(root, refresh_generation, &cancelled);
         #[cfg(any(not(windows), test))]
@@ -702,12 +741,7 @@ impl FolderSizeServiceV1 {
     }
 
     #[cfg(windows)]
-    fn try_mft_snapshot(
-        &mut self,
-        root: &Path,
-        refresh_generation: u64,
-        cancelled: &impl Fn() -> bool,
-    ) -> Result<FolderSnapshotV1, String> {
+    fn sync_service_mft_index(&mut self, root: &Path) -> Result<(), String> {
         use std::path::Component;
 
         let canonical_root = root
@@ -720,37 +754,124 @@ impl FolderSizeServiceV1 {
                 _ => None,
             })
             .ok_or_else(|| "MFT requires a local volume".to_owned())?;
-        if !self.mft_indexes.contains_key(&volume) {
-            let service_index = fresh_service_mft_index(&canonical_root);
-            match service_index {
-                Ok(index) => {
-                    self.mft_indexes.insert(volume.clone(), Arc::new(index));
+        let letter = service_volume_letter(&canonical_root)?;
+        let cache = service_mft_cache_root();
+        let latest = crate::mft_journal::latest_checkpoint(&cache, letter)?
+            .ok_or_else(|| "MFT service checkpoint is unavailable".to_owned())?;
+        if self.mft_checkpoints.get(&volume) == Some(&latest) {
+            return Ok(());
+        }
+
+        let mut invalidated_paths = std::collections::HashSet::new();
+        let (mut index, mut cursor) = if let (Some(index), Some(checkpoint)) = (
+            self.mft_indexes.get(&volume),
+            self.mft_checkpoints.get(&volume).copied(),
+        ) {
+            if checkpoint.volume != latest.volume || checkpoint.journal_id != latest.journal_id {
+                fresh_service_mft_index(&canonical_root)?
+            } else {
+                (index.as_ref().clone(), checkpoint)
+            }
+        } else {
+            fresh_service_mft_index(&canonical_root)?
+        };
+
+        if cursor.generation < latest.generation {
+            for delta in crate::mft_journal::deltas_after(
+                &cache,
+                letter,
+                cursor.generation,
+                latest.generation,
+            )? {
+                if delta.volume != cursor.volume
+                    || delta.journal_id != cursor.journal_id
+                    || delta.generation != cursor.generation.saturating_add(1)
+                    || delta.start_usn != cursor.next_usn
+                    || delta.next_usn < delta.start_usn
+                {
+                    return Err("MFT service delta chain is not contiguous".to_owned());
                 }
-                Err(error) => {
-                    return Err(error);
+                for change in &delta.changes {
+                    for reference in index.ancestor_references(change.reference) {
+                        if let Some(path) =
+                            index.path_for_reference(&volume_root(&canonical_root), reference)
+                        {
+                            invalidated_paths.insert(path);
+                        }
+                    }
+                    let affected = index.apply_change(change)?;
+                    for reference in affected {
+                        if let Some(path) =
+                            index.path_for_reference(&volume_root(&canonical_root), reference)
+                        {
+                            invalidated_paths.insert(path);
+                        }
+                    }
                 }
+                cursor = crate::mft_journal::MftCheckpointV2::new(
+                    cursor.volume,
+                    cursor.journal_id,
+                    delta.next_usn,
+                    delta.generation,
+                );
             }
         }
-        let index = self.mft_indexes[&volume].clone();
+        if cursor != latest {
+            return Err("MFT service checkpoint does not match applied deltas".to_owned());
+        }
+
+        self.mft_indexes.insert(volume.clone(), Arc::new(index));
+        self.mft_checkpoints.insert(volume.clone(), latest);
+        self.mft_aggregates.remove(&volume);
+        if !invalidated_paths.is_empty() {
+            for path in &invalidated_paths {
+                if let Ok(stamp) = folder_modified_stamp(path)
+                    && let Some(snapshot_path) = persistent_snapshot_path(path, stamp)
+                {
+                    let _ = fs::remove_file(snapshot_path);
+                }
+            }
+            self.modified_snapshots
+                .retain(|path, _| !invalidated_paths.contains(path));
+            self.aggregate_snapshot_roots
+                .retain(|path| !invalidated_paths.contains(path));
+            self.snapshots
+                .retain(|key, _| !invalidated_paths.contains(&key.canonical_root));
+            self.lru
+                .retain(|key| !invalidated_paths.contains(&key.canonical_root));
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn try_mft_snapshot(
+        &mut self,
+        root: &Path,
+        refresh_generation: u64,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<FolderSnapshotV1, String> {
+        let canonical_root = root
+            .canonicalize()
+            .map_err(|_| "MFT root is unavailable".to_owned())?;
         let root_reference = crate::mft_size_map::file_reference_number(&canonical_root)?;
-        let projected = index.project_subtree(root_reference, DEFAULT_MAX_NODES_V1, cancelled)?;
+        let projected =
+            crate::mft_query::query_hierarchy(&canonical_root, self.mft_cache_memory_mb)?;
+        if projected.len() > DEFAULT_MAX_NODES_V1
+            || projected.first().map(|node| node.reference) != Some(root_reference)
+        {
+            return Err("MFT hierarchy root or node bound is invalid".to_owned());
+        }
         let mut paths = HashMap::from([(root_reference, canonical_root.clone())]);
         let mut entries = Vec::with_capacity(projected.len().saturating_sub(1));
         for node in projected.into_iter().skip(1) {
+            if cancelled() {
+                return Err("MFT hierarchy projection was cancelled".to_owned());
+            }
             let parent = node
                 .parent_reference
                 .and_then(|reference| paths.get(&reference))
                 .ok_or_else(|| "MFT projection parent is missing".to_owned())?;
             let path = parent.join(&node.name);
-            let metadata = fs::symlink_metadata(&path)
-                .map_err(|_| "MFT projection contains a stale path".to_owned())?;
-            if is_reparse_point(&metadata)
-                || (!node.is_directory && crate::mft_size_map::file_link_count(&path)? > 1)
-            {
-                return Err(
-                    "MFT projection requires recursive hard-link/reparse fallback".to_owned(),
-                );
-            }
             paths.insert(node.reference, path.clone());
             entries.push(IndexedSnapshotEntryV1 {
                 path,
@@ -775,51 +896,31 @@ impl FolderSizeServiceV1 {
         &mut self,
         root: &Path,
         refresh_generation: u64,
-        cancelled: &impl Fn() -> bool,
+        _cancelled: &impl Fn() -> bool,
     ) -> Result<FolderSnapshotV1, String> {
-        use std::path::Component;
-        let volume = root
-            .components()
-            .find_map(|component| match component {
-                Component::Prefix(prefix) => Some(prefix.as_os_str().to_string_lossy().to_string()),
-                _ => None,
-            })
-            .ok_or_else(|| "MFT requires a local volume".to_owned())?;
-        if !self.mft_indexes.contains_key(&volume) {
-            let index = fresh_service_mft_index(root);
-            match index {
-                Ok(index) => {
-                    self.mft_indexes.insert(volume.clone(), Arc::new(index));
-                }
-                Err(error) => {
-                    return Err(error);
-                }
-            }
-        }
-        if !self.mft_aggregates.contains_key(&volume) {
-            let aggregate =
-                crate::mft_size_map::MftAggregateIndexV1::build(&self.mft_indexes[&volume], 8)?;
-            self.mft_aggregates
-                .insert(volume.clone(), Arc::new(aggregate));
-        }
-        let root_reference = crate::mft_size_map::file_reference_number(root)?;
-        let aggregate = self.mft_aggregates[&volume]
-            .get(root_reference)
-            .ok_or_else(|| "MFT aggregate root is unavailable".to_owned())?;
+        let aggregate = crate::mft_query::query_folder(root, self.mft_cache_memory_mb)?;
         let root_id = stable_node_id(Path::new(""));
+        let snapshot_status = if aggregate.partial {
+            SnapshotStatusV1::Partial
+        } else {
+            SnapshotStatusV1::Complete
+        };
         Ok(FolderSnapshotV1 {
             schema: SNAPSHOT_SCHEMA_V2,
             root_id,
             refresh_generation,
+            mft_generation: Some(aggregate.generation),
             method: SnapshotMethodV1::Mft,
-            status: SnapshotStatusV1::Complete,
+            status: snapshot_status,
+            // Partial is a typed successful state, not an error. Keeping the
+            // diagnostic empty lets Details render the known lower bound.
             diagnostic: None,
             aggregate: FolderAggregateSnapshotV1 {
                 recursive_bytes: aggregate.logical_bytes,
                 direct_bytes: 0,
                 file_count: aggregate.file_count,
                 directory_count: aggregate.directory_count,
-                status: SnapshotStatusV1::Complete,
+                status: snapshot_status,
             },
             nodes: vec![FolderSnapshotNodeV1 {
                 id: root_id,
@@ -831,7 +932,7 @@ impl FolderSizeServiceV1 {
                 kind: SnapshotNodeKindV1::Directory,
                 direct_bytes: 0,
                 recursive_bytes: aggregate.logical_bytes,
-                status: SnapshotStatusV1::Complete,
+                status: snapshot_status,
             }],
         })
     }
@@ -845,6 +946,37 @@ impl FolderSizeServiceV1 {
             self.leases.remove(key);
         }
         self.evict();
+    }
+
+    /// Retain only terminal folder results for the active Explorer window.
+    /// Aggregate-only snapshots are kept across sibling window navigations so
+    /// folder-size results can be reused between tabs on the same volume.
+    pub(crate) fn retain_cache_window(&mut self, root: &Path, max_depth: usize) {
+        let Ok(root) = root.canonicalize() else {
+            return;
+        };
+        let aggregate_snapshot_roots = &self.aggregate_snapshot_roots;
+        self.snapshots.retain(|key, _| {
+            self.leases.contains_key(key)
+                || path_is_within_depth(&key.canonical_root, &root, max_depth)
+        });
+        self.modified_snapshots.retain(|path, _| {
+            path_is_within_depth(path, &root, max_depth) || aggregate_snapshot_roots.contains(path)
+        });
+        for snapshot in self.snapshots.values_mut() {
+            *snapshot = Arc::new(compact_aggregate_snapshot(snapshot));
+        }
+        for (path, (stamp, snapshot)) in &mut self.modified_snapshots {
+            *snapshot = Arc::new(compact_aggregate_snapshot(snapshot));
+            write_persistent_snapshot(path, *stamp, snapshot);
+        }
+        self.lru.retain(|key| self.snapshots.contains_key(key));
+        #[cfg(windows)]
+        {
+            self.mft_indexes.clear();
+            self.mft_aggregates.clear();
+            self.mft_checkpoints.clear();
+        }
     }
 
     pub(crate) fn counters(&self) -> FolderSizeServiceCountersV1 {
@@ -870,8 +1002,28 @@ impl FolderSizeServiceV1 {
                 break;
             };
             self.modified_snapshots.remove(&oldest);
+            self.aggregate_snapshot_roots.remove(&oldest);
         }
     }
+}
+
+fn path_is_within_depth(path: &Path, root: &Path, max_depth: usize) -> bool {
+    path.strip_prefix(root)
+        .is_ok_and(|relative| relative.components().count() <= max_depth)
+}
+
+fn snapshot_has_complete_tree(snapshot: &FolderSnapshotV1) -> bool {
+    snapshot.nodes.len() as u64
+        >= snapshot
+            .aggregate
+            .file_count
+            .saturating_add(snapshot.aggregate.directory_count)
+}
+
+fn compact_aggregate_snapshot(snapshot: &FolderSnapshotV1) -> FolderSnapshotV1 {
+    let mut compact = snapshot.clone();
+    compact.nodes.truncate(1);
+    compact
 }
 
 fn folder_modified_stamp(path: &Path) -> Result<u128, String> {
@@ -936,12 +1088,9 @@ fn write_persistent_snapshot(root: &Path, modified_stamp: u128, snapshot: &Folde
 }
 
 #[cfg(windows)]
-fn fresh_service_mft_index(root: &Path) -> Result<crate::mft_size_map::MftIndexV1, String> {
+fn service_volume_letter(root: &Path) -> Result<char, String> {
     use std::path::{Component, Prefix};
-    use std::time::{Duration, SystemTime};
-
-    let letter = root
-        .components()
+    root.components()
         .find_map(|component| match component {
             Component::Prefix(prefix) => match prefix.kind() {
                 Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
@@ -951,32 +1100,73 @@ fn fresh_service_mft_index(root: &Path) -> Result<crate::mft_size_map::MftIndexV
             },
             _ => None,
         })
-        .ok_or_else(|| "MFT service cache requires a drive letter".to_owned())?;
-    let program_data = std::env::var_os("ProgramData")
+        .ok_or_else(|| "MFT service cache requires a drive letter".to_owned())
+}
+
+#[cfg(windows)]
+fn service_mft_cache_root() -> PathBuf {
+    std::env::var_os("ProgramData")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
-    let path = program_data
+        .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
         .join("SuperExplorer")
         .join("MftIndex")
-        .join(format!("{letter}.semftidx"));
-    let modified = fs::metadata(&path)
-        .and_then(|metadata| metadata.modified())
-        .map_err(|_| "MFT service cache is unavailable".to_owned())?;
-    if SystemTime::now()
-        .duration_since(modified)
-        .unwrap_or(Duration::MAX)
-        > Duration::from_secs(120)
-    {
-        return Err("MFT service cache is stale".to_owned());
-    }
+}
+
+#[cfg(windows)]
+fn volume_root(path: &Path) -> PathBuf {
+    service_volume_letter(path)
+        .map(|letter| PathBuf::from(format!("{letter}:\\")))
+        .unwrap_or_else(|_| path.to_path_buf())
+}
+
+#[cfg(windows)]
+fn fresh_service_mft_index(
+    root: &Path,
+) -> Result<
+    (
+        crate::mft_size_map::MftIndexV1,
+        crate::mft_journal::MftCheckpointV2,
+    ),
+    String,
+> {
+    let letter = service_volume_letter(root)?;
+    let cache = service_mft_cache_root();
+    let path = cache.join(format!("{letter}.semftidx"));
+    let latest = crate::mft_journal::latest_checkpoint(&cache, letter)?
+        .ok_or_else(|| "MFT service checkpoint is unavailable".to_owned())?;
     let mut last_error = "MFT service cache is unavailable".to_owned();
     for attempt in 0..5 {
         match crate::mft_size_map::read_index(&path) {
-            Ok(index) => return Ok(index),
+            Ok(mut index) => {
+                let deltas =
+                    crate::mft_journal::deltas_after(&cache, letter, 0, latest.generation)?;
+                let mut expected_generation = 0_u64;
+                let mut expected_usn = deltas
+                    .first()
+                    .map_or(latest.next_usn, |delta| delta.start_usn);
+                for delta in deltas {
+                    if delta.volume != latest.volume
+                        || delta.journal_id != latest.journal_id
+                        || delta.generation != expected_generation.saturating_add(1)
+                        || delta.start_usn != expected_usn
+                    {
+                        return Err("MFT service delta chain is not contiguous".to_owned());
+                    }
+                    for change in &delta.changes {
+                        let _ = index.apply_change(change)?;
+                    }
+                    expected_generation = delta.generation;
+                    expected_usn = delta.next_usn;
+                }
+                if expected_generation != latest.generation || expected_usn != latest.next_usn {
+                    return Err("MFT service checkpoint does not match base/deltas".to_owned());
+                }
+                return Ok((index, latest));
+            }
             Err(error) => last_error = error,
         }
         if attempt < 4 {
-            std::thread::sleep(Duration::from_millis(20));
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
     }
     Err(last_error)
@@ -986,7 +1176,7 @@ fn fresh_service_mft_index(root: &Path) -> Result<crate::mft_size_map::MftIndexV
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     fn fixture_root(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -1014,9 +1204,33 @@ mod tests {
             if !metadata.is_dir() || metadata.file_attributes() & (0x2 | 0x4) != 0 {
                 continue;
             }
-            service
-                .try_mft_aggregate(&entry.path().canonicalize().unwrap(), 1, &|| false)
+            let canonical = entry.path().canonicalize().unwrap();
+            let expected = match entry.file_name().to_string_lossy().as_ref() {
+                "files-999" => Some((999, 1)),
+                "files-1000" => Some((1_000, 1)),
+                "nested-counts" => Some((3, 3)),
+                _ => None,
+            };
+            let mut snapshot = service
+                .try_mft_aggregate(&canonical, 1, &|| false)
                 .unwrap_or_else(|error| panic!("{}: {error}", entry.path().display()));
+            if let Some((expected_files, expected_directories)) = expected {
+                for _ in 0..150 {
+                    if snapshot.status == SnapshotStatusV1::Complete
+                        && snapshot.aggregate.file_count == expected_files
+                        && snapshot.aggregate.directory_count == expected_directories
+                    {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                    snapshot = service
+                        .try_mft_aggregate(&canonical, 1, &|| false)
+                        .unwrap_or_else(|error| panic!("{}: {error}", entry.path().display()));
+                }
+                assert_eq!(snapshot.status, SnapshotStatusV1::Complete);
+                assert_eq!(snapshot.aggregate.file_count, expected_files);
+                assert_eq!(snapshot.aggregate.directory_count, expected_directories);
+            }
         }
     }
 
@@ -1196,6 +1410,102 @@ mod tests {
     }
 
     #[test]
+    fn completed_folder_results_are_trimmed_to_active_three_level_window() {
+        let root = fixture_root("three-level-window");
+        let a = root.join("a");
+        let b = a.join("b");
+        let c = b.join("c");
+        let d = c.join("d");
+        let outside = root.with_extension("outside");
+        fs::create_dir_all(&d).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let mut service = FolderSizeServiceV1::with_capacity(16);
+        for (generation, directory) in [&a, &b, &c, &d, &outside].into_iter().enumerate() {
+            service
+                .snapshot_or_scan(directory, generation as u64 + 1, || false)
+                .unwrap();
+        }
+
+        service.retain_cache_window(&root, 3);
+        assert!(
+            service
+                .modified_snapshots
+                .contains_key(&a.canonicalize().unwrap())
+        );
+        assert!(
+            service
+                .modified_snapshots
+                .contains_key(&b.canonicalize().unwrap())
+        );
+        assert!(
+            service
+                .modified_snapshots
+                .contains_key(&c.canonicalize().unwrap())
+        );
+        assert!(
+            !service
+                .modified_snapshots
+                .contains_key(&d.canonicalize().unwrap())
+        );
+        assert!(
+            !service
+                .modified_snapshots
+                .contains_key(&outside.canonicalize().unwrap())
+        );
+        let compact = &service.modified_snapshots[&a.canonicalize().unwrap()].1;
+        assert_eq!(
+            compact.nodes.len(),
+            1,
+            "Host retains only the terminal aggregate"
+        );
+        let size_map_tree = service.snapshot_or_scan(&a, 99, || false).unwrap();
+        assert!(snapshot_has_complete_tree(&size_map_tree));
+        assert!(size_map_tree.nodes.len() > 1);
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn aggregate_results_are_not_pruned_by_depth_window() {
+        let root = fixture_root("aggregate-window-share");
+        let keep = root.join("keep");
+        let evict = root.join("evict");
+        let tree = root.join("tree");
+        let child = tree.join("child");
+        fs::create_dir_all(&keep).unwrap();
+        fs::create_dir_all(&evict).unwrap();
+        fs::create_dir_all(&child).unwrap();
+        fs::write(child.join("payload.bin"), vec![0_u8; 3]).unwrap();
+
+        let mut service = FolderSizeServiceV1::with_capacity(8);
+
+        let keep = keep.canonicalize().unwrap();
+        let evict = evict.canonicalize().unwrap();
+        let tree = tree.canonicalize().unwrap();
+
+        service
+            .aggregate_or_scan(&keep, 1, false, || false, |_| {})
+            .unwrap();
+        service
+            .aggregate_or_scan(&evict, 1, false, || false, |_| {})
+            .unwrap();
+        service.snapshot_or_scan(&tree, 1, || false).unwrap();
+
+        assert!(service.modified_snapshots.contains_key(&keep));
+        assert!(service.modified_snapshots.contains_key(&evict));
+        assert!(service.modified_snapshots.contains_key(&tree));
+
+        service.retain_cache_window(&keep, 1);
+
+        assert!(service.modified_snapshots.contains_key(&keep));
+        assert!(service.modified_snapshots.contains_key(&evict));
+        assert!(!service.modified_snapshots.contains_key(&tree));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn hard_links_are_counted_per_directory_entry_like_explorer() {
         let root = fixture_root("hard-links");
         fs::create_dir_all(&root).unwrap();
@@ -1283,5 +1593,31 @@ mod tests {
         );
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn exact_directory_facts_never_fall_back_to_recursive_scanning() {
+        let root = fixture_root("mft-only-facts");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("would-be-counted.txt"), b"content").unwrap();
+        let mut service = FolderSizeServiceV1::with_capacity(8);
+        let method_calls = std::cell::Cell::new(0_u32);
+
+        let error = service
+            .aggregate_or_scan(
+                &root,
+                1,
+                true,
+                || false,
+                |_| {
+                    method_calls.set(method_calls.get() + 1);
+                },
+            )
+            .unwrap_err();
+
+        assert!(error.starts_with("MFT unavailable:"));
+        assert_eq!(method_calls.get(), 0);
+        assert_eq!(service.counters().fallback_count, 0);
+        fs::remove_dir_all(root).unwrap();
     }
 }

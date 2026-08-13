@@ -39,6 +39,7 @@ fn public_extension_crates_have_one_way_dependencies_and_a_host_composition_root
             "base64",
             "explorer-extension-api",
             "explorer-extension-ui-api",
+            "explorer-model",
             "libloading",
             "mlua",
             "ring",
@@ -54,12 +55,7 @@ fn public_extension_crates_have_one_way_dependencies_and_a_host_composition_root
         &metadata,
         "explorer-extension-host",
         "dev",
-        &[
-            "explorer-common",
-            "explorer-jobs",
-            "explorer-model",
-            "tempfile",
-        ],
+        &["explorer-common", "explorer-jobs", "tempfile"],
     );
     assert!(
         APP_MANIFEST

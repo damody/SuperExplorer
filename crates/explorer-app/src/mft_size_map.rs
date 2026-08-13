@@ -3,7 +3,7 @@
 #![cfg(windows)]
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashSet, VecDeque},
     ffi::c_void,
     io::{BufReader, BufWriter, Read as _, Write as _},
     mem::size_of,
@@ -39,10 +39,10 @@ pub(crate) struct MftEntryV1 {
     pub(crate) is_directory: bool,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct MftIndexV1 {
-    pub(crate) entries: HashMap<u64, MftEntryV1>,
-    children: HashMap<u64, Vec<u64>>,
+    pub(crate) entries: BTreeMap<u64, MftEntryV1>,
+    children: BTreeMap<u64, Vec<u64>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -63,14 +63,29 @@ pub(crate) struct MftAggregateV1 {
     pub(crate) directory_count: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct MftIndexMemoryBreakdownV1 {
+    pub(crate) volume_index_bytes: usize,
+    pub(crate) file_data_bytes: usize,
+}
+
 #[derive(Debug)]
 pub(crate) struct MftAggregateIndexV1 {
-    totals: HashMap<u64, MftAggregateV1>,
+    totals: BTreeMap<u64, MftAggregateV1>,
     worker_count: usize,
 }
 
 impl MftAggregateIndexV1 {
     pub(crate) fn build(index: &MftIndexV1, max_workers: usize) -> Result<Self, String> {
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        Self::build_cancelled(index, max_workers, &cancelled)
+    }
+
+    pub(crate) fn build_cancelled(
+        index: &MftIndexV1,
+        max_workers: usize,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<Self, String> {
         let roots = index
             .entries
             .values()
@@ -93,14 +108,17 @@ impl MftAggregateIndexV1 {
         }
         let worker_count = max_workers.clamp(1, 8).min(tasks.len().max(1));
         let tasks = std::sync::Mutex::new(tasks);
-        let totals = std::sync::Mutex::new(HashMap::with_capacity(index.entries.len()));
+        let totals = std::sync::Mutex::new(BTreeMap::new());
         std::thread::scope(|scope| {
             for _ in 0..worker_count {
                 scope.spawn(|| {
                     loop {
+                        if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                            break;
+                        }
                         let task = tasks.lock().ok().and_then(|mut tasks| tasks.pop_front());
                         let Some(root) = task else { break };
-                        let local = aggregate_component(index, root);
+                        let local = aggregate_component(index, root, cancelled);
                         if let Ok(mut totals) = totals.lock() {
                             totals.extend(local);
                         }
@@ -108,6 +126,9 @@ impl MftAggregateIndexV1 {
                 });
             }
         });
+        if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            return Err("MFT aggregate build cancelled".to_owned());
+        }
         let mut totals = totals
             .into_inner()
             .map_err(|_| "MFT aggregate workers failed")?;
@@ -133,23 +154,55 @@ impl MftAggregateIndexV1 {
         self.totals.get(&reference).copied()
     }
 
+    pub(crate) fn estimated_resident_bytes(&self) -> usize {
+        estimate_btree_bytes::<u64, MftAggregateV1>(self.totals.len())
+    }
+
+    /// Removes deterministic oldest-key records until the aggregate store is
+    /// within its independent hard budget. Returns whether data was removed.
+    pub(crate) fn trim_to_bytes(&mut self, limit: usize) -> bool {
+        let mut trimmed = false;
+        while self.estimated_resident_bytes() > limit && self.totals.len() > 1 {
+            let Some(reference) = self.totals.keys().next().copied() else {
+                break;
+            };
+            self.totals.remove(&reference);
+            trimmed = true;
+        }
+        trimmed
+    }
+
     #[cfg(test)]
     pub(crate) fn worker_count(&self) -> usize {
         self.worker_count
     }
 }
 
-fn aggregate_component(index: &MftIndexV1, root: u64) -> HashMap<u64, MftAggregateV1> {
+fn aggregate_component(
+    index: &MftIndexV1,
+    root: u64,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> BTreeMap<u64, MftAggregateV1> {
     let mut traversal = Vec::new();
     let mut pending = vec![root];
+    let mut visited = HashSet::new();
     while let Some(reference) = pending.pop() {
+        if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            return BTreeMap::new();
+        }
+        if !visited.insert(reference) {
+            continue;
+        }
         traversal.push(reference);
         if let Some(children) = index.children.get(&reference) {
             pending.extend(children.iter().copied());
         }
     }
-    let mut totals = HashMap::with_capacity(traversal.len());
+    let mut totals = BTreeMap::new();
     for reference in traversal.into_iter().rev() {
+        if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            return BTreeMap::new();
+        }
         let Some(entry) = index.entries.get(&reference) else {
             continue;
         };
@@ -185,6 +238,290 @@ fn add_aggregate(target: &mut MftAggregateV1, source: MftAggregateV1) {
 }
 
 impl MftIndexV1 {
+    pub(crate) fn from_entries(entries: BTreeMap<u64, MftEntryV1>) -> Self {
+        Self::from_entries_cancelled(entries, || false)
+            .expect("non-cancelled in-memory MFT construction cannot fail")
+    }
+
+    fn from_entries_cancelled(
+        entries: BTreeMap<u64, MftEntryV1>,
+        mut cancelled: impl FnMut() -> bool,
+    ) -> Result<Self, String> {
+        let mut children = BTreeMap::<u64, Vec<u64>>::new();
+        for (ordinal, entry) in entries.values().enumerate() {
+            if ordinal % 4_096 == 0 && cancelled() {
+                return Err("MFT index construction cancelled".to_owned());
+            }
+            if entry.reference != entry.parent_reference {
+                children
+                    .entry(entry.parent_reference)
+                    .or_default()
+                    .push(entry.reference);
+            }
+        }
+        Ok(Self { entries, children })
+    }
+
+    pub(crate) fn try_from_entries(entries: BTreeMap<u64, MftEntryV1>) -> Result<Self, String> {
+        let index = Self::from_entries(entries);
+        index.validate_topology()?;
+        Ok(index)
+    }
+
+    pub(crate) fn try_from_entries_cancelled(
+        entries: BTreeMap<u64, MftEntryV1>,
+        mut cancelled: impl FnMut() -> bool,
+    ) -> Result<Self, String> {
+        let index = Self::from_entries_cancelled(entries, &mut cancelled)?;
+        index.validate_topology_cancelled(&mut cancelled)?;
+        Ok(index)
+    }
+
+    pub(crate) fn validate_topology(&self) -> Result<(), String> {
+        self.validate_topology_cancelled(|| false)
+    }
+
+    fn validate_topology_cancelled(
+        &self,
+        mut cancelled: impl FnMut() -> bool,
+    ) -> Result<(), String> {
+        let mut roots = Vec::new();
+        for (ordinal, entry) in self.entries.values().enumerate() {
+            if ordinal % 4_096 == 0 && cancelled() {
+                return Err("MFT topology validation cancelled".to_owned());
+            }
+            if entry.reference == entry.parent_reference
+                || !self.entries.contains_key(&entry.parent_reference)
+            {
+                roots.push(entry.reference);
+            }
+        }
+        if roots.is_empty() && !self.entries.is_empty() {
+            return Err("MFT index contains no rooted topology".to_owned());
+        }
+        let mut visited = HashSet::with_capacity(self.entries.len());
+        let mut pending = roots;
+        while let Some(reference) = pending.pop() {
+            if visited.len() % 4_096 == 0 && cancelled() {
+                return Err("MFT topology validation cancelled".to_owned());
+            }
+            if !visited.insert(reference) {
+                return Err("MFT index contains a cyclic or multiply-parented topology".to_owned());
+            }
+            if let Some(children) = self.children.get(&reference) {
+                pending.extend(children.iter().copied());
+            }
+        }
+        if visited.len() != self.entries.len() {
+            return Err("MFT index contains a disconnected cycle".to_owned());
+        }
+        Ok(())
+    }
+    pub(crate) fn serialized_bytes(&self) -> usize {
+        17_usize.saturating_add(
+            self.entries
+                .values()
+                .map(|entry| 37_usize.saturating_add(entry.name.len()))
+                .sum::<usize>(),
+        )
+    }
+
+    pub(crate) fn projected_aggregate_bytes(&self) -> usize {
+        estimate_btree_bytes::<u64, MftAggregateV1>(self.entries.len())
+    }
+
+    /// Persisted records are individually removable acceleration data. Keep
+    /// one indivisible record even when it alone exceeds the configured cap.
+    pub(crate) fn trim_persisted_to_bytes(&mut self, limit: usize) -> bool {
+        let mut trimmed = false;
+        while self.serialized_bytes() > limit && self.entries.len() > 1 {
+            let Some(reference) = self.entries.keys().next_back().copied() else {
+                break;
+            };
+            self.entries.remove(&reference);
+            self.children.remove(&reference);
+            for children in self.children.values_mut() {
+                children.retain(|child| *child != reference);
+            }
+            trimmed = true;
+        }
+        trimmed
+    }
+
+    pub(crate) fn trim_file_data_to_bytes(&mut self, limit: usize) -> bool {
+        let mut trimmed = false;
+        let mut used = self
+            .entries
+            .values()
+            .map(|entry| entry.name.capacity())
+            .sum::<usize>();
+        for entry in self.entries.values_mut() {
+            if used <= limit {
+                break;
+            }
+            if !entry.name.is_empty() {
+                used = used.saturating_sub(entry.name.capacity());
+                entry.name.clear();
+                entry.name.shrink_to_fit();
+                trimmed = true;
+            }
+        }
+        trimmed
+    }
+
+    pub(crate) fn trim_volume_index_to_bytes(&mut self, limit: usize) -> bool {
+        let mut trimmed = false;
+        while self.memory_breakdown().volume_index_bytes > limit && self.entries.len() > 1 {
+            let Some(reference) = self.entries.keys().next_back().copied() else {
+                break;
+            };
+            self.entries.remove(&reference);
+            self.children.remove(&reference);
+            for children in self.children.values_mut() {
+                children.retain(|child| *child != reference);
+            }
+            trimmed = true;
+        }
+        trimmed
+    }
+    pub(crate) fn estimated_resident_bytes(&self) -> usize {
+        let breakdown = self.memory_breakdown();
+        breakdown
+            .volume_index_bytes
+            .saturating_add(breakdown.file_data_bytes)
+    }
+
+    pub(crate) fn memory_breakdown(&self) -> MftIndexMemoryBreakdownV1 {
+        let entries = estimate_btree_bytes::<u64, MftEntryV1>(self.entries.len());
+        let names = self
+            .entries
+            .values()
+            .map(|entry| entry.name.capacity())
+            .sum::<usize>();
+        let children = estimate_btree_bytes::<u64, Vec<u64>>(self.children.len()).saturating_add(
+            self.children
+                .values()
+                .map(|references| references.capacity().saturating_mul(8))
+                .sum::<usize>(),
+        );
+        MftIndexMemoryBreakdownV1 {
+            volume_index_bytes: entries.saturating_add(children),
+            file_data_bytes: names,
+        }
+    }
+    pub(crate) fn apply_change(
+        &mut self,
+        change: &crate::mft_journal::MftChangeV2,
+    ) -> Result<Vec<u64>, String> {
+        use crate::mft_journal::MftChangeKindV2;
+
+        let mut affected = self.ancestor_references(change.reference);
+        if let Some(old) = self.entries.get(&change.reference).cloned()
+            && let Some(children) = self.children.get_mut(&old.parent_reference)
+        {
+            children.retain(|reference| *reference != change.reference);
+        }
+        match change.kind {
+            MftChangeKindV2::Upsert => {
+                self.entries.insert(
+                    change.reference,
+                    MftEntryV1 {
+                        reference: change.reference,
+                        parent_reference: change.parent_reference,
+                        name: change.name.clone(),
+                        logical_bytes: change.logical_bytes,
+                        allocated_bytes: change.allocated_bytes,
+                        is_directory: change.is_directory,
+                    },
+                );
+                let children = self.children.entry(change.parent_reference).or_default();
+                if !children.contains(&change.reference) {
+                    children.push(change.reference);
+                }
+                affected.extend(self.ancestor_references(change.reference));
+            }
+            MftChangeKindV2::Delete => {
+                self.entries.remove(&change.reference);
+                self.children.remove(&change.reference);
+            }
+            MftChangeKindV2::Invalidate => {
+                return Err("MFT topology change requires recovery".to_owned());
+            }
+        }
+        affected.sort_unstable();
+        affected.dedup();
+        Ok(affected)
+    }
+
+    pub(crate) fn ancestor_references(&self, reference: u64) -> Vec<u64> {
+        let mut ancestors = Vec::new();
+        let mut current = reference;
+        for _ in 0..1024 {
+            let Some(entry) = self.entries.get(&current) else {
+                break;
+            };
+            ancestors.push(current);
+            if entry.parent_reference == current {
+                break;
+            }
+            current = entry.parent_reference;
+        }
+        ancestors
+    }
+
+    pub(crate) fn path_for_reference(
+        &self,
+        volume_root: &Path,
+        reference: u64,
+    ) -> Option<std::path::PathBuf> {
+        let mut names = Vec::new();
+        let mut current = reference;
+        for _ in 0..1024 {
+            let entry = self.entries.get(&current)?;
+            if entry.parent_reference == current {
+                break;
+            }
+            names.push(entry.name.clone());
+            current = entry.parent_reference;
+        }
+        let mut path = volume_root.to_path_buf();
+        for name in names.into_iter().rev() {
+            path.push(name);
+        }
+        Some(path)
+    }
+
+    pub(crate) fn aggregate_subtree_bounded(
+        &self,
+        root_reference: u64,
+        entry_limit: usize,
+        mut cancelled: impl FnMut() -> bool,
+    ) -> Result<MftAggregateV1, String> {
+        if !self.entries.contains_key(&root_reference) {
+            return Err("MFT root record is unavailable".to_owned());
+        }
+        let mut aggregate = MftAggregateV1::default();
+        let mut pending = vec![root_reference];
+        let mut visited = HashSet::new();
+        while let Some(reference) = pending.pop() {
+            if cancelled() || visited.len() >= entry_limit {
+                return Err("MFT subtree aggregate exceeded its interactive bound".to_owned());
+            }
+            if !visited.insert(reference) {
+                continue;
+            }
+            let entry = self
+                .entries
+                .get(&reference)
+                .ok_or_else(|| "MFT subtree record is unavailable".to_owned())?;
+            add_aggregate(&mut aggregate, direct_aggregate(entry));
+            if let Some(children) = self.children.get(&reference) {
+                pending.extend(children.iter().copied());
+            }
+        }
+        Ok(aggregate)
+    }
+
     pub(crate) fn project_subtree(
         &self,
         root_reference: u64,
@@ -196,9 +533,13 @@ impl MftIndexV1 {
         }
         let mut traversal = Vec::new();
         let mut pending = vec![root_reference];
+        let mut visited = HashSet::new();
         while let Some(reference) = pending.pop() {
             if cancelled() {
                 return Err("MFT projection cancelled".to_owned());
+            }
+            if !visited.insert(reference) {
+                return Err("MFT projection rejected a cyclic topology".to_owned());
             }
             traversal.push(reference);
             if let Some(children) = self.children.get(&reference) {
@@ -208,8 +549,8 @@ impl MftIndexV1 {
         if traversal.len() > visible_limit {
             return Err("MFT projection exceeds the complete-subtree node limit".to_owned());
         }
-        let mut logical_totals = HashMap::<u64, u64>::new();
-        let mut allocated_totals = HashMap::<u64, u64>::new();
+        let mut logical_totals = BTreeMap::<u64, u64>::new();
+        let mut allocated_totals = BTreeMap::<u64, u64>::new();
         for reference in traversal.iter().rev().copied() {
             let Some(entry) = self.entries.get(&reference) else {
                 continue;
@@ -264,6 +605,31 @@ impl MftIndexV1 {
     }
 }
 
+/// Approximate the resident allocation of a standard-library B-tree without
+/// relying on its private node layout. Nodes hold several ordered entries, so
+/// one pointer-sized allowance per entry is a conservative accounting margin
+/// while avoiding the old HashMap capacity/control-byte overestimate.
+const fn estimate_btree_bytes<K, V>(entries: usize) -> usize {
+    entries
+        .saturating_mul(std::mem::size_of::<(K, V)>().saturating_add(std::mem::size_of::<usize>()))
+}
+
+/// Conservative topology allowance used before a bounded SQLite load starts
+/// allocating rows. It models one entry-map slot, one worst-case children-map
+/// slot, and one child reference per MFT entry. The completed index is still
+/// checked with `memory_breakdown`, so this is an admission ceiling rather than
+/// a substitute for post-load accounting.
+pub(crate) const fn maximum_entries_for_volume_budget(bytes: usize) -> usize {
+    let entry_bytes =
+        std::mem::size_of::<(u64, MftEntryV1)>().saturating_add(std::mem::size_of::<usize>());
+    let child_map_bytes =
+        std::mem::size_of::<(u64, Vec<u64>)>().saturating_add(std::mem::size_of::<usize>());
+    let worst_case_bytes = entry_bytes
+        .saturating_add(child_map_bytes)
+        .saturating_add(std::mem::size_of::<u64>());
+    bytes / worst_case_bytes
+}
+
 pub(crate) fn write_index(path: &Path, index: &MftIndexV1) -> Result<(), String> {
     validate_helper_output_path(path)?;
     write_index_record(path, index)
@@ -278,7 +644,10 @@ pub(crate) fn write_service_index(path: &Path, index: &MftIndexV1) -> Result<(),
         .unwrap_or_else(|| std::path::PathBuf::from(r"C:\ProgramData"))
         .join("SuperExplorer")
         .join("MftIndex");
-    if parent != expected || path.extension().and_then(|value| value.to_str()) != Some("tmp") {
+    let test_root = cfg!(test) && parent.starts_with(std::env::temp_dir());
+    if (!test_root && parent != expected)
+        || path.extension().and_then(|value| value.to_str()) != Some("tmp")
+    {
         return Err("MFT service cache path is outside the fixed cache".to_owned());
     }
     write_index_record(path, index)
@@ -339,6 +708,14 @@ fn validate_helper_output_path(path: &Path) -> Result<(), String> {
 }
 
 pub(crate) fn read_index(path: &Path) -> Result<MftIndexV1, String> {
+    read_index_bounded(path, usize::MAX, usize::MAX).map(|(index, _)| index)
+}
+
+pub(crate) fn read_index_bounded(
+    path: &Path,
+    volume_limit_bytes: usize,
+    file_limit_bytes: usize,
+) -> Result<(MftIndexV1, bool), String> {
     let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
     let mut reader = BufReader::new(file);
     let mut magic = [0_u8; 9];
@@ -349,9 +726,16 @@ pub(crate) fn read_index(path: &Path) -> Result<MftIndexV1, String> {
         return Err("unsupported MFT index format".to_owned());
     }
     let count = read_stream_u64(&mut reader)?;
-    let capacity = usize::try_from(count).map_err(|_| "MFT index is too large")?;
-    let mut entries = HashMap::with_capacity(capacity);
+    let _ = usize::try_from(count).map_err(|_| "MFT index is too large")?;
+    let mut entries = BTreeMap::new();
+    let maximum_entries = volume_limit_bytes / 1_024;
+    let mut file_bytes = 0_usize;
+    let mut complete = true;
     for _ in 0..count {
+        if entries.len() >= maximum_entries {
+            complete = false;
+            break;
+        }
         let reference = normalize_ntfs_reference(read_stream_u64(&mut reader)?);
         let parent_reference = normalize_ntfs_reference(read_stream_u64(&mut reader)?);
         let logical_bytes = read_stream_u64(&mut reader)?;
@@ -368,32 +752,38 @@ pub(crate) fn read_index(path: &Path) -> Result<MftIndexV1, String> {
         if name_length > 64 * 1024 {
             return Err("MFT index name exceeds the safety limit".to_owned());
         }
-        let mut name = vec![0_u8; name_length];
-        reader
-            .read_exact(&mut name)
+        let name = if file_bytes.saturating_add(name_length) <= file_limit_bytes {
+            let mut name = vec![0_u8; name_length];
+            reader
+                .read_exact(&mut name)
+                .map_err(|error| error.to_string())?;
+            file_bytes = file_bytes.saturating_add(name.capacity());
+            String::from_utf8(name).map_err(|error| error.to_string())?
+        } else {
+            let skipped = std::io::copy(
+                &mut std::io::Read::by_ref(&mut reader).take(name_length as u64),
+                &mut std::io::sink(),
+            )
             .map_err(|error| error.to_string())?;
+            if skipped != name_length as u64 {
+                return Err("MFT index name is truncated".to_owned());
+            }
+            complete = false;
+            String::new()
+        };
         entries.insert(
             reference,
             MftEntryV1 {
                 reference,
                 parent_reference,
-                name: String::from_utf8(name).map_err(|error| error.to_string())?,
+                name,
                 logical_bytes,
                 allocated_bytes,
                 is_directory: directory[0] != 0,
             },
         );
     }
-    let mut children = HashMap::<u64, Vec<u64>>::new();
-    for entry in entries.values() {
-        if entry.reference != entry.parent_reference {
-            children
-                .entry(entry.parent_reference)
-                .or_default()
-                .push(entry.reference);
-        }
-    }
-    Ok(MftIndexV1 { entries, children })
+    Ok((MftIndexV1::from_entries(entries), complete))
 }
 
 fn read_stream_u64(reader: &mut impl std::io::Read) -> Result<u64, String> {
@@ -460,8 +850,17 @@ fn file_information(path: &Path) -> Result<BY_HANDLE_FILE_INFORMATION, String> {
 
 pub(crate) fn read_volume_index(
     path: &Path,
-    mut cancelled: impl FnMut() -> bool,
+    cancelled: impl FnMut() -> bool,
 ) -> Result<MftIndexV1, String> {
+    read_volume_index_bounded(path, usize::MAX, usize::MAX, cancelled).map(|(index, _)| index)
+}
+
+pub(crate) fn read_volume_index_bounded(
+    path: &Path,
+    volume_limit_bytes: usize,
+    file_limit_bytes: usize,
+    mut cancelled: impl FnMut() -> bool,
+) -> Result<(MftIndexV1, bool), String> {
     let volume = volume_device_path(path)?;
     let wide = std::ffi::OsStr::new(&volume)
         .encode_wide()
@@ -487,8 +886,11 @@ pub(crate) fn read_volume_index(
         HighUsn: i64::MAX,
     };
     let mut output = vec![0_u8; 1024 * 1024];
-    let mut entries = HashMap::new();
-    loop {
+    let mut entries = BTreeMap::new();
+    let maximum_entries = maximum_entries_for_volume_budget(volume_limit_bytes);
+    let mut estimated_file_bytes = 0_usize;
+    let mut complete = true;
+    'scan: loop {
         if cancelled() {
             return Err("MFT scan cancelled".to_owned());
         }
@@ -507,9 +909,9 @@ pub(crate) fn read_volume_index(
                 None,
             )
         };
-        if result.is_err() {
+        if let Err(error) = result {
             if entries.is_empty() {
-                return Err(result.unwrap_err().to_string());
+                return Err(error.to_string());
             }
             break;
         }
@@ -536,10 +938,23 @@ pub(crate) fn read_volume_index(
                 let name_start = offset.saturating_add(name_offset);
                 let name_end = name_start.saturating_add(name_len);
                 if name_end <= offset + record_length && name_len.is_multiple_of(2) {
-                    let name = output[name_start..name_end]
+                    if entries.len() >= maximum_entries {
+                        complete = false;
+                        break 'scan;
+                    }
+                    let utf16_name = output[name_start..name_end]
                         .chunks_exact(2)
                         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
                         .collect::<Vec<_>>();
+                    let decoded_name = String::from_utf16_lossy(&utf16_name);
+                    let next_file = estimated_file_bytes.saturating_add(decoded_name.capacity());
+                    let name = if next_file <= file_limit_bytes {
+                        estimated_file_bytes = next_file;
+                        decoded_name
+                    } else {
+                        complete = false;
+                        String::new()
+                    };
                     let (logical_bytes, allocated_bytes) =
                         if attributes & FILE_ATTRIBUTE_DIRECTORY.0 == 0 {
                             read_file_sizes(handle.0, reference).unwrap_or_default()
@@ -551,7 +966,7 @@ pub(crate) fn read_volume_index(
                         MftEntryV1 {
                             reference,
                             parent_reference,
-                            name: String::from_utf16_lossy(&name),
+                            name,
                             logical_bytes,
                             allocated_bytes,
                             is_directory: attributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0,
@@ -562,7 +977,7 @@ pub(crate) fn read_volume_index(
             offset += record_length;
         }
     }
-    let mut children = HashMap::<u64, Vec<u64>>::new();
+    let mut children = BTreeMap::<u64, Vec<u64>>::new();
     for entry in entries.values() {
         if entry.reference != entry.parent_reference {
             children
@@ -571,7 +986,12 @@ pub(crate) fn read_volume_index(
                 .push(entry.reference);
         }
     }
-    Ok(MftIndexV1 { entries, children })
+    let mut index = MftIndexV1 { entries, children };
+    if index.memory_breakdown().volume_index_bytes > volume_limit_bytes {
+        complete = false;
+        index.trim_volume_index_to_bytes(volume_limit_bytes);
+    }
+    Ok((index, complete))
 }
 
 pub(crate) fn read_volume_index_with_helper(
@@ -687,13 +1107,59 @@ fn parse_unnamed_data_sizes(record: &[u8]) -> Option<(u64, u64)> {
     Some((0, 0))
 }
 
-fn volume_device_path(path: &Path) -> Result<String, String> {
+pub(crate) fn volume_device_path(path: &Path) -> Result<String, String> {
     let text = path.to_string_lossy();
     let bytes = text.as_bytes();
     if bytes.len() < 2 || bytes[1] != b':' || !bytes[0].is_ascii_alphabetic() {
         return Err("MFT fast path requires a local drive-letter path".to_owned());
     }
     Ok(format!(r"\\.\{}:", (bytes[0] as char).to_ascii_uppercase()))
+}
+
+pub(crate) fn volume_serial_number(path: &Path) -> Result<u64, String> {
+    Ok(u64::from(file_information(path)?.dwVolumeSerialNumber))
+}
+
+pub(crate) fn current_entry(
+    root: &Path,
+    reference: u64,
+    parent_reference: u64,
+    name: String,
+    is_directory: bool,
+) -> Result<MftEntryV1, String> {
+    let volume = volume_device_path(root)?;
+    let wide = std::ffi::OsStr::new(&volume)
+        .encode_wide()
+        .chain([0])
+        .collect::<Vec<_>>();
+    // SAFETY: the UTF-16 device path is terminated and alive for the call.
+    let handle = unsafe {
+        CreateFileW(
+            PCWSTR(wide.as_ptr()),
+            FILE_GENERIC_READ.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            None,
+            OPEN_EXISTING,
+            Default::default(),
+            None,
+        )
+    }
+    .map_err(|error| error.to_string())?;
+    let handle = HandleGuard(handle);
+    let (logical_bytes, allocated_bytes) = if is_directory {
+        (0, 0)
+    } else {
+        read_file_sizes(handle.0, reference)
+            .ok_or_else(|| "MFT record is no longer available".to_owned())?
+    };
+    Ok(MftEntryV1 {
+        reference,
+        parent_reference,
+        name,
+        logical_bytes,
+        allocated_bytes,
+        is_directory,
+    })
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
@@ -717,6 +1183,136 @@ fn read_u64(bytes: &[u8], offset: usize) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn budget_fixture(entries: usize) -> MftIndexV1 {
+        let mut records = BTreeMap::new();
+        let mut children = BTreeMap::new();
+        records.insert(
+            1,
+            MftEntryV1 {
+                reference: 1,
+                parent_reference: 1,
+                name: "root".to_owned(),
+                logical_bytes: 0,
+                allocated_bytes: 0,
+                is_directory: true,
+            },
+        );
+        for reference in 2..=entries as u64 {
+            records.insert(
+                reference,
+                MftEntryV1 {
+                    reference,
+                    parent_reference: 1,
+                    name: format!("record-{reference:08}-with-name"),
+                    logical_bytes: reference,
+                    allocated_bytes: reference,
+                    is_directory: false,
+                },
+            );
+            children.entry(1).or_insert_with(Vec::new).push(reference);
+        }
+        MftIndexV1 {
+            entries: records,
+            children,
+        }
+    }
+
+    #[test]
+    fn sqlite_admission_uses_topology_layout_instead_of_a_one_kibibyte_row_guess() {
+        let available = 404 * 1024 * 1024;
+        let maximum = maximum_entries_for_volume_budget(available);
+
+        // A real multi-million-entry volume can fit this topology budget. The
+        // former `bytes / 1024` guess admitted fewer than 414k rows and kept
+        // such a foreground volume permanently partial despite ample memory.
+        assert!(maximum >= 2_261_604);
+        assert!(maximum < available);
+    }
+
+    #[test]
+    #[ignore = "requires an explicitly selected real NTFS volume"]
+    fn real_large_volume_fits_structure_derived_topology_and_name_budgets() {
+        let root = std::env::var_os("SUPEREXPLORER_REAL_MFT_VOLUME")
+            .map(std::path::PathBuf::from)
+            .expect("SUPEREXPLORER_REAL_MFT_VOLUME must name an NTFS root");
+        let (index, complete) =
+            read_volume_index_bounded(&root, 1_024 * 1024 * 1024, 256 * 1024 * 1024, || false)
+                .expect("bounded real-volume scan");
+        assert!(complete, "real volume should fit the configured budgets");
+        assert!(!index.entries.is_empty());
+        let memory = index.memory_breakdown();
+        assert!(memory.volume_index_bytes <= 1_024 * 1024 * 1024);
+        assert!(memory.file_data_bytes <= 256 * 1024 * 1024);
+    }
+
+    #[test]
+    fn independent_structure_trims_do_not_clear_unrelated_store() {
+        let original = budget_fixture(512);
+        let mut file_trimmed = original.clone();
+        let topology_before = file_trimmed.memory_breakdown().volume_index_bytes;
+        assert!(file_trimmed.trim_file_data_to_bytes(64));
+        assert!(file_trimmed.memory_breakdown().file_data_bytes <= 64);
+        assert_eq!(
+            file_trimmed.memory_breakdown().volume_index_bytes,
+            topology_before
+        );
+
+        let mut aggregate = MftAggregateIndexV1::build(&original, 8).unwrap();
+        assert!(aggregate.trim_to_bytes(256));
+        assert!(aggregate.estimated_resident_bytes() <= 256 || aggregate.totals.len() == 1);
+        assert_eq!(original.entries.len(), 512);
+    }
+
+    #[test]
+    fn subtree_aggregate_is_exact_without_building_the_whole_volume_and_is_bounded() {
+        let index = budget_fixture(4);
+        let aggregate = index.aggregate_subtree_bounded(1, 4, || false).unwrap();
+        assert_eq!(aggregate.logical_bytes, 9);
+        assert_eq!(aggregate.allocated_bytes, 9);
+        assert_eq!(aggregate.file_count, 3);
+        assert_eq!(aggregate.directory_count, 1);
+        assert!(
+            index
+                .aggregate_subtree_bounded(1, 2, || false)
+                .unwrap_err()
+                .contains("interactive bound")
+        );
+    }
+
+    #[test]
+    fn persisted_topology_rejects_cycles_and_projection_is_bounded() {
+        let cyclic = BTreeMap::from([
+            (
+                1,
+                MftEntryV1 {
+                    reference: 1,
+                    parent_reference: 2,
+                    name: "one".into(),
+                    logical_bytes: 0,
+                    allocated_bytes: 0,
+                    is_directory: true,
+                },
+            ),
+            (
+                2,
+                MftEntryV1 {
+                    reference: 2,
+                    parent_reference: 1,
+                    name: "two".into(),
+                    logical_bytes: 0,
+                    allocated_bytes: 0,
+                    is_directory: true,
+                },
+            ),
+        ]);
+        assert!(MftIndexV1::try_from_entries(cyclic).is_err());
+
+        let mut unchecked = MftIndexV1::from_entries(BTreeMap::new());
+        unchecked.entries = budget_fixture(2).entries;
+        unchecked.children = BTreeMap::from([(1, vec![2]), (2, vec![1])]);
+        assert!(unchecked.project_subtree(1, 10, || false).is_err());
+    }
 
     #[test]
     fn parses_resident_unnamed_data_size() {
@@ -770,6 +1366,17 @@ mod tests {
         .join(format!("{letter}.semftidx"));
         let index = read_index(&path).unwrap();
         let aggregate = MftAggregateIndexV1::build(&index, 8).unwrap();
+        let estimated_bytes = index
+            .estimated_resident_bytes()
+            .saturating_add(aggregate.estimated_resident_bytes());
+        println!(
+            "MFT BTree cache estimate: records={} bytes={estimated_bytes}",
+            index.entries.len()
+        );
+        assert!(
+            estimated_bytes <= 512 * 1024 * 1024,
+            "real volume aggregate must fit the configured 512 MiB cache"
+        );
         let reference = file_reference_number(Path::new(&root)).unwrap();
         assert!(
             aggregate.get(reference).is_some(),
@@ -829,8 +1436,8 @@ mod tests {
             is_directory: false,
         };
         let index = MftIndexV1 {
-            entries: HashMap::from([(entry.reference, entry.clone())]),
-            children: HashMap::from([(entry.parent_reference, vec![entry.reference])]),
+            entries: BTreeMap::from([(entry.reference, entry.clone())]),
+            children: BTreeMap::from([(entry.parent_reference, vec![entry.reference])]),
         };
         write_index(&path, &index).unwrap();
         assert!(
@@ -861,8 +1468,8 @@ mod tests {
             is_directory: false,
         };
         let index = MftIndexV1 {
-            entries: HashMap::from([(1, root), (2, file)]),
-            children: HashMap::from([(1, vec![2])]),
+            entries: BTreeMap::from([(1, root), (2, file)]),
+            children: BTreeMap::from([(1, vec![2])]),
         };
 
         let error = index.project_subtree(1, 1, || false).unwrap_err();
@@ -871,7 +1478,7 @@ mod tests {
 
     #[test]
     fn aggregate_index_reuses_exact_totals_and_never_exceeds_eight_workers() {
-        let mut entries = HashMap::new();
+        let mut entries = BTreeMap::new();
         let root = MftEntryV1 {
             reference: 1,
             parent_reference: 1,
@@ -881,7 +1488,7 @@ mod tests {
             is_directory: true,
         };
         entries.insert(1, root);
-        let mut children = HashMap::from([(1, Vec::new())]);
+        let mut children = BTreeMap::from([(1, Vec::new())]);
         for directory in 2_u64..=17 {
             entries.insert(
                 directory,
@@ -919,5 +1526,74 @@ mod tests {
             (2_u64..=17).sum::<u64>()
         );
         assert_eq!(aggregates.get(1).unwrap().directory_count, 17);
+    }
+
+    #[test]
+    fn delta_move_reports_old_and_new_ancestor_chains() {
+        let mut index = MftIndexV1 {
+            entries: BTreeMap::from([
+                (
+                    1,
+                    MftEntryV1 {
+                        reference: 1,
+                        parent_reference: 1,
+                        name: "root".into(),
+                        logical_bytes: 0,
+                        allocated_bytes: 0,
+                        is_directory: true,
+                    },
+                ),
+                (
+                    2,
+                    MftEntryV1 {
+                        reference: 2,
+                        parent_reference: 1,
+                        name: "old".into(),
+                        logical_bytes: 0,
+                        allocated_bytes: 0,
+                        is_directory: true,
+                    },
+                ),
+                (
+                    3,
+                    MftEntryV1 {
+                        reference: 3,
+                        parent_reference: 1,
+                        name: "new".into(),
+                        logical_bytes: 0,
+                        allocated_bytes: 0,
+                        is_directory: true,
+                    },
+                ),
+                (
+                    4,
+                    MftEntryV1 {
+                        reference: 4,
+                        parent_reference: 2,
+                        name: "file".into(),
+                        logical_bytes: 1,
+                        allocated_bytes: 1,
+                        is_directory: false,
+                    },
+                ),
+            ]),
+            children: BTreeMap::from([(1, vec![2, 3]), (2, vec![4])]),
+        };
+        let affected = index
+            .apply_change(&crate::mft_journal::MftChangeV2 {
+                kind: crate::mft_journal::MftChangeKindV2::Upsert,
+                reference: 4,
+                parent_reference: 3,
+                name: "renamed".into(),
+                logical_bytes: 9,
+                allocated_bytes: 16,
+                is_directory: false,
+                reason: 0,
+            })
+            .unwrap();
+        assert_eq!(affected, vec![1, 2, 3, 4]);
+        assert!(!index.children[&2].contains(&4));
+        assert!(index.children[&3].contains(&4));
+        assert_eq!(index.entries[&4].logical_bytes, 9);
     }
 }

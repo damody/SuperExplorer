@@ -1730,6 +1730,212 @@ impl BrokeredExplorerService {
 }
 
 impl ExplorerService for BrokeredExplorerService {
+    fn cache_telemetry_snapshot(&self) -> explorer_model::CacheTelemetrySnapshotV1 {
+        let configuration_pending = crate::application::mft_budget_configuration_pending_v1();
+        let diagnostics_result = (!configuration_pending).then(crate::mft_query::query_diagnostics);
+        let diagnostics = diagnostics_result
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .copied();
+        let missing_availability = mft_missing_telemetry_availability(
+            diagnostics_result
+                .as_ref()
+                .and_then(|result| result.as_ref().err())
+                .map(String::as_str),
+        );
+        let availability = diagnostics.map_or(missing_availability, |diagnostics| {
+            explorer_model::CacheTelemetryAvailabilityV1::Available(
+                explorer_model::CacheTelemetryValueV1 {
+                    bytes: diagnostics.lru_bytes,
+                    limit_bytes: Some(diagnostics.limit_bytes),
+                    entry_count: diagnostics.entry_count,
+                    counters: Some(explorer_model::CacheTelemetryCountersV1 {
+                        hits: diagnostics.hits,
+                        misses: diagnostics.misses,
+                    }),
+                },
+            )
+        });
+        let (extension_bytes, extension_entries) =
+            crate::application::host_extension_cache_telemetry_v1();
+        let (extension_disk_bytes, extension_disk_entries) =
+            crate::application::host_extension_persistent_cache_telemetry_v1();
+        let icon_disk = explorer_shell_win::icon_disk_cache_stats();
+        let thumbnail_disk = explorer_shell_win::thumbnail_disk_cache_stats();
+        let (icon_gpu, thumbnail_gpu) = gpui::compressed_gpu_cache_stats();
+        explorer_model::CacheTelemetrySnapshotV1::new(vec![
+            explorer_model::CacheTelemetryEntryV1 {
+                id: explorer_model::CacheTelemetryIdV1::ExtensionColumnsMemory,
+                category: explorer_model::CacheTelemetryCategoryV1::Memory,
+                availability: explorer_model::CacheTelemetryAvailabilityV1::Available(
+                    explorer_model::CacheTelemetryValueV1 {
+                        bytes: extension_bytes,
+                        limit_bytes: Some(crate::application::host_extension_cache_limit_v1()),
+                        entry_count: extension_entries,
+                        counters: None,
+                    },
+                ),
+            },
+            explorer_model::CacheTelemetryEntryV1 {
+                id: explorer_model::CacheTelemetryIdV1::IconsDisk,
+                category: explorer_model::CacheTelemetryCategoryV1::Disk,
+                availability: explorer_model::CacheTelemetryAvailabilityV1::Available(
+                    explorer_model::CacheTelemetryValueV1 {
+                        bytes: icon_disk.bytes,
+                        limit_bytes: Some(icon_disk.limit_bytes),
+                        entry_count: icon_disk.entries,
+                        counters: Some(explorer_model::CacheTelemetryCountersV1 {
+                            hits: icon_disk.hits,
+                            misses: icon_disk.misses,
+                        }),
+                    },
+                ),
+            },
+            explorer_model::CacheTelemetryEntryV1 {
+                id: explorer_model::CacheTelemetryIdV1::ThumbnailsDisk,
+                category: explorer_model::CacheTelemetryCategoryV1::Disk,
+                availability: explorer_model::CacheTelemetryAvailabilityV1::Available(
+                    explorer_model::CacheTelemetryValueV1 {
+                        bytes: thumbnail_disk.bytes,
+                        limit_bytes: Some(thumbnail_disk.limit_bytes),
+                        entry_count: thumbnail_disk.entries,
+                        counters: Some(explorer_model::CacheTelemetryCountersV1 {
+                            hits: thumbnail_disk.hits,
+                            misses: thumbnail_disk.misses,
+                        }),
+                    },
+                ),
+            },
+            explorer_model::CacheTelemetryEntryV1 {
+                id: explorer_model::CacheTelemetryIdV1::ExtensionColumnsDisk,
+                category: explorer_model::CacheTelemetryCategoryV1::Disk,
+                availability: explorer_model::CacheTelemetryAvailabilityV1::Available(
+                    explorer_model::CacheTelemetryValueV1 {
+                        bytes: extension_disk_bytes,
+                        limit_bytes: Some(
+                            crate::application::host_extension_persistent_cache_limit_v1(),
+                        ),
+                        entry_count: extension_disk_entries,
+                        counters: None,
+                    },
+                ),
+            },
+            explorer_model::CacheTelemetryEntryV1 {
+                id: explorer_model::CacheTelemetryIdV1::MftPersistedIndex,
+                category: explorer_model::CacheTelemetryCategoryV1::MftService,
+                availability: diagnostics.map_or(missing_availability, |diagnostics| {
+                    explorer_model::CacheTelemetryAvailabilityV1::Available(
+                        explorer_model::CacheTelemetryValueV1 {
+                            bytes: diagnostics.persisted_index_bytes,
+                            limit_bytes: diagnostics.persisted_index_limit_bytes,
+                            entry_count: 0,
+                            counters: None,
+                        },
+                    )
+                }),
+            },
+            explorer_model::CacheTelemetryEntryV1 {
+                id: explorer_model::CacheTelemetryIdV1::MftVolumeIndexMemory,
+                category: explorer_model::CacheTelemetryCategoryV1::MftService,
+                availability: diagnostics
+                    .and_then(|diagnostics| {
+                        diagnostics
+                            .volume_index_bytes
+                            .map(|bytes| (bytes, diagnostics.volume_index_limit_bytes))
+                    })
+                    .map_or(
+                        explorer_model::CacheTelemetryAvailabilityV1::Pending,
+                        |(bytes, limit_bytes)| {
+                            explorer_model::CacheTelemetryAvailabilityV1::Available(
+                                explorer_model::CacheTelemetryValueV1 {
+                                    bytes,
+                                    limit_bytes,
+                                    entry_count: 0,
+                                    counters: None,
+                                },
+                            )
+                        },
+                    ),
+            },
+            explorer_model::CacheTelemetryEntryV1 {
+                id: explorer_model::CacheTelemetryIdV1::MftFileDataMemory,
+                category: explorer_model::CacheTelemetryCategoryV1::MftService,
+                availability: diagnostics
+                    .and_then(|diagnostics| {
+                        diagnostics
+                            .file_data_bytes
+                            .map(|bytes| (bytes, diagnostics.file_data_limit_bytes))
+                    })
+                    .map_or(
+                        explorer_model::CacheTelemetryAvailabilityV1::Pending,
+                        |(bytes, limit_bytes)| {
+                            explorer_model::CacheTelemetryAvailabilityV1::Available(
+                                explorer_model::CacheTelemetryValueV1 {
+                                    bytes,
+                                    limit_bytes,
+                                    entry_count: 0,
+                                    counters: None,
+                                },
+                            )
+                        },
+                    ),
+            },
+            explorer_model::CacheTelemetryEntryV1 {
+                id: explorer_model::CacheTelemetryIdV1::MftAggregateMemory,
+                category: explorer_model::CacheTelemetryCategoryV1::MftService,
+                availability: diagnostics
+                    .and_then(|diagnostics| {
+                        diagnostics
+                            .aggregate_bytes
+                            .map(|bytes| (bytes, diagnostics.aggregate_limit_bytes))
+                    })
+                    .map_or(
+                        explorer_model::CacheTelemetryAvailabilityV1::Pending,
+                        |(bytes, limit_bytes)| {
+                            explorer_model::CacheTelemetryAvailabilityV1::Available(
+                                explorer_model::CacheTelemetryValueV1 {
+                                    bytes,
+                                    limit_bytes,
+                                    entry_count: 0,
+                                    counters: None,
+                                },
+                            )
+                        },
+                    ),
+            },
+            explorer_model::CacheTelemetryEntryV1 {
+                id: explorer_model::CacheTelemetryIdV1::IconsGpu,
+                category: explorer_model::CacheTelemetryCategoryV1::Gpu,
+                availability: explorer_model::CacheTelemetryAvailabilityV1::Available(
+                    explorer_model::CacheTelemetryValueV1 {
+                        bytes: icon_gpu.bytes,
+                        limit_bytes: Some(icon_gpu.limit_bytes),
+                        entry_count: icon_gpu.entries,
+                        counters: None,
+                    },
+                ),
+            },
+            explorer_model::CacheTelemetryEntryV1 {
+                id: explorer_model::CacheTelemetryIdV1::ThumbnailsGpu,
+                category: explorer_model::CacheTelemetryCategoryV1::Gpu,
+                availability: explorer_model::CacheTelemetryAvailabilityV1::Available(
+                    explorer_model::CacheTelemetryValueV1 {
+                        bytes: thumbnail_gpu.bytes,
+                        limit_bytes: Some(thumbnail_gpu.limit_bytes),
+                        entry_count: thumbnail_gpu.entries,
+                        counters: None,
+                    },
+                ),
+            },
+            explorer_model::CacheTelemetryEntryV1 {
+                id: explorer_model::CacheTelemetryIdV1::MftServiceLru,
+                category: explorer_model::CacheTelemetryCategoryV1::MftService,
+                availability,
+            },
+        ])
+        .unwrap_or_default()
+    }
+
     fn submit(&self, command: ExplorerCommand) -> Result<(), ExplorerServiceError> {
         match &command {
             ExplorerCommand::Navigate { context, location }
@@ -1925,6 +2131,16 @@ impl ExplorerService for BrokeredExplorerService {
     }
 }
 
+fn mft_missing_telemetry_availability(
+    error: Option<&str>,
+) -> explorer_model::CacheTelemetryAvailabilityV1 {
+    if error.is_some_and(|error| error.contains("schema mismatch") || error.contains("rejected")) {
+        explorer_model::CacheTelemetryAvailabilityV1::Unavailable
+    } else {
+        explorer_model::CacheTelemetryAvailabilityV1::Pending
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -2017,5 +2233,23 @@ mod tests {
             &explorer_model::LocationDescriptor::file_system("document.pdf"),
             false,
         ));
+    }
+
+    #[test]
+    fn mft_missing_telemetry_is_pending_until_a_terminal_protocol_failure() {
+        assert_eq!(
+            super::mft_missing_telemetry_availability(None),
+            explorer_model::CacheTelemetryAvailabilityV1::Pending
+        );
+        assert_eq!(
+            super::mft_missing_telemetry_availability(Some("MFT query pipe unavailable (2)")),
+            explorer_model::CacheTelemetryAvailabilityV1::Pending
+        );
+        assert_eq!(
+            super::mft_missing_telemetry_availability(Some(
+                "MFT diagnostics response schema mismatch"
+            )),
+            explorer_model::CacheTelemetryAvailabilityV1::Unavailable
+        );
     }
 }

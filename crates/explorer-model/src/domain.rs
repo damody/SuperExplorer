@@ -190,6 +190,11 @@ impl LocationDescriptor {
     }
 
     /// Creates a validated virtual-container location without exposing its filesystem path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the provider, generation, or component data does
+    /// not satisfy the bounded virtual-location contract.
     pub fn try_virtual(
         provider_id: impl Into<String>,
         container_identity: [u8; 16],

@@ -34,6 +34,7 @@ pub struct CodeLinesColumnConfigV1 {
     /// Folder Options package that owns this runtime contribution. This is
     /// host-minted while loading the one example and is never plugin input.
     pub option_package_id: String,
+    pub folder_admission: FolderAdmissionPolicyV1,
 }
 
 impl Default for CodeLinesColumnConfigV1 {
@@ -42,6 +43,62 @@ impl Default for CodeLinesColumnConfigV1 {
             descriptor: code_lines_column_descriptor(),
             display: CodeLinesDisplayMode::default(),
             option_package_id: "rust-tokei-code-lines-column".to_owned(),
+            folder_admission: FolderAdmissionPolicyV1 {
+                max_file_count: Some(999),
+                max_folder_count: None,
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FolderAdmissionPolicyV1 {
+    pub max_file_count: Option<u64>,
+    pub max_folder_count: Option<u64>,
+}
+
+impl FolderAdmissionPolicyV1 {
+    pub const fn requires_directory_facts(self) -> bool {
+        self.max_file_count.is_some() || self.max_folder_count.is_some()
+    }
+
+    pub fn evaluate(
+        self,
+        facts: crate::folder_size_column::DirectoryFactsV1,
+    ) -> FolderAdmissionOutcomeV1 {
+        if self
+            .max_file_count
+            .is_some_and(|maximum| facts.file_count > maximum)
+            || self
+                .max_folder_count
+                .is_some_and(|maximum| facts.folder_count > maximum)
+        {
+            FolderAdmissionOutcomeV1::OverLimit
+        } else {
+            FolderAdmissionOutcomeV1::Admitted
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FolderAdmissionOutcomeV1 {
+    Admitted,
+    OverLimit,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FolderAdmissionStateV1 {
+    Pending,
+    Unavailable,
+    OverLimit,
+}
+
+impl FolderAdmissionStateV1 {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Pending => "等待 File Count…",
+            Self::Unavailable => "依賴 File Count，因此未啟動",
+            Self::OverLimit => "File Count 超過限制，因此未啟動",
         }
     }
 }
@@ -95,6 +152,7 @@ pub struct CodeLinesColumnVisuals {
     pub context: Option<RequestContext>,
     pub values: HashMap<ShellItemId, CodeLinesValueV1>,
     pub errors: HashMap<ShellItemId, String>,
+    pub admissions: HashMap<ShellItemId, FolderAdmissionStateV1>,
 }
 
 impl CodeLinesColumnVisuals {
@@ -109,7 +167,26 @@ impl CodeLinesColumnVisuals {
         self.context = Some(context);
         self.values.clear();
         self.errors.clear();
+        self.admissions.clear();
         true
+    }
+
+    pub fn set_admission(
+        &mut self,
+        item_id: ShellItemId,
+        state: Option<FolderAdmissionStateV1>,
+    ) -> bool {
+        match state {
+            Some(state) => self.admissions.insert(item_id, state) != Some(state),
+            None => self.admissions.remove(&item_id).is_some(),
+        }
+    }
+
+    pub fn presentation_error_for(&self, item_id: &ShellItemId) -> Option<&str> {
+        self.errors
+            .get(item_id)
+            .map(String::as_str)
+            .or_else(|| self.admissions.get(item_id).map(|state| state.label()))
     }
 
     pub fn exact_sort_values(&self) -> HashMap<ShellItemId, Option<u64>> {
@@ -192,6 +269,40 @@ mod tests {
     }
 
     #[test]
+    fn folder_admission_is_inclusive_and_requires_every_declared_limit() {
+        let policy = FolderAdmissionPolicyV1 {
+            max_file_count: Some(999),
+            max_folder_count: Some(3),
+        };
+        let facts = |file_count, folder_count| crate::folder_size_column::DirectoryFactsV1 {
+            mft_generation: 7,
+            file_count,
+            folder_count,
+        };
+        assert_eq!(
+            policy.evaluate(facts(999, 3)),
+            FolderAdmissionOutcomeV1::Admitted
+        );
+        assert_eq!(
+            policy.evaluate(facts(1_000, 3)),
+            FolderAdmissionOutcomeV1::OverLimit
+        );
+        assert_eq!(
+            policy.evaluate(facts(999, 4)),
+            FolderAdmissionOutcomeV1::OverLimit
+        );
+        assert_eq!(FolderAdmissionStateV1::Pending.label(), "等待 File Count…");
+        assert_eq!(
+            FolderAdmissionStateV1::OverLimit.label(),
+            "File Count 超過限制，因此未啟動"
+        );
+        assert_eq!(
+            FolderAdmissionStateV1::Unavailable.label(),
+            "依賴 File Count，因此未啟動"
+        );
+    }
+
+    #[test]
     fn same_shell_item_is_not_reused_after_a_new_generation() {
         let item = ShellItemId::from_provider_bytes([7]).unwrap();
         let first = RequestContext::new(TabId::new(), Generation::new(1));
@@ -209,6 +320,7 @@ mod tests {
                 },
             )]),
             errors: HashMap::new(),
+            admissions: HashMap::new(),
         };
 
         assert!(visuals.begin_context(RequestContext::new(first.tab_id, Generation::new(2))));
@@ -235,6 +347,7 @@ mod tests {
                 },
             )]),
             errors: HashMap::new(),
+            admissions: HashMap::new(),
         };
 
         assert!(!visuals.begin_context(RequestContext::new(first.tab_id, first.generation)));
