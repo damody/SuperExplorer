@@ -17,7 +17,15 @@
 
 #### Scenario: File Count column is hidden
 - **WHEN** Rust Code Lines is enabled for a folder row while the built-in File Count column is hidden
-- **THEN** the Host performs no count query for Code Lines, sends no folder callback, and displays `依賴 File Count，因此未啟動`
+- **THEN** the Host performs no count query for Code Lines, sends no folder callback, displays a red `Limit`, and exposes `依賴 File Count，因此未啟動` through hover tooltip and the accessible cell name
+
+#### Scenario: Folder exceeds the Code Lines File Count limit
+- **WHEN** Rust or Lua Code Lines receives an exact current-generation File Count of at least 1000 for a folder row
+- **THEN** the Host sends no folder callback, displays a red `Limit`, and exposes `File Count 超過限制，因此未啟動` through hover tooltip and the accessible cell name
+
+#### Scenario: File Count is still pending
+- **WHEN** a visible File Count query has not yet produced an exact current-generation fact
+- **THEN** the Code Lines cell continues to display `等待 File Count…` using its normal pending presentation and does not display `Limit`
 
 ### Requirement: Lua tokei column example
 `lua-tokei-code-lines-column` SHALL package its exact `windows-x64` `tokei.exe`, license and hash and invoke it only through `tools.execute_bundled`/ToolHandle with shell-free bounded batches and JSON mapping. Its folder-applicable data-column contribution SHALL declare `max_file_count = 999` and SHALL use the same Host-enforced folder admission and presentation states as the Rust example.

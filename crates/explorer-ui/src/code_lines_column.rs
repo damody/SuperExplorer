@@ -97,9 +97,20 @@ impl FolderAdmissionStateV1 {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Pending => "等待 File Count…",
+            Self::Unavailable | Self::OverLimit => "Limit",
+        }
+    }
+
+    pub const fn reason(self) -> &'static str {
+        match self {
+            Self::Pending => "等待 File Count…",
             Self::Unavailable => "依賴 File Count，因此未啟動",
             Self::OverLimit => "File Count 超過限制，因此未啟動",
         }
+    }
+
+    pub const fn is_limit(self) -> bool {
+        matches!(self, Self::Unavailable | Self::OverLimit)
     }
 }
 
@@ -186,7 +197,7 @@ impl CodeLinesColumnVisuals {
         self.errors
             .get(item_id)
             .map(String::as_str)
-            .or_else(|| self.admissions.get(item_id).map(|state| state.label()))
+            .or_else(|| self.admissions.get(item_id).map(|state| state.reason()))
     }
 
     pub fn exact_sort_values(&self) -> HashMap<ShellItemId, Option<u64>> {
@@ -292,14 +303,20 @@ mod tests {
             FolderAdmissionOutcomeV1::OverLimit
         );
         assert_eq!(FolderAdmissionStateV1::Pending.label(), "等待 File Count…");
+        assert_eq!(FolderAdmissionStateV1::Pending.reason(), "等待 File Count…");
+        assert!(!FolderAdmissionStateV1::Pending.is_limit());
+        assert_eq!(FolderAdmissionStateV1::OverLimit.label(), "Limit");
         assert_eq!(
-            FolderAdmissionStateV1::OverLimit.label(),
+            FolderAdmissionStateV1::OverLimit.reason(),
             "File Count 超過限制，因此未啟動"
         );
+        assert!(FolderAdmissionStateV1::OverLimit.is_limit());
+        assert_eq!(FolderAdmissionStateV1::Unavailable.label(), "Limit");
         assert_eq!(
-            FolderAdmissionStateV1::Unavailable.label(),
+            FolderAdmissionStateV1::Unavailable.reason(),
             "依賴 File Count，因此未啟動"
         );
+        assert!(FolderAdmissionStateV1::Unavailable.is_limit());
     }
 
     #[test]
