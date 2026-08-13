@@ -1,0 +1,11 @@
+﻿{
+    "schema_version":  1,
+    "status":  "PASS",
+    "editor_count":  14,
+    "slider_width_px":  400,
+    "includes_24_mb_stop":  true,
+    "apply_value_mb":  2048,
+    "ok_value_mb":  4096,
+    "cancel_attempt_mb":  8192,
+    "cancel_preserved_mb":  4096
+}

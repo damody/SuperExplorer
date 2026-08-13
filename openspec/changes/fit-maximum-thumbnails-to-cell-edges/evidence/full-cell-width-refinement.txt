@@ -1,0 +1,20 @@
+Full-cell-width thumbnail refinement verification
+Date: 2026-08-05
+
+Correction
+- The stacked real-thumbnail host now equals the complete realized cell width.
+- Horizontal row padding is no longer subtracted, eliminating the visible gutter at the item border.
+- Aspect-fit, independent file-name space, row height, cache behavior, and centered square Shell-icon geometry remain unchanged.
+
+Verification
+- PASS: cargo test -p explorer-ui --lib thumbnail_edge_fit --locked -- --nocapture --test-threads=1 (2 passed)
+- PASS: cargo check -p explorer-ui
+- PASS: cargo build -p explorer-app
+- PASS: registered UTIT case thumbnail-edge-fit-regression (report in evidence/utit-refinement/report.json)
+- PASS: cargo fmt --all -- --check
+- PASS: python -m json.tool uitest/manifest.json
+- PASS: PowerShell AST parse for scripts/smoke_icon_view_visual_loading.ps1
+- PASS: openspec validate fit-maximum-thumbnails-to-cell-edges --strict
+
+Regression threshold
+- Maximum-icon headful coverage now requires the real thumbnail image host to consume at least 98.5% of the realized row width, so the previously observed approximately 20-pixel horizontal gutter cannot pass.

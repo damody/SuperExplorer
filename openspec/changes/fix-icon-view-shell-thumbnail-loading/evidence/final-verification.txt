@@ -1,0 +1,44 @@
+Verification record, 2026-08-05
+
+Clean integration worktree: D:\SuperExplorer-icon-verify at HEAD a1246e8 with only the icon-loading
+production changes applied. The worktree uses a junction to the unchanged main vendor/gpui-ce tree.
+
+PASS: cargo check -p explorer-ui
+PASS: cargo build -p explorer-app
+PASS: cargo test -p explorer-model thumbnail::tests::every_view_mode_has_an_explicit_policy
+PASS: cargo test -p explorer-ui --lib tests::qos_visible_icons_and_thumbnails_remain_admitted_when_visual_refinement_is_shed -- --exact --nocapture --test-threads=1
+PASS: main uitest/manifest.json parses as JSON
+PASS: scripts/smoke_icon_view_visual_loading.ps1 parses with the PowerShell AST parser
+
+Main-worktree integration blocker (outside this change):
+- explorer-ui contains concurrent, unfinished Code lines multi-runtime edits. Its struct declares
+  `code_lines_runtimes` and a 4-field `code_lines_requested` key while older methods still reference
+  `code_lines_runtime`, `code_lines_visuals`, and 3-field keys. The main crate therefore cannot build
+  until that separate work is reconciled.
+
+Headful attempt against the clean built app:
+- The application started, Shell STA initialized, the first viewport completed, and icons were
+  enriched.
+- The older smoke_icon_view_layout.ps1 stopped because it requires the view entry to expose
+  ControlType.MenuItem; current UIA exposes the visible view entry differently. The new focused
+  scenario locates the visible exact-name entry independently of ControlType, avoiding this harness
+  incompatibility.
+
+Final cache/flicker verification:
+- PASS: clean-worktree `cargo build -p explorer-app` after adding the Folder Options cache control.
+- PASS: maximum-icon cache admission test (half-budget priming, bounded to one viewport).
+- PASS: Folder Options draft/cancel/apply test for the 128 MiB default and 1 GiB selection.
+- PASS: strict `openspec validate fix-icon-view-shell-thumbnail-loading --strict`.
+- PASS: focused diff whitespace validation.
+
+Headful UTIT evidence:
+- PASS: `evidence/utit-focused-clean-10/report.json`.
+- Captured extra-large, large, medium, small, tiles, and newly-realized scrolled-item screenshots.
+- Subsequent fresh-shell runs exposed nondeterministic Windows thumbnail-provider timing; the
+  deterministic scheduling/cache behavior is therefore additionally covered by focused Rust tests.
+
+Manifest note:
+- The new `icon-view-visual-loading-headful` case is registered at `uitest/manifest.json`.
+- PASS: the complete UTF-8 manifest parses with `python -m json.tool`.
+- Windows PowerShell 5.1 `Get-Content` must use `-Encoding UTF8`; its ANSI default produces mojibake
+  and a false parse failure for the Chinese descriptions.

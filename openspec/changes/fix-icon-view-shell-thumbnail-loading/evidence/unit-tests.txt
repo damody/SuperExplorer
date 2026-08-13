@@ -1,0 +1,43 @@
+G1 / G3 model policy evidence
+Date: 2026-08-05
+
+Pre-fix inspection:
+- MediumIcons shared the Content/Tiles branch and requested Thumbnail at 48 logical px.
+- Tiles requested Thumbnail at 48 logical px.
+- This contradicted the approved 64 px MediumIcons and Shell-only Tiles contract.
+
+Commands after the policy correction:
+  cargo test -p explorer-model explorer_icon_views_use_the_expected_thumbnail_targets
+  cargo test -p explorer-model small_icon_and_tile_views_are_shell_icon_only
+
+Result:
+- thumbnail::tests::explorer_icon_views_use_the_expected_thumbnail_targets ... ok
+- thumbnail::tests::small_icon_and_tile_views_are_shell_icon_only ... ok
+- 2 focused tests passed; 0 failed.
+
+G2 / G4 / G5 UI regression source:
+- obsolete_shell_size_does_not_starve_current_thumbnail_requests
+- saturated_thumbnail_budget_does_not_starve_shell_icon_requests
+- stale_thumbnail_demand_is_rejected_without_removing_cached_shell_fallback
+- completed_thumbnail_cache_is_reused_for_a_compatible_view
+
+Current integration attempt:
+  cargo check -p explorer-ui
+  cargo test -p explorer-ui obsolete_shell_size_does_not_starve_current_thumbnail_requests --no-run
+
+Result: blocked before this change's production/test code could be fully compiled by pre-existing,
+concurrent Code lines edits in explorer-ui (`code_lines_visuals` / `code_lines_runtime` fields and
+3-tuple callers disagree with the new `code_lines_runtimes` / 4-tuple declarations). The compiler
+did identify one assertion type mismatch in the new cache-reuse test; it was corrected to compare
+against `CacheInsertOutcome::Inserted`. The unrelated Code lines sources were not modified.
+
+Final focused verification:
+- PASS: `cargo test -p explorer-model` (88 unit tests and 9 integration tests).
+- PASS: clean-worktree `cargo build -p explorer-app`.
+- PASS: `tests::maximum_icon_prime_reserves_half_of_the_configured_cache`.
+- PASS: `state::tests::folder_options_use_a_cancelable_draft_and_apply_to_the_active_tab`.
+- PASS: the cache preset model test verifies the 128 MiB default and 1 GiB cap.
+- PASS: strict OpenSpec validation.
+
+The two focused UI test commands were rerun without `--exact` because Rust's full test names include
+their module prefixes; both selected exactly one test and passed.

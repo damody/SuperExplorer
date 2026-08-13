@@ -1,0 +1,302 @@
+﻿{
+    "schema":  "icon-view-visual-loading-v1",
+    "status":  "PASS",
+    "fixture":  "D:\\SuperExplorer\\openspec\\changes\\fix-icon-view-shell-thumbnail-loading\\evidence\\utit-focused-clean-4\\fixture",
+    "modes":  [
+                  {
+                      "mode":  "extra-large",
+                      "thumbnail_expected":  true,
+                      "items":  [
+                                    {
+                                        "name":  "00-folder",
+                                        "colors":  6,
+                                        "blue_ratio":  0,
+                                        "magenta_ratio":  0,
+                                        "bounds":  {
+                                                       "left":  562,
+                                                       "top":  273,
+                                                       "width":  672,
+                                                       "height":  672
+                                                   }
+                                    },
+                                    {
+                                        "name":  "01-plain.txt",
+                                        "colors":  3521,
+                                        "blue_ratio":  0.000104078089569161,
+                                        "magenta_ratio":  0,
+                                        "bounds":  {
+                                                       "left":  1210,
+                                                       "top":  273,
+                                                       "width":  672,
+                                                       "height":  672
+                                                   }
+                                    },
+                                    {
+                                        "name":  "02-clip.mp4",
+                                        "colors":  1827,
+                                        "blue_ratio":  0,
+                                        "magenta_ratio":  0,
+                                        "bounds":  {
+                                                       "left":  1858,
+                                                       "top":  273,
+                                                       "width":  672,
+                                                       "height":  672
+                                                   }
+                                    },
+                                    {
+                                        "name":  "03-photo.jpg",
+                                        "colors":  1131,
+                                        "blue_ratio":  0,
+                                        "magenta_ratio":  0.5496777658431794,
+                                        "bounds":  {
+                                                       "left":  562,
+                                                       "top":  1043,
+                                                       "width":  672,
+                                                       "height":  672
+                                                   }
+                                    }
+                                ],
+                      "screenshot":  "extra-large.png"
+                  },
+                  {
+                      "mode":  "large",
+                      "thumbnail_expected":  true,
+                      "items":  [
+                                    {
+                                        "name":  "00-folder",
+                                        "colors":  5,
+                                        "blue_ratio":  0,
+                                        "magenta_ratio":  0,
+                                        "bounds":  {
+                                                       "left":  618,
+                                                       "top":  273,
+                                                       "width":  189,
+                                                       "height":  189
+                                                   }
+                                    },
+                                    {
+                                        "name":  "01-plain.txt",
+                                        "colors":  4,
+                                        "blue_ratio":  0.022227821169620111,
+                                        "magenta_ratio":  0,
+                                        "bounds":  {
+                                                       "left":  896,
+                                                       "top":  273,
+                                                       "width":  189,
+                                                       "height":  189
+                                                   }
+                                    },
+                                    {
+                                        "name":  "02-clip.mp4",
+                                        "colors":  4,
+                                        "blue_ratio":  0.022227821169620111,
+                                        "magenta_ratio":  0,
+                                        "bounds":  {
+                                                       "left":  1174,
+                                                       "top":  273,
+                                                       "width":  189,
+                                                       "height":  189
+                                                   }
+                                    },
+                                    {
+                                        "name":  "03-photo.jpg",
+                                        "colors":  228,
+                                        "blue_ratio":  0,
+                                        "magenta_ratio":  0.50037792894935751,
+                                        "bounds":  {
+                                                       "left":  1452,
+                                                       "top":  273,
+                                                       "width":  189,
+                                                       "height":  189
+                                                   }
+                                    }
+                                ],
+                      "screenshot":  "large.png"
+                  },
+                  {
+                      "mode":  "medium",
+                      "thumbnail_expected":  true,
+                      "items":  [
+                                    {
+                                        "name":  "00-folder",
+                                        "colors":  5,
+                                        "blue_ratio":  0,
+                                        "magenta_ratio":  0,
+                                        "bounds":  {
+                                                       "left":  619,
+                                                       "top":  273,
+                                                       "width":  126,
+                                                       "height":  126
+                                                   }
+                                    },
+                                    {
+                                        "name":  "01-plain.txt",
+                                        "colors":  4,
+                                        "blue_ratio":  0.050012597631645249,
+                                        "magenta_ratio":  0,
+                                        "bounds":  {
+                                                       "left":  835,
+                                                       "top":  273,
+                                                       "width":  126,
+                                                       "height":  126
+                                                   }
+                                    },
+                                    {
+                                        "name":  "02-clip.mp4",
+                                        "colors":  4,
+                                        "blue_ratio":  0.050012597631645249,
+                                        "magenta_ratio":  0,
+                                        "bounds":  {
+                                                       "left":  1051,
+                                                       "top":  273,
+                                                       "width":  126,
+                                                       "height":  126
+                                                   }
+                                    },
+                                    {
+                                        "name":  "03-photo.jpg",
+                                        "colors":  119,
+                                        "blue_ratio":  0,
+                                        "magenta_ratio":  0.49735449735449733,
+                                        "bounds":  {
+                                                       "left":  1267,
+                                                       "top":  273,
+                                                       "width":  126,
+                                                       "height":  126
+                                                   }
+                                    }
+                                ],
+                      "screenshot":  "medium.png"
+                  },
+                  {
+                      "mode":  "small",
+                      "thumbnail_expected":  false,
+                      "items":  [
+                                    {
+                                        "name":  "00-folder",
+                                        "colors":  5,
+                                        "blue_ratio":  0,
+                                        "magenta_ratio":  0,
+                                        "bounds":  {
+                                                       "left":  595,
+                                                       "top":  282,
+                                                       "width":  56,
+                                                       "height":  56
+                                                   }
+                                    },
+                                    {
+                                        "name":  "01-plain.txt",
+                                        "colors":  117,
+                                        "blue_ratio":  0,
+                                        "magenta_ratio":  0,
+                                        "bounds":  {
+                                                       "left":  984,
+                                                       "top":  282,
+                                                       "width":  56,
+                                                       "height":  56
+                                                   }
+                                    },
+                                    {
+                                        "name":  "02-clip.mp4",
+                                        "colors":  117,
+                                        "blue_ratio":  0,
+                                        "magenta_ratio":  0,
+                                        "bounds":  {
+                                                       "left":  1373,
+                                                       "top":  282,
+                                                       "width":  56,
+                                                       "height":  56
+                                                   }
+                                    },
+                                    {
+                                        "name":  "03-photo.jpg",
+                                        "colors":  1460,
+                                        "blue_ratio":  0.014349489795918368,
+                                        "magenta_ratio":  0,
+                                        "bounds":  {
+                                                       "left":  1762,
+                                                       "top":  282,
+                                                       "width":  56,
+                                                       "height":  56
+                                                   }
+                                    }
+                                ],
+                      "screenshot":  "small.png"
+                  },
+                  {
+                      "mode":  "tiles",
+                      "thumbnail_expected":  false,
+                      "items":  [
+                                    {
+                                        "name":  "00-folder",
+                                        "colors":  5,
+                                        "blue_ratio":  0,
+                                        "magenta_ratio":  0,
+                                        "bounds":  {
+                                                       "left":  595,
+                                                       "top":  294,
+                                                       "width":  70,
+                                                       "height":  70
+                                                   }
+                                    },
+                                    {
+                                        "name":  "01-plain.txt",
+                                        "colors":  176,
+                                        "blue_ratio":  0,
+                                        "magenta_ratio":  0,
+                                        "bounds":  {
+                                                       "left":  1081,
+                                                       "top":  294,
+                                                       "width":  70,
+                                                       "height":  70
+                                                   }
+                                    },
+                                    {
+                                        "name":  "02-clip.mp4",
+                                        "colors":  207,
+                                        "blue_ratio":  0,
+                                        "magenta_ratio":  0,
+                                        "bounds":  {
+                                                       "left":  1567,
+                                                       "top":  294,
+                                                       "width":  70,
+                                                       "height":  70
+                                                   }
+                                    },
+                                    {
+                                        "name":  "03-photo.jpg",
+                                        "colors":  2079,
+                                        "blue_ratio":  0.012629399585921325,
+                                        "magenta_ratio":  0,
+                                        "bounds":  {
+                                                       "left":  2053,
+                                                       "top":  294,
+                                                       "width":  69,
+                                                       "height":  70
+                                                   }
+                                    }
+                                ],
+                      "screenshot":  "tiles.png"
+                  }
+              ],
+    "scrolled_tail":  {
+                          "name":  "filler-067.dat",
+                          "colors":  4,
+                          "blue_ratio":  0.050012597631645249,
+                          "magenta_ratio":  0,
+                          "bounds":  {
+                                         "left":  619,
+                                         "top":  385,
+                                         "width":  126,
+                                         "height":  126
+                                     }
+                      },
+    "artifacts":  [
+                      "extra-large.png",
+                      "large.png",
+                      "medium.png",
+                      "small.png",
+                      "tiles.png",
+                      "scrolled-icon.png"
+                  ]
+}

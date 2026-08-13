@@ -1,0 +1,26 @@
+Maximum folder icon fallback verification
+Date: 2026-08-05
+
+Behavior verified
+- Exact-size Shell pixels remain preferred.
+- When exact pixels are absent, the largest same-item or shared-folder texture from the same DPI, theme, association generation, and overlay generation is selected for upscaling.
+- An incompatible cached texture is rejected.
+- An exact shared-base failure still permits one bounded real-item Shell request.
+- Cache admission and byte-budget behavior are unchanged.
+
+Automated verification
+- PASS: cargo test -p explorer-ui --lib maximum_folder_icon -- --nocapture --test-threads=1 (3 tests)
+- PASS: cargo check -p explorer-ui
+- PASS: cargo build -p explorer-app
+- PASS: cargo fmt --all -- --check
+- PASS: PowerShell AST parse for scripts/smoke_icon_view_visual_loading.ps1
+- PASS: python -m json.tool uitest/manifest.json
+- PASS: openspec validate fix-icon-view-shell-thumbnail-loading --strict
+- PASS: focused git diff --check
+- PASS: clean-worktree focused tests, explorer-ui check, and explorer-app build
+
+UTIT coverage
+- The registered headful scenario now reaches the 512 logical-pixel maximum zoom and writes maximum-folder.png.
+- Its maximum-folder assertion requires a near-full-size, multi-color, non-blue-fallback visual and therefore rejects the fixed tiny yellow fallback.
+- The deterministic manifest case maximum-folder-icon-fallback-regression runs the three focused Rust regression tests.
+- A new interactive screenshot attempt was not accepted as evidence because another foreground window covered the application capture and the unrelated BMP thumbnail provider was nondeterministic. The assertion and registered scenario remain in place for an unobstructed headful run.

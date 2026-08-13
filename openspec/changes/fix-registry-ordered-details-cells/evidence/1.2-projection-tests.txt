@@ -1,0 +1,9 @@
+Tasks: 1.2.1, 1.2.2, 1.2.3, 1.2.4, 1.2.5
+Implementation: crates/explorer-ui/src/chrome.rs
+Command: cargo test -p explorer-ui --locked --offline extension_detail -- --nocapture
+Expected: Registry-ordered identity matrices pass for Lua+Folder, Folder+Rust, and Lua+Folder+Lock+Rust.
+Actual: Exit 0; 2 passed, 0 failed, 286 filtered out.
+Additional compile gate: cargo check -p explorer-ui --locked --offline; exit 0.
+Fail-closed behavior: runtime/visual pairs are joined by exact descriptor ID; stale IDs are filtered by current registry membership; a current descriptor with no runtime retains its width and renders an unavailable em dash.
+Gate: G2
+Date: 2026-08-05 Asia/Taipei

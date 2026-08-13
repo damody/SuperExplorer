@@ -1,0 +1,6 @@
+Tasks: 2.1.1, 2.1.2, 2.1.3, 2.1.4
+Command: cargo test -p explorer-ui --locked --offline extension_detail -- --nocapture
+Expected: Registration order is normalized by BTreeMap ColumnId order; removal ignores stale IDs; re-enable restores the same position; unknown runtime IDs cannot project a cell.
+Actual: Exit 0; both lifecycle/projection tests passed. The all-four matrix is registered in a deliberately different order (Rust, Folder, Lock, Lua), Lua is removed, then re-enabled with the same stable ID.
+Gate: G3
+Date: 2026-08-05 Asia/Taipei

@@ -1,0 +1,21 @@
+﻿{
+    "status":  "passed",
+    "directory_values":  4,
+    "aligned_columns":  [
+                            "Code lines",
+                            "Main code lines",
+                            "Folder size"
+                        ],
+    "blank_excluded_from_value":  true,
+    "no_progress_bars":  true,
+    "observed_descendant_processes":  [
+
+                                      ],
+    "observed_plugin_tool_descendants":  [
+
+                                         ],
+    "clean_shutdown":  true,
+    "screenshots":  [
+                        "code-lines.png"
+                    ]
+}

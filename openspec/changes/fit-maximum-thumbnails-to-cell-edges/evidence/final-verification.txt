@@ -1,0 +1,24 @@
+Maximum thumbnail edge-fit verification
+Date: 2026-08-05
+
+Implemented behavior
+- Successful thumbnail admissions retain explicit thumbnail provenance through the file-view snapshot.
+- Shell icons, compatible-size Shell recovery, shared bases, failed-thumbnail fallbacks, and unknown visuals retain conservative Shell provenance.
+- Stacked thumbnail hosts use the realized cell width minus horizontal padding and the existing icon-region height.
+- Aspect-fit makes landscape thumbnails reach horizontal bounds and portrait thumbnails reach vertical bounds without crop or distortion.
+- Shell and fallback visuals retain the existing centered square icon host.
+- Row height, label layout, cache admission, cache budget, scheduling, and extraction resolution are unchanged.
+
+Verification
+- PASS: cargo test -p explorer-ui --lib thumbnail_edge_fit --locked -- --nocapture --test-threads=1 (2 passed)
+- PASS: registered UTIT case thumbnail-edge-fit-regression (1 case passed; report in evidence/utit-run/report.json)
+- PASS: cargo fmt --all -- --check
+- PASS: cargo check -p explorer-ui
+- PASS: cargo build -p explorer-app
+- PASS: python -m json.tool uitest/manifest.json
+- PASS: PowerShell AST parse for scripts/smoke_icon_view_visual_loading.ps1
+- PASS: openspec validate fit-maximum-thumbnails-to-cell-edges --strict
+- PASS: focused git diff --check
+
+Headful contract
+- The existing icon-view headful scenario now creates a deterministic leading landscape bitmap, reaches 512 logical-pixel zoom, compares the thumbnail and folder UIA image hosts, requires the thumbnail to approach the item width, and requires the folder to remain narrower and bounded.
