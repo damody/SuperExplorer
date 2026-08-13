@@ -22,14 +22,20 @@ mod context_menu;
 mod drag_drop;
 mod everything;
 pub use everything::{IndexedFolderEntryV1, query_folder_index};
+mod bc7_codec;
 mod extension;
 mod file_operation;
 mod icon;
 mod icon_disk_cache;
+pub use icon_disk_cache::{
+    ShellDiskCacheStatsV1, icon_disk_cache_stats, set_shell_disk_cache_limits,
+    thumbnail_disk_cache_stats,
+};
 mod namespace;
 mod native;
 mod navigation;
 mod preview;
+mod process_current_directory;
 mod restart_manager;
 mod search;
 mod shell_new;
@@ -55,13 +61,17 @@ pub use navigation::{DIRECTORY_BATCH_BYTE_CAP, DIRECTORY_BATCH_ITEM_CAP, open_de
 pub use preview::{
     AttachedPreviewSession, PreviewHandlerHost, PreviewLookup, render_preview_in_worker,
 };
+pub use process_current_directory::{
+    CurrentDirectoryOwnerBatchTerminal, CurrentDirectoryOwnerMatch,
+    discover_current_directory_owners_read_only,
+};
 pub use restart_manager::discover_lock_owners_read_only;
 pub use shell_new::{registered_shell_new_items, registered_shell_new_items_in_worker};
 pub use sta::{
     ShellDomainDiagnostics, ShellStaEndpointError, ShellStaError, ShellStaHandle, ShellStaState,
     StaResourceSnapshot,
 };
-pub use thumbnail::{clear_thumbnail_disk_cache, load_shell_thumbnail};
+pub use thumbnail::{clear_thumbnail_disk_cache, load_shell_thumbnail, load_shell_thumbnail_rgba};
 
 /// Opens a new Command Prompt, using the current Explorer folder when available.
 pub fn launch_command_prompt(working_directory: Option<&std::path::Path>) -> std::io::Result<()> {

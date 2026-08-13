@@ -17,27 +17,54 @@ use std::{
     time::SystemTime,
 };
 
-use explorer_model::{LocationDescriptor, ShellIconKey, ShellIconPayload, ShellIconTheme};
+use explorer_model::{
+    Bc7RasterPayload, LocationDescriptor, ShellIconKey, ShellIconPayload, ShellIconTheme,
+};
+
+use crate::bc7_codec::{self, Bc7ContentKind};
 use windows::{
     Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW},
     core::w,
 };
 
-const MAGIC: &[u8; 8] = b"RGXICON1";
-// Version 3 invalidates entries that may have captured pre-overlay or not-yet-ready Shell pixels.
-const SCHEMA_VERSION: u16 = 3;
-const PIXEL_FORMAT_RGBA8: u8 = 1;
+const MAGIC: &[u8; 8] = b"RGXBC7C1";
+const SCHEMA_VERSION: u16 = 5;
 const HEADER_LEN: usize = 8 + 2 + 8 + 2 + 2 + 4 + 1 + 8 + 4;
 const MAX_ENTRY_BYTES: u64 = 16 * 1024 * 1024;
 const DEFAULT_MAX_ENTRIES: usize = 4_096;
 const DEFAULT_MAX_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static ICON_MAX_TOTAL_BYTES: AtomicU64 = AtomicU64::new(DEFAULT_MAX_TOTAL_BYTES);
+static THUMBNAIL_MAX_TOTAL_BYTES: AtomicU64 = AtomicU64::new(1024 * 1024 * 1024);
+static ICON_HITS: AtomicU64 = AtomicU64::new(0);
+static ICON_MISSES: AtomicU64 = AtomicU64::new(0);
+static ICON_REJECTIONS: AtomicU64 = AtomicU64::new(0);
+static THUMBNAIL_HITS: AtomicU64 = AtomicU64::new(0);
+static THUMBNAIL_MISSES: AtomicU64 = AtomicU64::new(0);
+static THUMBNAIL_REJECTIONS: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ShellDiskCacheStatsV1 {
+    pub bytes: u64,
+    pub limit_bytes: u64,
+    pub entries: u64,
+    pub hits: u64,
+    pub misses: u64,
+    pub rejections: u64,
+}
 
 #[derive(Debug)]
 pub(crate) struct ShellIconDiskCache {
     root: Option<PathBuf>,
     max_entries: usize,
     max_total_bytes: u64,
+    encoding: DiskCacheEncoding,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DiskCacheEncoding {
+    Lossless,
+    LossyQuality80,
 }
 
 pub(crate) enum DiskCacheLoad {
@@ -57,7 +84,8 @@ impl Default for ShellIconDiskCache {
         Self {
             root,
             max_entries: DEFAULT_MAX_ENTRIES,
-            max_total_bytes: DEFAULT_MAX_TOTAL_BYTES,
+            max_total_bytes: ICON_MAX_TOTAL_BYTES.load(Ordering::Acquire),
+            encoding: DiskCacheEncoding::Lossless,
         }
     }
 }
@@ -67,7 +95,17 @@ impl ShellIconDiskCache {
         Self {
             root: Some(root),
             max_entries: DEFAULT_MAX_ENTRIES,
-            max_total_bytes: DEFAULT_MAX_TOTAL_BYTES,
+            max_total_bytes: ICON_MAX_TOTAL_BYTES.load(Ordering::Acquire),
+            encoding: DiskCacheEncoding::Lossless,
+        }
+    }
+
+    pub(crate) fn with_root_lossy_thumbnail(root: PathBuf) -> Self {
+        Self {
+            root: Some(root),
+            max_entries: DEFAULT_MAX_ENTRIES,
+            max_total_bytes: THUMBNAIL_MAX_TOTAL_BYTES.load(Ordering::Acquire),
+            encoding: DiskCacheEncoding::LossyQuality80,
         }
     }
 
@@ -88,17 +126,26 @@ impl ShellIconDiskCache {
             root: Some(root),
             max_entries: max_entries.max(1),
             max_total_bytes: max_total_bytes.max(HEADER_LEN as u64 + 4),
+            encoding: DiskCacheEncoding::Lossless,
         }
     }
 
     pub(crate) fn load_outcome(&self, key: &ShellIconKey) -> DiskCacheLoad {
         let Some(path) = self.entry_path(key) else {
+            self.counters().1.fetch_add(1, Ordering::Relaxed);
             return DiskCacheLoad::Miss;
         };
-        match Self::read_entry(&path, key) {
-            Ok(Some(payload)) => DiskCacheLoad::Hit(payload),
-            Ok(None) => DiskCacheLoad::Miss,
+        match self.read_entry(&path, key) {
+            Ok(Some(payload)) => {
+                self.counters().0.fetch_add(1, Ordering::Relaxed);
+                DiskCacheLoad::Hit(payload)
+            }
+            Ok(None) => {
+                self.counters().1.fetch_add(1, Ordering::Relaxed);
+                DiskCacheLoad::Miss
+            }
             Err(error) => {
+                self.counters().2.fetch_add(1, Ordering::Relaxed);
                 tracing::debug!(?error, "Shell icon disk cache entry was rejected");
                 let _ = fs::remove_file(path);
                 DiskCacheLoad::Rejected
@@ -106,7 +153,48 @@ impl ShellIconDiskCache {
         }
     }
 
-    #[cfg(test)]
+    fn counters(&self) -> (&'static AtomicU64, &'static AtomicU64, &'static AtomicU64) {
+        match self.encoding {
+            DiskCacheEncoding::Lossless => (&ICON_HITS, &ICON_MISSES, &ICON_REJECTIONS),
+            DiskCacheEncoding::LossyQuality80 => {
+                (&THUMBNAIL_HITS, &THUMBNAIL_MISSES, &THUMBNAIL_REJECTIONS)
+            }
+        }
+    }
+
+    fn content_kind(&self) -> Bc7ContentKind {
+        match self.encoding {
+            DiskCacheEncoding::Lossless => Bc7ContentKind::Icon,
+            DiskCacheEncoding::LossyQuality80 => Bc7ContentKind::Thumbnail,
+        }
+    }
+
+    fn stats(&self) -> ShellDiskCacheStatsV1 {
+        let (hits, misses, rejections) = self.counters();
+        let (bytes, entries) = self.root.as_ref().map_or((0, 0), |root| {
+            fs::read_dir(root).map_or((0, 0), |entries| {
+                entries
+                    .flatten()
+                    .filter_map(|entry| {
+                        let metadata = fs::symlink_metadata(entry.path()).ok()?;
+                        (metadata.is_file() && !metadata.file_type().is_symlink())
+                            .then_some(metadata.len())
+                    })
+                    .fold((0_u64, 0_u64), |(bytes, count), length| {
+                        (bytes.saturating_add(length), count.saturating_add(1))
+                    })
+            })
+        });
+        ShellDiskCacheStatsV1 {
+            bytes,
+            limit_bytes: self.max_total_bytes,
+            entries,
+            hits: hits.load(Ordering::Relaxed),
+            misses: misses.load(Ordering::Relaxed),
+            rejections: rejections.load(Ordering::Relaxed),
+        }
+    }
+
     pub(crate) fn load(&self, key: &ShellIconKey) -> Option<ShellIconPayload> {
         match self.load_outcome(key) {
             DiskCacheLoad::Hit(payload) => Some(payload),
@@ -126,15 +214,21 @@ impl ShellIconDiskCache {
 
     fn entry_path(&self, key: &ShellIconKey) -> Option<PathBuf> {
         let root = self.root.as_ref()?;
-        Some(root.join(format!("{:016x}.rgba", key_digest(key))))
+        Some(root.join(format!("{:016x}.bc7cache", key_digest(key))))
     }
 
-    fn read_entry(path: &Path, key: &ShellIconKey) -> io::Result<Option<ShellIconPayload>> {
-        let metadata = match fs::metadata(path) {
+    fn read_entry(&self, path: &Path, key: &ShellIconKey) -> io::Result<Option<ShellIconPayload>> {
+        let metadata = match fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error),
         };
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "cache entry is not a regular file",
+            ));
+        }
         if metadata.len() < HEADER_LEN as u64 || metadata.len() > MAX_ENTRY_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -162,7 +256,7 @@ impl ShellIconDiskCache {
         let checksum = take_u32(&bytes, &mut cursor)?;
         if schema != SCHEMA_VERSION
             || digest != key_digest(key)
-            || pixel_format != PIXEL_FORMAT_RGBA8
+            || pixel_format != self.content_kind() as u8
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -171,21 +265,34 @@ impl ShellIconDiskCache {
         }
         let payload_len = usize::try_from(payload_len)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "payload too large"))?;
-        if payload_len != bytes.len().saturating_sub(cursor)
-            || payload_len != stride as usize * usize::from(height)
-            || crc32(&bytes[cursor..]) != checksum
+        if payload_len != bytes.len().saturating_sub(cursor) || crc32(&bytes[cursor..]) != checksum
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "payload length, stride, or checksum mismatch",
             ));
         }
-        ShellIconPayload::new(
+        let layout = bc7_codec::checked_layout(u32::from(width), u32::from(height))?;
+        if stride != layout.row_pitch || payload_len != layout.payload_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "BC7 block layout mismatch",
+            ));
+        }
+        ShellIconPayload::new_bc7(
             key.clone(),
-            width,
-            height,
-            stride,
-            bytes[cursor..].to_vec(),
+            Bc7RasterPayload {
+                kind: match self.content_kind() {
+                    Bc7ContentKind::Icon => explorer_model::CompressedRasterKind::Icon,
+                    Bc7ContentKind::Thumbnail => explorer_model::CompressedRasterKind::Thumbnail,
+                },
+                width: u32::from(width),
+                height: u32::from(height),
+                padded_width: layout.padded_width,
+                padded_height: layout.padded_height,
+                row_pitch: layout.row_pitch,
+                blocks: bytes[cursor..].to_vec(),
+            },
             None,
         )
         .map(Some)
@@ -215,14 +322,34 @@ impl ShellIconDiskCache {
             file.write_all(&key_digest(&payload.key).to_le_bytes())?;
             file.write_all(&payload.width.to_le_bytes())?;
             file.write_all(&payload.height.to_le_bytes())?;
-            file.write_all(&payload.stride.to_le_bytes())?;
-            file.write_all(&[PIXEL_FORMAT_RGBA8])?;
-            let payload_len = u64::try_from(payload.rgba.len()).map_err(|_| {
+            let encoded = if let Some(raster) = &payload.bc7 {
+                bc7_codec::Bc7Raster {
+                    kind: self.content_kind(),
+                    width: raster.width,
+                    height: raster.height,
+                    padded_width: raster.padded_width,
+                    padded_height: raster.padded_height,
+                    row_pitch: raster.row_pitch,
+                    blocks: raster.blocks.clone(),
+                }
+            } else {
+                bc7_codec::encode_rgba(
+                    self.content_kind(),
+                    u32::from(payload.width),
+                    u32::from(payload.height),
+                    payload.stride,
+                    &payload.rgba,
+                )?
+            };
+            encoded.validate()?;
+            file.write_all(&encoded.row_pitch.to_le_bytes())?;
+            file.write_all(&[self.content_kind() as u8])?;
+            let payload_len = u64::try_from(encoded.blocks.len()).map_err(|_| {
                 io::Error::new(io::ErrorKind::InvalidInput, "icon payload is too large")
             })?;
             file.write_all(&payload_len.to_le_bytes())?;
-            file.write_all(&crc32(&payload.rgba).to_le_bytes())?;
-            file.write_all(&payload.rgba)?;
+            file.write_all(&crc32(&encoded.blocks).to_le_bytes())?;
+            file.write_all(&encoded.blocks)?;
             file.sync_all()?;
             drop(file);
             match fs::rename(&temporary, &path) {
@@ -251,16 +378,19 @@ impl ShellIconDiskCache {
             .filter_map(Result::ok)
             .filter_map(|entry| {
                 let path = entry.path();
-                (path.extension().and_then(|value| value.to_str()) == Some("rgba"))
-                    .then(|| {
-                        let metadata = entry.metadata().ok()?;
-                        Some((
-                            path,
-                            metadata.len(),
-                            metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                        ))
-                    })
-                    .flatten()
+                matches!(
+                    path.extension().and_then(|value| value.to_str()),
+                    Some("bc7cache" | "webp" | "rgba")
+                )
+                .then(|| {
+                    let metadata = fs::symlink_metadata(entry.path()).ok()?;
+                    (metadata.is_file() && !metadata.file_type().is_symlink()).then_some((
+                        path,
+                        metadata.len(),
+                        metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                    ))
+                })
+                .flatten()
             })
             .collect::<Vec<_>>();
         let mut total = candidates.iter().map(|(_, size, _)| *size).sum::<u64>();
@@ -282,6 +412,34 @@ impl ShellIconDiskCache {
             }
         }
     }
+}
+
+pub fn set_shell_disk_cache_limits(icon_bytes: u64, thumbnail_bytes: u64) {
+    ICON_MAX_TOTAL_BYTES.store(icon_bytes.max(64 * 1024 * 1024), Ordering::Release);
+    THUMBNAIL_MAX_TOTAL_BYTES.store(thumbnail_bytes.max(128 * 1024 * 1024), Ordering::Release);
+    ShellIconDiskCache::default().cleanup(Path::new(""));
+    let root = std::env::var_os("LOCALAPPDATA").map(|base| {
+        PathBuf::from(base)
+            .join("RustGpuiExplorer")
+            .join("thumbnail-cache")
+            .join("v1")
+    });
+    if let Some(root) = root {
+        ShellIconDiskCache::with_root_lossy_thumbnail(root).cleanup(Path::new(""));
+    }
+}
+
+pub fn icon_disk_cache_stats() -> ShellDiskCacheStatsV1 {
+    ShellIconDiskCache::default().stats()
+}
+
+pub fn thumbnail_disk_cache_stats() -> ShellDiskCacheStatsV1 {
+    let root = std::env::var_os("LOCALAPPDATA")
+        .map_or_else(std::env::temp_dir, PathBuf::from)
+        .join("RustGpuiExplorer")
+        .join("thumbnail-cache")
+        .join("v1");
+    ShellIconDiskCache::with_root_lossy_thumbnail(root).stats()
 }
 
 fn key_digest(key: &ShellIconKey) -> u64 {
@@ -436,13 +594,19 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_is_exact_and_generation_changes_the_entry() {
+    fn bc7_round_trip_preserves_identity_geometry_and_generation() {
         let root = tempfile::tempdir().expect("temp cache");
         let cache = ShellIconDiskCache::with_root(root.path().to_path_buf());
         let payload =
             ShellIconPayload::new(key(1), 2, 2, 8, (0..16).collect(), None).expect("valid payload");
         cache.store(&payload);
-        assert_eq!(cache.load(&key(1)), Some(payload));
+        let loaded = cache.load(&key(1)).expect("BC7 hit");
+        let bc7 = loaded.bc7.expect("compressed blocks");
+        assert_eq!(
+            (bc7.width, bc7.height, bc7.padded_width, bc7.padded_height),
+            (2, 2, 4, 4)
+        );
+        assert_eq!(bc7.blocks.len(), 16);
         assert!(cache.load(&key(2)).is_none());
         let overlay_only = ShellIconKey {
             overlay_generation: 2,
@@ -488,6 +652,74 @@ mod tests {
         std::fs::write(&entry, b"corrupt").expect("replace entry");
         assert!(cache.load(&key(3)).is_none());
         assert!(!entry.exists());
+    }
+
+    #[test]
+    fn thumbnail_bc7_round_trips_bounded_dimensions() {
+        let root = tempfile::tempdir().expect("temp cache");
+        let cache = ShellIconDiskCache::with_root_lossy_thumbnail(root.path().to_path_buf());
+        let payload =
+            ShellIconPayload::new(key(31), 2, 1, 8, vec![255, 0, 0, 255, 0, 255, 0, 255], None)
+                .expect("valid thumbnail payload");
+        assert!(cache.store(&payload));
+        let loaded = cache.load(&key(31)).expect("BC7 hit");
+        let raster = loaded.bc7.expect("compressed raster");
+        assert_eq!(
+            (
+                raster.width,
+                raster.height,
+                raster.padded_width,
+                raster.padded_height
+            ),
+            (2, 1, 4, 4)
+        );
+        assert_eq!(raster.row_pitch, 16);
+        assert_eq!(raster.blocks.len(), 16);
+        let entry = std::fs::read_dir(root.path())
+            .expect("read cache")
+            .next()
+            .expect("one entry")
+            .expect("valid entry")
+            .path();
+        assert_eq!(
+            entry.extension().and_then(|value| value.to_str()),
+            Some("bc7cache")
+        );
+    }
+
+    #[test]
+    fn legacy_rgba_entry_is_a_lazy_miss_without_startup_conversion() {
+        let root = tempfile::tempdir().expect("temp cache");
+        let legacy = root.path().join("deadbeef.rgba");
+        std::fs::write(&legacy, b"RGXICON1 legacy raw pixels").expect("legacy fixture");
+        let cache = ShellIconDiskCache::with_root(root.path().to_path_buf());
+        assert!(cache.load(&key(44)).is_none());
+        assert!(
+            legacy.exists(),
+            "lookup must not bulk-convert or delete unrelated legacy entries"
+        );
+    }
+
+    #[test]
+    fn normal_quota_cleanup_removes_obsolete_rgba_without_crossing_root() {
+        let root = tempfile::tempdir().expect("cache root");
+        let legacy = root.path().join("old.rgba");
+        std::fs::write(&legacy, vec![0_u8; 4_096]).expect("legacy fixture");
+        let outside = root.path().with_extension("outside.rgba");
+        std::fs::write(&outside, vec![0_u8; 4_096]).expect("outside fixture");
+        let cache = ShellIconDiskCache::with_limits(root.path().to_path_buf(), 1, 512);
+        let payload =
+            ShellIconPayload::new(key(91), 4, 4, 16, vec![0x80; 64], None).expect("valid payload");
+        assert!(cache.store(&payload));
+        assert!(
+            !legacy.exists(),
+            "bounded quota cleanup should remove obsolete cache data"
+        );
+        assert!(
+            outside.exists(),
+            "cleanup must not cross the registered cache root"
+        );
+        let _ = std::fs::remove_file(outside);
     }
 
     #[test]
@@ -576,7 +808,7 @@ mod tests {
                 .iter()
                 .filter(
                     |entry| entry.path().extension().and_then(|value| value.to_str())
-                        == Some("rgba")
+                        == Some("bc7cache")
                 )
                 .count(),
             1
@@ -589,7 +821,9 @@ mod tests {
 
         let entry = entries
             .into_iter()
-            .find(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("rgba"))
+            .find(|entry| {
+                entry.path().extension().and_then(|value| value.to_str()) == Some("bc7cache")
+            })
             .expect("one cache entry")
             .path();
         let mut bytes = std::fs::read(&entry).expect("read entry");

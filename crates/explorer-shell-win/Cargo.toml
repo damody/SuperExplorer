@@ -15,6 +15,7 @@ explorer-search = { path = "../explorer-search" }
 thiserror.workspace = true
 tracing.workspace = true
 libloading.workspace = true
+intel_tex_2 = "=0.5.0"
 
 [target.'cfg(windows)'.dependencies]
 windows.workspace = true

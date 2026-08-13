@@ -458,7 +458,6 @@ impl RenderOnce for ExplorerWindow {
             self.state.navigation_pane_width().value() + self.tokens.layout.divider_width.value();
         let file_origin_y = explorer_file_origin_y(self.tokens);
         let scrollbar_capture_action = self.on_action.clone();
-        let details_drag_cancel = self.on_action.clone();
         let folder_size_backend_status = self.visual_column_runtime.as_ref().and_then(|runtime| {
             let (status, active) = runtime.backend_status();
             status.label(active).map(str::to_owned)
@@ -475,11 +474,6 @@ impl RenderOnce for ExplorerWindow {
             .font_family(self.tokens.typography.family.primary)
             .text_size(px(self.tokens.typography.file_row.size.value()))
             .line_height(px(self.tokens.typography.file_row.line_height.value()))
-            .when_some(details_drag_cancel, |element, callback| {
-                element.on_mouse_up(MouseButton::Left, move |_, window, cx| {
-                    callback(&ExplorerAction::CancelDetailsColumnDrag, window, cx);
-                })
-            })
             .child(region_probe(EXPLORER_WINDOW_ID, None, "normal"))
             .child(
                 WindowChrome::new(
@@ -765,17 +759,17 @@ fn bookmark_bar(
         .border_color(tokens.theme.colors.divider.to_gpui())
         .bg(tokens.theme.colors.surface.to_gpui())
         .child({
-            let selected = state.selected_bookmark_target_and_id();
-            let enabled = selected.is_some();
-            let bookmarked = selected.is_some_and(|(_, id)| id.is_some());
+            let current_folder = state.current_folder_bookmark_target_and_id();
+            let enabled = current_folder.is_some();
+            let bookmarked = current_folder.is_some_and(|(_, id)| id.is_some());
             let label = if bookmarked {
-                "Remove selected item from bookmarks"
+                "Remove current folder from bookmarks"
             } else if enabled {
-                "Add selected item to bookmarks"
+                "Add current folder to bookmarks"
             } else {
-                "Select one file or folder to bookmark"
+                "Current location cannot be bookmarked"
             };
-            let action = ExplorerAction::ToggleSelectedBookmark;
+            let action = ExplorerAction::ToggleCurrentFolderBookmark;
             div()
                 .id("bookmark-star-toggle")
                 .role(Role::Button)
@@ -783,6 +777,7 @@ fn bookmark_bar(
                 .flex_none()
                 .px(px(8.0))
                 .py(px(4.0))
+                .text_size(px(20.0))
                 .rounded(px(4.0))
                 .text_color(if enabled {
                     tokens.theme.colors.text_primary.to_gpui()
@@ -1499,6 +1494,8 @@ pub(crate) fn folder_options_window_content(
     scroll: gpui::ScrollHandle,
     scrollbar: gpui::AnyElement,
     on_action: Option<ActionCallback>,
+    cache_budget_inputs: Vec<gpui::WeakEntity<EditableTextState>>,
+    cache_usage: crate::folder_options_window::CacheUsageSnapshotV1,
 ) -> impl IntoElement {
     use crate::actions::FolderOptionsPage;
 
@@ -1607,6 +1604,8 @@ pub(crate) fn folder_options_window_content(
                                 tokens,
                                 &settings,
                                 on_action.clone(),
+                                cache_budget_inputs.clone(),
+                                cache_usage,
                             ))
                         })
                         .when(page == FolderOptionsPage::Extensions, |body| {
@@ -1902,6 +1901,8 @@ fn folder_options_view_page(
     tokens: UiTokens,
     settings: &explorer_model::ViewSettings,
     on_action: Option<ActionCallback>,
+    cache_budget_inputs: Vec<gpui::WeakEntity<EditableTextState>>,
+    cache_usage: crate::folder_options_window::CacheUsageSnapshotV1,
 ) -> impl IntoElement {
     div()
         .flex()
@@ -1924,6 +1925,13 @@ fn folder_options_view_page(
                     on_action.clone(),
                 )),
         )
+        .child(cache_budget_controls(
+            tokens,
+            settings.cache_budgets,
+            cache_budget_inputs,
+            cache_usage,
+            on_action.clone(),
+        ))
         .child(
             div()
                 .text_size(px(tokens.typography.address.size.value()))
@@ -1969,44 +1977,6 @@ fn folder_options_view_page(
             tokens,
             on_action.clone(),
         ))
-        .child(
-            div()
-                .id("folder-option-icon-cache-memory")
-                .role(Role::Group)
-                .aria_label("Icon and thumbnail display cache limit")
-                .flex()
-                .flex_col()
-                .gap(px(tokens.layout.content_spacing.value()))
-                .child("Icon and thumbnail display cache limit")
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap(px(tokens.layout.content_spacing.value()))
-                        .children(
-                            [
-                                (64_u16, "64 MB"),
-                                (128, "128 MB"),
-                                (256, "256 MB"),
-                                (512, "512 MB"),
-                                (1_024, "1 GB"),
-                            ]
-                            .into_iter()
-                            .map(|(value, label)| {
-                                folder_option_checkbox(
-                                    SharedString::from(format!("folder-option-icon-cache-{value}")),
-                                    label,
-                                    explorer_model::normalized_icon_cache_memory_mb(
-                                        settings.icon_cache_memory_mb,
-                                    ) == value,
-                                    ExplorerAction::SetFolderOptionIconCacheMemoryMb(value),
-                                    tokens,
-                                    on_action.clone(),
-                                )
-                            }),
-                        ),
-                ),
-        )
         .child(folder_option_button(
             "folder-option-clear-thumbnail-cache",
             "清除縮圖快取",
@@ -2030,6 +2000,473 @@ fn folder_options_view_page(
             tokens,
             on_action,
         ))
+}
+
+fn cache_budget_controls(
+    tokens: UiTokens,
+    budgets: explorer_model::CacheBudgetSettingsV1,
+    inputs: Vec<gpui::WeakEntity<EditableTextState>>,
+    usage: crate::folder_options_window::CacheUsageSnapshotV1,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let telemetry_id = |id| match id {
+        explorer_model::CacheBudgetIdV1::ExtensionMemory => {
+            Some(explorer_model::CacheTelemetryIdV1::ExtensionColumnsMemory)
+        }
+        explorer_model::CacheBudgetIdV1::IconDisk => {
+            Some(explorer_model::CacheTelemetryIdV1::IconsDisk)
+        }
+        explorer_model::CacheBudgetIdV1::ThumbnailDisk => {
+            Some(explorer_model::CacheTelemetryIdV1::ThumbnailsDisk)
+        }
+        explorer_model::CacheBudgetIdV1::ExtensionDisk => {
+            Some(explorer_model::CacheTelemetryIdV1::ExtensionColumnsDisk)
+        }
+        explorer_model::CacheBudgetIdV1::MftPersistedIndex => {
+            Some(explorer_model::CacheTelemetryIdV1::MftPersistedIndex)
+        }
+        explorer_model::CacheBudgetIdV1::MftVolumeIndex => {
+            Some(explorer_model::CacheTelemetryIdV1::MftVolumeIndexMemory)
+        }
+        explorer_model::CacheBudgetIdV1::MftFileData => {
+            Some(explorer_model::CacheTelemetryIdV1::MftFileDataMemory)
+        }
+        explorer_model::CacheBudgetIdV1::MftAggregates => {
+            Some(explorer_model::CacheTelemetryIdV1::MftAggregateMemory)
+        }
+        explorer_model::CacheBudgetIdV1::MftLru => {
+            Some(explorer_model::CacheTelemetryIdV1::MftServiceLru)
+        }
+        _ => None,
+    };
+    let labels = [
+        "Icon memory",
+        "Shared/base icon memory",
+        "Thumbnail memory",
+        "Extension data-column memory",
+        "Icon GPU",
+        "Thumbnail GPU",
+        "Icon BC7 disk",
+        "Thumbnail BC7 disk",
+        "Extension data-column disk",
+        "Persisted MFT index",
+        "Volume index memory",
+        "File data memory",
+        "Folder aggregates memory",
+        "MFT Service LRU",
+        "Folder size cache TTL",
+    ];
+    let used_bytes = |id| match id {
+        explorer_model::CacheBudgetIdV1::IconMemory => Some(usage.icon_memory_bytes),
+        explorer_model::CacheBudgetIdV1::BaseIconMemory => Some(usage.base_icon_memory_bytes),
+        explorer_model::CacheBudgetIdV1::ThumbnailMemory => Some(usage.thumbnail_memory_bytes),
+        explorer_model::CacheBudgetIdV1::ExtensionMemory => usage.extension_memory_bytes,
+        explorer_model::CacheBudgetIdV1::IconGpu => Some(usage.icon_gpu_bytes),
+        explorer_model::CacheBudgetIdV1::ThumbnailGpu => Some(usage.thumbnail_gpu_bytes),
+        explorer_model::CacheBudgetIdV1::IconDisk => usage.icon_disk_bytes,
+        explorer_model::CacheBudgetIdV1::ThumbnailDisk => usage.thumbnail_disk_bytes,
+        explorer_model::CacheBudgetIdV1::ExtensionDisk => usage.extension_disk_bytes,
+        explorer_model::CacheBudgetIdV1::MftPersistedIndex => usage.mft_disk_bytes,
+        explorer_model::CacheBudgetIdV1::MftVolumeIndex => usage.mft_volume_index_memory_bytes,
+        explorer_model::CacheBudgetIdV1::MftFileData => usage.mft_file_data_memory_bytes,
+        explorer_model::CacheBudgetIdV1::MftAggregates => usage.mft_aggregate_memory_bytes,
+        explorer_model::CacheBudgetIdV1::MftLru => usage.mft_service_bytes,
+        explorer_model::CacheBudgetIdV1::FolderSizeCacheTtlSeconds => None,
+    };
+    let effective_limit = |id| match id {
+        explorer_model::CacheBudgetIdV1::IconMemory => Some(usage.icon_memory_limit),
+        explorer_model::CacheBudgetIdV1::BaseIconMemory => Some(usage.base_icon_memory_limit),
+        explorer_model::CacheBudgetIdV1::ThumbnailMemory => Some(usage.thumbnail_memory_limit),
+        explorer_model::CacheBudgetIdV1::ExtensionMemory => usage.extension_memory_limit,
+        explorer_model::CacheBudgetIdV1::IconGpu => Some(usage.icon_gpu_limit),
+        explorer_model::CacheBudgetIdV1::ThumbnailGpu => Some(usage.thumbnail_gpu_limit),
+        explorer_model::CacheBudgetIdV1::IconDisk => usage.icon_disk_limit,
+        explorer_model::CacheBudgetIdV1::ThumbnailDisk => usage.thumbnail_disk_limit,
+        explorer_model::CacheBudgetIdV1::ExtensionDisk => usage.extension_disk_limit,
+        explorer_model::CacheBudgetIdV1::MftPersistedIndex => usage.mft_disk_limit,
+        explorer_model::CacheBudgetIdV1::MftVolumeIndex => usage.mft_volume_index_memory_limit,
+        explorer_model::CacheBudgetIdV1::MftFileData => usage.mft_file_data_memory_limit,
+        explorer_model::CacheBudgetIdV1::MftAggregates => usage.mft_aggregate_memory_limit,
+        explorer_model::CacheBudgetIdV1::MftLru => usage.mft_service_limit,
+        explorer_model::CacheBudgetIdV1::FolderSizeCacheTtlSeconds => None,
+    };
+    div()
+        .id("folder-options-cache-usage")
+        .role(Role::Group)
+        .aria_label("Cache usage")
+        .flex()
+        .flex_col()
+        .gap(px(tokens.layout.control_padding_horizontal.value()))
+        .child("Cache usage and limits (updates every second)")
+        .child(
+            div()
+                .id("folder-options-cache-budget-controls")
+                .flex()
+                .flex_col()
+                .gap(px(tokens.layout.control_padding_horizontal.value()))
+                .children(
+                    explorer_model::CACHE_BUDGET_DESCRIPTORS_V1
+                        .into_iter()
+                        .zip(labels)
+                        .zip(inputs)
+                        .map(|((descriptor, label), input)| {
+                            let value = budgets.get(descriptor.id);
+                            let is_ttl_row = descriptor.id
+                                == explorer_model::CacheBudgetIdV1::FolderSizeCacheTtlSeconds;
+                            let unit_label = if is_ttl_row { "seconds" } else { "MB" };
+                            let unit_short = if is_ttl_row { "sec" } else { "MB" };
+                            let configured_limit = u64::from(value) * 1024 * 1024;
+                            let limit = effective_limit(descriptor.id).unwrap_or(configured_limit);
+                            let availability = telemetry_id(descriptor.id)
+                                .map(|id| usage.availability(id))
+                                .unwrap_or(crate::folder_options_window::CacheUsageAvailabilityV1::Available);
+                            let usage_text = cache_budget_usage_text(
+                                availability,
+                                used_bytes(descriptor.id),
+                                limit,
+                            );
+                            let stops = descriptor.slider_stops();
+                            let segment_width = 400.0 / stops.len().max(1) as f32;
+                            let keyboard_stops = stops.clone();
+                            div()
+                                .id(SharedString::from(format!(
+                                    "cache-budget-row-{:?}",
+                                    descriptor.id
+                                )))
+                                .flex()
+                                .flex_col()
+                                .gap(px(tokens.layout.content_spacing.value()))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_wrap()
+                                        .items_center()
+                                        .gap(px(tokens.layout.content_spacing.value()))
+                                        .child(label)
+                                        .when(!is_ttl_row, |el| el.child(usage_text))
+                                        .child(
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "cache-budget-input-{:?}",
+                                                    descriptor.id
+                                                )))
+                                                .role(Role::TextInput)
+                                                .aria_label(SharedString::from(format!(
+                                                    "{label} limit, {value} {unit_label}"
+                                                )))
+                                                .w(px(112.0))
+                                                .h(px(tokens.layout.minimum_hit_target.value()))
+                                                .child(
+                                                    text_input(SharedString::from(format!(
+                                                        "cache-budget-editor-{:?}",
+                                                        descriptor.id
+                                                    )))
+                                                    .state(input.clone())
+                                                    .multiline(false)
+                                                    .w_full()
+                                                    .h_full()
+                                                    .px(px(tokens.layout.content_spacing.value()))
+                                                    .border(px(1.0))
+                                                    .border_color(
+                                                        tokens.theme.colors.divider.to_gpui(),
+                                                    )
+                                                    .rounded(px(tokens
+                                                        .layout
+                                                        .corner_radius
+                                                        .value()))
+                                                    .bg(tokens.theme.colors.control_fill.to_gpui()),
+                                                ),
+                                        )
+                                        .child(unit_short),
+                                )
+                                .child(
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "cache-budget-slider-{:?}",
+                                            descriptor.id
+                                        )))
+                                        .role(Role::Slider)
+                                        .tab_index(0)
+                                        .aria_label(SharedString::from(format!("{label} limit")))
+                                        .aria_numeric_value(f64::from(value))
+                                        .aria_min_numeric_value(f64::from(descriptor.minimum_mb))
+                                        .aria_max_numeric_value(f64::from(descriptor.maximum_mb))
+                                        .w(px(400.0))
+                                        .h(px(18.0))
+                                        .flex()
+                                        .rounded(px(9.0))
+                                        .overflow_hidden()
+                                        .border(px(1.0))
+                                        .border_color(tokens.theme.colors.divider.to_gpui())
+                                        .when_some(on_action.clone(), |bar, callback| {
+                                            let keyboard_callback = callback.clone();
+                                            let a11y_stops = keyboard_stops.clone();
+                                            let keyboard_input = input.clone();
+                                            let a11y_input = input.clone();
+                                            bar.on_key_down(move |event, window, cx| {
+                                                let nearest = keyboard_stops
+                                                    .iter()
+                                                    .enumerate()
+                                                    .min_by_key(|(_, stop)| stop.abs_diff(value))
+                                                    .map_or(0, |(index, _)| index);
+                                                let target = match event.keystroke.key.as_str() {
+                                                    "left" | "down" => nearest.saturating_sub(1),
+                                                    "right" | "up" => (nearest + 1).min(
+                                                        keyboard_stops.len().saturating_sub(1),
+                                                    ),
+                                                    "home" => 0,
+                                                    "end" => keyboard_stops.len().saturating_sub(1),
+                                                    _ => return,
+                                                };
+                                                if let Some(stop) = keyboard_stops.get(target) {
+                                                    let text = stop.to_string();
+                                                    let _ = keyboard_input.update(cx, |state, cx| {
+                                                        state.emplace(&text, cx)
+                                                    });
+                                                    let mut next = budgets;
+                                                    next.set(descriptor.id, *stop);
+                                                    keyboard_callback(
+                                                &ExplorerAction::SetFolderOptionCacheBudgets(next),
+                                                window,
+                                                cx,
+                                            );
+                                                    cx.stop_propagation();
+                                                }
+                                            })
+                                            .on_a11y_action(AccessibleAction::SetValue, move |data, window, cx| {
+                                                let Some(gpui::accesskit::ActionData::NumericValue(requested)) = data else {
+                                                    return;
+                                                };
+                                                let requested = requested.clamp(
+                                                    f64::from(descriptor.minimum_mb),
+                                                    f64::from(descriptor.maximum_mb),
+                                                ) as u32;
+                                                let nearest = a11y_stops
+                                                    .iter()
+                                                    .min_by_key(|stop| stop.abs_diff(requested))
+                                                    .copied()
+                                                    .unwrap_or(descriptor.minimum_mb);
+                                                let mut next = budgets;
+                                                next.set(descriptor.id, nearest);
+                                                let text = nearest.to_string();
+                                                let _ = a11y_input.update(cx, |state, cx| {
+                                                    state.emplace(&text, cx)
+                                                });
+                                                callback(
+                                                    &ExplorerAction::SetFolderOptionCacheBudgets(next),
+                                                    window,
+                                                    cx,
+                                                );
+                                            })
+                                        })
+                                        .children(stops.into_iter().map(|stop| {
+                                            let segment_input = input.clone();
+                                            let mut next = budgets;
+                                            next.set(descriptor.id, stop);
+                                            let action =
+                                                ExplorerAction::SetFolderOptionCacheBudgets(next);
+                                            div()
+                                                .w(px(segment_width))
+                                                .h_full()
+                                                .bg(if stop <= value {
+                                                    tokens.theme.colors.accent.to_gpui()
+                                                } else {
+                                                    tokens.theme.colors.control_fill.to_gpui()
+                                                })
+                                                .when_some(
+                                                    on_action.clone(),
+                                                    |segment, callback| {
+                                                        segment.on_mouse_down(
+                                                            MouseButton::Left,
+                                                            move |_, window, cx| {
+                                                                let text = stop.to_string();
+                                                                let _ = segment_input.update(
+                                                                    cx,
+                                                                    |state, cx| {
+                                                                        state.emplace(&text, cx)
+                                                                    },
+                                                                );
+                                                                callback(&action, window, cx);
+                                                                cx.stop_propagation();
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                        })),
+                                )
+                        }),
+                ),
+        )
+}
+
+fn cache_budget_usage_text(
+    availability: crate::folder_options_window::CacheUsageAvailabilityV1,
+    used_bytes: Option<u64>,
+    limit: u64,
+) -> String {
+    let formatted_limit = crate::formatting::format_file_size(limit);
+    match (availability, used_bytes) {
+        (crate::folder_options_window::CacheUsageAvailabilityV1::Unavailable, _) => {
+            format!("Unavailable / {formatted_limit}")
+        }
+        (_, Some(bytes)) => format!(
+            "{} / {formatted_limit}",
+            crate::formatting::format_file_size(bytes),
+        ),
+        _ => format!("\u{2014} / {formatted_limit}"),
+    }
+}
+
+fn cache_usage_section(
+    tokens: UiTokens,
+    usage: crate::folder_options_window::CacheUsageSnapshotV1,
+) -> impl IntoElement {
+    let subtotal = |values: &[Option<u64>]| {
+        let partial = values.iter().any(Option::is_none);
+        let bytes = values
+            .iter()
+            .flatten()
+            .copied()
+            .fold(0_u64, u64::saturating_add);
+        (bytes, partial)
+    };
+    let bounded = |label: &'static str, used: u64, limit: u64| {
+        div().flex().justify_between().child(label).child(format!(
+            "{} / {}",
+            crate::formatting::format_file_size(used),
+            crate::formatting::format_file_size(limit)
+        ))
+    };
+    let disk = |label: &'static str, bytes: Option<u64>| {
+        div()
+            .flex()
+            .justify_between()
+            .child(label)
+            .child(bytes.map_or_else(
+                || "Unavailable".to_owned(),
+                crate::formatting::format_file_size,
+            ))
+    };
+    let (memory_total, memory_partial) = subtotal(&[
+        Some(usage.icon_memory_bytes),
+        Some(usage.base_icon_memory_bytes),
+        Some(usage.thumbnail_memory_bytes),
+        usage.extension_memory_bytes,
+    ]);
+    let (disk_total, disk_partial) = subtotal(&[
+        usage.icon_disk_bytes,
+        usage.thumbnail_disk_bytes,
+        usage.extension_disk_bytes,
+    ]);
+    let (gpu_total, gpu_partial) =
+        subtotal(&[Some(usage.icon_gpu_bytes), Some(usage.thumbnail_gpu_bytes)]);
+    div()
+        .id("folder-options-cache-usage")
+        .role(Role::Group)
+        .aria_label("Cache usage")
+        .flex()
+        .flex_col()
+        .gap(px(tokens.layout.content_spacing.value()))
+        .child("Cache usage (updates every second)")
+        .child("Memory")
+        .child(bounded(
+            "Icon",
+            usage.icon_memory_bytes,
+            usage.icon_memory_limit,
+        ))
+        .child(bounded(
+            "Shared/base icon",
+            usage.base_icon_memory_bytes,
+            usage.base_icon_memory_limit,
+        ))
+        .child(bounded(
+            "Thumbnail",
+            usage.thumbnail_memory_bytes,
+            usage.thumbnail_memory_limit,
+        ))
+        .child(disk(
+            "Extension data-column memory",
+            usage.extension_memory_bytes,
+        ))
+        .child(disk(
+            if memory_partial {
+                "Memory subtotal (partial)"
+            } else {
+                "Memory subtotal"
+            },
+            Some(memory_total),
+        ))
+        .child(format!(
+            "GPU (BC7): {}",
+            match usage.bc7_gpu_supported {
+                Some(true) => "Available",
+                Some(false) => "Unavailable",
+                None => "Detecting",
+            }
+        ))
+        .child(bounded(
+            "Icon GPU",
+            usage.icon_gpu_bytes,
+            usage.icon_gpu_limit,
+        ))
+        .child(bounded(
+            "Thumbnail GPU",
+            usage.thumbnail_gpu_bytes,
+            usage.thumbnail_gpu_limit,
+        ))
+        .child(disk(
+            if gpu_partial {
+                "GPU subtotal (partial)"
+            } else {
+                "GPU subtotal"
+            },
+            Some(gpu_total),
+        ))
+        .child("Disk")
+        .child(disk("Icon BC7", usage.icon_disk_bytes))
+        .child(disk("Thumbnail BC7", usage.thumbnail_disk_bytes))
+        .child(disk("Extension data-column", usage.extension_disk_bytes))
+        .child(disk(
+            if disk_partial {
+                "Disk subtotal (partial)"
+            } else {
+                "Disk subtotal"
+            },
+            Some(disk_total),
+        ))
+        .child("MFT Service")
+        .child(disk("Persisted index", usage.mft_disk_bytes))
+        .child(disk(
+            "Volume index memory",
+            usage.mft_volume_index_memory_bytes,
+        ))
+        .child(disk("File data memory", usage.mft_file_data_memory_bytes))
+        .child(disk(
+            "Folder aggregates memory",
+            usage.mft_aggregate_memory_bytes,
+        ))
+        .child(match (usage.mft_service_bytes, usage.mft_service_limit) {
+            (Some(used), Some(limit)) => bounded("Service LRU", used, limit).into_any_element(),
+            _ => disk("Service LRU", None).into_any_element(),
+        })
+        .child(
+            div()
+                .flex()
+                .justify_between()
+                .child("Service entries / hits / misses")
+                .child(
+                    match (
+                        usage.mft_service_entries,
+                        usage.mft_service_hits,
+                        usage.mft_service_misses,
+                    ) {
+                        (Some(entries), Some(hits), Some(misses)) => {
+                            format!("{entries} / {hits} / {misses}")
+                        }
+                        _ => "Unavailable".to_owned(),
+                    },
+                ),
+        )
 }
 
 fn folder_option_checkbox(
@@ -6831,6 +7268,22 @@ impl RenderOnce for FileViewHost {
                 let authors = entry.metadata.authors_display.clone().unwrap_or_default();
                 let tags = entry.metadata.tags_display.clone().unwrap_or_default();
                 let title = entry.metadata.title_display.clone().unwrap_or_default();
+                // File Count and Folder Count are directory facts. Some shell
+                // providers report a synthetic size for directories, which is
+                // relevant to Folder Size but must not suppress count requests.
+                let count_eligible = entry.is_container;
+                let file_count = builtin_count_display(
+                    count_eligible,
+                    folder_size_visuals
+                        .as_ref()
+                        .and_then(|visuals| visuals.file_count_for(&entry.id)),
+                );
+                let folder_count = builtin_count_display(
+                    count_eligible,
+                    folder_size_visuals
+                        .as_ref()
+                        .and_then(|visuals| visuals.folder_count_for(&entry.id)),
+                );
                 let mut ordered_detail_cells = Vec::new();
                 if view_settings.mode == explorer_model::ViewMode::Details && !drive_view {
                     for column_id in
@@ -6847,6 +7300,8 @@ impl RenderOnce for FileViewHost {
                             explorer_model::ColumnId::Authors => Some(authors.clone()),
                             explorer_model::ColumnId::Tags => Some(tags.clone()),
                             explorer_model::ColumnId::Title => Some(title.clone()),
+                            explorer_model::ColumnId::FileCount => Some(file_count.clone()),
+                            explorer_model::ColumnId::FolderCount => Some(folder_count.clone()),
                             _ => None,
                         };
                         if let Some(text) = builtin_text {
@@ -7876,6 +8331,14 @@ fn format_explorer_size(bytes: u64) -> String {
     crate::format_file_size(bytes)
 }
 
+fn builtin_count_display(eligible_container: bool, value: Option<u64>) -> String {
+    if eligible_container {
+        value.map_or_else(|| "—".to_owned(), |value| value.to_string())
+    } else {
+        String::new()
+    }
+}
+
 fn file_display_name(
     entry: &explorer_model::FileEntry,
     settings: &explorer_model::ViewSettings,
@@ -8618,9 +9081,42 @@ fn folder_size_detail_cell(
 ) -> gpui::AnyElement {
     let descriptor = &visuals.config.descriptor;
     let exact_bytes = visuals.value_for(entry_id);
+    let partial_bytes = visuals.partial_value_for(entry_id);
     let measurement_error = visuals.error_for(entry_id);
     let maximum = visuals.maximum_value();
     let item_id = extension_render_item_id(entry_id);
+    if visuals.partial_pending_for(entry_id) {
+        let label = "Calculating...";
+        let width = f32::from(view_settings.details_column_width(&descriptor.id));
+        return div()
+            .id(format!("folder-size-column-{visible_index}"))
+            .role(Role::Status)
+            .aria_label(format!("{}: {label}", descriptor.display_name))
+            .w(px(width))
+            .h_full()
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_end()
+            .child(label)
+            .into_any_element();
+    }
+    if let Some(bytes) = partial_bytes {
+        let label = format!("Partial: {}", format_explorer_size(bytes));
+        let width = f32::from(view_settings.details_column_width(&descriptor.id));
+        return div()
+            .id(format!("folder-size-column-{visible_index}"))
+            .role(Role::Status)
+            .aria_label(format!("{}: {label}", descriptor.display_name))
+            .w(px(width))
+            .h_full()
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_end()
+            .child(label)
+            .into_any_element();
+    }
     let render_generation = extension_render_generation(
         entry_id,
         format!(
@@ -8733,24 +9229,62 @@ fn code_lines_detail_column_cell(
     colors: crate::theme::SemanticColors,
 ) -> gpui::AnyElement {
     match column {
-        CodeLinesDetailColumn::Ready(visuals, runtime) => code_lines_detail_cell(
-            visuals,
-            runtime,
-            entry_id,
-            selected,
-            shell_icon_dpi,
-            visual_column_theme,
-            cell_request_generation,
-            view_settings,
-            row_column_registry,
-            visible_index,
-            layout,
-            colors,
-        ),
+        CodeLinesDetailColumn::Ready(visuals, runtime) => {
+            if let Some(admission) = visuals.admissions.get(entry_id) {
+                host_admission_detail_cell(
+                    &visuals.config.descriptor,
+                    admission.label(),
+                    view_settings,
+                    visible_index,
+                    layout,
+                )
+            } else {
+                code_lines_detail_cell(
+                    visuals,
+                    runtime,
+                    entry_id,
+                    selected,
+                    shell_icon_dpi,
+                    visual_column_theme,
+                    cell_request_generation,
+                    view_settings,
+                    row_column_registry,
+                    visible_index,
+                    layout,
+                    colors,
+                )
+            }
+        }
         CodeLinesDetailColumn::Unavailable(descriptor) => {
             unavailable_detail_cell(&descriptor, view_settings, visible_index, layout)
         }
     }
+}
+
+fn host_admission_detail_cell(
+    descriptor: &explorer_model::ColumnDescriptor,
+    label: &str,
+    view_settings: &explorer_model::ViewSettings,
+    visible_index: usize,
+    layout: crate::layout::LayoutTokens,
+) -> gpui::AnyElement {
+    let width = f32::from(view_settings.details_column_width(&descriptor.id));
+    div()
+        .id(format!(
+            "{}-{visible_index}",
+            details_column_selector("extension-column-admission", &descriptor.id)
+        ))
+        .role(Role::Status)
+        .aria_label(format!("{}: {label}", descriptor.display_name))
+        .w(px(width))
+        .h_full()
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_end()
+        .px(px(layout.content_spacing.value() / 2.0))
+        .child(label.to_owned())
+        .into_any_element()
 }
 
 #[allow(
@@ -8773,7 +9307,7 @@ fn code_lines_detail_cell(
 ) -> gpui::AnyElement {
     let descriptor = &visuals.config.descriptor;
     let value = visuals.values.get(entry_id);
-    let error = visuals.errors.get(entry_id);
+    let error = visuals.presentation_error_for(entry_id);
     let maximum = visuals.maximum_value();
     let item_id = extension_render_item_id(entry_id);
     let render_generation = extension_render_generation(
@@ -8821,7 +9355,7 @@ fn code_lines_detail_cell(
         }),
         loading: value.is_none() && error.is_none(),
         error: error
-            .map(|error| ROption::RSome(error.as_str().into()))
+            .map(|error| ROption::RSome(error.into()))
             .unwrap_or(ROption::RNone),
         selected,
         hovered: false,
@@ -9001,8 +9535,12 @@ fn details_column_menu(
         .aria_label("Choose details columns")
         .absolute()
         .top(px(tokens.layout.details_header_height.value() + 4.0))
+        .bottom(px(tokens.layout.content_spacing.value()))
         .left(px(tokens.layout.control_padding_horizontal.value()))
         .w(px(crate::layout::feature::DETAILS_COLUMN_MENU_WIDTH.value()))
+        .max_h(px(tokens.layout.menu_max_height.value()))
+        .overflow_x_hidden()
+        .overflow_y_scroll()
         .p(px(
             crate::layout::feature::DETAILS_COLUMN_MENU_PADDING.value()
         ))
@@ -9038,6 +9576,38 @@ fn details_column_menu(
                 callback,
             ))
         })
+        .when_some(folder_size_visuals, |element, visuals| {
+            let descriptor = &visuals.config.descriptor;
+            element.when(target == descriptor.id, |element| {
+                element.when_some(on_action.clone(), |element, callback| {
+                    element.child(column_menu_row(
+                        tokens,
+                        "details-column-menu-folder-size-bar".to_owned(),
+                        "Show proportional bar".to_owned(),
+                        visuals.config.folder_size_display.shows_bar(),
+                        true,
+                        ExplorerAction::ToggleFolderSizeProportionalBar,
+                        callback,
+                    ))
+                })
+            })
+        })
+        .children(code_lines_visuals.into_iter().filter_map(|visuals| {
+            let descriptor = &visuals.config.descriptor;
+            (target == descriptor.id).then(|| {
+                div().when_some(on_action.clone(), |element, callback| {
+                    element.child(column_menu_row(
+                        tokens,
+                        "details-column-menu-code-lines-detail".to_owned(),
+                        "Show comment and blank detail".to_owned(),
+                        visuals.config.display.shows_detail(),
+                        true,
+                        ExplorerAction::ToggleCodeLinesDetail,
+                        callback,
+                    ))
+                })
+            })
+        }))
         .child(
             div()
                 .h(px(
@@ -9069,38 +9639,6 @@ fn details_column_menu(
                     })
                 }),
         )
-        .when_some(folder_size_visuals, |element, visuals| {
-            let descriptor = &visuals.config.descriptor;
-            element.when(target == descriptor.id, |element| {
-                element.when_some(on_action.clone(), |element, callback| {
-                    element.child(column_menu_row(
-                        tokens,
-                        "details-column-menu-folder-size-bar".to_owned(),
-                        "Show proportional bar".to_owned(),
-                        visuals.config.folder_size_display.shows_bar(),
-                        true,
-                        ExplorerAction::ToggleFolderSizeProportionalBar,
-                        callback,
-                    ))
-                })
-            })
-        })
-        .children(code_lines_visuals.into_iter().filter_map(|visuals| {
-            let descriptor = &visuals.config.descriptor;
-            (target == descriptor.id).then(|| {
-                div().when_some(on_action.clone(), |element, callback| {
-                    element.child(column_menu_row(
-                        tokens,
-                        "details-column-menu-code-lines-detail".to_owned(),
-                        "Show comment and blank detail".to_owned(),
-                        visuals.config.display.shows_detail(),
-                        true,
-                        ExplorerAction::ToggleFolderSizeProportionalBar,
-                        callback,
-                    ))
-                })
-            })
-        }))
 }
 
 fn column_menu_row(
@@ -9348,7 +9886,10 @@ fn details_header_column(
         .when_some(drag_outside_cancel_callback, move |element, callback| {
             element.on_mouse_up_out(MouseButton::Left, move |_, window, cx| {
                 if cx.has_active_drag() {
-                    callback(&ExplorerAction::CancelDetailsColumnDrag, window, cx);
+                    let callback = callback.clone();
+                    window.defer(cx, move |window, cx| {
+                        callback(&ExplorerAction::CancelDetailsColumnDrag, window, cx);
+                    });
                 }
             })
         })
@@ -9425,7 +9966,10 @@ fn details_header_column(
                     move |element, callback| {
                         element.on_mouse_up_out(MouseButton::Left, move |_, window, cx| {
                             if cx.has_active_drag() {
-                                callback(&ExplorerAction::CancelDetailsColumnDrag, window, cx);
+                                let callback = callback.clone();
+                                window.defer(cx, move |window, cx| {
+                                    callback(&ExplorerAction::CancelDetailsColumnDrag, window, cx);
+                                });
                             }
                         })
                     },
@@ -11078,14 +11622,53 @@ mod tests {
         CAPTION_MINIMIZE_ID, COMMAND_BAR_ID, EXPLORER_WINDOW_ID, FILE_VIEW_HOST_ID, FileViewState,
         NAVIGATION_BAR_ID, NAVIGATION_PANE_ID, NEW_TAB_BUTTON_ID, SEARCH_BOX_ID, STATUS_BAR_ID,
         TAB_STRIP_ID, WINDOW_CHROME_ID, WINDOW_DRAG_REGION_ID, breadcrumb_ancestry_partition,
-        breadcrumb_location_shell_texture, client_to_screen_point, details_name_column_contains,
-        editable_input_colors, file_view_local_pointer, format_explorer_size,
-        localized_search_placeholder, marquee_content_rect, navigation_item_shell_texture,
-        navigation_shell_texture, new_tab_button_background, tab_background,
+        breadcrumb_location_shell_texture, builtin_count_display, client_to_screen_point,
+        details_name_column_contains, editable_input_colors, file_view_local_pointer,
+        format_explorer_size, localized_search_placeholder, marquee_content_rect,
+        navigation_item_shell_texture, navigation_shell_texture, new_tab_button_background,
+        tab_background,
     };
     use crate::{UiTokens, theme::ThemeTokens};
     use gpui::WindowControlArea;
     use std::cmp::Ordering;
+
+    #[test]
+    fn builtin_count_cells_distinguish_exact_unavailable_and_ineligible_rows() {
+        assert_eq!(builtin_count_display(true, Some(0)), "0");
+        assert_eq!(
+            builtin_count_display(true, Some(u64::MAX)),
+            u64::MAX.to_string()
+        );
+        assert_eq!(builtin_count_display(true, None), "—");
+        assert_eq!(builtin_count_display(false, Some(42)), "");
+        assert_eq!(builtin_count_display(false, None), "");
+    }
+
+    #[test]
+    fn folder_options_exposes_independent_cache_controls_and_all_usage_sections() {
+        let production = include_str!("chrome.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source");
+        for marker in [
+            "Cache usage and limits (updates every second)",
+            "updates every second",
+            "folder-options-cache-budget-controls",
+            "cache-budget-input-",
+            "cache-budget-slider-",
+            ".w(px(400.0))",
+            "\"left\" | \"down\"",
+            "\"home\"",
+            "\"end\"",
+            "Persisted MFT index",
+            "Folder aggregates memory",
+        ] {
+            assert!(
+                production.contains(marker),
+                "missing cache UI marker: {marker}"
+            );
+        }
+    }
 
     fn empty_render_image() -> std::sync::Arc<gpui::RenderImage> {
         std::sync::Arc::new(gpui::RenderImage::new(smallvec::SmallVec::<
@@ -11373,6 +11956,9 @@ mod tests {
                 right.metadata.title_display.as_deref(),
                 sort.direction,
             ),
+            explorer_model::ColumnId::FileCount | explorer_model::ColumnId::FolderCount => {
+                Ordering::Equal
+            }
             explorer_model::ColumnId::Extension { .. } => Ordering::Equal,
         };
         ordering
@@ -11850,14 +12436,60 @@ mod tests {
     }
 
     #[test]
-    fn root_drag_cancel_remains_a_capture_safe_terminal_path() {
+    fn root_does_not_cancel_column_drag_for_unrelated_pointer_release() {
         let production = include_str!("chrome.rs")
             .split("#[cfg(test)]")
             .next()
             .expect("production source");
-        assert!(production.contains(".when_some(details_drag_cancel, |element, callback|"));
-        assert!(
-            production.contains("callback(&ExplorerAction::CancelDetailsColumnDrag, window, cx);")
+        assert!(!production.contains("let details_drag_cancel = self.on_action.clone();"));
+        assert!(!production.contains(".when_some(details_drag_cancel, |element, callback|"));
+    }
+
+    #[test]
+    fn details_column_menu_is_bounded_scrollable_and_owns_row_clicks() {
+        let production = include_str!("chrome.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source");
+        let menu = production
+            .split("fn details_column_menu(")
+            .nth(1)
+            .and_then(|source| source.split("fn column_menu_row(").next())
+            .expect("details column menu source");
+        assert!(menu.contains(".max_h(px(tokens.layout.menu_max_height.value()))"));
+        assert!(menu.contains(".bottom(px(tokens.layout.content_spacing.value()))"));
+        assert!(menu.contains(".overflow_x_hidden()"));
+        assert!(menu.contains(".overflow_y_scroll()"));
+
+        let row = production
+            .split("fn column_menu_row(")
+            .nth(1)
+            .and_then(|source| source.split("fn details_column_selector(").next())
+            .expect("details column row source");
+        assert!(row.contains("cx.stop_propagation();"));
+    }
+
+    #[test]
+    fn details_header_defers_cancel_but_commits_drop_synchronously() {
+        let production = include_str!("chrome.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source");
+        let header = production
+            .split("fn details_header_column(")
+            .nth(1)
+            .expect("details header source");
+        assert_eq!(
+            header.matches("window.defer(cx, move |window, cx|").count(),
+            2,
+            "outer and nested header hit areas must both defer fallback cancellation"
+        );
+        assert_eq!(
+            header
+                .matches("callback(&ExplorerAction::CommitDetailsColumnDrag, window, cx);")
+                .count(),
+            2,
+            "outer and nested header hit areas must both commit valid drops synchronously"
         );
     }
 
@@ -12961,12 +13593,38 @@ mod tests {
             .next()
             .expect("bookmark toolbar has a bounded implementation");
         let star = toolbar
-            .split(".id(\"bookmark-star-toggle\")")
-            .nth(1)
+            .find(".id(\"bookmark-star-toggle\")")
             .expect("bookmark star exists");
-        assert!(star.contains(".absolute()\n                .left(px("));
-        assert!(
-            toolbar.contains(".pl(px(tokens.layout.control_padding_horizontal.value() + 40.0))")
-        );
+        let bookmarks = toolbar
+            .find(".children(visible.into_iter()")
+            .expect("bookmark entries exist");
+        assert!(star < bookmarks, "star must be the first toolbar control");
+        assert!(toolbar.contains(".text_size(px(20.0))"));
+        assert!(!toolbar.contains(".absolute()\n                .left(px("));
     }
+}
+#[test]
+fn cache_budget_usage_text_reserves_unavailable_for_confirmed_failure() {
+    use crate::folder_options_window::CacheUsageAvailabilityV1;
+
+    assert_eq!(
+        cache_budget_usage_text(CacheUsageAvailabilityV1::Pending, None, 512 * 1024 * 1024),
+        "\u{2014} / 512.0 MB"
+    );
+    assert_eq!(
+        cache_budget_usage_text(
+            CacheUsageAvailabilityV1::Pending,
+            Some(64 * 1024 * 1024),
+            1024 * 1024 * 1024,
+        ),
+        "64.0 MB / 1.0 GB"
+    );
+    assert_eq!(
+        cache_budget_usage_text(
+            CacheUsageAvailabilityV1::Unavailable,
+            Some(64 * 1024 * 1024),
+            1024 * 1024 * 1024,
+        ),
+        "Unavailable / 1.0 GB"
+    );
 }

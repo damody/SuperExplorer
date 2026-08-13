@@ -15,6 +15,8 @@
 )]
 
 mod bookmark;
+mod cache_budget;
+mod cache_telemetry;
 mod context_menu;
 mod domain;
 mod drag_drop;
@@ -31,6 +33,18 @@ mod window;
 use explorer_common::LifecyclePhase;
 
 pub use bookmark::{Bookmark, BookmarkId, BookmarkMutation, BookmarkTarget, Bookmarks};
+pub use cache_budget::{
+    CACHE_BUDGET_DESCRIPTORS_V1, CACHE_BUDGET_SLIDER_STOPS_MB_V1, CacheBudgetDescriptorV1,
+    CacheBudgetIdV1, CacheBudgetSettingsV1, DEFAULT_FOLDER_SIZE_CACHE_TTL_SECONDS,
+    FOLDER_SIZE_CACHE_TTL_MAX_SECONDS, FOLDER_SIZE_CACHE_TTL_SLIDER_STOPS_SECONDS_V1,
+    cache_budget_descriptor,
+};
+pub use cache_telemetry::{
+    CacheTelemetryAvailabilityV1, CacheTelemetryCategoryV1, CacheTelemetryCountersV1,
+    CacheTelemetryEntryV1, CacheTelemetryIdV1, CacheTelemetrySnapshotErrorV1,
+    CacheTelemetrySnapshotV1, CacheTelemetrySubtotalV1, CacheTelemetryValueV1,
+    MAX_CACHE_TELEMETRY_ENTRIES,
+};
 pub use context_menu::{
     ContextMenuHostCommand, ContextMenuInvocationProfile, ContextMenuOutcome, ContextMenuRequest,
     ContextMenuSession, ContextMenuSessionState, MenuPoint,
@@ -62,13 +76,16 @@ pub use navigation::{
     AddressBarMode, AddressBarState, BreadcrumbIconHint, BreadcrumbMenuItem, BreadcrumbSegment,
     BreadcrumbSegmentId, ColumnAlignment, ColumnApplicability, ColumnCost, ColumnDescriptor,
     ColumnId, ColumnIdError, ColumnLayoutEntry, ColumnRegistry, ColumnRegistryError,
-    ColumnSortSemantics, ColumnValueType, DEFAULT_ICON_CACHE_MEMORY_MB, DirectorySnapshot,
+    ColumnSortSemantics, ColumnValueType, DEFAULT_ICON_CACHE_MEMORY_MB,
+    DEFAULT_MFT_FOLDER_CACHE_MEMORY_MB, DEFAULT_THUMBNAIL_CACHE_MEMORY_MB, DirectorySnapshot,
     DirectoryState, DriveAvailability, DriveKind, DriveMetadata, FileEntry, FileEntryMetadata,
-    HistoryEntry, MAX_ICON_CACHE_MEMORY_MB, MenuFocusMovement, NavigationHistory,
-    OrderedColumnLayout, PresentationChange, SelectionModel, SortDescriptor, SortDirection,
-    TabRequestScopes, TabSearchState, TabState, TabViewState, ViewAnchor, ViewMode, ViewSettings,
-    default_icon_size_for_mode, effective_icon_size, location_breadcrumbs,
-    normalized_icon_cache_memory_mb,
+    HistoryEntry, MAX_ICON_CACHE_MEMORY_MB, MAX_MFT_FOLDER_CACHE_MEMORY_MB,
+    MAX_THUMBNAIL_CACHE_MEMORY_MB, MIN_MFT_FOLDER_CACHE_MEMORY_MB, MenuFocusMovement,
+    NavigationHistory, OrderedColumnLayout, PresentationChange, SelectionModel, SortDescriptor,
+    SortDirection, TabRequestScopes, TabSearchState, TabState, TabViewState, ViewAnchor, ViewMode,
+    ViewSettings, default_icon_size_for_mode, effective_icon_size, location_breadcrumbs,
+    normalized_icon_cache_memory_mb, normalized_mft_folder_cache_memory_mb,
+    normalized_thumbnail_cache_memory_mb,
 };
 pub use operation::{
     JournalEntry, JournalInverse, JournalPreimage, JournalValidation, OperationCenterState,
@@ -82,14 +99,14 @@ pub use preview::{
     PreviewRequestIdentity, PreviewSelection, PreviewTransitionError,
 };
 pub use protocol::{
-    BaseIconClass, BaseIconKey, BreadcrumbTerminal, ClipboardMode, ClipboardState,
-    ConflictDecision, DataTransferRequest, DirectoryDelta, ExplorerCommand, ExplorerEvent,
-    ExplorerService, ExplorerServiceError, FileOperationFlags, FileOperationKind,
-    FileOperationRequest, IconInvalidationEpochs, ItemDescriptor, LocationMetadata,
-    OpenDisposition, OperationItemOutcome, OperationItemResult, OperationProgress,
-    OperationTerminal, SearchBackend, SearchInput, SearchSourcePhase, SearchSourceStatus,
-    SearchTerminal, ShellContextMenuTarget, ShellIconFallbackReason, ShellIconKey,
-    ShellIconPayload, ShellIconPayloadError, ShellIconTheme, ShellNewItemDescriptor,
+    BaseIconClass, BaseIconKey, Bc7RasterPayload, BreadcrumbTerminal, ClipboardMode,
+    ClipboardState, CompressedRasterKind, ConflictDecision, DataTransferRequest, DirectoryDelta,
+    ExplorerCommand, ExplorerEvent, ExplorerService, ExplorerServiceError, FileOperationFlags,
+    FileOperationKind, FileOperationRequest, IconInvalidationEpochs, ItemDescriptor,
+    LocationMetadata, OpenDisposition, OperationItemOutcome, OperationItemResult,
+    OperationProgress, OperationTerminal, SearchBackend, SearchInput, SearchSourcePhase,
+    SearchSourceStatus, SearchTerminal, ShellContextMenuTarget, ShellIconFallbackReason,
+    ShellIconKey, ShellIconPayload, ShellIconPayloadError, ShellIconTheme, ShellNewItemDescriptor,
     ShellNewItemRecipe, ShellNewValidationError, TerminalLedger, TerminalViolation,
     TransferEffects, base_icon_key, classify_base_icon,
 };

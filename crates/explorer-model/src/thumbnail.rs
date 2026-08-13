@@ -173,6 +173,10 @@ pub enum ThumbnailTerminal {
         source: ThumbnailSource,
         pixels: ThumbnailPixels,
     },
+    Compressed {
+        source: ThumbnailSource,
+        raster: crate::Bc7RasterPayload,
+    },
     Fallback(ThumbnailFallbackReason),
     Failed(String),
 }
@@ -225,7 +229,7 @@ pub fn normalize_thumbnail_provider_outcome(
 impl ThumbnailTerminal {
     fn disposition(&self) -> TerminalDisposition {
         match self {
-            Self::Ready { .. } => TerminalDisposition::Success,
+            Self::Ready { .. } | Self::Compressed { .. } => TerminalDisposition::Success,
             Self::Fallback(ThumbnailFallbackReason::Cancelled) => TerminalDisposition::Cancelled,
             Self::Fallback(ThumbnailFallbackReason::Timeout) => TerminalDisposition::Timeout,
             Self::Fallback(_) | Self::Failed(_) => TerminalDisposition::Error,

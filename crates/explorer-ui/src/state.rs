@@ -7,9 +7,9 @@ use std::{
 };
 
 use explorer_model::{
-    DeleteLockKind, ExplorerCommand, ExplorerEvent, ExplorerWindowState, FileOperationKind,
-    FileOperationRequest, HistoryEntry, ItemDescriptor, LocationDescriptor, LockOwner,
-    LockOwnerCloseOutcome, LockOwnerCloseRequest, LockOwnerCloseTerminal,
+    DeleteLockKind, DirectoryState, ExplorerCommand, ExplorerEvent, ExplorerWindowState,
+    FileOperationKind, FileOperationRequest, HistoryEntry, ItemDescriptor, LocationDescriptor,
+    LockOwner, LockOwnerCloseOutcome, LockOwnerCloseRequest, LockOwnerCloseTerminal,
     LockOwnerDiscoveryRequest, LockOwnerDiscoveryTerminal, OpenDisposition, OperationCenterState,
     OperationRecord, OperationTerminal, PersistedQuickAccessPin, QuickAccessPins, RecentItems,
     RequestContext, ShellIdentity, ShellItemId, TabCloseOutcome, TabId, TabPresentationSnapshot,
@@ -24,6 +24,18 @@ use crate::{
     layout::{LayoutTokens, LogicalPx},
     theme::ThemeMode,
 };
+
+fn bookmark_target_for_current_location(
+    location: &LocationDescriptor,
+) -> Option<explorer_model::BookmarkTarget> {
+    let LocationDescriptor::FileSystem(path) = location else {
+        return None;
+    };
+    path.is_dir()
+        .then(|| explorer_model::BookmarkTarget::Folder {
+            location: location.clone(),
+        })
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NavigationHistoryMenuState {
@@ -494,6 +506,7 @@ pub struct AppViewState {
     /// Exact values for the one P0 runtime column. Keeping these in view state
     /// makes its sorted presentation authoritative for every row action.
     folder_size_sort_values: HashMap<ShellItemId, Option<u64>>,
+    builtin_count_sort_values: HashMap<explorer_model::ColumnId, HashMap<ShellItemId, Option<u64>>>,
     code_lines_sort_values: HashMap<explorer_model::ColumnId, HashMap<ShellItemId, Option<u64>>>,
     presentation_cache: Arc<Mutex<crate::file_view::DirectoryPresentationCache>>,
 }
@@ -736,6 +749,7 @@ impl AppViewState {
             marquee: None,
             file_view_typeahead: None,
             folder_size_sort_values: HashMap::new(),
+            builtin_count_sort_values: HashMap::new(),
             code_lines_sort_values: HashMap::new(),
             presentation_cache: Arc::new(Mutex::new(
                 crate::file_view::DirectoryPresentationCache::default(),
@@ -828,6 +842,22 @@ impl AppViewState {
             return false;
         }
         self.code_lines_sort_values.insert(column_id, values);
+        self.presentation_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        true
+    }
+
+    pub(crate) fn set_builtin_count_sort_values(
+        &mut self,
+        column_id: explorer_model::ColumnId,
+        values: HashMap<ShellItemId, Option<u64>>,
+    ) -> bool {
+        if self.builtin_count_sort_values.get(&column_id) == Some(&values) {
+            return false;
+        }
+        self.builtin_count_sort_values.insert(column_id, values);
         self.presentation_cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1783,7 +1813,11 @@ impl AppViewState {
     pub(crate) fn open_folder_options(&mut self) {
         self.more_menu_open = false;
         self.folder_options = Some(FolderOptionsDraft {
-            page: FolderOptionsPage::General,
+            page: if std::env::var_os("SUPEREXPLORER_UITEST_OPEN_FOLDER_OPTIONS").is_some() {
+                FolderOptionsPage::View
+            } else {
+                FolderOptionsPage::General
+            },
             settings: self.view_settings(),
             restore_previous_session: self.restore_previous_session,
             extension_enabled: self
@@ -2042,7 +2076,11 @@ impl AppViewState {
             let direction = match &column {
                 explorer_model::ColumnId::DateModified
                 | explorer_model::ColumnId::DateCreated
-                | explorer_model::ColumnId::Size => explorer_model::SortDirection::Descending,
+                | explorer_model::ColumnId::Size
+                | explorer_model::ColumnId::FileCount
+                | explorer_model::ColumnId::FolderCount => {
+                    explorer_model::SortDirection::Descending
+                }
                 explorer_model::ColumnId::Name
                 | explorer_model::ColumnId::Type
                 | explorer_model::ColumnId::Authors
@@ -2092,6 +2130,9 @@ impl AppViewState {
                     explorer_model::ColumnId::Authors => entry.metadata.authors_display.is_some(),
                     explorer_model::ColumnId::Tags => entry.metadata.tags_display.is_some(),
                     explorer_model::ColumnId::Title => entry.metadata.title_display.is_some(),
+                    explorer_model::ColumnId::FileCount | explorer_model::ColumnId::FolderCount => {
+                        entry.is_container
+                    }
                     explorer_model::ColumnId::Extension { .. } => false,
                 })
             })
@@ -2273,6 +2314,8 @@ impl AppViewState {
             explorer_model::ColumnId::Authors => "作者",
             explorer_model::ColumnId::Tags => "標籤",
             explorer_model::ColumnId::Title => "標題",
+            explorer_model::ColumnId::FileCount => "File Count",
+            explorer_model::ColumnId::FolderCount => "Folder Count",
             explorer_model::ColumnId::Extension { .. } => "擴充欄位",
         };
         let header_width = estimated_text_width(header) + 32.0;
@@ -2319,6 +2362,9 @@ impl AppViewState {
                     .title_display
                     .as_deref()
                     .map_or(16.0, |text| estimated_text_width(text) + 16.0),
+                explorer_model::ColumnId::FileCount | explorer_model::ColumnId::FolderCount => {
+                    estimated_text_width("9999999999") + 16.0
+                }
                 explorer_model::ColumnId::Extension { .. } => 16.0,
             })
             .fold(header_width, f32::max);
@@ -2799,6 +2845,15 @@ impl AppViewState {
     pub(crate) fn begin_active_location_load(&mut self) -> Option<ExplorerCommand> {
         let location = self.tabs.active_tab().history.current()?.location.clone();
         self.begin_active_navigation(location, false)
+    }
+
+    /// Starts the active restored tab only while its transient directory state is still idle.
+    /// Loading, ready, and terminal-error tabs keep their existing request or presentation.
+    pub(crate) fn begin_idle_active_location_load(&mut self) -> Option<ExplorerCommand> {
+        if !matches!(self.tabs.active_tab().directory, DirectoryState::Idle) {
+            return None;
+        }
+        self.begin_active_location_load()
     }
 
     pub(crate) fn begin_back_navigation(&mut self) -> Option<ExplorerCommand> {
@@ -3495,6 +3550,11 @@ impl AppViewState {
                     recovery.focus_index = 0;
                     recovery.status.clone_from(&error.user_message);
                 }
+                LockOwnerDiscoveryTerminal::DeadlineElapsed => {
+                    recovery.phase = LockRecoveryPhase::Unavailable;
+                    recovery.focus_index = 0;
+                    "Lock owner discovery reached its deadline.".clone_into(&mut recovery.status);
+                }
                 LockOwnerDiscoveryTerminal::Cancelled => {
                     self.lock_recovery = None;
                 }
@@ -4004,6 +4064,11 @@ impl AppViewState {
             }
             Some(presentation.sorted_by_extension_bytes(&values, tab.view.settings.sort.direction))
         } else if let Some(values) = self
+            .builtin_count_sort_values
+            .get(&tab.view.settings.sort.column)
+        {
+            Some(presentation.sorted_by_extension_bytes(values, tab.view.settings.sort.direction))
+        } else if let Some(values) = self
             .code_lines_sort_values
             .get(&tab.view.settings.sort.column)
         {
@@ -4405,26 +4470,14 @@ impl AppViewState {
         self.selected_items()
     }
 
-    pub(crate) fn selected_bookmark_target_and_id(
+    pub(crate) fn current_folder_bookmark_target_and_id(
         &self,
     ) -> Option<(
         explorer_model::BookmarkTarget,
         Option<explorer_model::BookmarkId>,
     )> {
-        let selected = self.selected_items();
-        let [item] = selected.as_slice() else {
-            return None;
-        };
-        let path = item.location.path()?;
-        let target = if path.is_dir() {
-            explorer_model::BookmarkTarget::Folder {
-                location: item.location.clone(),
-            }
-        } else {
-            explorer_model::BookmarkTarget::File {
-                location: item.location.clone(),
-            }
-        };
+        let location = &self.tabs.active_tab().history.current()?.location;
+        let target = bookmark_target_for_current_location(location)?;
         let id = self.bookmarks.id_for_target(&target);
         Some((target, id))
     }
@@ -5295,9 +5348,46 @@ fn navigation_locations_for_operation(request: &FileOperationRequest) -> Vec<Loc
 
 #[cfg(test)]
 mod tests {
-    use super::{AppViewState, CommandKind, resolve_details_column_insertion};
+    use super::{
+        AppViewState, CommandKind, bookmark_target_for_current_location,
+        resolve_details_column_insertion,
+    };
     use crate::{focus::FocusSurface, layout::LayoutTokens, theme::ThemeMode};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn bookmark_star_targets_only_the_current_file_system_folder() {
+        let fixture = std::env::temp_dir().join(format!(
+            "superexplorer-bookmark-star-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&fixture).expect("create bookmark star fixture");
+        let file = fixture.join("selected-child.txt");
+        std::fs::write(&file, b"fixture").expect("create selected child fixture");
+
+        let folder_location = explorer_model::LocationDescriptor::file_system(&fixture);
+        assert_eq!(
+            bookmark_target_for_current_location(&folder_location),
+            Some(explorer_model::BookmarkTarget::Folder {
+                location: folder_location,
+            })
+        );
+        assert!(
+            bookmark_target_for_current_location(&explorer_model::LocationDescriptor::file_system(
+                &file
+            ))
+            .is_none()
+        );
+        assert!(
+            bookmark_target_for_current_location(&explorer_model::LocationDescriptor::ParsingName(
+                "shell:Downloads".to_owned()
+            ))
+            .is_none()
+        );
+
+        std::fs::remove_file(file).expect("remove selected child fixture");
+        std::fs::remove_dir(fixture).expect("remove bookmark star fixture");
+    }
 
     fn state_with_rows() -> AppViewState {
         let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
@@ -5447,6 +5537,9 @@ mod tests {
             visible_detail_order(&state)[..4],
             [Name, Type, DateModified, Size]
         );
+        let committed = visible_detail_order(&state);
+        assert!(!state.cancel_details_column_drag());
+        assert_eq!(visible_detail_order(&state), committed);
 
         assert!(state.update_details_column_drag_preview(DateModified, Size, 75.0, 0.0, 100.0,));
         let unavailable = explorer_model::ColumnId::Extension {
@@ -5590,6 +5683,100 @@ mod tests {
                 .generation,
             context.generation
         );
+    }
+
+    fn restored_two_tab_state() -> (AppViewState, explorer_model::TabId, explorer_model::TabId) {
+        let first = explorer_model::TabState::new(explorer_model::HistoryEntry::new(
+            explorer_model::LocationDescriptor::file_system(r"C:\restored-first"),
+            "restored-first",
+        ));
+        let first_id = first.id;
+        let second = explorer_model::TabState::new(explorer_model::HistoryEntry::new(
+            explorer_model::LocationDescriptor::file_system(r"D:\restored-second"),
+            "restored-second",
+        ));
+        let second_id = second.id;
+        let tabs = explorer_model::ExplorerWindowState::from_restored_tabs(
+            vec![first, second],
+            first_id,
+            explorer_model::HistoryEntry::new(
+                explorer_model::LocationDescriptor::file_system(r"C:\fallback"),
+                "fallback",
+            ),
+        )
+        .expect("valid restored tabs");
+        (
+            AppViewState::with_restored_window_and_drag_threshold(tabs, (4.0, 4.0)),
+            first_id,
+            second_id,
+        )
+    }
+
+    #[test]
+    fn idle_restored_tab_starts_once_with_its_current_location() {
+        let (mut state, first_id, second_id) = restored_two_tab_state();
+        assert_eq!(state.tabs().active_tab_id(), first_id);
+        let command = state
+            .begin_idle_active_location_load()
+            .expect("idle restored tab loads");
+        assert!(matches!(
+            command,
+            explorer_model::ExplorerCommand::Navigate { location, .. }
+                if location == explorer_model::LocationDescriptor::file_system(r"C:\restored-first")
+        ));
+        assert!(matches!(
+            state.tabs().active_tab().directory,
+            explorer_model::DirectoryState::Loading { .. }
+        ));
+        assert!(state.begin_idle_active_location_load().is_none());
+
+        assert!(state.activate_tab(second_id));
+        assert!(state.begin_idle_active_location_load().is_some());
+        assert!(state.begin_idle_active_location_load().is_none());
+    }
+
+    #[test]
+    fn ready_and_failed_restored_tabs_are_not_retried_by_activation() {
+        let (mut ready, _, _) = restored_two_tab_state();
+        let ready_command = ready
+            .begin_idle_active_location_load()
+            .expect("ready fixture starts");
+        let ready_context = ready_command.context().expect("ready context").clone();
+        assert_eq!(
+            ready.apply_service_event(explorer_model::ExplorerEvent::DirectoryFinished {
+                context: ready_context,
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert!(matches!(
+            ready.tabs().active_tab().directory,
+            explorer_model::DirectoryState::Ready(_)
+        ));
+        assert!(ready.begin_idle_active_location_load().is_none());
+
+        let (mut failed, _, _) = restored_two_tab_state();
+        let failed_command = failed
+            .begin_idle_active_location_load()
+            .expect("failed fixture starts");
+        let failed_context = failed_command.context().expect("failed context").clone();
+        assert_eq!(
+            failed.apply_service_event(explorer_model::ExplorerEvent::Failed {
+                context: failed_context,
+                error: explorer_common::ExplorerError::new(
+                    explorer_common::ExplorerErrorKind::Availability,
+                    "restored-tab fixture",
+                    true,
+                    "The restored folder could not be loaded.",
+                    "controlled admission failure",
+                ),
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert!(matches!(
+            failed.tabs().active_tab().directory,
+            explorer_model::DirectoryState::Error { .. }
+        ));
+        assert!(failed.begin_idle_active_location_load().is_none());
     }
 
     #[test]
@@ -8020,9 +8207,11 @@ mod tests {
         state.update_folder_options(|settings| {
             settings.hidden_items = true;
             settings.icon_cache_memory_mb = 1_024;
+            settings.cache_budgets.mft_lru_mb = 2_048;
         });
         assert!(!state.view_settings().hidden_items);
-        assert_eq!(state.view_settings().icon_cache_memory_mb, 128);
+        assert_eq!(state.view_settings().icon_cache_memory_mb, 32);
+        assert_eq!(state.view_settings().cache_budgets.mft_lru_mb, 512);
         state.close_folder_options();
         assert!(!state.view_settings().hidden_items);
 
@@ -8032,12 +8221,41 @@ mod tests {
             settings.hidden_items = true;
             settings.file_name_extensions = false;
             settings.icon_cache_memory_mb = 1_024;
+            settings.cache_budgets.mft_lru_mb = 2_048;
         });
         state.confirm_folder_options();
         assert!(state.folder_options().is_none());
         assert!(state.view_settings().hidden_items);
         assert!(!state.view_settings().file_name_extensions);
         assert_eq!(state.view_settings().icon_cache_memory_mb, 1_024);
+        assert_eq!(state.view_settings().cache_budgets.mft_lru_mb, 2_048);
+    }
+
+    #[test]
+    fn cache_budget_apply_reopens_from_committed_value_without_stale_512() {
+        let mut state = AppViewState::default();
+        state.open_folder_options();
+        state.update_folder_options(|settings| settings.cache_budgets.mft_lru_mb = 2_048);
+        state.apply_folder_options();
+        assert_eq!(state.view_settings().cache_budgets.mft_lru_mb, 2_048);
+
+        state.update_folder_options(|settings| settings.cache_budgets.mft_lru_mb = 4_096);
+        state.close_folder_options();
+        assert_eq!(state.view_settings().cache_budgets.mft_lru_mb, 2_048);
+
+        state.open_folder_options();
+        assert_eq!(
+            state
+                .folder_options()
+                .expect("reopened draft")
+                .settings
+                .cache_budgets
+                .mft_lru_mb,
+            2_048
+        );
+        state.update_folder_options(|settings| settings.cache_budgets.mft_lru_mb = 16_384);
+        state.confirm_folder_options();
+        assert_eq!(state.view_settings().cache_budgets.mft_lru_mb, 16_384);
     }
 
     #[test]

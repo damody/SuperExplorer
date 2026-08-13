@@ -108,6 +108,7 @@ pub enum LockOwnerDiscoveryTerminal {
     Ready(Vec<LockOwner>),
     Empty,
     Cancelled,
+    DeadlineElapsed,
     Unavailable(ExplorerError),
     Failed(ExplorerError),
 }
