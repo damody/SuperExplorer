@@ -360,45 +360,22 @@ fn read_host_input(input: &InputStreamV1) -> Option<Vec<u8>> {
 }
 
 fn count_source(file_name: &str, bytes: &[u8]) -> Option<CodeRow> {
-    if bytes.contains(&0) {
+    if bytes.contains(&0) || std::str::from_utf8(bytes).is_err() {
         return None;
     }
-    let language = match Path::new(file_name)
-        .extension()
-        .and_then(|value| value.to_str())?
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "rs" => "Rust",
-        "c" | "h" => "C",
-        "cpp" | "cc" | "cxx" | "hpp" => "C++",
-        "py" => "Python",
-        "lua" => "Lua",
-        "js" | "mjs" | "cjs" => "JavaScript",
-        _ => return None,
-    };
-    let text = std::str::from_utf8(bytes).ok()?;
-    let mut row = CodeRow {
+    let config = tokei::Config::default();
+    let language = tokei::LanguageType::from_path(Path::new(file_name), &config)?;
+    let stats = language.parse_from_slice(bytes, &config).summarise();
+    let code = u64::try_from(stats.code).ok()?;
+    let comments = u64::try_from(stats.comments).ok()?;
+    let blanks = u64::try_from(stats.blanks).ok()?;
+    Some(CodeRow {
         path: file_name.to_owned(),
-        code: 0,
-        comments: 0,
-        blanks: 0,
-        total: 0,
-    };
-    for line in text.lines() {
-        row.total += 1;
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            row.blanks += 1;
-        } else if trimmed.starts_with("//") || trimmed.starts_with('#') || trimmed.starts_with("--")
-        {
-            row.comments += 1;
-        } else {
-            row.code += 1;
-        }
-    }
-    let _ = language;
-    Some(row)
+        code,
+        comments,
+        blanks,
+        total: code.saturating_add(comments).saturating_add(blanks),
+    })
 }
 
 fn count_input(file_name: &str, bytes: &[u8]) -> Option<CodeRow> {
@@ -680,6 +657,25 @@ mod tests {
         let row = count_input("mixed-project", &packed).expect("directory aggregate");
         assert_eq!(row.code, 1_325);
         assert_eq!(row.total, 1_325);
+    }
+
+    #[test]
+    fn source_count_uses_tokei_for_every_host_recognized_language() {
+        for (name, source) in [
+            ("data.json", "{\"ready\": true}\n"),
+            ("README.md", "# Heading\n"),
+            ("project.cs", "class Program {}\n"),
+            ("layout.xml", "<root />\n"),
+        ] {
+            let row = count_source(name, source.as_bytes())
+                .unwrap_or_else(|| panic!("{name} must remain supported"));
+            assert_eq!(row.path, name);
+            assert_eq!(
+                row.total,
+                row.code + row.comments + row.blanks,
+                "{name}"
+            );
+        }
     }
 
     #[test]
