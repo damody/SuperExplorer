@@ -18,8 +18,19 @@ pub mod application;
 pub mod branding;
 mod brokered_service;
 mod folder_size_service;
+mod mft_focus;
+#[cfg(windows)]
+mod mft_journal;
+mod mft_migration;
+#[cfg(windows)]
+mod mft_persistence;
+#[cfg(windows)]
+mod mft_query;
+mod mft_runtime;
 #[cfg(windows)]
 mod mft_size_map;
+#[cfg(windows)]
+mod mft_sqlite;
 mod pointer_capture;
 pub mod session_lifecycle;
 pub mod session_store;

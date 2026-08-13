@@ -1457,6 +1457,7 @@ dependencies = [
  "gpui_windows",
  "image",
  "raw-window-handle",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -1610,6 +1611,7 @@ dependencies = [
  "explorer-model",
  "explorer-search",
  "explorer-test-support",
+ "intel_tex_2",
  "libloading 0.8.9",
  "tempfile",
  "thiserror 2.0.19",
@@ -2803,6 +2805,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "intel_tex_2"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7980d359170e7da4bc2421aa74c49d338a3153313e006d732a3430f1af375a60"
+dependencies = [
+ "ispc_rt",
+]
+
+[[package]]
 name = "interpolate_name"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2839,6 +2850,16 @@ name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
+
+[[package]]
+name = "ispc_rt"
+version = "2.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a396f76fd253fab9945bb4c6080f515d0c4036bc30219462d199b58886fd37b4"
+dependencies = [
+ "libc",
+ "num_cpus",
+]
 
 [[package]]
 name = "itertools"

@@ -50,10 +50,11 @@ use std::{
 };
 
 const SHELL_TEXTURE_CACHE_CAPACITY: usize = 512;
-const SHELL_TEXTURE_CACHE_BYTE_BUDGET: usize = 128 * 1024 * 1024;
+const SHELL_TEXTURE_CACHE_BYTE_BUDGET: usize =
+    explorer_model::DEFAULT_ICON_CACHE_MEMORY_MB as usize * 1024 * 1024;
 const BASE_ICON_CACHE_CAPACITY: usize = 256;
-const BASE_ICON_CACHE_BYTE_BUDGET: usize = 32 * 1024 * 1024;
 const FILE_VIEWPORT_ICON_REQUEST_CAP: usize = 64;
+const BASE_ICON_CACHE_SHARE_DIVISOR: usize = 4;
 const FILE_PRELAYOUT_ICON_PRIME_CAP: usize = 16;
 // Keep UI admission aligned with explorer-shell-win's bounded thumbnail worker domain.
 // Admitting more here turns the excess requests into terminal Availability failures, leaving
@@ -74,10 +75,31 @@ fn icon_prime_cap(settings: &explorer_model::ViewSettings, dpi: u16) -> usize {
 }
 
 fn shell_texture_cache_byte_budget(settings: &explorer_model::ViewSettings) -> usize {
-    usize::from(explorer_model::normalized_icon_cache_memory_mb(
-        settings.icon_cache_memory_mb,
-    ))
+    usize::try_from(
+        settings
+            .cache_budgets
+            .icon_memory_mb
+            .saturating_add(settings.cache_budgets.base_icon_memory_mb),
+    )
+    .unwrap_or(usize::MAX / (1024 * 1024))
     .saturating_mul(1024 * 1024)
+}
+
+fn icon_cache_byte_budgets(settings: &explorer_model::ViewSettings) -> (usize, usize) {
+    (
+        usize::try_from(settings.cache_budgets.icon_memory_mb)
+            .unwrap_or_default()
+            .saturating_mul(1024 * 1024),
+        usize::try_from(settings.cache_budgets.base_icon_memory_mb)
+            .unwrap_or_default()
+            .saturating_mul(1024 * 1024),
+    )
+}
+
+fn thumbnail_pixel_cache_byte_budget(settings: &explorer_model::ViewSettings) -> usize {
+    usize::try_from(settings.cache_budgets.thumbnail_memory_mb)
+        .unwrap_or_default()
+        .saturating_mul(1024 * 1024)
 }
 
 fn prelayout_icon_range(
@@ -94,6 +116,60 @@ fn folder_size_result_is_current(
     current: &explorer_model::RequestContext,
 ) -> bool {
     result.context.tab_id == current.tab_id && result.context.generation == current.generation
+}
+
+fn folder_admission_for_entry(
+    is_container: bool,
+    policy: code_lines_column::FolderAdmissionPolicyV1,
+    value: Option<&folder_size_column::FolderSizeValueV1>,
+    directory_runtime_available: bool,
+    demand: DirectoryFactsDemandV1,
+) -> Result<(), code_lines_column::FolderAdmissionStateV1> {
+    if !is_container || !policy.requires_directory_facts() {
+        return Ok(());
+    }
+    if !demand.enables(policy) {
+        return Err(code_lines_column::FolderAdmissionStateV1::Unavailable);
+    }
+    match value {
+        Some(value) => value.directory_facts.map_or(
+            Err(code_lines_column::FolderAdmissionStateV1::Unavailable),
+            |facts| match policy.evaluate(facts) {
+                code_lines_column::FolderAdmissionOutcomeV1::Admitted => Ok(()),
+                code_lines_column::FolderAdmissionOutcomeV1::OverLimit => {
+                    Err(code_lines_column::FolderAdmissionStateV1::OverLimit)
+                }
+            },
+        ),
+        None if directory_runtime_available => {
+            Err(code_lines_column::FolderAdmissionStateV1::Pending)
+        }
+        None => Err(code_lines_column::FolderAdmissionStateV1::Unavailable),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct DirectoryFactsDemandV1 {
+    file_count: bool,
+    folder_count: bool,
+}
+
+impl DirectoryFactsDemandV1 {
+    fn from_settings(settings: &explorer_model::ViewSettings) -> Self {
+        Self {
+            file_count: settings.details_column_visible(&explorer_model::ColumnId::FileCount),
+            folder_count: settings.details_column_visible(&explorer_model::ColumnId::FolderCount),
+        }
+    }
+
+    const fn any(self) -> bool {
+        self.file_count || self.folder_count
+    }
+
+    const fn enables(self, policy: code_lines_column::FolderAdmissionPolicyV1) -> bool {
+        (policy.max_file_count.is_none() || self.file_count)
+            && (policy.max_folder_count.is_none() || self.folder_count)
+    }
 }
 
 fn prime_top_icon_range(
@@ -115,6 +191,17 @@ fn is_enrichment_service_event(event: &explorer_model::ExplorerEvent) -> bool {
         explorer_model::ExplorerEvent::ShellIconLoaded { .. }
             | explorer_model::ExplorerEvent::ShellIconFailed { .. }
             | explorer_model::ExplorerEvent::ThumbnailFinished { .. }
+    )
+}
+
+fn action_can_reveal_idle_restored_tab(action: &ExplorerAction) -> bool {
+    matches!(
+        action,
+        ExplorerAction::ActivateTab { .. }
+            | ExplorerAction::NextTab
+            | ExplorerAction::PreviousTab
+            | ExplorerAction::CloseActiveTab
+            | ExplorerAction::CloseTab { .. }
     )
 }
 
@@ -291,6 +378,7 @@ fn coalesce_directory_events(
 
 struct VisibleItemIconCache {
     entries: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
+    costs: HashMap<explorer_model::ShellIconKey, usize>,
     thumbnail_entries: HashSet<explorer_model::ShellIconKey>,
     order: VecDeque<explorer_model::ShellIconKey>,
     latest_association: HashMap<explorer_model::LocationDescriptor, u64>,
@@ -322,6 +410,7 @@ impl Default for VisibleItemIconCache {
     fn default() -> Self {
         Self {
             entries: HashMap::new(),
+            costs: HashMap::new(),
             thumbnail_entries: HashSet::new(),
             order: VecDeque::new(),
             latest_association: HashMap::new(),
@@ -345,6 +434,7 @@ impl VisibleItemIconCache {
 
     fn clear_overlay_dependent(&mut self) {
         self.entries.clear();
+        self.costs.clear();
         self.thumbnail_entries.clear();
         self.order.clear();
         self.latest_association.clear();
@@ -362,7 +452,7 @@ impl VisibleItemIconCache {
                 self.thumbnail_entries.remove(&oldest);
                 self.current_bytes = self
                     .current_bytes
-                    .saturating_sub(estimated_icon_bytes(&oldest));
+                    .saturating_sub(self.costs.remove(&oldest).unwrap_or_default());
                 self.evictions = self.evictions.saturating_add(1);
             }
         }
@@ -409,7 +499,9 @@ impl VisibleItemIconCache {
                 .retain(|candidate| self.entries.contains_key(candidate));
             self.recalculate_bytes();
         }
+        let cost = render_image_bytes(&texture);
         let replaced = self.entries.insert(key.clone(), texture);
+        let previous_cost = self.costs.insert(key.clone(), cost).unwrap_or_default();
         match provenance {
             FileVisualProvenance::Shell => {
                 self.thumbnail_entries.remove(key);
@@ -418,9 +510,11 @@ impl VisibleItemIconCache {
                 self.thumbnail_entries.insert(key.clone());
             }
         }
-        if replaced.is_none() {
-            self.current_bytes = self.current_bytes.saturating_add(estimated_icon_bytes(key));
-        }
+        let _ = replaced;
+        self.current_bytes = self
+            .current_bytes
+            .saturating_sub(previous_cost)
+            .saturating_add(cost);
         self.touch(key);
         while self.entries.len() > self.capacity || self.current_bytes > self.byte_budget {
             if let Some(oldest) = self.order.pop_front()
@@ -429,7 +523,7 @@ impl VisibleItemIconCache {
                 self.thumbnail_entries.remove(&oldest);
                 self.current_bytes = self
                     .current_bytes
-                    .saturating_sub(estimated_icon_bytes(&oldest));
+                    .saturating_sub(self.costs.remove(&oldest).unwrap_or_default());
                 self.evictions = self.evictions.saturating_add(1);
             }
         }
@@ -533,10 +627,11 @@ impl VisibleItemIconCache {
     }
 
     fn recalculate_bytes(&mut self) {
+        self.costs.retain(|key, _| self.entries.contains_key(key));
         self.current_bytes = self
-            .entries
-            .keys()
-            .map(estimated_icon_bytes)
+            .costs
+            .values()
+            .copied()
             .fold(0_usize, usize::saturating_add);
     }
 
@@ -572,43 +667,78 @@ struct FileIconSnapshot {
     thumbnail_keys: HashSet<explorer_model::ShellIconKey>,
 }
 
-fn estimated_icon_bytes(key: &explorer_model::ShellIconKey) -> usize {
-    usize::from(key.size_bucket)
-        .saturating_mul(usize::from(key.size_bucket))
-        .saturating_mul(4)
+fn render_image_bytes(image: &RenderImage) -> usize {
+    if let Some(compressed) = image.compressed_raster() {
+        compressed.blocks.len()
+    } else {
+        (0..image.frame_count())
+            .filter_map(|frame| image.as_bytes(frame).map(<[u8]>::len))
+            .fold(0_usize, usize::saturating_add)
+    }
 }
 
-#[derive(Default)]
 struct BaseIconCache {
     entries: HashMap<explorer_model::BaseIconKey, Arc<RenderImage>>,
     hashes: HashMap<explorer_model::BaseIconKey, u64>,
+    costs: HashMap<explorer_model::BaseIconKey, usize>,
     order: VecDeque<explorer_model::BaseIconKey>,
     current_bytes: usize,
+    byte_budget: usize,
     hits: u64,
     misses: u64,
     evictions: u64,
 }
 
-impl BaseIconCache {
-    fn insert(&mut self, key: explorer_model::BaseIconKey, texture: Arc<RenderImage>, hash: u64) {
-        let replaced = self.entries.insert(key.clone(), texture).is_some();
-        self.hashes.insert(key.clone(), hash);
-        if !replaced {
-            self.current_bytes = self.current_bytes.saturating_add(base_icon_bytes(&key));
+impl Default for BaseIconCache {
+    fn default() -> Self {
+        Self {
+            entries: HashMap::new(),
+            hashes: HashMap::new(),
+            costs: HashMap::new(),
+            order: VecDeque::new(),
+            current_bytes: 0,
+            byte_budget: SHELL_TEXTURE_CACHE_BYTE_BUDGET / BASE_ICON_CACHE_SHARE_DIVISOR,
+            hits: 0,
+            misses: 0,
+            evictions: 0,
         }
-        self.order.retain(|candidate| candidate != &key);
-        self.order.push_back(key);
-        while self.entries.len() > BASE_ICON_CACHE_CAPACITY
-            || self.current_bytes > BASE_ICON_CACHE_BYTE_BUDGET
+    }
+}
+
+impl BaseIconCache {
+    fn set_byte_budget(&mut self, byte_budget: usize) {
+        self.byte_budget = byte_budget.max(1024 * 1024);
+        self.evict_to_budget();
+    }
+
+    fn evict_to_budget(&mut self) {
+        while self.entries.len() > BASE_ICON_CACHE_CAPACITY || self.current_bytes > self.byte_budget
         {
-            if let Some(oldest) = self.order.pop_front()
-                && self.entries.remove(&oldest).is_some()
-            {
-                self.current_bytes = self.current_bytes.saturating_sub(base_icon_bytes(&oldest));
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            if self.entries.remove(&oldest).is_some() {
+                self.current_bytes = self
+                    .current_bytes
+                    .saturating_sub(self.costs.remove(&oldest).unwrap_or_default());
                 self.hashes.remove(&oldest);
                 self.evictions = self.evictions.saturating_add(1);
             }
         }
+    }
+
+    fn insert(&mut self, key: explorer_model::BaseIconKey, texture: Arc<RenderImage>, hash: u64) {
+        let cost = render_image_bytes(&texture);
+        let _replaced = self.entries.insert(key.clone(), texture).is_some();
+        let previous_cost = self.costs.insert(key.clone(), cost).unwrap_or_default();
+        self.hashes.insert(key.clone(), hash);
+        self.current_bytes = self
+            .current_bytes
+            .saturating_sub(previous_cost)
+            .saturating_add(cost);
+        self.order.retain(|candidate| candidate != &key);
+        self.order.push_back(key);
+        self.evict_to_budget();
     }
 
     fn get(&mut self, key: &explorer_model::BaseIconKey) -> Option<Arc<RenderImage>> {
@@ -647,8 +777,9 @@ impl BaseIconCache {
         self.entries
             .retain(|key, _| key.dpi == dpi && key.theme == theme);
         self.hashes.retain(|key, _| self.entries.contains_key(key));
+        self.costs.retain(|key, _| self.entries.contains_key(key));
         self.order.retain(|key| self.entries.contains_key(key));
-        self.current_bytes = self.entries.keys().map(base_icon_bytes).sum();
+        self.current_bytes = self.costs.values().copied().sum();
     }
 }
 
@@ -658,13 +789,8 @@ fn icon_payload_hash(payload: &explorer_model::ShellIconPayload) -> u64 {
     payload.width.hash(&mut hasher);
     payload.height.hash(&mut hasher);
     payload.rgba.hash(&mut hasher);
+    payload.bc7.hash(&mut hasher);
     hasher.finish()
-}
-
-fn base_icon_bytes(key: &explorer_model::BaseIconKey) -> usize {
-    usize::from(key.size_bucket)
-        .saturating_mul(usize::from(key.size_bucket))
-        .saturating_mul(4)
 }
 
 fn initial_icon_epochs() -> explorer_model::IconInvalidationEpochs {
@@ -923,11 +1049,13 @@ pub struct ExplorerRoot {
     safe_mode_confirmation_error: Option<String>,
     extension_ui_pump: Option<Box<dyn ExtensionUiPumpPortV1>>,
     visual_column_runtime: Option<folder_size_column::VisualColumnRuntimeHandleV1>,
+    visual_column_descriptor_enabled: bool,
     folder_size_visuals: Option<folder_size_column::FolderSizeColumnVisuals>,
     folder_size_requested: HashSet<(
         explorer_model::TabId,
         explorer_model::Generation,
         explorer_model::ShellItemId,
+        bool,
     )>,
     folder_size_context: Option<explorer_model::RequestContext>,
     folder_size_display_override: Option<folder_size_column::FolderSizeDisplayMode>,
@@ -1209,7 +1337,7 @@ impl ExplorerRoot {
                 64 * 1024 * 1024,
             ),
             thumbnail_memory_cache: explorer_jobs::ThumbnailMemoryCache::new(
-                128 * 1024 * 1024,
+                usize::from(explorer_model::DEFAULT_THUMBNAIL_CACHE_MEMORY_MB) * 1024 * 1024,
                 2_048,
             ),
             thumbnail_requests: HashMap::new(),
@@ -1249,6 +1377,7 @@ impl ExplorerRoot {
             safe_mode_confirmation_error: None,
             extension_ui_pump: None,
             visual_column_runtime: None,
+            visual_column_descriptor_enabled: false,
             folder_size_visuals: None,
             folder_size_requested: HashSet::new(),
             folder_size_context: None,
@@ -1308,11 +1437,29 @@ impl ExplorerRoot {
             tracing::warn!("rejected unsupported visual-column runtime configuration");
             return;
         }
+        runtime.configure_cache_budgets(self.state.view_settings().cache_budgets);
         self.visual_column_runtime = Some(runtime);
+        self.visual_column_descriptor_enabled = true;
         if let Some(display) = self.folder_size_display_override {
             config.folder_size_display = display;
         }
         self.folder_size_visuals = Some(folder_size_column::FolderSizeColumnVisuals::new(config));
+        self.folder_size_requested.clear();
+        self.folder_size_context = None;
+    }
+
+    /// Connects the application-owned MFT aggregate worker without exposing
+    /// the optional Folder Size extension column.
+    pub fn attach_directory_facts_runtime(
+        &mut self,
+        runtime: folder_size_column::VisualColumnRuntimeHandleV1,
+    ) {
+        runtime.configure_cache_budgets(self.state.view_settings().cache_budgets);
+        self.visual_column_runtime = Some(runtime);
+        self.visual_column_descriptor_enabled = false;
+        self.folder_size_visuals = Some(folder_size_column::FolderSizeColumnVisuals::new(
+            folder_size_column::VisualColumnConfigV1::default(),
+        ));
         self.folder_size_requested.clear();
         self.folder_size_context = None;
     }
@@ -1346,6 +1493,7 @@ impl ExplorerRoot {
                 context: None,
                 values: HashMap::new(),
                 errors: HashMap::new(),
+                admissions: HashMap::new(),
             };
             self.code_lines_requested
                 .retain(|(requested_column, _, _, _)| requested_column != &column_id);
@@ -1358,6 +1506,7 @@ impl ExplorerRoot {
                 context: None,
                 values: HashMap::new(),
                 errors: HashMap::new(),
+                admissions: HashMap::new(),
             });
     }
 
@@ -1582,6 +1731,12 @@ impl ExplorerRoot {
             .folder_size_context
             .clone()
             .expect("folder-size context initialized above");
+        let require_directory_facts =
+            DirectoryFactsDemandV1::from_settings(&self.state.view_settings()).any();
+        runtime.set_directory_facts_active(require_directory_facts);
+        if !self.visual_column_descriptor_enabled && !require_directory_facts {
+            return;
+        }
         if let Some(visuals) = self.folder_size_visuals.as_mut() {
             visuals.begin_context(&request_context);
         }
@@ -1589,14 +1744,18 @@ impl ExplorerRoot {
         let requests = entries
             .iter()
             .filter(|entry| {
-                folder_size_column::applies_to_shell_entry(
-                    entry.is_container,
-                    entry.metadata.size_bytes,
-                )
+                entry.is_container
+                    && (require_directory_facts
+                        || folder_size_column::applies_to_shell_entry(
+                            entry.is_container,
+                            entry.metadata.size_bytes,
+                        ))
             })
             .filter(|entry| {
                 visuals.is_none_or(|visuals| {
                     !visuals.has_value_for_context(&request_context, &entry.id)
+                        || (require_directory_facts
+                            && visuals.directory_facts_for(&entry.id).is_none())
                 })
             })
             .filter_map(|entry| match &entry.location {
@@ -1605,12 +1764,15 @@ impl ExplorerRoot {
                         tab_id,
                         generation,
                         entry.id.clone(),
+                        require_directory_facts,
                     )) =>
                 {
                     Some(folder_size_column::FolderSizeRequestV1 {
                         context: request_context.clone(),
                         item_id: entry.id.clone(),
                         path: path.clone(),
+                        mft_cache_memory_mb: self.state.view_settings().mft_folder_cache_memory_mb,
+                        require_directory_facts,
                     })
                 }
                 explorer_model::LocationDescriptor::FileSystem(_) => None,
@@ -1630,7 +1792,7 @@ impl ExplorerRoot {
             runtime.cancel_folder_size_context(&context);
         }
         self.folder_size_requested
-            .retain(|(tab_id, generation, _)| {
+            .retain(|(tab_id, generation, _, _)| {
                 *tab_id != context.tab_id || *generation != context.generation
             });
     }
@@ -1666,7 +1828,8 @@ impl ExplorerRoot {
             .as_ref()
             .is_none_or(|visuals| visuals.config.descriptor != config.descriptor);
         let mut changed = render_ready;
-        if descriptor_changed
+        if self.visual_column_descriptor_enabled
+            && descriptor_changed
             && self
                 .state
                 .install_visual_column_descriptor(config.descriptor.clone())
@@ -1690,7 +1853,7 @@ impl ExplorerRoot {
             })
             .collect::<HashSet<_>>();
         self.folder_size_requested
-            .retain(|(tab_id, generation, _)| {
+            .retain(|(tab_id, generation, _, _)| {
                 live_snapshots.contains(&folder_size_column::FolderSizeSnapshotKeyV1 {
                     tab_id: *tab_id,
                     generation: *generation,
@@ -1729,9 +1892,24 @@ impl ExplorerRoot {
                 changed = true;
             }
         }
+        for retry in visuals.take_due_retries(Instant::now()) {
+            self.folder_size_requested
+                .retain(|(tab_id, generation, item_id, _)| {
+                    (*tab_id, *generation, item_id) != (retry.0, retry.1, &retry.2)
+                });
+            changed = true;
+        }
         if changed {
             self.state
                 .set_folder_size_sort_values(visuals.exact_sort_values());
+            self.state.set_builtin_count_sort_values(
+                explorer_model::ColumnId::FileCount,
+                visuals.exact_file_count_sort_values(),
+            );
+            self.state.set_builtin_count_sort_values(
+                explorer_model::ColumnId::FolderCount,
+                visuals.exact_folder_count_sort_values(),
+            );
         }
         changed
     }
@@ -1749,32 +1927,52 @@ impl ExplorerRoot {
         // tree, so a Shell item ID reused by F5/navigation cannot leak an old
         // value for even one frame while the 16 ms pump is idle.
         self.begin_code_lines_contexts(request_context.clone());
-        for runtime in &self.code_lines_runtimes {
+        let directory_runtime_available = self.visual_column_runtime.is_some();
+        let directory_facts_demand =
+            DirectoryFactsDemandV1::from_settings(&self.state.view_settings());
+        for index in 0..self.code_lines_runtimes.len() {
+            let runtime = Arc::clone(&self.code_lines_runtimes[index]);
             let config = runtime.config();
             if !self.state.extension_enabled(&config.option_package_id) {
                 continue;
             }
             let column_id = config.descriptor.id;
-            let requests = entries
-                .iter()
-                .filter_map(|entry| match &entry.location {
-                    explorer_model::LocationDescriptor::FileSystem(path)
-                        if self.code_lines_requested.insert((
-                            column_id.clone(),
-                            tab_id,
-                            generation,
-                            entry.id.clone(),
-                        )) =>
-                    {
-                        Some(code_lines_column::CodeLinesRequestV1 {
-                            context: request_context.clone(),
-                            item_id: entry.id.clone(),
-                            path: path.clone(),
-                        })
+            let mut requests = Vec::new();
+            for entry in &entries {
+                let explorer_model::LocationDescriptor::FileSystem(path) = &entry.location else {
+                    continue;
+                };
+                let admission = folder_admission_for_entry(
+                    entry.is_container,
+                    config.folder_admission,
+                    self.folder_size_visuals
+                        .as_ref()
+                        .and_then(|visuals| visuals.values.get(&entry.id)),
+                    directory_runtime_available,
+                    directory_facts_demand,
+                );
+                match admission {
+                    Ok(()) => {
+                        self.code_lines_visuals[index].set_admission(entry.id.clone(), None);
                     }
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
+                    Err(state) => {
+                        self.code_lines_visuals[index].set_admission(entry.id.clone(), Some(state));
+                        continue;
+                    }
+                }
+                if self.code_lines_requested.insert((
+                    column_id.clone(),
+                    tab_id,
+                    generation,
+                    entry.id.clone(),
+                )) {
+                    requests.push(code_lines_column::CodeLinesRequestV1 {
+                        context: request_context.clone(),
+                        item_id: entry.id.clone(),
+                        path: path.clone(),
+                    });
+                }
+            }
             if !requests.is_empty() {
                 runtime.submit_code_lines_requests(requests);
             }
@@ -2314,7 +2512,7 @@ impl ExplorerRoot {
                 64 * 1024 * 1024,
             ),
             thumbnail_memory_cache: explorer_jobs::ThumbnailMemoryCache::new(
-                128 * 1024 * 1024,
+                usize::from(explorer_model::DEFAULT_THUMBNAIL_CACHE_MEMORY_MB) * 1024 * 1024,
                 2_048,
             ),
             thumbnail_requests: HashMap::new(),
@@ -2354,6 +2552,7 @@ impl ExplorerRoot {
             safe_mode_confirmation_error: None,
             extension_ui_pump: None,
             visual_column_runtime: None,
+            visual_column_descriptor_enabled: false,
             folder_size_visuals: None,
             folder_size_requested: HashSet::new(),
             folder_size_context: None,
@@ -2410,7 +2609,7 @@ impl ExplorerRoot {
                 64 * 1024 * 1024,
             ),
             thumbnail_memory_cache: explorer_jobs::ThumbnailMemoryCache::new(
-                128 * 1024 * 1024,
+                usize::from(explorer_model::DEFAULT_THUMBNAIL_CACHE_MEMORY_MB) * 1024 * 1024,
                 2_048,
             ),
             thumbnail_requests: HashMap::new(),
@@ -2450,6 +2649,7 @@ impl ExplorerRoot {
             safe_mode_confirmation_error: None,
             extension_ui_pump: None,
             visual_column_runtime: None,
+            visual_column_descriptor_enabled: false,
             folder_size_visuals: None,
             folder_size_requested: HashSet::new(),
             folder_size_context: None,
@@ -2834,6 +3034,14 @@ impl ExplorerRoot {
                                             this.preview_thumbnail_failed =
                                                 this.preview_texture.is_none();
                                         }
+                                        explorer_model::ThumbnailTerminal::Compressed {
+                                            raster,
+                                            ..
+                                        } => {
+                                            this.preview_texture = bc7_texture(raster);
+                                            this.preview_thumbnail_failed =
+                                                this.preview_texture.is_none();
+                                        }
                                         explorer_model::ThumbnailTerminal::Fallback(_)
                                         | explorer_model::ThumbnailTerminal::Failed(_) => {
                                             this.preview_texture = None;
@@ -2844,9 +3052,20 @@ impl ExplorerRoot {
                                 if let (
                                     Some(presentation),
                                     explorer_model::ThumbnailTerminal::Ready { pixels, .. },
-                                ) = (presentation, outcome)
+                                ) = (presentation.clone(), outcome)
                                     && admit_presentation
                                     && let Some(texture) = thumbnail_texture(pixels)
+                                {
+                                    this.shell_icons.insert_thumbnail(&presentation, texture);
+                                }
+                                if let (
+                                    Some(presentation),
+                                    explorer_model::ThumbnailTerminal::Compressed {
+                                        raster, ..
+                                    },
+                                ) = (presentation, outcome)
+                                    && admit_presentation
+                                    && let Some(texture) = bc7_texture(raster)
                                 {
                                     this.shell_icons.insert_thumbnail(&presentation, texture);
                                 }
@@ -3204,6 +3423,13 @@ impl ExplorerRoot {
         self.submit_command(command);
     }
 
+    fn submit_idle_active_location_load(&mut self) {
+        let Some(command) = self.state.begin_idle_active_location_load() else {
+            return;
+        };
+        self.submit_command(command);
+    }
+
     fn submit_navigation_icon_loads(&mut self) {
         let tab = self.state.tabs().active_tab();
         let theme = match self.tokens.theme.mode {
@@ -3279,8 +3505,15 @@ impl ExplorerRoot {
             .find(|tab| tab.id == directory_context.tab_id)
             .is_some_and(|tab| tab.view.settings.always_show_icons);
         let logical_size = navigation_pane::view_icon_logical_size_for_settings(&view_settings);
-        self.shell_icons
-            .set_byte_budget(shell_texture_cache_byte_budget(&view_settings));
+        let (visible_icon_budget, base_icon_budget) = icon_cache_byte_budgets(&view_settings);
+        self.shell_icons.set_byte_budget(visible_icon_budget);
+        self.base_icons.set_byte_budget(base_icon_budget);
+        self.thumbnail_memory_cache
+            .set_byte_budget(thumbnail_pixel_cache_byte_budget(&view_settings));
+        gpui::set_compressed_gpu_cache_limits(
+            u64::from(view_settings.cache_budgets.icon_gpu_mb) * 1024 * 1024,
+            u64::from(view_settings.cache_budgets.thumbnail_gpu_mb) * 1024 * 1024,
+        );
         let theme = match self.tokens.theme.mode {
             ThemeMode::Light => explorer_model::ShellIconTheme::Light,
             ThemeMode::Dark => explorer_model::ShellIconTheme::Dark,
@@ -4584,27 +4817,32 @@ impl ExplorerRoot {
             }
             return;
         }
-        if action == ExplorerAction::ToggleFolderSizeProportionalBar {
-            if !self.code_lines_runtimes.is_empty() {
-                let current = self.code_lines_visuals.first().map_or(
-                    code_lines_column::CodeLinesDisplayMode::default(),
-                    |visuals| visuals.config.display,
-                );
-                let next = match current {
-                    code_lines_column::CodeLinesDisplayMode::CodeOnly => {
-                        code_lines_column::CodeLinesDisplayMode::WithCommentAndBlank
-                    }
-                    code_lines_column::CodeLinesDisplayMode::WithCommentAndBlank => {
-                        code_lines_column::CodeLinesDisplayMode::CodeOnly
-                    }
-                };
-                self.code_lines_display_override = Some(next);
-                for visuals in &mut self.code_lines_visuals {
-                    visuals.config.display = next;
+        if action == ExplorerAction::ToggleCodeLinesDetail {
+            let current = self.code_lines_visuals.first().map_or(
+                code_lines_column::CodeLinesDisplayMode::default(),
+                |visuals| visuals.config.display,
+            );
+            let next = match current {
+                code_lines_column::CodeLinesDisplayMode::CodeOnly => {
+                    code_lines_column::CodeLinesDisplayMode::WithCommentAndBlank
                 }
-                cx.notify();
-                return;
+                code_lines_column::CodeLinesDisplayMode::WithCommentAndBlank => {
+                    code_lines_column::CodeLinesDisplayMode::CodeOnly
+                }
+            };
+            self.code_lines_display_override = Some(next);
+            for visuals in &mut self.code_lines_visuals {
+                visuals.config.display = next;
             }
+            tracing::info!(
+                display = ?next,
+                columns = self.code_lines_visuals.len(),
+                "Code lines detail display changed"
+            );
+            cx.notify();
+            return;
+        }
+        if action == ExplorerAction::ToggleFolderSizeProportionalBar {
             let current = self.folder_size_visuals.as_ref().map_or(
                 folder_size_column::FolderSizeDisplayMode::default(),
                 |visuals| visuals.config.folder_size_display,
@@ -4708,9 +4946,46 @@ impl ExplorerRoot {
         }
         let focused_before = self.state.focused_surface();
         let seven_z_enabled_before = self.state.extension_enabled("rust-7z-virtual-folder");
+        let mft_cache_memory_mb_before = self.state.view_settings().mft_folder_cache_memory_mb;
+        let cache_budgets_before = self.state.view_settings().cache_budgets;
+        let directory_facts_demand_before =
+            DirectoryFactsDemandV1::from_settings(&self.state.view_settings());
         let ((), measurement) = measure_callback(action.name(), || {
             dispatch_action(&mut self.state, action.clone(), source);
         });
+        let directory_facts_demand_after =
+            DirectoryFactsDemandV1::from_settings(&self.state.view_settings());
+        if directory_facts_demand_before != directory_facts_demand_after {
+            if !directory_facts_demand_after.any() {
+                self.folder_size_requested
+                    .retain(|(_, _, _, require_directory_facts)| !*require_directory_facts);
+            } else if !directory_facts_demand_before.any() {
+                // A visible count column is an explicit activation event. Drop
+                // any obsolete count-only suppression key and submit current
+                // folder rows now; no refresh or navigation is required.
+                self.folder_size_requested
+                    .retain(|(_, _, _, require_directory_facts)| !*require_directory_facts);
+                self.submit_folder_size_requests();
+            }
+        }
+        if matches!(
+            action,
+            ExplorerAction::ApplyFolderOptions | ExplorerAction::ConfirmFolderOptions
+        ) && self.state.view_settings().mft_folder_cache_memory_mb != mft_cache_memory_mb_before
+        {
+            self.folder_size_requested.clear();
+            if let Some(visuals) = self.folder_size_visuals.as_mut() {
+                visuals.values.clear();
+            }
+        }
+        if matches!(
+            action,
+            ExplorerAction::ApplyFolderOptions | ExplorerAction::ConfirmFolderOptions
+        ) && self.state.view_settings().cache_budgets != cache_budgets_before
+            && let Some(runtime) = self.visual_column_runtime.as_ref()
+        {
+            runtime.configure_cache_budgets(self.state.view_settings().cache_budgets);
+        }
         if action == ExplorerAction::AddLuaBookmark {
             self.state.begin_bookmark_editor(None);
             self.reset_bookmark_editor_inputs(cx);
@@ -4812,8 +5087,9 @@ impl ExplorerRoot {
                 cx.notify();
             }
         }
-        if action == ExplorerAction::ToggleSelectedBookmark {
-            if let Some((target, existing_id)) = self.state.selected_bookmark_target_and_id() {
+        if action == ExplorerAction::ToggleCurrentFolderBookmark {
+            if let Some((target, existing_id)) = self.state.current_folder_bookmark_target_and_id()
+            {
                 let mutation = if let Some(id) = existing_id {
                     self.state.remove_bookmark(id)
                 } else {
@@ -4933,6 +5209,9 @@ impl ExplorerRoot {
                 folder_options_window::FolderOptionsWindowSnapshotV1 {
                     draft,
                     extensions: self.state.extensions().to_vec(),
+                    cache_usage: self.cache_usage_snapshot(
+                        folder_options_window::CacheUsageSnapshotV1::default(),
+                    ),
                 }
             });
             let _ = observer(true, snapshot, cx);
@@ -5368,6 +5647,9 @@ impl ExplorerRoot {
         {
             self.submit_command(command);
         }
+        if action_can_reveal_idle_restored_tab(&action) {
+            self.submit_idle_active_location_load();
+        }
         if action == ExplorerAction::ToggleTheme {
             let theme = match self.tokens.theme.mode {
                 ThemeMode::Light => explorer_model::ShellIconTheme::Light,
@@ -5596,6 +5878,33 @@ impl ExplorerRoot {
             window.remove_window();
         }
         cx.notify();
+    }
+
+    pub(crate) fn cache_usage_snapshot(
+        &self,
+        mut snapshot: folder_options_window::CacheUsageSnapshotV1,
+    ) -> folder_options_window::CacheUsageSnapshotV1 {
+        let icons = self.shell_icons.stats();
+        let thumbnails = self.thumbnail_memory_cache.stats();
+        snapshot.icon_memory_bytes = icons.current_bytes as u64;
+        snapshot.icon_memory_limit = icons.byte_budget as u64;
+        snapshot.base_icon_memory_bytes = self.base_icons.current_bytes as u64;
+        snapshot.base_icon_memory_limit = self.base_icons.byte_budget as u64;
+        snapshot.thumbnail_memory_bytes = thumbnails.current_bytes as u64;
+        snapshot.thumbnail_memory_limit = thumbnails.byte_budget as u64;
+        let (icon_gpu, thumbnail_gpu) = gpui::compressed_gpu_cache_stats();
+        snapshot.icon_gpu_bytes = icon_gpu.bytes;
+        snapshot.icon_gpu_limit = icon_gpu.limit_bytes;
+        snapshot.icon_gpu_entries = icon_gpu.entries;
+        snapshot.thumbnail_gpu_bytes = thumbnail_gpu.bytes;
+        snapshot.thumbnail_gpu_limit = thumbnail_gpu.limit_bytes;
+        snapshot.thumbnail_gpu_entries = thumbnail_gpu.entries;
+        snapshot.bc7_gpu_supported = icon_gpu.supported;
+        snapshot
+    }
+
+    pub(crate) fn service_for_cache_telemetry(&self) -> Option<Arc<dyn ExplorerService>> {
+        self.service.clone()
     }
 
     fn breadcrumb_key_action(&self, event: &gpui::KeyDownEvent) -> Option<ExplorerAction> {
@@ -6243,6 +6552,9 @@ fn visual_entries(prefix: &str) -> Vec<explorer_model::FileEntry> {
 }
 
 fn shell_icon_texture(payload: &explorer_model::ShellIconPayload) -> Option<Arc<RenderImage>> {
+    if let Some(raster) = &payload.bc7 {
+        return bc7_texture(raster);
+    }
     let tight_stride = usize::from(payload.width) * 4;
     let mut pixels = if payload.stride as usize == tight_stride {
         payload.rgba.clone()
@@ -6258,6 +6570,26 @@ fn shell_icon_texture(payload: &explorer_model::ShellIconPayload) -> Option<Arc<
         image::RgbaImage::from_raw(u32::from(payload.width), u32::from(payload.height), pixels)?;
     let frame = image::Frame::new(buffer);
     Some(Arc::new(RenderImage::new(smallvec::smallvec![frame])))
+}
+
+fn bc7_texture(raster: &explorer_model::Bc7RasterPayload) -> Option<Arc<RenderImage>> {
+    raster.validate(64 * 1024 * 1024).then(|| {
+        gpui::RenderImage::new_bc7_srgb(gpui::CompressedRaster {
+            kind: match raster.kind {
+                explorer_model::CompressedRasterKind::Icon => gpui::CompressedRasterKind::Icon,
+                explorer_model::CompressedRasterKind::Thumbnail => {
+                    gpui::CompressedRasterKind::Thumbnail
+                }
+            },
+            width: raster.width,
+            height: raster.height,
+            padded_width: raster.padded_width,
+            padded_height: raster.padded_height,
+            row_pitch: raster.row_pitch,
+            blocks: Arc::from(raster.blocks.clone()),
+        })
+        .map(Arc::new)
+    })?
 }
 
 fn thumbnail_texture(pixels: &explorer_model::ThumbnailPixels) -> Option<Arc<RenderImage>> {
@@ -7089,16 +7421,413 @@ mod tests {
     };
 
     use super::{
-        BaseIconCache, ENRICHMENT_SERVICE_EVENT_CAPACITY, ExplorerRoot, ExtensionUiPumpPortV1,
-        SafeModeOfferV1, UiTokens, VisibleItemIconCache, VisualFixtureState,
+        BaseIconCache, DirectoryFactsDemandV1, ENRICHMENT_SERVICE_EVENT_CAPACITY, ExplorerRoot,
+        ExtensionUiPumpPortV1, SafeModeOfferV1, UiTokens, VisibleItemIconCache, VisualFixtureState,
         action_for_host_context_command, active_window_title, advance_item_overlay_epoch,
         captured_scrollbar_axis_to_logical, coalesce_directory_events, extension_ui_pump_due,
         file_view_global_command_action, file_view_item_command_action,
-        file_view_navigation_target, folder_size_result_is_current, is_command_prompt_address,
-        is_passive_pointer_action, physical_client_to_logical, prepare_shell_texture_pixels,
-        should_end_address_edit, should_end_inline_rename, synchronize_theme, thumbnail_texture,
+        file_view_navigation_target, folder_admission_for_entry, folder_size_result_is_current,
+        is_command_prompt_address, is_passive_pointer_action, physical_client_to_logical,
+        prepare_shell_texture_pixels, seed_active_visual_tab, should_end_address_edit,
+        should_end_inline_rename, synchronize_theme, thumbnail_texture,
         window_title_for_history_entry,
     };
+
+    #[derive(Default)]
+    struct RecordingDirectoryFactsRuntimeV1 {
+        requests: Mutex<Vec<super::folder_size_column::FolderSizeRequestV1>>,
+    }
+
+    impl super::folder_size_column::VisualColumnRuntimePortV1 for RecordingDirectoryFactsRuntimeV1 {
+        fn config(&self) -> super::folder_size_column::VisualColumnConfigV1 {
+            super::folder_size_column::VisualColumnConfigV1::default()
+        }
+
+        fn submit_folder_size_requests(
+            &self,
+            requests: Vec<super::folder_size_column::FolderSizeRequestV1>,
+        ) {
+            self.requests.lock().unwrap().extend(requests);
+        }
+
+        fn cancel_folder_size_context(&self, _: &explorer_model::RequestContext) {}
+
+        fn invalidate_directory_cache(&self, _: &std::path::Path) {}
+
+        fn drain_folder_size_results(&self) -> Vec<super::folder_size_column::FolderSizeResultV1> {
+            Vec::new()
+        }
+
+        fn render_cell(
+            &self,
+            _: explorer_extension_ui_api::CellRenderContextV1,
+        ) -> explorer_extension_ui_api::CellRenderPlanV1 {
+            explorer_extension_ui_api::CellRenderPlanV1::text_only(
+                "",
+                explorer_extension_ui_api::CellColorV1::rgba(0, 0, 0, 0),
+            )
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingCodeLinesRuntimeV1 {
+        requests: Mutex<Vec<super::code_lines_column::CodeLinesRequestV1>>,
+    }
+
+    impl super::code_lines_column::CodeLinesRuntimePortV1 for RecordingCodeLinesRuntimeV1 {
+        fn config(&self) -> super::code_lines_column::CodeLinesColumnConfigV1 {
+            super::code_lines_column::CodeLinesColumnConfigV1::default()
+        }
+
+        fn submit_code_lines_requests(
+            &self,
+            requests: Vec<super::code_lines_column::CodeLinesRequestV1>,
+        ) {
+            self.requests.lock().unwrap().extend(requests);
+        }
+
+        fn cancel_code_lines_context(&self, _: &explorer_model::RequestContext) {}
+
+        fn invalidate_directory_cache(&self, _: &std::path::Path) {}
+
+        fn drain_code_lines_results(&self) -> Vec<super::code_lines_column::CodeLinesResultV1> {
+            Vec::new()
+        }
+
+        fn render_cell(
+            &self,
+            _: explorer_extension_ui_api::CellRenderContextV1,
+        ) -> explorer_extension_ui_api::CellRenderPlanV1 {
+            explorer_extension_ui_api::CellRenderPlanV1::text_only(
+                "",
+                explorer_extension_ui_api::CellColorV1::rgba(0, 0, 0, 0),
+            )
+        }
+    }
+
+    #[test]
+    fn directory_facts_requests_follow_visible_count_columns_and_deduplicate() {
+        let runtime = Arc::new(RecordingDirectoryFactsRuntimeV1::default());
+        let mut root = ExplorerRoot::default();
+        seed_active_visual_tab(&mut root.state, "Counts", true, false);
+        root.attach_directory_facts_runtime(runtime.clone());
+
+        root.submit_folder_size_requests();
+        assert!(runtime.requests.lock().unwrap().is_empty());
+
+        root.state
+            .toggle_details_column(explorer_model::ColumnId::FileCount);
+        root.submit_folder_size_requests();
+        let first = runtime.requests.lock().unwrap().clone();
+        assert_eq!(first.len(), 2);
+        assert!(first.iter().all(|request| request.require_directory_facts));
+
+        root.state
+            .toggle_details_column(explorer_model::ColumnId::FolderCount);
+        root.submit_folder_size_requests();
+        assert_eq!(runtime.requests.lock().unwrap().len(), first.len());
+
+        root.state
+            .toggle_details_column(explorer_model::ColumnId::FileCount);
+        root.state
+            .toggle_details_column(explorer_model::ColumnId::FolderCount);
+        root.folder_size_requested.clear();
+        root.submit_folder_size_requests();
+        assert_eq!(runtime.requests.lock().unwrap().len(), first.len());
+    }
+
+    #[test]
+    fn restored_visible_count_column_starts_current_folder_requests() {
+        let runtime = Arc::new(RecordingDirectoryFactsRuntimeV1::default());
+        let mut root = ExplorerRoot::default();
+        root.state
+            .toggle_details_column(explorer_model::ColumnId::FolderCount);
+        seed_active_visual_tab(&mut root.state, "Restored Counts", true, false);
+        root.attach_directory_facts_runtime(runtime.clone());
+
+        root.submit_folder_size_requests();
+
+        let requests = runtime.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.require_directory_facts)
+        );
+    }
+
+    #[test]
+    fn hidden_file_count_blocks_folder_code_lines_without_starting_count_queries() {
+        let facts = Arc::new(RecordingDirectoryFactsRuntimeV1::default());
+        let code_lines = Arc::new(RecordingCodeLinesRuntimeV1::default());
+        let mut root = ExplorerRoot::default();
+        seed_active_visual_tab(&mut root.state, "Hidden Count", true, false);
+        root.attach_directory_facts_runtime(facts.clone());
+        root.attach_code_lines_runtime(code_lines.clone());
+
+        root.submit_folder_size_requests();
+        root.submit_code_lines_requests();
+
+        assert!(facts.requests.lock().unwrap().is_empty());
+        let requests = code_lines.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        let containers = root
+            .state
+            .tabs()
+            .active_tab()
+            .visible_snapshot()
+            .unwrap()
+            .entries()
+            .iter()
+            .filter(|entry| entry.is_container)
+            .map(|entry| entry.id.clone())
+            .collect::<HashSet<_>>();
+        assert!(
+            requests
+                .iter()
+                .all(|request| !containers.contains(&request.item_id))
+        );
+        assert!(root.code_lines_visuals[0].admissions.values().all(|state| {
+            *state == super::code_lines_column::FolderAdmissionStateV1::Unavailable
+        }));
+    }
+
+    #[test]
+    fn folder_admission_never_dispatches_without_exact_in_limit_facts() {
+        let policy = super::code_lines_column::FolderAdmissionPolicyV1 {
+            max_file_count: Some(999),
+            max_folder_count: None,
+        };
+        assert_eq!(
+            folder_admission_for_entry(
+                true,
+                policy,
+                None,
+                true,
+                DirectoryFactsDemandV1 {
+                    file_count: true,
+                    folder_count: false
+                },
+            ),
+            Err(super::code_lines_column::FolderAdmissionStateV1::Pending)
+        );
+        assert!(
+            folder_admission_for_entry(
+                false,
+                policy,
+                None,
+                false,
+                DirectoryFactsDemandV1::default(),
+            )
+            .is_ok()
+        );
+        let value = |file_count| super::folder_size_column::FolderSizeValueV1 {
+            exact_bytes: Some(0),
+            directory_facts: Some(super::folder_size_column::DirectoryFactsV1 {
+                mft_generation: 8,
+                file_count,
+                folder_count: 0,
+            }),
+            partial: false,
+            error: None,
+            retry_after: None,
+        };
+        assert!(
+            folder_admission_for_entry(
+                true,
+                policy,
+                Some(&value(999)),
+                true,
+                DirectoryFactsDemandV1 {
+                    file_count: true,
+                    folder_count: false
+                },
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            folder_admission_for_entry(
+                true,
+                policy,
+                Some(&value(1_000)),
+                true,
+                DirectoryFactsDemandV1 {
+                    file_count: true,
+                    folder_count: false
+                }
+            ),
+            Err(super::code_lines_column::FolderAdmissionStateV1::OverLimit)
+        );
+        let unavailable = super::folder_size_column::FolderSizeValueV1 {
+            exact_bytes: None,
+            directory_facts: None,
+            partial: false,
+            error: Some("MFT unavailable".to_owned()),
+            retry_after: None,
+        };
+        assert_eq!(
+            folder_admission_for_entry(
+                true,
+                policy,
+                Some(&unavailable),
+                true,
+                DirectoryFactsDemandV1 {
+                    file_count: true,
+                    folder_count: false
+                }
+            ),
+            Err(super::code_lines_column::FolderAdmissionStateV1::Unavailable)
+        );
+
+        let partial = super::folder_size_column::FolderSizeValueV1 {
+            exact_bytes: Some(12),
+            directory_facts: None,
+            partial: true,
+            error: None,
+            retry_after: None,
+        };
+        assert_eq!(
+            folder_admission_for_entry(
+                true,
+                policy,
+                Some(&partial),
+                true,
+                DirectoryFactsDemandV1 {
+                    file_count: true,
+                    folder_count: false
+                }
+            ),
+            Err(super::code_lines_column::FolderAdmissionStateV1::Unavailable)
+        );
+        assert_eq!(
+            folder_admission_for_entry(
+                true,
+                policy,
+                None,
+                false,
+                DirectoryFactsDemandV1 {
+                    file_count: true,
+                    folder_count: false
+                }
+            ),
+            Err(super::code_lines_column::FolderAdmissionStateV1::Unavailable)
+        );
+
+        let both = super::code_lines_column::FolderAdmissionPolicyV1 {
+            max_file_count: Some(999),
+            max_folder_count: Some(3),
+        };
+        let value_with_counts =
+            |file_count, folder_count| super::folder_size_column::FolderSizeValueV1 {
+                exact_bytes: Some(0),
+                directory_facts: Some(super::folder_size_column::DirectoryFactsV1 {
+                    mft_generation: 9,
+                    file_count,
+                    folder_count,
+                }),
+                partial: false,
+                error: None,
+                retry_after: None,
+            };
+        assert!(
+            folder_admission_for_entry(
+                true,
+                both,
+                Some(&value_with_counts(999, 3)),
+                true,
+                DirectoryFactsDemandV1 {
+                    file_count: true,
+                    folder_count: true
+                }
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            folder_admission_for_entry(
+                true,
+                both,
+                Some(&value_with_counts(998, 4)),
+                true,
+                DirectoryFactsDemandV1 {
+                    file_count: true,
+                    folder_count: true
+                }
+            ),
+            Err(super::code_lines_column::FolderAdmissionStateV1::OverLimit)
+        );
+
+        let unlimited = super::code_lines_column::FolderAdmissionPolicyV1::default();
+        assert!(
+            folder_admission_for_entry(
+                true,
+                unlimited,
+                None,
+                false,
+                DirectoryFactsDemandV1::default()
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn hidden_count_columns_disable_limited_folder_admission_even_with_cached_facts() {
+        let policy = super::code_lines_column::FolderAdmissionPolicyV1 {
+            max_file_count: Some(999),
+            max_folder_count: None,
+        };
+        let cached = super::folder_size_column::FolderSizeValueV1 {
+            exact_bytes: Some(0),
+            directory_facts: Some(super::folder_size_column::DirectoryFactsV1 {
+                mft_generation: 12,
+                file_count: 1,
+                folder_count: 0,
+            }),
+            partial: false,
+            error: None,
+            retry_after: None,
+        };
+
+        assert_eq!(
+            folder_admission_for_entry(
+                true,
+                policy,
+                Some(&cached),
+                true,
+                DirectoryFactsDemandV1::default(),
+            ),
+            Err(super::code_lines_column::FolderAdmissionStateV1::Unavailable)
+        );
+    }
+
+    #[test]
+    fn each_declared_limit_requires_its_corresponding_visible_count_column() {
+        let both = super::code_lines_column::FolderAdmissionPolicyV1 {
+            max_file_count: Some(999),
+            max_folder_count: Some(9),
+        };
+        assert!(!DirectoryFactsDemandV1::default().any());
+        assert!(
+            !DirectoryFactsDemandV1 {
+                file_count: true,
+                folder_count: false
+            }
+            .enables(both)
+        );
+        assert!(
+            !DirectoryFactsDemandV1 {
+                file_count: false,
+                folder_count: true
+            }
+            .enables(both)
+        );
+        assert!(
+            DirectoryFactsDemandV1 {
+                file_count: true,
+                folder_count: true
+            }
+            .enables(both)
+        );
+    }
 
     #[test]
     fn address_bar_recognizes_only_the_bare_cmd_command() {
@@ -7205,6 +7934,7 @@ mod tests {
                 },
             )]),
             errors: std::collections::HashMap::from([(item.clone(), "old error".to_owned())]),
+            admissions: std::collections::HashMap::new(),
         }];
         let column_id = root.code_lines_visuals[0].config.descriptor.id.clone();
         root.code_lines_requested
@@ -7243,6 +7973,7 @@ mod tests {
             ),
             item_id,
             exact_bytes: Some(42),
+            directory_facts: None,
             partial: false,
             error: None,
         };
@@ -7261,8 +7992,10 @@ mod tests {
             result.item_id,
             super::folder_size_column::FolderSizeValueV1 {
                 exact_bytes: Some(42),
+                directory_facts: None,
                 partial: false,
                 error: None,
+                retry_after: None,
             },
         );
         assert!(visuals.begin_context(&current));
@@ -7470,21 +8203,27 @@ mod tests {
     }
 
     #[test]
-    fn maximum_icons_leave_half_the_texture_cache_for_visible_and_chrome_assets() {
+    fn icon_and_thumbnail_caches_have_independent_memory_budgets() {
         let mut settings = explorer_model::ViewSettings {
             mode: explorer_model::ViewMode::ExtraLargeIcons,
             ..explorer_model::ViewSettings::default()
         };
         settings.icon_size = 512;
 
-        assert_eq!(super::icon_prime_cap(&settings, 192), 16);
+        assert_eq!(super::icon_prime_cap(&settings, 192), 4);
         settings.icon_cache_memory_mb = 64;
         assert_eq!(super::icon_prime_cap(&settings, 192), 8);
         settings.icon_cache_memory_mb = 1_024;
         assert_eq!(super::icon_prime_cap(&settings, 192), 16);
 
         settings.icon_cache_memory_mb = 128;
+        settings.thumbnail_cache_memory_mb = 256;
         let budget = super::shell_texture_cache_byte_budget(&settings);
+        assert_eq!(budget, 128 * 1024 * 1024);
+        assert_eq!(
+            super::thumbnail_pixel_cache_byte_budget(&settings),
+            256 * 1024 * 1024
+        );
         let mut cache = super::VisibleItemIconCache::default();
         cache.set_byte_budget(budget);
         for id in 0_u8..16 {
@@ -7511,7 +8250,7 @@ mod tests {
         let stats = cache.stats();
         assert_eq!(stats.entries, 16);
         assert_eq!(stats.evictions, 0);
-        assert!(stats.current_bytes <= stats.byte_budget / 2);
+        assert!(stats.current_bytes <= stats.byte_budget);
     }
 
     #[test]
@@ -8528,7 +9267,7 @@ mod tests {
         let second = cache.get(&key).expect("shared texture");
         assert!(Arc::ptr_eq(&first, &second));
         assert!(cache.entries.len() <= super::BASE_ICON_CACHE_CAPACITY);
-        assert!(cache.current_bytes <= super::BASE_ICON_CACHE_BYTE_BUDGET);
+        assert!(cache.current_bytes <= cache.byte_budget);
     }
 
     #[test]
@@ -9044,6 +9783,129 @@ mod tests {
         {
             Ok(None)
         }
+    }
+
+    fn restored_tab_root_with_service(
+        service: Arc<dyn explorer_model::ExplorerService>,
+    ) -> (ExplorerRoot, explorer_model::TabId, explorer_model::TabId) {
+        let first = explorer_model::TabState::new(explorer_model::HistoryEntry::new(
+            explorer_model::LocationDescriptor::file_system(r"C:\restored-first"),
+            "restored-first",
+        ));
+        let first_id = first.id;
+        let second = explorer_model::TabState::new(explorer_model::HistoryEntry::new(
+            explorer_model::LocationDescriptor::file_system(r"D:\restored-second"),
+            "restored-second",
+        ));
+        let second_id = second.id;
+        let tabs = explorer_model::ExplorerWindowState::from_restored_tabs(
+            vec![first, second],
+            first_id,
+            explorer_model::HistoryEntry::new(
+                explorer_model::LocationDescriptor::file_system(r"C:\fallback"),
+                "fallback",
+            ),
+        )
+        .expect("valid restored tabs");
+        (
+            ExplorerRoot::with_service_drag_threshold_and_restored_window(
+                UiTokens::default(),
+                service,
+                (4.0, 4.0),
+                tabs,
+            ),
+            first_id,
+            second_id,
+        )
+    }
+
+    fn navigation_command_count(commands: &[explorer_model::ExplorerCommand]) -> usize {
+        commands
+            .iter()
+            .filter(|command| matches!(command, explorer_model::ExplorerCommand::Navigate { .. }))
+            .count()
+    }
+
+    #[test]
+    fn only_active_tab_changes_probe_for_an_idle_restored_directory() {
+        let tab_id = explorer_model::TabId::new();
+        for action in [
+            ExplorerAction::ActivateTab { tab_id },
+            ExplorerAction::NextTab,
+            ExplorerAction::PreviousTab,
+            ExplorerAction::CloseActiveTab,
+            ExplorerAction::CloseTab { tab_id },
+        ] {
+            assert!(super::action_can_reveal_idle_restored_tab(&action));
+        }
+        assert!(!super::action_can_reveal_idle_restored_tab(
+            &ExplorerAction::NewTab
+        ));
+        assert!(!super::action_can_reveal_idle_restored_tab(
+            &ExplorerAction::Refresh
+        ));
+    }
+
+    #[test]
+    fn restored_background_activation_and_cycle_submit_one_idle_load() {
+        let service = Arc::new(RecordingService::default());
+        let (mut root, first_id, second_id) = restored_tab_root_with_service(service.clone());
+        assert_eq!(navigation_command_count(&service.0.lock().unwrap()), 1);
+
+        assert!(root.state.activate_tab(second_id));
+        root.submit_idle_active_location_load();
+        root.submit_idle_active_location_load();
+        assert_eq!(navigation_command_count(&service.0.lock().unwrap()), 2);
+
+        assert!(root.state.activate_tab(first_id));
+        root.submit_idle_active_location_load();
+        assert_eq!(navigation_command_count(&service.0.lock().unwrap()), 2);
+
+        let reverse_service = Arc::new(RecordingService::default());
+        let (mut reverse, _, reverse_second) =
+            restored_tab_root_with_service(reverse_service.clone());
+        assert!(reverse.state.activate_tab(reverse_second));
+        reverse.submit_idle_active_location_load();
+        assert!(reverse.state.cycle_tab(-1));
+        reverse.submit_idle_active_location_load();
+        assert_eq!(
+            navigation_command_count(&reverse_service.0.lock().unwrap()),
+            2
+        );
+    }
+
+    #[test]
+    fn closing_active_restored_tab_loads_the_idle_replacement_once() {
+        let service = Arc::new(RecordingService::default());
+        let (mut root, first_id, second_id) = restored_tab_root_with_service(service.clone());
+        assert_eq!(
+            root.state.close_tab(first_id),
+            explorer_model::TabCloseOutcome::Closed
+        );
+        assert_eq!(root.state.tabs().active_tab_id(), second_id);
+        root.submit_idle_active_location_load();
+        root.submit_idle_active_location_load();
+        assert_eq!(navigation_command_count(&service.0.lock().unwrap()), 2);
+    }
+
+    #[test]
+    fn rejected_restored_tab_auto_load_becomes_retryable_error() {
+        let (mut root, _, second_id) = restored_tab_root_with_service(Arc::new(OverloadedService));
+        assert!(matches!(
+            root.state.tabs().active_tab().directory,
+            explorer_model::DirectoryState::Error { .. }
+        ));
+        assert!(root.state.activate_tab(second_id));
+        root.submit_idle_active_location_load();
+        assert!(matches!(
+            root.state.tabs().active_tab().directory,
+            explorer_model::DirectoryState::Error { .. }
+        ));
+        assert!(
+            root.state
+                .command_availability()
+                .is_enabled(crate::state::CommandKind::Refresh)
+        );
     }
 
     #[test]

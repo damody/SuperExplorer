@@ -53,6 +53,96 @@ const DIRECT_RENDER_CACHE_CAP_V1: usize = 512;
 const SIZE_MAP_RENDER_QUEUE_CAP_V1: usize = 8;
 static NEXT_SIZE_MAP_RUNTIME_INCARNATION_V1: AtomicU64 = AtomicU64::new(1);
 const SIZE_MAP_RENDER_CACHE_CAP_V1: usize = 4;
+static MFT_BUDGET_CONFIGURATION_V1: OnceLock<
+    Arc<(
+        Mutex<Option<crate::mft_query::MftCacheBudgetLimitsV1>>,
+        Condvar,
+    )>,
+> = OnceLock::new();
+static MFT_BUDGET_CONFIGURATION_PENDING_V1: AtomicBool = AtomicBool::new(true);
+
+pub(crate) fn mft_budget_configuration_pending_v1() -> bool {
+    MFT_BUDGET_CONFIGURATION_PENDING_V1.load(Ordering::Acquire)
+}
+
+fn mft_diagnostics_match_limits(
+    diagnostics: &crate::mft_query::MftCacheDiagnosticsV1,
+    limits: crate::mft_query::MftCacheBudgetLimitsV1,
+) -> bool {
+    let mib = 1024 * 1024;
+    diagnostics.limit_bytes == u64::from(limits.lru_mb) * mib
+        && diagnostics.persisted_index_limit_bytes
+            == Some(u64::from(limits.persisted_index_mb) * mib)
+        && diagnostics.volume_index_limit_bytes == Some(u64::from(limits.volume_index_mb) * mib)
+        && diagnostics.file_data_limit_bytes == Some(u64::from(limits.file_data_mb) * mib)
+        && diagnostics.aggregate_limit_bytes == Some(u64::from(limits.aggregate_mb) * mib)
+}
+
+fn configure_mft_budget_snapshot(limits: crate::mft_query::MftCacheBudgetLimitsV1) {
+    let state = MFT_BUDGET_CONFIGURATION_V1
+        .get_or_init(|| {
+            let state = Arc::new((Mutex::new(None), Condvar::new()));
+            let worker_state = Arc::clone(&state);
+            let _worker = std::thread::Builder::new()
+                .name("mft-budget-reconnect".to_owned())
+                .spawn(move || {
+                    loop {
+                        let (lock, ready) = &*worker_state;
+                        let desired = {
+                            let mut desired = lock
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            while desired.is_none() {
+                                desired = ready
+                                    .wait(desired)
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            }
+                            desired.expect("checked above")
+                        };
+                        if crate::mft_query::query_diagnostics().is_ok_and(|diagnostics| {
+                            mft_diagnostics_match_limits(&diagnostics, desired)
+                        }) {
+                            MFT_BUDGET_CONFIGURATION_PENDING_V1.store(false, Ordering::Release);
+                            let guard = lock
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            let _ = ready
+                                .wait_timeout(guard, Duration::from_secs(2))
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            continue;
+                        }
+                        MFT_BUDGET_CONFIGURATION_PENDING_V1.store(true, Ordering::Release);
+                        let applied = crate::mft_query::set_cache_budgets(desired)
+                            .is_ok_and(|effective| effective == desired);
+                        if applied {
+                            MFT_BUDGET_CONFIGURATION_PENDING_V1.store(false, Ordering::Release);
+                        }
+                        let desired_guard = lock
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let _ = ready
+                            .wait_timeout(
+                                desired_guard,
+                                if applied {
+                                    Duration::from_secs(2)
+                                } else {
+                                    Duration::from_millis(250)
+                                },
+                            )
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        MFT_BUDGET_CONFIGURATION_PENDING_V1.store(true, Ordering::Release);
+                    }
+                });
+            state
+        })
+        .clone();
+    let (lock, ready) = &*state;
+    *lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(limits);
+    MFT_BUDGET_CONFIGURATION_PENDING_V1.store(true, Ordering::Release);
+    ready.notify_one();
+}
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct CellRenderKeyV1(Vec<u8>);
@@ -718,18 +808,28 @@ struct ApplicationVisualColumnRuntimeV1 {
     results: Mutex<mpsc::Receiver<explorer_ui::folder_size_column::FolderSizeResultV1>>,
     cached_results: Mutex<Vec<explorer_ui::folder_size_column::FolderSizeResultV1>>,
     cache: Arc<Mutex<HostExtensionColumnCacheV1<FolderSizeCachedValueV1>>>,
-    renderer: AsyncCellRendererV1,
+    renderer: Option<AsyncCellRendererV1>,
     backend_status: Arc<AtomicU8>,
     backend_active: Arc<AtomicBool>,
+    directory_facts_active: AtomicBool,
+    directory_facts_focus: crate::mft_focus::FocusWindowReporterV1,
 }
 
 const HOST_EXTENSION_COLUMN_CACHE_CAPACITY_V1: usize = 16_384;
+static HOST_EXTENSION_MEMORY_LIMIT_BYTES_V1: AtomicU64 = AtomicU64::new(32 * 1024 * 1024);
+static HOST_EXTENSION_DISK_LIMIT_BYTES_V1: AtomicU64 = AtomicU64::new(256 * 1024 * 1024);
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct HostExtensionColumnCacheKeyV1 {
     canonical_path: PathBuf,
     modified_seconds: u64,
     modified_nanos: u32,
+}
+
+fn unix_seconds_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
 }
 
 fn host_extension_column_cache_key(path: &Path) -> Option<HostExtensionColumnCacheKeyV1> {
@@ -749,9 +849,112 @@ fn host_extension_column_cache_key(path: &Path) -> Option<HostExtensionColumnCac
 
 #[derive(Debug)]
 struct HostExtensionColumnCacheV1<T> {
-    values: HashMap<HostExtensionColumnCacheKeyV1, (PathBuf, u64, T)>,
+    /// Entries keyed by canonical path + the directory mtime observed when
+    /// the value was produced. The value tuple is
+    /// `(directory, directory_epoch, cached_at_seconds, value)`.
+    values: HashMap<HostExtensionColumnCacheKeyV1, (PathBuf, u64, u64, T)>,
     directory_epochs: HashMap<PathBuf, u64>,
     persistent_namespace: Option<&'static str>,
+    active_root: Option<PathBuf>,
+    active_depth: usize,
+    /// When `Some`, a lookup whose mtime no longer matches may still reuse an
+    /// in-memory entry whose mtime is newer than the current one (or older,
+    /// see `get`) as long as it was written within this many seconds.
+    ttl_seconds: Option<u64>,
+    telemetry: Arc<HostExtensionCacheTrackerV1>,
+}
+
+#[derive(Debug, Default)]
+struct HostExtensionCacheTrackerV1 {
+    bytes: AtomicU64,
+    entries: AtomicU64,
+}
+
+static HOST_EXTENSION_CACHE_TRACKERS_V1: OnceLock<
+    Mutex<Vec<std::sync::Weak<HostExtensionCacheTrackerV1>>>,
+> = OnceLock::new();
+
+fn register_host_extension_cache_tracker_v1() -> Arc<HostExtensionCacheTrackerV1> {
+    let tracker = Arc::new(HostExtensionCacheTrackerV1::default());
+    if let Ok(mut trackers) = HOST_EXTENSION_CACHE_TRACKERS_V1
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+    {
+        trackers.retain(|candidate| candidate.strong_count() != 0);
+        trackers.push(Arc::downgrade(&tracker));
+    }
+    tracker
+}
+
+pub(crate) fn host_extension_cache_telemetry_v1() -> (u64, u64) {
+    let Some(trackers) = HOST_EXTENSION_CACHE_TRACKERS_V1.get() else {
+        return (0, 0);
+    };
+    let Ok(mut trackers) = trackers.lock() else {
+        return (0, 0);
+    };
+    let mut bytes = 0_u64;
+    let mut entries = 0_u64;
+    trackers.retain(|candidate| {
+        let Some(tracker) = candidate.upgrade() else {
+            return false;
+        };
+        bytes = bytes.saturating_add(tracker.bytes.load(Ordering::Acquire));
+        entries = entries.saturating_add(tracker.entries.load(Ordering::Acquire));
+        true
+    });
+    (bytes, entries)
+}
+
+pub(crate) fn host_extension_cache_limit_v1() -> u64 {
+    HOST_EXTENSION_MEMORY_LIMIT_BYTES_V1.load(Ordering::Acquire)
+}
+
+pub(crate) fn host_extension_persistent_cache_limit_v1() -> u64 {
+    HOST_EXTENSION_DISK_LIMIT_BYTES_V1.load(Ordering::Acquire)
+}
+
+pub(crate) fn host_extension_persistent_cache_telemetry_v1() -> (u64, u64) {
+    let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") else {
+        return (0, 0);
+    };
+    let root = PathBuf::from(local_app_data)
+        .join("SuperExplorer")
+        .join("data-column-cache");
+    let Ok(metadata) = fs::symlink_metadata(&root) else {
+        return (0, 0);
+    };
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return (0, 0);
+    }
+    let mut bytes = 0_u64;
+    let mut entries = 0_u64;
+    let mut visited = 0_usize;
+    let mut pending = vec![root];
+    while let Some(directory) = pending.pop() {
+        visited = visited.saturating_add(1);
+        if visited > 100_000 {
+            break;
+        }
+        let Ok(children) = fs::read_dir(directory) else {
+            continue;
+        };
+        for child in children.flatten() {
+            let Ok(metadata) = fs::symlink_metadata(child.path()) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_dir() {
+                pending.push(child.path());
+            } else if metadata.is_file() {
+                bytes = bytes.saturating_add(metadata.len());
+                entries = entries.saturating_add(1);
+            }
+        }
+    }
+    (bytes, entries)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -767,6 +970,10 @@ impl<T> Default for HostExtensionColumnCacheV1<T> {
             values: HashMap::new(),
             directory_epochs: HashMap::new(),
             persistent_namespace: None,
+            active_root: None,
+            active_depth: 3,
+            ttl_seconds: None,
+            telemetry: register_host_extension_cache_tracker_v1(),
         }
     }
 }
@@ -777,6 +984,59 @@ trait HostExtensionColumnCacheValueV1: Clone {
 }
 
 impl<T: HostExtensionColumnCacheValueV1> HostExtensionColumnCacheV1<T> {
+    fn entry_bytes(key: &HostExtensionColumnCacheKeyV1, directory: &Path, value: &T) -> u64 {
+        let value_bytes = serde_json::to_vec(&value.encode_cache_value())
+            .map_or(0_u64, |bytes| bytes.len().try_into().unwrap_or(u64::MAX));
+        (key.canonical_path.to_string_lossy().len() as u64)
+            .saturating_add(directory.to_string_lossy().len() as u64)
+            .saturating_add(value_bytes)
+            .saturating_add(64)
+    }
+
+    fn trim_memory_budget(&mut self) {
+        let limit = HOST_EXTENSION_MEMORY_LIMIT_BYTES_V1.load(Ordering::Acquire);
+        while self
+            .values
+            .iter()
+            .fold(0_u64, |total, (key, (directory, _, _, value))| {
+                total.saturating_add(Self::entry_bytes(key, directory, value))
+            })
+            > limit
+        {
+            let Some(oldest_key) = self
+                .values
+                .iter()
+                .min_by_key(|(_, (_, _, cached_at, _))| *cached_at)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            self.values.remove(&oldest_key);
+        }
+    }
+
+    fn refresh_telemetry(&self) {
+        let bytes = self
+            .values
+            .iter()
+            .fold(0_u64, |total, (key, (directory, _, _, value))| {
+                let value_bytes = serde_json::to_vec(&value.encode_cache_value())
+                    .map_or(0_u64, |bytes| bytes.len().try_into().unwrap_or(u64::MAX));
+                let key_bytes = key.canonical_path.to_string_lossy().len() as u64;
+                let directory_bytes = directory.to_string_lossy().len() as u64;
+                total
+                    .saturating_add(key_bytes)
+                    .saturating_add(directory_bytes)
+                    .saturating_add(value_bytes)
+                    .saturating_add(64)
+            });
+        self.telemetry.bytes.store(bytes, Ordering::Release);
+        self.telemetry.entries.store(
+            self.values.len().try_into().unwrap_or(u64::MAX),
+            Ordering::Release,
+        );
+    }
+
     fn persistent(namespace: &'static str) -> Self {
         Self {
             persistent_namespace: Some(namespace),
@@ -784,8 +1044,22 @@ impl<T: HostExtensionColumnCacheValueV1> HostExtensionColumnCacheV1<T> {
         }
     }
 
+    fn with_ttl(mut self, seconds: u64) -> Self {
+        self.ttl_seconds = Some(seconds);
+        self
+    }
+
+    fn set_ttl_seconds(&mut self, ttl: Option<u64>) {
+        self.ttl_seconds = ttl;
+    }
+
     fn admission(&self, path: &Path) -> Option<HostExtensionColumnCacheAdmissionV1> {
         let key = host_extension_column_cache_key(path)?;
+        if let Some(root) = self.active_root.as_deref()
+            && !path_is_within_depth(&key.canonical_path, root, self.active_depth)
+        {
+            return None;
+        }
         let directory = key.canonical_path.parent()?.to_path_buf();
         let directory_epoch = self.directory_epochs.get(&directory).copied().unwrap_or(0);
         Some(HostExtensionColumnCacheAdmissionV1 {
@@ -795,14 +1069,82 @@ impl<T: HostExtensionColumnCacheValueV1> HostExtensionColumnCacheV1<T> {
         })
     }
 
-    fn get(&self, admission: &HostExtensionColumnCacheAdmissionV1) -> Option<T> {
+    fn retain_window(&mut self, root: &Path, max_depth: usize) {
+        let Ok(root) = fs::canonicalize(root) else {
+            return;
+        };
+        if self.active_root.as_deref() == Some(root.as_path()) && self.active_depth == max_depth {
+            return;
+        }
+        self.active_root = Some(root.clone());
+        self.active_depth = max_depth;
         self.values
-            .get(&admission.key)
-            .and_then(|(directory, epoch, value)| {
-                (directory == &admission.directory && *epoch == admission.directory_epoch)
-                    .then(|| value.clone())
-            })
-            .or_else(|| self.read_persistent(admission))
+            .retain(|key, _| path_is_within_depth(&key.canonical_path, &root, max_depth));
+        self.directory_epochs
+            .retain(|directory, _| path_is_within_depth(directory, &root, max_depth));
+        self.prune_persistent_window(&root, max_depth);
+        self.refresh_telemetry();
+    }
+
+    fn prune_persistent_window(&self, root: &Path, max_depth: usize) {
+        let Some(namespace) = self.persistent_namespace else {
+            return;
+        };
+        let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") else {
+            return;
+        };
+        let directory = PathBuf::from(local_app_data)
+            .join("SuperExplorer")
+            .join("data-column-cache")
+            .join("v1")
+            .join(namespace);
+        let Ok(entries) = fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let keep = fs::symlink_metadata(&path).is_ok_and(|metadata| {
+                metadata.is_file()
+                    && !metadata.file_type().is_symlink()
+                    && metadata.len() <= 16 * 1024
+            }) && fs::read(&path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                .and_then(|record| record.get("path")?.as_str().map(PathBuf::from))
+                .is_some_and(|cached| path_is_within_depth(&cached, root, max_depth));
+            if !keep {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
+
+    fn get(&self, admission: &HostExtensionColumnCacheAdmissionV1) -> Option<T> {
+        // Exact mtime match: the directory has not changed since the value was
+        // produced, so the entry is unconditionally fresh.
+        if let Some((directory, epoch, _, value)) = self.values.get(&admission.key)
+            && directory == &admission.directory
+            && *epoch == admission.directory_epoch
+        {
+            return Some(value.clone());
+        }
+        // TTL window: the mtime moved (an actively-written volume like C:), but
+        // the measurement is recent enough to reuse instead of rescanning the
+        // whole tree. Pick the newest entry for the canonical path so a stale
+        // duplicate can never shadow a fresher one.
+        if let Some(ttl) = self.ttl_seconds
+            && let Some((directory, epoch, cached_at, value)) = self
+                .values
+                .iter()
+                .filter(|(key, _)| key.canonical_path == admission.key.canonical_path)
+                .max_by_key(|(_, (_, _, cached_at, _))| *cached_at)
+                .map(|(_, entry)| entry)
+            && directory == &admission.directory
+            && *epoch == admission.directory_epoch
+            && unix_seconds_now().saturating_sub(*cached_at) <= ttl
+        {
+            return Some(value.clone());
+        }
+        self.read_persistent(admission)
     }
 
     fn insert(&mut self, admission: HostExtensionColumnCacheAdmissionV1, value: T) -> bool {
@@ -820,17 +1162,27 @@ impl<T: HostExtensionColumnCacheValueV1> HostExtensionColumnCacheV1<T> {
         {
             self.values.clear();
         }
+        // With a TTL, the mtime is a soft freshness hint: keep only the newest
+        // entry per canonical path so lookups stay O(1) in the common case and
+        // a superseded mtime variant cannot accumulate.
+        if self.ttl_seconds.is_some() {
+            self.values
+                .retain(|key, _| key.canonical_path != admission.key.canonical_path);
+        }
         self.values.insert(
             admission.key.clone(),
             (
                 admission.directory.clone(),
                 admission.directory_epoch,
+                unix_seconds_now(),
                 value,
             ),
         );
-        if let Some((_, _, value)) = self.values.get(&admission.key) {
+        self.trim_memory_budget();
+        if let Some((_, _, _, value)) = self.values.get(&admission.key) {
             self.write_persistent(&admission, value);
         }
+        self.refresh_telemetry();
         true
     }
 
@@ -840,7 +1192,9 @@ impl<T: HostExtensionColumnCacheValueV1> HostExtensionColumnCacheV1<T> {
         };
         let epoch = self.directory_epochs.entry(directory.clone()).or_insert(0);
         *epoch = epoch.wrapping_add(1);
-        self.values.retain(|_, (scope, _, _)| scope != &directory);
+        self.values
+            .retain(|_, (scope, _, _, _)| scope != &directory);
+        self.refresh_telemetry();
     }
 
     fn persistent_path(&self, key: &HostExtensionColumnCacheKeyV1) -> Option<PathBuf> {
@@ -904,6 +1258,68 @@ impl<T: HostExtensionColumnCacheValueV1> HostExtensionColumnCacheV1<T> {
     }
 }
 
+fn configure_host_extension_cache_budgets(memory_mb: u32, disk_mb: u32) {
+    HOST_EXTENSION_MEMORY_LIMIT_BYTES_V1
+        .store(u64::from(memory_mb) * 1024 * 1024, Ordering::Release);
+    let disk_limit = u64::from(disk_mb) * 1024 * 1024;
+    HOST_EXTENSION_DISK_LIMIT_BYTES_V1.store(disk_limit, Ordering::Release);
+    let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") else {
+        return;
+    };
+    let root = PathBuf::from(local_app_data)
+        .join("SuperExplorer")
+        .join("data-column-cache");
+    let Ok(namespaces) = fs::read_dir(root) else {
+        return;
+    };
+    let mut files = Vec::new();
+    let mut pending = namespaces
+        .flatten()
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_dir() {
+                pending.push(path);
+            } else if metadata.is_file() {
+                let modified = metadata.modified().unwrap_or(UNIX_EPOCH);
+                files.push((modified, metadata.len(), path));
+            }
+        }
+    }
+    files.sort_by_key(|(modified, _, _)| *modified);
+    let mut total = files
+        .iter()
+        .fold(0_u64, |sum, (_, bytes, _)| sum.saturating_add(*bytes));
+    for (_, bytes, path) in files {
+        if total <= disk_limit {
+            break;
+        }
+        if fs::remove_file(path).is_ok() {
+            total = total.saturating_sub(bytes);
+        }
+    }
+}
+
+fn path_is_within_depth(path: &Path, root: &Path, max_depth: usize) -> bool {
+    path.strip_prefix(root)
+        .is_ok_and(|relative| relative.components().count() <= max_depth)
+}
+
+fn request_cache_root<'a>(paths: impl Iterator<Item = &'a Path>) -> Option<PathBuf> {
+    paths.filter_map(Path::parent).next().map(Path::to_path_buf)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct FolderSizeCachedValueV1 {
     exact_bytes: u64,
@@ -938,9 +1354,18 @@ fn partition_folder_size_cache_hits(
     Vec<explorer_ui::folder_size_column::FolderSizeResultV1>,
     Vec<explorer_ui::folder_size_column::FolderSizeRequestV1>,
 ) {
+    if let Some(root) = request_cache_root(requests.iter().map(|request| request.path.as_path()))
+        && let Ok(mut cache) = cache.lock()
+    {
+        cache.retain_window(&root, 3);
+    }
     let mut hits = Vec::new();
     let mut misses = Vec::new();
     for request in requests {
+        if request.require_directory_facts {
+            misses.push(request);
+            continue;
+        }
         let cached = cache.lock().ok().and_then(|cache| {
             let admission = cache.admission(&request.path)?;
             cache.get(&admission)
@@ -950,6 +1375,7 @@ fn partition_folder_size_cache_hits(
                 context: request.context,
                 item_id: request.item_id,
                 exact_bytes: Some(cached.exact_bytes),
+                directory_facts: None,
                 partial: false,
                 error: None,
             });
@@ -958,6 +1384,25 @@ fn partition_folder_size_cache_hits(
         }
     }
     (hits, misses)
+}
+
+fn exact_directory_facts(
+    status: crate::folder_size_service::SnapshotStatusV1,
+    mft_generation: Option<u64>,
+    file_count: u64,
+    root_inclusive_directory_count: u64,
+) -> Option<explorer_ui::folder_size_column::DirectoryFactsV1> {
+    (status == crate::folder_size_service::SnapshotStatusV1::Complete)
+        .then(|| {
+            mft_generation.map(
+                |mft_generation| explorer_ui::folder_size_column::DirectoryFactsV1 {
+                    mft_generation,
+                    file_count,
+                    folder_count: root_inclusive_directory_count.saturating_sub(1),
+                },
+            )
+        })
+        .flatten()
 }
 
 #[derive(Default)]
@@ -1065,14 +1510,28 @@ impl ApplicationVisualColumnRuntimeV1 {
         renderer: explorer_extension_host::SinglePluginVisualRenderRuntimeV1,
         snapshot_service: Arc<Mutex<crate::folder_size_service::FolderSizeServiceV1>>,
     ) -> Result<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1, Error> {
+        Self::start_with_renderer(Some(renderer), snapshot_service)
+    }
+
+    fn start_directory_facts(
+        snapshot_service: Arc<Mutex<crate::folder_size_service::FolderSizeServiceV1>>,
+    ) -> Result<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1, Error> {
+        Self::start_with_renderer(None, snapshot_service)
+    }
+
+    fn start_with_renderer(
+        renderer: Option<explorer_extension_host::SinglePluginVisualRenderRuntimeV1>,
+        snapshot_service: Arc<Mutex<crate::folder_size_service::FolderSizeServiceV1>>,
+    ) -> Result<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1, Error> {
         let pending = Arc::new((
             Mutex::new(PendingFolderSizeWorkV1::default()),
             Condvar::new(),
         ));
         let worker_pending = pending.clone();
-        let cache = Arc::new(Mutex::new(HostExtensionColumnCacheV1::<
-            FolderSizeCachedValueV1,
-        >::persistent("folder-size")));
+        let cache = Arc::new(Mutex::new(
+            HostExtensionColumnCacheV1::<FolderSizeCachedValueV1>::persistent("folder-size")
+                .with_ttl(explorer_model::DEFAULT_FOLDER_SIZE_CACHE_TTL_SECONDS),
+        ));
         let worker_cache = Arc::clone(&cache);
         let worker_snapshot_service = Arc::clone(&snapshot_service);
         let backend_status = Arc::new(AtomicU8::new(0));
@@ -1100,6 +1559,8 @@ impl ApplicationVisualColumnRuntimeV1 {
                         }
                         take_folder_size_requests(&mut state)
                     };
+                    let cache_root =
+                        request_cache_root(requests.iter().map(|request| request.path.as_path()));
                     for request in requests {
                         if folder_size_request_cancelled(&worker_pending, &request) {
                             finish_folder_size_request(&worker_pending, &request);
@@ -1112,6 +1573,7 @@ impl ApplicationVisualColumnRuntimeV1 {
                                     context: request.context,
                                     item_id: request.item_id,
                                     exact_bytes: None,
+                                    directory_facts: None,
                                     partial: false,
                                     error: None,
                                 },
@@ -1122,20 +1584,23 @@ impl ApplicationVisualColumnRuntimeV1 {
                             .lock()
                             .ok()
                             .and_then(|cache| cache.admission(&request.path));
-                        let cached = cache_admission.as_ref().and_then(|admission| {
-                            worker_cache
-                                .lock()
-                                .ok()
-                                .and_then(|cache| cache.get(admission))
-                        });
+                        let cached = (!request.require_directory_facts)
+                            .then(|| {
+                                cache_admission.as_ref().and_then(|admission| {
+                                    worker_cache
+                                        .lock()
+                                        .ok()
+                                        .and_then(|cache| cache.get(admission))
+                                })
+                            })
+                            .flatten();
+                        if let Ok(mut service) = worker_snapshot_service.lock() {
+                            service.set_mft_cache_memory_mb(request.mft_cache_memory_mb);
+                        }
                         worker_backend_active.store(true, Ordering::Release);
                         let measured = if let Some(cached) = cached {
                             worker_backend_status.store(1, Ordering::Release);
-                            Ok(explorer_extension_ui_api::FolderSizeMeasureResultV1 {
-                                exact_bytes: cached.exact_bytes,
-                                partial: false,
-                                error: None.into(),
-                            })
+                            Ok((cached.exact_bytes, None, false, None))
                         } else {
                             worker_snapshot_service
                                 .lock()
@@ -1145,6 +1610,7 @@ impl ApplicationVisualColumnRuntimeV1 {
                                         .aggregate_or_scan(
                                             &request.path,
                                             request.context.generation.value(),
+                                            request.require_directory_facts,
                                             || {
                                                 folder_size_request_cancelled(
                                                     &worker_pending,
@@ -1177,16 +1643,20 @@ impl ApplicationVisualColumnRuntimeV1 {
                                             Ordering::Release,
                                         );
                                     }
-                                    explorer_extension_ui_api::FolderSizeMeasureResultV1 {
-                                    exact_bytes: snapshot.aggregate.recursive_bytes,
-                                    partial: snapshot.status
-                                        != crate::folder_size_service::SnapshotStatusV1::Complete,
-                                    error: snapshot
-                                        .diagnostic
-                                        .clone()
-                                        .map(abi_stable::std_types::RString::from)
-                                        .into(),
-                                }
+                                    let partial = snapshot.status
+                                        != crate::folder_size_service::SnapshotStatusV1::Complete;
+                                    let facts = exact_directory_facts(
+                                        snapshot.status,
+                                        snapshot.mft_generation,
+                                        snapshot.aggregate.file_count,
+                                        snapshot.aggregate.directory_count,
+                                    );
+                                    (
+                                        snapshot.aggregate.recursive_bytes,
+                                        facts,
+                                        partial,
+                                        snapshot.diagnostic.clone(),
+                                    )
                                 })
                         };
                         worker_backend_active.store(false, Ordering::Release);
@@ -1194,13 +1664,11 @@ impl ApplicationVisualColumnRuntimeV1 {
                         if folder_size_request_cancelled(&worker_pending, &request) {
                             continue;
                         }
-                        let (exact_bytes, partial, error) = match measured {
-                            Ok(result) => (
-                                (!result.partial).then_some(result.exact_bytes),
-                                result.partial,
-                                result.error.into_option().map(String::from),
-                            ),
-                            Err(error) => (None, true, Some(error.to_string())),
+                        let (exact_bytes, directory_facts, partial, error) = match measured {
+                            Ok((exact_bytes, directory_facts, partial, error)) => {
+                                (Some(exact_bytes), directory_facts, partial, error)
+                            }
+                            Err(error) => (None, None, true, Some(error.to_string())),
                         };
                         if exact_bytes.is_none() {
                             worker_backend_status.store(4, Ordering::Release);
@@ -1219,6 +1687,7 @@ impl ApplicationVisualColumnRuntimeV1 {
                                 context: request.context,
                                 item_id: request.item_id,
                                 exact_bytes,
+                                directory_facts,
                                 partial,
                                 error,
                             })
@@ -1226,6 +1695,11 @@ impl ApplicationVisualColumnRuntimeV1 {
                         {
                             break;
                         }
+                    }
+                    if let Some(root) = cache_root
+                        && let Ok(mut service) = worker_snapshot_service.lock()
+                    {
+                        service.retain_cache_window(&root, 3);
                     }
                 }
             })
@@ -1237,10 +1711,13 @@ impl ApplicationVisualColumnRuntimeV1 {
             cache,
             backend_status,
             backend_active,
-            renderer: AsyncCellRendererV1::start(
-                renderer,
-                FOLDER_SIZE_RENDERER_CONTRIBUTION_ID_V1,
-            )?,
+            directory_facts_active: AtomicBool::new(false),
+            directory_facts_focus: crate::mft_focus::FocusWindowReporterV1::new(),
+            renderer: renderer
+                .map(|renderer| {
+                    AsyncCellRendererV1::start(renderer, FOLDER_SIZE_RENDERER_CONTRIBUTION_ID_V1)
+                })
+                .transpose()?,
         }))
     }
 }
@@ -1264,6 +1741,38 @@ impl explorer_ui::folder_size_column::VisualColumnRuntimePortV1
 {
     fn config(&self) -> explorer_ui::folder_size_column::VisualColumnConfigV1 {
         explorer_ui::folder_size_column::VisualColumnConfigV1::default()
+    }
+
+    fn configure_cache_budgets(&self, budgets: explorer_model::CacheBudgetSettingsV1) {
+        configure_host_extension_cache_budgets(
+            budgets.extension_memory_mb,
+            budgets.extension_disk_mb,
+        );
+        explorer_shell_win::set_shell_disk_cache_limits(
+            u64::from(budgets.icon_disk_mb) * 1024 * 1024,
+            u64::from(budgets.thumbnail_disk_mb) * 1024 * 1024,
+        );
+        let to_u16 = |value: u32| value.min(u32::from(u16::MAX)) as u16;
+        configure_mft_budget_snapshot(crate::mft_query::MftCacheBudgetLimitsV1 {
+            persisted_index_mb: to_u16(budgets.mft_persisted_index_mb),
+            volume_index_mb: to_u16(budgets.mft_volume_index_mb),
+            file_data_mb: to_u16(budgets.mft_file_data_mb),
+            aggregate_mb: to_u16(budgets.mft_aggregates_mb),
+            lru_mb: to_u16(budgets.mft_lru_mb),
+        });
+        // 0 disables TTL reuse (a changed directory mtime rescans immediately);
+        // any positive value reuses the last measurement for that many seconds.
+        let ttl = (budgets.folder_size_cache_ttl_seconds != 0)
+            .then_some(u64::from(budgets.folder_size_cache_ttl_seconds));
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.set_ttl_seconds(ttl);
+        }
+    }
+
+    fn set_directory_facts_active(&self, active: bool) {
+        if self.directory_facts_active.swap(active, Ordering::AcqRel) != active {
+            self.directory_facts_focus.set_focused(active);
+        }
     }
 
     fn backend_status(
@@ -1334,15 +1843,22 @@ impl explorer_ui::folder_size_column::VisualColumnRuntimePortV1
     }
 
     fn drain_render_results(&self) -> bool {
-        self.renderer.drain_ready()
+        self.renderer
+            .as_ref()
+            .is_some_and(AsyncCellRendererV1::drain_ready)
     }
 
     fn render_cell(
         &self,
         context: explorer_extension_ui_api::CellRenderContextV1,
     ) -> explorer_extension_ui_api::CellRenderPlanV1 {
-        self.renderer
-            .render_or_enqueue(context, "Loading folder size")
+        match self.renderer.as_ref() {
+            Some(renderer) => renderer.render_or_enqueue(context, "Loading folder size"),
+            None => explorer_extension_ui_api::CellRenderPlanV1::text_only(
+                "Folder size unavailable",
+                context.theme.muted_foreground,
+            ),
+        }
     }
 }
 
@@ -1367,6 +1883,7 @@ struct ApplicationCodeLinesRuntimeV1 {
     renderer: AsyncCellRendererV1,
     mode: BatchDetailsColumnModeV1,
     option_package_id: String,
+    folder_admission: explorer_ui::code_lines_column::FolderAdmissionPolicyV1,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1419,6 +1936,11 @@ fn partition_code_lines_cache_hits(
     Vec<explorer_ui::code_lines_column::CodeLinesResultV1>,
     Vec<explorer_ui::code_lines_column::CodeLinesRequestV1>,
 ) {
+    if let Some(root) = request_cache_root(requests.iter().map(|request| request.path.as_path()))
+        && let Ok(mut cache) = cache.lock()
+    {
+        cache.retain_window(&root, 3);
+    }
     let mut hits = Vec::new();
     let mut misses = Vec::new();
     for request in requests {
@@ -1438,6 +1960,31 @@ fn partition_code_lines_cache_hits(
         }
     }
     (hits, misses)
+}
+
+fn partition_batch_details_cache_hits(
+    cache: &Mutex<HostExtensionColumnCacheV1<CodeLinesCachedValueV1>>,
+    mode: BatchDetailsColumnModeV1,
+    requests: Vec<explorer_ui::code_lines_column::CodeLinesRequestV1>,
+) -> (
+    Vec<explorer_ui::code_lines_column::CodeLinesResultV1>,
+    Vec<explorer_ui::code_lines_column::CodeLinesRequestV1>,
+) {
+    if mode == BatchDetailsColumnModeV1::LockOwner {
+        return (Vec::new(), requests);
+    }
+    partition_code_lines_cache_hits(cache, requests)
+}
+
+fn batch_details_cache_admission(
+    cache: &Mutex<HostExtensionColumnCacheV1<CodeLinesCachedValueV1>>,
+    mode: BatchDetailsColumnModeV1,
+    path: &Path,
+) -> Option<HostExtensionColumnCacheAdmissionV1> {
+    if mode == BatchDetailsColumnModeV1::LockOwner {
+        return None;
+    }
+    cache.lock().ok().and_then(|cache| cache.admission(path))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1464,6 +2011,20 @@ impl ApplicationCodeLinesRuntimeV1 {
         mode: BatchDetailsColumnModeV1,
         option_package_id: String,
     ) -> Result<explorer_ui::code_lines_column::CodeLinesRuntimeHandleV1, Error> {
+        let contribution_id = match mode {
+            BatchDetailsColumnModeV1::CodeLines => CODE_LINES_CONTRIBUTION_ID_V1,
+            BatchDetailsColumnModeV1::LuaCodeLines => LUA_CODE_LINES_CONTRIBUTION_ID_V1,
+            BatchDetailsColumnModeV1::LockOwner => LOCK_OWNER_CONTRIBUTION_ID_V1,
+        };
+        let folder_admission = provider
+            .folder_admission_policy(contribution_id)
+            .map_or_else(
+                explorer_ui::code_lines_column::FolderAdmissionPolicyV1::default,
+                |policy| explorer_ui::code_lines_column::FolderAdmissionPolicyV1 {
+                    max_file_count: policy.max_file_count.into_option(),
+                    max_folder_count: policy.max_folder_count.into_option(),
+                },
+            );
         let pending = Arc::new((
             Mutex::new(PendingCodeLinesWorkV1::default()),
             Condvar::new(),
@@ -1524,10 +2085,8 @@ impl ApplicationCodeLinesRuntimeV1 {
                         if worker_epoch.load(Ordering::Acquire) != epoch {
                             break;
                         }
-                        let cache_admission = worker_cache
-                            .lock()
-                            .ok()
-                            .and_then(|cache| cache.admission(&request.path));
+                        let cache_admission =
+                            batch_details_cache_admission(&worker_cache, mode, &request.path);
                         let cached = cache_admission.as_ref().and_then(|admission| {
                             worker_cache
                                 .lock()
@@ -1549,62 +2108,6 @@ impl ApplicationCodeLinesRuntimeV1 {
                                 return;
                             }
                             continue;
-                        }
-                        if mode != BatchDetailsColumnModeV1::LockOwner {
-                            let directory_value = if mode == BatchDetailsColumnModeV1::LuaCodeLines
-                            {
-                                measure_all_code_lines_directory(&request.path)
-                            } else {
-                                measure_code_lines_directory(&request.path)
-                            };
-                            match directory_value {
-                                Ok(Some(value)) => {
-                                    if let Some(admission) = cache_admission.as_ref()
-                                        && host_extension_column_cache_key(&request.path).as_ref()
-                                            == Some(&admission.key)
-                                        && let Ok(mut cache) = worker_cache.lock()
-                                    {
-                                        cache.insert(
-                                            admission.clone(),
-                                            CodeLinesCachedValueV1 {
-                                                value: Some(value.clone()),
-                                                error: None,
-                                            },
-                                        );
-                                    }
-                                    if current_code_lines_epoch(&worker_epoch, epoch)
-                                        && !publish_code_lines_result(
-                                            &result_tx,
-                                            explorer_ui::code_lines_column::CodeLinesResultV1 {
-                                                context: request.context,
-                                                item_id: request.item_id,
-                                                value: Some(value),
-                                                error: None,
-                                            },
-                                        )
-                                    {
-                                        return;
-                                    }
-                                    continue;
-                                }
-                                Ok(None) => {}
-                                Err(error) => {
-                                    if current_code_lines_epoch(&worker_epoch, epoch)
-                                        && !publish_code_lines_result(
-                                            &result_tx,
-                                            explorer_ui::code_lines_column::CodeLinesResultV1 {
-                                                context: request.context,
-                                                item_id: request.item_id,
-                                                value: None,
-                                                error: Some(error),
-                                            },
-                                        )
-                                    {
-                                        return;
-                                    }
-                                    continue;
-                                }
-                            }
                         }
                         let bytes = match mode {
                             BatchDetailsColumnModeV1::CodeLines
@@ -1704,6 +2207,7 @@ impl ApplicationCodeLinesRuntimeV1 {
             )?,
             mode,
             option_package_id,
+            folder_admission,
         }))
     }
 }
@@ -1887,6 +2391,10 @@ fn emit_code_lines_batch_error(
 
 fn current_code_lines_epoch(current_epoch: &AtomicU64, epoch: u64) -> bool {
     current_epoch.load(Ordering::Acquire) == epoch
+}
+
+fn is_code_lines_directory_row(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_dir())
 }
 
 fn publish_code_lines_result(
@@ -2353,71 +2861,315 @@ fn lock_owner_cache_store(
 fn lock_owner_query_service(
     generation: u64,
 ) -> explorer_extension_host::HostLockOwnerQueryServiceV1 {
-    explorer_extension_host::HostLockOwnerQueryServiceV1::new(move |path, _deadline_millis| {
-        let cache_key = lock_owner_cache_key(path);
-        let now = Instant::now();
-        if let Some(hit) = cache_key
-            .as_ref()
-            .and_then(|key| lock_owner_cache_lookup(key, generation, now))
-        {
-            return hit;
-        }
-        let request = explorer_model::LockOwnerDiscoveryRequest {
-            resources: vec![explorer_model::LocationDescriptor::file_system(
-                path.clone(),
-            )],
-        };
-        let outcome = explorer_shell_win::discover_lock_owners_read_only(
-            &request,
-            &explorer_model::CancellationToken::new(),
-        );
-        let projected = match outcome {
-            explorer_model::LockOwnerDiscoveryTerminal::Ready(owners) => (
-                explorer_extension_api::LockOwnerQueryStatusV1::READY,
-                owners
-                    .into_iter()
-                    .map(|owner| explorer_extension_api::LockOwnerRecordV1 {
-                        item: explorer_extension_api::ItemHandleV1::from_host([0; 16], 0),
-                        process_id: owner.identity.process_id,
-                        application_type:
-                            explorer_extension_api::LockOwnerApplicationTypeV1::from_raw(
-                                match owner.application_type {
-                                    explorer_model::LockOwnerApplicationType::Unknown => 0,
-                                    explorer_model::LockOwnerApplicationType::MainWindow => 1,
-                                    explorer_model::LockOwnerApplicationType::OtherWindow => 2,
-                                    explorer_model::LockOwnerApplicationType::Service => 3,
-                                    explorer_model::LockOwnerApplicationType::Explorer => 4,
-                                    explorer_model::LockOwnerApplicationType::Console => 5,
-                                    explorer_model::LockOwnerApplicationType::Critical => 6,
-                                },
-                            ),
-                        display_name: owner.display_name.into(),
-                        service_name: "".into(),
-                    })
-                    .collect(),
-            ),
-            explorer_model::LockOwnerDiscoveryTerminal::Empty => (
-                explorer_extension_api::LockOwnerQueryStatusV1::EMPTY,
-                Vec::new(),
-            ),
-            explorer_model::LockOwnerDiscoveryTerminal::Cancelled => (
+    explorer_extension_host::HostLockOwnerQueryServiceV1::new(move |resources, control| {
+        if control.is_cancelled() {
+            return (
                 explorer_extension_api::LockOwnerQueryStatusV1::CANCELLED,
                 Vec::new(),
-            ),
-            explorer_model::LockOwnerDiscoveryTerminal::Unavailable(_) => (
-                explorer_extension_api::LockOwnerQueryStatusV1::UNAVAILABLE,
-                Vec::new(),
-            ),
-            explorer_model::LockOwnerDiscoveryTerminal::Failed(_) => (
-                explorer_extension_api::LockOwnerQueryStatusV1::HOST_ERROR,
-                Vec::new(),
-            ),
-        };
-        if let Some(cache_key) = cache_key {
-            lock_owner_cache_store(cache_key, generation, projected.0, projected.1.clone(), now);
+            );
         }
-        projected
+        if control.deadline_elapsed() {
+            return (
+                explorer_extension_api::LockOwnerQueryStatusV1::DEADLINE_ELAPSED,
+                Vec::new(),
+            );
+        }
+
+        let now = Instant::now();
+        let mut results = vec![None; resources.len()];
+        let mut misses = Vec::new();
+        let mut miss_paths = Vec::new();
+        for (index, resource) in resources.iter().enumerate() {
+            let cache_key = lock_owner_cache_key(&resource.path);
+            if let Some((status, mut owners)) = cache_key
+                .as_ref()
+                .and_then(|key| lock_owner_cache_lookup(key, generation, now))
+            {
+                for owner in &mut owners {
+                    owner.item = resource.item;
+                }
+                results[index] = Some((status, owners));
+            } else {
+                misses.push((index, cache_key));
+                miss_paths.push(resource.path.clone());
+            }
+        }
+
+        let current_batch = explorer_shell_win::discover_current_directory_owners_read_only(
+            &miss_paths,
+            &|| control.is_cancelled(),
+            control.deadline(),
+        );
+        if matches!(
+            current_batch,
+            explorer_shell_win::CurrentDirectoryOwnerBatchTerminal::Cancelled
+        ) || control.is_cancelled()
+        {
+            return (
+                explorer_extension_api::LockOwnerQueryStatusV1::CANCELLED,
+                Vec::new(),
+            );
+        }
+        if matches!(
+            current_batch,
+            explorer_shell_win::CurrentDirectoryOwnerBatchTerminal::DeadlineElapsed
+        ) || control.deadline_elapsed()
+        {
+            return (
+                explorer_extension_api::LockOwnerQueryStatusV1::DEADLINE_ELAPSED,
+                Vec::new(),
+            );
+        }
+
+        for (miss_index, (resource_index, cache_key)) in misses.into_iter().enumerate() {
+            if control.is_cancelled() {
+                return (
+                    explorer_extension_api::LockOwnerQueryStatusV1::CANCELLED,
+                    Vec::new(),
+                );
+            }
+            if control.deadline_elapsed() {
+                return (
+                    explorer_extension_api::LockOwnerQueryStatusV1::DEADLINE_ELAPSED,
+                    Vec::new(),
+                );
+            }
+            let current = current_directory_item_terminal(&current_batch, miss_index);
+            let restart_manager = if !std::fs::metadata(&resources[resource_index].path)
+                .is_ok_and(|metadata| metadata.is_dir())
+            {
+                let request = explorer_model::LockOwnerDiscoveryRequest {
+                    resources: vec![explorer_model::LocationDescriptor::file_system(
+                        resources[resource_index].path.clone(),
+                    )],
+                };
+                explorer_shell_win::discover_lock_owners_read_only(
+                    &request,
+                    &explorer_model::CancellationToken::new(),
+                )
+            } else {
+                explorer_model::LockOwnerDiscoveryTerminal::Empty
+            };
+            let combined = compose_lock_owner_terminals(restart_manager, current);
+            let (status, owners) =
+                project_lock_owner_terminal(combined, resources[resource_index].item);
+            if let Some(cache_key) = cache_key {
+                let mut cached = owners.clone();
+                for owner in &mut cached {
+                    owner.item = explorer_extension_api::ItemHandleV1::from_host([0; 16], 0);
+                }
+                lock_owner_cache_store(cache_key, generation, status, cached, now);
+            }
+            results[resource_index] = Some((status, owners));
+        }
+
+        aggregate_lock_owner_batch(results)
     })
+}
+
+fn current_directory_item_terminal(
+    batch: &explorer_shell_win::CurrentDirectoryOwnerBatchTerminal,
+    resource_index: usize,
+) -> explorer_model::LockOwnerDiscoveryTerminal {
+    match batch {
+        explorer_shell_win::CurrentDirectoryOwnerBatchTerminal::Complete(items) => items
+            .iter()
+            .find(|item| item.resource_index == resource_index)
+            .map_or(explorer_model::LockOwnerDiscoveryTerminal::Empty, |item| {
+                if item.owners.is_empty() {
+                    explorer_model::LockOwnerDiscoveryTerminal::Empty
+                } else {
+                    explorer_model::LockOwnerDiscoveryTerminal::Ready(item.owners.clone())
+                }
+            }),
+        explorer_shell_win::CurrentDirectoryOwnerBatchTerminal::Cancelled => {
+            explorer_model::LockOwnerDiscoveryTerminal::Cancelled
+        }
+        explorer_shell_win::CurrentDirectoryOwnerBatchTerminal::DeadlineElapsed => {
+            explorer_model::LockOwnerDiscoveryTerminal::DeadlineElapsed
+        }
+        explorer_shell_win::CurrentDirectoryOwnerBatchTerminal::Unavailable(error) => {
+            explorer_model::LockOwnerDiscoveryTerminal::Unavailable(error.clone())
+        }
+    }
+}
+
+fn compose_lock_owner_terminals(
+    restart_manager: explorer_model::LockOwnerDiscoveryTerminal,
+    current_directory: explorer_model::LockOwnerDiscoveryTerminal,
+) -> explorer_model::LockOwnerDiscoveryTerminal {
+    use explorer_model::LockOwnerDiscoveryTerminal as Terminal;
+
+    if matches!(restart_manager, Terminal::Cancelled)
+        || matches!(current_directory, Terminal::Cancelled)
+    {
+        return Terminal::Cancelled;
+    }
+    if matches!(restart_manager, Terminal::DeadlineElapsed)
+        || matches!(current_directory, Terminal::DeadlineElapsed)
+    {
+        return Terminal::DeadlineElapsed;
+    }
+
+    let mut owners = Vec::new();
+    if let Terminal::Ready(ready) = &restart_manager {
+        owners.extend(ready.iter().cloned());
+    }
+    if let Terminal::Ready(ready) = &current_directory {
+        for owner in ready {
+            if !owners.iter().any(|existing| {
+                existing.identity.process_id == owner.identity.process_id
+                    && existing.identity.creation_time_100ns == owner.identity.creation_time_100ns
+            }) {
+                owners.push(owner.clone());
+            }
+        }
+    }
+    if !owners.is_empty() {
+        owners.sort_by(|left, right| {
+            left.identity
+                .process_id
+                .cmp(&right.identity.process_id)
+                .then_with(|| {
+                    left.identity
+                        .creation_time_100ns
+                        .cmp(&right.identity.creation_time_100ns)
+                })
+                .then_with(|| {
+                    left.display_name
+                        .to_lowercase()
+                        .cmp(&right.display_name.to_lowercase())
+                })
+                .then_with(|| {
+                    lock_owner_application_type_rank(left.application_type)
+                        .cmp(&lock_owner_application_type_rank(right.application_type))
+                })
+        });
+        owners.truncate(RoadmapLimits::default().lock_recovery_max_owners);
+        return Terminal::Ready(owners);
+    }
+    if matches!(restart_manager, Terminal::Failed(_)) {
+        return restart_manager;
+    }
+    if matches!(current_directory, Terminal::Failed(_)) {
+        return current_directory;
+    }
+    if matches!(restart_manager, Terminal::Unavailable(_)) {
+        return restart_manager;
+    }
+    if matches!(current_directory, Terminal::Unavailable(_)) {
+        return current_directory;
+    }
+    Terminal::Empty
+}
+
+fn project_lock_owner_terminal(
+    outcome: explorer_model::LockOwnerDiscoveryTerminal,
+    item: explorer_extension_api::ItemHandleV1,
+) -> (
+    explorer_extension_api::LockOwnerQueryStatusV1,
+    Vec<explorer_extension_api::LockOwnerRecordV1>,
+) {
+    use explorer_model::LockOwnerDiscoveryTerminal as Terminal;
+    match outcome {
+        Terminal::Ready(owners) => (
+            explorer_extension_api::LockOwnerQueryStatusV1::READY,
+            owners
+                .into_iter()
+                .map(|owner| explorer_extension_api::LockOwnerRecordV1 {
+                    item,
+                    process_id: owner.identity.process_id,
+                    application_type: explorer_extension_api::LockOwnerApplicationTypeV1::from_raw(
+                        lock_owner_application_type_rank(owner.application_type),
+                    ),
+                    display_name: owner.display_name.into(),
+                    service_name: "".into(),
+                })
+                .collect(),
+        ),
+        Terminal::Empty => (
+            explorer_extension_api::LockOwnerQueryStatusV1::EMPTY,
+            Vec::new(),
+        ),
+        Terminal::Cancelled => (
+            explorer_extension_api::LockOwnerQueryStatusV1::CANCELLED,
+            Vec::new(),
+        ),
+        Terminal::DeadlineElapsed => (
+            explorer_extension_api::LockOwnerQueryStatusV1::DEADLINE_ELAPSED,
+            Vec::new(),
+        ),
+        Terminal::Unavailable(_) => (
+            explorer_extension_api::LockOwnerQueryStatusV1::UNAVAILABLE,
+            Vec::new(),
+        ),
+        Terminal::Failed(_) => (
+            explorer_extension_api::LockOwnerQueryStatusV1::HOST_ERROR,
+            Vec::new(),
+        ),
+    }
+}
+
+fn aggregate_lock_owner_batch(
+    results: Vec<
+        Option<(
+            explorer_extension_api::LockOwnerQueryStatusV1,
+            Vec<explorer_extension_api::LockOwnerRecordV1>,
+        )>,
+    >,
+) -> (
+    explorer_extension_api::LockOwnerQueryStatusV1,
+    Vec<explorer_extension_api::LockOwnerRecordV1>,
+) {
+    let mut owners = Vec::new();
+    let mut ownerless_status = explorer_extension_api::LockOwnerQueryStatusV1::EMPTY;
+    let mut ownerless = false;
+    for (status, item_owners) in results.into_iter().flatten() {
+        if status == explorer_extension_api::LockOwnerQueryStatusV1::CANCELLED {
+            return (status, Vec::new());
+        }
+        if status == explorer_extension_api::LockOwnerQueryStatusV1::DEADLINE_ELAPSED {
+            return (status, Vec::new());
+        }
+        if item_owners.is_empty() {
+            ownerless = true;
+            if lock_owner_status_rank(status) > lock_owner_status_rank(ownerless_status) {
+                ownerless_status = status;
+            }
+        } else {
+            owners.extend(item_owners);
+        }
+    }
+    let status = if ownerless {
+        ownerless_status
+    } else {
+        explorer_extension_api::LockOwnerQueryStatusV1::READY
+    };
+    (status, owners)
+}
+
+fn lock_owner_status_rank(status: explorer_extension_api::LockOwnerQueryStatusV1) -> u8 {
+    if status == explorer_extension_api::LockOwnerQueryStatusV1::HOST_ERROR {
+        3
+    } else if status == explorer_extension_api::LockOwnerQueryStatusV1::UNAVAILABLE {
+        2
+    } else {
+        1
+    }
+}
+
+const fn lock_owner_application_type_rank(
+    application_type: explorer_model::LockOwnerApplicationType,
+) -> u32 {
+    match application_type {
+        explorer_model::LockOwnerApplicationType::Unknown => 0,
+        explorer_model::LockOwnerApplicationType::MainWindow => 1,
+        explorer_model::LockOwnerApplicationType::OtherWindow => 2,
+        explorer_model::LockOwnerApplicationType::Service => 3,
+        explorer_model::LockOwnerApplicationType::Explorer => 4,
+        explorer_model::LockOwnerApplicationType::Console => 5,
+        explorer_model::LockOwnerApplicationType::Critical => 6,
+    }
 }
 
 fn parse_batch_details_value(
@@ -2464,6 +3216,7 @@ impl explorer_ui::code_lines_column::CodeLinesRuntimePortV1 for ApplicationCodeL
             };
             config.descriptor.display_name = "Code lines".to_owned();
         }
+        config.folder_admission = self.folder_admission;
         config
     }
 
@@ -2471,7 +3224,7 @@ impl explorer_ui::code_lines_column::CodeLinesRuntimePortV1 for ApplicationCodeL
         &self,
         requests: Vec<explorer_ui::code_lines_column::CodeLinesRequestV1>,
     ) {
-        let (hits, misses) = partition_code_lines_cache_hits(&self.cache, requests);
+        let (hits, misses) = partition_batch_details_cache_hits(&self.cache, self.mode, requests);
         if let Ok(mut cached_results) = self.cached_results.lock() {
             cached_results.extend(hits);
         }
@@ -2621,6 +3374,8 @@ impl ApplicationSizeMapRuntimeV1 {
                     if worker_epoch.load(Ordering::Acquire) != batch_epoch {
                         continue;
                     }
+                    let cache_root =
+                        request_cache_root(requests.iter().map(|request| request.path.as_path()));
                     // Publish an initial state for every direct child before
                     // walking any subtree. This keeps the map interactive and
                     // lets the renderer show all known siblings while exact
@@ -2652,31 +3407,60 @@ impl ApplicationSizeMapRuntimeV1 {
                         if worker_epoch.load(Ordering::Acquire) != batch_epoch {
                             break;
                         }
-                        let scan = worker_snapshot_service
-                            .lock()
-                            .map_err(|_| "folder snapshot service poisoned".to_owned())
-                            .and_then(|mut service| {
-                                service.snapshot_or_scan(
-                                    &request.path,
-                                    request.context.generation.value(),
-                                    || worker_epoch.load(Ordering::Acquire) != batch_epoch,
-                                )
-                            })
-                            .map(|snapshot| {
-                                project_shared_snapshot_to_size_map(
-                                    &snapshot,
-                                    &request.path,
-                                    &request.item_id,
-                                )
-                            })
-                            .unwrap_or_else(|error| SizeMapTreeScanV1 {
+                        let scan = match fs::symlink_metadata(&request.path) {
+                            Ok(metadata) if metadata.is_file() => SizeMapTreeScanV1 {
                                 outcome: SizeMapScanOutcomeV1 {
-                                    bytes: 0,
-                                    terminal: SizeMapScanTerminalV1::Failed,
-                                    diagnostic: Some(error),
+                                    bytes: metadata.len(),
+                                    terminal: SizeMapScanTerminalV1::Complete,
+                                    diagnostic: None,
                                 },
                                 nodes: Vec::new(),
-                            });
+                            },
+                            Ok(metadata) if metadata.is_dir() => worker_snapshot_service
+                                .lock()
+                                .map_err(|_| "folder snapshot service poisoned".to_owned())
+                                .and_then(|mut service| {
+                                    service.snapshot_or_scan(
+                                        &request.path,
+                                        request.context.generation.value(),
+                                        || worker_epoch.load(Ordering::Acquire) != batch_epoch,
+                                    )
+                                })
+                                .map(|snapshot| {
+                                    project_shared_snapshot_to_size_map(
+                                        &snapshot,
+                                        &request.path,
+                                        &request.item_id,
+                                    )
+                                })
+                                .unwrap_or_else(|error| SizeMapTreeScanV1 {
+                                    outcome: SizeMapScanOutcomeV1 {
+                                        bytes: 0,
+                                        terminal: SizeMapScanTerminalV1::Failed,
+                                        diagnostic: Some(error),
+                                    },
+                                    nodes: Vec::new(),
+                                }),
+                            Ok(_) => SizeMapTreeScanV1 {
+                                outcome: SizeMapScanOutcomeV1 {
+                                    bytes: 0,
+                                    terminal: SizeMapScanTerminalV1::Unavailable,
+                                    diagnostic: Some(
+                                        "Size Map item is not a regular file or directory"
+                                            .to_owned(),
+                                    ),
+                                },
+                                nodes: Vec::new(),
+                            },
+                            Err(error) => SizeMapTreeScanV1 {
+                                outcome: SizeMapScanOutcomeV1 {
+                                    bytes: 0,
+                                    terminal: SizeMapScanTerminalV1::Unavailable,
+                                    diagnostic: Some(error.to_string()),
+                                },
+                                nodes: Vec::new(),
+                            },
+                        };
                         if scan.outcome.terminal == SizeMapScanTerminalV1::Cancelled
                             || worker_epoch.load(Ordering::Acquire) != batch_epoch
                         {
@@ -2728,6 +3512,11 @@ impl ApplicationSizeMapRuntimeV1 {
                         {
                             break;
                         }
+                    }
+                    if let Some(root) = cache_root
+                        && let Ok(mut service) = worker_snapshot_service.lock()
+                    {
+                        service.retain_cache_window(&root, 3);
                     }
                 }
             })
@@ -3151,7 +3940,9 @@ fn measure_size_map_tree(
         let retain_node =
             parent.is_none() || nodes.len() < usize::try_from(max_entries).unwrap_or(usize::MAX);
         if !retain_node {
-            let parent_index = parent.expect("only the root is retained without a parent");
+            let Some(parent_index) = parent else {
+                continue;
+            };
             if !is_container {
                 nodes[parent_index].bytes = nodes[parent_index].bytes.saturating_add(file_bytes);
                 continue;
@@ -4034,6 +4825,7 @@ struct ShutdownResources {
     extension_host: Option<explorer_extension_host::ExtensionHost>,
     loaded_extension_summary: Option<String>,
     visual_column_runtime: Option<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1>,
+    visual_column_extension_loaded: bool,
     code_lines_runtimes: Vec<explorer_ui::code_lines_column::CodeLinesRuntimeHandleV1>,
     size_map_runtime: Option<explorer_ui::size_map_view::SizeMapRuntimeHandleV1>,
     virtual_folder_runtime: Option<explorer_extension_host::SinglePluginVirtualFolderRuntimeV1>,
@@ -4197,6 +4989,12 @@ impl ApplicationLifecycle {
                 virtual_folder_runtime = Some(virtual_folders);
             }
         }
+        let visual_column_extension_loaded = visual_column_runtime.is_some();
+        if visual_column_runtime.is_none() {
+            visual_column_runtime = Some(ApplicationVisualColumnRuntimeV1::start_directory_facts(
+                Arc::clone(&folder_size_service),
+            )?);
+        }
         let loaded_extension_summary = (!summaries.is_empty()).then(|| summaries.join(" | "));
         if let Some(summary) = loaded_extension_summary.as_deref() {
             diagnostics.record_event("development_plugin_loaded", &[("summary", summary)])?;
@@ -4285,6 +5083,7 @@ impl ApplicationLifecycle {
                 extension_host: Some(extension_host),
                 loaded_extension_summary,
                 visual_column_runtime,
+                visual_column_extension_loaded,
                 code_lines_runtimes,
                 size_map_runtime,
                 virtual_folder_runtime,
@@ -4350,6 +5149,7 @@ impl ApplicationLifecycle {
         let safe_mode_offers = self.safe_mode_ui_offers()?;
         let loaded_extension_summary = self.loaded_extension_summary()?;
         let visual_column_runtime = self.visual_column_runtime()?;
+        let visual_column_extension_loaded = self.visual_column_extension_loaded()?;
         let code_lines_runtimes = self.code_lines_runtimes()?;
         let size_map_runtime = self.size_map_runtime()?;
         let safe_mode_resources = Arc::clone(&self.resources);
@@ -4481,6 +5281,7 @@ impl ApplicationLifecycle {
                 let bookmarks_for_window = bookmarks.clone();
                 let loaded_extension_summary_for_window = loaded_extension_summary.clone();
                 let visual_column_runtime_for_window = visual_column_runtime.clone();
+                let visual_column_extension_loaded_for_window = visual_column_extension_loaded;
                 let code_lines_runtimes_for_window = code_lines_runtimes.clone();
                 let size_map_runtime_for_window = size_map_runtime.clone();
                 let folder_options_controller_for_window = Rc::clone(&folder_options_controller);
@@ -4523,6 +5324,7 @@ impl ApplicationLifecycle {
                             safe_mode_confirm,
                             loaded_extension_summary_for_window,
                             visual_column_runtime_for_window,
+                            visual_column_extension_loaded_for_window,
                             code_lines_runtimes_for_window,
                             size_map_runtime_for_window,
                             extension_ui_pump.map(|pump| {
@@ -4602,6 +5404,17 @@ impl ApplicationLifecycle {
                         return;
                     }
                 };
+
+                if std::env::var_os("SUPEREXPLORER_UITEST_OPEN_FOLDER_OPTIONS").is_some() {
+                    let _ = main_window.update(cx, |root, window, cx| {
+                        root.dispatch_action_for_test(
+                            explorer_ui::actions::ExplorerAction::OpenFolderOptions,
+                            explorer_ui::actions::ActionSource::Programmatic,
+                            window,
+                            cx,
+                        );
+                    });
+                }
 
                 if show_splash && let Err(error) = crate::branding::open_splash(cx, main_window) {
                     tracing::warn!(%error, "startup splash could not be created");
@@ -4779,6 +5592,13 @@ impl ApplicationLifecycle {
             .map_err(|_| anyhow::anyhow!("application lifecycle mutex was poisoned"))
     }
 
+    fn visual_column_extension_loaded(&self) -> Result<bool, Error> {
+        self.resources
+            .lock()
+            .map(|resources| resources.visual_column_extension_loaded)
+            .map_err(|_| anyhow::anyhow!("application lifecycle mutex was poisoned"))
+    }
+
     fn code_lines_runtimes(
         &self,
     ) -> Result<Vec<explorer_ui::code_lines_column::CodeLinesRuntimeHandleV1>, Error> {
@@ -4844,6 +5664,7 @@ fn create_explorer_root(
     broker_health: explorer_ui::state::BrokerUiHealth,
     broker_retry: explorer_ui::BrokerRetryObserver,
     visual_column_runtime: Option<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1>,
+    visual_column_extension_loaded: bool,
     code_lines_runtimes: Vec<explorer_ui::code_lines_column::CodeLinesRuntimeHandleV1>,
     size_map_runtime: Option<explorer_ui::size_map_view::SizeMapRuntimeHandleV1>,
     extension_ui_pump: Option<Box<dyn explorer_ui::ExtensionUiPumpPortV1>>,
@@ -4876,7 +5697,11 @@ fn create_explorer_root(
         explorer_shell_win::open_default(&location).map_err(|error| error.to_string())
     }));
     if let Some(runtime) = visual_column_runtime {
-        root.attach_visual_column_runtime(runtime);
+        if visual_column_extension_loaded {
+            root.attach_visual_column_runtime(runtime);
+        } else {
+            root.attach_directory_facts_runtime(runtime);
+        }
     }
     for runtime in code_lines_runtimes {
         root.attach_code_lines_runtime(runtime);
@@ -4919,6 +5744,7 @@ fn create_focused_explorer_root(
     safe_mode_confirm: explorer_ui::SafeModeConfirmObserverV1,
     loaded_extension_summary: Option<String>,
     visual_column_runtime: Option<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1>,
+    visual_column_extension_loaded: bool,
     code_lines_runtimes: Vec<explorer_ui::code_lines_column::CodeLinesRuntimeHandleV1>,
     size_map_runtime: Option<explorer_ui::size_map_view::SizeMapRuntimeHandleV1>,
     extension_ui_pump: Option<Box<dyn explorer_ui::ExtensionUiPumpPortV1>>,
@@ -4942,6 +5768,7 @@ fn create_focused_explorer_root(
         broker_health,
         broker_retry,
         visual_column_runtime,
+        visual_column_extension_loaded,
         code_lines_runtimes,
         size_map_runtime,
         extension_ui_pump,
@@ -4954,6 +5781,12 @@ fn create_focused_explorer_root(
     }));
     root.attach_text_inputs(cx);
     root.attach_focus_handle(focus_handle);
+    let focus_reporter = crate::mft_focus::FocusWindowReporterV1::new();
+    focus_reporter.set_focused(window.is_window_active());
+    cx.observe_window_activation(window, move |_, window, _| {
+        focus_reporter.set_focused(window.is_window_active());
+    })
+    .detach();
     if !safe_mode_offers.is_empty() {
         root.configure_safe_mode_offers(safe_mode_offers, safe_mode_confirm);
     }
@@ -5379,8 +6212,10 @@ mod tests {
     };
 
     use abi_stable::std_types::{ROption, RVec};
+    use explorer_common::{ExplorerError, ExplorerErrorKind};
     use explorer_extension_api::{
-        IncrementalResultBatchV1, IncrementalResultEntryV1, JobContextV1, JobTerminalV1,
+        IncrementalResultBatchV1, IncrementalResultEntryV1, ItemHandleV1, JobContextV1,
+        JobTerminalV1, LockOwnerApplicationTypeV1, LockOwnerQueryStatusV1, LockOwnerRecordV1,
         PluginItemResultV1, PluginValueV1, SinkSubmitStatusV1,
     };
     use explorer_extension_host::{
@@ -5388,34 +6223,286 @@ mod tests {
         ExtensionJobUiIngressV1, ExtensionResultBufferConfigV1,
     };
     use explorer_model::{
-        FileEntry, FileEntryMetadata, Generation, LocationDescriptor, RequestContext, ShellItemId,
-        TabId, ViewMode,
+        FileEntry, FileEntryMetadata, Generation, LocationDescriptor, LockOwner,
+        LockOwnerApplicationType, LockOwnerDiscoveryTerminal, LockOwnerEligibility,
+        LockOwnerIdentity, RequestContext, ShellItemId, TabId, ViewMode,
     };
+
+    #[test]
+    fn mft_diagnostics_match_only_the_complete_acknowledged_snapshot() {
+        let limits = crate::mft_query::MftCacheBudgetLimitsV1 {
+            persisted_index_mb: 1_024,
+            volume_index_mb: 512,
+            file_data_mb: 256,
+            aggregate_mb: 512,
+            lru_mb: 2_048,
+        };
+        let mib = 1024 * 1024;
+        let diagnostics = crate::mft_query::MftCacheDiagnosticsV1 {
+            limit_bytes: 2_048 * mib,
+            persisted_index_limit_bytes: Some(1_024 * mib),
+            volume_index_limit_bytes: Some(512 * mib),
+            file_data_limit_bytes: Some(256 * mib),
+            aggregate_limit_bytes: Some(512 * mib),
+            ..Default::default()
+        };
+        assert!(super::mft_diagnostics_match_limits(&diagnostics, limits));
+        let stale = crate::mft_query::MftCacheDiagnosticsV1 {
+            limit_bytes: 512 * mib,
+            ..diagnostics
+        };
+        assert!(!super::mft_diagnostics_match_limits(&stale, limits));
+    }
     use explorer_ui::ExtensionUiPumpPortV1 as _;
 
     use super::preferred_size_map_scan_method;
 
     use super::{
-        ApplicationExtensionReadyProjectorV1, ApplicationExtensionUiPumpV1, CodeLinesCachedValueV1,
-        FolderSizeCachedValueV1, HostExtensionColumnCacheV1, LockOwnerCacheKeyV1,
-        PendingFolderSizeWorkV1, PendingSizeMapWorkV1, SIZE_MAP_REQUEST_QUEUE_CAP_V1,
-        SafeModeIncidentOfferV1, SafeModeIncidentPortV1, SizeMapHardLinkPolicyV1,
-        SizeMapProjectionV1, SizeMapScanOutcomeV1, SizeMapScanTerminalV1, aggregate_size_map_items,
-        cancel_folder_size_context, cell_render_key, code_lines_directory_cache_key,
+        ApplicationExtensionReadyProjectorV1, ApplicationExtensionUiPumpV1,
+        BatchDetailsColumnModeV1, CodeLinesCachedValueV1, FolderSizeCachedValueV1,
+        HostExtensionColumnCacheV1, LockOwnerCacheKeyV1, PendingFolderSizeWorkV1,
+        PendingSizeMapWorkV1, SIZE_MAP_REQUEST_QUEUE_CAP_V1, SafeModeIncidentOfferV1,
+        SafeModeIncidentPortV1, SizeMapHardLinkPolicyV1, SizeMapProjectionV1, SizeMapScanOutcomeV1,
+        SizeMapScanTerminalV1, aggregate_lock_owner_batch, aggregate_size_map_items,
+        batch_details_cache_admission, cancel_folder_size_context, cell_render_key,
+        code_lines_directory_cache_key, compose_lock_owner_terminals,
         confirm_offered_safe_mode_incident_v1, confirm_presented_safe_mode_incident_v1,
         emit_post_commit_safe_mode_telemetry_v1, enqueue_folder_size_requests,
-        enqueue_size_map_requests, lock_owner_cache_lookup, lock_owner_cache_store,
-        measure_all_code_lines_directory, measure_code_lines_directory,
-        measure_code_lines_directory_with_cache, measure_size_map_path, measure_size_map_tree,
+        enqueue_size_map_requests, exact_directory_facts, is_code_lines_directory_row,
+        lock_owner_cache_lookup, lock_owner_cache_store, measure_all_code_lines_directory,
+        measure_code_lines_directory, measure_code_lines_directory_with_cache,
+        measure_size_map_path, measure_size_map_tree, partition_batch_details_cache_hits,
         partition_code_lines_cache_hits, partition_folder_size_cache_hits,
         partition_size_map_projection, project_size_map_plan, read_code_lines_directory_cache,
         read_code_lines_file_bounded, read_code_lines_path_bounded, should_restore_saved_tabs,
-        size_map_node_id, size_map_render_key, take_folder_size_requests,
+        size_map_node_id, size_map_render_key, take_folder_size_requests, unix_seconds_now,
     };
 
     struct FakeSafeModePortV1 {
         denied: bool,
         confirmed: Mutex<Vec<u8>>,
+    }
+
+    #[test]
+    fn mft_directory_facts_exclude_the_root_and_fail_closed() {
+        use crate::folder_size_service::SnapshotStatusV1;
+
+        let facts = exact_directory_facts(SnapshotStatusV1::Complete, Some(17), 999, 4)
+            .expect("complete MFT result");
+        assert_eq!(facts.mft_generation, 17);
+        assert_eq!(facts.file_count, 999);
+        assert_eq!(facts.folder_count, 3);
+        assert_eq!(
+            exact_directory_facts(SnapshotStatusV1::Complete, Some(17), 0, 0)
+                .unwrap()
+                .folder_count,
+            0
+        );
+        assert!(exact_directory_facts(SnapshotStatusV1::Partial, Some(17), 1, 2).is_none());
+        assert!(exact_directory_facts(SnapshotStatusV1::Complete, None, 1, 2).is_none());
+    }
+
+    fn test_lock_owner(process_id: u32, creation_time_100ns: u64, name: &str) -> LockOwner {
+        LockOwner {
+            identity: LockOwnerIdentity {
+                process_id,
+                creation_time_100ns,
+            },
+            display_name: name.to_owned(),
+            application_type: LockOwnerApplicationType::Console,
+            restartable: false,
+            eligibility: LockOwnerEligibility::Protected,
+        }
+    }
+
+    fn test_lock_owner_error(operation: &str) -> ExplorerError {
+        ExplorerError::new(
+            ExplorerErrorKind::Availability,
+            operation,
+            true,
+            "lock owner unavailable",
+            "test terminal",
+        )
+    }
+
+    #[test]
+    fn lock_owner_composition_merges_deduplicates_and_orders_sources() {
+        let result = compose_lock_owner_terminals(
+            LockOwnerDiscoveryTerminal::Ready(vec![test_lock_owner(
+                42,
+                100,
+                "restart-manager.exe",
+            )]),
+            LockOwnerDiscoveryTerminal::Ready(vec![
+                test_lock_owner(42, 100, "cmd.exe"),
+                test_lock_owner(7, 200, "cmd.exe"),
+            ]),
+        );
+
+        let LockOwnerDiscoveryTerminal::Ready(owners) = result else {
+            panic!("owners from either discovery source must produce READY");
+        };
+        assert_eq!(
+            owners
+                .iter()
+                .map(|owner| owner.identity.process_id)
+                .collect::<Vec<_>>(),
+            vec![7, 42]
+        );
+        assert_eq!(owners[1].display_name, "restart-manager.exe");
+    }
+
+    #[test]
+    fn lock_owner_composition_applies_global_and_ownerless_terminal_precedence() {
+        assert!(matches!(
+            compose_lock_owner_terminals(
+                LockOwnerDiscoveryTerminal::Ready(vec![test_lock_owner(1, 1, "cmd.exe")]),
+                LockOwnerDiscoveryTerminal::Cancelled,
+            ),
+            LockOwnerDiscoveryTerminal::Cancelled
+        ));
+        assert!(matches!(
+            compose_lock_owner_terminals(
+                LockOwnerDiscoveryTerminal::DeadlineElapsed,
+                LockOwnerDiscoveryTerminal::Failed(test_lock_owner_error("failed")),
+            ),
+            LockOwnerDiscoveryTerminal::DeadlineElapsed
+        ));
+        assert!(matches!(
+            compose_lock_owner_terminals(
+                LockOwnerDiscoveryTerminal::Unavailable(test_lock_owner_error("unavailable")),
+                LockOwnerDiscoveryTerminal::Failed(test_lock_owner_error("failed")),
+            ),
+            LockOwnerDiscoveryTerminal::Failed(_)
+        ));
+    }
+
+    #[test]
+    fn lock_owner_batch_preserves_owners_while_reporting_worst_ownerless_status() {
+        let item = ItemHandleV1::from_host([9; 16], 1);
+        let owner = LockOwnerRecordV1 {
+            item,
+            process_id: 91,
+            application_type: LockOwnerApplicationTypeV1::MAIN_WINDOW,
+            display_name: "cmd.exe".into(),
+            service_name: "".into(),
+        };
+
+        let (status, owners) = aggregate_lock_owner_batch(vec![
+            Some((LockOwnerQueryStatusV1::READY, vec![owner.clone()])),
+            Some((LockOwnerQueryStatusV1::UNAVAILABLE, Vec::new())),
+            Some((LockOwnerQueryStatusV1::HOST_ERROR, Vec::new())),
+        ]);
+        assert_eq!(status, LockOwnerQueryStatusV1::HOST_ERROR);
+        assert_eq!(owners.len(), 1);
+        assert_eq!(owners[0].process_id, owner.process_id);
+
+        let (status, owners) = aggregate_lock_owner_batch(vec![
+            Some((LockOwnerQueryStatusV1::READY, vec![owner])),
+            Some((LockOwnerQueryStatusV1::CANCELLED, Vec::new())),
+        ]);
+        assert_eq!(status, LockOwnerQueryStatusV1::CANCELLED);
+        assert!(owners.is_empty());
+    }
+
+    #[test]
+    fn lock_owner_bypasses_the_durable_code_lines_value_cache() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("superexplorer-lock-cache-{nonce}"));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("occupied");
+        fs::create_dir(&path).unwrap();
+        let cache = Mutex::new(HostExtensionColumnCacheV1::default());
+
+        let admission = cache.lock().unwrap().admission(&path).unwrap();
+        cache.lock().unwrap().insert(
+            admission,
+            CodeLinesCachedValueV1 {
+                value: Some(explorer_ui::code_lines_column::CodeLinesValueV1 {
+                    language: String::new(),
+                    code: 0,
+                    comments: 0,
+                    blanks: 0,
+                    total: 0,
+                }),
+                error: None,
+            },
+        );
+        let request = explorer_ui::code_lines_column::CodeLinesRequestV1 {
+            context: RequestContext::new(TabId::new(), Generation::new(1)),
+            item_id: ShellItemId::from_provider_bytes(b"occupied-folder".to_vec()).unwrap(),
+            path: path.clone(),
+        };
+
+        assert!(
+            batch_details_cache_admission(&cache, BatchDetailsColumnModeV1::CodeLines, &path)
+                .is_some()
+        );
+        assert!(
+            batch_details_cache_admission(&cache, BatchDetailsColumnModeV1::LockOwner, &path)
+                .is_none(),
+            "dynamic owner state must never be intercepted by the durable code-lines cache"
+        );
+        let (hits, misses) = partition_batch_details_cache_hits(
+            &cache,
+            BatchDetailsColumnModeV1::LockOwner,
+            vec![request],
+        );
+        assert!(hits.is_empty());
+        assert_eq!(
+            misses.len(),
+            1,
+            "the provider must run even after a durable blank was stored"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn host_data_column_cache_retains_only_three_levels_below_active_folder() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("superexplorer-three-level-cache-{nonce}"));
+        let a = root.join("a");
+        let b1 = a.join("b1");
+        let b2 = a.join("b2");
+        let c1 = b1.join("c1");
+        let c2 = b2.join("c2");
+        let d1 = c1.join("d1");
+        let outside = root.with_extension("outside");
+        for directory in [&c1, &c2, &d1, &outside] {
+            fs::create_dir_all(directory).unwrap();
+        }
+
+        let mut cache = HostExtensionColumnCacheV1::<u64>::default();
+        for (index, directory) in [&a, &b1, &b2, &c1, &c2, &d1, &outside]
+            .into_iter()
+            .enumerate()
+        {
+            let admission = cache.admission(directory).unwrap();
+            assert!(cache.insert(admission, index as u64));
+        }
+
+        cache.retain_window(&root, 3);
+        let retained = cache
+            .values
+            .keys()
+            .map(|key| key.canonical_path.clone())
+            .collect::<std::collections::HashSet<_>>();
+        for expected in [&a, &b1, &b2, &c1, &c2] {
+            assert!(retained.contains(&expected.canonicalize().unwrap()));
+        }
+        assert!(!retained.contains(&d1.canonicalize().unwrap()));
+        assert!(!retained.contains(&outside.canonicalize().unwrap()));
+        assert_eq!(retained.len(), 5);
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
     }
 
     #[test]
@@ -5436,6 +6523,8 @@ mod tests {
         let original = cache.admission(&source).expect("host metadata admission");
         assert!(cache.insert(original.clone(), 41));
         assert_eq!(cache.get(&original), Some(41));
+        assert_eq!(cache.telemetry.entries.load(Ordering::Acquire), 1);
+        assert!(cache.telemetry.bytes.load(Ordering::Acquire) > 0);
 
         let folder_cache = Mutex::new(HostExtensionColumnCacheV1::default());
         let folder_admission = folder_cache.lock().unwrap().admission(&source).unwrap();
@@ -5447,6 +6536,8 @@ mod tests {
             context: RequestContext::new(TabId::new(), Generation::new(1)),
             item_id: ShellItemId::from_provider_bytes(b"cached-folder".to_vec()).unwrap(),
             path: source.clone(),
+            mft_cache_memory_mb: 512,
+            require_directory_facts: false,
         };
         let (hits, misses) = partition_folder_size_cache_hits(&folder_cache, vec![request.clone()]);
         assert_eq!(hits.len(), 1, "a host hit is rebound without provider work");
@@ -5531,6 +6622,126 @@ mod tests {
         let refreshed = cache.admission(&source).unwrap();
         assert!(cache.insert(refreshed.clone(), 12));
         assert_eq!(cache.get(&refreshed), Some(12));
+
+        drop(file);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn folder_size_cache_with_ttl_reuses_changed_mtime_within_window() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("superexplorer-folder-size-ttl-{nonce}"));
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("value.rs");
+        fs::write(&source, "fn main() {}\n").unwrap();
+        let file = fs::OpenOptions::new().write(true).open(&source).unwrap();
+        file.set_times(fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(10)))
+            .unwrap();
+
+        let folder_cache = Mutex::new(
+            HostExtensionColumnCacheV1::<FolderSizeCachedValueV1>::default()
+                .with_ttl(explorer_model::DEFAULT_FOLDER_SIZE_CACHE_TTL_SECONDS),
+        );
+        let original = folder_cache.lock().unwrap().admission(&source).unwrap();
+        assert!(folder_cache.lock().unwrap().insert(
+            original.clone(),
+            FolderSizeCachedValueV1 { exact_bytes: 41 },
+        ));
+        let request = explorer_ui::folder_size_column::FolderSizeRequestV1 {
+            context: RequestContext::new(TabId::new(), Generation::new(1)),
+            item_id: ShellItemId::from_provider_bytes(b"ttl-cached-folder".to_vec()).unwrap(),
+            path: source.clone(),
+            mft_cache_memory_mb: 512,
+            require_directory_facts: false,
+        };
+        let (hits, misses) = partition_folder_size_cache_hits(&folder_cache, vec![request.clone()]);
+        assert_eq!(hits.len(), 1, "same mtime hits as before");
+
+        // The volume keeps being written: the mtime moves, but the measurement
+        // is still inside the 60s TTL so the same bytes are reused instead of
+        // rescanning the tree (the A-tab/B-tab same-drive scenario).
+        file.set_times(fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(20)))
+            .unwrap();
+        let changed = folder_cache.lock().unwrap().admission(&source).unwrap();
+        assert_ne!(changed.key, original.key);
+        let (hits, misses) = partition_folder_size_cache_hits(&folder_cache, vec![request.clone()]);
+        assert_eq!(
+            hits.len(),
+            1,
+            "changed mtime inside TTL reuses the cached bytes"
+        );
+        assert!(
+            misses.is_empty(),
+            "a TTL hit must not reach provider dispatch"
+        );
+
+        // Past the TTL window the entry is stale and the provider must run.
+        {
+            let mut cache = folder_cache.lock().unwrap();
+            let entry = cache
+                .values
+                .iter_mut()
+                .find(|(key, _)| key.canonical_path == changed.key.canonical_path)
+                .expect("ttl entry present");
+            entry.1.2 = unix_seconds_now()
+                .saturating_sub(explorer_model::DEFAULT_FOLDER_SIZE_CACHE_TTL_SECONDS + 1);
+        }
+        let (hits, misses) = partition_folder_size_cache_hits(&folder_cache, vec![request]);
+        assert!(hits.is_empty());
+        assert_eq!(misses.len(), 1, "expired ttl must invoke the provider");
+
+        drop(file);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn folder_size_cache_ttl_toggle_reconfigures_reuse_window() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("superexplorer-folder-size-ttl-off-{nonce}"));
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("value.rs");
+        fs::write(&source, "fn main() {}\n").unwrap();
+        let file = fs::OpenOptions::new().write(true).open(&source).unwrap();
+        file.set_times(fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(10)))
+            .unwrap();
+
+        let folder_cache =
+            Mutex::new(HostExtensionColumnCacheV1::<FolderSizeCachedValueV1>::default());
+        let original = folder_cache.lock().unwrap().admission(&source).unwrap();
+        assert!(folder_cache.lock().unwrap().insert(
+            original.clone(),
+            FolderSizeCachedValueV1 { exact_bytes: 41 },
+        ));
+
+        file.set_times(fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(20)))
+            .unwrap();
+        let changed = folder_cache.lock().unwrap().admission(&source).unwrap();
+        assert_ne!(changed.key, original.key);
+        assert_eq!(
+            folder_cache.lock().unwrap().get(&changed),
+            None,
+            "without a TTL a moved mtime must rescan immediately"
+        );
+
+        folder_cache.lock().unwrap().set_ttl_seconds(Some(60));
+        assert_eq!(
+            folder_cache.lock().unwrap().get(&changed),
+            Some(FolderSizeCachedValueV1 { exact_bytes: 41 }),
+            "enabling a TTL reuses the recent measurement"
+        );
+
+        folder_cache.lock().unwrap().set_ttl_seconds(None);
+        assert_eq!(
+            folder_cache.lock().unwrap().get(&changed),
+            None,
+            "disabling the TTL (0 in Folder Options) restores strict mtime checks"
+        );
 
         drop(file);
         fs::remove_dir_all(&root).unwrap();
@@ -5693,6 +6904,27 @@ mod tests {
         .unwrap();
         assert!(matches!(read_code_lines_file_bounded(&path), Ok(None)));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn directory_rows_are_recognized_before_admitted_recursive_measurement() {
+        let root = std::env::temp_dir().join(format!(
+            "superexplorer-code-lines-visible-directory-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("large-project/src")).unwrap();
+        fs::write(root.join("large-project/src/main.rs"), b"fn main() {}\n").unwrap();
+
+        assert!(is_code_lines_directory_row(&root.join("large-project")));
+        assert!(!is_code_lines_directory_row(
+            &root.join("large-project/src/main.rs")
+        ));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -6285,6 +7517,8 @@ mod tests {
                 context,
                 item_id: ShellItemId::from_provider_bytes(id.to_le_bytes()).unwrap(),
                 path: format!(r"C:\fixture\{id}").into(),
+                mft_cache_memory_mb: 512,
+                require_directory_facts: false,
             }
         };
         let mut pending = PendingFolderSizeWorkV1::default();
@@ -6311,6 +7545,8 @@ mod tests {
             context,
             item_id: ShellItemId::from_provider_bytes(1_u64.to_le_bytes()).unwrap(),
             path: PathBuf::from(r"C:\fixture\slow"),
+            mft_cache_memory_mb: 512,
+            require_directory_facts: false,
         };
         let mut pending = PendingFolderSizeWorkV1::default();
 
@@ -6344,6 +7580,8 @@ mod tests {
                 context,
                 item_id: ShellItemId::from_provider_bytes(1_u64.to_le_bytes()).unwrap(),
                 path: PathBuf::from(r"C:\fixture\slow"),
+                mft_cache_memory_mb: 512,
+                require_directory_facts: false,
             };
         let mut pending = PendingFolderSizeWorkV1::default();
 
@@ -6363,11 +7601,15 @@ mod tests {
             context: RequestContext::new(tab, Generation::new(1)),
             item_id: ShellItemId::from_provider_bytes(1_u64.to_le_bytes()).unwrap(),
             path: PathBuf::from(r"C:\fixture\old-slow"),
+            mft_cache_memory_mb: 512,
+            require_directory_facts: false,
         };
         let new_request = explorer_ui::folder_size_column::FolderSizeRequestV1 {
             context: RequestContext::new(tab, Generation::new(2)),
             item_id: ShellItemId::from_provider_bytes(2_u64.to_le_bytes()).unwrap(),
             path: PathBuf::from(r"C:\fixture\new"),
+            mft_cache_memory_mb: 512,
+            require_directory_facts: false,
         };
         let mut pending = PendingFolderSizeWorkV1::default();
 

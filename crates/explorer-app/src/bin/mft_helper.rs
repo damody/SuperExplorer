@@ -1,5 +1,7 @@
 #![cfg(windows)]
 
+#[path = "../mft_journal.rs"]
+mod mft_journal;
 #[path = "../mft_size_map.rs"]
 mod mft_size_map;
 
