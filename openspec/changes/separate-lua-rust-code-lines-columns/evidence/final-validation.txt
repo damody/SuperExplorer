@@ -1,0 +1,8 @@
+Recorded: 2026-08-05 Asia/Taipei
+PASS: PowerShell parser accepted scripts/smoke_tokei_plugin_headful.ps1 with zero parse errors.
+PASS: cargo check -p explorer-ui -p explorer-app --locked --offline.
+PASS: cargo test -p explorer-ui --locked --offline code_lines -- --nocapture (6 passed).
+PASS: cargo test --manifest-path sdk/fixtures/rust-tokei-code-lines-column/Cargo.toml --locked --offline (9 passed).
+PASS: dual-provider headful run, clean shutdown, numeric sort, no progress bars, two exact headers, Rust: 1,250.
+PASS: openspec validate separate-lua-rust-code-lines-columns --strict.
+OPEN: deterministic .sepack rebuild/validation is blocked by unrelated unfinished published SDK inventory changes; see 3.1-package-validation.txt.

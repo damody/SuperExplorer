@@ -55,6 +55,8 @@
       "properties": {
         "id": { "type": "string" }, "feature_id": { "type": "string" },
         "kind": { "enum": ["abi-root", "gpui", "column", "renderer", "recalculate", "settings", "view-mode"] },
+        "max_file_count": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "max_folder_count": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
         "capabilities": { "type": "array", "items": { "type": "string" } },
         "payload": { "type": "string" }
       }

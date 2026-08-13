@@ -430,7 +430,7 @@ fn execute_thumbnail(request: &explorer_extension_protocol::StartPayload) -> Vec
         },
         explorer_model::ThumbnailPriority::ActiveVisible,
     );
-    match explorer_shell_win::load_shell_thumbnail(
+    match explorer_shell_win::load_shell_thumbnail_rgba(
         &thumbnail_request,
         &explorer_model::LocationDescriptor::file_system(path),
         request.flags & 2 != 0,
@@ -444,6 +444,7 @@ fn execute_thumbnail(request: &explorer_extension_protocol::StartPayload) -> Vec
             pixels.bytes.len()
         )
         .into_bytes(),
+        explorer_model::ThumbnailTerminal::Compressed { .. } => b"thumbnail-failed".to_vec(),
         explorer_model::ThumbnailTerminal::Fallback(reason) => {
             format!("thumbnail-fallback:{reason:?}").into_bytes()
         }
@@ -483,7 +484,7 @@ fn execute_thumbnail_payload(request: &explorer_extension_protocol::StartPayload
         },
         explorer_model::ThumbnailPriority::ActiveVisible,
     );
-    let terminal = explorer_shell_win::load_shell_thumbnail(
+    let terminal = explorer_shell_win::load_shell_thumbnail_rgba(
         &thumbnail_request,
         &location,
         payload.cache_only,
@@ -504,6 +505,9 @@ fn execute_thumbnail_payload(request: &explorer_extension_protocol::StartPayload
                 stride: pixels.stride,
                 pixels: pixels.bytes,
             }
+        }
+        explorer_model::ThumbnailTerminal::Compressed { .. } => {
+            explorer_extension_protocol::ThumbnailResultPayload::Failed
         }
         explorer_model::ThumbnailTerminal::Fallback(reason) => {
             explorer_extension_protocol::ThumbnailResultPayload::Fallback {

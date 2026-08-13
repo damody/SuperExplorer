@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-08-05",
+  "command": "cargo test -p explorer-app size_map_100k_memory_projection_scan_and_cancel_gate --release --locked --offline -- --ignored --nocapture",
+  "build_profile": "release",
+  "hardware": {
+    "cpu": "AMD Ryzen 9 9950X3D 16-Core Processor",
+    "memory_kib": 131713744,
+    "os": "Microsoft Windows 11 Pro",
+    "os_version": "10.0.26200",
+    "os_build": "26200"
+  },
+  "thresholds": {
+    "memory_delta_bytes_max": 268435456,
+    "projection_ms_max": 2000,
+    "scan_ms_max": 30000,
+    "cancel_ms_max": 250,
+    "projected_rectangles_max": 256,
+    "redraw_upper_bound_max": 1
+  },
+  "observed": {
+    "nodes": 100000,
+    "memory_delta_bytes": 99528704,
+    "projection_ms": 19,
+    "projected_rectangles": 256,
+    "redraw_upper_bound": 1,
+    "scan_ms": 3052,
+    "cancel_ms": 14,
+    "cancel_polls": 4097
+  },
+  "result": "pass"
+}

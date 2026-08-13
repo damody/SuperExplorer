@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "package": "rust-folder-size-map-view@0.1.0",
+  "target": "x86_64-pc-windows-msvc",
+  "dependency_source_of_truth": "Cargo.toml exact requirements resolved by Cargo.lock",
+  "cargo_toml_sha256": "081dbea67d049634fa158dbe61928cbd47c5badee09b716899e37125a2b405ba",
+  "source": "relative public SDK crate paths plus crates.io registry resolved by Cargo.lock",
+  "lock_sha256": "70391c7c44ad6fc45f87a9a152a34e2234dc063ea005050145d3cac55932d65c",
+  "static_component_count": 41,
+  "linkage": "static Rust libraries linked into plugin.dll",
+  "runtime_download": false,
+  "runtime_executable": false,
+  "reproducibility": "exact public SDK versions and Cargo.lock under --locked --offline"
+}

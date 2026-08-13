@@ -1,0 +1,6 @@
+Task IDs: 2.2.4, 2.3.3
+Recorded: 2026-08-05 Asia/Taipei
+Command: cargo test --manifest-path sdk/fixtures/rust-tokei-code-lines-column/Cargo.toml --locked --offline
+Expected: aggregation, tie, unsupported input, renderer, grouping, cache, registrar, and sort-value tests pass.
+Actual: exit 0; 9 passed, 0 failed.
+Assertions include multi-file per-language aggregation, largest-language versus largest-file selection, ascending-name tie resolution, malformed/empty directory pack rejection, Rust: 25 renderer output, 1,250 grouping, cache schema 2, and U64 selected code sorting.

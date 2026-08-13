@@ -407,6 +407,7 @@ pub struct SinglePluginVisualColumnRuntimeV1 {
     render_columns: BTreeMap<String, VisualColumnObjectV1>,
     size_map_views: BTreeMap<String, SizeMapViewObjectV1>,
     batch_column_providers: BTreeMap<String, BatchColumnProviderObjectV1>,
+    batch_folder_admission: BTreeMap<String, explorer_extension_api::FolderAdmissionPolicyV1>,
     virtual_folder_providers: BTreeMap<String, VirtualFolderProviderObjectV1>,
     batch_lock_owner_capabilities: BTreeSet<String>,
     renderer_authority: Arc<RuntimeAuthorityV1>,
@@ -528,6 +529,7 @@ pub struct SinglePluginSizeMapViewRuntimeV1 {
 pub struct SinglePluginBatchColumnRuntimeV1 {
     plugin_id: explorer_extension_api::StableIdV1,
     providers: BTreeMap<String, BatchColumnProviderObjectV1>,
+    folder_admission: BTreeMap<String, explorer_extension_api::FolderAdmissionPolicyV1>,
     lock_owner_capabilities: BTreeSet<String>,
     direct_call_guard: DirectPluginCallGuardV1,
     _single_owner: PhantomData<Cell<()>>,
@@ -658,6 +660,7 @@ impl SinglePluginVisualColumnRuntimeV1 {
             SinglePluginBatchColumnRuntimeV1 {
                 plugin_id,
                 providers: self.batch_column_providers,
+                folder_admission: self.batch_folder_admission,
                 lock_owner_capabilities: self.batch_lock_owner_capabilities,
                 direct_call_guard: self.direct_call_guard,
                 _single_owner: PhantomData,
@@ -704,6 +707,7 @@ impl SinglePluginVisualColumnRuntimeV1 {
             SinglePluginBatchColumnRuntimeV1 {
                 plugin_id,
                 providers: self.batch_column_providers,
+                folder_admission: self.batch_folder_admission,
                 lock_owner_capabilities: self.batch_lock_owner_capabilities,
                 direct_call_guard: self.direct_call_guard.clone(),
                 _single_owner: PhantomData,
@@ -791,6 +795,16 @@ impl SinglePluginVirtualFolderRuntimeV1 {
 }
 
 impl SinglePluginBatchColumnRuntimeV1 {
+    /// Returns the validated folder-admission policy registered for a batch
+    /// column. Missing policies retain unlimited behavior.
+    #[must_use]
+    pub fn folder_admission_policy(
+        &self,
+        contribution_id: &str,
+    ) -> Option<explorer_extension_api::FolderAdmissionPolicyV1> {
+        self.folder_admission.get(contribution_id).copied()
+    }
+
     /// Prepares the one explicit-DLL batch provider with a direct, bounded
     /// host authority. This is deliberately not package discovery: only a
     /// provider retained from the selected `--plugin-dll` can be dispatched.
@@ -1140,6 +1154,7 @@ pub(crate) fn load_single_plugin_visual_column_runtime(
     let mut render_columns = BTreeMap::new();
     let mut size_map_views = BTreeMap::new();
     let mut batch_column_providers = BTreeMap::new();
+    let mut batch_folder_admission = BTreeMap::new();
     let mut virtual_folder_providers = BTreeMap::new();
     let mut batch_lock_owner_capabilities = BTreeSet::new();
     let renderer_authority = Arc::new(RuntimeAuthorityV1::new().map_err(|_| {
@@ -1148,6 +1163,15 @@ pub(crate) fn load_single_plugin_visual_column_runtime(
     let mut renderer_grants = BTreeMap::new();
     for contribution in output.contributions.into_iter() {
         let contribution_id = contribution.contribution_id.into_string();
+        let folder_admission = contribution.folder_admission.into_option();
+        if folder_admission.is_some()
+            && (contribution.kind != RegisteredContributionKindV1::COLUMN
+                || matches!(contribution.batch_column_provider, ROption::RNone))
+        {
+            return Err(SinglePluginLoadErrorV1::LoadFailed(format!(
+                "folder admission on non-batch column contribution {contribution_id:?}"
+            )));
+        }
         if let Some(object) = contribution.visual_column.into_option() {
             let target = if contribution.kind == RegisteredContributionKindV1::COLUMN {
                 &mut measure_columns
@@ -1235,10 +1259,13 @@ pub(crate) fn load_single_plugin_visual_column_runtime(
                     "registrar returned duplicate batch-column contribution {contribution_id:?}"
                 )));
             }
+            if let Some(policy) = folder_admission {
+                batch_folder_admission.insert(contribution_id.clone(), policy);
+            }
             if contribution
                 .required_capabilities
                 .iter()
-                .any(|capability| capability.as_str() == "lock_owner.query")
+                .any(|capability| is_public_lock_owner_query_capability(capability.as_str()))
             {
                 batch_lock_owner_capabilities.insert(contribution_id.clone());
             }
@@ -1284,12 +1311,17 @@ pub(crate) fn load_single_plugin_visual_column_runtime(
         render_columns,
         size_map_views,
         batch_column_providers,
+        batch_folder_admission,
         virtual_folder_providers,
         batch_lock_owner_capabilities,
         renderer_authority,
         renderer_grants,
         direct_call_guard,
     })
+}
+
+fn is_public_lock_owner_query_capability(capability: &str) -> bool {
+    capability == "lock-owner.query"
 }
 
 struct ResidentLoadStateV1 {
@@ -1747,6 +1779,12 @@ mod tests {
             .expect("build-time artifact is valid")
             .fingerprint
             .as_str()
+    }
+
+    #[test]
+    fn public_lock_owner_capability_uses_the_manifest_hyphenated_spelling() {
+        assert!(is_public_lock_owner_query_capability("lock-owner.query"));
+        assert!(!is_public_lock_owner_query_capability("lock_owner.query"));
     }
 
     #[test]

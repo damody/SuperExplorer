@@ -1110,6 +1110,10 @@ fn typed_thumbnail_pixels_cross_only_the_bounded_broker_contract() {
         explorer_model::ThumbnailTerminal::Ready { pixels, .. } => pixels
             .validate(explorer_extension_protocol::MAXIMUM_FRAME_BYTES)
             .expect("bounded owned pixels"),
+        explorer_model::ThumbnailTerminal::Compressed { raster, .. } => assert!(
+            raster.validate(explorer_extension_protocol::MAXIMUM_FRAME_BYTES),
+            "bounded owned BC7 rows"
+        ),
         explorer_model::ThumbnailTerminal::Fallback(_) => {}
         explorer_model::ThumbnailTerminal::Failed(detail) => {
             assert!(!detail.contains(&fixture.path().display().to_string()));

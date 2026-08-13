@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "command": "cargo test --manifest-path sdk/fixtures/rust-folder-size-visual-column/Cargo.toml --locked --offline",
+  "exit_code": 0,
+  "elapsed_milliseconds": 1837,
+  "utc": "2026-08-04T17:05:06.3621010Z",
+  "machine": "DESKTOP-906EL9Q",
+  "processor": "AMD64 Family 26 Model 68 Stepping 0, AuthenticAMD",
+  "coverage": "recursive bytes, cycle/no-follow, partial truthfulness, cache identity/mtime/settings, process-restart cache, aggregate and renderer states"
+}

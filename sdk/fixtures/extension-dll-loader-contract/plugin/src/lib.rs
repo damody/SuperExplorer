@@ -61,6 +61,7 @@ impl ExtensionRegistrarImplementationV1 for Registrar {
                 expected_sort: ROption::RNone,
                 opaque_contract: ROption::RNone,
                 renderer_contribution_id: ROption::RNone,
+                folder_admission: ROption::RNone,
                 provider: ROption::RNone,
                 visual_column: ROption::RNone,
                 size_map_view: ROption::RNone,

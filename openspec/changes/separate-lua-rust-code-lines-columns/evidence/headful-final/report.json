@@ -1,0 +1,24 @@
+﻿{
+    "status":  "passed",
+    "values":  4,
+    "real_shell_icons":  "captured",
+    "no_progress_bars":  true,
+    "numeric_sort":  [
+                         1,
+                         1,
+                         1,
+                         1250
+                     ],
+    "detail":  "Main code lines: JavaScript: 1 JavaScript · 0 comments · 0 blanks · 1 total",
+    "observed_descendant_processes":  [
+
+                                      ],
+    "observed_plugin_tool_descendants":  [
+
+                                         ],
+    "clean_shutdown":  true,
+    "screenshots":  [
+                        "code-lines.png",
+                        "code-lines-detail.png"
+                    ]
+}

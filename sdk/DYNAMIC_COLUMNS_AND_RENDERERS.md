@@ -16,6 +16,21 @@ count. Aggregate calls are bounded and generation-scoped; partial, stale or
 over-limit results are rejected. An optional renderer descriptor must accept
 the column's value kind.
 
+## Folder admission limits
+
+A batch data-column contribution may set `folder_admission` on its
+`RegisteredContributionV1`. `max_file_count` and `max_folder_count` are
+optional inclusive `u64` limits; omitted values are unlimited, zero is valid,
+and declaring both requires both limits to pass. These limits apply only to
+folder items. Ordinary file items keep the existing dispatch path.
+
+The host obtains exact File Count and Folder Count values from MFT Service and
+evaluates the policy before creating or dispatching folder work. Pending,
+partial, unavailable, stale, or over-limit facts never enter the extension
+callback. Extensions receive no MFT handle and cannot override the admission
+decision. The Rust and Lua Code Lines examples demonstrate
+`max_file_count = 999`.
+
 ## Renderer contract
 
 Implement `VisualColumnImplementationV1`. The render method receives only an
@@ -43,4 +58,3 @@ powershell -NoProfile -File scripts/build-plugin.ps1 -PluginRoot sdk/fixtures/ru
 The sample's `Cargo.toml` uses exact SDK versions with first-party relative
 paths and registry versions for third-party crates. It is intentionally not a
 root workspace member.
-

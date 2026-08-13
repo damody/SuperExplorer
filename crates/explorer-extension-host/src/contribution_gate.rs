@@ -31,6 +31,9 @@ pub struct ContributionRegistrationV1 {
     pub contribution_id: String,
     pub kind: ContributionKindV1,
     pub required_capabilities: Vec<String>,
+    /// Inclusive Host-enforced limits for directory jobs. Missing means the
+    /// contribution retains its existing unlimited behavior.
+    pub folder_admission: Option<explorer_extension_api::FolderAdmissionPolicyV1>,
     /// Optional sealed job contract. A contribution without one cannot mint a
     /// job authority.
     pub job_contract: Option<ContributionJobContractV1>,
@@ -120,6 +123,7 @@ impl ValidatedContributionSetV1 {
                 .required_capabilities
                 .iter()
                 .any(|capability| capability == "lock_owner.query"),
+            folder_admission: contribution.folder_admission,
         })
     }
 }
@@ -138,6 +142,7 @@ pub(crate) struct ValidatedJobDescriptorV1 {
     /// contribution capability set. Stream open never accepts a plugin string.
     pub(crate) filesystem_read_authorized: bool,
     pub(crate) lock_owner_query_authorized: bool,
+    pub(crate) folder_admission: Option<explorer_extension_api::FolderAdmissionPolicyV1>,
 }
 
 #[cfg(all(test, feature = "integration-test-support"))]
@@ -257,6 +262,14 @@ impl ContributionGateV1 {
                 });
             }
             previous_id = Some(&registration.contribution_id);
+            if registration.folder_admission.is_some()
+                && (registration.kind != ContributionKindV1::Column
+                    || registration.job_contract.is_none())
+            {
+                return Err(ContributionGateErrorV1::InvalidFolderAdmissionPolicy {
+                    contribution_id: registration.contribution_id.clone(),
+                });
+            }
             let Some(feature) = resolved
                 .manifest()
                 .features
@@ -444,6 +457,8 @@ pub enum ContributionGateErrorV1 {
     },
     #[error("contribution {contribution_id} has an invalid sealed job contract")]
     InvalidJobContract { contribution_id: String },
+    #[error("contribution {contribution_id} cannot declare a folder admission policy")]
+    InvalidFolderAdmissionPolicy { contribution_id: String },
     #[error("contribution {contribution_id} has no matching GPUI renderer contract")]
     OpaqueRendererContract { contribution_id: String },
     #[error("invalid {field} identifier: {value}")]
@@ -563,6 +578,7 @@ mod tests {
                 .iter()
                 .map(|value| (*value).to_owned())
                 .collect(),
+            folder_admission: None,
             job_contract: None,
         }
     }
@@ -944,6 +960,7 @@ mod tests {
                 contribution_id: "size".to_owned(),
                 kind: ContributionKindV1::Column,
                 required_capabilities: capabilities,
+                folder_admission: None,
                 job_contract: None,
             };
             assert!(matches!(
@@ -964,6 +981,7 @@ mod tests {
             contribution_id: "size".to_owned(),
             kind: ContributionKindV1::Column,
             required_capabilities: Vec::new(),
+            folder_admission: None,
             job_contract: None,
         };
         assert!(matches!(
@@ -985,6 +1003,7 @@ mod tests {
                 contribution_id: "size".to_owned(),
                 kind: ContributionKindV1::Column,
                 required_capabilities: Vec::new(),
+                folder_admission: None,
                 job_contract: None,
             },
             ContributionRegistrationV1 {
@@ -992,6 +1011,7 @@ mod tests {
                 contribution_id: "y".repeat(65),
                 kind: ContributionKindV1::Column,
                 required_capabilities: Vec::new(),
+                folder_admission: None,
                 job_contract: None,
             },
         ];
@@ -1053,6 +1073,36 @@ mod tests {
             assert!(matches!(
                 ContributionGateV1::validate(resolved, &[missing_renderer]),
                 Err(ContributionGateErrorV1::OpaqueRendererContract { .. })
+            ));
+        });
+    }
+
+    #[test]
+    fn folder_admission_accepts_zero_and_is_rejected_outside_data_columns() {
+        with_resolved(&[feature("feature", &[])], |resolved| {
+            let policy = explorer_extension_api::FolderAdmissionPolicyV1 {
+                max_file_count: ROption::RSome(0),
+                max_folder_count: ROption::RSome(u64::MAX),
+            };
+            let mut column = registration("feature", "column", ContributionKindV1::Column, &[]);
+            column.folder_admission = Some(policy);
+            column.job_contract = Some(ContributionJobContractV1 {
+                interface_id: StableIdV1::new(IdNamespaceV1::new(10, 1), 1),
+                expected_sort: ROption::RSome(StableSortValueKindV1::U64),
+                opaque_schema: None,
+                renderer_contribution_id: None,
+            });
+            let validated = ContributionGateV1::validate(resolved, &[column]).unwrap();
+            assert_eq!(
+                validated.job_descriptor("column").unwrap().folder_admission,
+                Some(policy)
+            );
+
+            let mut command = registration("feature", "command", ContributionKindV1::Command, &[]);
+            command.folder_admission = Some(policy);
+            assert!(matches!(
+                ContributionGateV1::validate(resolved, &[command]),
+                Err(ContributionGateErrorV1::InvalidFolderAdmissionPolicy { .. })
             ));
         });
     }

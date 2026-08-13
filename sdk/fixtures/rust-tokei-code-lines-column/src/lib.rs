@@ -17,14 +17,14 @@ use abi_stable::{
     std_types::{ROption, RResult, RString, RVec},
 };
 use explorer_extension_api::{
-    ABI_SCHEMA_V1, AbiErrorCodeV1, AbiErrorV1, BatchColumnContextV1,
-    BatchColumnProviderImplementationV1, BatchColumnProviderObjectV1, EXTENSION_ID_NAMESPACE_V1,
-    ExtensionRegistrarImplementationV1, ExtensionRootModuleV1, ExtensionRootModuleV1_Ref,
-    IncrementalResultBatchV1, IncrementalResultEntryV1, InputStreamReadRequestV1,
-    InputStreamStatusV1, JobTerminalV1, MAX_INPUT_STREAM_READ_BYTES_V1, PluginItemOutcomeV1,
-    PluginItemResultV1, PluginMetadataV1, PluginValueV1, ROOT_MODULE_CONTRACT_ID_V1,
-    RegisteredContributionKindV1, RegisteredContributionV1, RegistrarOutputResultV1,
-    RegistrarOutputV1, RegistrationOutcomeV1, SDK_MAJOR_VERSION_V1, StableIdV1, StableSortValueV1,
+    AbiErrorCodeV1, AbiErrorV1, BatchColumnContextV1, BatchColumnProviderImplementationV1,
+    BatchColumnProviderObjectV1, ExtensionRegistrarImplementationV1, ExtensionRootModuleV1,
+    ExtensionRootModuleV1_Ref, IncrementalResultBatchV1, IncrementalResultEntryV1,
+    InputStreamReadRequestV1, InputStreamStatusV1, JobTerminalV1, PluginItemOutcomeV1,
+    PluginItemResultV1, PluginMetadataV1, PluginValueV1, RegisteredContributionKindV1,
+    RegisteredContributionV1, RegistrarOutputResultV1, RegistrarOutputV1, RegistrationOutcomeV1,
+    StableIdV1, StableSortValueV1, ABI_SCHEMA_V1, EXTENSION_ID_NAMESPACE_V1,
+    MAX_INPUT_STREAM_READ_BYTES_V1, ROOT_MODULE_CONTRACT_ID_V1, SDK_MAJOR_VERSION_V1,
 };
 use explorer_extension_ui_api::{
     CellColorV1, CellRenderContextV1, CellRenderPlanV1, FolderSizeMeasureRequestV1,
@@ -368,6 +368,9 @@ impl VisualColumnImplementationV1 for TokeiCodeLinesProvider {
 
     fn render(&self, context: CellRenderContextV1) -> CellRenderPlanV1 {
         let muted = context.theme.muted_foreground;
+        if let Some(error) = context.error.clone().into_option() {
+            return CellRenderPlanV1::text_only(error, muted);
+        }
         let Some(value) = context
             .value
             .into_option()
@@ -519,6 +522,12 @@ impl ExtensionRegistrarImplementationV1 for TokeiRegistrar {
                     renderer_contribution_id: ROption::RSome(RString::from(
                         "rust-tokei:code-lines-renderer",
                     )),
+                    folder_admission: ROption::RSome(
+                        explorer_extension_api::FolderAdmissionPolicyV1 {
+                            max_file_count: ROption::RSome(999),
+                            max_folder_count: ROption::RNone,
+                        },
+                    ),
                     provider: ROption::RNone,
                     visual_column: ROption::RNone,
                     size_map_view: ROption::RNone,
@@ -536,6 +545,7 @@ impl ExtensionRegistrarImplementationV1 for TokeiRegistrar {
                     expected_sort: ROption::RNone,
                     opaque_contract: ROption::RNone,
                     renderer_contribution_id: ROption::RNone,
+                    folder_admission: ROption::RNone,
                     provider: ROption::RNone,
                     visual_column: ROption::RSome(
                         explorer_extension_api::VisualColumnObjectV1::new(TokeiCodeLinesProvider),
@@ -639,6 +649,11 @@ mod tests {
             ROption::RSome(_)
         ));
         assert!(matches!(contribution.visual_column, ROption::RNone));
+        let policy = contribution
+            .folder_admission
+            .expect("Code Lines declares its Host admission limit");
+        assert_eq!(policy.max_file_count, ROption::RSome(999));
+        assert_eq!(policy.max_folder_count, ROption::RNone);
         assert_eq!(
             output.contributions[1].kind,
             RegisteredContributionKindV1::GPUI_RENDERER

@@ -22,6 +22,7 @@
       "id": "rust-tokei:code-lines",
       "feature_id": "rust-tokei",
       "kind": "column",
+      "max_file_count": 999,
       "capabilities": ["abi", "filesystem.read"],
       "payload": "src/lib.rs"
     },

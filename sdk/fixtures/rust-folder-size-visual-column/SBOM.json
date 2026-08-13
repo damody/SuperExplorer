@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "format": "superexplorer-static-rust-sbom-v1",
+  "package": "rust-folder-size-visual-column@0.1.0",
+  "target": "x86_64-pc-windows-msvc",
+  "classification": "static-rust-library",
+  "dependency_source_of_truth": "Cargo.toml exact requirements resolved by Cargo.lock",
+  "cargo_toml_sha256": "e55e3353daaad81c7399c1deb4a1c008114df86974e953de01cde64613006c19",
+  "lockfile": {
+    "path": "Cargo.lock",
+    "sha256": "24153cd0a3ab44a0410435b652e75326db78ebc91052614fae8aab493108acd8"
+  },
+  "component_count": 41,
+  "component_inventory": "Every package record in Cargo.lock, including the two relative public SDK crates; no private or vendored dependency is present",
+  "linkage": "static Rust libraries linked into plugin.dll",
+  "runtime_download": false,
+  "runtime_executable": false
+}
