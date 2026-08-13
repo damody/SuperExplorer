@@ -30,7 +30,11 @@ When MFT Service is unavailable, the location is not backed by a supported NTFS 
 
 Extend the built-in `ColumnId` set, stable-ID parser, registry descriptors, ordered layout, session persistence, rendering, auto-sizing, filtering behavior where applicable, and integer sorting for the two columns. Both descriptors use container applicability and background aggregate cost.
 
-The directory-facts coordinator starts work when either count column is visible or an enabled extension contribution requires the facts. Therefore, hiding `File Count` affects only presentation; it does not disable a dependency required by Code Lines or another extension.
+The directory-facts coordinator is strictly presentation-driven. It starts work immediately when either built-in count column transitions to visible, including a visible column restored at startup or carried into a newly loaded directory. If neither `File Count` nor `Folder Count` is visible, it submits no directory-facts query. An extension dependency alone must never start the coordinator.
+
+Visibility also controls which fact is enabled for extension admission. A contribution with `max_file_count` may consume the shared MFT result only while `File Count` is visible; a contribution with `max_folder_count` may consume it only while `Folder Count` is visible. When both limits are declared, both columns must be visible. Because MFT Service returns one aggregate containing both counts, showing either count column still issues only one shared query, but a hidden fact is not considered enabled for extension admission.
+
+Turning on a count column is an explicit lifecycle event: the UI immediately submits deduplicated requests for the current filesystem-folder rows and repaints as exact results arrive, without requiring refresh or navigation. Turning off the last visible count column cancels obsolete presentation work and prevents new count queries. Existing consumers such as Folder Size may continue their own independent work, but that work does not make hidden count facts eligible for extension admission.
 
 ## Extension admission policy
 
@@ -56,7 +60,7 @@ For a folder row, Code Lines has these states:
 3. At 1000 or more files, the Host does not invoke Code Lines and displays `File Count 超過限制，因此未啟動`.
 4. If File Count is unavailable, incomplete, or stale, the Host does not invoke Code Lines and displays `依賴 File Count，因此未啟動`.
 
-The File Count column does not need to be visible for this dependency to run. Regular file rows continue to use existing Code Lines behavior without a folder-count gate.
+The `File Count` column must be visible for this dependency to run. When it is hidden, Code Lines displays its existing File Count dependency-not-enabled state, starts neither a directory-facts query nor Code Lines work for folder rows, and does not use a cached hidden result to bypass the dependency. Regular file rows continue to use existing Code Lines behavior without a folder-count gate.
 
 ## Error and lifecycle behavior
 
@@ -82,11 +86,14 @@ Unit and integration coverage must verify:
 - stable-ID parsing, descriptor validation, default-hidden layout, resize/reorder persistence, and legacy/extensible session migration, including a previously saved eight-built-in layout that gains both hidden chooser rows without losing preferences;
 - independent column toggles, blank file rows, exact integer rendering, and sorting with unavailable values excluded;
 - one deduplicated MFT query shared by both columns and multiple dependent extensions;
+- immediate request submission when either count column becomes visible, including restored-visible startup state, without requiring refresh or navigation;
+- zero directory-facts queries while both count columns are hidden, even when an enabled extension declares count limits;
+- cancellation or suppression of new count work after the last visible count column is hidden;
 - cache invalidation on MFT generation change, refresh, watcher events, navigation, and cancellation;
 - manifest validation and AND semantics for zero, one, or two admission limits;
 - absence of an extension callback while facts are pending, unavailable, stale, partial, or over limit;
 - unchanged behavior for existing contributions without a policy and for regular file calculations;
 - Code Lines admission at 999 files, rejection at 1000 files, and the three dependency/limit status messages;
-- Code Lines dependency acquisition while the File Count column is hidden.
+- Code Lines dependency-not-enabled presentation and zero folder dispatch while the File Count column is hidden.
 
 Final validation must run the focused model, MFT, extension-host, application, and UI tests, followed by the repository's standard build/test/install validation. A headful test must show the two optional columns, verify their recursive values and sorting, and prove that Code Lines starts below the boundary but remains undispatched with the correct status at and above the boundary or when MFT facts are unavailable.
