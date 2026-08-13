@@ -10,11 +10,11 @@ Add optional built-in `File Count` and `Folder Count` Details columns backed exc
 
 - `File Count` is the number of regular-file descendants in the complete folder subtree.
 - `Folder Count` is the number of real directory descendants in the complete folder subtree. It excludes the queried folder itself.
-- Reparse points, junctions, and symbolic links are neither counted nor traversed.
+- Reparse-point, junction, and symbolic-link directory entries count as one folder, but their targets are never traversed.
 - Both columns apply only to filesystem folder rows. File rows are blank.
 - Exact values use unsigned-integer sorting. Unavailable or incomplete values display `—` and do not enter the integer sort domain.
 
-The columns use stable IDs `builtin:file_count` and `builtin:folder_count`. Existing sessions migrate with both columns hidden. This change does not add localization resources; the specified status strings are rendered directly.
+The columns use stable IDs `builtin:file_count` and `builtin:folder_count`. Existing sessions migrate with both columns hidden. Migration must reconcile every restored extensible layout against the current built-in descriptor set: it preserves every saved entry's order, width, and visibility, then appends any newly introduced built-in descriptor exactly once with its default width and hidden visibility. This guarantees that a session saved before these IDs existed exposes both rows in the Details column chooser without resetting the user's layout. This change does not add localization resources; the specified status strings are rendered directly.
 
 ## Directory facts architecture
 
@@ -77,9 +77,9 @@ This change does not add user-editable threshold controls, localization resource
 Unit and integration coverage must verify:
 
 - recursive file counting and root-excluded recursive folder counting;
-- exclusion and non-traversal of reparse points, junctions, and symbolic links;
+- one-entry counting and target non-traversal for reparse points, junctions, and symbolic links;
 - MFT-only behavior for NTFS, virtual, unsupported, unavailable, partial, and stale results;
-- stable-ID parsing, descriptor validation, default-hidden layout, resize/reorder persistence, and legacy session migration;
+- stable-ID parsing, descriptor validation, default-hidden layout, resize/reorder persistence, and legacy/extensible session migration, including a previously saved eight-built-in layout that gains both hidden chooser rows without losing preferences;
 - independent column toggles, blank file rows, exact integer rendering, and sorting with unavailable values excluded;
 - one deduplicated MFT query shared by both columns and multiple dependent extensions;
 - cache invalidation on MFT generation change, refresh, watcher events, navigation, and cancellation;
