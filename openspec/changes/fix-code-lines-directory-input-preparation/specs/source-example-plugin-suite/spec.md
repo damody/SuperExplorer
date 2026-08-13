@@ -11,6 +11,10 @@ The Host SHALL prepare Rust and Lua Code Lines directory snapshots only from reg
 - **WHEN** the Lua Code Lines provider receives a file or directory snapshot containing any language recognized by the workspace-locked tokei classifier
 - **THEN** it uses tokei parsing for that language and includes its exact code, comment, and blank counts in the all-language total
 
+#### Scenario: Installed providers display the same real folder together
+- **WHEN** the installed Rust and Lua Code Lines providers are loaded together for `D:\code\file_explorer`
+- **THEN** both columns complete for every admitted representative folder, each all-language Code lines value is greater than or equal to its Main code lines value, and neither column exposes a preparation error or permanent loading state
+
 #### Scenario: Supported source exceeds the single-stream limit
 - **WHEN** the complete framed snapshot of recognized source would exceed `MAX_HOST_INPUT_STREAM_SOURCE_BYTES_V1`
 - **THEN** that folder is reported as `Unsupported source` and no oversized stream is submitted
