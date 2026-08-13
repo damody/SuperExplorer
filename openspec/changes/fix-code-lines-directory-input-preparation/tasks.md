@@ -17,3 +17,4 @@
 - [x] 3.2 Run strict OpenSpec validation and scan the change artifacts for placeholders or contradictions.
 - [x] 3.3 Diagnose every direct child of `D:\code\file_explorer` with the production snapshot builder and record that no accepted snapshot can fail the Host stream size contract.
 - [x] 3.4 Build through the standard application path and verify the repaired Code Lines results no longer show `Code lines input could not be prepared` for the target folder.
+- [x] 3.5 Load both installed providers in one clean-profile run and verify paired Code lines and Main code lines results for representative `D:\code\file_explorer` folders.

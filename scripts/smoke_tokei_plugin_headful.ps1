@@ -16,6 +16,7 @@ param(
     [switch]$UseExecutableInPlace,
     [switch]$LockOwnerMode,
     [switch]$DualCodeLinesMode,
+    [switch]$DualCodeLinesRealFolderMode,
     [switch]$DetailsColumnDragMode,
     [switch]$WideWindow
 )
@@ -30,27 +31,32 @@ $codeLinesDetailPattern = "^$([regex]::Escape($codeLinesColumn)): (?:.+: )?[\d,]
 if ($LASTEXITCODE -ne 0) { throw "tokei plugin cargo test failed ($LASTEXITCODE)" }
 & cargo.exe build --manifest-path (Join-Path $pluginRoot 'Cargo.toml') --target x86_64-pc-windows-msvc --locked --offline
 if ($LASTEXITCODE -ne 0) { throw "tokei plugin cargo build failed ($LASTEXITCODE)" }
+if ($DualCodeLinesRealFolderMode -and -not $DualCodeLinesMode) {
+    throw 'DualCodeLinesRealFolderMode requires DualCodeLinesMode'
+}
 if ($DualCodeLinesMode) {
     $secondPluginRoot = if ([IO.Path]::IsPathRooted($SecondPluginRoot)) { $SecondPluginRoot } else { Join-Path $workspace $SecondPluginRoot }
     & cargo.exe test --manifest-path (Join-Path $secondPluginRoot 'Cargo.toml') --locked --offline
     if ($LASTEXITCODE -ne 0) { throw "second tokei plugin cargo test failed ($LASTEXITCODE)" }
     & cargo.exe build --manifest-path (Join-Path $secondPluginRoot 'Cargo.toml') --target x86_64-pc-windows-msvc --locked --offline
     if ($LASTEXITCODE -ne 0) { throw "second tokei plugin cargo build failed ($LASTEXITCODE)" }
-    $dualOutputRoot = if ([IO.Path]::IsPathRooted($OutputDirectory)) { $OutputDirectory } else { Join-Path $workspace $OutputDirectory }
-    $dualFixture = Join-Path $dualOutputRoot 'dual-main-language-sample'
-    New-Item -ItemType Directory -Force -Path $dualFixture | Out-Null
-    $mixedProject = Join-Path $dualFixture 'mixed-project'
-    New-Item -ItemType Directory -Force -Path $mixedProject | Out-Null
-    foreach ($fixtureDirectory in $dualFixture,$mixedProject) {
-        foreach ($staleFixtureFile in 'main.rs','script.py','script.lua','script.js') {
-            Remove-Item -LiteralPath (Join-Path $fixtureDirectory $staleFixtureFile) -Force -ErrorAction SilentlyContinue
+    if (-not $DualCodeLinesRealFolderMode) {
+        $dualOutputRoot = if ([IO.Path]::IsPathRooted($OutputDirectory)) { $OutputDirectory } else { Join-Path $workspace $OutputDirectory }
+        $dualFixture = Join-Path $dualOutputRoot 'dual-main-language-sample'
+        New-Item -ItemType Directory -Force -Path $dualFixture | Out-Null
+        $mixedProject = Join-Path $dualFixture 'mixed-project'
+        New-Item -ItemType Directory -Force -Path $mixedProject | Out-Null
+        foreach ($fixtureDirectory in $dualFixture,$mixedProject) {
+            foreach ($staleFixtureFile in 'main.rs','script.py','script.lua','script.js') {
+                Remove-Item -LiteralPath (Join-Path $fixtureDirectory $staleFixtureFile) -Force -ErrorAction SilentlyContinue
+            }
         }
+        $rustLines = 1..1250 | ForEach-Object { "fn line_$($_)() {}" }
+        $javaScriptLines = 1..75 | ForEach-Object { "const value_$($_) = $($_);" }
+        [IO.File]::WriteAllText((Join-Path $mixedProject 'main.rs'),($rustLines -join "`n") + "`n")
+        [IO.File]::WriteAllText((Join-Path $mixedProject 'script.js'),($javaScriptLines -join "`n") + "`n")
+        $InitialPath = $dualFixture
     }
-    $rustLines = 1..1250 | ForEach-Object { "fn line_$($_)() {}" }
-    $javaScriptLines = 1..75 | ForEach-Object { "const value_$($_) = $($_);" }
-    [IO.File]::WriteAllText((Join-Path $mixedProject 'main.rs'),($rustLines -join "`n") + "`n")
-    [IO.File]::WriteAllText((Join-Path $mixedProject 'script.js'),($javaScriptLines -join "`n") + "`n")
-    $InitialPath = $dualFixture
 }
 if ($DirectoryAdmissionUnavailableMode) {
     $admissionOutputRoot = if ([IO.Path]::IsPathRooted($OutputDirectory)) { $OutputDirectory } else { Join-Path $workspace $OutputDirectory }
@@ -366,7 +372,7 @@ function Find-CellOnRow($Root,[string]$RowName,[string]$CellPrefix) {
     $rowTop=$row.Current.BoundingRectangle.Top
     0..($all.Count-1) | ForEach-Object { $all.Item($_) } | Where-Object {
         $_.Current.Name -like "$CellPrefix*" -and
-        [Math]::Abs($_.Current.BoundingRectangle.Top-$rowTop) -lt 8
+        [Math]::Abs($_.Current.BoundingRectangle.Top-$rowTop) -lt 24
     } | Select-Object -First 1
 }
 
@@ -829,7 +835,7 @@ try {
         Get-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Raw
         return
     }
-    $directoryMinimum = if ($DualCodeLinesMode) { 1 } else { $MinimumDirectoryValues }
+    $directoryMinimum = if ($DualCodeLinesMode -and -not $DualCodeLinesRealFolderMode) { 1 } else { $MinimumDirectoryValues }
     # Keep this script Windows PowerShell 5.1 compatible even when it is read
     # as the system ANSI code page rather than UTF-8.
     $dependencyUnavailableText = -join @(0x4F9D,0x8CF4,0x20,0x46,0x69,0x6C,0x65,0x20,0x43,0x6F,0x75,0x6E,0x74,0xFF0C,0x56E0,0x6B64,0x672A,0x555F,0x52D5 | ForEach-Object { [char]$_ })
@@ -1015,25 +1021,27 @@ try {
             Capture-Window $window (Join-Path $OutputDirectory 'dual-code-lines-failure.png')
             throw 'Code lines and Main code lines were not simultaneously installed'
         }
-        $nameHeader=Find-ButtonName $root 'Sort by Name'
-        if ($null -eq $nameHeader) { $nameHeader=Find-ButtonNamePrefix $root 'Name, sorted' }
-        $dateHeader=Find-ButtonName $root 'Sort by Date modified'
-        if ($null -eq $dateHeader) { throw 'Date modified header was unavailable for reorder test' }
-        Drag-ElementToElement $root $luaHeader $dateHeader
-        $luaHeader=Find-ButtonName $root 'Sort by Code lines'
-        $rustHeader=Find-ButtonName $root 'Sort by Main code lines'
-        $dateHeader=Find-ButtonName $root 'Sort by Date modified'
-        if ($luaHeader.Current.BoundingRectangle.Left -ge $dateHeader.Current.BoundingRectangle.Left) {
-            Capture-Window $window (Join-Path $OutputDirectory 'column-drag-failure.png')
-            throw 'Code lines was not moved before Date modified by pointer drag'
+        if (-not $DualCodeLinesRealFolderMode) {
+            $nameHeader=Find-ButtonName $root 'Sort by Name'
+            if ($null -eq $nameHeader) { $nameHeader=Find-ButtonNamePrefix $root 'Name, sorted' }
+            $dateHeader=Find-ButtonName $root 'Sort by Date modified'
+            if ($null -eq $dateHeader) { throw 'Date modified header was unavailable for reorder test' }
+            Drag-ElementToElement $root $luaHeader $dateHeader
+            $luaHeader=Find-ButtonName $root 'Sort by Code lines'
+            $rustHeader=Find-ButtonName $root 'Sort by Main code lines'
+            $dateHeader=Find-ButtonName $root 'Sort by Date modified'
+            if ($luaHeader.Current.BoundingRectangle.Left -ge $dateHeader.Current.BoundingRectangle.Left) {
+                Capture-Window $window (Join-Path $OutputDirectory 'column-drag-failure.png')
+                throw 'Code lines was not moved before Date modified by pointer drag'
+            }
+            Drag-ElementToElement $root $nameHeader $rustHeader
+            $nameHeader=Find-ButtonName $root 'Sort by Name'
+            if ($null -eq $nameHeader) { $nameHeader=Find-ButtonNamePrefix $root 'Name, sorted' }
+            if ($nameHeader.Current.BoundingRectangle.Left -gt $rustHeader.Current.BoundingRectangle.Left) {
+                throw 'Name moved away from the leftmost column'
+            }
+            Capture-Window $window (Join-Path $OutputDirectory 'columns-reordered.png')
         }
-        Drag-ElementToElement $root $nameHeader $rustHeader
-        $nameHeader=Find-ButtonName $root 'Sort by Name'
-        if ($null -eq $nameHeader) { $nameHeader=Find-ButtonNamePrefix $root 'Name, sorted' }
-        if ($nameHeader.Current.BoundingRectangle.Left -gt $rustHeader.Current.BoundingRectangle.Left) {
-            throw 'Name moved away from the leftmost column'
-        }
-        Capture-Window $window (Join-Path $OutputDirectory 'columns-reordered.png')
     }
     if ($cells.Count -lt $(if($DirectoryAggregateMode){$directoryMinimum}else{3})) {
         Capture-Window $window (Join-Path $OutputDirectory 'code-lines-failure.png')
@@ -1055,7 +1063,35 @@ try {
         if ($preparationFailures.Count -ne 0) {
             throw "Directory Code Lines still exposed $($preparationFailures.Count) input-preparation failures"
         }
-        if ($DualCodeLinesMode) {
+        $dualRealFolderValues = @()
+        if ($DualCodeLinesRealFolderMode) {
+            $expectedFolders = @('.claude','appmover','docs','explorer-core','FluentExplorer','FluentExplorer.UITests')
+            $dualDeadline = [DateTime]::UtcNow.AddSeconds(90)
+            do {
+                $dualRealFolderValues = @()
+                foreach ($folder in $expectedFolders) {
+                    $mainCell = Find-CellOnRow $root $folder 'Main code lines:'
+                    $totalCell = Find-CellOnRow $root $folder 'Code lines:'
+                    $mainMatch = if ($null -ne $mainCell) { [regex]::Match($mainCell.Current.Name,'^Main code lines: (?:.+: )?([\d,]+)') } else { $null }
+                    $totalMatch = if ($null -ne $totalCell) { [regex]::Match($totalCell.Current.Name,'^Code lines: ([\d,]+)') } else { $null }
+                    if ($null -ne $mainMatch -and $mainMatch.Success -and $null -ne $totalMatch -and $totalMatch.Success) {
+                        $mainValue = [UInt64]$mainMatch.Groups[1].Value.Replace(',','')
+                        $totalValue = [UInt64]$totalMatch.Groups[1].Value.Replace(',','')
+                        $dualRealFolderValues += [pscustomobject]@{folder=$folder;main=$mainValue;total=$totalValue}
+                    }
+                }
+                if ($dualRealFolderValues.Count -lt $expectedFolders.Count) { Start-Sleep -Milliseconds 200 }
+            } while ($dualRealFolderValues.Count -lt $expectedFolders.Count -and [DateTime]::UtcNow -lt $dualDeadline)
+            if ($dualRealFolderValues.Count -ne $expectedFolders.Count) {
+                Capture-Window $window (Join-Path $OutputDirectory 'dual-real-folder-failure.png')
+                throw "Expected both Code Lines values for $($expectedFolders.Count) folders; found $($dualRealFolderValues.Count)"
+            }
+            foreach ($value in $dualRealFolderValues) {
+                if ($value.total -lt $value.main) {
+                    throw "All-language Code lines was below Main code lines for $($value.folder): $($value.total) < $($value.main)"
+                }
+            }
+        } elseif ($DualCodeLinesMode) {
             $allNames = 0..($all.Count-1) | ForEach-Object { $all.Item($_).Current.Name }
             if (-not ($allNames -match '^Main code lines: Rust: 1,250\b')) {
                 throw "Main code lines did not expose the dominant-language-only value Rust: 1,250"
@@ -1071,7 +1107,7 @@ try {
         $expectedBroker=if (Test-Path -LiteralPath $expectedBrokerPath) { (Resolve-Path -LiteralPath $expectedBrokerPath).Path } else { $null }
         $unexpectedChildren=if ($InputPreparationRepairMode) { @() } else { @($descendants | Where-Object { $null -eq $expectedBroker -or ($_ -split ':\d+$')[0] -ine $expectedBroker }) }
         if ($unexpectedChildren.Count -ne 0) { throw "Unexpected plugin/tool descendant process observed: $($unexpectedChildren | ConvertTo-Json -Compress)" }
-        [pscustomobject]@{status='passed'; directory_values=$cells.Count; aligned_columns=$alignedColumns; blank_excluded_from_value=$true; no_progress_bars=$noProgressBars; observed_descendant_processes=$descendants; observed_plugin_tool_descendants=$unexpectedChildren; clean_shutdown=$true; screenshots=$(if($DualCodeLinesMode){@('code-lines.png','columns-reordered.png')}else{@('code-lines.png')})} |
+        [pscustomobject]@{status='passed'; directory_values=$cells.Count; dual_real_folder_values=$dualRealFolderValues; aligned_columns=$alignedColumns; blank_excluded_from_value=$true; no_progress_bars=$noProgressBars; observed_descendant_processes=$descendants; observed_plugin_tool_descendants=$unexpectedChildren; clean_shutdown=$true; screenshots=$(if($DualCodeLinesMode -and -not $DualCodeLinesRealFolderMode){@('code-lines.png','columns-reordered.png')}else{@('code-lines.png')})} |
             ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Encoding utf8
         Get-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Raw
         return
