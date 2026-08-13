@@ -1,0 +1,18 @@
+## 1. Reproduce and freeze the contract
+
+- [ ] 1.1 Add a focused regression proving a binary-heavy directory with supported source produces a dispatchable source-only snapshot.
+- [ ] 1.2 Add boundary coverage proving directory snapshots never exceed the single Host input stream limit and empty/oversized source sets are unsupported.
+- [ ] 1.3 Add batch-preparation coverage proving one invalid row cannot fail other valid rows.
+
+## 2. Repair directory snapshot preparation
+
+- [ ] 2.1 Filter recursive directory entries with the locked tokei path classifier before reading their contents.
+- [ ] 2.2 Apply `MAX_HOST_INPUT_STREAM_SOURCE_BYTES_V1` to the complete framed directory snapshot.
+- [ ] 2.3 Refactor batch input preparation to publish per-row errors while dispatching all successfully prepared rows.
+
+## 3. Verification
+
+- [ ] 3.1 Run formatting and focused `explorer-app`, Rust provider, Lua provider, and Host runtime tests with locked/offline dependencies.
+- [ ] 3.2 Run strict OpenSpec validation and scan the change artifacts for placeholders or contradictions.
+- [ ] 3.3 Diagnose every direct child of `D:\code\file_explorer` with the production snapshot builder and record that no accepted snapshot can fail the Host stream size contract.
+- [ ] 3.4 Build through the standard application path and verify the repaired Code Lines results no longer show `Code lines input could not be prepared` for the target folder.
