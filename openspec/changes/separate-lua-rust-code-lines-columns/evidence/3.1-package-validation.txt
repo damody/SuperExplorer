@@ -1,0 +1,9 @@
+Task IDs: 3.1.1, 3.1.2, 3.1.3
+Recorded: 2026-08-05 Asia/Taipei
+Status: BLOCKED (not complete)
+Command: sdk/scripts/validate-plugin.ps1 followed by build-plugin.ps1 and package-plugin.ps1 for both tokei fixtures.
+Actual: validator stopped before build/package with SESDK-INPUT-001: published SDK inventory differs from current SDK files.
+Cause: the shared worktree already contains unrelated, unfinished SDK bundle-manifest/sdk-lock/UI ABI changes. Restoring or republishing those user-owned SDK files would exceed this change's ownership, and build/build_sdk.lua also stops because the current shared workspace.package has no version entry.
+Validated alternative evidence (does not close this package gate): both target DLLs build locked/offline, both load together in the production app, and headful verification passes.
+Rust debug DLL SHA-256: 5CC4D470F1D24F5AC2A158D75017DCE8A1878C2CCFA46145B5C511BE3076B97C
+Lua debug DLL SHA-256: D31E5FC5432F09E6AE434B05B8DE30A3E4D04D0DF4C4DA6571628E72F848E725

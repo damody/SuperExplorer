@@ -106,6 +106,10 @@ struct Contribution {
     kind: String,
     capabilities: Vec<String>,
     payload: String,
+    #[serde(default)]
+    max_file_count: Option<u64>,
+    #[serde(default)]
+    max_folder_count: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -384,9 +388,15 @@ pub fn materialize_folder_size_template(
     let is_lua_bulk = template.contains("lua-bulk-folder-generator");
     let is_exif = template.contains("rust-exif-rename-command");
     let is_7z = template.contains("rust-7z-virtual-folder");
-    if usize::from(is_visual_column) + usize::from(is_size_map) + usize::from(is_tokei)
-        + usize::from(is_lock_owner) + usize::from(is_lua_tokei) + usize::from(is_lua_bulk)
-        + usize::from(is_exif) + usize::from(is_7z) != 1
+    if usize::from(is_visual_column)
+        + usize::from(is_size_map)
+        + usize::from(is_tokei)
+        + usize::from(is_lock_owner)
+        + usize::from(is_lua_tokei)
+        + usize::from(is_lua_bulk)
+        + usize::from(is_exif)
+        + usize::from(is_7z)
+        != 1
         || TOKENS
             .iter()
             .any(|token| template.matches(token).count() != 1)
@@ -425,19 +435,27 @@ pub fn materialize_folder_size_template(
         "rust-folder-size-map-view" => is_size_map && is_exact_size_map_declarations(&manifest),
         "rust-tokei-code-lines-column" => is_tokei && is_exact_tokei_declarations(&manifest),
         "rust-lock-owner-column" => is_lock_owner && is_exact_lock_owner_declarations(&manifest),
-        "lua-tokei-code-lines-column" => is_lua_tokei && is_exact_new_example_declarations(&manifest, &["column"]),
-        "lua-bulk-folder-generator" => is_lua_bulk && is_exact_new_example_declarations(&manifest, &["command", "form", "operation-plan"]),
-        "rust-exif-rename-command" => is_exif && is_exact_new_example_declarations(&manifest, &["command", "operation-plan"]),
-        "rust-7z-virtual-folder" => is_7z && is_exact_new_example_declarations(&manifest, &["resource", "operation-plan"]),
+        "lua-tokei-code-lines-column" => is_lua_tokei && is_exact_lua_tokei_declarations(&manifest),
+        "lua-bulk-folder-generator" => {
+            is_lua_bulk
+                && is_exact_new_example_declarations(
+                    &manifest,
+                    &["command", "form", "operation-plan"],
+                )
+        }
+        "rust-exif-rename-command" => {
+            is_exif && is_exact_new_example_declarations(&manifest, &["command", "operation-plan"])
+        }
+        "rust-7z-virtual-folder" => {
+            is_7z && is_exact_new_example_declarations(&manifest, &["resource", "operation-plan"])
+        }
         _ => false,
     };
     if !declarations_are_exact
         || manifest.sdk.bundle_id != bundle_id
         || manifest.sdk.abi_schema != abi_schema
     {
-        return Err(
-            "resolved Rust example declarations are not the approved 0→1 set".into(),
-        );
+        return Err("resolved Rust example declarations are not the approved 0→1 set".into());
     }
     ensure_regular_project_path(&canonical_root, &manifest_path)?;
     fs::write(&manifest_path, resolved.as_bytes())
@@ -512,11 +530,15 @@ fn is_exact_tokei_declarations(manifest: &Manifest) -> bool {
         && manifest.contributions[0].feature_id == "rust-tokei"
         && manifest.contributions[0].capabilities == ["abi", "filesystem.read"]
         && manifest.contributions[0].payload == "src/lib.rs"
+        && manifest.contributions[0].max_file_count == Some(999)
+        && manifest.contributions[0].max_folder_count.is_none()
         && manifest.contributions[1].id == "rust-tokei:code-lines-renderer"
         && manifest.contributions[1].kind == "renderer"
         && manifest.contributions[1].feature_id == "rust-tokei"
         && manifest.contributions[1].capabilities == ["abi"]
         && manifest.contributions[1].payload == "src/lib.rs"
+        && manifest.contributions[1].max_file_count.is_none()
+        && manifest.contributions[1].max_folder_count.is_none()
 }
 
 fn is_exact_lock_owner_declarations(manifest: &Manifest) -> bool {
@@ -536,14 +558,31 @@ fn is_exact_lock_owner_declarations(manifest: &Manifest) -> bool {
         && manifest.contributions[1].payload == "src/lib.rs"
 }
 
+fn is_exact_lua_tokei_declarations(manifest: &Manifest) -> bool {
+    is_exact_new_example_declarations(manifest, &["column"])
+        && manifest.contributions[0].max_file_count == Some(999)
+        && manifest.contributions[0].max_folder_count.is_none()
+}
+
 fn is_exact_new_example_declarations(manifest: &Manifest, kinds: &[&str]) -> bool {
     manifest.features.len() == 1
         && !manifest.features[0].capabilities.is_empty()
         && manifest.contributions.len() == kinds.len()
-        && manifest.contributions.iter().zip(kinds).all(|(value, kind)| {
-            value.kind == *kind && value.feature_id == manifest.features[0].id
-                && value.payload == "src/lib.rs" && value.capabilities.iter().all(|capability| manifest.features[0].capabilities.contains(capability))
-        })
+        && manifest
+            .contributions
+            .iter()
+            .zip(kinds)
+            .all(|(value, kind)| {
+                value.kind == *kind
+                    && value.feature_id == manifest.features[0].id
+                    && value.payload == "src/lib.rs"
+                    && value
+                        .capabilities
+                        .iter()
+                        .all(|capability| manifest.features[0].capabilities.contains(capability))
+                    && (manifest.package.id == "lua-tokei-code-lines-column"
+                        || (value.max_file_count.is_none() && value.max_folder_count.is_none()))
+            })
 }
 
 /// Synthesizes the canonical host `manifest.json` for a P0 local-developer
@@ -751,12 +790,22 @@ fn stage_validated_package(
         bytes: read_regular_bytes(root, dll, MAX_PAYLOAD_BYTES)?,
     }];
     if manifest.package.id.starts_with("lua-") {
-        payloads.push(StagedPayload { path: "lua/main.lua".into(), kind: "lua" ,
-            bytes: read_regular_bytes(root, &root.join("lua/main.lua"), MAX_PAYLOAD_BYTES)? });
+        payloads.push(StagedPayload {
+            path: "lua/main.lua".into(),
+            kind: "lua",
+            bytes: read_regular_bytes(root, &root.join("lua/main.lua"), MAX_PAYLOAD_BYTES)?,
+        });
     }
     if manifest.package.id == "lua-tokei-code-lines-column" {
-        for (path, kind) in [("tools/windows-x64/tokei/tokei.exe", "tool"), ("tools/windows-x64/tokei/LICENSE.txt", "license")] {
-            payloads.push(StagedPayload { path: path.into(), kind, bytes: read_regular_bytes(root, &root.join(path), MAX_PAYLOAD_BYTES)? });
+        for (path, kind) in [
+            ("tools/windows-x64/tokei/tokei.exe", "tool"),
+            ("tools/windows-x64/tokei/LICENSE.txt", "license"),
+        ] {
+            payloads.push(StagedPayload {
+                path: path.into(),
+                kind,
+                bytes: read_regular_bytes(root, &root.join(path), MAX_PAYLOAD_BYTES)?,
+            });
         }
     }
     let mut private_dependencies = manifest.private_dependencies.iter().collect::<Vec<_>>();
@@ -1693,6 +1742,16 @@ fn validate_manifest(manifest: &Manifest, root: &Path, expected: &ExpectedSdk) -
     let mut contributions = BTreeSet::new();
     for (index, contribution) in manifest.contributions.iter().enumerate() {
         let path = format!("contributions[{index}]");
+        if (contribution.max_file_count.is_some() || contribution.max_folder_count.is_some())
+            && contribution.kind != "column"
+        {
+            diagnostics.push(diagnostic(
+                "SESDK-CONTRIBUTION-007",
+                "manifest",
+                &path,
+                "folder count limits are valid only on data-column contributions",
+            ));
+        }
         if !valid_contribution_id(&contribution.id) || !contributions.insert(&contribution.id) {
             diagnostics.push(diagnostic(
                 "SESDK-ID-003",
@@ -1718,7 +1777,10 @@ fn validate_manifest(manifest: &Manifest, root: &Path, expected: &ExpectedSdk) -
         let tokei_kind = matches!(contribution.kind.as_str(), "column" | "renderer");
         let lock_owner_kind = matches!(contribution.kind.as_str(), "column" | "renderer");
         let lua_tokei_kind = contribution.kind == "column";
-        let lua_bulk_kind = matches!(contribution.kind.as_str(), "command" | "form" | "operation-plan");
+        let lua_bulk_kind = matches!(
+            contribution.kind.as_str(),
+            "command" | "form" | "operation-plan"
+        );
         let exif_kind = matches!(contribution.kind.as_str(), "command" | "operation-plan");
         let archive_kind = matches!(contribution.kind.as_str(), "resource" | "operation-plan");
         if !(matches!(contribution.kind.as_str(), "abi-root" | "gpui")
@@ -3693,9 +3755,9 @@ fn valid_contribution_id(value: &str) -> bool {
     if value.len() > 64 {
         return false;
     }
-    value
-        .split_once(':')
-        .is_some_and(|(namespace, leaf)| valid_id(namespace) && valid_id(leaf) && !leaf.contains(':'))
+    value.split_once(':').is_some_and(|(namespace, leaf)| {
+        valid_id(namespace) && valid_id(leaf) && !leaf.contains(':')
+    })
 }
 
 fn valid_version(value: &str) -> bool {
@@ -3960,7 +4022,7 @@ mod tests {
   "rust": { "crate_name": "rust-tokei-code-lines-column", "entrypoint": "plugin.dll" },
   "features": [{ "id": "rust-tokei", "capabilities": ["abi", "filesystem.read"] }],
   "contributions": [
-    { "id": "rust-tokei:code-lines", "feature_id": "rust-tokei", "kind": "column", "capabilities": ["abi", "filesystem.read"], "payload": "src/lib.rs" },
+    { "id": "rust-tokei:code-lines", "feature_id": "rust-tokei", "kind": "column", "max_file_count": 999, "capabilities": ["abi", "filesystem.read"], "payload": "src/lib.rs" },
     { "id": "rust-tokei:code-lines-renderer", "feature_id": "rust-tokei", "kind": "renderer", "capabilities": ["abi"], "payload": "src/lib.rs" }
   ],
   "payloads": [{ "path": "src/lib.rs", "size": @SOURCE_SIZE@, "sha256": "@SOURCE_SHA256@", "kind": "rust-source" }],
@@ -3977,6 +4039,53 @@ mod tests {
 
         assert!(is_exact_tokei_declarations(&manifest));
         assert!(valid_contribution_id("rust-tokei:code-lines"));
+    }
+
+    #[test]
+    fn folder_admission_metadata_accepts_u64_boundaries_and_defaults_to_unlimited() {
+        let omitted = serde_json::from_str::<Contribution>(
+            r#"{"id":"column","feature_id":"feature","kind":"column","capabilities":[],"payload":"src/lib.rs"}"#,
+        )
+        .expect("decode contribution without admission limits");
+        assert_eq!(omitted.max_file_count, None);
+        assert_eq!(omitted.max_folder_count, None);
+
+        let bounded = serde_json::from_str::<Contribution>(&format!(
+            r#"{{"id":"column","feature_id":"feature","kind":"column","capabilities":[],"payload":"src/lib.rs","max_file_count":0,"max_folder_count":{}}}"#,
+            u64::MAX
+        ))
+        .expect("decode full unsigned admission domain");
+        assert_eq!(bounded.max_file_count, Some(0));
+        assert_eq!(bounded.max_folder_count, Some(u64::MAX));
+
+        for malformed in ["-1", "18446744073709551616", "1.5", "\"999\""] {
+            let source = format!(
+                r#"{{"id":"column","feature_id":"feature","kind":"column","capabilities":[],"payload":"src/lib.rs","max_file_count":{malformed}}}"#
+            );
+            assert!(serde_json::from_str::<Contribution>(&source).is_err());
+        }
+    }
+
+    #[test]
+    fn folder_admission_metadata_is_rejected_for_non_columns() {
+        let directory = TestDirectory::new();
+        let mut manifest = manifest_for_test();
+        manifest.features.push(Feature {
+            id: "feature".into(),
+            capabilities: vec!["abi".into()],
+        });
+        manifest.contributions.push(Contribution {
+            id: "command".into(),
+            feature_id: "feature".into(),
+            kind: "command".into(),
+            capabilities: vec!["abi".into()],
+            payload: "src/lib.rs".into(),
+            max_file_count: Some(0),
+            max_folder_count: Some(u64::MAX),
+        });
+
+        let diagnostics = validate_manifest(&manifest, &directory.0, &expected_for_test());
+        assert!(has_code(&diagnostics, "SESDK-CONTRIBUTION-007"));
     }
 
     #[test]

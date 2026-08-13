@@ -642,6 +642,7 @@ impl ExtensionRegistrarImplementationV1 for P0ConsumerRegistrar {
                     expected_sort: ROption::RSome(StableSortValueKindV1::U64),
                     opaque_contract: ROption::RNone,
                     renderer_contribution_id: ROption::RSome(RString::from("folder-size-renderer")),
+                    folder_admission: ROption::RNone,
                     provider: ROption::RNone,
                     visual_column: ROption::RSome(VisualColumnObjectV1::new(
                         FolderSizeMeasureColumn,
@@ -659,6 +660,7 @@ impl ExtensionRegistrarImplementationV1 for P0ConsumerRegistrar {
                     expected_sort: ROption::RNone,
                     opaque_contract: ROption::RNone,
                     renderer_contribution_id: ROption::RNone,
+                    folder_admission: ROption::RNone,
                     provider: ROption::RNone,
                     visual_column: ROption::RSome(VisualColumnObjectV1::new(FolderSizeRenderer)),
                     size_map_view: ROption::RNone,

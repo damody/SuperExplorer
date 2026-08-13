@@ -762,6 +762,16 @@ fn contribution_from_abi(
         7 => ContributionKindV1::Resource,
         _ => return Err(()),
     };
+    let folder_admission = descriptor.folder_admission.into_option();
+    if folder_admission.is_some()
+        && (kind != ContributionKindV1::Column
+            || matches!(
+                descriptor.batch_column_provider,
+                abi_stable::std_types::ROption::RNone
+            ))
+    {
+        return Err(());
+    }
     let opaque_schema = descriptor
         .opaque_contract
         .into_option()
@@ -775,6 +785,7 @@ fn contribution_from_abi(
             .into_iter()
             .map(|capability| capability.to_string())
             .collect(),
+        folder_admission,
         job_contract: Some(ContributionJobContractV1 {
             interface_id: descriptor.interface_id,
             expected_sort: descriptor.expected_sort,
@@ -3004,6 +3015,7 @@ mod tests {
                         contribution_id: contribution_id.clone(),
                         kind: ContributionKindV1::Column,
                         required_capabilities: self.required_capabilities.clone(),
+                        folder_admission: None,
                         job_contract: Some(ContributionJobContractV1 {
                             interface_id: StableIdV1::new(IdNamespaceV1::new(1, 1), 1),
                             expected_sort: abi_stable::std_types::ROption::RNone,

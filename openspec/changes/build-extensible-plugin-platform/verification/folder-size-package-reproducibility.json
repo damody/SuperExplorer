@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "command": "sdk/scripts/package-plugin.ps1 -PluginRoot sdk/fixtures/rust-folder-size-visual-column",
+  "archive": "rust-folder-size-visual-column-0.1.0-sdk-ac955c5039825ec20a852b5f.sepack",
+  "first_sha256": "04cd2470c8eaa958d965c4c6d74c265cc50086e7bbe3a5c7b9c5c746c2ef69a1",
+  "second_sha256": "04cd2470c8eaa958d965c4c6d74c265cc50086e7bbe3a5c7b9c5c746c2ef69a1",
+  "deterministic": true
+}

@@ -17,6 +17,7 @@ macro_rules! wire_enum {
         impl $name {
             $(pub const $constant: Self = Self($value);)+
             #[must_use] pub const fn into_raw(self) -> u32 { self.0 }
+            #[allow(clippy::manual_range_patterns)]
             #[must_use] pub const fn is_known(self) -> bool { matches!(self.0, $($value)|+) }
         }
     };
@@ -156,9 +157,10 @@ impl ViewLifecycleV1 {
         use ViewLifecycleEventV1 as Event;
         use ViewLifecycleStateV1 as State;
         let next = match (self.state, event) {
-            (State::Created, Event::Activate) | (State::Suspended, Event::Resume) => State::Active,
+            (State::Created, Event::Activate)
+            | (State::Suspended, Event::Resume)
+            | (State::Focused, Event::Blur) => State::Active,
             (State::Active, Event::Focus) => State::Focused,
-            (State::Focused, Event::Blur) => State::Active,
             (State::Active | State::Focused, Event::Suspend) => State::Suspended,
             (State::Created | State::Active | State::Focused | State::Suspended, Event::Close) => {
                 State::Closed
@@ -217,6 +219,12 @@ pub enum ViewModeRegistrationErrorV1 {
 }
 
 impl ViewModeRegistrationV1 {
+    /// Validates the complete data-only view registration contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ViewModeRegistrationErrorV1`] when an ID, display name,
+    /// semantic value, or factory binding is invalid.
     pub fn validate(&self) -> Result<(), ViewModeRegistrationErrorV1> {
         if !valid_id(self.id.as_str()) {
             return Err(ViewModeRegistrationErrorV1::InvalidId);

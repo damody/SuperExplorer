@@ -16,6 +16,7 @@ macro_rules! wire_enum {
             $(pub const $constant: Self = Self($value);)+
             #[must_use] pub const fn from_raw(raw: u32) -> Self { Self(raw) }
             #[must_use] pub const fn into_raw(self) -> u32 { self.0 }
+            #[allow(clippy::manual_range_patterns)]
             #[must_use] pub const fn is_known(self) -> bool {
                 matches!(self.0, $($value)|+)
             }
@@ -117,6 +118,11 @@ pub enum ColumnDescriptorErrorV1 {
 impl ColumnDescriptorV1 {
     /// Host-side shape validation. Unknown numeric semantics are preserved by
     /// decoding but rejected until a newer host explicitly supports them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ColumnDescriptorErrorV1`] when an identifier, width,
+    /// semantic, provider, aggregate, or renderer binding is invalid.
     pub fn validate(&self) -> Result<(), ColumnDescriptorErrorV1> {
         if !self.id.is_valid() {
             return Err(ColumnDescriptorErrorV1::InvalidId);
@@ -247,9 +253,9 @@ mod tests {
         assert_eq!(
             hashes,
             [
-                0x7d24_63a4_01b1_0c74,
-                0x5607_4322_a717_71e9,
-                0x6630_005d_7d84_a437,
+                0x74bc_aa34_e18b_c12b,
+                0xcec8_3635_553f_2b3e,
+                0x9de8_1b4e_393d_e548,
             ]
         );
     }

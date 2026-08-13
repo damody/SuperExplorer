@@ -76,7 +76,7 @@ impl BatchColumnProviderImplementationV1 for Provider {
                 .into(),
             item_generation: context.item_generation,
             location_generation: context.location_generation,
-            deadline_millis: 2_000,
+            deadline_millis: 5_000,
             reserved: 0,
         });
         if outcome.item_generation != context.item_generation
@@ -226,6 +226,7 @@ impl ExtensionRegistrarImplementationV1 for Registrar {
                     ),
                     opaque_contract: ROption::RNone,
                     renderer_contribution_id: ROption::RSome(RENDERER_ID.into()),
+                    folder_admission: ROption::RNone,
                     provider: ROption::RNone,
                     visual_column: ROption::RNone,
                     size_map_view: ROption::RNone,
@@ -243,6 +244,7 @@ impl ExtensionRegistrarImplementationV1 for Registrar {
                     expected_sort: ROption::RNone,
                     opaque_contract: ROption::RNone,
                     renderer_contribution_id: ROption::RNone,
+                    folder_admission: ROption::RNone,
                     provider: ROption::RNone,
                     visual_column: ROption::RSome(
                         explorer_extension_ui_api::VisualColumnObjectV1::new(Provider),

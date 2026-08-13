@@ -8,6 +8,9 @@ param(
     [string]$OutputDirectory = 'target\tokei-headful-smoke',
     [string[]]$AdditionalPluginDlls = @(),
     [switch]$DirectoryAggregateMode,
+    [switch]$DirectoryAdmissionUnavailableMode,
+    [switch]$DirectoryAdmissionBoundaryMode,
+    [switch]$UseExecutableInPlace,
     [switch]$LockOwnerMode,
     [switch]$DualCodeLinesMode,
     [switch]$DetailsColumnDragMode,
@@ -46,6 +49,24 @@ if ($DualCodeLinesMode) {
     [IO.File]::WriteAllText((Join-Path $mixedProject 'script.js'),($javaScriptLines -join "`n") + "`n")
     $InitialPath = $dualFixture
 }
+if ($DirectoryAdmissionUnavailableMode) {
+    $admissionOutputRoot = if ([IO.Path]::IsPathRooted($OutputDirectory)) { $OutputDirectory } else { Join-Path $workspace $OutputDirectory }
+    $admissionFixture = Join-Path $admissionOutputRoot 'mft-count-admission-fixture'
+    $underLimit = Join-Path $admissionFixture 'files-999'
+    $overLimit = Join-Path $admissionFixture 'files-1000'
+    $nested = Join-Path $admissionFixture 'nested-counts\a\b'
+    New-Item -ItemType Directory -Force -Path $underLimit,$overLimit,$nested | Out-Null
+    foreach ($index in 0..998) {
+        [IO.File]::WriteAllText((Join-Path $underLimit ("f{0:D4}.rs" -f $index)), "fn f$index() {}`n")
+    }
+    foreach ($index in 0..999) {
+        [IO.File]::WriteAllText((Join-Path $overLimit ("f{0:D4}.rs" -f $index)), "fn f$index() {}`n")
+    }
+    [IO.File]::WriteAllText((Join-Path $admissionFixture 'nested-counts\root.rs'), "fn root() {}`n")
+    [IO.File]::WriteAllText((Join-Path $admissionFixture 'nested-counts\a\child.rs'), "fn child() {}`n")
+    [IO.File]::WriteAllText((Join-Path $nested 'deep.rs'), "fn deep() {}`n")
+    $InitialPath = $admissionFixture
+}
 foreach ($name in 'Executable','PluginDll','InitialPath','OutputDirectory') {
     $value = Get-Variable -Name $name -ValueOnly
     if (-not [IO.Path]::IsPathRooted($value)) { Set-Variable -Name $name -Value ([IO.Path]::GetFullPath((Join-Path $workspace $value))) }
@@ -71,12 +92,21 @@ $alternateFolder=Join-Path $OutputDirectory 'lock-owner-alternate'
 if ($LockOwnerMode) {
     New-Item -ItemType Directory -Force -Path $alternateFolder | Out-Null
     [IO.File]::WriteAllText((Join-Path $alternateFolder 'alternate-marker.txt'),'alternate')
+    $nativeCwdParent=Join-Path $InitialPath 'cwd-native-parent'
+    $nativeCwdNested=Join-Path $nativeCwdParent 'nested'
+    $wow64CwdParent=Join-Path $InitialPath 'cwd-wow64-parent'
+    $wow64CwdNested=Join-Path $wow64CwdParent 'nested'
+    New-Item -ItemType Directory -Force -Path $nativeCwdNested,$wow64CwdNested | Out-Null
+    [IO.File]::WriteAllText((Join-Path $nativeCwdNested 'native-marker.txt'),'native')
+    [IO.File]::WriteAllText((Join-Path $wow64CwdNested 'wow64-marker.txt'),'wow64')
 }
-$isolatedLaunchDirectory=Join-Path $OutputDirectory 'isolated-app'
-New-Item -ItemType Directory -Force -Path $isolatedLaunchDirectory | Out-Null
-$isolatedExecutable=Join-Path $isolatedLaunchDirectory (Split-Path -Leaf $Executable)
-[IO.File]::Copy($Executable,$isolatedExecutable,$true)
-$Executable=$isolatedExecutable
+if (-not $UseExecutableInPlace) {
+    $isolatedLaunchDirectory=Join-Path $OutputDirectory 'isolated-app'
+    New-Item -ItemType Directory -Force -Path $isolatedLaunchDirectory | Out-Null
+    $isolatedExecutable=Join-Path $isolatedLaunchDirectory (Split-Path -Leaf $Executable)
+    [IO.File]::Copy($Executable,$isolatedExecutable,$true)
+    $Executable=$isolatedExecutable
+}
 
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName UIAutomationClient
@@ -107,6 +137,7 @@ namespace TokeiHeadfulSmoke {
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window,IntPtr processId);
     [DllImport("user32.dll")] public static extern IntPtr GetKeyboardLayout(uint threadId);
     [DllImport("dwmapi.dll")] public static extern int DwmFlush();
+    [DllImport("kernel32.dll",SetLastError=true)] public static extern bool IsWow64Process2(IntPtr process,out ushort processMachine,out ushort nativeMachine);
   }
   public sealed class JobProcessObserver : IDisposable {
     const uint CREATE_SUSPENDED=0x00000004, DETACHED_PROCESS=0x00000008, JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO=4, JOB_OBJECT_MSG_NEW_PROCESS=6;
@@ -321,6 +352,21 @@ function Find-NamePrefix($Root,[string]$Prefix) {
         Where-Object { $_.Current.Name -like "$Prefix*" } | Select-Object -First 1
 }
 
+function Find-CellOnRow($Root,[string]$RowName,[string]$CellPrefix) {
+    $all=$Root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+    $rootTop=$Root.Current.BoundingRectangle.Top
+    $row=0..($all.Count-1) | ForEach-Object { $all.Item($_) } | Where-Object {
+        ($_.Current.Name -like "$RowName*" -or $_.Current.Name -like "Name: $RowName*") -and
+        $_.Current.BoundingRectangle.Top -gt ($rootTop+180) -and $_.Current.BoundingRectangle.Height -gt 0
+    } | Select-Object -First 1
+    if ($null -eq $row) { return $null }
+    $rowTop=$row.Current.BoundingRectangle.Top
+    0..($all.Count-1) | ForEach-Object { $all.Item($_) } | Where-Object {
+        $_.Current.Name -like "$CellPrefix*" -and
+        [Math]::Abs($_.Current.BoundingRectangle.Top-$rowTop) -lt 8
+    } | Select-Object -First 1
+}
+
 function Code-Line-Values($Root) {
     $all=$Root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
     @(0..($all.Count-1) | ForEach-Object { $all.Item($_) } |
@@ -482,21 +528,40 @@ $childEnvironment=[ordered]@{
     EXPLORER_VISUAL_STATE='populated'; EXPLORER_VISUAL_DIAGNOSTICS=$diagnostics; EXPLORER_INITIAL_PATH=$InitialPath; EXPLORER_LOG_DIR=$OutputDirectory
     LOCALAPPDATA=$localAppData; APPDATA=$roamingAppData; EXPLORER_UITEST_EXTENSION_STATE_ROOT=$extensionState
 }
-if ($LockOwnerMode) { $childEnvironment.EXPLORER_LOCK_OWNER_TEST_DELAY_MS='900' }
+if ($LockOwnerMode) {
+    $childEnvironment.EXPLORER_LOCK_OWNER_TEST_DELAY_MS='900'
+}
 $previousEnvironment=@{}
 foreach($entry in $childEnvironment.GetEnumerator()) {
     $previousEnvironment[$entry.Key]=[Environment]::GetEnvironmentVariable($entry.Key,'Process')
     [Environment]::SetEnvironmentVariable($entry.Key,[string]$entry.Value,'Process')
 }
 $lockHolder=$null
+$nativeCmd=$null
+$wow64Cmd=$null
 if ($LockOwnerMode) {
     & cargo.exe build -p explorer-shell-win --bin explorer-lock-holder --locked --offline
     if ($LASTEXITCODE -ne 0) { throw "lock-holder build failed ($LASTEXITCODE)" }
     $heldFile=Join-Path $InitialPath 'locked.txt'
     if (-not (Test-Path -LiteralPath $heldFile)) { [IO.File]::WriteAllText($heldFile,'held') }
     $lockHolder=Start-Process -FilePath (Join-Path $workspace 'target\debug\explorer-lock-holder.exe') -ArgumentList @($heldFile) -PassThru -WindowStyle Hidden
+    $nativeCmdPath=Join-Path $env:SystemRoot 'System32\cmd.exe'
+    $wow64CmdPath=Join-Path $env:SystemRoot 'SysWOW64\cmd.exe'
+    if (-not (Test-Path -LiteralPath $nativeCmdPath) -or -not (Test-Path -LiteralPath $wow64CmdPath)) {
+        throw 'Native or SysWOW64 cmd.exe fixture is unavailable'
+    }
+    $nativeCmd=Start-Process -FilePath $nativeCmdPath -ArgumentList @('/D','/Q','/K') -WorkingDirectory $nativeCwdNested -PassThru -WindowStyle Hidden
+    $wow64Cmd=Start-Process -FilePath $wow64CmdPath -ArgumentList @('/D','/Q','/K') -WorkingDirectory $wow64CwdNested -PassThru -WindowStyle Hidden
+    $nativeCmdPid=$nativeCmd.Id
+    $wow64CmdPid=$wow64Cmd.Id
     Start-Sleep -Milliseconds 500
     if ($lockHolder.HasExited) { throw 'lock-holder exited before the app query' }
+    if ($nativeCmd.HasExited -or $wow64Cmd.HasExited) { throw 'cmd.exe current-directory fixture exited before the app query' }
+    [UInt16]$wow64ProcessMachine=0; [UInt16]$wow64NativeMachine=0
+    if (-not [TokeiHeadfulSmoke.Native]::IsWow64Process2($wow64Cmd.Handle,[ref]$wow64ProcessMachine,[ref]$wow64NativeMachine)) {
+        throw "IsWow64Process2 failed for SysWOW64 cmd.exe: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+    }
+    if ($wow64ProcessMachine -eq 0) { throw 'SysWOW64 cmd.exe did not report a WOW64 process identity' }
 }
 try {
     $pluginArguments="--plugin-dll `"$PluginDll`""
@@ -541,6 +606,54 @@ try {
         }
         $appeared=$ownerCell.Current.Name
         Capture-Window $window (Join-Path $OutputDirectory 'lock-owner-present.png')
+
+        # Prove that a process current directory occupies both its exact row
+        # and every visible ancestor directory, for native and WOW64 cmd.exe.
+        $cwdEvidence=[ordered]@{}
+        foreach($fixture in @(
+            @{ Name='native'; Parent=$nativeCwdParent; Nested=$nativeCwdNested; Marker='native-marker.txt'; ParentRow='cwd-native-parent' },
+            @{ Name='wow64'; Parent=$wow64CwdParent; Nested=$wow64CwdNested; Marker='wow64-marker.txt'; ParentRow='cwd-wow64-parent' }
+        )) {
+            Set-Address $root $fixture.Parent 'nested'
+            $deadline=[DateTime]::UtcNow.AddSeconds(20); $nestedOwner=$null
+            do {
+                Start-Sleep -Milliseconds 150
+                $nestedOwner=Find-NamePrefix $root 'Lock owners: cmd.exe'
+            } while ($null -eq $nestedOwner -and [DateTime]::UtcNow -lt $deadline)
+            if ($null -eq $nestedOwner) { throw "$($fixture.Name) cmd.exe was not shown on its nested current-directory row" }
+            $nestedOwnerName=$nestedOwner.Current.Name
+            Capture-Window $window (Join-Path $OutputDirectory "lock-owner-cwd-$($fixture.Name)-nested.png")
+
+            [void][TokeiHeadfulSmoke.Native]::SetForegroundWindow($window)
+            $up=Find-AutomationId $root 'navigation-up'
+            if ($null -eq $up) { $up=Find-ButtonName $root 'Up' }
+            if ($null -eq $up) { throw 'Up navigation control was unavailable' }
+            Click-Element $root $up
+            Start-Sleep -Milliseconds 700
+            $deadline=[DateTime]::UtcNow.AddSeconds(20); $parentOwner=$null; $parentOwners=@()
+            do {
+                Start-Sleep -Milliseconds 150
+                $all=$root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+                $parentOwners=@(0..($all.Count-1) | ForEach-Object { $all.Item($_) } |
+                    Where-Object { $_.Current.Name -like 'Lock owners: cmd.exe*' })
+                $parentOwner=$parentOwners | Select-Object -First 1
+            } while ($parentOwners.Count -lt 2 -and [DateTime]::UtcNow -lt $deadline)
+            Capture-Window $window (Join-Path $OutputDirectory "lock-owner-cwd-$($fixture.Name)-parent.png")
+            if ($parentOwners.Count -lt 2) { throw 'Native and WOW64 cmd.exe were not projected to both visible parent rows' }
+            $cwdEvidence[$fixture.Name]=[ordered]@{nested=$nestedOwnerName;parent=$parentOwner.Current.Name}
+        }
+
+        $nativeCmd.Kill(); $nativeCmd.WaitForExit(); $nativeCmd=$null
+        $wow64Cmd.Kill(); $wow64Cmd.WaitForExit(); $wow64Cmd=$null
+        [void][TokeiHeadfulSmoke.Native]::SetForegroundWindow($window)
+        Send-Key 0x74
+        $deadline=[DateTime]::UtcNow.AddSeconds(20); $cwdOwner=Find-NamePrefix $root 'Lock owners: cmd.exe'
+        do {
+            Start-Sleep -Milliseconds 150
+            $cwdOwner=Find-NamePrefix $root 'Lock owners: cmd.exe'
+        } while ($null -ne $cwdOwner -and [DateTime]::UtcNow -lt $deadline)
+        if ($null -ne $cwdOwner) { throw 'cmd.exe current-directory owner remained after process exit and F5' }
+        Capture-Window $window (Join-Path $OutputDirectory 'lock-owner-cwd-cleared.png')
 
         # Start several old-generation queries, then change both tab and
         # location before the deterministic debug delay expires. Keep the lock
@@ -591,6 +704,25 @@ try {
         while ($null -eq $options -and [DateTime]::UtcNow -lt $deadline)
         if ($null -eq $options) { throw 'Folder Options command was unavailable' }
         Click-Element $root $options
+        $mainRoot=$root
+        $folderOptionsName=([string][char]0x8CC7)+[char]0x6599+[char]0x593E+[char]0x9078+[char]0x9805
+        $deadline=[DateTime]::UtcNow.AddSeconds(10); $optionsRoot=$null
+        do {
+            Start-Sleep -Milliseconds 100
+            $windows=[Windows.Automation.AutomationElement]::RootElement.FindAll(
+                [Windows.Automation.TreeScope]::Children,[Windows.Automation.Condition]::TrueCondition)
+            $optionsRoot=0..($windows.Count-1) | ForEach-Object { $windows.Item($_) } | Where-Object {
+                $_.Current.NativeWindowHandle -ne 0 -and $_.Current.ProcessId -eq $process.Id -and
+                ($_.Current.Name -eq 'Folder Options' -or $_.Current.Name -eq $folderOptionsName -or
+                    $null -ne $_.FindFirst([Windows.Automation.TreeScope]::Descendants,
+                        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::AutomationIdProperty,'folder-options-window')))
+            } | Select-Object -First 1
+        } while ($null -eq $optionsRoot -and [DateTime]::UtcNow -lt $deadline)
+        if ($null -eq $optionsRoot) { throw 'Folder Options native window was unavailable' }
+        $root=$optionsRoot
+        $mainWindow=$window
+        $window=[IntPtr]$optionsRoot.Current.NativeWindowHandle
+        [void][TokeiHeadfulSmoke.Native]::SetForegroundWindow($window)
         $deadline=[DateTime]::UtcNow.AddSeconds(5); $extensionsTab=$null
         do { Start-Sleep -Milliseconds 100; $extensionsTab=Find-AutomationId $root 'folder-options-extensions-tab' }
         while ($null -eq $extensionsTab -and [DateTime]::UtcNow -lt $deadline)
@@ -646,6 +778,9 @@ try {
         if ($null -eq $ok) { $ok=Find-Name $root (([string][char]0x78BA)+[char]0x5B9A) }
         if ($null -eq $ok) { throw 'Folder Options OK was unavailable' }
         Click-Element $root $ok
+        $root=$mainRoot
+        $window=$mainWindow
+        [void][TokeiHeadfulSmoke.Native]::SetForegroundWindow($window)
         Start-Sleep -Milliseconds 1300
         if ($null -ne (Find-Name $root 'Sort by Lock owners')) {
             Capture-Window $window (Join-Path $OutputDirectory 'lock-owner-disable-failure.png')
@@ -661,21 +796,98 @@ try {
         Capture-Window $window (Join-Path $OutputDirectory 'lock-owner-cleared.png')
         if (-not [TokeiHeadfulSmoke.Native]::PostMessage($window,0x0010,[UIntPtr]::Zero,[IntPtr]::Zero)) { throw 'Could not request clean app shutdown' }
         if (-not $process.WaitForExit(10000)) { throw 'App did not complete clean shutdown' }
-        [pscustomobject]@{status='passed';owner_appeared=$appeared;rapid_refresh_rejected=$true;tab_change_rejected=$true;folder_change_rejected=$true;feature_disable_rejected=$true;owner_cleared_after_refresh=$true;stale_generation_rejected=$true;process_control_exposed=$false;screenshots=@('lock-owner-present.png','lock-owner-cleared.png')} |
+        [pscustomobject]@{status='passed';owner_appeared=$appeared;native_cmd_pid=$nativeCmdPid;wow64_cmd_pid=$wow64CmdPid;wow64_process_machine=$wow64ProcessMachine;wow64_native_machine=$wow64NativeMachine;cwd_ancestry=$cwdEvidence;cwd_owner_cleared_after_exit_and_f5=$true;rapid_refresh_rejected=$true;tab_change_rejected=$true;folder_change_rejected=$true;feature_disable_rejected=$true;owner_cleared_after_refresh=$true;stale_generation_rejected=$true;process_control_exposed=$false;screenshots=@('lock-owner-present.png','lock-owner-cwd-native-nested.png','lock-owner-cwd-native-parent.png','lock-owner-cwd-wow64-nested.png','lock-owner-cwd-wow64-parent.png','lock-owner-cwd-cleared.png','lock-owner-cleared.png')} |
             ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Encoding utf8
         Get-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Raw
         return
     }
     $directoryMinimum = if ($DualCodeLinesMode) { 1 } else { 10 }
-    $deadline=[DateTime]::UtcNow.AddSeconds(90); $header=$null; $cells=@(); $loading=@()
+    # Keep this script Windows PowerShell 5.1 compatible even when it is read
+    # as the system ANSI code page rather than UTF-8.
+    $dependencyUnavailableText = -join @(0x4F9D,0x8CF4,0x20,0x46,0x69,0x6C,0x65,0x20,0x43,0x6F,0x75,0x6E,0x74,0xFF0C,0x56E0,0x6B64,0x672A,0x555F,0x52D5 | ForEach-Object { [char]$_ })
+    $overLimitText = -join @(0x46,0x69,0x6C,0x65,0x20,0x43,0x6F,0x75,0x6E,0x74,0x20,0x8D85,0x904E,0x9650,0x5236,0xFF0C,0x56E0,0x6B64,0x672A,0x555F,0x52D5 | ForEach-Object { [char]$_ })
+    $deadline=[DateTime]::UtcNow.AddSeconds($(if ($DirectoryAdmissionUnavailableMode) { 20 } else { 90 })); $header=$null; $cells=@(); $loading=@(); $dependencyUnavailable=@(); $overLimit=@()
     do {
         Start-Sleep -Milliseconds 150; $header=Find-ButtonName $root "Sort by $codeLinesColumn"
         $all=$root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
         $cells=0..($all.Count-1) | ForEach-Object { $all.Item($_) } | Where-Object { $_.Current.Name -match $codeLinesCellPattern }
         $loading=0..($all.Count-1) | ForEach-Object { $all.Item($_) } | Where-Object { $_.Current.Name -match 'Loading code lines' }
-    } while (($null -eq $header -or $cells.Count -lt $(if($DirectoryAggregateMode){$directoryMinimum}else{3}) -or $loading.Count -ne 0) -and [DateTime]::UtcNow -lt $deadline)
+        $dependencyUnavailable=0..($all.Count-1) | ForEach-Object { $all.Item($_) } | Where-Object { $_.Current.Name -match [regex]::Escape($dependencyUnavailableText) }
+        $overLimit=0..($all.Count-1) | ForEach-Object { $all.Item($_) } | Where-Object { $_.Current.Name -match [regex]::Escape($overLimitText) }
+    } while (($null -eq $header -or $(if($DirectoryAdmissionUnavailableMode){$dependencyUnavailable.Count -lt 2}elseif($DirectoryAdmissionBoundaryMode){$cells.Count -lt 2 -or $overLimit.Count -lt 1 -or $loading.Count -ne 0}else{$cells.Count -lt $(if($DirectoryAggregateMode){$directoryMinimum}else{3}) -or $loading.Count -ne 0})) -and [DateTime]::UtcNow -lt $deadline)
     if ($null -eq $header) { throw "$codeLinesColumn header was not installed" }
+    if ($DirectoryAdmissionUnavailableMode) {
+        if ($dependencyUnavailable.Count -lt 2) {
+            Capture-Window $window (Join-Path $OutputDirectory 'code-lines-dependency-unavailable-failure.png')
+            0..($all.Count-1) | ForEach-Object { $all.Item($_).Current.Name } |
+                Where-Object { $_ -and ($_ -match 'File Count|code lines|Code lines|MFT') } |
+                Sort-Object -Unique |
+                Set-Content -LiteralPath (Join-Path $OutputDirectory 'dependency-visible-names.txt') -Encoding utf8
+            throw "Expected at least two dependency-unavailable folder cells; found $($dependencyUnavailable.Count)"
+        }
+        if ($null -ne (Find-ButtonName $root 'Sort by File Count')) {
+            throw 'Hidden File Count dependency unexpectedly made the built-in column visible'
+        }
+        Capture-Window $window (Join-Path $OutputDirectory 'code-lines-dependency-unavailable.png')
+        if (-not [TokeiHeadfulSmoke.Native]::PostMessage($window,0x0010,[UIntPtr]::Zero,[IntPtr]::Zero)) { throw 'Could not request clean app shutdown' }
+        if (-not $process.WaitForExit(10000)) { throw 'App did not complete clean shutdown' }
+        [pscustomobject]@{
+            status='passed'; dependency_state='unavailable'; unavailable_cells=$dependencyUnavailable.Count
+            file_count_column_hidden=$true; callback_values=0; clean_shutdown=$true
+            screenshots=@('code-lines-dependency-unavailable.png')
+        } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Encoding utf8
+        Get-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Raw
+        return
+    }
+    if ($DirectoryAdmissionBoundaryMode) {
+        if ($cells.Count -lt 2) { throw "Expected admitted Code Lines values for files-999 and nested-counts; found $($cells.Count)" }
+        if ($overLimit.Count -lt 1) { throw "Expected the files-1000 over-limit Host state; found $($overLimit.Count)" }
+        if ($null -ne (Find-ButtonName $root 'Sort by File Count')) { throw 'Hidden File Count dependency unexpectedly made the built-in column visible' }
+        Capture-Window $window (Join-Path $OutputDirectory 'code-lines-999-1000-boundary.png')
+        if (-not [TokeiHeadfulSmoke.Native]::PostMessage($window,0x0010,[UIntPtr]::Zero,[IntPtr]::Zero)) { throw 'Could not request clean app shutdown' }
+        if (-not $process.WaitForExit(10000)) { throw 'App did not complete clean shutdown' }
+        [pscustomobject]@{
+            status='passed'; admitted_cells=$cells.Count; over_limit_cells=$overLimit.Count
+            file_count_column_hidden=$true; clean_shutdown=$true
+            screenshots=@('code-lines-999-1000-boundary.png')
+        } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Encoding utf8
+        Get-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Raw
+        return
+    }
     if ($DetailsColumnDragMode) {
+        $toolbarPopups = @(
+            @{ names = @('Create a new item'); label = 'New' },
+            @{ names = @('Sort'); label = 'Sort' },
+            @{ names = @('View'); label = 'View' },
+            @{ names = @('Extensions',(([string][char]0x64F4)+[char]0x5145+[char]0x529F+[char]0x80FD)); label = 'Extensions' }
+        )
+        foreach ($probe in $toolbarPopups) {
+            $button = $null
+            foreach ($candidate in $probe.names) {
+                $button = Find-ButtonName $root $candidate
+                if ($null -ne $button) { break }
+            }
+            if ($null -eq $button) { throw "$($probe.label) toolbar button was unavailable" }
+            Click-ElementPointer $root $button
+            $deadline = [DateTime]::UtcNow.AddSeconds(3)
+            $popup = $null
+            do {
+                Start-Sleep -Milliseconds 50
+                $menus = $root.FindAll([Windows.Automation.TreeScope]::Descendants,
+                    [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Menu))
+                if ($menus.Count -gt 0) {
+                    $popup = 0..($menus.Count-1) | ForEach-Object { $menus.Item($_) } |
+                        Where-Object { $_.Current.BoundingRectangle.Width -gt 0 -and $_.Current.BoundingRectangle.Height -gt 0 } |
+                        Select-Object -First 1
+                }
+            } while ($null -eq $popup -and [DateTime]::UtcNow -lt $deadline)
+            if ($null -eq $popup) { throw "$($probe.label) toolbar click did not open a menu" }
+            if ($probe.label -eq 'Extensions') {
+                Capture-Window $window (Join-Path $OutputDirectory 'toolbar-extensions-popup.png')
+            }
+            Send-Key 0x1B
+        }
+
         $dateHeader=Find-ButtonName $root 'Sort by Date modified'
         $typeHeader=Find-ButtonName $root 'Sort by Type'
         $dateCell=Find-NamePrefix $root 'Date modified:'
@@ -707,7 +919,15 @@ try {
             throw 'Rightward preview order did not remain committed after mouse-up'
         }
 
-        $leftEvidence=Begin-DetailsColumnMidpointDrag $root $dateHeader $typeHeader 0.25
+        Send-Key 0x74
+        Start-Sleep -Milliseconds 500
+        $dateHeader=Find-ButtonName $root 'Sort by Date modified'
+        $typeHeader=Find-ButtonName $root 'Sort by Type'
+        if ($dateHeader.Current.BoundingRectangle.Left -le $typeHeader.Current.BoundingRectangle.Left) {
+            throw 'Committed details-column order did not persist after refresh'
+        }
+
+        $cancelEvidence=Begin-DetailsColumnMidpointDrag $root $dateHeader $typeHeader 0.25
         try {
             $dateHeader=Find-ButtonName $root 'Sort by Date modified'
             $typeHeader=Find-ButtonName $root 'Sort by Type'
@@ -716,21 +936,46 @@ try {
             if ($dateHeader.Current.BoundingRectangle.Left -ge $typeHeader.Current.BoundingRectangle.Left -or
                 $dateCell.Current.BoundingRectangle.Left -ge $typeCell.Current.BoundingRectangle.Left) {
                 Capture-Window $window (Join-Path $OutputDirectory 'column-drag-live-failure.png')
-                throw "Leftward preview was not symmetric before mouse-up: pointer=$($leftEvidence | ConvertTo-Json -Compress)"
+                throw "Cancelable preview was not visible before outside release: pointer=$($cancelEvidence | ConvertTo-Json -Compress)"
             }
-            Capture-Window $window (Join-Path $OutputDirectory 'column-drag-live-left.png')
+            $outsideX = [int]($typeHeader.Current.BoundingRectangle.Left + $typeHeader.Current.BoundingRectangle.Width / 2)
+            $outsideY = [int]($typeHeader.Current.BoundingRectangle.Bottom + 160)
+            [void][TokeiHeadfulSmoke.Native]::SetCursorPos($outsideX,$outsideY)
+            [TokeiHeadfulSmoke.Native]::mouse_event(0x0001,0,0,0,[UIntPtr]::Zero)
         } finally {
             [TokeiHeadfulSmoke.Native]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero)
             Start-Sleep -Milliseconds 400
         }
+        $dateHeader=Find-ButtonName $root 'Sort by Date modified'
+        $typeHeader=Find-ButtonName $root 'Sort by Type'
+        if ($dateHeader.Current.BoundingRectangle.Left -le $typeHeader.Current.BoundingRectangle.Left) {
+            throw 'Outside release did not restore the pre-drag committed order'
+        }
+
+        $nameHeader=Find-ButtonName $root 'Sort by Name'
+        if ($null -eq $nameHeader) { $nameHeader=Find-ButtonNamePrefix $root 'Name, sorted' }
+        if ($null -eq $nameHeader) { throw 'Name header was unavailable' }
+        Drag-ElementToElement $root $nameHeader $dateHeader
+        $nameHeader=Find-ButtonName $root 'Sort by Name'
+        if ($null -eq $nameHeader) { $nameHeader=Find-ButtonNamePrefix $root 'Name, sorted' }
+        $leftmostHeader=@($root.FindAll([Windows.Automation.TreeScope]::Descendants,
+            [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Button)) |
+            ForEach-Object { $_ } | Where-Object { $_.Current.Name -like 'Sort by *' -or $_.Current.Name -like 'Name, sorted*' } |
+            Sort-Object { $_.Current.BoundingRectangle.Left } | Select-Object -First 1)
+        if ($leftmostHeader.Count -eq 0 -or $leftmostHeader[0].Current.Name -notlike '*Name*') {
+            throw 'Name did not remain the fixed leftmost details column'
+        }
+        Capture-Window $window (Join-Path $OutputDirectory 'column-drag-live-persisted.png')
 
         if (-not [TokeiHeadfulSmoke.Native]::PostMessage($window,0x0010,[UIntPtr]::Zero,[IntPtr]::Zero)) { throw 'Could not request clean app shutdown' }
         if (-not $process.WaitForExit(10000)) { throw 'App did not complete clean shutdown' }
         [pscustomobject]@{
-            status='passed'; live_before_mouse_up=$true; adjacent_right_midpoint=$true
-            adjacent_left_midpoint=$true; committed_after_release=$true
-            right_pointer_bounds=$rightEvidence; left_pointer_bounds=$leftEvidence
-            screenshots=@('column-drag-live-right.png','column-drag-live-left.png')
+            status='passed'; toolbar_buttons=@('New','Sort','View','Extensions')
+            live_before_mouse_up=$true; adjacent_right_midpoint=$true
+            committed_after_release=$true; persisted_after_refresh=$true
+            outside_release_restored=$true; name_fixed_leftmost=$true
+            right_pointer_bounds=$rightEvidence; cancel_pointer_bounds=$cancelEvidence
+            screenshots=@('toolbar-extensions-popup.png','column-drag-live-right.png','column-drag-live-persisted.png')
         } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Encoding utf8
         Get-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Raw
         return
@@ -824,10 +1069,19 @@ try {
     Capture-Window $window (Join-Path $OutputDirectory 'code-lines-menu.png')
     $toggle=Find-NamePrefix $root 'Show comment and blank detail'
     if ($null -eq $toggle) { throw "$codeLinesColumn detail setting was not exposed" }
-    Click-Element $root $toggle; Start-Sleep -Milliseconds 350
-    $all=$root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
-    $detail=0..($all.Count-1) | ForEach-Object { $all.Item($_) } | Where-Object { $_.Current.Name -match $codeLinesDetailPattern } | Select-Object -First 1
-    if ($null -eq $detail) { throw "$codeLinesColumn comment/blank detail did not render" }
+    Click-Element $root $toggle
+    $detailDeadline=[DateTime]::UtcNow.AddSeconds(10)
+    $detail=$null
+    do {
+        Start-Sleep -Milliseconds 150
+        $all=$root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+        $detail=0..($all.Count-1) | ForEach-Object { $all.Item($_) } | Where-Object { $_.Current.Name -match $codeLinesDetailPattern } | Select-Object -First 1
+    } while ($null -eq $detail -and [DateTime]::UtcNow -lt $detailDeadline)
+    if ($null -eq $detail) {
+        Capture-Window $window (Join-Path $OutputDirectory 'code-lines-detail-missing.png')
+        $toggleState=(Find-NamePrefix $root 'Show comment and blank detail').Current.Name
+        throw "$codeLinesColumn comment/blank detail did not render; toggle=$toggleState"
+    }
     $detailName=$detail.Current.Name
     Capture-Window $window (Join-Path $OutputDirectory 'code-lines-detail.png')
     Start-Sleep -Milliseconds 250
@@ -843,11 +1097,22 @@ try {
     Get-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Raw
 } finally {
     if ($null -ne $lockHolder -and -not $lockHolder.HasExited) { $lockHolder.Kill(); $lockHolder.WaitForExit() }
+    if ($null -ne $nativeCmd -and -not $nativeCmd.HasExited) { $nativeCmd.Kill(); $nativeCmd.WaitForExit() }
+    if ($null -ne $wow64Cmd -and -not $wow64Cmd.HasExited) { $wow64Cmd.Kill(); $wow64Cmd.WaitForExit() }
     if (-not $process.HasExited) {
         if ($null -ne $window -and $window -ne [IntPtr]::Zero) { [void][TokeiHeadfulSmoke.Native]::PostMessage($window,0x0010,[UIntPtr]::Zero,[IntPtr]::Zero) }
         if (-not $process.WaitForExit(3000)) { $process.Kill(); $process.WaitForExit() }
     }
     if ($null -ne $processObserver) { $processObserver.Dispose() }
+    if ($LockOwnerMode) {
+        foreach($fixturePath in @($nativeCwdParent,$wow64CwdParent)) {
+            $resolvedFixture=[IO.Path]::GetFullPath($fixturePath)
+            $resolvedInitial=[IO.Path]::GetFullPath($InitialPath).TrimEnd([IO.Path]::DirectorySeparatorChar)+[IO.Path]::DirectorySeparatorChar
+            if ($resolvedFixture.StartsWith($resolvedInitial,[StringComparison]::OrdinalIgnoreCase) -and [IO.Directory]::Exists($resolvedFixture)) {
+                [IO.Directory]::Delete($resolvedFixture,$true)
+            }
+        }
+    }
     '' | Set-Content (Join-Path $OutputDirectory 'stdout.log') -Encoding utf8
     '' | Set-Content (Join-Path $OutputDirectory 'stderr.log') -Encoding utf8
 }

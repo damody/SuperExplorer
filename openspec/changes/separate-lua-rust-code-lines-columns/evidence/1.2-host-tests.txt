@@ -1,0 +1,9 @@
+Task IDs: 1.1.2, 1.2.4, 2.1.3
+Recorded: 2026-08-05 Asia/Taipei
+Command: cargo check -p explorer-ui -p explorer-app --locked --offline
+Expected: exit 0.
+Actual: exit 0; warnings are pre-existing lint/dead-code warnings.
+Command: cargo test -p explorer-ui --locked --offline code_lines -- --nocapture
+Expected: all focused code-lines tests pass.
+Actual: exit 0; 6 passed, 0 failed, including distinct Lua/Rust identity and independent sort-state coverage.
+Broader test note: cargo test -p explorer-ui -p explorer-app --locked --offline code_lines cannot compile unrelated in-progress MFT Size Map tests because preferred_size_map_scan_method and Path are not imported into that test module. This does not affect the production binary or focused explorer-ui gate.

@@ -1,0 +1,1561 @@
+{
+  "schema_version": 1,
+  "fixture": {
+    "width_logical": 1280.0,
+    "height_logical": 760.0,
+    "expected_dpi_percent": 100,
+    "actual_scale_factor": 1.75,
+    "theme": "light",
+    "font": "Microsoft JhengHei UI",
+    "placeholder_state": "populated"
+  },
+  "theme": {
+    "mode": "light",
+    "high_contrast_active": false,
+    "colors": [
+      {
+        "slot": "Surface",
+        "rgba": [
+          255,
+          255,
+          255,
+          255
+        ]
+      },
+      {
+        "slot": "SubtleSurface",
+        "rgba": [
+          232,
+          232,
+          232,
+          255
+        ]
+      },
+      {
+        "slot": "ControlFill",
+        "rgba": [
+          253,
+          253,
+          253,
+          255
+        ]
+      },
+      {
+        "slot": "ControlHover",
+        "rgba": [
+          248,
+          248,
+          248,
+          255
+        ]
+      },
+      {
+        "slot": "ControlPressed",
+        "rgba": [
+          240,
+          240,
+          240,
+          255
+        ]
+      },
+      {
+        "slot": "SelectedActive",
+        "rgba": [
+          0,
+          120,
+          212,
+          255
+        ]
+      },
+      {
+        "slot": "SelectedText",
+        "rgba": [
+          255,
+          255,
+          255,
+          255
+        ]
+      },
+      {
+        "slot": "SelectedInactive",
+        "rgba": [
+          240,
+          240,
+          240,
+          255
+        ]
+      },
+      {
+        "slot": "Divider",
+        "rgba": [
+          214,
+          214,
+          214,
+          255
+        ]
+      },
+      {
+        "slot": "TextPrimary",
+        "rgba": [
+          26,
+          26,
+          26,
+          255
+        ]
+      },
+      {
+        "slot": "TextSecondary",
+        "rgba": [
+          90,
+          90,
+          90,
+          255
+        ]
+      },
+      {
+        "slot": "TextDisabled",
+        "rgba": [
+          158,
+          158,
+          158,
+          255
+        ]
+      },
+      {
+        "slot": "Focus",
+        "rgba": [
+          0,
+          120,
+          212,
+          255
+        ]
+      },
+      {
+        "slot": "Danger",
+        "rgba": [
+          196,
+          43,
+          28,
+          255
+        ]
+      },
+      {
+        "slot": "Accent",
+        "rgba": [
+          0,
+          120,
+          212,
+          255
+        ]
+      },
+      {
+        "slot": "ToolbarFill",
+        "rgba": [
+          248,
+          248,
+          248,
+          255
+        ]
+      },
+      {
+        "slot": "AddressFill",
+        "rgba": [
+          253,
+          253,
+          253,
+          255
+        ]
+      },
+      {
+        "slot": "SearchFill",
+        "rgba": [
+          253,
+          253,
+          253,
+          255
+        ]
+      },
+      {
+        "slot": "RowHover",
+        "rgba": [
+          245,
+          245,
+          245,
+          255
+        ]
+      },
+      {
+        "slot": "MenuFill",
+        "rgba": [
+          249,
+          249,
+          249,
+          255
+        ]
+      },
+      {
+        "slot": "CaptionHover",
+        "rgba": [
+          224,
+          224,
+          224,
+          255
+        ]
+      }
+    ]
+  },
+  "layout": {
+    "title_tab_height": 40.0,
+    "command_bar_height": 48.0,
+    "address_bar_height": 48.0,
+    "status_bar_height": 18.0,
+    "navigation_pane_width": 293.0,
+    "divider_width": 8.0,
+    "content_spacing": 8.0,
+    "focus_stroke": 2.0
+  },
+  "region_diagnostics": {
+    "schema_version": 2,
+    "actual_scale_factor": 1.75,
+    "rounding_method": "gpui-logical-bounds-multiplied-by-window-scale-no-rounding",
+    "regions": [
+      {
+        "id": "active-tab",
+        "parent": "tab-strip",
+        "state": "active",
+        "logical_rect": {
+          "x": 12.0,
+          "y": 8.0,
+          "width": 246.2857208251953,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 21.0,
+          "y": 14.0,
+          "width": 431.0,
+          "height": 56.0
+        },
+        "icon_bounds": {
+          "x": 389.0,
+          "y": 28.0,
+          "width": 28.0,
+          "height": 28.0
+        },
+        "typography_reference": null
+      },
+      {
+        "id": "active-tab-close",
+        "parent": "active-tab",
+        "state": "tab-close-button",
+        "logical_rect": {
+          "x": 214.2857208251953,
+          "y": 16.0,
+          "width": 32.0,
+          "height": 16.0
+        },
+        "physical_rect": {
+          "x": 375.0,
+          "y": 28.0,
+          "width": 56.0,
+          "height": 28.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "breadcrumb-address-editor",
+        "parent": "navigation-bar",
+        "state": "browsing",
+        "logical_rect": {
+          "x": 188.0,
+          "y": 46.85714340209961,
+          "width": 771.4285888671875,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 329.0,
+          "y": 82.0,
+          "width": 1350.0,
+          "height": 56.0
+        },
+        "icon_bounds": {
+          "x": 1277.0,
+          "y": 96.0,
+          "width": 28.0,
+          "height": 28.0
+        },
+        "typography_reference": {
+          "profile": "windows-11-26200-explorer-26100.8875-zh-tw-175",
+          "family": "Microsoft JhengHei UI",
+          "size": 14.0,
+          "weight": 400,
+          "line_height": 22.0,
+          "baseline": 17.0
+        }
+      },
+      {
+        "id": "caption-close",
+        "parent": "window-chrome",
+        "state": "enabled",
+        "logical_rect": {
+          "x": 1234.2857666015625,
+          "y": 0.0,
+          "width": 45.71428680419922,
+          "height": 40.0
+        },
+        "physical_rect": {
+          "x": 2160.0,
+          "y": 0.0,
+          "width": 80.0,
+          "height": 70.0
+        },
+        "icon_bounds": {
+          "x": 2186.0,
+          "y": 15.0,
+          "width": 28.0,
+          "height": 28.0
+        },
+        "typography_reference": null
+      },
+      {
+        "id": "caption-maximize",
+        "parent": "window-chrome",
+        "state": "enabled",
+        "logical_rect": {
+          "x": 1188.5714111328125,
+          "y": 0.0,
+          "width": 45.71428680419922,
+          "height": 40.0
+        },
+        "physical_rect": {
+          "x": 2080.0,
+          "y": 0.0,
+          "width": 80.0,
+          "height": 70.0
+        },
+        "icon_bounds": {
+          "x": 2106.0,
+          "y": 15.0,
+          "width": 28.0,
+          "height": 28.0
+        },
+        "typography_reference": null
+      },
+      {
+        "id": "caption-minimize",
+        "parent": "window-chrome",
+        "state": "enabled",
+        "logical_rect": {
+          "x": 1142.857177734375,
+          "y": 0.0,
+          "width": 45.71428680419922,
+          "height": 40.0
+        },
+        "physical_rect": {
+          "x": 2000.0,
+          "y": 0.0,
+          "width": 80.0,
+          "height": 70.0
+        },
+        "icon_bounds": {
+          "x": 2025.9998779296875,
+          "y": 15.0,
+          "width": 28.0,
+          "height": 28.0
+        },
+        "typography_reference": null
+      },
+      {
+        "id": "command-bar",
+        "parent": "explorer-window",
+        "state": "normal",
+        "logical_rect": {
+          "x": 0.0,
+          "y": 120.0,
+          "width": 1280.0,
+          "height": 46.28571319580078
+        },
+        "physical_rect": {
+          "x": 0.0,
+          "y": 210.0,
+          "width": 2240.0,
+          "height": 81.0
+        },
+        "icon_bounds": null,
+        "typography_reference": {
+          "profile": "windows-11-26200-explorer-26100.8875-zh-tw-175",
+          "family": "Microsoft JhengHei UI",
+          "size": 12.0,
+          "weight": 400,
+          "line_height": 16.0,
+          "baseline": 13.0
+        }
+      },
+      {
+        "id": "command-copy",
+        "parent": null,
+        "state": "disabled",
+        "logical_rect": {
+          "x": 140.0,
+          "y": 126.85713958740234,
+          "width": 40.0,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 245.0,
+          "y": 222.0,
+          "width": 70.0,
+          "height": 56.0
+        },
+        "icon_bounds": {
+          "x": 266.0,
+          "y": 236.0,
+          "width": 28.0,
+          "height": 28.0
+        },
+        "typography_reference": null
+      },
+      {
+        "id": "command-cut",
+        "parent": null,
+        "state": "disabled",
+        "logical_rect": {
+          "x": 92.0,
+          "y": 126.85713958740234,
+          "width": 40.0,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 161.0,
+          "y": 222.0,
+          "width": 70.0,
+          "height": 56.0
+        },
+        "icon_bounds": {
+          "x": 182.0,
+          "y": 236.0,
+          "width": 28.0,
+          "height": 28.0
+        },
+        "typography_reference": null
+      },
+      {
+        "id": "command-delete",
+        "parent": null,
+        "state": "disabled",
+        "logical_rect": {
+          "x": 332.0,
+          "y": 126.85713958740234,
+          "width": 40.0,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 581.0,
+          "y": 222.0,
+          "width": 70.0,
+          "height": 56.0
+        },
+        "icon_bounds": {
+          "x": 602.0,
+          "y": 236.0,
+          "width": 28.0,
+          "height": 28.0
+        },
+        "typography_reference": null
+      },
+      {
+        "id": "command-extensions-menu",
+        "parent": null,
+        "state": "enabled",
+        "logical_rect": {
+          "x": 588.0,
+          "y": 126.85713958740234,
+          "width": 96.0,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 1029.0,
+          "y": 222.0,
+          "width": 168.0,
+          "height": 56.0
+        },
+        "icon_bounds": {
+          "x": 1050.0,
+          "y": 236.0,
+          "width": 28.0,
+          "height": 28.0
+        },
+        "typography_reference": null
+      },
+      {
+        "id": "command-more-menu",
+        "parent": null,
+        "state": "enabled",
+        "logical_rect": {
+          "x": 540.0,
+          "y": 126.85713958740234,
+          "width": 40.0,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 945.0,
+          "y": 222.0,
+          "width": 70.0,
+          "height": 56.0
+        },
+        "icon_bounds": {
+          "x": 966.0,
+          "y": 236.0,
+          "width": 28.0,
+          "height": 28.0
+        },
+        "typography_reference": null
+      },
+      {
+        "id": "command-new",
+        "parent": null,
+        "state": "enabled",
+        "logical_rect": {
+          "x": 12.0,
+          "y": 126.85713958740234,
+          "width": 72.0,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 21.0,
+          "y": 222.0,
+          "width": 126.0,
+          "height": 56.0
+        },
+        "icon_bounds": {
+          "x": 42.0,
+          "y": 236.0,
+          "width": 28.0,
+          "height": 28.0
+        },
+        "typography_reference": null
+      },
+      {
+        "id": "command-paste",
+        "parent": null,
+        "state": "disabled",
+        "logical_rect": {
+          "x": 188.0,
+          "y": 126.85713958740234,
+          "width": 40.0,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 329.0,
+          "y": 222.0,
+          "width": 70.0,
+          "height": 56.0
+        },
+        "icon_bounds": {
+          "x": 350.0,
+          "y": 236.0,
+          "width": 28.0,
+          "height": 28.0
+        },
+        "typography_reference": null
+      },
+      {
+        "id": "command-rename",
+        "parent": null,
+        "state": "disabled",
+        "logical_rect": {
+          "x": 236.0,
+          "y": 126.85713958740234,
+          "width": 40.0,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 413.0,
+          "y": 222.0,
+          "width": 70.0,
+          "height": 56.0
+        },
+        "icon_bounds": {
+          "x": 434.0,
+          "y": 236.0,
+          "width": 28.0,
+          "height": 28.0
+        },
+        "typography_reference": null
+      },
+      {
+        "id": "command-share",
+        "parent": null,
+        "state": "disabled",
+        "logical_rect": {
+          "x": 284.0,
+          "y": 126.85713958740234,
+          "width": 40.0,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 497.0,
+          "y": 222.0,
+          "width": 70.0,
+          "height": 56.0
+        },
+        "icon_bounds": {
+          "x": 518.0,
+          "y": 236.0,
+          "width": 28.0,
+          "height": 28.0
+        },
+        "typography_reference": null
+      },
+      {
+        "id": "command-sort",
+        "parent": null,
+        "state": "enabled",
+        "logical_rect": {
+          "x": 380.0,
+          "y": 126.85713958740234,
+          "width": 72.0,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 665.0,
+          "y": 222.0,
+          "width": 126.0,
+          "height": 56.0
+        },
+        "icon_bounds": {
+          "x": 686.0,
+          "y": 236.0,
+          "width": 28.0,
+          "height": 28.0
+        },
+        "typography_reference": null
+      },
+      {
+        "id": "command-view",
+        "parent": null,
+        "state": "enabled",
+        "logical_rect": {
+          "x": 460.0,
+          "y": 126.85713958740234,
+          "width": 72.0,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 805.0,
+          "y": 222.0,
+          "width": 126.0,
+          "height": 56.0
+        },
+        "icon_bounds": {
+          "x": 826.0,
+          "y": 236.0,
+          "width": 28.0,
+          "height": 28.0
+        },
+        "typography_reference": null
+      },
+      {
+        "id": "details-header",
+        "parent": "file-view-host",
+        "state": "normal",
+        "logical_rect": {
+          "x": 301.1428527832031,
+          "y": 168.0,
+          "width": 978.8571166992188,
+          "height": 26.85714340209961
+        },
+        "physical_rect": {
+          "x": 527.0,
+          "y": 294.0,
+          "width": 1713.0,
+          "height": 47.0
+        },
+        "icon_bounds": null,
+        "typography_reference": {
+          "profile": "windows-11-26200-explorer-26100.8875-zh-tw-175",
+          "family": "Microsoft JhengHei UI",
+          "size": 11.0,
+          "weight": 400,
+          "line_height": 16.0,
+          "baseline": 13.0
+        }
+      },
+      {
+        "id": "explorer-window",
+        "parent": null,
+        "state": "normal",
+        "logical_rect": {
+          "x": 0.0,
+          "y": 0.0,
+          "width": 1280.0,
+          "height": 760.0
+        },
+        "physical_rect": {
+          "x": 0.0,
+          "y": 0.0,
+          "width": 2240.0,
+          "height": 1330.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "file-row-0",
+        "parent": "file-view-host",
+        "state": "normal",
+        "logical_rect": {
+          "x": 301.1428527832031,
+          "y": 196.0,
+          "width": 978.8571166992188,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 527.0,
+          "y": 343.0,
+          "width": 1713.0,
+          "height": 56.0
+        },
+        "icon_bounds": null,
+        "typography_reference": {
+          "profile": "windows-11-26200-explorer-26100.8875-zh-tw-175",
+          "family": "Microsoft JhengHei UI",
+          "size": 12.0,
+          "weight": 400,
+          "line_height": 16.0,
+          "baseline": 13.0
+        }
+      },
+      {
+        "id": "file-row-1",
+        "parent": "file-view-host",
+        "state": "normal",
+        "logical_rect": {
+          "x": 301.1428527832031,
+          "y": 228.0,
+          "width": 978.8571166992188,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 527.0,
+          "y": 399.0,
+          "width": 1713.0,
+          "height": 56.0
+        },
+        "icon_bounds": null,
+        "typography_reference": {
+          "profile": "windows-11-26200-explorer-26100.8875-zh-tw-175",
+          "family": "Microsoft JhengHei UI",
+          "size": 12.0,
+          "weight": 400,
+          "line_height": 16.0,
+          "baseline": 13.0
+        }
+      },
+      {
+        "id": "file-row-2",
+        "parent": "file-view-host",
+        "state": "normal",
+        "logical_rect": {
+          "x": 301.1428527832031,
+          "y": 260.0,
+          "width": 978.8571166992188,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 527.0,
+          "y": 455.0,
+          "width": 1713.0,
+          "height": 56.0
+        },
+        "icon_bounds": null,
+        "typography_reference": {
+          "profile": "windows-11-26200-explorer-26100.8875-zh-tw-175",
+          "family": "Microsoft JhengHei UI",
+          "size": 12.0,
+          "weight": 400,
+          "line_height": 16.0,
+          "baseline": 13.0
+        }
+      },
+      {
+        "id": "file-row-3",
+        "parent": "file-view-host",
+        "state": "normal",
+        "logical_rect": {
+          "x": 301.1428527832031,
+          "y": 292.0,
+          "width": 978.8571166992188,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 527.0,
+          "y": 511.0,
+          "width": 1713.0,
+          "height": 56.0
+        },
+        "icon_bounds": null,
+        "typography_reference": {
+          "profile": "windows-11-26200-explorer-26100.8875-zh-tw-175",
+          "family": "Microsoft JhengHei UI",
+          "size": 12.0,
+          "weight": 400,
+          "line_height": 16.0,
+          "baseline": 13.0
+        }
+      },
+      {
+        "id": "file-view-host",
+        "parent": "explorer-window",
+        "state": "normal",
+        "logical_rect": {
+          "x": 301.1428527832031,
+          "y": 168.0,
+          "width": 978.8571166992188,
+          "height": 574.2857055664062
+        },
+        "physical_rect": {
+          "x": 527.0,
+          "y": 294.0,
+          "width": 1713.0,
+          "height": 1005.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "navigation-back",
+        "parent": null,
+        "state": "disabled",
+        "logical_rect": {
+          "x": 12.0,
+          "y": 46.85714340209961,
+          "width": 32.0,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 21.0,
+          "y": 82.0,
+          "width": 56.0,
+          "height": 56.0
+        },
+        "icon_bounds": {
+          "x": 35.0,
+          "y": 96.0,
+          "width": 28.0,
+          "height": 28.0
+        },
+        "typography_reference": null
+      },
+      {
+        "id": "navigation-bar",
+        "parent": "explorer-window",
+        "state": "normal",
+        "logical_rect": {
+          "x": 0.0,
+          "y": 40.0,
+          "width": 1280.0,
+          "height": 46.28571319580078
+        },
+        "physical_rect": {
+          "x": 0.0,
+          "y": 70.0,
+          "width": 2240.0,
+          "height": 81.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "navigation-divider",
+        "parent": "explorer-window",
+        "state": "normal",
+        "logical_rect": {
+          "x": 293.1428527832031,
+          "y": 168.0,
+          "width": 8.0,
+          "height": 574.2857055664062
+        },
+        "physical_rect": {
+          "x": 513.0,
+          "y": 294.0,
+          "width": 14.0,
+          "height": 1005.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "navigation-forward",
+        "parent": null,
+        "state": "disabled",
+        "logical_rect": {
+          "x": 52.0,
+          "y": 46.85714340209961,
+          "width": 32.0,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 91.0,
+          "y": 82.0,
+          "width": 56.0,
+          "height": 56.0
+        },
+        "icon_bounds": {
+          "x": 105.0,
+          "y": 96.0,
+          "width": 28.0,
+          "height": 28.0
+        },
+        "typography_reference": null
+      },
+      {
+        "id": "navigation-item-computer-separator",
+        "parent": "navigation-pane",
+        "state": "separator",
+        "logical_rect": {
+          "x": 12.0,
+          "y": 512.0,
+          "width": 267.4285583496094,
+          "height": 16.0
+        },
+        "physical_rect": {
+          "x": 21.0,
+          "y": 896.0,
+          "width": 467.9999694824219,
+          "height": 28.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "navigation-item-desktop",
+        "parent": "navigation-pane",
+        "state": "normal",
+        "logical_rect": {
+          "x": 12.0,
+          "y": 320.0,
+          "width": 267.4285583496094,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 21.0,
+          "y": 560.0,
+          "width": 467.9999694824219,
+          "height": 56.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "navigation-item-documents",
+        "parent": "navigation-pane",
+        "state": "normal",
+        "logical_rect": {
+          "x": 12.0,
+          "y": 384.0,
+          "width": 267.4285583496094,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 21.0,
+          "y": 672.0,
+          "width": 467.9999694824219,
+          "height": 56.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "navigation-item-downloads",
+        "parent": "navigation-pane",
+        "state": "normal",
+        "logical_rect": {
+          "x": 12.0,
+          "y": 352.0,
+          "width": 267.4285583496094,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 21.0,
+          "y": 616.0,
+          "width": 467.9999694824219,
+          "height": 56.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "navigation-item-drive-c",
+        "parent": "navigation-pane",
+        "state": "normal",
+        "logical_rect": {
+          "x": 12.0,
+          "y": 593.1428833007812,
+          "width": 267.4285583496094,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 21.0,
+          "y": 1038.0,
+          "width": 467.9999694824219,
+          "height": 56.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "navigation-item-drive-d",
+        "parent": "navigation-pane",
+        "state": "selected",
+        "logical_rect": {
+          "x": 12.0,
+          "y": 625.1428833007812,
+          "width": 267.4285583496094,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 21.0,
+          "y": 1094.0,
+          "width": 467.9999694824219,
+          "height": 56.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "navigation-item-drive-e",
+        "parent": "navigation-pane",
+        "state": "normal",
+        "logical_rect": {
+          "x": 12.0,
+          "y": 657.1428833007812,
+          "width": 267.4285583496094,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 21.0,
+          "y": 1150.0,
+          "width": 467.9999694824219,
+          "height": 56.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "navigation-item-favorites-separator",
+        "parent": "navigation-pane",
+        "state": "separator",
+        "logical_rect": {
+          "x": 12.0,
+          "y": 302.8571472167969,
+          "width": 267.4285583496094,
+          "height": 16.0
+        },
+        "physical_rect": {
+          "x": 21.0,
+          "y": 530.0,
+          "width": 467.9999694824219,
+          "height": 28.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "navigation-item-gallery",
+        "parent": "navigation-pane",
+        "state": "normal",
+        "logical_rect": {
+          "x": 12.0,
+          "y": 238.85714721679688,
+          "width": 267.4285583496094,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 21.0,
+          "y": 418.0,
+          "width": 467.9999694824219,
+          "height": 56.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "navigation-item-home",
+        "parent": "navigation-pane",
+        "state": "normal",
+        "logical_rect": {
+          "x": 12.0,
+          "y": 174.85714721679688,
+          "width": 267.4285583496094,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 21.0,
+          "y": 306.0,
+          "width": 467.9999694824219,
+          "height": 56.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "navigation-item-libraries",
+        "parent": "navigation-pane",
+        "state": "normal",
+        "logical_rect": {
+          "x": 12.0,
+          "y": 529.1428833007812,
+          "width": 267.4285583496094,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 21.0,
+          "y": 926.0000610351562,
+          "width": 467.9999694824219,
+          "height": 56.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "navigation-item-music",
+        "parent": "navigation-pane",
+        "state": "normal",
+        "logical_rect": {
+          "x": 12.0,
+          "y": 448.0,
+          "width": 267.4285583496094,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 21.0,
+          "y": 784.0,
+          "width": 467.9999694824219,
+          "height": 56.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "navigation-item-network",
+        "parent": "navigation-pane",
+        "state": "normal",
+        "logical_rect": {
+          "x": 12.0,
+          "y": 689.1428833007812,
+          "width": 267.4285583496094,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 21.0,
+          "y": 1206.0,
+          "width": 467.9999694824219,
+          "height": 56.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "navigation-item-onedrive",
+        "parent": "navigation-pane",
+        "state": "normal",
+        "logical_rect": {
+          "x": 12.0,
+          "y": 270.8571472167969,
+          "width": 267.4285583496094,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 21.0,
+          "y": 474.0,
+          "width": 467.9999694824219,
+          "height": 56.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "navigation-item-pictures",
+        "parent": "navigation-pane",
+        "state": "normal",
+        "logical_rect": {
+          "x": 12.0,
+          "y": 416.0,
+          "width": 267.4285583496094,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 21.0,
+          "y": 728.0,
+          "width": 467.9999694824219,
+          "height": 56.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "navigation-item-quick-access",
+        "parent": "navigation-pane",
+        "state": "normal",
+        "logical_rect": {
+          "x": 12.0,
+          "y": 206.85714721679688,
+          "width": 267.4285583496094,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 21.0,
+          "y": 362.0,
+          "width": 467.9999694824219,
+          "height": 56.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "navigation-item-recycle-bin",
+        "parent": "navigation-pane",
+        "state": "normal",
+        "logical_rect": {
+          "x": 12.0,
+          "y": 721.1428833007812,
+          "width": 267.4285583496094,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 21.0,
+          "y": 1262.0,
+          "width": 467.9999694824219,
+          "height": 56.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "navigation-item-this-pc",
+        "parent": "navigation-pane",
+        "state": "normal",
+        "logical_rect": {
+          "x": 12.0,
+          "y": 561.1428833007812,
+          "width": 267.4285583496094,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 21.0,
+          "y": 982.0000610351562,
+          "width": 467.9999694824219,
+          "height": 56.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "navigation-item-videos",
+        "parent": "navigation-pane",
+        "state": "normal",
+        "logical_rect": {
+          "x": 12.0,
+          "y": 480.0,
+          "width": 267.4285583496094,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 21.0,
+          "y": 840.0,
+          "width": 467.9999694824219,
+          "height": 56.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "navigation-pane",
+        "parent": "explorer-window",
+        "state": "normal",
+        "logical_rect": {
+          "x": 0.0,
+          "y": 168.0,
+          "width": 291.4285583496094,
+          "height": 574.2857055664062
+        },
+        "physical_rect": {
+          "x": 0.0,
+          "y": 294.0,
+          "width": 509.9999694824219,
+          "height": 1005.0
+        },
+        "icon_bounds": null,
+        "typography_reference": {
+          "profile": "windows-11-26200-explorer-26100.8875-zh-tw-175",
+          "family": "Microsoft JhengHei UI",
+          "size": 12.0,
+          "weight": 400,
+          "line_height": 16.0,
+          "baseline": 13.0
+        }
+      },
+      {
+        "id": "navigation-refresh",
+        "parent": null,
+        "state": "enabled",
+        "logical_rect": {
+          "x": 140.0,
+          "y": 46.85714340209961,
+          "width": 40.0,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 245.0,
+          "y": 82.0,
+          "width": 70.0,
+          "height": 56.0
+        },
+        "icon_bounds": {
+          "x": 266.0,
+          "y": 96.0,
+          "width": 28.0,
+          "height": 28.0
+        },
+        "typography_reference": null
+      },
+      {
+        "id": "navigation-up",
+        "parent": null,
+        "state": "enabled",
+        "logical_rect": {
+          "x": 92.0,
+          "y": 46.85714340209961,
+          "width": 40.0,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 161.0,
+          "y": 82.0,
+          "width": 70.0,
+          "height": 56.0
+        },
+        "icon_bounds": {
+          "x": 182.0,
+          "y": 96.0,
+          "width": 28.0,
+          "height": 28.0
+        },
+        "typography_reference": null
+      },
+      {
+        "id": "new-tab-button",
+        "parent": "tab-strip",
+        "state": "enabled",
+        "logical_rect": {
+          "x": 266.28570556640625,
+          "y": 8.0,
+          "width": 32.0,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 466.0,
+          "y": 14.0,
+          "width": 56.0,
+          "height": 56.0
+        },
+        "icon_bounds": {
+          "x": 480.0,
+          "y": 28.0,
+          "width": 28.0,
+          "height": 28.0
+        },
+        "typography_reference": null
+      },
+      {
+        "id": "operation-center",
+        "parent": "explorer-window",
+        "state": "normal",
+        "logical_rect": {
+          "x": 0.0,
+          "y": 742.2857055664062,
+          "width": 1280.0,
+          "height": 0.0
+        },
+        "physical_rect": {
+          "x": 0.0,
+          "y": 1299.0,
+          "width": 2240.0,
+          "height": 0.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "search-box",
+        "parent": "navigation-bar",
+        "state": "editable",
+        "logical_rect": {
+          "x": 967.4285888671875,
+          "y": 46.85714340209961,
+          "width": 300.5714416503906,
+          "height": 32.0
+        },
+        "physical_rect": {
+          "x": 1693.0,
+          "y": 82.0,
+          "width": 526.0,
+          "height": 56.0
+        },
+        "icon_bounds": {
+          "x": 2170.0,
+          "y": 96.0,
+          "width": 28.0,
+          "height": 28.0
+        },
+        "typography_reference": {
+          "profile": "windows-11-26200-explorer-26100.8875-zh-tw-175",
+          "family": "Microsoft JhengHei UI",
+          "size": 14.0,
+          "weight": 400,
+          "line_height": 22.0,
+          "baseline": 17.0
+        }
+      },
+      {
+        "id": "status-bar",
+        "parent": "explorer-window",
+        "state": "normal",
+        "logical_rect": {
+          "x": 0.0,
+          "y": 744.0,
+          "width": 1280.0,
+          "height": 16.0
+        },
+        "physical_rect": {
+          "x": 0.0,
+          "y": 1302.0,
+          "width": 2240.0,
+          "height": 28.0
+        },
+        "icon_bounds": null,
+        "typography_reference": {
+          "profile": "windows-11-26200-explorer-26100.8875-zh-tw-175",
+          "family": "Microsoft JhengHei UI",
+          "size": 11.0,
+          "weight": 400,
+          "line_height": 14.0,
+          "baseline": 11.0
+        }
+      },
+      {
+        "id": "status-details-view",
+        "parent": "status-bar",
+        "state": "enabled",
+        "logical_rect": {
+          "x": 1224.5714111328125,
+          "y": 742.8571166992188,
+          "width": 17.714284896850586,
+          "height": 17.714284896850586
+        },
+        "physical_rect": {
+          "x": 2143.0,
+          "y": 1300.0,
+          "width": 30.999998092651367,
+          "height": 30.999998092651367
+        },
+        "icon_bounds": {
+          "x": 2144.0,
+          "y": 1302.0,
+          "width": 28.0,
+          "height": 28.0
+        },
+        "typography_reference": null
+      },
+      {
+        "id": "status-icon-view",
+        "parent": "status-bar",
+        "state": "enabled",
+        "logical_rect": {
+          "x": 1250.2857666015625,
+          "y": 742.8571166992188,
+          "width": 17.714284896850586,
+          "height": 17.714284896850586
+        },
+        "physical_rect": {
+          "x": 2188.0,
+          "y": 1300.0,
+          "width": 30.999998092651367,
+          "height": 30.999998092651367
+        },
+        "icon_bounds": {
+          "x": 2189.0,
+          "y": 1302.0,
+          "width": 28.0,
+          "height": 28.0
+        },
+        "typography_reference": null
+      },
+      {
+        "id": "tab-strip",
+        "parent": "window-chrome",
+        "state": "normal",
+        "logical_rect": {
+          "x": 0.0,
+          "y": 0.0,
+          "width": 310.28570556640625,
+          "height": 40.0
+        },
+        "physical_rect": {
+          "x": 0.0,
+          "y": 0.0,
+          "width": 543.0,
+          "height": 70.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      },
+      {
+        "id": "window-chrome",
+        "parent": "explorer-window",
+        "state": "active",
+        "logical_rect": {
+          "x": 0.0,
+          "y": 0.0,
+          "width": 1280.0,
+          "height": 40.0
+        },
+        "physical_rect": {
+          "x": 0.0,
+          "y": 0.0,
+          "width": 2240.0,
+          "height": 70.0
+        },
+        "icon_bounds": null,
+        "typography_reference": {
+          "profile": "windows-11-26200-explorer-26100.8875-zh-tw-175",
+          "family": "Microsoft JhengHei UI",
+          "size": 12.0,
+          "weight": 400,
+          "line_height": 16.0,
+          "baseline": 13.0
+        }
+      },
+      {
+        "id": "window-drag-region",
+        "parent": "window-chrome",
+        "state": "normal",
+        "logical_rect": {
+          "x": 0.0,
+          "y": 0.0,
+          "width": 1142.857177734375,
+          "height": 40.0
+        },
+        "physical_rect": {
+          "x": 0.0,
+          "y": 0.0,
+          "width": 2000.0,
+          "height": 70.0
+        },
+        "icon_bounds": null,
+        "typography_reference": null
+      }
+    ]
+  }
+}

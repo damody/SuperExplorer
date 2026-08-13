@@ -1,0 +1,8 @@
+Task: 1.1.1
+Recorded: 2026-08-05 Asia/Taipei
+Relevant pre-existing modified files: crates/explorer-app/src/application.rs, crates/explorer-ui/src/chrome.rs, crates/explorer-ui/src/code_lines_column.rs, crates/explorer-ui/src/lib.rs, crates/explorer-ui/src/state.rs, scripts/smoke_tokei_plugin_headful.ps1, sdk fixture metadata and Rust provider.
+Stable Rust column identity: package rust-tokei, column code-lines.
+Stable Lua column identity: package lua-tokei-code-lines-column, column code-lines.
+Observed collision: application lifecycle retained only the first code-lines runtime; ExplorerRoot retained one runtime, one visuals object, one request set, and AppViewState retained one sort-value map.
+Existing focused commands: cargo test -p explorer-ui --locked --offline code_lines; cargo test --manifest-path sdk/fixtures/rust-tokei-code-lines-column/Cargo.toml --locked --offline; scripts/smoke_tokei_plugin_headful.ps1.
+Preservation rule: unrelated bookmark, folder-options, thumbnail, MFT Size Map, and automation edits remain untouched in ownership and are not reverted.

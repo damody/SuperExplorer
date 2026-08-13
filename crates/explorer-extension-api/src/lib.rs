@@ -504,6 +504,23 @@ pub struct OpaquePayloadContractV1 {
     pub schema_version: u32,
 }
 
+/// Optional inclusive limits applied by the Host before dispatching a folder
+/// to a data-column provider. `RNone` means that dimension is unlimited.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, StableAbi)]
+pub struct FolderAdmissionPolicyV1 {
+    pub max_file_count: ROption<u64>,
+    pub max_folder_count: ROption<u64>,
+}
+
+impl FolderAdmissionPolicyV1 {
+    #[must_use]
+    pub const fn is_unlimited(self) -> bool {
+        matches!(self.max_file_count, ROption::RNone)
+            && matches!(self.max_folder_count, ROption::RNone)
+    }
+}
+
 /// Complete ABI descriptor for one contribution and optional job provider.
 /// Strings are descriptive only; the host revalidates them against the sealed
 /// package manifest before retaining this object.
@@ -518,6 +535,9 @@ pub struct RegisteredContributionV1 {
     pub expected_sort: ROption<StableSortValueKindV1>,
     pub opaque_contract: ROption<OpaquePayloadContractV1>,
     pub renderer_contribution_id: ROption<RString>,
+    /// Host-owned folder admission policy. Only column contributions with a
+    /// batch provider may declare this value; ordinary file items bypass it.
+    pub folder_admission: ROption<FolderAdmissionPolicyV1>,
     pub provider: ROption<JobProviderObjectV1>,
     /// Optional visual-column object retained by the host after registration.
     pub visual_column: ROption<VisualColumnObjectV1>,

@@ -390,9 +390,7 @@ fn count_source(file_name: &str, bytes: &[u8]) -> Option<CodeRow> {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             row.blanks += 1;
-        } else if trimmed.starts_with("//")
-            || trimmed.starts_with('#')
-            || trimmed.starts_with("--")
+        } else if trimmed.starts_with("//") || trimmed.starts_with('#') || trimmed.starts_with("--")
         {
             row.comments += 1;
         } else {
@@ -504,6 +502,9 @@ impl VisualColumnImplementationV1 for LuaTokeiColumn {
     }
 
     fn render(&self, context: CellRenderContextV1) -> CellRenderPlanV1 {
+        if let Some(error) = context.error.clone().into_option() {
+            return CellRenderPlanV1::text_only(error, context.theme.muted_foreground);
+        }
         let Some(value) = context.value.into_option() else {
             return CellRenderPlanV1::text_only(
                 if context.loading { "Loading" } else { "—" },
@@ -514,13 +515,25 @@ impl VisualColumnImplementationV1 for LuaTokeiColumn {
             Ok(value) => value,
             Err(_) => return CellRenderPlanV1::text_only("—", context.theme.muted_foreground),
         };
-        let code = parsed.get("code").and_then(serde_json::Value::as_u64).unwrap_or(0);
+        let code = parsed
+            .get("code")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
         let detail = if context.settings.contains("with-detail") {
             format!(
                 "Lua/tokei · {} comments · {} blanks · {} total",
-                parsed.get("comments").and_then(serde_json::Value::as_u64).unwrap_or(0),
-                parsed.get("blanks").and_then(serde_json::Value::as_u64).unwrap_or(0),
-                parsed.get("total").and_then(serde_json::Value::as_u64).unwrap_or(0)
+                parsed
+                    .get("comments")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0),
+                parsed
+                    .get("blanks")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0),
+                parsed
+                    .get("total")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0)
             )
         } else {
             String::new()
@@ -543,39 +556,51 @@ impl ExtensionRegistrarImplementationV1 for Registrar {
     fn register(&self, _: RegistrarRequestV1) -> RegistrarOutputResultV1 {
         RResult::ROk(RegistrarOutputV1 {
             outcome: RegistrationOutcomeV1::accepted(2),
-            contributions: vec![RegisteredContributionV1 {
-                feature_id: "lua-tokei".into(),
-                contribution_id: "lua-tokei:column".into(),
-                kind: RegisteredContributionKindV1::COLUMN,
-                required_capabilities: vec![
-                    "filesystem.read".into(),
-                    "tools.execute_bundled".into(),
-                ]
-                .into(),
-                interface_id: INTERFACE_ID,
-                expected_sort: ROption::RSome(StableSortValueKindV1::U64),
-                opaque_contract: ROption::RNone,
-                renderer_contribution_id: ROption::RSome("lua-tokei:renderer".into()),
-                provider: ROption::RNone,
-                visual_column: ROption::RNone,
-                size_map_view: ROption::RNone,
-                virtual_folder_provider: ROption::RNone,
-                batch_column_provider: ROption::RSome(BatchColumnProviderObjectV1::new(LuaTokeiColumn)),
-            }, RegisteredContributionV1 {
-                feature_id: "lua-tokei".into(),
-                contribution_id: "lua-tokei:renderer".into(),
-                kind: RegisteredContributionKindV1::GPUI_RENDERER,
-                required_capabilities: vec!["abi".into()].into(),
-                interface_id: INTERFACE_ID,
-                expected_sort: ROption::RNone,
-                opaque_contract: ROption::RNone,
-                renderer_contribution_id: ROption::RNone,
-                provider: ROption::RNone,
-                visual_column: ROption::RSome(VisualColumnObjectV1::new(LuaTokeiColumn)),
-                size_map_view: ROption::RNone,
-                virtual_folder_provider: ROption::RNone,
-                batch_column_provider: ROption::RNone,
-            }]
+            contributions: vec![
+                RegisteredContributionV1 {
+                    feature_id: "lua-tokei".into(),
+                    contribution_id: "lua-tokei:column".into(),
+                    kind: RegisteredContributionKindV1::COLUMN,
+                    required_capabilities: vec![
+                        "filesystem.read".into(),
+                        "tools.execute_bundled".into(),
+                    ]
+                    .into(),
+                    interface_id: INTERFACE_ID,
+                    expected_sort: ROption::RSome(StableSortValueKindV1::U64),
+                    opaque_contract: ROption::RNone,
+                    renderer_contribution_id: ROption::RSome("lua-tokei:renderer".into()),
+                    folder_admission: ROption::RSome(
+                        explorer_extension_api::FolderAdmissionPolicyV1 {
+                            max_file_count: ROption::RSome(999),
+                            max_folder_count: ROption::RNone,
+                        },
+                    ),
+                    provider: ROption::RNone,
+                    visual_column: ROption::RNone,
+                    size_map_view: ROption::RNone,
+                    virtual_folder_provider: ROption::RNone,
+                    batch_column_provider: ROption::RSome(BatchColumnProviderObjectV1::new(
+                        LuaTokeiColumn,
+                    )),
+                },
+                RegisteredContributionV1 {
+                    feature_id: "lua-tokei".into(),
+                    contribution_id: "lua-tokei:renderer".into(),
+                    kind: RegisteredContributionKindV1::GPUI_RENDERER,
+                    required_capabilities: vec!["abi".into()].into(),
+                    interface_id: INTERFACE_ID,
+                    expected_sort: ROption::RNone,
+                    opaque_contract: ROption::RNone,
+                    renderer_contribution_id: ROption::RNone,
+                    folder_admission: ROption::RNone,
+                    provider: ROption::RNone,
+                    visual_column: ROption::RSome(VisualColumnObjectV1::new(LuaTokeiColumn)),
+                    size_map_view: ROption::RNone,
+                    virtual_folder_provider: ROption::RNone,
+                    batch_column_provider: ROption::RNone,
+                },
+            ]
             .into(),
         })
     }
@@ -595,6 +620,25 @@ pub fn plugin_root() -> ExtensionRootModuleV1_Ref {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use explorer_extension_api::registrar_request_v1;
+
+    #[test]
+    fn registrar_declares_the_999_file_folder_limit() {
+        let output = plugin_root()
+            .create_registrar()
+            .create()
+            .into_result()
+            .unwrap()
+            .register(registrar_request_v1())
+            .into_result()
+            .unwrap();
+        let policy = output.contributions[0]
+            .folder_admission
+            .expect("Lua Code Lines declares its Host admission limit");
+        assert_eq!(policy.max_file_count, ROption::RSome(999));
+        assert_eq!(policy.max_folder_count, ROption::RNone);
+    }
+
     #[test]
     fn maps_stable_rows() {
         let rows =

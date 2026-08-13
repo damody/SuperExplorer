@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "bundle_id": "sdk-81629582378ec99910a91898",
-  "inventory_root_sha256": "13b7192a7517fa3193c314885cf7f7fa13b8565e84a2df04e595d7be46c4e89a",
-  "sdk_lock_sha256": "cddcb4b3f7b32110d347e02b3b34be9eac00fd03c911ea9875d2a5c87ecec4fd",
+  "bundle_id": "sdk-87a9ead56f7f618d2226a906",
+  "inventory_root_sha256": "a68bc9b64fd0d73dd4512b56d4559f47bdae4d918bff34f8d66e91589ea56413",
+  "sdk_lock_sha256": "7d57d5e74225a802a9b227b036530386733a3237101e059daa0bf06f713729f3",
   "files": [
     {
       "path": "crates/explorer-extension-api/Cargo.toml",
@@ -10,7 +10,7 @@
     },
     {
       "path": "crates/explorer-extension-api/src/column.rs",
-      "sha256": "2c3483b4e82975d4a21aa8af23f2a96edada3374fa0f94962f9609f3430738b4"
+      "sha256": "f23e7389aaedf4d47965ad38602d915b395c22385a6ddbddbb56a6c4c6375187"
     },
     {
       "path": "crates/explorer-extension-api/src/jobs.rs",
@@ -18,7 +18,7 @@
     },
     {
       "path": "crates/explorer-extension-api/src/lib.rs",
-      "sha256": "fcf7a099bdd25f0e73021edc40474cfc3ef9378e8158dc873928ef58f2e5e6cd"
+      "sha256": "f776d0b5e0838dbca4249b46eeaa06381d91075fe615e66e9a24b38101f03552"
     },
     {
       "path": "crates/explorer-extension-api/src/operation_plan.rs",
@@ -34,7 +34,7 @@
     },
     {
       "path": "crates/explorer-extension-api/src/view_mode.rs",
-      "sha256": "6c1eec582b11704b43d554bbec838e2f2a03668e459fb85ab5b33b990f25a3bd"
+      "sha256": "4e77021f5134021b549891c5f4007e6a47b487501c6f323d8211a9b9adbb0de2"
     },
     {
       "path": "crates/explorer-extension-api/src/virtual_folder.rs",
@@ -70,7 +70,7 @@
     },
     {
       "path": "sdk/DYNAMIC_COLUMNS_AND_RENDERERS.md",
-      "sha256": "1405c484bfbb337c446658c6456cfdf54ff646c41571402742baf72669dbc1b3"
+      "sha256": "34f97819970a2bf81ca62937e6418c1d3ea683f5c49cfdaf9c0489daa2171617"
     },
     {
       "path": "sdk/DYNAMIC_COLUMNS_AND_RENDERERS.zh-TW.md",
@@ -674,7 +674,7 @@
     },
     {
       "path": "sdk/fixtures/extension-author-jobs-v1/src/main.rs",
-      "sha256": "19b5f2bbf169be9f56acf917fb083cafbf3e92a1b0781643879a33beefb17fcf"
+      "sha256": "96a41d2d6c5555aa8de6d8d36cd876a7c219ff6b871d78b3382607e5a51a76a5"
     },
     {
       "path": "sdk/fixtures/extension-dll-loader-contract/Cargo.lock",
@@ -702,7 +702,7 @@
     },
     {
       "path": "sdk/fixtures/extension-dll-loader-contract/plugin/src/lib.rs",
-      "sha256": "d9dccc8d41d3f85ebf7e8e96a5bfe1e1f61e6c2d2ab60c689333128464ad0664"
+      "sha256": "17990e91a830c6b9d201614b69969da44f0df1f152b2e984d3bb0b145b4d8aa5"
     },
     {
       "path": "sdk/fixtures/extension-dll-loader-contract/runner/Cargo.toml",
@@ -750,7 +750,7 @@
     },
     {
       "path": "sdk/fixtures/job-context-v1-contract/new-plugin/src/lib.rs",
-      "sha256": "a48451375ec8418ca930e46193b5d514d60659655e205302ae8ef5721c202c38"
+      "sha256": "8a332f4d7e18ee753f96f5b6d1baf508eb9b55a3dac20f1f6d23232dcb6fc7ec"
     },
     {
       "path": "sdk/fixtures/lua-bulk-folder-generator/Cargo.lock",
@@ -814,7 +814,7 @@
     },
     {
       "path": "sdk/fixtures/lua-bulk-folder-generator/src/lib.rs",
-      "sha256": "ad5ff913a61541c42f38982bc6dc86aeb944e1a55f47ae56569519ec0ce44f91"
+      "sha256": "6a5d3ef313abbbec357ee984840de4eef14aa6ee3a2ba90c66ac3957fb8da4a7"
     },
     {
       "path": "sdk/fixtures/lua-tokei-code-lines-column/Cargo.lock",
@@ -862,7 +862,7 @@
     },
     {
       "path": "sdk/fixtures/lua-tokei-code-lines-column/plugin-project.json",
-      "sha256": "429a5b5a332f2ccb45b43af73db540be15caddbf6cda4f940904f191c500bcca"
+      "sha256": "ee0af2ec4e341e8b6b1efe4c0093dfc1ea8c0008e9ace36f0f846aee5b7f631b"
     },
     {
       "path": "sdk/fixtures/lua-tokei-code-lines-column/provenance.json",
@@ -898,7 +898,7 @@
     },
     {
       "path": "sdk/fixtures/lua-tokei-code-lines-column/src/lib.rs",
-      "sha256": "b8a14954374a3e6198cf6597fac2cfce6c25d49e489c81f8f836796bc71879b0"
+      "sha256": "297525472861fe0f51b74e659b7195add3dc28e998138ed062b7f0a6b3cbc7a9"
     },
     {
       "path": "sdk/fixtures/lua-tokei-code-lines-column/tools/LICENSE-tokei.txt",
@@ -1186,7 +1186,7 @@
     },
     {
       "path": "sdk/fixtures/rust-7z-virtual-folder/src/lib.rs",
-      "sha256": "35f81c17dd9251eb7dc5d3835ad48c0d13884b3ebd80222d8b6a05c942fc32db"
+      "sha256": "9a03b3db16f9b5c5c7500476915a22aed131f9a799a693196460f72d52cab579"
     },
     {
       "path": "sdk/fixtures/rust-exif-rename-command/Cargo.lock",
@@ -1246,7 +1246,7 @@
     },
     {
       "path": "sdk/fixtures/rust-exif-rename-command/src/lib.rs",
-      "sha256": "2287407e490204cb6e51786e45140127dd297e34003323192eebdf23a17311d3"
+      "sha256": "f8b02a98ad55ebf67c58582f1743cbf7111edc9ee0f4e13b3f71d52a80aa2e1c"
     },
     {
       "path": "sdk/fixtures/rust-folder-size-map-view/Cargo.lock",
@@ -1334,7 +1334,7 @@
     },
     {
       "path": "sdk/fixtures/rust-folder-size-map-view/src/lib.rs",
-      "sha256": "54a709ad6d5a787971cd1c3032fee9cd97c35069a575fb8922a3a4a6fcc2c40c"
+      "sha256": "a7424d6f5264189ff4656527998675975104deb9671f9e3395e9155119a01aff"
     },
     {
       "path": "sdk/fixtures/rust-folder-size-visual-column/Cargo.lock",
@@ -1414,7 +1414,7 @@
     },
     {
       "path": "sdk/fixtures/rust-folder-size-visual-column/src/lib.rs",
-      "sha256": "72b4d7c26eb909990c3594c389ef913381b86fcfd40d40d396233dc26e43db2a"
+      "sha256": "dfb7030c13b9f5c252b925bca305a3bdcff2349e1ce6d60428335a8667b787d6"
     },
     {
       "path": "sdk/fixtures/rust-lock-owner-column/Cargo.lock",
@@ -1438,11 +1438,11 @@
     },
     {
       "path": "sdk/fixtures/rust-lock-owner-column/README.md",
-      "sha256": "fd602722377a7244f303a9b9b6a5e69bb644d72d1645d2d4490d4691aec1a551"
+      "sha256": "7eb7c7b33fb2634c226a8db346fe80e76117e6915d99b2ddc2cd04e7e04f0d6a"
     },
     {
       "path": "sdk/fixtures/rust-lock-owner-column/README.zh-TW.md",
-      "sha256": "abcc570f36400d142eff7933fafa621271d1ca1d41632cbba8060203797f7640"
+      "sha256": "2c1a50aa2f98abe0da2e90ff463e4cf93965b5b118050498a5543390ecfc1392"
     },
     {
       "path": "sdk/fixtures/rust-lock-owner-column/SBOM.json",
@@ -1478,7 +1478,7 @@
     },
     {
       "path": "sdk/fixtures/rust-lock-owner-column/src/lib.rs",
-      "sha256": "c3b7b749b26756fb89dac52b9c5f0ee2b828c7c2d2aa13a18de12e313797893a"
+      "sha256": "6dbccb9241b851529f7c2ce5b35031caf026b276e21f5c649b2e67d4ee6ed613"
     },
     {
       "path": "sdk/fixtures/rust-tokei-code-lines-column/Cargo.lock",
@@ -1502,7 +1502,7 @@
     },
     {
       "path": "sdk/fixtures/rust-tokei-code-lines-column/README.md",
-      "sha256": "5d02ecf6ba4ebcf28559b07e89bbfa75df0cc577148f0f1176943cdc987492e5"
+      "sha256": "9d80bd42faf26bd30413f2f172d993b3fe93a2016c27282248c7b758905521de"
     },
     {
       "path": "sdk/fixtures/rust-tokei-code-lines-column/README.zh-TW.md",
@@ -1522,7 +1522,7 @@
     },
     {
       "path": "sdk/fixtures/rust-tokei-code-lines-column/plugin-project.json",
-      "sha256": "56afa48649d9edb9e12ba3bc829979abc6bc2570894f75260fdbe34df4fbdd51"
+      "sha256": "77ffd06379e84d6fb3dcf65e25b2a0d322249dd7af1e328a2d628cbbcda14459"
     },
     {
       "path": "sdk/fixtures/rust-tokei-code-lines-column/provenance.json",
@@ -1570,7 +1570,7 @@
     },
     {
       "path": "sdk/fixtures/rust-tokei-code-lines-column/src/lib.rs",
-      "sha256": "e81d848ec8f653ccdc1e11b0851335194517dc8a54e5017525f68e03be139135"
+      "sha256": "8040b5a9e452b7553a0e333c003e253f7c1d5174072f9ea7b41bfb5f1f7c5060"
     },
     {
       "path": "sdk/fixtures/ui-fingerprint-loader/.cargo/config.toml",
@@ -1614,7 +1614,7 @@
     },
     {
       "path": "sdk/schemas/p0-manifest.schema.json",
-      "sha256": "c976172c716ddf99cac1d68dc28774119a361aeb9007e91b734aa8f9337299ff"
+      "sha256": "c31c12cee09ab2554f644878e05fea36aa7a9e605ff05ba499388fe433dae26f"
     },
     {
       "path": "sdk/schemas/release-freeze.schema.json",
@@ -1922,7 +1922,7 @@
     },
     {
       "path": "sdk/tools/plugin-tooling/src/lib.rs",
-      "sha256": "a753916974926f26be5dbef7091b302ac416687f11e1c4d5c711116e385a26b7"
+      "sha256": "74681e97340f0a2246320e616fc7afee1b62ce5d8a974b6d82a1bead0800a1c0"
     },
     {
       "path": "sdk/tools/plugin-tooling/src/main.rs",
@@ -2302,7 +2302,7 @@
     },
     {
       "path": "vendor/gpui-ce/crates/gpui/src/assets.rs",
-      "sha256": "b247986eda77ade83814b30965d1cc33f13373e246a30120c49e92e491133052"
+      "sha256": "5daa027f41eb2009b7868301c2f8e892ea026aacd3e7e9c173a6f6b2060b137e"
     },
     {
       "path": "vendor/gpui-ce/crates/gpui/src/bounds_tree.rs",
@@ -2434,7 +2434,7 @@
     },
     {
       "path": "vendor/gpui-ce/crates/gpui/src/platform.rs",
-      "sha256": "3c69273c90727366bb066fbd16ab9f4f0593b5d06d246606247b656f43dcfe2a"
+      "sha256": "3e5d5a3c18ec593918a585111243158272959efcf83a55c0e4f8b9f93739eb7a"
     },
     {
       "path": "vendor/gpui-ce/crates/gpui/src/platform/app_menu.rs",
@@ -2570,7 +2570,7 @@
     },
     {
       "path": "vendor/gpui-ce/crates/gpui/src/window.rs",
-      "sha256": "aa4561c6c7a7099f652da16e075e05663b466ae7cc6bf03ec1cf70647b376384"
+      "sha256": "e7736a4db995d68bbe59078e90593c5f99e14e5aaec6f5731b1af28b7d014dc3"
     },
     {
       "path": "vendor/gpui-ce/crates/gpui/src/window/a11y.rs",
@@ -2822,7 +2822,7 @@
     },
     {
       "path": "vendor/gpui-ce/crates/gpui_macos/src/metal_atlas.rs",
-      "sha256": "2e8c9d74bf96d7a2442c364bd6c7bf514ed6c73a9856b0aab3ea24050f69ccf0"
+      "sha256": "0f2ec5930484e7d6ccb7b0a458acbcc1764e46520a98543b1a0c6c1326fa3ae9"
     },
     {
       "path": "vendor/gpui-ce/crates/gpui_macos/src/metal_renderer.rs",
@@ -3154,7 +3154,7 @@
     },
     {
       "path": "vendor/gpui-ce/crates/gpui_wgpu/src/wgpu_atlas.rs",
-      "sha256": "f495cad4ee493f49bc86d22cb15c66af5c521bee8c17bb2f43878d544b75f91f"
+      "sha256": "7cad02dd805b91fb79f9eef79206477fd94a3dc310b72eb2faa7665a7df799b0"
     },
     {
       "path": "vendor/gpui-ce/crates/gpui_wgpu/src/wgpu_context.rs",
@@ -3202,7 +3202,7 @@
     },
     {
       "path": "vendor/gpui-ce/crates/gpui_windows/src/directx_atlas.rs",
-      "sha256": "c0d4aa62ce959388055d1e6458ac214f285bfa05f05a9d877dbcf00322785276"
+      "sha256": "4d60bb9c174de7f566759d3d9cd0a5dd35a30cfddb1a5ae2f90283fd4b0abba6"
     },
     {
       "path": "vendor/gpui-ce/crates/gpui_windows/src/directx_devices.rs",
@@ -3214,7 +3214,7 @@
     },
     {
       "path": "vendor/gpui-ce/crates/gpui_windows/src/dispatcher.rs",
-      "sha256": "dc37f8a6da17f20b46094374a695202f003add29c84774b3fee75bcc31fe18e8"
+      "sha256": "bb2204fd8e04201b54e9c646b79105975824aafeea1d623ed0372eab03f1abc8"
     },
     {
       "path": "vendor/gpui-ce/crates/gpui_windows/src/display.rs",
@@ -3452,7 +3452,7 @@
   "generated_artifacts": [
     {
       "path": "sdk/ui-abi-fingerprint.json",
-      "sha256": "0db47d19608b4940867375c87ff53fbe02440917ecdcbc497044da1536868fbd"
+      "sha256": "76b721b417c3d42da4a5587b5371fdc7ca060d8fcb9bf1c70e6ef2c482959306"
     }
   ]
 }

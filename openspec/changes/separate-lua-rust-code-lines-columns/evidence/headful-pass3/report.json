@@ -1,0 +1,26 @@
+﻿{
+    "status":  "passed",
+    "values":  6,
+    "real_shell_icons":  "captured",
+    "no_progress_bars":  true,
+    "numeric_sort":  [
+                         0,
+                         1,
+                         1,
+                         1,
+                         1,
+                         3
+                     ],
+    "detail":  "Main code lines: Python: 0 Python · 0 comments · 0 blanks · 0 total",
+    "observed_descendant_processes":  [
+
+                                      ],
+    "observed_plugin_tool_descendants":  [
+
+                                         ],
+    "clean_shutdown":  true,
+    "screenshots":  [
+                        "code-lines.png",
+                        "code-lines-detail.png"
+                    ]
+}

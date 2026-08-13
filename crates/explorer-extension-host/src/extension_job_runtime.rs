@@ -502,8 +502,53 @@ pub struct HostLockOwnerQueryServiceV1 {
     query: Arc<HostLockOwnerQueryFnV1>,
 }
 
-type HostLockOwnerQueryFnV1 =
-    dyn Fn(&PathBuf, u32) -> (LockOwnerQueryStatusV1, Vec<LockOwnerRecordV1>) + Send + Sync;
+/// One capability-resolved item in the host-only lock-owner batch seam.
+#[derive(Clone, Debug)]
+pub struct HostLockOwnerResourceV1 {
+    pub item: ItemHandleV1,
+    pub path: PathBuf,
+}
+
+/// Live cancellation and one absolute deadline for a complete public query.
+#[derive(Clone)]
+pub struct HostLockOwnerQueryControlV1 {
+    deadline: Option<std::time::Instant>,
+    is_cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+
+impl fmt::Debug for HostLockOwnerQueryControlV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HostLockOwnerQueryControlV1")
+            .field("deadline", &self.deadline)
+            .finish_non_exhaustive()
+    }
+}
+
+impl HostLockOwnerQueryControlV1 {
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        (self.is_cancelled)()
+    }
+
+    #[must_use]
+    pub fn deadline(&self) -> Option<std::time::Instant> {
+        self.deadline
+    }
+
+    #[must_use]
+    pub fn deadline_elapsed(&self) -> bool {
+        self.deadline
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+    }
+}
+
+type HostLockOwnerQueryFnV1 = dyn Fn(
+        &[HostLockOwnerResourceV1],
+        &HostLockOwnerQueryControlV1,
+    ) -> (LockOwnerQueryStatusV1, Vec<LockOwnerRecordV1>)
+    + Send
+    + Sync;
 
 impl fmt::Debug for HostLockOwnerQueryServiceV1 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -516,7 +561,10 @@ impl fmt::Debug for HostLockOwnerQueryServiceV1 {
 impl HostLockOwnerQueryServiceV1 {
     #[must_use]
     pub fn new(
-        query: impl Fn(&PathBuf, u32) -> (LockOwnerQueryStatusV1, Vec<LockOwnerRecordV1>)
+        query: impl Fn(
+            &[HostLockOwnerResourceV1],
+            &HostLockOwnerQueryControlV1,
+        ) -> (LockOwnerQueryStatusV1, Vec<LockOwnerRecordV1>)
         + Send
         + Sync
         + 'static,
@@ -821,6 +869,21 @@ struct HostLockOwnerQueryAdapterV1 {
 
 impl AbiLockOwnerQueryServiceV1 for HostLockOwnerQueryAdapterV1 {
     fn query(&self, request: LockOwnerQueryRequestV1) -> LockOwnerQueryOutcomeV1 {
+        let item_generation = request.item_generation;
+        let location_generation = request.location_generation;
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.query_inner(request)))
+            .unwrap_or_else(|_| LockOwnerQueryOutcomeV1 {
+                status: LockOwnerQueryStatusV1::HOST_ERROR,
+                reserved: 0,
+                item_generation,
+                location_generation,
+                owners: RVec::new(),
+            })
+    }
+}
+
+impl HostLockOwnerQueryAdapterV1 {
+    fn query_inner(&self, request: LockOwnerQueryRequestV1) -> LockOwnerQueryOutcomeV1 {
         let empty = |status| LockOwnerQueryOutcomeV1 {
             status,
             reserved: 0,
@@ -860,39 +923,65 @@ impl AbiLockOwnerQueryServiceV1 for HostLockOwnerQueryAdapterV1 {
             let Some((_, path)) = self.resources.iter().find(|(item, _)| item == handle) else {
                 return empty(LockOwnerQueryStatusV1::UNAVAILABLE);
             };
-            resolved.push((*handle, path.clone()));
+            resolved.push(HostLockOwnerResourceV1 {
+                item: *handle,
+                path: path.clone(),
+            });
         }
-        let started = std::time::Instant::now();
-        let mut status = LockOwnerQueryStatusV1::EMPTY;
-        let mut owners = Vec::new();
-        for (item, path) in resolved {
-            let (item_status, mut item_owners) =
-                (self.service.query)(&path, request.deadline_millis);
-            if item_status == LockOwnerQueryStatusV1::READY {
-                status = LockOwnerQueryStatusV1::READY;
-            } else if item_status != LockOwnerQueryStatusV1::EMPTY
-                && status != LockOwnerQueryStatusV1::READY
-            {
-                status = item_status;
-            }
-            for owner in &mut item_owners {
-                owner.item = item;
-                truncate_utf8_rstring(
-                    &mut owner.display_name,
-                    explorer_extension_api::MAX_LOCK_OWNER_DISPLAY_NAME_BYTES_V1,
-                );
-                truncate_utf8_rstring(
-                    &mut owner.service_name,
-                    explorer_extension_api::MAX_LOCK_OWNER_DISPLAY_NAME_BYTES_V1,
-                );
-            }
-            owners.extend(item_owners);
+        let state = self.state.clone();
+        let job_handle = self.job;
+        let runtime_authority = Arc::clone(&self.runtime_authority);
+        let authority = self.authority.clone();
+        let control = HostLockOwnerQueryControlV1 {
+            deadline: (request.deadline_millis != 0).then(|| {
+                std::time::Instant::now()
+                    + std::time::Duration::from_millis(u64::from(request.deadline_millis))
+            }),
+            is_cancelled: Arc::new(move || {
+                if runtime_authority
+                    .revalidate(&authority, AuthorityAdapterV1::LockOwner)
+                    .is_err()
+                {
+                    return true;
+                }
+                let Some(state) = state.upgrade() else {
+                    return true;
+                };
+                let Ok(state) = state.lock() else {
+                    return true;
+                };
+                state.jobs.get(&job_handle).is_none_or(|job| {
+                    job.terminal.is_some() || job.control != JobControlStateV1::ACTIVE
+                })
+            }),
+        };
+        if control.is_cancelled() {
+            return empty(LockOwnerQueryStatusV1::CANCELLED);
         }
-        if request.deadline_millis != 0
-            && started.elapsed()
-                > std::time::Duration::from_millis(u64::from(request.deadline_millis))
-        {
+        if control.deadline_elapsed() {
             return empty(LockOwnerQueryStatusV1::DEADLINE_ELAPSED);
+        }
+        let (status, mut owners) = (self.service.query)(&resolved, &control);
+        if control.is_cancelled() {
+            return empty(LockOwnerQueryStatusV1::CANCELLED);
+        }
+        if control.deadline_elapsed() {
+            return empty(LockOwnerQueryStatusV1::DEADLINE_ELAPSED);
+        }
+        let requested = resolved
+            .iter()
+            .map(|resource| resource.item)
+            .collect::<HashSet<_>>();
+        owners.retain(|owner| requested.contains(&owner.item));
+        for owner in &mut owners {
+            truncate_utf8_rstring(
+                &mut owner.display_name,
+                explorer_extension_api::MAX_LOCK_OWNER_DISPLAY_NAME_BYTES_V1,
+            );
+            truncate_utf8_rstring(
+                &mut owner.service_name,
+                explorer_extension_api::MAX_LOCK_OWNER_DISPLAY_NAME_BYTES_V1,
+            );
         }
         owners.truncate(explorer_extension_api::MAX_LOCK_OWNER_QUERY_RESULTS_V1);
         LockOwnerQueryOutcomeV1 {
@@ -5022,10 +5111,11 @@ mod tests {
             authority,
             Arc::new(AtomicUsize::new(0)),
         );
-        request.lock_owner_query = Some(HostLockOwnerQueryServiceV1::new(|_, _| {
+        request.lock_owner_query = Some(HostLockOwnerQueryServiceV1::new(|resources, _| {
+            let requested_item = resources[0].item;
             let owners = (0..(explorer_extension_api::MAX_LOCK_OWNER_QUERY_RESULTS_V1 + 32))
                 .map(|process_id| LockOwnerRecordV1 {
-                    item: ItemHandleV1::from_host([1; 16], 1),
+                    item: requested_item,
                     process_id: process_id as u32,
                     application_type:
                         explorer_extension_api::LockOwnerApplicationTypeV1::MAIN_WINDOW,
