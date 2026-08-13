@@ -363,7 +363,13 @@ fn validate_manifest(manifest: &Manifest) -> Result<()> {
         for resource in &case.exclusive_resources {
             if !matches!(
                 resource.as_str(),
-                "gui" | "cursor" | "clipboard" | "ole" | "explorer"
+                "gui"
+                    | "cursor"
+                    | "clipboard"
+                    | "ole"
+                    | "explorer"
+                    | "mft-service"
+                    | "ntfs-journal"
             ) {
                 bail!(
                     "case {} uses unknown exclusive resource {resource}",

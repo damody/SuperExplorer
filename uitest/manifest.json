@@ -2,6 +2,35 @@
   "schema_version": 1,
   "cases": [
     {
+      "id": "installer-mft-service-lifecycle-contract",
+      "description": "Verify installer upgrades query and stop the MFT service, wait for STOPPED before overwriting its binary, then restart and require RUNNING.",
+      "suites": ["quick", "full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\test_installer_mft_service_lifecycle.ps1"],
+      "timeout_seconds": 30,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "path", "path": "{workspace_root}\\scripts\\test_installer_mft_service_lifecycle.ps1"},
+        {"kind": "path", "path": "{workspace_root}\\installer\\SuperExplorer.nsi"}
+      ],
+      "covers": ["event-driven-mft-index-updates/*"]
+    },
+    {
+      "id": "mft-event-service-resource-and-freshness",
+      "description": "Verify the installed LocalSystem MFT service stays event-driven for two idle minutes and publishes a real NTFS mutation within ten seconds without rewriting the base index.",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\smoke_mft_event_service.ps1", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 180,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "path", "path": "{workspace_root}\\scripts\\smoke_mft_event_service.ps1"}
+      ],
+      "exclusive_resources": ["mft-service", "ntfs-journal"],
+      "covers": ["event-driven-mft-index-updates/*"],
+      "required_artifacts": ["report.json"]
+    },
+    {
       "id": "workspace-format",
       "description": "驗證整個 workspace 的 Rust 格式不會漂移。",
       "suites": ["quick"],
@@ -823,6 +852,22 @@
       ]
     },
     {
+      "id": "restored-tab-directory-autoload-headful",
+      "description": "以兩個真實程序重開 SuperExplorer，驗證作用中還原分頁立即載入、背景還原分頁首次啟用自動載入，且不殘留 Directory service is not connected。",
+      "suites": ["quick", "full", "visual"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\run_roadmap_session_validation.ps1", "-OutputDirectory", "{evidence_dir}", "-RestartRuns", "2"],
+      "timeout_seconds": 900,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\scripts\\run_roadmap_session_validation.ps1"}
+      ],
+      "exclusive_resources": ["gui", "cursor"],
+      "covers": ["complete-explorer-post-parity-roadmap/session-settings-persistence/*"],
+      "required_artifacts": ["report.json", "headful-report.json", "restored-active-loaded.png", "restored-background-loaded.png"]
+    },
+    {
       "id": "roadmap-session-settings",
       "description": "以 UIA 驗證三個 mixed-location 分頁、獨立 history/view、active tab、window bounds、screenshots 與 10 次 clean/crash restart 的完整 before/after restore。",
       "suites": ["quick", "full", "visual", "soak"],
@@ -1227,8 +1272,8 @@
         {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
       ],
       "exclusive_resources": ["gui", "cursor", "explorer"],
-      "covers": ["folder-options-dedicated-window/folder-options-window/*"],
-      "required_artifacts": ["report.json", "folder-options-before-scroll.png", "folder-options-after-scroll.png", "folder-options-after-escape.png"]
+      "covers": ["folder-options-dedicated-window/folder-options-window/*", "independent-cache-budgets-telemetry-webp/folder-options-cache-usage/*"],
+      "required_artifacts": ["report.json", "folder-options-cache-controls.png", "folder-options-cache-telemetry.png", "folder-options-cache-mft.png", "folder-options-before-scroll.png", "folder-options-after-scroll.png", "folder-options-after-escape.png"]
     },
     {
       "id": "extension-command-interaction-headful",
@@ -1837,8 +1882,69 @@
       ]
     },
     {
+      "id": "mft-directory-count-admission-unavailable-headful",
+      "description": "Create deterministic 999/1000/nested folders and prove an unavailable exact MFT dependency keeps folder Code Lines undispatched while File Count remains hidden.",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": [
+        "-Sta",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "{workspace_root}\\scripts\\smoke_tokei_plugin_headful.ps1",
+        "-Executable",
+        "{workspace_root}\\target\\release\\SuperExplorer.exe",
+        "-PluginDll",
+        "{workspace_root}\\sdk\\fixtures\\rust-tokei-code-lines-column\\target\\x86_64-pc-windows-msvc\\release\\rust_tokei_code_lines_column.dll",
+        "-OutputDirectory",
+        "{evidence_dir}",
+        "-DirectoryAdmissionUnavailableMode"
+      ],
+      "timeout_seconds": 240,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\release\\SuperExplorer.exe"},
+        {"kind": "path", "path": "{workspace_root}\\sdk\\fixtures\\rust-tokei-code-lines-column\\target\\x86_64-pc-windows-msvc\\release\\rust_tokei_code_lines_column.dll"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "explorer", "mft-service"],
+      "covers": [
+        "add-mft-directory-count-columns/mft-directory-facts-columns/*",
+        "add-mft-directory-count-columns/source-example-plugin-suite/rust-tokei-column-example"
+      ],
+      "required_artifacts": [
+        "report.json",
+        "code-lines-dependency-unavailable.png"
+      ]
+    },
+    {
+      "id": "details-column-chooser-persistent-scroll-headful",
+      "description": "Use genuine pointer and wheel input in a short installed-app window to prove repeated column toggles keep the chooser open, overflow stays inside the viewport, the final row is reachable, and bottom scroll position survives a toggle.",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": [
+        "-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+        "{workspace_root}\\scripts\\smoke_details_column_chooser.ps1",
+        "-OutputDirectory", "{evidence_dir}", "-SkipBuild"
+      ],
+      "timeout_seconds": 120,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "explorer"],
+      "covers": ["persist-scrollable-details-column-menu/details-column-chooser/*"],
+      "required_artifacts": [
+        "report.json",
+        "details-column-chooser-persistent.png",
+        "details-column-chooser-scrolled-bottom.png"
+      ]
+    },
+    {
       "id": "details-column-live-reorder-headful",
-      "description": "Use DPI-aware physical pointer input to prove an adjacent right/left Details-column drag updates both header and data cells before mouse-up, then commits on release.",
+      "description": "Use DPI-aware physical pointer input to prove toolbar popup buttons work, valid Details-column drops commit and persist, outside drops restore, and Name stays fixed leftmost.",
       "suites": ["full", "visual"],
       "program": "powershell.exe",
       "arguments": [
@@ -1857,12 +1963,20 @@
         {"kind": "path", "path": "{workspace_root}\\sdk\\fixtures\\rust-tokei-code-lines-column\\target\\x86_64-pc-windows-msvc\\debug\\rust_tokei_code_lines_column.dll"}
       ],
       "exclusive_resources": ["gui", "cursor", "explorer"],
-      "covers": ["live-details-column-drag-preview/details-column-live-reordering/*"],
-      "required_artifacts": ["report.json", "column-drag-live-right.png", "column-drag-live-left.png"]
+      "covers": [
+        "live-details-column-drag-preview/details-column-live-reordering/*",
+        "fix-toolbar-click-and-column-drop/explorer-pointer-interaction/*"
+      ],
+      "required_artifacts": [
+        "report.json",
+        "toolbar-extensions-popup.png",
+        "column-drag-live-right.png",
+        "column-drag-live-persisted.png"
+      ]
     },
     {
       "id": "rust-lock-owner-headful",
-      "description": "Load the discover-only Lock Owner column and reject delayed results across rapid refresh, tab and folder changes, and production Folder Options disable.",
+      "description": "Load the discover-only Lock Owner column, attribute native and WOW64 cmd.exe current directories to exact and parent rows, clear them after exit plus F5, and reject delayed results across refresh, tab, folder, and feature changes.",
       "suites": ["full", "visual"],
       "program": "powershell.exe",
       "arguments": [
@@ -1873,15 +1987,26 @@
         "-InitialPath", "{workspace_root}\\sdk\\fixtures\\rust-lock-owner-column\\samples",
         "-OutputDirectory", "{evidence_dir}", "-LockOwnerMode"
       ],
-      "timeout_seconds": 120,
+      "timeout_seconds": 240,
       "prerequisites": [
         {"kind":"windows"}, {"kind":"interactive_desktop"},
         {"kind":"path","path":"{workspace_root}\\target\\debug\\SuperExplorer.exe"},
         {"kind":"path","path":"{workspace_root}\\sdk\\fixtures\\rust-lock-owner-column\\target\\x86_64-pc-windows-msvc\\debug\\rust_lock_owner_column.dll"}
       ],
       "exclusive_resources": ["gui", "cursor", "explorer"],
-      "covers": ["build-extensible-plugin-platform/source-example-plugin-suite/lock-owner-column-example"],
-      "required_artifacts": ["report.json", "lock-owner-present.png", "lock-owner-cleared.png"]
+      "covers": [
+        "build-extensible-plugin-platform/source-example-plugin-suite/lock-owner-column-example"
+      ],
+      "required_artifacts": [
+        "report.json",
+        "lock-owner-present.png",
+        "lock-owner-cwd-native-nested.png",
+        "lock-owner-cwd-native-parent.png",
+        "lock-owner-cwd-wow64-nested.png",
+        "lock-owner-cwd-wow64-parent.png",
+        "lock-owner-cwd-cleared.png",
+        "lock-owner-cleared.png"
+      ]
     },
     {
       "id":"lua-tokei-code-lines-headful","description":"Load the Lua tokei plugin in the production app and verify exact Code lines values, numeric sorting, settings, text-only cells, and ordinary shell icons.","suites":["full","visual"],"program":"powershell.exe",
@@ -1915,10 +2040,22 @@
       "required_artifacts":["report.json","bookmark-context-menu.png","bookmark-star-on.png","bookmark-star-off.png","bookmark-toolbar.png","bookmark-overflow.png","bookmark-manager.png"]
     },
     {
+      "id":"bookmark-star-toggle-headful","description":"Verify the prominent leftmost bookmark star toggles the current folder with no selection and remains selection-independent.","suites":["quick","full","visual"],"program":"powershell.exe",
+      "arguments":["-Sta","-NoProfile","-ExecutionPolicy","Bypass","-File","{workspace_root}\\scripts\\smoke_bookmark_star_toggle.ps1","-OutputDirectory","{evidence_dir}","-SkipBuild"],
+      "timeout_seconds":90,"prerequisites":[{"kind":"windows"},{"kind":"interactive_desktop"},{"kind":"path","path":"{workspace_root}\\target\\debug\\SuperExplorer.exe"}],"exclusive_resources":["gui","cursor","explorer"],
+      "covers":["add-bookmark-toolbar-lua-commands/bookmark-toolbar/*"],"required_artifacts":["report.json","bookmark-star-selected.png","bookmark-star-off.png","bookmark-star-on.png"]
+    },
+    {
       "id":"rust-7z-virtual-folder-headful","description":"Open plain and AES 7z containers in the production app and verify navigation, breadcrumb/history, preview, drag-out, rename, delete, whole-container undo, and password non-persistence.","suites":["full","visual"],"program":"powershell.exe",
       "arguments":["-Sta","-NoProfile","-ExecutionPolicy","Bypass","-File","{workspace_root}\\scripts\\smoke_7z_plugin_headful.ps1","-PluginDll","{workspace_root}\\sdk\\fixtures\\rust-7z-virtual-folder\\target\\x86_64-pc-windows-msvc\\debug\\rust_7z_virtual_folder.dll","-OutputDirectory","{evidence_dir}"],
       "timeout_seconds":240,"prerequisites":[{"kind":"windows"},{"kind":"interactive_desktop"},{"kind":"command","name":"cargo.exe"}],"exclusive_resources":["gui","cursor","explorer"],
       "covers":["build-extensible-plugin-platform/source-example-plugin-suite/editable-7z-virtual-folder-example"],"required_artifacts":["report.json","archive-preview.png","encrypted-archive.png"]
+    },
+    {
+      "id":"independent-cache-budget-editors-headful","description":"Verify all 14 cache budget editors, 400 px accessible sliders, 24 MB stop, scrolling, Apply/OK persistence, and Cancel rollback.","suites":["full","visual"],"program":"powershell.exe",
+      "arguments":["-Sta","-NoProfile","-ExecutionPolicy","Bypass","-File","{workspace_root}\\scripts\\smoke_cache_budget_editors.ps1","-Profile","debug","-OutputDirectory","{evidence_dir}","-SkipBuild"],
+      "timeout_seconds":180,"prerequisites":[{"kind":"windows"},{"kind":"interactive_desktop"},{"kind":"path","path":"{workspace_root}\\target\\debug\\SuperExplorer.exe"}],"exclusive_resources":["gui","cursor","explorer"],
+      "covers":["independent-cache-max-editors/folder-options-cache-budget-editors/*","independent-cache-max-editors/cache-budget-commit-correctness/*"],"required_artifacts":["report.json","cache-budgets-apply-2048.png","cache-budgets-ok-4096.png","cache-budgets-cancel-preserves-4096.png"]
     }
   ]
 }

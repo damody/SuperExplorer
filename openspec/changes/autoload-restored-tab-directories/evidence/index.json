@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "change": "autoload-restored-tab-directories",
+  "generated_utc": "2026-08-06T16:37:23.8764895Z",
+  "adjustments": [
+    {
+      "id": "A1",
+      "class": "task-refinement",
+      "reason": "The repository-wide UTIT runner rejected an unrelated unarchived coverage selector before selecting this case. The same registered PowerShell case was executed directly with fail-on-error, preserving every approved G3 assertion and artifact.",
+      "formal_runner_exit": 2,
+      "formal_runner_error": "case folder-options-extensions-scroll-escape coverage selector matched nothing: independent-cache-budgets-telemetry-webp/folder-options-cache-usage/*"
+    }
+  ],
+  "records": [
+    {
+      "record_id": "G1-state",
+      "artifact": "cargo test -p explorer-ui restored_tab --locked --offline -- --test-threads=1",
+      "expected": "Idle loads once; Loading, Ready, and Error do not auto-retry.",
+      "actual": "4 focused restored-tab tests passed; exit 0.",
+      "exit_status": 0,
+      "source_hashes": {
+        "crates/explorer-ui/src/state.rs": "07da25f7d4fb1318ea7158928bd319e7b576ab7aafdc59370cc2e36341b33546"
+      },
+      "subchecks": {
+        "1.1.1": "passed",
+        "1.1.2": "passed",
+        "1.1.3": "passed",
+        "1.1.4": "passed"
+      }
+    },
+    {
+      "record_id": "G2-root",
+      "artifact": "explorer-ui focused root tests and locked/offline build",
+      "expected": "All active-tab transitions share one duplicate-safe submission path and admission failure becomes retryable Error.",
+      "actual": "Activation/cycle, close replacement, action classification, and overloaded service tests passed; SuperExplorer build exited 0.",
+      "exit_status": 0,
+      "source_hashes": {
+        "crates/explorer-ui/src/lib.rs": "182924f675bbeaea35373fbf9d331458685fa1e55ba288c04961e2e1196c6883"
+      },
+      "subchecks": {
+        "1.2.1": "passed",
+        "1.2.2": "passed",
+        "1.2.3": "passed",
+        "1.2.4": "passed",
+        "1.2.5": "passed",
+        "1.2.6": "passed"
+      }
+    },
+    {
+      "record_id": "G3-headful",
+      "artifact": "target/openspec-evidence/autoload-restored-tab-directories/utit-direct-2/report.json",
+      "artifact_sha256": "72ec80be94785abcecdf7631b7d7e12e1d10a80c83fda0a8de0e0b65dfca59ee",
+      "command": "scripts/run_roadmap_session_validation.ps1 -OutputDirectory target/openspec-evidence/autoload-restored-tab-directories/utit-direct-2 -RestartRuns 2 -SkipBuild",
+      "expected": "Clean and forced recovery runs auto-load restored active/background tabs with no persistent disconnected message and emit screenshots/logs/report.",
+      "actual": "PASS; restart_runs=2; clean_runs=1; crash_runs=1; active=true; background=true; persistent_disconnected_seen=false.",
+      "exit_status": 0,
+      "adjustment_id": "A1",
+      "source_hashes": {
+        "scripts/smoke_session_restore_headful.ps1": "b894f38b816b2f7e25b4b3b0013e92a1d636287f8f01300d3f09e26e72a3f4f6",
+        "scripts/run_roadmap_session_validation.ps1": "3f52e598fa794536a1f1c5a3d8e2506871c0a7a16baa70e04b0d68d7ea043ca5",
+        "uitest/manifest.json": "2bd8778b901d5c0526b6741bf04302b415b1e29d25ce37a99ab29700eb07d5a8"
+      },
+      "subchecks": {
+        "2.1.1": "passed",
+        "2.1.2": "passed",
+        "2.1.3": "passed",
+        "2.1.4": "passed",
+        "2.1.5": "passed",
+        "2.1.6": "passed",
+        "2.1.7": "passed-via-A1"
+      }
+    },
+    {
+      "record_id": "G4-validation",
+      "artifact": "final locked/offline validation command set",
+      "expected": "Formatting, focused tests, session tests, app build, script/manifest parsing, diff check, and strict OpenSpec validation pass.",
+      "actual": "All commands exited 0; explorer-ui 4/4 focused tests, explorer-app session 8/8, explorer-model session 9/9 plus 1 integration test; no temporary diagnostics or public/session-schema changes found.",
+      "exit_status": 0,
+      "subchecks": {
+        "3.1.1": "passed",
+        "3.1.2": "passed",
+        "3.1.3": "passed",
+        "3.1.4": "passed",
+        "3.1.5": "passed",
+        "3.1.6": "passed",
+        "3.1.7": "passed-no-p0-p1",
+        "3.1.8": "passed"
+      }
+    }
+  ]
+}

@@ -271,7 +271,7 @@ pub enum ExplorerAction {
     CompressSelectedToZip,
     AddSelectedToFavorites,
     AddSelectedToBookmarks,
-    ToggleSelectedBookmark,
+    ToggleCurrentFolderBookmark,
     ActivateBookmark {
         id: explorer_model::BookmarkId,
     },
@@ -321,6 +321,9 @@ pub enum ExplorerAction {
     ToggleFolderOptionCompactView,
     ToggleFolderOptionAlwaysShowIcons,
     SetFolderOptionIconCacheMemoryMb(u16),
+    SetFolderOptionThumbnailCacheMemoryMb(u16),
+    SetFolderOptionMftCacheMemoryMb(u16),
+    SetFolderOptionCacheBudgets(explorer_model::CacheBudgetSettingsV1),
     ClearThumbnailCache,
     ToggleFolderOptionDetailsPane,
     ToggleFolderOptionPreviewPane,
@@ -455,6 +458,7 @@ pub enum ExplorerAction {
     },
     ToggleDetailsColumn(explorer_model::ColumnId),
     ToggleFolderSizeProportionalBar,
+    ToggleCodeLinesDetail,
     AutoSizeAllDetailsColumns,
     BeginDetailsColumnResize {
         column: explorer_model::ColumnId,
@@ -606,7 +610,7 @@ impl ExplorerAction {
             Self::CompressSelectedToZip => "CompressSelectedToZip",
             Self::AddSelectedToFavorites => "AddSelectedToFavorites",
             Self::AddSelectedToBookmarks => "AddSelectedToBookmarks",
-            Self::ToggleSelectedBookmark => "ToggleSelectedBookmark",
+            Self::ToggleCurrentFolderBookmark => "ToggleCurrentFolderBookmark",
             Self::ActivateBookmark { .. } => "ActivateBookmark",
             Self::AddLuaBookmark => "AddLuaBookmark",
             Self::EditBookmark { .. } => "EditBookmark",
@@ -635,6 +639,11 @@ impl ExplorerAction {
             Self::ToggleFolderOptionCompactView => "ToggleFolderOptionCompactView",
             Self::ToggleFolderOptionAlwaysShowIcons => "ToggleFolderOptionAlwaysShowIcons",
             Self::SetFolderOptionIconCacheMemoryMb(_) => "SetFolderOptionIconCacheMemoryMb",
+            Self::SetFolderOptionThumbnailCacheMemoryMb(_) => {
+                "SetFolderOptionThumbnailCacheMemoryMb"
+            }
+            Self::SetFolderOptionMftCacheMemoryMb(_) => "SetFolderOptionMftCacheMemoryMb",
+            Self::SetFolderOptionCacheBudgets(_) => "SetFolderOptionCacheBudgets",
             Self::ClearThumbnailCache => "ClearThumbnailCache",
             Self::ToggleFolderOptionDetailsPane => "ToggleFolderOptionDetailsPane",
             Self::ToggleFolderOptionPreviewPane => "ToggleFolderOptionPreviewPane",
@@ -694,6 +703,7 @@ impl ExplorerAction {
             Self::ClearDetailsFilter { .. } => "ClearDetailsFilter",
             Self::ToggleDetailsColumn(_) => "ToggleDetailsColumn",
             Self::ToggleFolderSizeProportionalBar => "ToggleFolderSizeProportionalBar",
+            Self::ToggleCodeLinesDetail => "ToggleCodeLinesDetail",
             Self::AutoSizeAllDetailsColumns => "AutoSizeAllDetailsColumns",
             Self::BeginDetailsColumnResize { .. } => "BeginDetailsColumnResize",
             Self::UpdateDetailsColumnResize { .. } => "UpdateDetailsColumnResize",
@@ -1252,10 +1262,11 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
             state.selected_namespace_command_enabled(explorer_model::NamespaceCommand::Restore)
         }
         ExplorerAction::EmptyRecycleBin => state.active_is_recycle_bin(),
-        ExplorerAction::AddSelectedToFavorites
-        | ExplorerAction::AddSelectedToBookmarks
-        | ExplorerAction::ToggleSelectedBookmark => {
+        ExplorerAction::AddSelectedToFavorites | ExplorerAction::AddSelectedToBookmarks => {
             state.selected_namespace_command_enabled(explorer_model::NamespaceCommand::Pin)
+        }
+        ExplorerAction::ToggleCurrentFolderBookmark => {
+            state.current_folder_bookmark_target_and_id().is_some()
         }
         ExplorerAction::CopySelectedPaths => !state.tabs().active_tab().selection.is_empty(),
         ExplorerAction::Paste => {
@@ -1286,6 +1297,7 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
             .get(*request_id)
             .is_some_and(|record| !record.phase.is_terminal()),
         ExplorerAction::ToggleDetailsColumn(explorer_model::ColumnId::Name) => false,
+        ExplorerAction::EndDetailsColumnResize => state.details_column_resize_active(),
         ExplorerAction::SetColumnId(column) => state.sort_column_supported(column.clone()),
         ExplorerAction::ToggleSortMenu
         | ExplorerAction::CloseSortMenu
@@ -1320,10 +1332,10 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::ClearDetailsFilter { .. }
         | ExplorerAction::ToggleDetailsColumn(_)
         | ExplorerAction::ToggleFolderSizeProportionalBar
+        | ExplorerAction::ToggleCodeLinesDetail
         | ExplorerAction::AutoSizeAllDetailsColumns
         | ExplorerAction::BeginDetailsColumnResize { .. }
         | ExplorerAction::UpdateDetailsColumnResize { .. }
-        | ExplorerAction::EndDetailsColumnResize
         | ExplorerAction::UndoCurrentFolder
         | ExplorerAction::OpenFolderOptions
         | ExplorerAction::OpenAboutDialog
@@ -1343,6 +1355,9 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::ToggleFolderOptionCompactView
         | ExplorerAction::ToggleFolderOptionAlwaysShowIcons
         | ExplorerAction::SetFolderOptionIconCacheMemoryMb(_)
+        | ExplorerAction::SetFolderOptionThumbnailCacheMemoryMb(_)
+        | ExplorerAction::SetFolderOptionMftCacheMemoryMb(_)
+        | ExplorerAction::SetFolderOptionCacheBudgets(_)
         | ExplorerAction::ClearThumbnailCache
         | ExplorerAction::ToggleFolderOptionDetailsPane
         | ExplorerAction::ToggleFolderOptionPreviewPane
@@ -1592,7 +1607,7 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         | ExplorerAction::CompressSelectedToZip
         | ExplorerAction::AddSelectedToFavorites
         | ExplorerAction::AddSelectedToBookmarks
-        | ExplorerAction::ToggleSelectedBookmark
+        | ExplorerAction::ToggleCurrentFolderBookmark
         | ExplorerAction::CopySelectedPaths
         | ExplorerAction::CancelOperation { .. } => FocusSurface::FileView,
         ExplorerAction::BeginFileDrag { x, y, button } => {
@@ -1907,6 +1922,46 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             state.update_folder_options(|settings| {
                 settings.icon_cache_memory_mb =
                     explorer_model::normalized_icon_cache_memory_mb(value);
+                settings.cache_budgets.icon_memory_mb = u32::from(value);
+            });
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::SetFolderOptionThumbnailCacheMemoryMb(value) => {
+            state.update_folder_options(|settings| {
+                settings.thumbnail_cache_memory_mb =
+                    explorer_model::normalized_thumbnail_cache_memory_mb(value);
+                settings.cache_budgets.thumbnail_memory_mb = u32::from(value);
+            });
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::SetFolderOptionMftCacheMemoryMb(value) => {
+            state.update_folder_options(|settings| {
+                settings.mft_folder_cache_memory_mb =
+                    explorer_model::normalized_mft_folder_cache_memory_mb(value);
+                settings.cache_budgets.mft_lru_mb = u32::from(value);
+            });
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::SetFolderOptionCacheBudgets(budgets) => {
+            state.update_folder_options(|settings| {
+                settings.cache_budgets = budgets.normalized();
+                settings.icon_cache_memory_mb = explorer_model::normalized_icon_cache_memory_mb(
+                    settings
+                        .cache_budgets
+                        .icon_memory_mb
+                        .min(u32::from(u16::MAX)) as u16,
+                );
+                settings.thumbnail_cache_memory_mb =
+                    explorer_model::normalized_thumbnail_cache_memory_mb(
+                        settings
+                            .cache_budgets
+                            .thumbnail_memory_mb
+                            .min(u32::from(u16::MAX)) as u16,
+                    );
+                settings.mft_folder_cache_memory_mb =
+                    explorer_model::normalized_mft_folder_cache_memory_mb(
+                        settings.cache_budgets.mft_lru_mb.min(u32::from(u16::MAX)) as u16,
+                    );
             });
             FocusSurface::CommandBar
         }
@@ -2049,7 +2104,7 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         }
         ExplorerAction::OpenDetailsColumnMenu { column } => {
             state.open_details_column_menu(column);
-            FocusSurface::CommandBar
+            FocusSurface::FileView
         }
         ExplorerAction::CloseDetailsColumnMenu => {
             state.close_details_column_menu();
@@ -2073,12 +2128,13 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         }
         ExplorerAction::ToggleDetailsColumn(column) => {
             state.toggle_details_column(column);
-            FocusSurface::CommandBar
+            FocusSurface::FileView
         }
-        ExplorerAction::ToggleFolderSizeProportionalBar => FocusSurface::CommandBar,
+        ExplorerAction::ToggleFolderSizeProportionalBar => FocusSurface::FileView,
+        ExplorerAction::ToggleCodeLinesDetail => FocusSurface::FileView,
         ExplorerAction::AutoSizeAllDetailsColumns => {
             state.auto_size_all_details_columns();
-            FocusSurface::CommandBar
+            FocusSurface::FileView
         }
         ExplorerAction::BeginDetailsColumnResize { column, pointer_x } => {
             state.begin_details_column_resize(column, pointer_x);
@@ -2283,6 +2339,78 @@ mod tests {
             state.view_settings().sort.direction,
             explorer_model::SortDirection::Descending
         );
+    }
+
+    #[test]
+    fn details_column_chooser_repeats_toggles_without_losing_file_view_ownership() {
+        let mut state = writable_state();
+        state.focus(FocusSurface::FileView);
+
+        let opened = dispatch_action(
+            &mut state,
+            ExplorerAction::OpenDetailsColumnMenu {
+                column: explorer_model::ColumnId::Size,
+            },
+            ActionSource::Mouse,
+        );
+        assert_eq!(opened.handled_surface, FocusSurface::FileView);
+        assert_eq!(state.focused_surface(), FocusSurface::FileView);
+        assert_eq!(
+            state.details_column_menu(),
+            Some(explorer_model::ColumnId::Size)
+        );
+
+        let stray_resize_end = dispatch_action(
+            &mut state,
+            ExplorerAction::EndDetailsColumnResize,
+            ActionSource::Mouse,
+        );
+        assert_eq!(stray_resize_end.outcome, ActionOutcome::Disabled);
+        assert_eq!(
+            state.details_column_menu(),
+            Some(explorer_model::ColumnId::Size),
+            "an inactive separator mouse-up must not dismiss the chooser"
+        );
+
+        let initially_visible = state.details_column_visible(explorer_model::ColumnId::Size);
+        for expected in [
+            !initially_visible,
+            initially_visible,
+            !initially_visible,
+            initially_visible,
+        ] {
+            let toggled = dispatch_action(
+                &mut state,
+                ExplorerAction::ToggleDetailsColumn(explorer_model::ColumnId::Size),
+                ActionSource::Mouse,
+            );
+            assert_eq!(toggled.handled_surface, FocusSurface::FileView);
+            assert_eq!(
+                state.details_column_visible(explorer_model::ColumnId::Size),
+                expected
+            );
+            assert_eq!(
+                state.details_column_menu(),
+                Some(explorer_model::ColumnId::Size),
+                "hiding the originating header must not dismiss its chooser"
+            );
+        }
+
+        let name = dispatch_action(
+            &mut state,
+            ExplorerAction::ToggleDetailsColumn(explorer_model::ColumnId::Name),
+            ActionSource::Mouse,
+        );
+        assert_eq!(name.outcome, ActionOutcome::Disabled);
+        assert!(state.details_column_visible(explorer_model::ColumnId::Name));
+        assert!(state.details_column_menu().is_some());
+
+        dispatch_action(
+            &mut state,
+            ExplorerAction::CloseDetailsColumnMenu,
+            ActionSource::Keyboard,
+        );
+        assert!(state.details_column_menu().is_none());
     }
 
     #[test]

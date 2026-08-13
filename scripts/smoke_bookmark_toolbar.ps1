@@ -20,7 +20,7 @@ function Get-PopupHandle{
 }
 function Invoke-AddBookmarkMenu([string]$ItemName){
  Invoke-UitestClick -Element (Find-UitestFileItem -Root $context.Root -Name $ItemName) -Right
- $popup=$null;$deadline=[DateTime]::UtcNow.AddSeconds(5);do{$popup=Get-PopupHandle;if($null-eq$popup){Start-Sleep -Milliseconds 50}}while($null-eq$popup-and[DateTime]::UtcNow-lt$deadline);if($null-eq$popup){throw'native bookmark popup not found'}
+ $popup=$null;$deadline=[DateTime]::UtcNow.AddSeconds(5);do{$popup=Get-PopupHandle;if($null-eq$popup){Start-Sleep -Milliseconds 50}}while($null-eq$popup-and[DateTime]::UtcNow-lt$deadline);if($null-eq$popup){throw 'native bookmark popup not found'}
  Save-UitestScreenshot -Root $context.Root -Path (Join-Path $output 'bookmark-context-menu.png')
  $menu=[RustExplorerUitest.BookmarkMenuNative]::SendMessage($popup,0x01E1,[IntPtr]::Zero,[IntPtr]::Zero);$matched=$false
  $expected=(-join @([char]0x52A0,[char]0x5165,[char]0x66F8,[char]0x7C64))
@@ -30,21 +30,18 @@ function Invoke-AddBookmarkMenu([string]$ItemName){
 try {
  $context=Start-UitestExplorer -InitialPath $fixture -OutputDirectory $output -Profile $Profile -SkipBuild:$SkipBuild
  Invoke-AddBookmarkMenu 'Folder bookmark'
- $removeStar=Find-ByName 'Remove selected item from bookmarks'
+ $addStar=Find-ByName 'Add current folder to bookmarks'
  $folderBookmark=Find-UitestElement -Root $context.Root -Description 'Folder bookmark button' -Predicate {param($e) $e.Current.Name -like '*Bookmark: Folder bookmark*'}
- if($removeStar.Current.BoundingRectangle.Left -ge $folderBookmark.Current.BoundingRectangle.Left){throw 'Bookmark star is not fixed at the left edge of the toolbar'}
- Save-UitestScreenshot -Root $context.Root -Path (Join-Path $output 'bookmark-star-on.png')
- Invoke-UitestClick -Element $removeStar
- [void](Find-ByName 'Add selected item to bookmarks')
+ if($addStar.Current.BoundingRectangle.Left -ge $folderBookmark.Current.BoundingRectangle.Left){throw 'Bookmark star is not fixed at the left edge of the toolbar'}
  Save-UitestScreenshot -Root $context.Root -Path (Join-Path $output 'bookmark-star-off.png')
- Invoke-UitestClick -Element (Find-ByName 'Add selected item to bookmarks')
- [void](Find-ByName 'Remove selected item from bookmarks')
+ Invoke-UitestClick -Element $addStar
+ [void](Find-ByName 'Remove current folder from bookmarks')
+ Save-UitestScreenshot -Root $context.Root -Path (Join-Path $output 'bookmark-star-on.png')
  Invoke-UitestClick -Element (Find-UitestFileItem -Root $context.Root -Name 'File bookmark.txt')
- Invoke-UitestClick -Element (Find-ByName 'Add selected item to bookmarks')
- [void](Find-ByName 'Remove selected item from bookmarks')
- Invoke-UitestClick -Element (Find-ByName 'Remove selected item from bookmarks')
- [void](Find-ByName 'Add selected item to bookmarks')
- Invoke-UitestClick -Element (Find-ByName 'Add selected item to bookmarks')
+ [void](Find-ByName 'Remove current folder from bookmarks')
+ Invoke-UitestClick -Element (Find-ByName 'Remove current folder from bookmarks')
+ [void](Find-ByName 'Add current folder to bookmarks')
+ Invoke-UitestClick -Element (Find-ByName 'Add current folder to bookmarks')
  1..12|ForEach-Object{
    Invoke-UitestClick -Element (Find-ByName 'Add Lua bookmark')
    [void](Find-ByName 'Bookmark editor')
