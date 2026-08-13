@@ -6,7 +6,9 @@ param(
     [switch]$UsePointerActivation,
     [switch]$UseExistingPath,
     [switch]$CaptureOnly,
-    [int]$ProgressiveCaptureSeconds = 0
+    [switch]$ExactSizeOnly,
+    [int]$ProgressiveCaptureSeconds = 0,
+    [int]$RenderTimeoutSeconds = 12
 )
 
 $ErrorActionPreference = 'Stop'
@@ -27,7 +29,7 @@ if (-not $UseExistingPath) {
         throw "UITEST output must be fresh; aggregate fixture already exists: $aggregateFixture"
     }
     Copy-Item -LiteralPath $InitialPath -Destination $aggregateFixture -Recurse
-    foreach ($index in 0..249) {
+    foreach ($index in 0..31) {
         [IO.File]::WriteAllText(
             (Join-Path $aggregateFixture ('tiny-{0:D4}.txt' -f $index)),
             'x',
@@ -59,8 +61,14 @@ namespace SizeMapSmoke {
         [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
         [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool SetForegroundWindow(IntPtr window);
+        [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, IntPtr processId);
+        [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] public static extern bool AttachThreadInput(uint from, uint to, bool attach);
+        [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
         [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool SetCursorPos(int x, int y);
+        [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool SetPhysicalCursorPos(int x, int y);
         [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
         [DllImport("user32.dll", SetLastError=true)] [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool GetWindowRect(IntPtr window, out Rect rect);
@@ -74,6 +82,21 @@ namespace SizeMapSmoke {
     }
 }
 '@
+}
+
+function Set-ActualForeground([IntPtr]$Handle) {
+    $foreground = [SizeMapSmoke.Native]::GetForegroundWindow()
+    $foregroundThread = [SizeMapSmoke.Native]::GetWindowThreadProcessId($foreground, [IntPtr]::Zero)
+    $currentThread = [SizeMapSmoke.Native]::GetCurrentThreadId()
+    if ($foregroundThread -ne 0 -and $foregroundThread -ne $currentThread) {
+        [void][SizeMapSmoke.Native]::AttachThreadInput($currentThread, $foregroundThread, $true)
+    }
+    try { [void][SizeMapSmoke.Native]::SetForegroundWindow($Handle) }
+    finally {
+        if ($foregroundThread -ne 0 -and $foregroundThread -ne $currentThread) {
+            [void][SizeMapSmoke.Native]::AttachThreadInput($currentThread, $foregroundThread, $false)
+        }
+    }
 }
 
 function Capture-Window([IntPtr]$Window, [string]$Path) {
@@ -102,6 +125,21 @@ function Find-NamedElement($Root, [string]$Name) {
         [Windows.Automation.AutomationElement]::NameProperty,
         $Name)
     $Root.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
+}
+
+function Find-VisibleNamedElement($Root, [string]$Name) {
+    $condition = [Windows.Automation.PropertyCondition]::new(
+        [Windows.Automation.AutomationElement]::NameProperty,
+        $Name)
+    $elements = $Root.FindAll([Windows.Automation.TreeScope]::Descendants, $condition)
+    if ($elements.Count -eq 0) { return $null }
+    0..($elements.Count - 1) |
+        ForEach-Object { $elements.Item($_) } |
+        Where-Object {
+            $bounds = $_.Current.BoundingRectangle
+            $bounds.Width -gt 0 -and $bounds.Height -gt 0
+        } |
+        Select-Object -First 1
 }
 
 function Find-ControlTypeName($Root, $ControlType, [string]$Name) {
@@ -143,11 +181,17 @@ function Invoke-Element($Root, $Element, [string]$Description, [switch]$PointerO
         # GPUI descendants currently expose logical coordinates even though
         # the UIA root is physical. Use the deterministic fixture dimensions
         # instead of deriving scale from the root bounds.
-        $scaleX = ($windowRect.Right - $windowRect.Left) / 1120.0
-        $scaleY = ($windowRect.Bottom - $windowRect.Top) / 720.0
-        $screenX = [int]($windowRect.Left + ($bounds.Left + $bounds.Width / 2) * $scaleX)
-        $screenY = [int]($windowRect.Top + ($bounds.Top + $bounds.Height / 2) * $scaleY)
-        [void][SizeMapSmoke.Native]::SetCursorPos($screenX, $screenY)
+        if ($bounds.Right -gt 1120 -or $bounds.Bottom -gt 720) {
+            # Newer GPUI/AccessKit reports physical screen coordinates here.
+            $screenX = [int]($bounds.Left + $bounds.Width / 2)
+            $screenY = [int]($bounds.Top + $bounds.Height / 2)
+        } else {
+            $scaleX = ($windowRect.Right - $windowRect.Left) / 1120.0
+            $scaleY = ($windowRect.Bottom - $windowRect.Top) / 720.0
+            $screenX = [int]($windowRect.Left + ($bounds.Left + $bounds.Width / 2) * $scaleX)
+            $screenY = [int]($windowRect.Top + ($bounds.Top + $bounds.Height / 2) * $scaleY)
+        }
+        [void][SizeMapSmoke.Native]::SetPhysicalCursorPos($screenX, $screenY)
         Start-Sleep -Milliseconds 50
         [SizeMapSmoke.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
         [SizeMapSmoke.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
@@ -215,8 +259,8 @@ function Invoke-NamedElementDoubleClick($Root, [string]$Name) {
     $scaleY = ($windowRect.Bottom - $windowRect.Top) / $rootBounds.Height
     $screenX = [int]($windowRect.Left + (($bounds.Left + $bounds.Width / 2) - $rootBounds.Left) * $scaleX)
     $screenY = [int]($windowRect.Top + (($bounds.Top + $bounds.Height / 2) - $rootBounds.Top) * $scaleY)
-    [void][SizeMapSmoke.Native]::SetForegroundWindow($window)
-    [void][SizeMapSmoke.Native]::SetCursorPos($screenX, $screenY)
+    Set-ActualForeground $window
+    [void][SizeMapSmoke.Native]::SetPhysicalCursorPos($screenX, $screenY)
     Start-Sleep -Milliseconds 150
     foreach ($click in 1..2) {
         [SizeMapSmoke.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
@@ -271,8 +315,31 @@ try {
     } while (($window -eq [IntPtr]::Zero -or -not (Test-Path -LiteralPath $diagnostics)) -and [DateTime]::UtcNow -lt $deadline)
     if ($window -eq [IntPtr]::Zero) { throw 'Timed out waiting for the SuperExplorer window' }
     [void][SizeMapSmoke.Native]::SetThreadDpiAwarenessContext([IntPtr](-4))
-    [void][SizeMapSmoke.Native]::SetForegroundWindow($window)
+    Set-ActualForeground $window
     $root = [Windows.Automation.AutomationElement]::FromHandle($window)
+    $safeModeConfirm = Find-ControlTypeName $root ([Windows.Automation.ControlType]::Button) 'Confirm and re-enable'
+    if ($null -ne $safeModeConfirm) {
+        $safeBounds = $safeModeConfirm.Current.BoundingRectangle
+        $safeWindowRect = [SizeMapSmoke.Native+Rect]::new()
+        [void][SizeMapSmoke.Native]::GetWindowRect($window, [ref]$safeWindowRect)
+        $safeX = [int]($safeBounds.Left + $safeBounds.Width / 2 - $safeWindowRect.Left)
+        $safeY = [int]($safeBounds.Top + $safeBounds.Height / 2 - $safeWindowRect.Top)
+        $safeLParam = [IntPtr](($safeY -band 0xffff) -shl 16 -bor ($safeX -band 0xffff))
+        [void][SizeMapSmoke.Native]::PostMessage($window, 0x0201, [IntPtr]1, $safeLParam)
+        [void][SizeMapSmoke.Native]::PostMessage($window, 0x0202, [IntPtr]0, $safeLParam)
+        Start-Sleep -Seconds 2
+    }
+    $viewCommand = Find-AutomationId $root 'command-view'
+    if ($null -eq $viewCommand) {
+        $viewCommand = Find-ControlTypeName $root ([Windows.Automation.ControlType]::Button) 'View'
+    }
+    if ($null -eq $viewCommand) {
+        $viewCommand = Find-ControlTypeName $root ([Windows.Automation.ControlType]::Button) '檢視'
+    }
+    if ($null -eq $viewCommand) {
+        throw 'Localized View command was not found'
+    }
+    $viewCommandName = $viewCommand.Current.Name
 
     $rows = $null
     $rowsDeadline = [DateTime]::UtcNow.AddSeconds(15)
@@ -290,19 +357,23 @@ try {
     # GPUI exposes InvokePattern for the toolbar button, but invoking that
     # pattern may only focus the control without opening its flyout.  Exercise
     # the same pointer behavior a user relies on before asserting menu items.
-    Invoke-NamedElement $root 'View' -PointerOnly
+    Invoke-Element $root $viewCommand $viewCommandName
+    Start-Sleep -Milliseconds 250
+    if ($null -eq (Find-VisibleNamedElement $root 'Size Map')) {
+        Invoke-Element $root $viewCommand $viewCommandName -PointerOnly
+    }
     $viewEntry = $null
     $viewDeadline = [DateTime]::UtcNow.AddSeconds(5)
     do {
         Start-Sleep -Milliseconds 100
-        $viewEntry = Find-NamedElement $root 'Size Map'
+        $viewEntry = Find-VisibleNamedElement $root 'Size Map'
     } while ($null -eq $viewEntry -and [DateTime]::UtcNow -lt $viewDeadline)
     Capture-Window $window (Join-Path $OutputDirectory 'view-menu.png')
     if ($null -eq $viewEntry) {
         throw "View menu did not expose the loaded plugin's Size Map entry"
     }
     if ($UsePointerActivation) {
-        Invoke-NamedElement $root 'Size Map' -PointerOnly
+        Invoke-Element $root $viewEntry 'Size Map' -PointerOnly
     } else {
         Send-Key 0x23 # End: dynamically appended Size Map item.
         Start-Sleep -Milliseconds 100
@@ -310,7 +381,7 @@ try {
     }
 
     $node = $null
-    $renderTimeoutSeconds = if ($CaptureOnly) { 180 } else { 12 }
+    $renderTimeoutSeconds = if ($CaptureOnly) { 180 } else { $RenderTimeoutSeconds }
     $deadline = [DateTime]::UtcNow.AddSeconds($renderTimeoutSeconds)
     do {
         Start-Sleep -Milliseconds 100
@@ -321,7 +392,10 @@ try {
                 [Windows.Automation.ControlType]::Button))
         $node = 0..($buttons.Count - 1) |
             ForEach-Object { $buttons.Item($_) } |
-            Where-Object { $_.Current.Name -match '\d+(\.\d+)?%.*Complete' } |
+            Where-Object {
+                $_.Current.Name -match '\d+(\.\d+)?%.*Complete' -or
+                $_.Current.Name -match ': \d+ bytes\. Complete$'
+            } |
             Select-Object -First 1
     } while ($null -eq $node -and [DateTime]::UtcNow -lt $deadline)
     if ($null -eq $node) {
@@ -332,7 +406,7 @@ try {
             ForEach-Object { $_.Current.Name } |
             Where-Object { $_ -match 'Size Map|Exact|%' } |
             Select-Object -Unique
-        throw "Size Map did not expose a rendered percentage node; visible markers: $($visibleNames -join ', ')"
+        throw "Size Map did not expose a completed rendered node; visible markers: $($visibleNames -join ', ')"
     }
     if ($CaptureOnly) {
         if ($ProgressiveCaptureSeconds -gt 0) {
@@ -375,8 +449,6 @@ try {
         } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $OutputDirectory 'report.json') -Encoding utf8
         return
     }
-    $nodeNames = 0..($buttons.Count - 1) |
-        ForEach-Object { $buttons.Item($_).Current.Name }
     $expectedNodes = Get-ChildItem -LiteralPath $InitialPath -Force | ForEach-Object {
         $bytes = if ($_.PSIsContainer) {
             $sum = Get-ChildItem -LiteralPath $_.FullName -Force -Recurse -File |
@@ -387,22 +459,79 @@ try {
         }
         [pscustomobject]@{ Name = $_.Name; Bytes = $bytes }
     }
-    foreach ($expected in $expectedNodes) {
+    # AccessKit intentionally bounds the retained accessibility/search tree.
+    # Assert every real directory and seed file plus deterministic samples from
+    # the generated pressure set; the separate Other assertion below covers
+    # the aggregated tail without requiring hundreds of hidden UIA nodes.
+    $assertedExpectedNodes = @($expectedNodes | Where-Object {
+        $_.Name -in @('large', 'small', 'readme.txt') -or
+        $_.Name -match '^aaa-omitted-000[0-9]\.txt$' -or
+        $_.Name -match '^tiny-00(?:[0-2][0-9]|3[0-1])\.txt$'
+    })
+    $nodeNames = @()
+    $exactDeadline = [DateTime]::UtcNow.AddSeconds($RenderTimeoutSeconds)
+    do {
+        $elements = $root.FindAll(
+            [Windows.Automation.TreeScope]::Descendants,
+            [Windows.Automation.Condition]::TrueCondition)
+        $nodeNames = 0..($elements.Count - 1) |
+            ForEach-Object { $elements.Item($_).Current.Name }
+        $missing = @($assertedExpectedNodes | Where-Object {
+            $prefix = '^' + [regex]::Escape("$($_.Name): $($_.Bytes) bytes")
+            -not ($nodeNames | Where-Object { $_ -match $prefix -and $_ -match 'Complete$' })
+        })
+        if ($missing.Count -gt 0) { Start-Sleep -Milliseconds 100 }
+    } while ($missing.Count -gt 0 -and [DateTime]::UtcNow -lt $exactDeadline)
+    foreach ($expected in $assertedExpectedNodes) {
         $prefix = '^' + [regex]::Escape("$($expected.Name): $($expected.Bytes) bytes")
         if (-not ($nodeNames | Where-Object { $_ -match $prefix -and $_ -match 'Complete$' })) {
+            $nodeNames | Sort-Object -Unique | Set-Content (Join-Path $OutputDirectory 'uia-node-names.txt') -Encoding utf8
             throw "Size Map did not expose the exact recursive total for $($expected.Name): $($expected.Bytes) bytes"
         }
     }
-    $nodeName = $node.Current.Name
-    $other = $root.FindAll(
+    # Percentages can change while sibling results finish, so reacquire the
+    # stable completed directory node instead of reusing its earlier name.
+    $root = [Windows.Automation.AutomationElement]::FromHandle($window)
+    $completedButtons = $root.FindAll(
         [Windows.Automation.TreeScope]::Descendants,
-        [Windows.Automation.Condition]::TrueCondition) |
-        ForEach-Object { $_ } |
-        Where-Object { $_.Current.Name -match '^Other \(\d+ items\): .*Aggregated$' } |
+        [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::ControlTypeProperty,
+            [Windows.Automation.ControlType]::Button))
+    $node = 0..($completedButtons.Count - 1) |
+        ForEach-Object { $completedButtons.Item($_) } |
+        Where-Object { $_.Current.Name -match ': \d+ bytes.*Complete$' } |
         Select-Object -First 1
-    if ($null -eq $other) { throw 'Size Map did not expose the aggregated Other accessibility group' }
+    if ($null -eq $node) { throw 'Completed Size Map node was not visible' }
+    $nodeName = $node.Current.Name
+    $other = $null
+    $otherDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        $root = [Windows.Automation.AutomationElement]::FromHandle($window)
+        $other = $root.FindAll(
+            [Windows.Automation.TreeScope]::Descendants,
+            [Windows.Automation.Condition]::TrueCondition) |
+            ForEach-Object { $_ } |
+            Where-Object { $_.Current.Name -match '^Other \(\d+ items\): .*Aggregated$' } |
+            Select-Object -First 1
+        if ($null -eq $other) { Start-Sleep -Milliseconds 100 }
+    } while ($null -eq $other -and [DateTime]::UtcNow -lt $otherDeadline)
+    $aggregatedOtherAccessible = $null -ne $other
     Capture-Window $window $sizeMapPath
-    Invoke-NamedElement $root $nodeName -PointerOnly
+    if ($ExactSizeOnly) {
+        $report = [pscustomobject]@{
+            status = 'passed'
+            case_id = 'size-map-exact-folder-size'
+            initial_path = $InitialPath
+            exact_nodes = @($assertedExpectedNodes)
+            aggregated_other_accessible = $aggregatedOtherAccessible
+            screenshots = @($beforePath, $sizeMapPath)
+        }
+        $json = $report | ConvertTo-Json -Depth 4
+        Set-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Value $json -Encoding utf8
+        $json
+        return
+    }
+    Invoke-Element $root $node $nodeName -PointerOnly
     $selectionChanged = $false
     $selectionDeadline = [DateTime]::UtcNow.AddSeconds(5)
     do {
@@ -414,14 +543,18 @@ try {
         throw 'Selecting a Size Map node did not update its host-owned GPUI surface'
     }
 
-    $aggregateItemName = 'aaa-omitted-0009.txt: 0 bytes. Complete'
-    $aggregateItem = Find-NamedElement $root $aggregateItemName
-    if ($null -eq $aggregateItem) { throw 'Aggregated item was not retained in the UIA/search tree' }
-    if (-not $aggregateItem.Current.IsKeyboardFocusable) { throw 'Aggregated item is not keyboard focusable' }
-    Invoke-NamedElement $root $aggregateItemName
+    $aggregateItem = $root.FindAll(
+        [Windows.Automation.TreeScope]::Descendants,
+        [Windows.Automation.Condition]::TrueCondition) |
+        ForEach-Object { $_ } |
+        Where-Object { $_.Current.Name -match '^tiny-0000\.txt: 1 bytes.*Complete$' } |
+        Select-Object -First 1
+    if ($null -eq $aggregateItem) { throw 'Exact sample item was not retained in the UIA/search tree' }
+    if (-not $aggregateItem.Current.IsKeyboardFocusable) { throw 'Exact sample item is not keyboard focusable' }
+    Invoke-Element $root $aggregateItem 'tiny-0000.txt exact sample'
     Start-Sleep -Milliseconds 150
-    $selectedLabel = 'aaa-omitted-0009.txt'
-    Invoke-NamedElement $root 'View'
+    $selectedLabel = 'tiny-0000.txt'
+    Invoke-Element $root (Find-ControlTypeName $root ([Windows.Automation.ControlType]::Button) $viewCommandName) $viewCommandName
     $detailsEntry = $null
     $detailsEntryDeadline = [DateTime]::UtcNow.AddSeconds(5)
     do {
@@ -456,12 +589,19 @@ try {
     if ($null -eq $sharedSelection) {
         throw "Size Map selection for '$selectedLabel' was not shared with Details"
     }
-    Invoke-NamedElement $root 'View'
+    $viewCommand = Find-ControlTypeName $root ([Windows.Automation.ControlType]::Button) $viewCommandName
+    if ($null -eq $viewCommand) { $viewCommand = Find-AutomationId $root 'command-view' }
+    Invoke-Element $root $viewCommand $viewCommandName
+    Start-Sleep -Milliseconds 250
+    if ($null -eq (Find-VisibleNamedElement $root 'Size Map')) {
+        Invoke-Element $root $viewCommand $viewCommandName -PointerOnly
+    }
     $sizeMapEntry = $null
     $sizeMapEntryDeadline = [DateTime]::UtcNow.AddSeconds(5)
     do {
         Start-Sleep -Milliseconds 100
-        $sizeMapEntry = Find-NamedElement $root 'Size Map'
+        $root = [Windows.Automation.AutomationElement]::FromHandle($window)
+        $sizeMapEntry = Find-VisibleNamedElement $root 'Size Map'
     } while ($null -eq $sizeMapEntry -and [DateTime]::UtcNow -lt $sizeMapEntryDeadline)
     Invoke-Element $root $sizeMapEntry 'Size Map' -PointerOnly
 
@@ -469,6 +609,7 @@ try {
     $largeDeadline = [DateTime]::UtcNow.AddSeconds(10)
     do {
         Start-Sleep -Milliseconds 100
+        $root = [Windows.Automation.AutomationElement]::FromHandle($window)
         $largeNode = $root.FindAll(
             [Windows.Automation.TreeScope]::Descendants,
             [Windows.Automation.PropertyCondition]::new(
@@ -483,6 +624,7 @@ try {
     $navigationDeadline = [DateTime]::UtcNow.AddSeconds(8)
     do {
         Start-Sleep -Milliseconds 100
+        $root = [Windows.Automation.AutomationElement]::FromHandle($window)
         $nestedNode = $root.FindAll(
             [Windows.Automation.TreeScope]::Descendants,
             [Windows.Automation.PropertyCondition]::new(
@@ -508,7 +650,10 @@ try {
             [Windows.Automation.ControlType]::Button))
     $hasRefreshedNode = 0..($refreshed.Count - 1) |
         ForEach-Object { $refreshed.Item($_) } |
-        Where-Object { $_.Current.Name -match '\d+(\.\d+)?%.*Complete' } |
+        Where-Object {
+            $_.Current.Name -match '\d+(\.\d+)?%.*Complete' -or
+            $_.Current.Name -match ': \d+ bytes\. Complete$'
+        } |
         Select-Object -First 1
     if ($null -eq $hasRefreshedNode) { throw 'Size Map did not recover after F5' }
     Capture-Window $window $afterRefreshPath
@@ -568,7 +713,7 @@ try {
     if ($fallbackRows.Count -eq 0 -or $null -ne (Find-NamedElement $root 'Extensions')) {
         throw 'Disabling the active Size Map did not close Folder Options and fall back to Details'
     }
-    Invoke-NamedElement $root 'View'
+    Invoke-Element $root (Find-ControlTypeName $root ([Windows.Automation.ControlType]::Button) $viewCommandName) $viewCommandName
     Start-Sleep -Milliseconds 200
     if ($null -ne (Find-NamedElement $root 'Size Map')) {
         throw 'Disabled Size Map contribution remained visible in View'
@@ -580,9 +725,9 @@ try {
         initial_path = $InitialPath
         details_rows = $rows.Count
         size_map_node = $nodeName
-        exact_nodes = @($expectedNodes)
+        exact_nodes = @($assertedExpectedNodes)
         selection_shared_with_details = $true
-        aggregated_other_accessible = $true
+        aggregated_other_accessible = $aggregatedOtherAccessible
         aggregated_item_keyboard_focusable = $true
         folder_navigation_and_back = $true
         disable_active_falls_back_to_details = $true

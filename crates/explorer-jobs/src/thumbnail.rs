@@ -266,6 +266,22 @@ impl ThumbnailMemoryCache {
         value
     }
 
+    pub fn set_byte_budget(&mut self, byte_budget: usize) {
+        self.byte_budget = byte_budget.max(1);
+        self.stats.byte_budget = self.byte_budget;
+        while self.stats.current_bytes > self.byte_budget {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            if let Some(evicted) = self.entries.remove(&oldest) {
+                self.stats.current_bytes =
+                    self.stats.current_bytes.saturating_sub(evicted.byte_cost());
+                self.stats.evictions = self.stats.evictions.saturating_add(1);
+            }
+        }
+        self.stats.entries = self.entries.len();
+    }
+
     pub fn insert(
         &mut self,
         key: ThumbnailRequestKey,
@@ -493,5 +509,31 @@ mod tests {
         cache.clear();
         assert_eq!(cache.stats().entries, 0);
         assert_eq!(cache.stats().current_bytes, 0);
+    }
+
+    #[test]
+    fn lowering_byte_budget_immediately_evicts_least_recently_used_entries() {
+        let mut cache = ThumbnailMemoryCache::new(16, 8);
+        let pixels = || {
+            Arc::new(ThumbnailPixels {
+                width: 1,
+                height: 1,
+                stride: 4,
+                bytes: vec![0; 4],
+            })
+        };
+        cache.insert(key(1), pixels());
+        cache.insert(key(2), pixels());
+        cache.insert(key(3), pixels());
+        assert!(cache.get(&key(1)).is_some());
+
+        cache.set_byte_budget(8);
+
+        assert_eq!(cache.stats().byte_budget, 8);
+        assert_eq!(cache.stats().current_bytes, 8);
+        assert_eq!(cache.stats().entries, 2);
+        assert!(cache.get(&key(2)).is_none());
+        assert!(cache.get(&key(1)).is_some());
+        assert!(cache.get(&key(3)).is_some());
     }
 }

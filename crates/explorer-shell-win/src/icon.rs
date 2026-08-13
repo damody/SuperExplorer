@@ -95,6 +95,20 @@ impl ShellIconCache {
             tracing::debug!(cache_source = "memory", "Shell icon cache hit");
             return Ok(entry.payload.clone());
         }
+        match self.disk.load_outcome(key) {
+            crate::icon_disk_cache::DiskCacheLoad::Hit(payload) => {
+                self.stats.disk_hits = self.stats.disk_hits.saturating_add(1);
+                tracing::debug!(cache_source = "bc7-disk", "Shell icon cache hit");
+                self.insert(payload.clone());
+                return Ok(payload);
+            }
+            crate::icon_disk_cache::DiskCacheLoad::Miss => {
+                self.stats.disk_misses = self.stats.disk_misses.saturating_add(1);
+            }
+            crate::icon_disk_cache::DiskCacheLoad::Rejected => {
+                self.stats.disk_corrupt = self.stats.disk_corrupt.saturating_add(1);
+            }
+        }
         // Filesystem overlay state (including TortoiseGit) can change while the path and the
         // persisted cache key remain stable across process launches. Ask the live Shell first
         // for existing paths, then refresh the disk entry. The persisted pixels remain a useful
@@ -107,6 +121,7 @@ impl ShellIconCache {
                         self.stats.disk_write_failures =
                             self.stats.disk_write_failures.saturating_add(1);
                     }
+                    let payload = self.disk.load(key).unwrap_or(payload);
                     self.insert(payload.clone());
                     tracing::debug!(cache_source = "shell-refresh", "Shell icon cache refreshed");
                     return Ok(payload);
@@ -116,26 +131,13 @@ impl ShellIconCache {
                 }
             }
         }
-        match self.disk.load_outcome(key) {
-            crate::icon_disk_cache::DiskCacheLoad::Hit(payload) => {
-                self.stats.disk_hits = self.stats.disk_hits.saturating_add(1);
-                tracing::debug!(cache_source = "disk", "Shell icon cache hit");
-                self.insert(payload.clone());
-                return Ok(payload);
-            }
-            crate::icon_disk_cache::DiskCacheLoad::Miss => {
-                self.stats.disk_misses = self.stats.disk_misses.saturating_add(1);
-            }
-            crate::icon_disk_cache::DiskCacheLoad::Rejected => {
-                self.stats.disk_corrupt = self.stats.disk_corrupt.saturating_add(1);
-            }
-        }
         tracing::debug!(cache_source = "shell", "Shell icon cache miss");
         self.stats.shell_loads = self.stats.shell_loads.saturating_add(1);
         let payload = load(key)?;
         if !self.disk.store(&payload) {
             self.stats.disk_write_failures = self.stats.disk_write_failures.saturating_add(1);
         }
+        let payload = self.disk.load(key).unwrap_or(payload);
         self.insert(payload.clone());
         tracing::debug!(
             memory_hits = self.stats.memory_hits,
@@ -701,8 +703,15 @@ mod tests {
                 .expect("valid payload");
         assert!(disk.store(&payload));
         let mut cache = ShellIconCache::with_disk(2, disk);
-        assert_eq!(cache.load(&key).expect("disk hit"), payload);
-        assert_eq!(cache.load(&key).expect("memory hit"), payload);
+        let disk_hit = cache.load(&key).expect("disk hit");
+        assert_eq!(disk_hit.key, payload.key);
+        assert_eq!((disk_hit.width, disk_hit.height), (1, 1));
+        assert!(disk_hit.rgba.is_empty());
+        assert!(
+            disk_hit.bc7.is_some(),
+            "persisted icons are promoted to BC7"
+        );
+        assert_eq!(cache.load(&key).expect("memory hit"), disk_hit);
         assert_eq!(
             cache.stats(),
             super::ShellIconCacheStats {

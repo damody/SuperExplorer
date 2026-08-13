@@ -38,6 +38,25 @@ pub fn load_shell_thumbnail(
         cache_only,
         maximum_decoded_bytes,
         Some(&disk),
+        true,
+    )
+}
+
+/// Retrieves provider-backed RGBA for ABI consumers that cannot accept GPUI's private BC7 payload.
+pub fn load_shell_thumbnail_rgba(
+    request: &ThumbnailRequest,
+    location: &LocationDescriptor,
+    cache_only: bool,
+    maximum_decoded_bytes: usize,
+) -> ThumbnailTerminal {
+    let disk = thumbnail_disk_cache();
+    load_shell_thumbnail_with_cache(
+        request,
+        location,
+        cache_only,
+        maximum_decoded_bytes,
+        Some(&disk),
+        false,
     )
 }
 
@@ -47,6 +66,7 @@ fn load_shell_thumbnail_with_cache(
     cache_only: bool,
     maximum_decoded_bytes: usize,
     disk: Option<&crate::icon_disk_cache::ShellIconDiskCache>,
+    allow_compressed: bool,
 ) -> ThumbnailTerminal {
     let cache_only = cache_only || requires_cache_only(location);
     if request.context.cancellation.is_cancelled() {
@@ -63,6 +83,12 @@ fn load_shell_thumbnail_with_cache(
     if let Some(crate::icon_disk_cache::DiskCacheLoad::Hit(payload)) =
         disk.map(|cache| cache.load_outcome(&disk_key))
     {
+        if allow_compressed && let Some(raster) = payload.bc7 {
+            return ThumbnailTerminal::Compressed {
+                source: ThumbnailSource::DiskCache,
+                raster,
+            };
+        }
         let pixels = ThumbnailPixels {
             width: u32::from(payload.width),
             height: u32::from(payload.height),
@@ -142,7 +168,20 @@ fn load_shell_thumbnail_with_cache(
         ShellIconPayload::new(disk_key, width, height, stride, pixels.bytes.clone(), None)
     {
         if let Some(disk) = disk {
-            let _ = disk.store(&payload);
+            if disk.store(&payload) && allow_compressed {
+                if let Some(compressed) = disk.load(&payload.key)
+                    && let Some(raster) = compressed.bc7
+                {
+                    return ThumbnailTerminal::Compressed {
+                        source: if cache_only {
+                            ThumbnailSource::WindowsCache
+                        } else {
+                            ThumbnailSource::Provider
+                        },
+                        raster,
+                    };
+                }
+            }
         }
     }
     ThumbnailTerminal::Ready {
@@ -188,7 +227,7 @@ fn thumbnail_disk_cache() -> crate::icon_disk_cache::ShellIconDiskCache {
         .join("RustGpuiExplorer")
         .join("thumbnail-cache")
         .join("v1");
-    crate::icon_disk_cache::ShellIconDiskCache::with_root(root)
+    crate::icon_disk_cache::ShellIconDiskCache::with_root_lossy_thumbnail(root)
 }
 
 fn disk_key(request: &ThumbnailRequest, location: &LocationDescriptor) -> ShellIconKey {
@@ -253,6 +292,11 @@ mod tests {
                 ..
             } => "project-disk",
             ThumbnailTerminal::Ready { .. } => "other-ready",
+            ThumbnailTerminal::Compressed {
+                source: ThumbnailSource::DiskCache,
+                ..
+            } => "project-bc7-disk",
+            ThumbnailTerminal::Compressed { .. } => "other-compressed",
             ThumbnailTerminal::Fallback(_) => "fallback",
             ThumbnailTerminal::Failed(_) => "failed",
         }
@@ -283,6 +327,7 @@ mod tests {
             false,
             limit,
             None,
+            false,
         );
         let no_disk_us = started.elapsed().as_micros();
         assert!(matches!(no_disk, ThumbnailTerminal::Ready { .. }));
@@ -297,16 +342,23 @@ mod tests {
             false,
             limit,
             None,
+            false,
         );
         assert!(matches!(primed, ThumbnailTerminal::Ready { .. }));
         let started = Instant::now();
-        let windows =
-            load_shell_thumbnail_with_cache(&windows_request, &windows_location, true, limit, None);
+        let windows = load_shell_thumbnail_with_cache(
+            &windows_request,
+            &windows_location,
+            true,
+            limit,
+            None,
+            false,
+        );
         let windows_us = started.elapsed().as_micros();
         assert!(matches!(windows, ThumbnailTerminal::Ready { .. }));
 
         // Prime an isolated project cache with a third image, then measure its exact
-        // serialized RGBA hit without consulting the Shell provider.
+        // serialized BC7 hit without consulting the Shell provider.
         let cache_root = fixtures.path().join("project-cache");
         let disk = crate::icon_disk_cache::ShellIconDiskCache::with_root(cache_root);
         let project_request = benchmark_request(b"benchmark-project-disk");
@@ -317,8 +369,15 @@ mod tests {
             false,
             limit,
             Some(&disk),
+            true,
         );
-        assert!(matches!(primed, ThumbnailTerminal::Ready { .. }));
+        assert!(matches!(
+            primed,
+            ThumbnailTerminal::Compressed {
+                source: ThumbnailSource::Provider,
+                ..
+            }
+        ));
         let started = Instant::now();
         let project = load_shell_thumbnail_with_cache(
             &project_request,
@@ -326,11 +385,12 @@ mod tests {
             false,
             limit,
             Some(&disk),
+            true,
         );
         let project_us = started.elapsed().as_micros();
         assert!(matches!(
             project,
-            ThumbnailTerminal::Ready {
+            ThumbnailTerminal::Compressed {
                 source: ThumbnailSource::DiskCache,
                 ..
             }
@@ -497,6 +557,9 @@ mod tests {
             let classification = match terminal {
                 ThumbnailTerminal::Ready { source, pixels } => {
                     format!("ready:{source:?}:{}x{}", pixels.width, pixels.height)
+                }
+                ThumbnailTerminal::Compressed { source, raster } => {
+                    format!("compressed:{source:?}:{}x{}", raster.width, raster.height)
                 }
                 ThumbnailTerminal::Fallback(reason) => format!("fallback:{reason:?}"),
                 ThumbnailTerminal::Failed(_) => "failed".to_owned(),

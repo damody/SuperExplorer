@@ -14,6 +14,14 @@ const fn default_icon_cache_memory_mb() -> u16 {
     crate::DEFAULT_ICON_CACHE_MEMORY_MB
 }
 
+const fn default_thumbnail_cache_memory_mb() -> u16 {
+    crate::DEFAULT_THUMBNAIL_CACHE_MEMORY_MB
+}
+
+const fn default_mft_folder_cache_memory_mb() -> u16 {
+    crate::DEFAULT_MFT_FOLDER_CACHE_MEMORY_MB
+}
+
 /// Current durable session schema.
 pub const SESSION_SCHEMA_VERSION: u16 = 3;
 const MAX_PROVENANCE_BYTES: usize = 256;
@@ -213,6 +221,12 @@ pub struct PersistedViewSettings {
     pub always_show_icons: bool,
     #[serde(default = "default_icon_cache_memory_mb")]
     pub icon_cache_memory_mb: u16,
+    #[serde(default = "default_thumbnail_cache_memory_mb")]
+    pub thumbnail_cache_memory_mb: u16,
+    #[serde(default = "default_mft_folder_cache_memory_mb")]
+    pub mft_folder_cache_memory_mb: u16,
+    #[serde(default)]
+    pub cache_budgets: PersistedCacheBudgetSettingsV1,
     pub sort: PersistedSort,
     pub group_by: Option<PersistedColumn>,
     pub details_column_order: Vec<PersistedColumn>,
@@ -243,6 +257,9 @@ impl Default for PersistedViewSettings {
             compact_view: false,
             always_show_icons: false,
             icon_cache_memory_mb: crate::DEFAULT_ICON_CACHE_MEMORY_MB,
+            thumbnail_cache_memory_mb: crate::DEFAULT_THUMBNAIL_CACHE_MEMORY_MB,
+            mft_folder_cache_memory_mb: crate::DEFAULT_MFT_FOLDER_CACHE_MEMORY_MB,
+            cache_budgets: PersistedCacheBudgetSettingsV1::default(),
             sort: PersistedSort {
                 column: PersistedColumn::Name,
                 direction: PersistedSortDirection::Ascending,
@@ -256,6 +273,86 @@ impl Default for PersistedViewSettings {
             details_pane_width: 320,
             preview_pane_width: 360,
         }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PersistedCacheBudgetSettingsV1 {
+    pub icon_memory_mb: u32,
+    pub base_icon_memory_mb: u32,
+    pub thumbnail_memory_mb: u32,
+    pub extension_memory_mb: u32,
+    pub icon_gpu_mb: u32,
+    pub thumbnail_gpu_mb: u32,
+    pub icon_disk_mb: u32,
+    pub thumbnail_disk_mb: u32,
+    pub extension_disk_mb: u32,
+    pub mft_persisted_index_mb: u32,
+    pub mft_volume_index_mb: u32,
+    pub mft_file_data_mb: u32,
+    pub mft_aggregates_mb: u32,
+    pub mft_lru_mb: u32,
+    pub folder_size_cache_ttl_seconds: u32,
+}
+
+impl Default for PersistedCacheBudgetSettingsV1 {
+    fn default() -> Self {
+        crate::CacheBudgetSettingsV1::default().into()
+    }
+}
+
+impl From<crate::CacheBudgetSettingsV1> for PersistedCacheBudgetSettingsV1 {
+    fn from(value: crate::CacheBudgetSettingsV1) -> Self {
+        Self {
+            icon_memory_mb: value.icon_memory_mb,
+            base_icon_memory_mb: value.base_icon_memory_mb,
+            thumbnail_memory_mb: value.thumbnail_memory_mb,
+            extension_memory_mb: value.extension_memory_mb,
+            icon_gpu_mb: value.icon_gpu_mb,
+            thumbnail_gpu_mb: value.thumbnail_gpu_mb,
+            icon_disk_mb: value.icon_disk_mb,
+            thumbnail_disk_mb: value.thumbnail_disk_mb,
+            extension_disk_mb: value.extension_disk_mb,
+            mft_persisted_index_mb: value.mft_persisted_index_mb,
+            mft_volume_index_mb: value.mft_volume_index_mb,
+            mft_file_data_mb: value.mft_file_data_mb,
+            mft_aggregates_mb: value.mft_aggregates_mb,
+            mft_lru_mb: value.mft_lru_mb,
+            folder_size_cache_ttl_seconds: value.folder_size_cache_ttl_seconds,
+        }
+    }
+}
+
+impl From<PersistedCacheBudgetSettingsV1> for crate::CacheBudgetSettingsV1 {
+    fn from(value: PersistedCacheBudgetSettingsV1) -> Self {
+        // 512 MiB was the historical default, but it cannot hold the topology
+        // of common multi-million-entry NTFS volumes. Treat that exact legacy
+        // value as the old default during restore; deliberately smaller or
+        // larger user selections remain unchanged.
+        let mft_volume_index_mb = if value.mft_volume_index_mb == 512 {
+            1_024
+        } else {
+            value.mft_volume_index_mb
+        };
+        Self {
+            icon_memory_mb: value.icon_memory_mb,
+            base_icon_memory_mb: value.base_icon_memory_mb,
+            thumbnail_memory_mb: value.thumbnail_memory_mb,
+            extension_memory_mb: value.extension_memory_mb,
+            icon_gpu_mb: value.icon_gpu_mb,
+            thumbnail_gpu_mb: value.thumbnail_gpu_mb,
+            icon_disk_mb: value.icon_disk_mb,
+            thumbnail_disk_mb: value.thumbnail_disk_mb,
+            extension_disk_mb: value.extension_disk_mb,
+            mft_persisted_index_mb: value.mft_persisted_index_mb,
+            mft_volume_index_mb,
+            mft_file_data_mb: value.mft_file_data_mb,
+            mft_aggregates_mb: value.mft_aggregates_mb,
+            mft_lru_mb: value.mft_lru_mb,
+            folder_size_cache_ttl_seconds: value.folder_size_cache_ttl_seconds,
+        }
+        .normalized()
     }
 }
 
@@ -429,6 +526,13 @@ impl PersistedSessionEnvelope {
         )
     }
 
+    /// Projects the current window, quick-access pins, and bookmarks into one
+    /// bounded reconstructible session snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionValidationError`] when current state violates a bound
+    /// or cannot be serialized into the persisted session contract.
     pub fn project_with_bookmarks(
         window: &ExplorerWindowState,
         placement: PersistedWindowPlacement,
@@ -725,10 +829,10 @@ impl PersistedSessionEnvelope {
             match &bookmark.target {
                 crate::BookmarkTarget::Folder { location }
                 | crate::BookmarkTarget::File { location } => {
-                    validate_location(location, &format!("bookmarks[{index}].location"), limits)?
+                    validate_location(location, &format!("bookmarks[{index}].location"), limits)?;
                 }
                 crate::BookmarkTarget::LuaScript { source } => {
-                    validate_text(source, &format!("bookmarks[{index}].source"), 256 * 1024)?
+                    validate_text(source, &format!("bookmarks[{index}].source"), 256 * 1024)?;
                 }
             }
         }
@@ -807,7 +911,19 @@ impl RestorePlan {
 impl PersistedViewSettings {
     /// Converts explicit schema fields into the runtime view representation.
     pub fn to_runtime(&self) -> ViewSettings {
-        let details_layout = if self.extensible_column_layout.is_empty() {
+        let mut cache_budgets: crate::CacheBudgetSettingsV1 = self.cache_budgets.clone().into();
+        if self.cache_budgets == PersistedCacheBudgetSettingsV1::default() {
+            cache_budgets.icon_memory_mb = u32::from(crate::normalized_icon_cache_memory_mb(
+                self.icon_cache_memory_mb,
+            ));
+            cache_budgets.thumbnail_memory_mb = u32::from(
+                crate::normalized_thumbnail_cache_memory_mb(self.thumbnail_cache_memory_mb),
+            );
+            cache_budgets.mft_lru_mb = u32::from(crate::normalized_mft_folder_cache_memory_mb(
+                self.mft_folder_cache_memory_mb,
+            ));
+        }
+        let mut details_layout = if self.extensible_column_layout.is_empty() {
             layout_from_legacy(
                 &self.details_column_order,
                 self.details_columns,
@@ -827,18 +943,21 @@ impl PersistedViewSettings {
                 )
             })
         };
+        details_layout.reconcile_current_built_ins();
         let sort = self
             .extension_sort
             .as_ref()
             .and_then(|sort| ColumnId::parse(sort.column_id.clone()).ok())
-            .map(|column| SortDescriptor {
-                column,
-                direction: match self.extension_sort.as_ref().map(|sort| sort.direction) {
-                    Some(PersistedSortDirection::Descending) => SortDirection::Descending,
-                    _ => SortDirection::Ascending,
+            .map_or_else(
+                || self.sort.into(),
+                |column| SortDescriptor {
+                    column,
+                    direction: match self.extension_sort.as_ref().map(|sort| sort.direction) {
+                        Some(PersistedSortDirection::Descending) => SortDirection::Descending,
+                        _ => SortDirection::Ascending,
+                    },
                 },
-            })
-            .unwrap_or_else(|| self.sort.into());
+            );
         ViewSettings {
             mode: self.mode.into(),
             extension_view_id: self.extension_view_id.clone(),
@@ -851,6 +970,13 @@ impl PersistedViewSettings {
             compact_view: self.compact_view,
             always_show_icons: self.always_show_icons,
             icon_cache_memory_mb: crate::normalized_icon_cache_memory_mb(self.icon_cache_memory_mb),
+            thumbnail_cache_memory_mb: crate::normalized_thumbnail_cache_memory_mb(
+                self.thumbnail_cache_memory_mb,
+            ),
+            mft_folder_cache_memory_mb: crate::normalized_mft_folder_cache_memory_mb(
+                self.mft_folder_cache_memory_mb,
+            ),
+            cache_budgets: cache_budgets.normalized(),
             sort,
             details_layout,
             details_pane_width: self.details_pane_width,
@@ -1039,18 +1165,15 @@ impl From<&HistoryEntry> for PersistedHistoryEntry {
 
 impl From<ViewSettings> for PersistedViewSettings {
     fn from(settings: ViewSettings) -> Self {
-        let extension_sort =
-            settings
-                .sort
-                .column
-                .extension_parts()
-                .map(|_| PersistedExtensionSort {
-                    column_id: settings.sort.column.stable_id(),
-                    direction: match settings.sort.direction {
-                        SortDirection::Ascending => PersistedSortDirection::Ascending,
-                        SortDirection::Descending => PersistedSortDirection::Descending,
-                    },
-                });
+        let extension_sort = PersistedColumn::try_from(&settings.sort.column)
+            .is_err()
+            .then(|| PersistedExtensionSort {
+                column_id: settings.sort.column.stable_id(),
+                direction: match settings.sort.direction {
+                    SortDirection::Ascending => PersistedSortDirection::Ascending,
+                    SortDirection::Descending => PersistedSortDirection::Descending,
+                },
+            });
         let extensible_column_layout = settings
             .details_layout
             .entries()
@@ -1074,6 +1197,13 @@ impl From<ViewSettings> for PersistedViewSettings {
             icon_cache_memory_mb: crate::normalized_icon_cache_memory_mb(
                 settings.icon_cache_memory_mb,
             ),
+            thumbnail_cache_memory_mb: crate::normalized_thumbnail_cache_memory_mb(
+                settings.thumbnail_cache_memory_mb,
+            ),
+            mft_folder_cache_memory_mb: crate::normalized_mft_folder_cache_memory_mb(
+                settings.mft_folder_cache_memory_mb,
+            ),
+            cache_budgets: settings.cache_budgets.into(),
             sort: settings.sort.into(),
             group_by: None,
             details_column_order: settings
@@ -1194,7 +1324,7 @@ impl TryFrom<&ColumnId> for PersistedColumn {
             ColumnId::Authors => Ok(Self::Authors),
             ColumnId::Tags => Ok(Self::Tags),
             ColumnId::Title => Ok(Self::Title),
-            ColumnId::Extension { .. } => Err(()),
+            ColumnId::FileCount | ColumnId::FolderCount | ColumnId::Extension { .. } => Err(()),
         }
     }
 }
@@ -1735,5 +1865,61 @@ mod tests {
         let restored = decoded.to_runtime();
         assert_eq!(restored.extension_view_id, persisted.extension_view_id);
         assert_eq!(restored.mode, ViewMode::Details);
+    }
+
+    #[test]
+    fn cache_budget_settings_default_clamp_and_round_trip() {
+        let persisted = PersistedViewSettings::default();
+        let mut value = serde_json::to_value(&persisted).expect("serialize settings");
+        value
+            .as_object_mut()
+            .expect("settings object")
+            .remove("cache_budgets");
+        let legacy: PersistedViewSettings =
+            serde_json::from_value(value).expect("legacy settings deserialize");
+        assert_eq!(
+            legacy.cache_budgets,
+            PersistedCacheBudgetSettingsV1::default()
+        );
+
+        let mut changed = persisted;
+        changed.cache_budgets.icon_memory_mb = 0;
+        changed.cache_budgets.mft_lru_mb = u32::MAX;
+        changed.cache_budgets.mft_volume_index_mb = 512;
+        let runtime = changed.to_runtime();
+        assert_eq!(runtime.cache_budgets.icon_memory_mb, 8);
+        assert_eq!(runtime.cache_budgets.mft_lru_mb, 16_384);
+        assert_eq!(runtime.cache_budgets.mft_volume_index_mb, 1_024);
+        let encoded = PersistedViewSettings::from(runtime);
+        assert_eq!(encoded.cache_budgets.icon_memory_mb, 8);
+        assert_eq!(encoded.cache_budgets.mft_lru_mb, 16_384);
+        assert_eq!(encoded.cache_budgets.mft_volume_index_mb, 1_024);
+    }
+
+    #[test]
+    fn folder_size_cache_ttl_defaults_clamps_and_round_trips() {
+        let persisted = PersistedViewSettings::default();
+        assert_eq!(
+            persisted.cache_budgets.folder_size_cache_ttl_seconds,
+            crate::DEFAULT_FOLDER_SIZE_CACHE_TTL_SECONDS as u32
+        );
+
+        let mut changed = persisted.clone();
+        changed.cache_budgets.folder_size_cache_ttl_seconds = 0;
+        let runtime = changed.to_runtime();
+        assert_eq!(
+            runtime.cache_budgets.folder_size_cache_ttl_seconds, 0,
+            "0 stays 0 so the Folder Options row can disable TTL reuse"
+        );
+        let encoded = PersistedViewSettings::from(runtime);
+        assert_eq!(encoded.cache_budgets.folder_size_cache_ttl_seconds, 0);
+
+        let mut over = persisted.clone();
+        over.cache_budgets.folder_size_cache_ttl_seconds = u32::MAX;
+        let runtime = over.to_runtime();
+        assert_eq!(
+            runtime.cache_budgets.folder_size_cache_ttl_seconds,
+            crate::FOLDER_SIZE_CACHE_TTL_MAX_SECONDS as u32
+        );
     }
 }

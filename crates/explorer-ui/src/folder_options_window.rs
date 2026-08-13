@@ -1,6 +1,13 @@
 //! Dedicated, modeless Folder Options window.
 
-use std::rc::Rc;
+use std::{
+    rc::Rc,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use gpui::{
     App, Bounds, Context, FocusHandle, Focusable, IntoElement, KeyDownEvent, MouseButton,
@@ -14,11 +21,23 @@ use crate::{
     chrome::{self, ActionCallback},
     state::{ExtensionOptionV1, FolderOptionsDraft},
 };
+use gpui_elements::editable_text::{EditableTextState, StringStorage};
 
 const INITIAL_WIDTH: f32 = 960.0;
 const INITIAL_HEIGHT: f32 = 760.0;
 const MINIMUM_WIDTH: f32 = 680.0;
 const MINIMUM_HEIGHT: f32 = 480.0;
+
+fn parse_cache_budget_memory_mb(
+    value: &str,
+    descriptor: explorer_model::CacheBudgetDescriptorV1,
+) -> Option<u32> {
+    value
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .map(|value| descriptor.normalize(value))
+}
 
 /// Modeless window options. `WindowKind::Normal` is intentional: GPUI's
 /// Windows `Dialog` kind disables its owner and would make Explorer modal.
@@ -47,6 +66,298 @@ pub fn folder_options_window_options(cx: &App) -> WindowOptions {
 pub struct FolderOptionsWindowSnapshotV1 {
     pub draft: FolderOptionsDraft,
     pub extensions: Vec<ExtensionOptionV1>,
+    pub cache_usage: CacheUsageSnapshotV1,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CacheUsageSnapshotV1 {
+    pub icon_memory_bytes: u64,
+    pub icon_memory_limit: u64,
+    pub base_icon_memory_bytes: u64,
+    pub base_icon_memory_limit: u64,
+    pub thumbnail_memory_bytes: u64,
+    pub thumbnail_memory_limit: u64,
+    pub icon_gpu_bytes: u64,
+    pub icon_gpu_limit: u64,
+    pub icon_gpu_entries: u64,
+    pub thumbnail_gpu_bytes: u64,
+    pub thumbnail_gpu_limit: u64,
+    pub thumbnail_gpu_entries: u64,
+    pub bc7_gpu_supported: Option<bool>,
+    pub extension_memory_bytes: Option<u64>,
+    pub extension_memory_limit: Option<u64>,
+    pub extension_memory_entries: Option<u64>,
+    pub icon_disk_bytes: Option<u64>,
+    pub icon_disk_limit: Option<u64>,
+    pub thumbnail_disk_bytes: Option<u64>,
+    pub thumbnail_disk_limit: Option<u64>,
+    pub extension_disk_bytes: Option<u64>,
+    pub extension_disk_limit: Option<u64>,
+    pub mft_disk_bytes: Option<u64>,
+    pub mft_disk_limit: Option<u64>,
+    pub mft_volume_index_memory_bytes: Option<u64>,
+    pub mft_volume_index_memory_limit: Option<u64>,
+    pub mft_file_data_memory_bytes: Option<u64>,
+    pub mft_file_data_memory_limit: Option<u64>,
+    pub mft_aggregate_memory_bytes: Option<u64>,
+    pub mft_aggregate_memory_limit: Option<u64>,
+    pub mft_service_bytes: Option<u64>,
+    pub mft_service_limit: Option<u64>,
+    pub mft_service_entries: Option<u64>,
+    pub mft_service_hits: Option<u64>,
+    pub mft_service_misses: Option<u64>,
+    pending_mask: u16,
+    unavailable_mask: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CacheUsageAvailabilityV1 {
+    Pending,
+    Available,
+    Unavailable,
+}
+
+impl CacheUsageSnapshotV1 {
+    fn telemetry_bit(id: explorer_model::CacheTelemetryIdV1) -> u16 {
+        1_u16 << (id as u16)
+    }
+
+    fn set_availability(
+        &mut self,
+        id: explorer_model::CacheTelemetryIdV1,
+        availability: CacheUsageAvailabilityV1,
+    ) {
+        let bit = Self::telemetry_bit(id);
+        self.pending_mask &= !bit;
+        self.unavailable_mask &= !bit;
+        match availability {
+            CacheUsageAvailabilityV1::Pending => self.pending_mask |= bit,
+            CacheUsageAvailabilityV1::Unavailable => self.unavailable_mask |= bit,
+            CacheUsageAvailabilityV1::Available => {}
+        }
+    }
+
+    pub fn availability(&self, id: explorer_model::CacheTelemetryIdV1) -> CacheUsageAvailabilityV1 {
+        let bit = Self::telemetry_bit(id);
+        if self.unavailable_mask & bit != 0 {
+            CacheUsageAvailabilityV1::Unavailable
+        } else if self.pending_mask & bit != 0 {
+            CacheUsageAvailabilityV1::Pending
+        } else {
+            CacheUsageAvailabilityV1::Available
+        }
+    }
+
+    pub fn background_sample(
+        service: Option<&dyn explorer_model::ExplorerService>,
+        cancelled: &AtomicBool,
+    ) -> Self {
+        if cancelled.load(Ordering::Acquire) {
+            return Self::default();
+        }
+        let mut sample = Self::default();
+        if let Some(service) = service {
+            let telemetry = service.cache_telemetry_snapshot();
+            sample.apply_host_telemetry(&telemetry);
+        }
+        sample
+    }
+
+    fn apply_host_telemetry(&mut self, telemetry: &explorer_model::CacheTelemetrySnapshotV1) {
+        for entry in telemetry.entries() {
+            self.set_availability(
+                entry.id,
+                match entry.availability {
+                    explorer_model::CacheTelemetryAvailabilityV1::Available(_) => {
+                        CacheUsageAvailabilityV1::Available
+                    }
+                    explorer_model::CacheTelemetryAvailabilityV1::Pending => {
+                        CacheUsageAvailabilityV1::Pending
+                    }
+                    explorer_model::CacheTelemetryAvailabilityV1::Unavailable => {
+                        CacheUsageAvailabilityV1::Unavailable
+                    }
+                },
+            );
+        }
+        if let Some(entry) =
+            telemetry.entry(explorer_model::CacheTelemetryIdV1::ExtensionColumnsMemory)
+            && let explorer_model::CacheTelemetryAvailabilityV1::Available(value) =
+                entry.availability
+        {
+            self.extension_memory_bytes = Some(value.bytes);
+            self.extension_memory_limit = value.limit_bytes;
+            self.extension_memory_entries = Some(value.entry_count);
+        }
+        for (id, target, limit_target) in [
+            (
+                explorer_model::CacheTelemetryIdV1::IconsDisk,
+                &mut self.icon_disk_bytes,
+                Some(&mut self.icon_disk_limit),
+            ),
+            (
+                explorer_model::CacheTelemetryIdV1::ThumbnailsDisk,
+                &mut self.thumbnail_disk_bytes,
+                Some(&mut self.thumbnail_disk_limit),
+            ),
+            (
+                explorer_model::CacheTelemetryIdV1::ExtensionColumnsDisk,
+                &mut self.extension_disk_bytes,
+                Some(&mut self.extension_disk_limit),
+            ),
+            (
+                explorer_model::CacheTelemetryIdV1::MftPersistedIndex,
+                &mut self.mft_disk_bytes,
+                Some(&mut self.mft_disk_limit),
+            ),
+            (
+                explorer_model::CacheTelemetryIdV1::MftVolumeIndexMemory,
+                &mut self.mft_volume_index_memory_bytes,
+                Some(&mut self.mft_volume_index_memory_limit),
+            ),
+            (
+                explorer_model::CacheTelemetryIdV1::MftFileDataMemory,
+                &mut self.mft_file_data_memory_bytes,
+                Some(&mut self.mft_file_data_memory_limit),
+            ),
+            (
+                explorer_model::CacheTelemetryIdV1::MftAggregateMemory,
+                &mut self.mft_aggregate_memory_bytes,
+                Some(&mut self.mft_aggregate_memory_limit),
+            ),
+        ] {
+            if let Some(entry) = telemetry.entry(id)
+                && let explorer_model::CacheTelemetryAvailabilityV1::Available(value) =
+                    entry.availability
+            {
+                *target = Some(value.bytes);
+                if let Some(limit_target) = limit_target {
+                    *limit_target = value.limit_bytes;
+                }
+            }
+        }
+        if let Some(entry) = telemetry.entry(explorer_model::CacheTelemetryIdV1::MftServiceLru)
+            && let explorer_model::CacheTelemetryAvailabilityV1::Available(value) =
+                entry.availability
+        {
+            self.mft_service_bytes = Some(value.bytes);
+            self.mft_service_limit = value.limit_bytes;
+            self.mft_service_entries = Some(value.entry_count);
+            if let Some(counters) = value.counters {
+                self.mft_service_hits = Some(counters.hits);
+                self.mft_service_misses = Some(counters.misses);
+            }
+        }
+    }
+
+    fn retain_pending_from(&mut self, previous: Self) {
+        macro_rules! retain {
+            ($id:expr, $($field:ident),+ $(,)?) => {
+                if self.availability($id) == CacheUsageAvailabilityV1::Pending {
+                    $(if self.$field.is_none() { self.$field = previous.$field; })+
+                }
+            };
+        }
+        retain!(
+            explorer_model::CacheTelemetryIdV1::ExtensionColumnsMemory,
+            extension_memory_bytes,
+            extension_memory_limit,
+            extension_memory_entries
+        );
+        retain!(
+            explorer_model::CacheTelemetryIdV1::IconsDisk,
+            icon_disk_bytes,
+            icon_disk_limit
+        );
+        retain!(
+            explorer_model::CacheTelemetryIdV1::ThumbnailsDisk,
+            thumbnail_disk_bytes,
+            thumbnail_disk_limit
+        );
+        retain!(
+            explorer_model::CacheTelemetryIdV1::ExtensionColumnsDisk,
+            extension_disk_bytes,
+            extension_disk_limit
+        );
+        retain!(
+            explorer_model::CacheTelemetryIdV1::MftPersistedIndex,
+            mft_disk_bytes,
+            mft_disk_limit
+        );
+        retain!(
+            explorer_model::CacheTelemetryIdV1::MftVolumeIndexMemory,
+            mft_volume_index_memory_bytes,
+            mft_volume_index_memory_limit
+        );
+        retain!(
+            explorer_model::CacheTelemetryIdV1::MftFileDataMemory,
+            mft_file_data_memory_bytes,
+            mft_file_data_memory_limit
+        );
+        retain!(
+            explorer_model::CacheTelemetryIdV1::MftAggregateMemory,
+            mft_aggregate_memory_bytes,
+            mft_aggregate_memory_limit
+        );
+        retain!(
+            explorer_model::CacheTelemetryIdV1::MftServiceLru,
+            mft_service_bytes,
+            mft_service_limit,
+            mft_service_entries,
+            mft_service_hits,
+            mft_service_misses
+        );
+    }
+}
+
+struct CacheUsageSamplerV1 {
+    in_flight: AtomicBool,
+    cancelled: AtomicBool,
+    latest: Mutex<CacheUsageSnapshotV1>,
+}
+
+impl CacheUsageSamplerV1 {
+    fn new(initial: CacheUsageSnapshotV1) -> Self {
+        Self {
+            in_flight: AtomicBool::new(false),
+            cancelled: AtomicBool::new(false),
+            latest: Mutex::new(initial),
+        }
+    }
+
+    fn sample(
+        &self,
+        service: Option<&dyn explorer_model::ExplorerService>,
+    ) -> CacheUsageSnapshotV1 {
+        if self.cancelled.load(Ordering::Acquire)
+            || self
+                .in_flight
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            return self
+                .latest
+                .lock()
+                .map_or_else(|_| CacheUsageSnapshotV1::default(), |latest| *latest);
+        }
+        let previous = self
+            .latest
+            .lock()
+            .map_or_else(|_| CacheUsageSnapshotV1::default(), |latest| *latest);
+        let mut sampled = CacheUsageSnapshotV1::background_sample(service, &self.cancelled);
+        sampled.retain_pending_from(previous);
+        if !self.cancelled.load(Ordering::Acquire)
+            && let Ok(mut latest) = self.latest.lock()
+        {
+            *latest = sampled;
+        }
+        self.in_flight.store(false, Ordering::Release);
+        sampled
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -65,6 +376,15 @@ pub struct FolderOptionsWindow {
     extensions_scroll: ScrollHandle,
     scrollbar_drag: Option<ScrollbarDragV1>,
     snapshot: FolderOptionsWindowSnapshotV1,
+    cache_budget_inputs: Vec<gpui::Entity<EditableTextState>>,
+    cache_budget_input_baseline: explorer_model::CacheBudgetSettingsV1,
+    cache_usage_sampler: Arc<CacheUsageSamplerV1>,
+}
+
+impl Drop for FolderOptionsWindow {
+    fn drop(&mut self) {
+        self.cache_usage_sampler.cancel();
+    }
 }
 
 impl FolderOptionsWindow {
@@ -77,6 +397,50 @@ impl FolderOptionsWindow {
     ) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
+        let cache_budget_input_baseline = snapshot.draft.settings.cache_budgets;
+        let cache_budget_inputs = explorer_model::CACHE_BUDGET_DESCRIPTORS_V1
+            .into_iter()
+            .map(|descriptor| {
+                let value = snapshot.draft.settings.cache_budgets.get(descriptor.id);
+                cx.new(|cx| EditableTextState::new(StringStorage::from(value.to_string()), cx))
+            })
+            .collect::<Vec<_>>();
+        let cache_usage_sampler = Arc::new(CacheUsageSamplerV1::new(snapshot.cache_usage));
+        let refresh_sampler = Arc::clone(&cache_usage_sampler);
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let service = this
+                    .update(cx, |this, _| this.owner)
+                    .ok()
+                    .and_then(|owner| {
+                        owner
+                            .update(cx, |root, _, _| root.service_for_cache_telemetry())
+                            .ok()
+                    })
+                    .flatten();
+                let sampler = Arc::clone(&refresh_sampler);
+                let disk = cx
+                    .background_executor()
+                    .spawn(async move { sampler.sample(service.as_deref()) })
+                    .await;
+                if this
+                    .update(cx, |this, cx| {
+                        let owner = this.owner;
+                        if let Ok(usage) =
+                            owner.update(cx, |root, _, _| root.cache_usage_snapshot(disk))
+                        {
+                            this.snapshot.cache_usage = usage;
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
         Self {
             tokens,
             owner,
@@ -86,6 +450,9 @@ impl FolderOptionsWindow {
             extensions_scroll: ScrollHandle::new(),
             scrollbar_drag: None,
             snapshot,
+            cache_budget_inputs,
+            cache_budget_input_baseline,
+            cache_usage_sampler,
         }
     }
 
@@ -289,7 +656,38 @@ impl Render for FolderOptionsWindow {
                     action,
                     ExplorerAction::CloseFolderOptions | ExplorerAction::ConfirmFolderOptions
                 );
+                let cache_budgets = matches!(
+                    action,
+                    ExplorerAction::ApplyFolderOptions | ExplorerAction::ConfirmFolderOptions
+                )
+                .then(|| {
+                    let mut budgets = this.snapshot.draft.settings.cache_budgets;
+                    for (descriptor, input) in explorer_model::CACHE_BUDGET_DESCRIPTORS_V1
+                        .into_iter()
+                        .zip(&this.cache_budget_inputs)
+                    {
+                        if let Some(value) =
+                            parse_cache_budget_memory_mb(input.read(cx).as_str(), descriptor)
+                            && value != this.cache_budget_input_baseline.get(descriptor.id)
+                        {
+                            budgets.set(descriptor.id, value);
+                        }
+                    }
+                    budgets.normalized()
+                });
                 match owner.update(cx, |root, owner_window, cx| {
+                    if let Some(budgets) = cache_budgets {
+                        tracing::info!(
+                            mft_lru_mb = budgets.mft_lru_mb,
+                            "Folder Options cache budgets committed from editors"
+                        );
+                        root.dispatch_folder_options_action(
+                            ExplorerAction::SetFolderOptionCacheBudgets(budgets),
+                            ActionSource::Keyboard,
+                            owner_window,
+                            cx,
+                        );
+                    }
                     root.dispatch_folder_options_action(
                         action.clone(),
                         ActionSource::Mouse,
@@ -301,6 +699,7 @@ impl Render for FolderOptionsWindow {
                         .map(|draft| FolderOptionsWindowSnapshotV1 {
                             draft,
                             extensions: root.state.extensions().to_vec(),
+                            cache_usage: root.cache_usage_snapshot(this.snapshot.cache_usage),
                         })
                 }) {
                     Ok(Some(snapshot)) => this.snapshot = snapshot,
@@ -313,6 +712,29 @@ impl Render for FolderOptionsWindow {
                     Err(error) => {
                         tracing::warn!(%error, "Folder Options action owner is unavailable");
                     }
+                }
+                if let ExplorerAction::SetFolderOptionCacheBudgets(budgets) = action {
+                    tracing::info!(
+                        mft_lru_mb = budgets.mft_lru_mb,
+                        "Folder Options cache budgets updated"
+                    );
+                    for (descriptor, input) in explorer_model::CACHE_BUDGET_DESCRIPTORS_V1
+                        .into_iter()
+                        .zip(&this.cache_budget_inputs)
+                    {
+                        let value = budgets.get(descriptor.id).to_string();
+                        input.update(cx, |state, cx| state.emplace(&value, cx));
+                    }
+                }
+                if let Some(budgets) = cache_budgets {
+                    for (descriptor, input) in explorer_model::CACHE_BUDGET_DESCRIPTORS_V1
+                        .into_iter()
+                        .zip(&this.cache_budget_inputs)
+                    {
+                        let value = budgets.get(descriptor.id).to_string();
+                        input.update(cx, |state, cx| state.emplace(&value, cx));
+                    }
+                    this.cache_budget_input_baseline = budgets;
                 }
                 this.stop_drag();
                 if close {
@@ -379,6 +801,11 @@ impl Render for FolderOptionsWindow {
                 scroll,
                 scrollbar,
                 Some(on_action),
+                self.cache_budget_inputs
+                    .iter()
+                    .map(gpui::Entity::downgrade)
+                    .collect(),
+                self.snapshot.cache_usage,
             ))
     }
 }
@@ -388,6 +815,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cache_budget_input_accepts_arbitrary_values_and_clamps_per_row() {
+        let descriptor =
+            explorer_model::cache_budget_descriptor(explorer_model::CacheBudgetIdV1::MftLru);
+        assert_eq!(
+            parse_cache_budget_memory_mb("4096", descriptor),
+            Some(4_096)
+        );
+        assert_eq!(
+            parse_cache_budget_memory_mb("4097", descriptor),
+            Some(4_097)
+        );
+        assert_eq!(
+            parse_cache_budget_memory_mb("16384", descriptor),
+            Some(16_384)
+        );
+        assert_eq!(
+            parse_cache_budget_memory_mb("16385", descriptor),
+            Some(16_384)
+        );
+        assert_eq!(
+            parse_cache_budget_memory_mb(" 2048 ", descriptor),
+            Some(2_048)
+        );
+        assert_eq!(parse_cache_budget_memory_mb("0", descriptor), Some(128));
+        assert_eq!(parse_cache_budget_memory_mb("", descriptor), None);
+        assert_eq!(parse_cache_budget_memory_mb("512 MB", descriptor), None);
+    }
+
+    #[test]
     fn window_options_are_modeless_resizable_and_bounded() {
         let cx = gpui::TestAppContext::single();
         let app = cx.app.borrow();
@@ -395,5 +851,152 @@ mod tests {
         assert_eq!(options.kind, gpui::WindowKind::Normal);
         assert!(options.is_resizable);
         assert_eq!(options.window_min_size, Some(size(px(680.0), px(480.0))));
+    }
+
+    #[test]
+    fn disk_sampler_reentry_reuses_latest_completed_snapshot() {
+        let expected = CacheUsageSnapshotV1 {
+            icon_disk_bytes: Some(41),
+            ..CacheUsageSnapshotV1::default()
+        };
+        let sampler = CacheUsageSamplerV1::new(expected);
+        sampler.in_flight.store(true, Ordering::Release);
+        assert_eq!(sampler.sample(None), expected);
+        assert!(sampler.in_flight.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn host_snapshot_maps_disk_values_without_directory_scanning() {
+        let available = |id, category, bytes| explorer_model::CacheTelemetryEntryV1 {
+            id,
+            category,
+            availability: explorer_model::CacheTelemetryAvailabilityV1::Available(
+                explorer_model::CacheTelemetryValueV1 {
+                    bytes,
+                    limit_bytes: None,
+                    entry_count: 1,
+                    counters: None,
+                },
+            ),
+        };
+        let telemetry = explorer_model::CacheTelemetrySnapshotV1::new(vec![
+            available(
+                explorer_model::CacheTelemetryIdV1::IconsDisk,
+                explorer_model::CacheTelemetryCategoryV1::Disk,
+                11,
+            ),
+            available(
+                explorer_model::CacheTelemetryIdV1::ThumbnailsDisk,
+                explorer_model::CacheTelemetryCategoryV1::Disk,
+                22,
+            ),
+            available(
+                explorer_model::CacheTelemetryIdV1::ExtensionColumnsDisk,
+                explorer_model::CacheTelemetryCategoryV1::Disk,
+                33,
+            ),
+            available(
+                explorer_model::CacheTelemetryIdV1::MftPersistedIndex,
+                explorer_model::CacheTelemetryCategoryV1::MftService,
+                44,
+            ),
+            available(
+                explorer_model::CacheTelemetryIdV1::MftVolumeIndexMemory,
+                explorer_model::CacheTelemetryCategoryV1::MftService,
+                55,
+            ),
+            available(
+                explorer_model::CacheTelemetryIdV1::MftFileDataMemory,
+                explorer_model::CacheTelemetryCategoryV1::MftService,
+                66,
+            ),
+            available(
+                explorer_model::CacheTelemetryIdV1::MftAggregateMemory,
+                explorer_model::CacheTelemetryCategoryV1::MftService,
+                77,
+            ),
+        ])
+        .unwrap();
+        let mut snapshot = CacheUsageSnapshotV1::default();
+        snapshot.apply_host_telemetry(&telemetry);
+        assert_eq!(snapshot.icon_disk_bytes, Some(11));
+        assert_eq!(snapshot.thumbnail_disk_bytes, Some(22));
+        assert_eq!(snapshot.extension_disk_bytes, Some(33));
+        assert_eq!(snapshot.mft_disk_bytes, Some(44));
+        assert_eq!(snapshot.mft_volume_index_memory_bytes, Some(55));
+        assert_eq!(snapshot.mft_file_data_memory_bytes, Some(66));
+        assert_eq!(snapshot.mft_aggregate_memory_bytes, Some(77));
+    }
+
+    #[test]
+    fn pending_sample_retains_last_success_and_unavailable_does_not_claim_pending() {
+        let id = explorer_model::CacheTelemetryIdV1::MftServiceLru;
+        let available = explorer_model::CacheTelemetrySnapshotV1::new(vec![
+            explorer_model::CacheTelemetryEntryV1 {
+                id,
+                category: explorer_model::CacheTelemetryCategoryV1::MftService,
+                availability: explorer_model::CacheTelemetryAvailabilityV1::Available(
+                    explorer_model::CacheTelemetryValueV1 {
+                        bytes: 41,
+                        limit_bytes: Some(512),
+                        entry_count: 3,
+                        counters: Some(explorer_model::CacheTelemetryCountersV1 {
+                            hits: 5,
+                            misses: 7,
+                        }),
+                    },
+                ),
+            },
+        ])
+        .unwrap();
+        let mut previous = CacheUsageSnapshotV1::default();
+        previous.apply_host_telemetry(&available);
+
+        let pending = explorer_model::CacheTelemetrySnapshotV1::new(vec![
+            explorer_model::CacheTelemetryEntryV1 {
+                id,
+                category: explorer_model::CacheTelemetryCategoryV1::MftService,
+                availability: explorer_model::CacheTelemetryAvailabilityV1::Pending,
+            },
+        ])
+        .unwrap();
+        let mut next = CacheUsageSnapshotV1::default();
+        next.apply_host_telemetry(&pending);
+        next.retain_pending_from(previous);
+        assert_eq!(next.availability(id), CacheUsageAvailabilityV1::Pending);
+        assert_eq!(next.mft_service_bytes, Some(41));
+        assert_eq!(next.mft_service_limit, Some(512));
+        assert_eq!(next.mft_service_hits, Some(5));
+
+        let unavailable = explorer_model::CacheTelemetrySnapshotV1::new(vec![
+            explorer_model::CacheTelemetryEntryV1 {
+                id,
+                category: explorer_model::CacheTelemetryCategoryV1::MftService,
+                availability: explorer_model::CacheTelemetryAvailabilityV1::Unavailable,
+            },
+        ])
+        .unwrap();
+        next.apply_host_telemetry(&unavailable);
+        assert_eq!(next.availability(id), CacheUsageAvailabilityV1::Unavailable);
+
+        let recovered = explorer_model::CacheTelemetrySnapshotV1::new(vec![
+            explorer_model::CacheTelemetryEntryV1 {
+                id,
+                category: explorer_model::CacheTelemetryCategoryV1::MftService,
+                availability: explorer_model::CacheTelemetryAvailabilityV1::Available(
+                    explorer_model::CacheTelemetryValueV1 {
+                        bytes: 99,
+                        limit_bytes: Some(2_048),
+                        entry_count: 4,
+                        counters: None,
+                    },
+                ),
+            },
+        ])
+        .unwrap();
+        next.apply_host_telemetry(&recovered);
+        assert_eq!(next.availability(id), CacheUsageAvailabilityV1::Available);
+        assert_eq!(next.mft_service_bytes, Some(99));
+        assert_eq!(next.mft_service_limit, Some(2_048));
     }
 }
