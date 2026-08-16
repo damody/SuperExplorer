@@ -3,6 +3,8 @@
 use std::{ffi::c_void, path::Path, ptr, time::Duration};
 
 const PIPE_NAME: &str = r"\\.\pipe\SuperExplorerMftFolderSizeV1";
+const PIPE_SECURITY_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GRGW;;;IU)";
+const PIPE_TYPE_MESSAGE_READMODE_REJECT_REMOTE: u32 = 0x0000_0001 | 0x0000_0008;
 #[cfg(test)]
 static TEST_PIPE_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
@@ -596,7 +598,7 @@ pub(crate) fn serve_queries(
     let name = wide(PIPE_NAME);
     #[cfg(test)]
     let name = wide(test_pipe_name());
-    let sddl = wide("D:P(A;;GA;;;SY)(A;;GRGW;;;IU)");
+    let sddl = wide(PIPE_SECURITY_SDDL);
     let mut descriptor = ptr::null_mut();
     if unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -620,7 +622,7 @@ pub(crate) fn serve_queries(
             CreateNamedPipeW(
                 name.as_ptr(),
                 0x0000_0003,
-                0x0000_0001 | 0x0000_0008,
+                PIPE_TYPE_MESSAGE_READMODE_REJECT_REMOTE,
                 8,
                 4_096,
                 4_096,
@@ -1135,6 +1137,19 @@ mod tests {
             !format!("{expected:?}")
                 .to_ascii_lowercase()
                 .contains("path")
+        );
+    }
+
+    #[test]
+    fn diagnostics_pipe_security_is_local_system_and_interactive_user_only() {
+        assert_eq!(
+            PIPE_SECURITY_SDDL, "D:P(A;;GA;;;SY)(A;;GRGW;;;IU)",
+            "the diagnostics endpoint must not grant anonymous, network, or broad authenticated-user access"
+        );
+        assert_ne!(
+            PIPE_TYPE_MESSAGE_READMODE_REJECT_REMOTE & 0x0000_0008,
+            0,
+            "PIPE_REJECT_REMOTE_CLIENTS must remain enabled"
         );
     }
 

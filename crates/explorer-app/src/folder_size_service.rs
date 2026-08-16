@@ -15,6 +15,8 @@ pub(crate) const SNAPSHOT_SCHEMA_V2: u32 = 2;
 pub(crate) const MAX_SNAPSHOT_BYTES_V1: u64 = 64 * 1024 * 1024;
 pub(crate) const DEFAULT_MAX_NODES_V1: usize = 1_000_000;
 pub(crate) const MAX_DIAGNOSTIC_BYTES_V1: usize = 512;
+const PERSISTENT_RECORD_SCHEMA_V1: u32 = 1;
+const SEMANTIC_POLICY_VERSION_V1: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) enum SnapshotMethodV1 {
@@ -76,6 +78,30 @@ pub(crate) struct FolderSnapshotV1 {
     pub diagnostic: Option<String>,
     pub aggregate: FolderAggregateSnapshotV1,
     pub nodes: Vec<FolderSnapshotNodeV1>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct PersistentSnapshotKeyV1 {
+    root_identity: u64,
+    modified_stamp: u128,
+    semantic_policy_version: u32,
+    backend_data_version: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct PersistentSnapshotRecordV1 {
+    schema: u32,
+    key: PersistentSnapshotKeyV1,
+    snapshot: FolderSnapshotV1,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum FolderSnapshotDeltaV1 {
+    Add(FolderSnapshotNodeV1),
+    Update(FolderSnapshotNodeV1),
+    Remove(SnapshotNodeIdV1),
+    SubtreeComplete(SnapshotNodeIdV1),
+    ScanComplete(SnapshotStatusV1),
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -146,6 +172,16 @@ pub(crate) fn scan_recursive_reference(
     policy: RecursiveSnapshotPolicyV1,
     cancelled: impl Fn() -> bool,
 ) -> Result<FolderSnapshotV1, String> {
+    scan_recursive_reference_with_deltas(root, refresh_generation, policy, cancelled, |_| {})
+}
+
+pub(crate) fn scan_recursive_reference_with_deltas(
+    root: &Path,
+    refresh_generation: u64,
+    policy: RecursiveSnapshotPolicyV1,
+    cancelled: impl Fn() -> bool,
+    mut emit: impl FnMut(FolderSnapshotDeltaV1),
+) -> Result<FolderSnapshotV1, String> {
     let canonical_root = root
         .canonicalize()
         .map_err(|_| "folder snapshot root is unavailable".to_owned())?;
@@ -168,6 +204,7 @@ pub(crate) fn scan_recursive_reference(
         recursive_bytes: 0,
         status: SnapshotStatusV1::Complete,
     }];
+    emit(FolderSnapshotDeltaV1::Add(nodes[0].clone()));
     let mut indices = HashMap::from([(root_id, 0_usize)]);
     let mut queue = VecDeque::from([(canonical_root.clone(), root_id)]);
     let mut aggregate = FolderAggregateSnapshotV1 {
@@ -182,19 +219,24 @@ pub(crate) fn scan_recursive_reference(
     while let Some((directory, directory_id)) = queue.pop_front() {
         if cancelled() {
             aggregate.status = SnapshotStatusV1::Cancelled;
-            return Ok(finish_snapshot(
+            let snapshot = finish_snapshot(
                 root_id,
                 refresh_generation,
                 aggregate.status,
                 Some("folder snapshot cancelled".to_owned()),
                 aggregate,
                 nodes,
-            ));
+            );
+            emit(FolderSnapshotDeltaV1::ScanComplete(snapshot.status));
+            return Ok(snapshot);
         }
         let entries = match fs::read_dir(&directory) {
             Ok(entries) => entries,
             Err(_) => {
                 mark_partial(&mut nodes, &indices, directory_id);
+                if let Some(index) = indices.get(&directory_id).copied() {
+                    emit(FolderSnapshotDeltaV1::Update(nodes[index].clone()));
+                }
                 aggregate.status = SnapshotStatusV1::Partial;
                 diagnostic
                     .get_or_insert_with(|| "one or more subtrees were inaccessible".to_owned());
@@ -205,14 +247,16 @@ pub(crate) fn scan_recursive_reference(
             if nodes.len() >= policy.max_nodes {
                 aggregate.status = SnapshotStatusV1::ResourceLimited;
                 diagnostic = Some("folder snapshot node limit reached".to_owned());
-                return Ok(finish_snapshot(
+                let snapshot = finish_snapshot(
                     root_id,
                     refresh_generation,
                     aggregate.status,
                     diagnostic,
                     aggregate,
                     nodes,
-                ));
+                );
+                emit(FolderSnapshotDeltaV1::ScanComplete(snapshot.status));
+                return Ok(snapshot);
             }
             let path = entry.path();
             let Ok(metadata) = fs::symlink_metadata(&path) else {
@@ -242,6 +286,7 @@ pub(crate) fn scan_recursive_reference(
                 recursive_bytes: bytes,
                 status: SnapshotStatusV1::Complete,
             });
+            emit(FolderSnapshotDeltaV1::Add(nodes[index].clone()));
             indices.insert(id, index);
             if kind == SnapshotNodeKindV1::Directory {
                 aggregate.directory_count = aggregate.directory_count.saturating_add(1);
@@ -267,18 +312,25 @@ pub(crate) fn scan_recursive_reference(
             if nodes[index].status != SnapshotStatusV1::Complete {
                 nodes[parent_index].status = SnapshotStatusV1::Partial;
             }
+            emit(FolderSnapshotDeltaV1::Update(nodes[parent_index].clone()));
+        }
+        if nodes[index].kind == SnapshotNodeKindV1::Directory {
+            emit(FolderSnapshotDeltaV1::SubtreeComplete(nodes[index].id));
         }
     }
     aggregate.recursive_bytes = nodes[0].recursive_bytes;
     aggregate.status = nodes[0].status;
-    Ok(finish_snapshot(
+    emit(FolderSnapshotDeltaV1::SubtreeComplete(root_id));
+    let snapshot = finish_snapshot(
         root_id,
         refresh_generation,
         aggregate.status,
         diagnostic,
         aggregate,
         nodes,
-    ))
+    );
+    emit(FolderSnapshotDeltaV1::ScanComplete(snapshot.status));
+    Ok(snapshot)
 }
 
 pub(crate) fn snapshot_from_indexed_entries(
@@ -457,6 +509,11 @@ fn try_everything_snapshot(
     Err("Everything folder snapshot lacks complete-subtree proof".to_owned())
 }
 
+fn force_recursive_backend_for_validation() -> bool {
+    std::env::var_os("SUPEREXPLORER_FOLDER_SNAPSHOT_FORCE_RECURSIVE")
+        .is_some_and(|value| value == "1")
+}
+
 #[cfg(windows)]
 fn is_reparse_point(metadata: &fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
@@ -469,13 +526,21 @@ fn is_reparse_point(metadata: &fs::Metadata) -> bool {
     metadata.file_type().is_symlink()
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub(crate) struct FolderSizeServiceCountersV1 {
     pub physical_scans: u64,
     pub subscribers: u64,
     pub cache_hits: u64,
     pub stale_rejections: u64,
     pub fallback_count: u64,
+}
+
+#[cfg(windows)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum MftHelperPromptStateV1 {
+    InFlight,
+    Succeeded,
+    Failed(String),
 }
 
 #[derive(Default)]
@@ -494,6 +559,8 @@ pub(crate) struct FolderSizeServiceV1 {
     mft_aggregates: HashMap<String, Arc<crate::mft_size_map::MftAggregateIndexV1>>,
     #[cfg(windows)]
     mft_checkpoints: HashMap<String, crate::mft_journal::MftCheckpointV2>,
+    #[cfg(windows)]
+    mft_helper_prompts: HashMap<String, MftHelperPromptStateV1>,
 }
 
 impl FolderSizeServiceV1 {
@@ -507,6 +574,51 @@ impl FolderSizeServiceV1 {
 
     pub(crate) fn set_mft_cache_memory_mb(&mut self, value: u16) {
         self.mft_cache_memory_mb = explorer_model::normalized_mft_folder_cache_memory_mb(value);
+    }
+
+    /// Drops generation-bound publications for a manual refresh while keeping
+    /// a complete modified-date record eligible for the correction contract:
+    /// an unchanged folder may be rebound to the new generation without I/O.
+    pub(crate) fn advance_generation(&mut self, root: &Path) {
+        let Ok(root) = root.canonicalize() else {
+            return;
+        };
+        self.snapshots
+            .retain(|key, _| key.canonical_root != root || self.leases.contains_key(key));
+        self.lru.retain(|key| self.snapshots.contains_key(key));
+    }
+
+    /// A watcher change invalidates every cached requested root that is an
+    /// ancestor of the changed path. Descendant cache roots are also removed
+    /// for directory rename/removal events where their old identity vanished.
+    pub(crate) fn invalidate_watcher_path(&mut self, changed: &Path) {
+        let canonical_changed =
+            canonicalize_existing_ancestor(changed).unwrap_or_else(|| changed.to_path_buf());
+        let affected = self
+            .modified_snapshots
+            .iter()
+            .filter_map(|(root, (stamp, _))| {
+                (canonical_changed.starts_with(root) || root.starts_with(&canonical_changed))
+                    .then_some((root.clone(), *stamp))
+            })
+            .collect::<Vec<_>>();
+        for (root, stamp) in &affected {
+            if let Some(path) = persistent_snapshot_path(root, *stamp) {
+                let _ = fs::remove_file(path);
+            }
+        }
+        let affected_roots = affected
+            .into_iter()
+            .map(|(root, _)| root)
+            .collect::<HashSet<_>>();
+        self.modified_snapshots
+            .retain(|root, _| !affected_roots.contains(root));
+        self.aggregate_snapshot_roots
+            .retain(|root| !affected_roots.contains(root));
+        self.snapshots
+            .retain(|key, _| !affected_roots.contains(&key.canonical_root));
+        self.lru
+            .retain(|key| !affected_roots.contains(&key.canonical_root));
     }
 
     pub(crate) fn subscribe(&mut self, key: SnapshotLeaseKeyV1) -> Option<Arc<FolderSnapshotV1>> {
@@ -539,6 +651,7 @@ impl FolderSizeServiceV1 {
             refresh_generation,
         };
         let modified_stamp = folder_modified_stamp(&canonical_root)?;
+        self.invalidate_modified_mismatch(&canonical_root, modified_stamp);
         self.counters.subscribers = self.counters.subscribers.saturating_add(1);
         if !require_current_mft && let Some(snapshot) = self.snapshots.get(&key).cloned() {
             self.counters.cache_hits = self.counters.cache_hits.saturating_add(1);
@@ -560,6 +673,7 @@ impl FolderSizeServiceV1 {
         }
         if !require_current_mft
             && let Some(mut reused) = read_persistent_snapshot(&canonical_root, modified_stamp)
+            && self.cached_snapshot_backend_is_current(&canonical_root, &reused)
         {
             reused.refresh_generation = refresh_generation;
             let reused = Arc::new(reused);
@@ -576,31 +690,52 @@ impl FolderSizeServiceV1 {
         #[cfg(all(windows, not(test)))]
         let accelerated = {
             method_changed(SnapshotMethodV1::Mft);
-            self.try_mft_aggregate(&canonical_root, refresh_generation, &cancelled)
+            if force_recursive_backend_for_validation() {
+                Err("MFT disabled by deterministic validation override".to_owned())
+            } else {
+                self.try_mft_aggregate(&canonical_root, refresh_generation, &cancelled)
+                    .or_else(|service_error| {
+                        self.try_helper_mft_aggregate(
+                            &canonical_root,
+                            refresh_generation,
+                            &cancelled,
+                        )
+                        .map_err(|helper_error| {
+                            format!("service: {service_error}; helper: {helper_error}")
+                        })
+                    })
+            }
         };
         #[cfg(any(not(windows), test))]
         let accelerated: Result<FolderSnapshotV1, String> =
             Err("MFT backend disabled in this build".to_owned());
         let snapshot = match accelerated {
             Ok(snapshot) => snapshot,
-            Err(error) => {
+            Err(mft_error) => {
                 if require_current_mft {
-                    return Err(format!("MFT unavailable: {error}"));
+                    return Err(format!("MFT unavailable: {mft_error}"));
                 }
-                #[cfg(test)]
-                {
-                    method_changed(SnapshotMethodV1::Recursive);
-                    scan_recursive_reference(
-                        root,
-                        refresh_generation,
-                        RecursiveSnapshotPolicyV1::default(),
-                        cancelled,
-                    )?
-                }
-                #[cfg(not(test))]
-                {
-                    tracing::debug!(%error, path = %root.display(), "MFT aggregate unavailable");
-                    return Err(format!("MFT unavailable: {error}"));
+                self.counters.fallback_count = self.counters.fallback_count.saturating_add(1);
+                method_changed(SnapshotMethodV1::Everything);
+                match try_everything_snapshot(root, refresh_generation, &cancelled) {
+                    Ok(snapshot) => snapshot,
+                    Err(everything_error) => {
+                        self.counters.fallback_count =
+                            self.counters.fallback_count.saturating_add(1);
+                        method_changed(SnapshotMethodV1::Recursive);
+                        tracing::debug!(
+                            %mft_error,
+                            %everything_error,
+                            path = %root.display(),
+                            "accelerated folder aggregate unavailable; using recursive reference"
+                        );
+                        scan_recursive_reference(
+                            root,
+                            refresh_generation,
+                            RecursiveSnapshotPolicyV1::default(),
+                            cancelled,
+                        )?
+                    }
                 }
             }
         };
@@ -635,6 +770,7 @@ impl FolderSizeServiceV1 {
             refresh_generation,
         };
         let modified_stamp = folder_modified_stamp(&canonical_root)?;
+        self.invalidate_modified_mismatch(&canonical_root, modified_stamp);
         self.counters.subscribers = self.counters.subscribers.saturating_add(1);
         if let Some(snapshot) = self
             .snapshots
@@ -643,6 +779,7 @@ impl FolderSizeServiceV1 {
             .cloned()
         {
             self.counters.cache_hits = self.counters.cache_hits.saturating_add(1);
+            self.emit_validation_counters();
             return Ok(snapshot);
         }
         if let Some((cached_stamp, cached)) = self.modified_snapshots.get(&canonical_root)
@@ -658,10 +795,12 @@ impl FolderSizeServiceV1 {
             self.lru.push_back(key);
             self.counters.cache_hits = self.counters.cache_hits.saturating_add(1);
             self.evict();
+            self.emit_validation_counters();
             return Ok(reused);
         }
         if let Some(mut reused) = read_persistent_snapshot(&canonical_root, modified_stamp)
             && snapshot_has_complete_tree(&reused)
+            && self.cached_snapshot_backend_is_current(&canonical_root, &reused)
         {
             reused.refresh_generation = refresh_generation;
             let reused = Arc::new(reused);
@@ -673,32 +812,49 @@ impl FolderSizeServiceV1 {
             self.lru.push_back(key);
             self.counters.cache_hits = self.counters.cache_hits.saturating_add(1);
             self.evict();
+            self.emit_validation_counters();
             return Ok(reused);
         }
         // Installed Windows builds keep MFT ownership in the LocalSystem
         // service. The interactive process consumes only the service-computed
         // aggregate and projects it into the host-owned UI snapshot.
         #[cfg(all(windows, not(test)))]
-        let accelerated = self.try_mft_snapshot(root, refresh_generation, &cancelled);
+        let accelerated = if force_recursive_backend_for_validation() {
+            Err("MFT disabled by deterministic validation override".to_owned())
+        } else {
+            self.try_mft_snapshot(root, refresh_generation, &cancelled)
+                .or_else(|service_error| {
+                    self.try_helper_mft_snapshot(root, refresh_generation, &cancelled)
+                        .map_err(|helper_error| {
+                            format!("service: {service_error}; helper: {helper_error}")
+                        })
+                })
+        };
         #[cfg(any(not(windows), test))]
         let accelerated: Result<FolderSnapshotV1, String> =
             Err("MFT backend disabled in this build".to_owned());
         let snapshot = match accelerated {
             Ok(snapshot) => snapshot,
-            Err(error) => {
-                #[cfg(test)]
-                {
-                    scan_recursive_reference(
-                        root,
-                        refresh_generation,
-                        RecursiveSnapshotPolicyV1::default(),
-                        cancelled,
-                    )?
-                }
-                #[cfg(not(test))]
-                {
-                    tracing::debug!(%error, path = %root.display(), "MFT folder snapshot unavailable");
-                    return Err(format!("MFT unavailable: {error}"));
+            Err(mft_error) => {
+                self.counters.fallback_count = self.counters.fallback_count.saturating_add(1);
+                match try_everything_snapshot(root, refresh_generation, &cancelled) {
+                    Ok(snapshot) => snapshot,
+                    Err(everything_error) => {
+                        self.counters.fallback_count =
+                            self.counters.fallback_count.saturating_add(1);
+                        tracing::debug!(
+                            %mft_error,
+                            %everything_error,
+                            path = %root.display(),
+                            "accelerated folder tree unavailable; using recursive reference"
+                        );
+                        scan_recursive_reference(
+                            root,
+                            refresh_generation,
+                            RecursiveSnapshotPolicyV1::default(),
+                            cancelled,
+                        )?
+                    }
                 }
             }
         };
@@ -722,6 +878,7 @@ impl FolderSizeServiceV1 {
     ) -> bool {
         if snapshot.refresh_generation != key.refresh_generation {
             self.counters.stale_rejections = self.counters.stale_rejections.saturating_add(1);
+            self.emit_validation_counters();
             return false;
         }
         self.counters.physical_scans = self.counters.physical_scans.saturating_add(1);
@@ -737,7 +894,20 @@ impl FolderSizeServiceV1 {
         self.lru.retain(|candidate| candidate != &key);
         self.lru.push_back(key);
         self.evict();
+        self.emit_validation_counters();
         true
+    }
+
+    /// Publishes privacy-safe counters only when a headful validation process
+    /// explicitly supplies an output path. Production sessions do no extra I/O.
+    fn emit_validation_counters(&self) {
+        let Some(path) = std::env::var_os("SUPEREXPLORER_FOLDER_SNAPSHOT_COUNTERS") else {
+            return;
+        };
+        let Ok(bytes) = serde_json::to_vec_pretty(&self.counters) else {
+            return;
+        };
+        let _ = fs::write(PathBuf::from(path), bytes);
     }
 
     #[cfg(windows)]
@@ -783,14 +953,7 @@ impl FolderSizeServiceV1 {
                 cursor.generation,
                 latest.generation,
             )? {
-                if delta.volume != cursor.volume
-                    || delta.journal_id != cursor.journal_id
-                    || delta.generation != cursor.generation.saturating_add(1)
-                    || delta.start_usn != cursor.next_usn
-                    || delta.next_usn < delta.start_usn
-                {
-                    return Err("MFT service delta chain is not contiguous".to_owned());
-                }
+                let next_cursor = crate::mft_journal::validate_delta_after(cursor, &delta)?;
                 for change in &delta.changes {
                     for reference in index.ancestor_references(change.reference) {
                         if let Some(path) =
@@ -808,12 +971,7 @@ impl FolderSizeServiceV1 {
                         }
                     }
                 }
-                cursor = crate::mft_journal::MftCheckpointV2::new(
-                    cursor.volume,
-                    cursor.journal_id,
-                    delta.next_usn,
-                    delta.generation,
-                );
+                cursor = next_cursor;
             }
         }
         if cursor != latest {
@@ -883,12 +1041,24 @@ impl FolderSizeServiceV1 {
                 is_directory: node.is_directory,
             });
         }
-        snapshot_from_indexed_entries(
+        let aggregate = crate::mft_query::query_folder(&canonical_root, self.mft_cache_memory_mb)?;
+        if aggregate.partial {
+            return Err("MFT hierarchy aggregate is partial".to_owned());
+        }
+        let mut snapshot = snapshot_from_indexed_entries(
             &canonical_root,
             refresh_generation,
             SnapshotMethodV1::Mft,
             entries,
-        )
+        )?;
+        if snapshot.aggregate.recursive_bytes != aggregate.logical_bytes
+            || snapshot.aggregate.file_count != aggregate.file_count
+            || snapshot.aggregate.directory_count != aggregate.directory_count
+        {
+            return Err("MFT hierarchy completeness proof mismatch".to_owned());
+        }
+        snapshot.mft_generation = Some(aggregate.generation);
+        Ok(snapshot)
     }
 
     #[cfg(windows)]
@@ -937,6 +1107,122 @@ impl FolderSizeServiceV1 {
         })
     }
 
+    #[cfg(windows)]
+    fn helper_mft_index(
+        &mut self,
+        root: &Path,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<(Arc<crate::mft_size_map::MftIndexV1>, u64), String> {
+        let canonical_root = root
+            .canonicalize()
+            .map_err(|_| "MFT helper root is unavailable".to_owned())?;
+        let volume = service_volume_letter(&canonical_root)?.to_string();
+        let root_reference = crate::mft_size_map::file_reference_number(&canonical_root)?;
+        if let Some(index) = self.mft_indexes.get(&volume).cloned() {
+            index.project_subtree(root_reference, DEFAULT_MAX_NODES_V1, || cancelled())?;
+            return Ok((index, root_reference));
+        }
+        match self.mft_helper_prompts.get(&volume) {
+            Some(MftHelperPromptStateV1::InFlight) => {
+                return Err("MFT helper prompt is already in flight for this volume".to_owned());
+            }
+            Some(MftHelperPromptStateV1::Failed(error)) => {
+                return Err(format!(
+                    "MFT helper was already declined or failed for this volume: {error}"
+                ));
+            }
+            Some(MftHelperPromptStateV1::Succeeded) | None => {}
+        }
+        self.mft_helper_prompts
+            .insert(volume.clone(), MftHelperPromptStateV1::InFlight);
+        let result =
+            crate::mft_size_map::read_volume_index_with_helper(&canonical_root, || cancelled())
+                .and_then(|index| {
+                    index.validate_topology()?;
+                    index.project_subtree(root_reference, DEFAULT_MAX_NODES_V1, || cancelled())?;
+                    Ok(Arc::new(index))
+                });
+        match result {
+            Ok(index) => {
+                self.mft_indexes.insert(volume.clone(), Arc::clone(&index));
+                self.mft_helper_prompts
+                    .insert(volume, MftHelperPromptStateV1::Succeeded);
+                Ok((index, root_reference))
+            }
+            Err(error) => {
+                self.mft_helper_prompts
+                    .insert(volume, MftHelperPromptStateV1::Failed(error.clone()));
+                Err(error)
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    fn try_helper_mft_snapshot(
+        &mut self,
+        root: &Path,
+        refresh_generation: u64,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<FolderSnapshotV1, String> {
+        let canonical_root = root
+            .canonicalize()
+            .map_err(|_| "MFT helper root is unavailable".to_owned())?;
+        let (index, root_reference) = self.helper_mft_index(&canonical_root, cancelled)?;
+        let projected =
+            index.project_subtree(root_reference, DEFAULT_MAX_NODES_V1, || cancelled())?;
+        let mut paths = HashMap::from([(root_reference, canonical_root.clone())]);
+        let mut entries = Vec::with_capacity(projected.len().saturating_sub(1));
+        for node in projected.into_iter().skip(1) {
+            let parent = node
+                .parent_reference
+                .and_then(|reference| paths.get(&reference))
+                .ok_or_else(|| "MFT helper projection parent is missing".to_owned())?;
+            let path = parent.join(&node.name);
+            paths.insert(node.reference, path.clone());
+            entries.push(IndexedSnapshotEntryV1 {
+                path,
+                bytes: if node.is_directory {
+                    0
+                } else {
+                    node.logical_bytes
+                },
+                is_directory: node.is_directory,
+            });
+        }
+        let snapshot = snapshot_from_indexed_entries(
+            &canonical_root,
+            refresh_generation,
+            SnapshotMethodV1::Mft,
+            entries,
+        )?;
+        let expected = crate::mft_size_map::MftAggregateIndexV1::build(&index, 8)?
+            .get(root_reference)
+            .ok_or_else(|| "MFT helper aggregate root is missing".to_owned())?;
+        if snapshot.aggregate.recursive_bytes != expected.logical_bytes
+            || snapshot.aggregate.file_count != expected.file_count
+            || snapshot.aggregate.directory_count != expected.directory_count
+        {
+            return Err("MFT helper completeness proof mismatch".to_owned());
+        }
+        Ok(snapshot)
+    }
+
+    #[cfg(windows)]
+    fn try_helper_mft_aggregate(
+        &mut self,
+        root: &Path,
+        refresh_generation: u64,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<FolderSnapshotV1, String> {
+        // Validate a complete bounded subtree before publishing an aggregate;
+        // this keeps a truncated helper index from becoming an exact zero.
+        let snapshot = self.try_helper_mft_snapshot(root, refresh_generation, cancelled)?;
+        Ok(FolderSnapshotV1 {
+            nodes: vec![snapshot.nodes[0].clone()],
+            ..snapshot
+        })
+    }
+
     pub(crate) fn release(&mut self, key: &SnapshotLeaseKeyV1) {
         let Some(count) = self.leases.get_mut(key) else {
             return;
@@ -963,11 +1249,17 @@ impl FolderSizeServiceV1 {
         self.modified_snapshots.retain(|path, _| {
             path_is_within_depth(path, &root, max_depth) || aggregate_snapshot_roots.contains(path)
         });
-        for snapshot in self.snapshots.values_mut() {
-            *snapshot = Arc::new(compact_aggregate_snapshot(snapshot));
+        for (key, snapshot) in &mut self.snapshots {
+            if !self.aggregate_snapshot_roots.contains(&key.canonical_root) {
+                *snapshot = Arc::new(compact_aggregate_snapshot(snapshot));
+            }
         }
         for (path, (stamp, snapshot)) in &mut self.modified_snapshots {
-            *snapshot = Arc::new(compact_aggregate_snapshot(snapshot));
+            // Folder Size roots must retain their bounded tree projection so a
+            // later Size Map subscriber can reuse the same physical walk.
+            if !self.aggregate_snapshot_roots.contains(path) {
+                *snapshot = Arc::new(compact_aggregate_snapshot(snapshot));
+            }
             write_persistent_snapshot(path, *stamp, snapshot);
         }
         self.lru.retain(|key| self.snapshots.contains_key(key));
@@ -981,6 +1273,41 @@ impl FolderSizeServiceV1 {
 
     pub(crate) fn counters(&self) -> FolderSizeServiceCountersV1 {
         self.counters.clone()
+    }
+
+    fn cached_snapshot_backend_is_current(&self, root: &Path, snapshot: &FolderSnapshotV1) -> bool {
+        if snapshot.method != SnapshotMethodV1::Mft {
+            return true;
+        }
+        #[cfg(all(windows, not(test)))]
+        {
+            crate::mft_query::query_folder(root, self.mft_cache_memory_mb).is_ok_and(|current| {
+                !current.partial && snapshot.mft_generation == Some(current.generation)
+            })
+        }
+        #[cfg(any(not(windows), test))]
+        {
+            let _ = root;
+            false
+        }
+    }
+
+    fn invalidate_modified_mismatch(&mut self, root: &Path, current_stamp: u128) {
+        let Some((stale_stamp, _)) = self.modified_snapshots.get(root) else {
+            return;
+        };
+        if *stale_stamp == current_stamp {
+            return;
+        }
+        let stale_stamp = *stale_stamp;
+        if let Some(path) = persistent_snapshot_path(root, stale_stamp) {
+            let _ = fs::remove_file(path);
+        }
+        self.modified_snapshots.remove(root);
+        self.aggregate_snapshot_roots.remove(root);
+        self.snapshots
+            .retain(|key, _| key.canonical_root != root || self.leases.contains_key(key));
+        self.lru.retain(|key| self.snapshots.contains_key(key));
     }
 
     fn evict(&mut self) {
@@ -1004,6 +1331,21 @@ impl FolderSizeServiceV1 {
             self.modified_snapshots.remove(&oldest);
             self.aggregate_snapshot_roots.remove(&oldest);
         }
+    }
+}
+
+fn canonicalize_existing_ancestor(path: &Path) -> Option<PathBuf> {
+    let mut cursor = path;
+    let mut tail = Vec::new();
+    loop {
+        if let Ok(mut canonical) = cursor.canonicalize() {
+            for component in tail.iter().rev() {
+                canonical.push(component);
+            }
+            return Some(canonical);
+        }
+        tail.push(cursor.file_name()?.to_os_string());
+        cursor = cursor.parent()?;
     }
 }
 
@@ -1052,6 +1394,22 @@ fn persistent_snapshot_path(root: &Path, modified_stamp: u128) -> Option<PathBuf
         })
 }
 
+fn persistent_root_identity(root: &Path) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    root.to_string_lossy()
+        .to_ascii_lowercase()
+        .hash(&mut hasher);
+    hasher.finish()
+}
+
+const fn backend_data_version(method: SnapshotMethodV1) -> u32 {
+    match method {
+        SnapshotMethodV1::Recursive => 1,
+        SnapshotMethodV1::Mft => 2,
+        SnapshotMethodV1::Everything => 1,
+    }
+}
+
 fn read_persistent_snapshot(root: &Path, modified_stamp: u128) -> Option<FolderSnapshotV1> {
     let path = persistent_snapshot_path(root, modified_stamp)?;
     let metadata = fs::symlink_metadata(&path).ok()?;
@@ -1061,8 +1419,26 @@ fn read_persistent_snapshot(root: &Path, modified_stamp: u128) -> Option<FolderS
     {
         return None;
     }
-    let snapshot = decode_snapshot_bounded(fs::File::open(path).ok()?).ok()?;
-    (snapshot.status == SnapshotStatusV1::Complete).then_some(snapshot)
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .ok()?
+        .take(MAX_SNAPSHOT_BYTES_V1 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_SNAPSHOT_BYTES_V1 {
+        return None;
+    }
+    let record: PersistentSnapshotRecordV1 = serde_json::from_slice(&bytes).ok()?;
+    let expected = PersistentSnapshotKeyV1 {
+        root_identity: persistent_root_identity(root),
+        modified_stamp,
+        semantic_policy_version: SEMANTIC_POLICY_VERSION_V1,
+        backend_data_version: backend_data_version(record.snapshot.method),
+    };
+    (record.schema == PERSISTENT_RECORD_SCHEMA_V1
+        && record.key == expected
+        && record.snapshot.status == SnapshotStatusV1::Complete)
+        .then_some(record.snapshot)
 }
 
 fn write_persistent_snapshot(root: &Path, modified_stamp: u128, snapshot: &FolderSnapshotV1) {
@@ -1072,9 +1448,22 @@ fn write_persistent_snapshot(root: &Path, modified_stamp: u128, snapshot: &Folde
     let Some(directory) = destination.parent() else {
         return;
     };
-    let Ok(bytes) = encode_snapshot_bounded(snapshot) else {
+    let record = PersistentSnapshotRecordV1 {
+        schema: PERSISTENT_RECORD_SCHEMA_V1,
+        key: PersistentSnapshotKeyV1 {
+            root_identity: persistent_root_identity(root),
+            modified_stamp,
+            semantic_policy_version: SEMANTIC_POLICY_VERSION_V1,
+            backend_data_version: backend_data_version(snapshot.method),
+        },
+        snapshot: snapshot.clone(),
+    };
+    let Ok(bytes) = serde_json::to_vec(&record) else {
         return;
     };
+    if bytes.len() as u64 > MAX_SNAPSHOT_BYTES_V1 {
+        return;
+    }
     if fs::create_dir_all(directory).is_err() {
         return;
     }
@@ -1253,6 +1642,47 @@ mod tests {
     }
 
     #[test]
+    fn recursive_reference_emits_progressive_nodes_and_terminal_delta() {
+        let root = fixture_root("progressive-deltas");
+        fs::create_dir_all(root.join("child")).unwrap();
+        fs::write(root.join("child/payload.bin"), vec![0_u8; 9]).unwrap();
+        let mut deltas = Vec::new();
+        let snapshot = scan_recursive_reference_with_deltas(
+            &root,
+            7,
+            RecursiveSnapshotPolicyV1::default(),
+            || false,
+            |delta| deltas.push(delta),
+        )
+        .unwrap();
+
+        assert_eq!(snapshot.aggregate.recursive_bytes, 9);
+        assert!(matches!(
+            deltas.first(),
+            Some(FolderSnapshotDeltaV1::Add(_))
+        ));
+        assert!(
+            deltas
+                .iter()
+                .any(|delta| matches!(delta, FolderSnapshotDeltaV1::SubtreeComplete(_)))
+        );
+        assert_eq!(
+            deltas.last(),
+            Some(&FolderSnapshotDeltaV1::ScanComplete(
+                SnapshotStatusV1::Complete
+            ))
+        );
+        assert_eq!(
+            deltas
+                .iter()
+                .filter(|delta| matches!(delta, FolderSnapshotDeltaV1::Add(_)))
+                .count(),
+            snapshot.nodes.len()
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn snapshot_codec_rejects_corruption_schema_and_oversize() {
         let root = fixture_root("codec");
         fs::create_dir_all(&root).unwrap();
@@ -1406,6 +1836,79 @@ mod tests {
         let third = service.snapshot_or_scan(&root, 3, || false).unwrap();
         assert_eq!(third.aggregate.recursive_bytes, 22);
         assert_eq!(service.counters().physical_scans, 2);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn manual_generation_rebinds_unchanged_cache_and_watcher_invalidates_ancestors() {
+        let root = fixture_root("watcher-invalidation");
+        let child = root.join("child");
+        let payload = child.join("payload.bin");
+        fs::create_dir_all(&child).unwrap();
+        fs::write(&payload, vec![0_u8; 4]).unwrap();
+        let mut service = FolderSizeServiceV1::with_capacity(8);
+
+        let first = service.snapshot_or_scan(&root, 1, || false).unwrap();
+        assert_eq!(first.aggregate.recursive_bytes, 4);
+        service.advance_generation(&root);
+        let rebound = service.snapshot_or_scan(&root, 2, || false).unwrap();
+        assert_eq!(rebound.refresh_generation, 2);
+        assert_eq!(service.counters().physical_scans, 1);
+
+        fs::write(&payload, vec![0_u8; 9]).unwrap();
+        service.invalidate_watcher_path(&payload);
+        let refreshed = service.snapshot_or_scan(&root, 3, || false).unwrap();
+        assert_eq!(refreshed.aggregate.recursive_bytes, 9);
+        assert_eq!(service.counters().physical_scans, 2);
+
+        let renamed = root.join("renamed");
+        fs::rename(&child, &renamed).unwrap();
+        service.invalidate_watcher_path(&child);
+        let after_rename = service.snapshot_or_scan(&root, 4, || false).unwrap();
+        assert_eq!(after_rename.aggregate.recursive_bytes, 9);
+        assert!(after_rename.nodes.iter().any(|node| node.name == "renamed"));
+        assert_eq!(service.counters().physical_scans, 3);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn persistent_record_rejects_policy_backend_identity_and_corruption() {
+        let root = fixture_root("persistent-record-key");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("payload.bin"), vec![0_u8; 13]).unwrap();
+        let canonical = root.canonicalize().unwrap();
+        let stamp = folder_modified_stamp(&canonical).unwrap();
+        let snapshot =
+            scan_recursive_reference(&canonical, 1, RecursiveSnapshotPolicyV1::default(), || {
+                false
+            })
+            .unwrap();
+        write_persistent_snapshot(&canonical, stamp, &snapshot);
+        assert_eq!(
+            read_persistent_snapshot(&canonical, stamp)
+                .unwrap()
+                .aggregate
+                .recursive_bytes,
+            13
+        );
+
+        let path = persistent_snapshot_path(&canonical, stamp).unwrap();
+        let mut record: PersistentSnapshotRecordV1 =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        record.key.semantic_policy_version = record.key.semantic_policy_version.saturating_add(1);
+        fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        assert!(read_persistent_snapshot(&canonical, stamp).is_none());
+
+        write_persistent_snapshot(&canonical, stamp, &snapshot);
+        let mut record: PersistentSnapshotRecordV1 =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        record.key.backend_data_version = record.key.backend_data_version.saturating_add(1);
+        fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        assert!(read_persistent_snapshot(&canonical, stamp).is_none());
+
+        fs::write(&path, b"not-json").unwrap();
+        assert!(read_persistent_snapshot(&canonical, stamp).is_none());
+        let _ = fs::remove_file(path);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1619,5 +2122,78 @@ mod tests {
         assert_eq!(method_calls.get(), 0);
         assert_eq!(service.counters().fallback_count, 0);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn helper_prompt_state_coalesces_and_does_not_repeat_terminal_failure() {
+        let root = fixture_root("helper-prompt-state");
+        fs::create_dir_all(&root).unwrap();
+        let canonical = root.canonicalize().unwrap();
+        let volume = service_volume_letter(&canonical).unwrap().to_string();
+        let mut service = FolderSizeServiceV1::with_capacity(8);
+
+        service
+            .mft_helper_prompts
+            .insert(volume.clone(), MftHelperPromptStateV1::InFlight);
+        let in_flight = service.helper_mft_index(&canonical, &|| false).unwrap_err();
+        assert!(in_flight.contains("already in flight"));
+
+        service.mft_helper_prompts.insert(
+            volume,
+            MftHelperPromptStateV1::Failed("user declined UAC".to_owned()),
+        );
+        let declined = service.helper_mft_index(&canonical, &|| false).unwrap_err();
+        assert!(declined.contains("already declined or failed"));
+        assert!(declined.contains("user declined UAC"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires SUPEREXPLORER_PROFILE_FOLDER_ROOT"]
+    fn opt_in_profile_cold_warm_folder_backends() {
+        let root = PathBuf::from(
+            std::env::var_os("SUPEREXPLORER_PROFILE_FOLDER_ROOT")
+                .expect("SUPEREXPLORER_PROFILE_FOLDER_ROOT is required"),
+        );
+        let started = std::time::Instant::now();
+        let cold =
+            scan_recursive_reference(&root, 1, RecursiveSnapshotPolicyV1::default(), || false)
+                .unwrap();
+        let cold_ms = started.elapsed().as_millis();
+        let started = std::time::Instant::now();
+        let warm_reference =
+            scan_recursive_reference(&root, 2, RecursiveSnapshotPolicyV1::default(), || false)
+                .unwrap();
+        let warm_reference_ms = started.elapsed().as_millis();
+        assert_eq!(cold.aggregate, warm_reference.aggregate);
+
+        let mut service = FolderSizeServiceV1::with_capacity(8);
+        let started = std::time::Instant::now();
+        let first = service.snapshot_or_scan(&root, 3, || false).unwrap();
+        let service_first_ms = started.elapsed().as_millis();
+        let started = std::time::Instant::now();
+        let warm = service.snapshot_or_scan(&root, 4, || false).unwrap();
+        let service_warm_ms = started.elapsed().as_millis();
+        assert_eq!(cold.aggregate, first.aggregate);
+        assert_eq!(first.aggregate, warm.aggregate);
+
+        let started = std::time::Instant::now();
+        let everything =
+            explorer_shell_win::query_folder_index(&root, DEFAULT_MAX_NODES_V1, || false);
+        let everything_ms = started.elapsed().as_millis();
+        println!(
+            "PROFILE_JSON={{\"root\":{:?},\"recursive_cold_ms\":{},\"recursive_warm_ms\":{},\"service_first_ms\":{},\"service_warm_ms\":{},\"bytes\":{},\"files\":{},\"directories\":{},\"everything_ms\":{},\"everything_eligible\":false,\"everything_result\":{:?}}}",
+            root.display().to_string(),
+            cold_ms,
+            warm_reference_ms,
+            service_first_ms,
+            service_warm_ms,
+            cold.aggregate.recursive_bytes,
+            cold.aggregate.file_count,
+            cold.aggregate.directory_count,
+            everything_ms,
+            everything.as_ref().map(Vec::len).map_err(String::as_str),
+        );
     }
 }
