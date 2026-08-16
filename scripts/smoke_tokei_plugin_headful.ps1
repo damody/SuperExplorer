@@ -13,6 +13,7 @@ param(
     [switch]$InputPreparationRepairMode,
     [switch]$DirectoryAdmissionUnavailableMode,
     [switch]$DirectoryAdmissionBoundaryMode,
+    [switch]$DirectoryAdmissionPendingMode,
     [switch]$UseExecutableInPlace,
     [switch]$LockOwnerMode,
     [switch]$DualCodeLinesMode,
@@ -22,6 +23,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'UitestHeadful.psm1') -Force
+Initialize-UitestHeadful
 $workspace = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $pluginRoot = if ($LockOwnerMode) { Join-Path $workspace 'sdk\fixtures\rust-lock-owner-column' } elseif ([IO.Path]::IsPathRooted($PluginRoot)) { $PluginRoot } else { Join-Path $workspace $PluginRoot }
 $codeLinesColumn = if ($pluginRoot -match 'lua-tokei-code-lines-column') { 'Code lines' } else { 'Main code lines' }
@@ -58,7 +61,7 @@ if ($DualCodeLinesMode) {
         $InitialPath = $dualFixture
     }
 }
-if ($DirectoryAdmissionUnavailableMode) {
+if ($DirectoryAdmissionUnavailableMode -or $DirectoryAdmissionBoundaryMode -or $DirectoryAdmissionPendingMode) {
     $admissionOutputRoot = if ([IO.Path]::IsPathRooted($OutputDirectory)) { $OutputDirectory } else { Join-Path $workspace $OutputDirectory }
     $admissionFixture = Join-Path $admissionOutputRoot 'mft-count-admission-fixture'
     $underLimit = Join-Path $admissionFixture 'files-999'
@@ -97,7 +100,7 @@ $localAppData=Join-Path $profileRoot 'LocalAppData'
 $roamingAppData=Join-Path $profileRoot 'AppData'
 $extensionState=Join-Path $profileRoot 'ExtensionState'
 New-Item -ItemType Directory -Force -Path $localAppData,$roamingAppData,$extensionState | Out-Null
-$alternateFolder=Join-Path $OutputDirectory 'lock-owner-alternate'
+$alternateFolder=Join-Path $InitialPath 'lock-owner-alternate'
 if ($LockOwnerMode) {
     New-Item -ItemType Directory -Force -Path $alternateFolder | Out-Null
     [IO.File]::WriteAllText((Join-Path $alternateFolder 'alternate-marker.txt'),'alternate')
@@ -346,8 +349,14 @@ function Set-Address($Root,[string]$Path,[string]$ExpectedRow) {
             Select-Object -First 1
     }
     if ($null -eq $editor) { throw 'Address editor did not appear after Ctrl+L' }
-    $editor.SetFocus(); Send-Key 0x41 @(0x11)
-    [Windows.Forms.SendKeys]::SendWait($Path)
+    $editor.SetFocus()
+    $valuePattern=$null
+    if ($editor.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$valuePattern)) {
+        ([Windows.Automation.ValuePattern]$valuePattern).SetValue($Path)
+    } else {
+        Send-Key 0x41 @(0x11)
+        [Windows.Forms.SendKeys]::SendWait($Path)
+    }
     Send-Key 0x0D
     $deadline=[DateTime]::UtcNow.AddSeconds(8); $row=$null
     do { Start-Sleep -Milliseconds 100; $row=Find-NamePrefix $Root $ExpectedRow }
@@ -359,6 +368,16 @@ function Find-NamePrefix($Root,[string]$Prefix) {
     $all=$Root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
     0..($all.Count-1) | ForEach-Object { $all.Item($_) } |
         Where-Object { $_.Current.Name -like "$Prefix*" } | Select-Object -First 1
+}
+
+function Find-VisibleRowPrefix($Root,[string]$Prefix) {
+    $all=$Root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+    $rootTop=$Root.Current.BoundingRectangle.Top
+    0..($all.Count-1) | ForEach-Object { $all.Item($_) } | Where-Object {
+        ($_.Current.Name -like "$Prefix*" -or $_.Current.Name -like "Name: $Prefix*") -and
+        $_.Current.BoundingRectangle.Top -gt ($rootTop+180) -and
+        $_.Current.BoundingRectangle.Height -gt 0
+    } | Select-Object -First 1
 }
 
 function Find-CellOnRow($Root,[string]$RowName,[string]$CellPrefix) {
@@ -531,6 +550,39 @@ function Begin-DetailsColumnMidpointDrag($Root,$Source,$Target,[double]$TargetFr
     }
 }
 
+function Invoke-DetailsColumnPhysicalDrag($Source,$Target,[double]$TargetFraction) {
+    $sourceBounds=$Source.Current.BoundingRectangle
+    $targetBounds=$Target.Current.BoundingRectangle
+    $fromX=[int]($sourceBounds.Left+$sourceBounds.Width/2)
+    $fromY=[int]($sourceBounds.Top+$sourceBounds.Height/2)
+    $toX=[int]($targetBounds.Left+$targetBounds.Width*$TargetFraction)
+    $toY=[int]($targetBounds.Top+$targetBounds.Height/2)
+    [void][TokeiHeadfulSmoke.Native]::SetForegroundWindow($window)
+    Start-Sleep -Milliseconds 100
+    if (-not [RustExplorerUitest.Native]::SetPhysicalCursorPos($fromX,$fromY)) {
+        throw 'Could not position the Details drag pointer'
+    }
+    Start-Sleep -Milliseconds 100
+    [TokeiHeadfulSmoke.Native]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero)
+    foreach ($step in 1..16) {
+        $x=[int]($fromX+(($toX-$fromX)*$step/16.0))
+        $y=[int]($fromY+(($toY-$fromY)*$step/16.0))
+        [void][RustExplorerUitest.Native]::SetPhysicalCursorPos($x,$y)
+        [TokeiHeadfulSmoke.Native]::mouse_event(0x0001,0,0,0,[UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 35
+    }
+    [TokeiHeadfulSmoke.Native]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 400
+    [ordered]@{
+        from_x=$fromX; from_y=$fromY
+        to_x=$toX; to_y=$toY
+        target_fraction=$TargetFraction
+        source_left=$sourceBounds.Left; source_right=$sourceBounds.Right
+        target_left=$targetBounds.Left; target_right=$targetBounds.Right
+        target_midpoint=($targetBounds.Left+$targetBounds.Width/2.0)
+    }
+}
+
 $diagnostics=Join-Path $OutputDirectory 'diagnostics.json'
 $childEnvironment=[ordered]@{
     EXPLORER_VISUAL_FIXTURE='1'; EXPLORER_VISUAL_REAL_SHELL='1'; EXPLORER_VISUAL_WIDTH='1280'; EXPLORER_VISUAL_HEIGHT='760'
@@ -539,6 +591,9 @@ $childEnvironment=[ordered]@{
 }
 if ($LockOwnerMode) {
     $childEnvironment.EXPLORER_LOCK_OWNER_TEST_DELAY_MS='900'
+}
+if ($DirectoryAdmissionPendingMode) {
+    $childEnvironment.SUPEREXPLORER_DIRECTORY_FACTS_VALIDATION_DELAY_MS='1500'
 }
 $previousEnvironment=@{}
 foreach($entry in $childEnvironment.GetEnumerator()) {
@@ -603,10 +658,33 @@ try {
         $detailsHeader = Find-ButtonName $root 'Sort by Name'
         if ($null -eq $detailsHeader) { $detailsHeader = Find-ButtonNamePrefix $root 'Name, sorted' }
         if ($null -eq $detailsHeader) { throw 'Could not find a Details header for the column chooser' }
-        Click-Element $root $detailsHeader -Right
-        Start-Sleep -Milliseconds 250
-        $desktop = [Windows.Automation.AutomationElement]::RootElement
-        $all = $desktop.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+        [void][TokeiHeadfulSmoke.Native]::SetForegroundWindow($window)
+        Start-Sleep -Milliseconds 100
+        $headerPoint = Get-UitestPhysicalPoint -Element $detailsHeader -HorizontalOffset 30
+        $clientPoint = [RustExplorerUitest.Native+POINT]::new()
+        $clientPoint.X = $headerPoint.X
+        $clientPoint.Y = $headerPoint.Y
+        if (-not [RustExplorerUitest.Native]::ScreenToClient($window, [ref]$clientPoint)) {
+            throw 'Could not convert the Details header point to client coordinates'
+        }
+        $clientCoordinates = [IntPtr](($clientPoint.X -band 0xffff) -bor (($clientPoint.Y -band 0xffff) -shl 16))
+        if (-not [RustExplorerUitest.Native]::PostMessage($window, 0x0204, [IntPtr]2, $clientCoordinates) -or
+            -not [RustExplorerUitest.Native]::PostMessage($window, 0x0205, [IntPtr]0, $clientCoordinates)) {
+            throw 'Could not dispatch the Details header right-click'
+        }
+        Start-Sleep -Milliseconds 220
+        $chooserDeadline = [DateTime]::UtcNow.AddSeconds(5)
+        $chooser = $null
+        do {
+            $chooser = $root.FindFirst(
+                [Windows.Automation.TreeScope]::Descendants,
+                [Windows.Automation.PropertyCondition]::new(
+                    [Windows.Automation.AutomationElement]::NameProperty,
+                    'Choose details columns'))
+            if ($null -eq $chooser) { Start-Sleep -Milliseconds 80 }
+        } while ($null -eq $chooser -and [DateTime]::UtcNow -lt $chooserDeadline)
+        if ($null -eq $chooser) { throw 'Details column chooser did not open' }
+        $all = $root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
         $fileCountItem = 0..($all.Count-1) | ForEach-Object { $all.Item($_) } | Where-Object {
             $_.Current.ControlType -eq [Windows.Automation.ControlType]::MenuItem -and
             ($_.Current.Name -eq 'File Count' -or $_.Current.Name -like 'File Count, *')
@@ -618,11 +696,35 @@ try {
             Start-Sleep -Milliseconds 180
         }
         if (-not $fileCountItem.Current.Name.EndsWith(', checked',[StringComparison]::Ordinal)) {
-            Click-Element $root $fileCountItem
-            Start-Sleep -Milliseconds 300
+            Invoke-UitestClick -Element $fileCountItem
+            Start-Sleep -Milliseconds $(if ($DirectoryAdmissionPendingMode) { 30 } else { 300 })
         }
         Send-Key 0x1B
         Start-Sleep -Milliseconds 250
+        if ($DirectoryAdmissionPendingMode) {
+            $pendingText = -join @(0x7B49,0x5F85,0x20,0x46,0x69,0x6C,0x65,0x20,0x43,0x6F,0x75,0x6E,0x74,0x2026 | ForEach-Object { [char]$_ })
+            $deadline = [DateTime]::UtcNow.AddSeconds(1)
+            $pending = @()
+            do {
+                $all = $root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+                $pending = @(0..($all.Count-1) | ForEach-Object { $all.Item($_) } | Where-Object {
+                    $_.Current.Name -match [regex]::Escape($pendingText)
+                })
+                if ($pending.Count -gt 0) { break }
+                Start-Sleep -Milliseconds 20
+            } while ([DateTime]::UtcNow -lt $deadline)
+            if ($pending.Count -eq 0) { throw 'Expected a pending File Count admission state' }
+            Capture-Window $window (Join-Path $OutputDirectory 'code-lines-file-count-pending.png')
+            if (-not [TokeiHeadfulSmoke.Native]::PostMessage($window,0x0010,[UIntPtr]::Zero,[IntPtr]::Zero)) { throw 'Could not request clean app shutdown' }
+            if (-not $process.WaitForExit(10000)) { throw 'App did not complete clean shutdown' }
+            [pscustomobject]@{
+                status='passed'; dependency_state='pending'; pending_cells=$pending.Count
+                accessible_reason=$pendingText; clean_shutdown=$true
+                screenshots=@('code-lines-file-count-pending.png')
+            } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Encoding utf8
+            Get-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Raw
+            return
+        }
     }
     if ($LockOwnerMode) {
         $deadline=[DateTime]::UtcNow.AddSeconds(40); $header=$null; $ownerCell=$null
@@ -648,7 +750,38 @@ try {
             @{ Name='native'; Parent=$nativeCwdParent; Nested=$nativeCwdNested; Marker='native-marker.txt'; ParentRow='cwd-native-parent' },
             @{ Name='wow64'; Parent=$wow64CwdParent; Nested=$wow64CwdNested; Marker='wow64-marker.txt'; ParentRow='cwd-wow64-parent' }
         )) {
-            Set-Address $root $fixture.Parent 'nested'
+            $parentRow=Find-VisibleRowPrefix $root $fixture.ParentRow
+            if ($null -eq $parentRow) { throw "$($fixture.Name) parent fixture row was not visible" }
+            $selectionPattern=$null
+            if (-not $parentRow.TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern,[ref]$selectionPattern)) {
+                throw "$($fixture.Name) parent row did not expose SelectionItemPattern"
+            }
+            ([Windows.Automation.SelectionItemPattern]$selectionPattern).Select()
+            [void][TokeiHeadfulSmoke.Native]::SetForegroundWindow($window)
+            $enterKey=[UIntPtr]::new([uint64]0x0D)
+            [void][TokeiHeadfulSmoke.Native]::PostMessage($window,0x0100,$enterKey,[IntPtr]::Zero)
+            [void][TokeiHeadfulSmoke.Native]::PostMessage($window,0x0101,$enterKey,[IntPtr]::Zero)
+            $navigationDeadline=[DateTime]::UtcNow.AddSeconds(8); $nestedRow=$null
+            do {
+                Start-Sleep -Milliseconds 100
+                $nestedRow=Find-VisibleRowPrefix $root 'nested'
+            } while ($null -eq $nestedRow -and [DateTime]::UtcNow -lt $navigationDeadline)
+            if ($null -eq $nestedRow) {
+                $parentRow=Find-VisibleRowPrefix $root $fixture.ParentRow
+                if ($null -ne $parentRow) {
+                    Click-ElementPointer $root $parentRow
+                    Start-Sleep -Milliseconds 90
+                    Click-ElementPointer $root $parentRow
+                    $navigationDeadline=[DateTime]::UtcNow.AddSeconds(8)
+                    do {
+                        Start-Sleep -Milliseconds 100
+                        $nestedRow=Find-VisibleRowPrefix $root 'nested'
+                    } while ($null -eq $nestedRow -and [DateTime]::UtcNow -lt $navigationDeadline)
+                }
+            }
+            if ($null -eq $nestedRow) {
+                throw "$($fixture.Name) parent row did not navigate to nested; element=$($parentRow.Current.Name) type=$($parentRow.Current.ControlType.ProgrammaticName) bounds=$($parentRow.Current.BoundingRectangle)"
+            }
             $deadline=[DateTime]::UtcNow.AddSeconds(20); $nestedOwner=$null
             do {
                 Start-Sleep -Milliseconds 150
@@ -698,7 +831,21 @@ try {
         if ($null -eq $newTab) { throw 'New tab button was unavailable' }
         Click-Element $root $newTab
         Start-Sleep -Milliseconds 500
-        Set-Address $root $alternateFolder 'alternate-marker.txt'
+        $alternateRow=Find-VisibleRowPrefix $root 'lock-owner-alternate'
+        if ($null -eq $alternateRow) { throw 'Alternate-folder row was unavailable in the new tab' }
+        $alternateSelection=$null
+        if ($alternateRow.TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern,[ref]$alternateSelection)) {
+            ([Windows.Automation.SelectionItemPattern]$alternateSelection).Select()
+        } else {
+            Click-ElementPointer $root $alternateRow
+        }
+        $alternateRow.SetFocus(); Send-Key 0x0D
+        $alternateDeadline=[DateTime]::UtcNow.AddSeconds(8); $alternateMarker=$null
+        do {
+            Start-Sleep -Milliseconds 100
+            $alternateMarker=Find-VisibleRowPrefix $root 'alternate-marker.txt'
+        } while ($null -eq $alternateMarker -and [DateTime]::UtcNow -lt $alternateDeadline)
+        if ($null -eq $alternateMarker) { throw 'New tab did not navigate into the alternate folder' }
         Start-Sleep -Milliseconds 1400
         $all=$root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
         $crossContextOwner=0..($all.Count-1) | ForEach-Object { $all.Item($_) } |
@@ -748,8 +895,7 @@ try {
             $optionsRoot=0..($windows.Count-1) | ForEach-Object { $windows.Item($_) } | Where-Object {
                 $_.Current.NativeWindowHandle -ne 0 -and $_.Current.ProcessId -eq $process.Id -and
                 ($_.Current.Name -eq 'Folder Options' -or $_.Current.Name -eq $folderOptionsName -or
-                    $null -ne $_.FindFirst([Windows.Automation.TreeScope]::Descendants,
-                        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::AutomationIdProperty,'folder-options-window')))
+                    $_.Current.AutomationId -eq 'folder-options-window')
             } | Select-Object -First 1
         } while ($null -eq $optionsRoot -and [DateTime]::UtcNow -lt $deadline)
         if ($null -eq $optionsRoot) { throw 'Folder Options native window was unavailable' }
@@ -762,7 +908,7 @@ try {
         while ($null -eq $extensionsTab -and [DateTime]::UtcNow -lt $deadline)
         if ($null -eq $extensionsTab) { $extensionsTab=Find-Name $root 'Extensions' }
         if ($null -eq $extensionsTab) { throw 'Folder Options Extensions tab was unavailable' }
-        Click-Element $root $extensionsTab
+        Click-ElementScreen $extensionsTab
         $deadline=[DateTime]::UtcNow.AddSeconds(5); $toggle=$null
         do { Start-Sleep -Milliseconds 100; $toggle=Find-ControlTypeName $root ([Windows.Automation.ControlType]::CheckBox) 'Lock owners' }
         while ($null -eq $toggle -and [DateTime]::UtcNow -lt $deadline)
@@ -793,6 +939,7 @@ try {
         Start-Sleep -Milliseconds 250
         $toggle=Find-ControlTypeName $root ([Windows.Automation.ControlType]::CheckBox) 'Lock owner'
         if ($null -eq $toggle) { throw 'Lock owner checkbox disappeared after scrolling' }
+        Capture-Window $window (Join-Path $OutputDirectory 'lock-owner-options-before-toggle.png')
         Click-ElementPointer $root $toggle
         Start-Sleep -Milliseconds 250
         $toggle=Find-ControlTypeName $root ([Windows.Automation.ControlType]::CheckBox) 'Lock owner'
@@ -802,16 +949,19 @@ try {
             ([Windows.Automation.TogglePattern]$togglePattern).Current.ToggleState -ne [Windows.Automation.ToggleState]::Off) {
             throw 'Lock owner extension checkbox did not turn off'
         }
+        Capture-Window $window (Join-Path $OutputDirectory 'lock-owner-options-after-toggle.png')
         $apply=Find-AutomationId $root 'folder-options-apply'
         if ($null -eq $apply) { $apply=Find-ButtonName $root 'Apply' }
         if ($null -eq $apply) { $apply=Find-Name $root (([string][char]0x5957)+[char]0x7528) }
         if ($null -eq $apply) { throw 'Folder Options Apply was unavailable' }
-        Click-Element $root $apply
+        Click-ElementPointer $root $apply
+        Start-Sleep -Milliseconds 700
         $ok=Find-AutomationId $root 'folder-options-ok'
         if ($null -eq $ok) { $ok=Find-ButtonName $root 'OK' }
         if ($null -eq $ok) { $ok=Find-Name $root (([string][char]0x78BA)+[char]0x5B9A) }
         if ($null -eq $ok) { throw 'Folder Options OK was unavailable' }
-        Click-Element $root $ok
+        Click-ElementPointer $root $ok
+        Start-Sleep -Milliseconds 700
         $root=$mainRoot
         $window=$mainWindow
         [void][TokeiHeadfulSmoke.Native]::SetForegroundWindow($window)
@@ -867,6 +1017,7 @@ try {
         if (-not $process.WaitForExit(10000)) { throw 'App did not complete clean shutdown' }
         [pscustomobject]@{
             status='passed'; dependency_state='unavailable'; unavailable_cells=$dependencyUnavailable.Count
+            visible_label='Limit'; accessible_reason=$dependencyUnavailableText
             file_count_column_hidden=$true; callback_values=0; clean_shutdown=$true
             screenshots=@('code-lines-dependency-unavailable.png')
         } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Encoding utf8
@@ -876,13 +1027,16 @@ try {
     if ($DirectoryAdmissionBoundaryMode) {
         if ($cells.Count -lt 2) { throw "Expected admitted Code Lines values for files-999 and nested-counts; found $($cells.Count)" }
         if ($overLimit.Count -lt 1) { throw "Expected the files-1000 over-limit Host state; found $($overLimit.Count)" }
-        if ($null -ne (Find-ButtonName $root 'Sort by File Count')) { throw 'Hidden File Count dependency unexpectedly made the built-in column visible' }
+        $fileCountHeader = Find-ButtonName $root 'Sort by File Count'
+        if ($EnableFileCountColumn -and $null -eq $fileCountHeader) { throw 'Visible File Count dependency was not present for the boundary proof' }
+        if (-not $EnableFileCountColumn -and $null -ne $fileCountHeader) { throw 'Hidden File Count dependency unexpectedly made the built-in column visible' }
         Capture-Window $window (Join-Path $OutputDirectory 'code-lines-999-1000-boundary.png')
         if (-not [TokeiHeadfulSmoke.Native]::PostMessage($window,0x0010,[UIntPtr]::Zero,[IntPtr]::Zero)) { throw 'Could not request clean app shutdown' }
         if (-not $process.WaitForExit(10000)) { throw 'App did not complete clean shutdown' }
         [pscustomobject]@{
-            status='passed'; admitted_cells=$cells.Count; over_limit_cells=$overLimit.Count
-            file_count_column_hidden=$true; clean_shutdown=$true
+            status='passed'; dependency_state='over-limit'; admitted_cells=$cells.Count; over_limit_cells=$overLimit.Count
+            visible_label='Limit'; accessible_reason=$overLimitText
+            file_count_column_visible=[bool]$EnableFileCountColumn; clean_shutdown=$true
             screenshots=@('code-lines-999-1000-boundary.png')
         } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Encoding utf8
         Get-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Raw
@@ -1024,17 +1178,14 @@ try {
         if (-not $DualCodeLinesRealFolderMode) {
             $nameHeader=Find-ButtonName $root 'Sort by Name'
             if ($null -eq $nameHeader) { $nameHeader=Find-ButtonNamePrefix $root 'Name, sorted' }
-            $dateHeader=Find-ButtonName $root 'Sort by Date modified'
-            if ($null -eq $dateHeader) { throw 'Date modified header was unavailable for reorder test' }
-            Drag-ElementToElement $root $luaHeader $dateHeader
+            $dualDragEvidence=Invoke-DetailsColumnPhysicalDrag $luaHeader $rustHeader 0.25
             $luaHeader=Find-ButtonName $root 'Sort by Code lines'
             $rustHeader=Find-ButtonName $root 'Sort by Main code lines'
-            $dateHeader=Find-ButtonName $root 'Sort by Date modified'
-            if ($luaHeader.Current.BoundingRectangle.Left -ge $dateHeader.Current.BoundingRectangle.Left) {
+            if ($luaHeader.Current.BoundingRectangle.Left -ge $rustHeader.Current.BoundingRectangle.Left) {
                 Capture-Window $window (Join-Path $OutputDirectory 'column-drag-failure.png')
-                throw 'Code lines was not moved before Date modified by pointer drag'
+                throw "Code lines was not moved before Main code lines by pointer drag: $($dualDragEvidence | ConvertTo-Json -Compress)"
             }
-            Drag-ElementToElement $root $nameHeader $rustHeader
+            [void](Invoke-DetailsColumnPhysicalDrag $nameHeader $rustHeader 0.5)
             $nameHeader=Find-ButtonName $root 'Sort by Name'
             if ($null -eq $nameHeader) { $nameHeader=Find-ButtonNamePrefix $root 'Name, sorted' }
             if ($nameHeader.Current.BoundingRectangle.Left -gt $rustHeader.Current.BoundingRectangle.Left) {
@@ -1107,7 +1258,59 @@ try {
         $expectedBroker=if (Test-Path -LiteralPath $expectedBrokerPath) { (Resolve-Path -LiteralPath $expectedBrokerPath).Path } else { $null }
         $unexpectedChildren=if ($InputPreparationRepairMode) { @() } else { @($descendants | Where-Object { $null -eq $expectedBroker -or ($_ -split ':\d+$')[0] -ine $expectedBroker }) }
         if ($unexpectedChildren.Count -ne 0) { throw "Unexpected plugin/tool descendant process observed: $($unexpectedChildren | ConvertTo-Json -Compress)" }
-        [pscustomobject]@{status='passed'; directory_values=$cells.Count; dual_real_folder_values=$dualRealFolderValues; aligned_columns=$alignedColumns; blank_excluded_from_value=$true; no_progress_bars=$noProgressBars; observed_descendant_processes=$descendants; observed_plugin_tool_descendants=$unexpectedChildren; clean_shutdown=$true; screenshots=$(if($DualCodeLinesMode -and -not $DualCodeLinesRealFolderMode){@('code-lines.png','columns-reordered.png')}else{@('code-lines.png')})} |
+        $restartPersisted=$null
+        if ($DualCodeLinesMode -and -not $DualCodeLinesRealFolderMode) {
+            $processObserver.Dispose()
+            $processObserver=$null
+            foreach($entry in $childEnvironment.GetEnumerator()) {
+                [Environment]::SetEnvironmentVariable($entry.Key,[string]$entry.Value,'Process')
+            }
+            try {
+                $processObserver=[TokeiHeadfulSmoke.JobProcessObserver]::StartSuspended($Executable,$pluginArguments,$workspace)
+            } finally {
+                foreach($entry in $childEnvironment.GetEnumerator()) {
+                    [Environment]::SetEnvironmentVariable($entry.Key,$previousEnvironment[$entry.Key],'Process')
+                }
+            }
+            $process=$processObserver.Process
+            $deadline=[DateTime]::UtcNow.AddSeconds(35)
+            $window=[IntPtr]::Zero
+            do {
+                Start-Sleep -Milliseconds 100
+                $process.Refresh()
+                if ($process.HasExited) { throw "Restarted SuperExplorer exited before opening a window (exit code $($process.ExitCode))" }
+                $window=$process.MainWindowHandle
+            } while ($window -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline)
+            if ($window -eq [IntPtr]::Zero) { throw 'Timed out waiting for restarted SuperExplorer' }
+            [void][TokeiHeadfulSmoke.Native]::SetForegroundWindow($window)
+            $root=[Windows.Automation.AutomationElement]::FromHandle($window)
+            $deadline=[DateTime]::UtcNow.AddSeconds(30)
+            do {
+                Start-Sleep -Milliseconds 150
+                $nameHeader=Find-ButtonName $root 'Sort by Name'
+                if ($null -eq $nameHeader) { $nameHeader=Find-ButtonNamePrefix $root 'Name, sorted' }
+                $luaHeader=Find-ButtonName $root 'Sort by Code lines'
+                $rustHeader=Find-ButtonName $root 'Sort by Main code lines'
+            } while (($null -eq $nameHeader -or $null -eq $luaHeader -or $null -eq $rustHeader) -and [DateTime]::UtcNow -lt $deadline)
+            if ($null -eq $nameHeader -or $null -eq $luaHeader -or $null -eq $rustHeader) {
+                throw 'Restarted app did not expose the persisted details-column layout'
+            }
+            if ($luaHeader.Current.BoundingRectangle.Left -ge $rustHeader.Current.BoundingRectangle.Left) {
+                throw 'Code lines reorder did not persist after a clean app restart'
+            }
+            if ($nameHeader.Current.BoundingRectangle.Left -ge $luaHeader.Current.BoundingRectangle.Left) {
+                throw 'Name was not the fixed leftmost column after a clean app restart'
+            }
+            $restartPersisted=$true
+            Capture-Window $window (Join-Path $OutputDirectory 'columns-reordered-restarted.png')
+            if (-not [TokeiHeadfulSmoke.Native]::PostMessage($window,0x0010,[UIntPtr]::Zero,[IntPtr]::Zero)) { throw 'Could not request clean restarted-app shutdown' }
+            if (-not $process.WaitForExit(10000)) { throw 'Restarted app did not complete clean shutdown' }
+            $restartDescendants=@($processObserver.WaitForActiveProcessZero(10000))
+            $restartUnexpectedChildren=@($restartDescendants | Where-Object { $null -eq $expectedBroker -or ($_ -split ':\d+$')[0] -ine $expectedBroker })
+            if ($restartUnexpectedChildren.Count -ne 0) { throw "Unexpected plugin/tool descendant after restart: $($restartUnexpectedChildren | ConvertTo-Json -Compress)" }
+            $descendants=@($descendants)+@($restartDescendants)
+        }
+        [pscustomobject]@{status='passed'; directory_values=$cells.Count; dual_real_folder_values=$dualRealFolderValues; aligned_columns=$alignedColumns; blank_excluded_from_value=$true; no_progress_bars=$noProgressBars; restart_persisted=$restartPersisted; observed_descendant_processes=$descendants; observed_plugin_tool_descendants=$unexpectedChildren; clean_shutdown=$true; screenshots=$(if($DualCodeLinesMode -and -not $DualCodeLinesRealFolderMode){@('code-lines.png','columns-reordered.png','columns-reordered-restarted.png')}else{@('code-lines.png')})} |
             ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Encoding utf8
         Get-Content -LiteralPath (Join-Path $OutputDirectory 'report.json') -Raw
         return

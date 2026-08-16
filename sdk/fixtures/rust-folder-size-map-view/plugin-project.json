@@ -18,7 +18,7 @@
     "entrypoint": "plugin.dll"
   },
   "features": [
-    { "id": "view", "capabilities": ["abi", "filesystem.read"] }
+    { "id": "view", "capabilities": ["abi", "folder.tree"] }
   ],
   "contributions": [
     {
@@ -32,7 +32,7 @@
       "id": "size-map",
       "feature_id": "view",
       "kind": "view-mode",
-      "capabilities": ["abi"],
+      "capabilities": ["abi", "folder.tree"],
       "payload": "src/lib.rs"
     }
   ],

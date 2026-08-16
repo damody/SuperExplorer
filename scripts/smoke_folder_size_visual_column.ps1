@@ -2,7 +2,8 @@ param(
     [string]$Executable = 'target\debug\SuperExplorer.exe',
     [string]$PluginDll = 'sdk\fixtures\rust-folder-size-visual-column\target\x86_64-pc-windows-msvc\debug\rust_folder_size_visual_column.dll',
     [string]$InitialPath = 'sdk\fixtures\rust-folder-size-visual-column\fixtures\sample',
-    [string]$OutputDirectory = 'target\rust-folder-size-visual-column-headful'
+    [string]$OutputDirectory = 'target\rust-folder-size-visual-column-headful',
+    [switch]$ForceRecursive
 )
 
 $ErrorActionPreference = 'Stop'
@@ -56,6 +57,7 @@ function Capture([IntPtr]$window,[string]$path) {
     $b=[Drawing.Bitmap]::new($r.Right-$r.Left,$r.Bottom-$r.Top); try { $g=[Drawing.Graphics]::FromImage($b); try { $dc=$g.GetHdc(); try { if (-not [FolderSizeHeadful.Native]::PrintWindow($window,$dc,2)) { throw 'PrintWindow failed' } } finally {$g.ReleaseHdc($dc)} } finally {$g.Dispose()}; $b.Save($path,[Drawing.Imaging.ImageFormat]::Png) } finally {$b.Dispose()}
 }
 function Find-Name($root,[string]$name) { $root.FindFirst([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,$name)) }
+function Find-AutomationId($root,[string]$id) { $root.FindFirst([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::AutomationIdProperty,$id)) }
 function Find-Prefix($root,[string]$prefix) { $a=$root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition); 0..($a.Count-1) | % {$a.Item($_)} | ? {$_.Current.Name -like "$prefix*"} | select -First 1 }
 function Click($root,$element,[switch]$Right) {
     $b=$element.Current.BoundingRectangle
@@ -68,12 +70,21 @@ function Key([byte]$key) { [FolderSizeHeadful.Native]::keybd_event($key,0,0,[UIn
 function Chord([byte]$modifier,[byte]$key) { [FolderSizeHeadful.Native]::keybd_event($modifier,0,0,[UIntPtr]::Zero); Key $key; [FolderSizeHeadful.Native]::keybd_event($modifier,0,2,[UIntPtr]::Zero) }
 
 $diag=Join-Path $OutputDirectory 'diagnostics.json'; $psi=[Diagnostics.ProcessStartInfo]::new(); $psi.FileName=$Executable; $psi.Arguments="--plugin-dll `"$PluginDll`""; $psi.WorkingDirectory=$workspace; $psi.UseShellExecute=$false; $psi.EnvironmentVariables['EXPLORER_VISUAL_FIXTURE']='1'; $psi.EnvironmentVariables['EXPLORER_VISUAL_REAL_SHELL']='1'; $psi.EnvironmentVariables['EXPLORER_VISUAL_STATE']='populated'; $psi.EnvironmentVariables['EXPLORER_VISUAL_DIAGNOSTICS']=$diag; $psi.EnvironmentVariables['EXPLORER_INITIAL_PATH']=$InitialPath; $psi.EnvironmentVariables['EXPLORER_LOG_DIR']=$OutputDirectory; $psi.EnvironmentVariables['EXPLORER_UITEST_EXTENSION_STATE_ROOT']=$extensionState
+if ($ForceRecursive) { $psi.EnvironmentVariables['SUPEREXPLORER_FOLDER_SNAPSHOT_FORCE_RECURSIVE']='1' }
 $process=[Diagnostics.Process]::Start($psi); try {
     $until=[DateTime]::UtcNow.AddSeconds(35); do { Start-Sleep -Milliseconds 150; $process.Refresh(); $window=$process.MainWindowHandle } while (($window -eq [IntPtr]::Zero -or -not (Test-Path $diag)) -and [DateTime]::UtcNow -lt $until)
     if ($window -eq [IntPtr]::Zero) { throw 'Timed out waiting for SuperExplorer' }; [FolderSizeHeadful.Native]::SetForegroundWindow($window) | Out-Null; $root=[Windows.Automation.AutomationElement]::FromHandle($window)
     $until=[DateTime]::UtcNow.AddSeconds(30); do { Start-Sleep -Milliseconds 200; $header=Find-Name $root 'Sort by Folder size'; $cells=Find-Prefix $root 'Folder size: ' } while (($null -eq $header -or $null -eq $cells -or $cells.Current.Name -match 'Loading|Calculating') -and [DateTime]::UtcNow -lt $until)
     if ($null -eq $header -or $null -eq $cells) { throw 'Folder size column did not produce completed exact values' }
     $exactValue = $cells.Current.Name
+    $backendElement=Find-AutomationId $root 'status-folder-size-backend'
+    $backend=if($null -ne $backendElement){$backendElement.Current.Name}else{$null}
+    if([string]::IsNullOrWhiteSpace($backend)) {
+        foreach($name in @('Folder size: Recursive scan','Folder size: Recursive scan...','Folder size: Host cache','Folder size: Host cache...')) {
+            $candidate=Find-Name $root $name
+            if($null -ne $candidate){$backend=$candidate.Current.Name;break}
+        }
+    }
     $columnImage=Join-Path $OutputDirectory 'folder-size-column.png'; Capture $window $columnImage
     $all=$root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
     # GPUI element IDs are intentionally not accessibility nodes for this
@@ -91,5 +102,6 @@ $process=[Diagnostics.Process]::Start($psi); try {
     $until=[DateTime]::UtcNow.AddSeconds(3); $cachedCell=$null
     do { Start-Sleep -Milliseconds 50; $cachedCell=Find-Prefix $root 'Folder size: ' } while (($null -eq $cachedCell -or $cachedCell.Current.Name -match 'Loading|Calculating') -and [DateTime]::UtcNow -lt $until)
     $cacheTimer.Stop(); if ($null -eq $cachedCell -or $cachedCell.Current.Name -match 'Loading|Calculating') { throw 'Returning to an unchanged folder did not reuse the host cache' }
-    [pscustomobject]@{status='passed';case_id='rust-folder-size-visual-column-headful';fixture_items=$fixtureItemCount;exact_value=$exactValue;data_items=$rows.Count;decorative_bar_automation_nodes=$tracks.Count;proportional_bar_visual_delta=$true;numeric_sort=$true;proportional_bar_toggle=$true;f5_generation_recovery=$true;unchanged_folder_host_cache=$true;cache_roundtrip_millis=$cacheTimer.ElapsedMilliseconds;screenshots=@('folder-size-column.png','folder-size-bar-on.png','folder-size-bar-off.png')} | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $OutputDirectory 'report.json') -Encoding utf8
+    if ($ForceRecursive -and -not [string]::IsNullOrWhiteSpace($backend) -and $backend -notmatch 'Recursive scan|Host cache') { throw "Expected recursive fallback or its Host cache reuse, got '$backend'" }
+    [pscustomobject]@{status='passed';case_id='rust-folder-size-visual-column-headful';fixture_items=$fixtureItemCount;exact_value=$exactValue;data_items=$rows.Count;backend_status=$backend;forced_recursive=[bool]$ForceRecursive;everything_eligible=$false;uac_prompted=$false;decorative_bar_automation_nodes=$tracks.Count;proportional_bar_visual_delta=$true;numeric_sort=$true;proportional_bar_toggle=$true;f5_generation_recovery=$true;unchanged_folder_host_cache=$true;cache_roundtrip_millis=$cacheTimer.ElapsedMilliseconds;screenshots=@('folder-size-column.png','folder-size-bar-on.png','folder-size-bar-off.png')} | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $OutputDirectory 'report.json') -Encoding utf8
 } finally { if ($process -and -not $process.HasExited) {$process.Kill();$process.WaitForExit()} }

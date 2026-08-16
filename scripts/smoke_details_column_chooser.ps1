@@ -25,6 +25,7 @@ if ($CountColumnsValueMode) {
     Set-Content -LiteralPath (Join-Path $nested 'two.txt') -Value 'two' -Encoding utf8
 }
 $context = $null
+$countActivityPath = Join-Path $output 'folder-snapshot-counters.json'
 
 function Find-DetailsHeader {
     Find-UitestElement -Root $context.Root -Description 'Details header' -Predicate {
@@ -98,15 +99,18 @@ function Find-CellOnRow([string]$RowName, [string]$CellName) {
         [Windows.Automation.Condition]::TrueCondition)
     $rootTop = $context.Root.Current.BoundingRectangle.Top
     $row = 0..($all.Count - 1) | ForEach-Object { $all.Item($_) } | Where-Object {
-        ($_.Current.Name -eq $RowName -or $_.Current.Name -like "Name: $RowName*") -and
+        ($_.Current.Name -eq $RowName -or
+            $_.Current.Name -eq "$RowName Folder" -or
+            $_.Current.Name -like "Name: $RowName*") -and
         $_.Current.BoundingRectangle.Top -gt ($rootTop + 180) -and
         $_.Current.BoundingRectangle.Height -gt 0
     } | Select-Object -First 1
     if ($null -eq $row) { return $null }
-    $rowTop = $row.Current.BoundingRectangle.Top
+    $rowBounds = $row.Current.BoundingRectangle
     0..($all.Count - 1) | ForEach-Object { $all.Item($_) } | Where-Object {
         $_.Current.Name -eq $CellName -and
-        [Math]::Abs($_.Current.BoundingRectangle.Top - $rowTop) -lt 8
+        $_.Current.BoundingRectangle.Top -ge $rowBounds.Top -and
+        $_.Current.BoundingRectangle.Bottom -le $rowBounds.Bottom
     } | Select-Object -First 1
 }
 
@@ -115,19 +119,50 @@ function Wait-CellOnRow([string]$RowName, [string]$CellName) {
     # index. Large volumes may need substantially longer than an ordinary UI
     # repaint, so keep the window (and its visible-column demand) alive while
     # the service completes that bounded rebuild.
-    $deadline = [DateTime]::UtcNow.AddSeconds(120)
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
     do {
         $cell = Find-CellOnRow -RowName $RowName -CellName $CellName
         if ($null -ne $cell) { return $cell }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
+    $all = $context.Root.FindAll(
+        [Windows.Automation.TreeScope]::Descendants,
+        [Windows.Automation.Condition]::TrueCondition)
+    $rootTop = $context.Root.Current.BoundingRectangle.Top
+    $row = 0..($all.Count - 1) | ForEach-Object { $all.Item($_) } | Where-Object {
+        ($_.Current.Name -eq $RowName -or
+            $_.Current.Name -eq "$RowName Folder" -or
+            $_.Current.Name -like "Name: $RowName*") -and
+        $_.Current.BoundingRectangle.Top -gt ($rootTop + 180) -and
+        $_.Current.BoundingRectangle.Height -gt 0
+    } | Select-Object -First 1
+    if ($null -ne $row) {
+        $rowBounds = $row.Current.BoundingRectangle
+        $rowCells = 0..($all.Count - 1) | ForEach-Object { $all.Item($_) } | Where-Object {
+            $_.Current.BoundingRectangle.Top -ge $rowBounds.Top -and
+            $_.Current.BoundingRectangle.Bottom -le $rowBounds.Bottom -and
+            $_.Current.BoundingRectangle.Width -gt 0
+        } | ForEach-Object { $_.Current.Name } | Where-Object { $_ } | Select-Object -Unique
+        $rowCells | Set-Content -LiteralPath (Join-Path $output 'count-timeout-row-cells.txt') -Encoding utf8
+    }
+    0..($all.Count - 1) | ForEach-Object {
+        $element = $all.Item($_)
+        $bounds = $element.Current.BoundingRectangle
+        "name=$($element.Current.Name)`ttype=$($element.Current.ControlType.ProgrammaticName)`tbounds=$bounds"
+    } | Set-Content -LiteralPath (Join-Path $output 'count-timeout-accessibility.txt') -Encoding utf8
+    Save-UitestScreenshot -Root $context.Root -Path (Join-Path $output 'count-timeout.png')
     throw "cell '$CellName' did not appear on '$RowName'"
 }
 
 try {
-    $context = Start-UitestExplorer -InitialPath $fixture -OutputDirectory $output -Profile $Profile -Executable $Executable -SkipBuild:$SkipBuild -UseCurrentProfile:$UseCurrentProfile
+    $additionalEnvironment = @{}
+    if ($CountColumnsValueMode) {
+        $additionalEnvironment['SUPEREXPLORER_FOLDER_SNAPSHOT_COUNTERS'] = $countActivityPath
+    }
+    $context = Start-UitestExplorer -InitialPath $fixture -OutputDirectory $output -Profile $Profile -Executable $Executable -SkipBuild:$SkipBuild -UseCurrentProfile:$UseCurrentProfile -AdditionalEnvironment $additionalEnvironment
     [void](Find-UitestFileItem -Root $context.Root -Name 'alpha.txt')
-    [void][RustExplorerUitest.Native]::SetWindowPos($context.Hwnd, [IntPtr]::Zero, 40, 40, 1100, 880, 0x0040)
+    $initialWidth = if ($CountColumnsValueMode) { 2200 } else { 1100 }
+    [void][RustExplorerUitest.Native]::SetWindowPos($context.Hwnd, [IntPtr]::Zero, 40, 40, $initialWidth, 880, 0x0040)
     Start-Sleep -Milliseconds 350
 
     Invoke-RightClick -Element (Find-DetailsHeader)
@@ -187,6 +222,35 @@ try {
         [void](Wait-CellOnRow -RowName 'empty-folder' -CellName 'File Count: 0')
         [void](Wait-CellOnRow -RowName 'empty-folder' -CellName 'Folder Count: 0')
         Save-UitestScreenshot -Root $context.Root -Path (Join-Path $output 'visible-count-columns-populated.png')
+        if (-not (Test-Path -LiteralPath $countActivityPath)) {
+            throw 'Visible count columns did not publish snapshot activity counters'
+        }
+        $visibleCounters = Get-Content -Raw -LiteralPath $countActivityPath | ConvertFrom-Json
+
+        Invoke-RightClick -Element (Find-DetailsHeader)
+        Send-ChooserWheel -Delta -120 -Count 12
+        foreach ($name in 'File Count','Folder Count') {
+            $item = Find-ChooserItem -Name $name
+            $scrollPattern = $null
+            if ($item.TryGetCurrentPattern([Windows.Automation.ScrollItemPattern]::Pattern,[ref]$scrollPattern)) {
+                ([Windows.Automation.ScrollItemPattern]$scrollPattern).ScrollIntoView()
+                Start-Sleep -Milliseconds 100
+            }
+            $item = Wait-ChooserItemState -Name $name -Checked $true -Visible $true
+            Invoke-UitestClick -Element $item
+            [void](Wait-ChooserItemState -Name $name -Checked $false -Visible $true)
+        }
+        Send-UitestKey -Key 0x1B -DelayMilliseconds 200
+        Send-UitestKey -Key 0x74 -DelayMilliseconds 1800
+        $hiddenCounters = Get-Content -Raw -LiteralPath $countActivityPath | ConvertFrom-Json
+        if ($hiddenCounters.physical_scans -ne $visibleCounters.physical_scans) {
+            throw "Hiding both count columns allowed new count activity: before=$($visibleCounters.physical_scans), after=$($hiddenCounters.physical_scans)"
+        }
+        if ($null -ne (Find-CellOnRow -RowName 'counted-folder' -CellName 'File Count: 2') -or
+            $null -ne (Find-CellOnRow -RowName 'counted-folder' -CellName 'Folder Count: 1')) {
+            throw 'Count cells remained presented after both columns were hidden'
+        }
+        Save-UitestScreenshot -Root $context.Root -Path (Join-Path $output 'both-count-columns-hidden.png')
         [ordered]@{
             schema_version = 1
             status = 'PASS'
@@ -196,7 +260,10 @@ try {
             empty_folder_file_count = 0
             empty_folder_folder_count = 0
             source = 'MFT service runtime'
-            screenshots = @('visible-count-columns-populated.png')
+            visible_physical_scans = $visibleCounters.physical_scans
+            hidden_refresh_physical_scans = $hiddenCounters.physical_scans
+            both_hidden_suppressed_new_activity = $true
+            screenshots = @('visible-count-columns-populated.png','both-count-columns-hidden.png')
         } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $output 'report.json') -Encoding utf8
         return
     }

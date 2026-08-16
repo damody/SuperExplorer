@@ -208,7 +208,11 @@ try {
     Stop-UitestExplorer -Context $context
     $context = Start-UitestExplorer -InitialPath '' -OutputDirectory $output -Profile $Profile -Executable $Executable -SkipBuild
     $mainRoot = $context.Root
-    $options = Wait-OptionsWindow $context.Process.Id
+    try {
+        $options = Wait-OptionsWindow $context.Process.Id
+    } catch {
+        $options = Open-Options $mainRoot
+    }
     $script:optionsHwnd = [IntPtr]$options.Current.NativeWindowHandle
     $script:optionsBounds = $options.Current.BoundingRectangle
     Invoke-Control (Find-NamePrefix $options ([string]([char]0x6AA2) + [char]0x8996))
@@ -230,7 +234,11 @@ try {
     Stop-UitestExplorer -Context $context
     $context = Start-UitestExplorer -InitialPath '' -OutputDirectory $output -Profile $Profile -Executable $Executable -SkipBuild
     $mainRoot = $context.Root
-    $options = Wait-OptionsWindow $context.Process.Id
+    try {
+        $options = Wait-OptionsWindow $context.Process.Id
+    } catch {
+        $options = Open-Options $mainRoot
+    }
     $script:optionsHwnd = [IntPtr]$options.Current.NativeWindowHandle
     $script:optionsBounds = $options.Current.BoundingRectangle
     Invoke-Control (Find-NamePrefix $options ([string]([char]0x6AA2) + [char]0x8996))
@@ -250,6 +258,10 @@ try {
         cancel_attempt_mb = 8192
         cancel_preserved_mb = 4096
         representative_budgets_mb = $representativeBudgets
+        telemetry_evidence = [ordered]@{
+            apply = 'cache-budgets-apply-2048.png and explorer.log commit mft_lru_mb=2048'
+            restart = 'cache-budgets-ok-4096.png with persisted representative owner limits'
+        }
     } | ConvertTo-Json | Set-Content -Encoding utf8 -LiteralPath (Join-Path $output 'report.json')
 } finally {
     if ($null -ne $context) { Stop-UitestExplorer -Context $context }

@@ -1,14 +1,19 @@
 param(
     [string]$Executable = 'target\debug\SuperExplorer.exe',
     [string]$PluginDll = 'sdk\fixtures\rust-folder-size-map-view\target\x86_64-pc-windows-msvc\debug\rust_folder_size_map_view.dll',
+    [string]$FolderSizePluginDll = '',
     [string]$InitialPath = '.',
     [string]$OutputDirectory = 'target\size-map-smoke',
     [switch]$UsePointerActivation,
     [switch]$UseExistingPath,
     [switch]$CaptureOnly,
     [switch]$ExactSizeOnly,
+    [switch]$ExpectPartial,
     [int]$ProgressiveCaptureSeconds = 0,
-    [int]$RenderTimeoutSeconds = 12
+    [int]$RenderTimeoutSeconds = 12,
+    [switch]$AssertSharedScan,
+    [switch]$ForceRecursive,
+    [switch]$CreateInaccessibleSubtree
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,6 +26,15 @@ foreach ($name in 'Executable', 'PluginDll', 'InitialPath', 'OutputDirectory') {
 }
 $Executable = (Resolve-Path -LiteralPath $Executable).Path
 $PluginDll = (Resolve-Path -LiteralPath $PluginDll).Path
+if (-not [string]::IsNullOrWhiteSpace($FolderSizePluginDll)) {
+    if (-not [IO.Path]::IsPathRooted($FolderSizePluginDll)) {
+        $FolderSizePluginDll = [IO.Path]::GetFullPath((Join-Path $workspaceRoot $FolderSizePluginDll))
+    }
+    $FolderSizePluginDll = (Resolve-Path -LiteralPath $FolderSizePluginDll).Path
+}
+if ($AssertSharedScan -and [string]::IsNullOrWhiteSpace($FolderSizePluginDll)) {
+    throw '-AssertSharedScan requires -FolderSizePluginDll'
+}
 $InitialPath = (Resolve-Path -LiteralPath $InitialPath).Path
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 if (-not $UseExistingPath) {
@@ -42,6 +56,26 @@ if (-not $UseExistingPath) {
             [Text.UTF8Encoding]::new($false))
     }
     $InitialPath = (Resolve-Path -LiteralPath $aggregateFixture).Path
+}
+$inaccessibleSubtree = $null
+$inaccessibleSid = $null
+if ($CreateInaccessibleSubtree) {
+    if (-not $ForceRecursive) {
+        throw '-CreateInaccessibleSubtree requires -ForceRecursive'
+    }
+    $partialParent = Join-Path $InitialPath 'partial-known-parent'
+    New-Item -ItemType Directory -Path $partialParent -ErrorAction Stop | Out-Null
+    [IO.File]::WriteAllText(
+        (Join-Path $partialParent 'known-before-inaccessible.txt'),
+        'known partial bytes',
+        [Text.UTF8Encoding]::new($false))
+    $inaccessibleSubtree = Join-Path $partialParent 'inaccessible-child'
+    New-Item -ItemType Directory -Path $inaccessibleSubtree -ErrorAction Stop | Out-Null
+    $inaccessibleSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    & icacls.exe $inaccessibleSubtree /deny ('*{0}:(RD)' -f $inaccessibleSid) | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "failed to apply bounded inaccessible-subtree ACL: $inaccessibleSubtree"
+    }
 }
 $profileRoot = Join-Path $OutputDirectory 'profile'
 $localAppData = Join-Path $profileRoot 'LocalAppData'
@@ -277,6 +311,7 @@ function Send-Key([byte]$VirtualKey) {
 }
 
 $diagnostics = Join-Path $OutputDirectory 'diagnostics.json'
+$snapshotCounters = Join-Path $OutputDirectory 'folder-snapshot-counters.json'
 $beforePath = Join-Path $OutputDirectory 'details-before.png'
 $sizeMapPath = Join-Path $OutputDirectory 'size-map.png'
 $selectedPath = Join-Path $OutputDirectory 'size-map-selected.png'
@@ -284,6 +319,9 @@ $afterRefreshPath = Join-Path $OutputDirectory 'size-map-after-f5.png'
 $start = [Diagnostics.ProcessStartInfo]::new()
 $start.FileName = $Executable
 $start.Arguments = "--plugin-dll `"$PluginDll`""
+if (-not [string]::IsNullOrWhiteSpace($FolderSizePluginDll)) {
+    $start.Arguments += " --plugin-dll `"$FolderSizePluginDll`""
+}
 $start.WorkingDirectory = $workspaceRoot
 $start.UseShellExecute = $false
 $start.RedirectStandardOutput = $true
@@ -298,10 +336,17 @@ $start.EnvironmentVariables['EXPLORER_VISUAL_FONT'] = 'Microsoft JhengHei UI'
 $start.EnvironmentVariables['EXPLORER_VISUAL_STATE'] = 'populated'
 $start.EnvironmentVariables['EXPLORER_VISUAL_DIAGNOSTICS'] = $diagnostics
 $start.EnvironmentVariables['EXPLORER_INITIAL_PATH'] = $InitialPath
+$start.EnvironmentVariables['SUPEREXPLORER_FOLDER_SNAPSHOT_COUNTERS'] = '1'
 $start.EnvironmentVariables['EXPLORER_LOG_DIR'] = $OutputDirectory
 $start.EnvironmentVariables['LOCALAPPDATA'] = $localAppData
 $start.EnvironmentVariables['APPDATA'] = $roamingAppData
 $start.EnvironmentVariables['EXPLORER_UITEST_EXTENSION_STATE_ROOT'] = $extensionState
+if ($AssertSharedScan) {
+    $start.EnvironmentVariables['SUPEREXPLORER_FOLDER_SNAPSHOT_COUNTERS'] = $snapshotCounters
+}
+if ($ForceRecursive) {
+    $start.EnvironmentVariables['SUPEREXPLORER_FOLDER_SNAPSHOT_FORCE_RECURSIVE'] = '1'
+}
 $process = [Diagnostics.Process]::Start($start)
 $stdoutTask = $process.StandardOutput.ReadToEndAsync()
 $stderrTask = $process.StandardError.ReadToEndAsync()
@@ -354,6 +399,21 @@ try {
     if ($rows.Count -eq 0) { throw 'Real folder contents did not load in Details view' }
     Capture-Window $window $beforePath
 
+    $sharedScanBefore = $null
+    if ($AssertSharedScan) {
+        $counterDeadline = [DateTime]::UtcNow.AddSeconds(30)
+        do {
+            Start-Sleep -Milliseconds 100
+            if (Test-Path -LiteralPath $snapshotCounters) {
+                try { $sharedScanBefore = Get-Content -Raw -LiteralPath $snapshotCounters | ConvertFrom-Json }
+                catch { $sharedScanBefore = $null }
+            }
+        } while (($null -eq $sharedScanBefore -or $sharedScanBefore.physical_scans -lt 2) -and [DateTime]::UtcNow -lt $counterDeadline)
+        if ($null -eq $sharedScanBefore -or $sharedScanBefore.physical_scans -lt 2) {
+            throw 'Folder Size did not publish both visible directory snapshots before Size Map activation'
+        }
+    }
+
     # GPUI exposes InvokePattern for the toolbar button, but invoking that
     # pattern may only focus the control without opening its flyout.  Exercise
     # the same pointer behavior a user relies on before asserting menu items.
@@ -393,8 +453,12 @@ try {
         $node = 0..($buttons.Count - 1) |
             ForEach-Object { $buttons.Item($_) } |
             Where-Object {
-                $_.Current.Name -match '\d+(\.\d+)?%.*Complete' -or
-                $_.Current.Name -match ': \d+ bytes\. Complete$'
+                if ($ExpectPartial) {
+                    $_.Current.Name -match '(?i)partial'
+                } else {
+                    $_.Current.Name -match '\d+(\.\d+)?%.*Complete' -or
+                    $_.Current.Name -match ': \d+ bytes\. Complete$'
+                }
             } |
             Select-Object -First 1
     } while ($null -eq $node -and [DateTime]::UtcNow -lt $deadline)
@@ -404,9 +468,56 @@ try {
             [Windows.Automation.TreeScope]::Descendants,
             [Windows.Automation.Condition]::TrueCondition) |
             ForEach-Object { $_.Current.Name } |
-            Where-Object { $_ -match 'Size Map|Exact|%' } |
+            Where-Object { $_ -match '(?i)Size Map|Exact|%|Partial' } |
             Select-Object -Unique
         throw "Size Map did not expose a completed rendered node; visible markers: $($visibleNames -join ', ')"
+    }
+    if ($ExpectPartial) {
+        Capture-Window $window $sizeMapPath
+        Invoke-Element $root $viewCommand $viewCommandName
+        Start-Sleep -Milliseconds 250
+        if ($null -eq (Find-VisibleNamedElement $root 'Size Map')) {
+            Invoke-Element $root $viewCommand $viewCommandName -PointerOnly
+            Start-Sleep -Milliseconds 250
+        }
+        $detailsEntry = Find-DetailsViewElement $root
+        if ($null -eq $detailsEntry) { throw 'Details entry was not available after partial Size Map capture' }
+        Send-Key 0x24 # Home: first built-in view mode.
+        foreach ($step in 1..5) { Send-Key 0x28 } # Details is the sixth built-in mode.
+        Send-Key 0x0D
+        $detailsPartial = $null
+        $detailsDeadline = [DateTime]::UtcNow.AddSeconds($RenderTimeoutSeconds)
+        do {
+            Start-Sleep -Milliseconds 100
+            $detailsPartial = $root.FindAll(
+                [Windows.Automation.TreeScope]::Descendants,
+                [Windows.Automation.Condition]::TrueCondition) |
+                ForEach-Object { $_ } |
+                Where-Object { $_.Current.Name -match '(?i)Partial:' } |
+                Select-Object -First 1
+        } while ($null -eq $detailsPartial -and [DateTime]::UtcNow -lt $detailsDeadline)
+        if ($null -eq $detailsPartial) {
+            $root.FindAll(
+                [Windows.Automation.TreeScope]::Descendants,
+                [Windows.Automation.Condition]::TrueCondition) |
+                ForEach-Object { $_.Current.Name } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                Select-Object -Unique |
+                Set-Content -LiteralPath (Join-Path $OutputDirectory 'details-accessible-names.txt') -Encoding utf8
+            Capture-Window $window (Join-Path $OutputDirectory 'details-partial-missing.png')
+            throw 'Details did not expose a Partial folder-size cell'
+        }
+        $detailsPartialPath = Join-Path $OutputDirectory 'details-partial.png'
+        Capture-Window $window $detailsPartialPath
+        [pscustomobject]@{
+            status = 'passed'
+            case_id = 'size-map-partial-presentation'
+            initial_path = $InitialPath
+            partial_node = $node.Current.Name
+            details_partial = $detailsPartial.Current.Name
+            screenshots = @($beforePath, $sizeMapPath, $detailsPartialPath)
+        } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $OutputDirectory 'report.json') -Encoding utf8
+        return
     }
     if ($CaptureOnly) {
         if ($ProgressiveCaptureSeconds -gt 0) {
@@ -489,6 +600,17 @@ try {
             throw "Size Map did not expose the exact recursive total for $($expected.Name): $($expected.Bytes) bytes"
         }
     }
+    $sharedScanAfter = $null
+    if ($AssertSharedScan) {
+        Start-Sleep -Milliseconds 500
+        $sharedScanAfter = Get-Content -Raw -LiteralPath $snapshotCounters | ConvertFrom-Json
+        if ($sharedScanAfter.physical_scans -ne $sharedScanBefore.physical_scans) {
+            throw "Size Map repeated Folder Size physical work: before=$($sharedScanBefore.physical_scans), after=$($sharedScanAfter.physical_scans)"
+        }
+        if ($sharedScanAfter.cache_hits -le $sharedScanBefore.cache_hits) {
+            throw 'Size Map did not record a Host snapshot cache hit for the Folder Size results'
+        }
+    }
     # Percentages can change while sibling results finish, so reacquire the
     # stable completed directory node instead of reusing its earlier name.
     $root = [Windows.Automation.AutomationElement]::FromHandle($window)
@@ -523,6 +645,10 @@ try {
             case_id = 'size-map-exact-folder-size'
             initial_path = $InitialPath
             exact_nodes = @($assertedExpectedNodes)
+            shared_scan_asserted = [bool]$AssertSharedScan
+            physical_scans_before_size_map = if ($null -ne $sharedScanBefore) { $sharedScanBefore.physical_scans } else { $null }
+            physical_scans_after_size_map = if ($null -ne $sharedScanAfter) { $sharedScanAfter.physical_scans } else { $null }
+            shared_cache_hits_after_size_map = if ($null -ne $sharedScanAfter) { $sharedScanAfter.cache_hits } else { $null }
             aggregated_other_accessible = $aggregatedOtherAccessible
             screenshots = @($beforePath, $sizeMapPath)
         }
@@ -726,6 +852,10 @@ try {
         details_rows = $rows.Count
         size_map_node = $nodeName
         exact_nodes = @($assertedExpectedNodes)
+        shared_scan_asserted = [bool]$AssertSharedScan
+        physical_scans_before_size_map = if ($null -ne $sharedScanBefore) { $sharedScanBefore.physical_scans } else { $null }
+        physical_scans_after_size_map = if ($null -ne $sharedScanAfter) { $sharedScanAfter.physical_scans } else { $null }
+        shared_cache_hits_after_size_map = if ($null -ne $sharedScanAfter) { $sharedScanAfter.cache_hits } else { $null }
         selection_shared_with_details = $true
         aggregated_other_accessible = $aggregatedOtherAccessible
         aggregated_item_keyboard_focusable = $true
@@ -744,4 +874,10 @@ try {
     }
     $stdoutTask.Result | Set-Content -LiteralPath (Join-Path $OutputDirectory 'stdout.log') -Encoding utf8
     $stderrTask.Result | Set-Content -LiteralPath (Join-Path $OutputDirectory 'stderr.log') -Encoding utf8
+    if ($null -ne $inaccessibleSubtree -and (Test-Path -LiteralPath $inaccessibleSubtree)) {
+        & icacls.exe $inaccessibleSubtree /remove:d ('*{0}' -f $inaccessibleSid) /inheritance:e | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Remove-Item -LiteralPath $inaccessibleSubtree -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
