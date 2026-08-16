@@ -1,0 +1,15 @@
+G5 partial validation (2026-08-14)
+
+PASS cargo fmt --all -- --check
+PASS openspec validate differentiate-main-code-lines-and-reorder-columns --strict
+PASS git diff --check for the affected crates, fixtures, script, manifest, and change artifacts
+PASS explorer-model dynamic_columns: 14 tests
+PASS explorer-ui details_column: 10 tests
+PASS explorer-app code_lines: 10 tests
+PASS Rust tokei fixture: 9 tests plus doc tests
+PASS Lua tokei fixture: 7 tests plus doc tests
+PASS PowerShell parser for scripts/smoke_tokei_plugin_headful.ps1
+PASS UTF-8 JSON parse for uitest/manifest.json
+
+BLOCKED G4 raw passing report and before/after/restart screenshots: the isolated headful fixture cannot enable/materialize the required File Count dependency through its current Details chooser automation. Tasks 3.1.3 and 3.2.3 remain open.
+

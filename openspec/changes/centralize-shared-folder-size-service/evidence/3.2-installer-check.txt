@@ -15,3 +15,11 @@ Installer build:
   PASS; dist\SuperExplorer-Setup-1.2026.8.5-x64.exe (7,991,605 bytes)
 NSIS verified: admin installer, Program Files + HKLM, LocalSystem automatic service,
 upgrade stop/config/start, uninstall stop/delete, fixed ProgramData cache removal.
+
+Current installed candidate verification (2026-08-14 Asia/Taipei):
+  SuperExplorer.exe SHA256 9A7536CC424AC5EF619AB247629E9DA42060A105F0A6ED46A545343B17B65919
+  superexplorer-mft-helper.exe SHA256 44D26D3BBAFFB0F95127FE9F467B9BDF5C2CAAAF4AD5D3FE399686BFDD72E542
+  superexplorer-mft-service.exe SHA256 A4916F7ADFCC6D7B237F45AECDC5D0329565C651BC17F7E02E8BDAAF1E4DA2E1
+  Everything64.dll SHA256 C7AB8B47F7DD4C41AA735F4BA40B35AD5460A86FA7ABE0C94383F12BCE33BFB6
+  SuperExplorerMft: Running, Auto, LocalSystem, exact Program Files service path.
+  crates/explorer-app/app.manifest: requestedExecutionLevel=asInvoker, uiAccess=false.

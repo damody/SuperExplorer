@@ -1,0 +1,26 @@
+centralize-shared-folder-size-service final validation
+Date: 2026-08-14 Asia/Taipei
+Progress: 55/58 tasks resolved
+
+PASS
+- cargo fmt --all -- --check
+- cargo test -p explorer-app --lib folder_size_service::tests:: --offline -- --nocapture --test-threads=1
+  Result: 20 passed, 0 failed, 1 explicit opt-in profile ignored.
+- cargo build -p explorer-app --release --bin SuperExplorer --offline
+- python -m json.tool uitest/manifest.json
+- OpenSpec strict validation.
+- Evidence index: 55 unique task records; every referenced artifact exists and its SHA-256 matches.
+- Headful Folder Size, Size Map, forced recursive fallback, and simultaneous dual-consumer shared-scan reports.
+- Manual screenshot review: exact Folder Size values/proportional bars, Size Map hierarchy, and recursive fallback are visually coherent.
+- Dual-consumer production-app assertion: physical scans remained 2 -> 2 while Host cache hits increased to 2.
+- Installer lifecycle/check evidence retained in evidence/3.2-installer-check.txt.
+
+BLOCKED RELEASE LEAVES
+- 3.2.3: manifests, registrars, fixtures, SDK docs, samples, and ABI schema are migrated, but the canonical protected UI fingerprint cannot be promoted while the checked-out GPUI revision is unapproved.
+- 3.2.6: sdk/scripts/validate-plugin.ps1 rejects the published SDK inventory with SESDK-INPUT-001, as required, because current protected inputs differ from the approved bundle.
+- 4.1.7: final release gate cannot be marked until 3.2.3 and 3.2.6 pass.
+
+Protected dependency disposition
+- Checked-out vendor/gpui-ce revision: b3d978d34361087fbb6a9fb92565970943831b4d
+- Approved sdk/sdk-lock.json revision: 8945e2981b9fd00ca887e042d8adb9acc241b168
+- No unapproved fingerprint or SDK bundle was generated or promoted.

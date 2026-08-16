@@ -1,0 +1,62 @@
+﻿{
+    "schema_version":  1,
+    "status":  "PASS",
+    "environment":  {
+                        "interactive_desktop":  true,
+                        "screen_count":  1,
+                        "dpi":  168,
+                        "scale_factor":  1.75
+                    },
+    "window":  {
+                   "initial_hwnd":  11929152,
+                   "cancel_reopen_hwnd":  12912192,
+                   "title_close_hwnd":  13108800,
+                   "escape_reopen_hwnd":  13370944,
+                   "count":  1,
+                   "physical_bounds":  {
+                                           "left":  1080,
+                                           "top":  435,
+                                           "width":  1680,
+                                           "height":  1330
+                                       },
+                   "logical_size":  {
+                                        "width":  960,
+                                        "height":  760
+                                    }
+               },
+    "scroll_delta":  {
+                         "options_page":  623.42999267578125,
+                         "first_card":  -1091,
+                         "last_card":  -1092,
+                         "background_file_view":  0
+                     },
+    "oracles":  {
+                    "separate_native_window":  true,
+                    "owner_remains_interactive":  true,
+                    "repeated_open_reuses_same_hwnd_and_draft":  true,
+                    "footer_button_reachable_before_scroll":  true,
+                    "genuine_mouse_wheel_scrolls_extension_list":  true,
+                    "right_side_scrollbar_visible_after_scroll":  true,
+                    "wheel_does_not_scroll_background_folder":  true,
+                    "footer_button_stays_fixed_after_scroll":  true,
+                    "escape_closes_without_requiring_footer":  true,
+                    "apply_stays_open_and_ok_closes":  true,
+                    "cancel_closes_and_stale_handle_reopens":  true,
+                    "native_title_close_clears_controller":  true,
+                    "home_end_page_up_page_down_clamp":  true,
+                    "page_offsets_restore_independently":  true,
+                    "track_click_pages_options":  true,
+                    "thumb_drag_scrolls_options":  true
+                },
+    "scroll_actions":  {
+                           "home":  0,
+                           "end":  623.42999267578125,
+                           "maximum":  623.42999267578125,
+                           "page_up":  17.7156982421875,
+                           "page_down":  623.42999267578125,
+                           "view_page":  978.8599853515625,
+                           "restored_extensions":  623.42999267578125,
+                           "track_click":  605.71429443359375,
+                           "thumb_drag":  602.97650146484375
+                       }
+}

@@ -1,0 +1,7 @@
+{
+  "physical_scans": 2,
+  "subscribers": 4,
+  "cache_hits": 2,
+  "stale_rejections": 0,
+  "fallback_count": 4
+}

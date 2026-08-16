@@ -14,7 +14,7 @@
 - [x] 1.1.2 Add backward-compatible session serde defaults, projection, validation, and round-trip behavior.
 - [x] 1.1.3 Add independent UI actions that mutate only their selected budget.
 - [x] 1.1.4 Add unit and golden-fixture tests for defaults, bounds, prior-session restore, and independence.
-- [ ] 1.1.5 Write G-SETTINGS evidence records for tasks 1.1.1–1.1.4.
+- [x] 1.1.5 Write G-SETTINGS evidence records for tasks 1.1.1–1.1.4.
 
 ### 1.2 Cache telemetry value contract
 
@@ -47,7 +47,7 @@
 - [x] 2.1.2 Apply icon reductions to visible/shared icon ownership without modifying thumbnail state.
 - [x] 2.1.3 Apply thumbnail reductions through immediate LRU eviction without modifying icon state.
 - [x] 2.1.4 Add deterministic insertion, promotion, reduction, oversized-entry, and sibling-isolation tests.
-- [ ] 2.1.5 Write G-MEMORY-LRU evidence records for tasks 2.1.1–2.1.4.
+- [x] 2.1.5 Write G-MEMORY-LRU evidence records for tasks 2.1.1–2.1.4.
 
 ### 2.2 Host memory and extension reporters
 
@@ -63,7 +63,7 @@
 - [x] 2.2.2 Add Host extension data-column memory and persistent-storage accounting at the ownership boundary.
 - [x] 2.2.3 Compose reporters into one immutable snapshot without exposing implementation references to Folder Options.
 - [x] 2.2.4 Add reporter accuracy, plugin-override rejection, and unavailable-source tests.
-- [ ] 2.2.5 Write G-HOST-REPORTERS evidence records for tasks 2.2.1–2.2.4.
+- [x] 2.2.5 Write G-HOST-REPORTERS evidence records for tasks 2.2.1–2.2.4.
 
 ### 2.3 Single-flight disk sampler
 
@@ -78,7 +78,7 @@
 - [x] 2.3.1 Implement bounded accounting for only registered cache roots with cancellation and error isolation.
 - [x] 2.3.2 Implement latest-completed snapshot storage and a single-flight admission guard.
 - [x] 2.3.3 Add slow-sample, inaccessible-root, cancellation, symlink/reparse, saturation, and non-overlap tests.
-- [ ] 2.3.4 Write G-DISK-SAMPLER evidence records for tasks 2.3.1–2.3.3.
+- [x] 2.3.4 Write G-DISK-SAMPLER evidence records for tasks 2.3.1–2.3.3.
 
 ## 3. WebP Shell Cache Persistence
 
@@ -95,8 +95,8 @@
 - [x] 3.1.1 Inventory the locked `image` WebP feature/API and record whether another codec is required.
 - [x] 3.1.2 Verify dependency license/provenance and locked offline Windows build behavior.
 - [x] 3.1.3 Prove lossless alpha icon and quality-80 thumbnail encode/decode on representative fixtures.
-- [ ] 3.1.4 Prove truncated, corrupt, oversized-dimension, and decoded-byte-limit rejection behavior.
-- [ ] 3.1.5 Record the G-CODEC activation decision and evidence for tasks 3.1.1–3.1.4.
+- [x] 3.1.4 Prove truncated, corrupt, oversized-dimension, and decoded-byte-limit rejection behavior.
+- [x] 3.1.5 Record the G-CODEC activation decision and evidence for tasks 3.1.1–3.1.4.
 
 ### 3.2 Versioned WebP envelope and atomic storage
 
@@ -112,9 +112,9 @@
 - [x] 3.2.2 Implement lossless icon WebP encoding and validated owned-RGBA decoding.
 - [x] 3.2.3 Implement quality-80 thumbnail WebP encoding and validated owned-pixel decoding.
 - [x] 3.2.4 Preserve same-directory temporary publication, concurrency behavior, access metadata, and per-root LRU quotas.
-- [ ] 3.2.5 Expose independent icon/thumbnail disk usage, limits, counts, hits, and misses to Host reporting.
-- [ ] 3.2.6 Add round-trip, alpha, quality, corruption, bomb, concurrent-write, and quota-isolation tests.
-- [ ] 3.2.7 Write G-WEBP-STORAGE evidence records for tasks 3.2.1–3.2.6.
+- [x] 3.2.5 Expose independent icon/thumbnail disk usage, limits, counts, hits, and misses to Host reporting.
+- [x] 3.2.6 Add round-trip, alpha, quality, corruption, bomb, concurrent-write, and quota-isolation tests.
+- [x] 3.2.7 Write G-WEBP-STORAGE evidence records for tasks 3.2.1–3.2.6.
 
 ### 3.3 Lazy raw-cache migration
 
@@ -127,9 +127,9 @@
 **完成門檻：** Old entries are never decoded as WebP, startup performs no bulk conversion, provider regeneration succeeds, and cleanup stays scoped.
 
 - [x] 3.3.1 Switch production icon and thumbnail cache roots/schema to `.webp` without reading `.rgba` as hits.
-- [ ] 3.3.2 Regenerate WebP entries lazily through existing provider paths and include obsolete files in scoped quota cleanup.
-- [ ] 3.3.3 Add old-entry miss, no-startup-scan, lazy-regeneration, and scoped-cleanup tests.
-- [ ] 3.3.4 Write G-WEBP-MIGRATION evidence records for tasks 3.3.1–3.3.3.
+- [x] 3.3.2 Regenerate WebP entries lazily through existing provider paths and include obsolete files in scoped quota cleanup.
+- [x] 3.3.3 Add old-entry miss, no-startup-scan, lazy-regeneration, and scoped-cleanup tests.
+- [x] 3.3.4 Write G-WEBP-MIGRATION evidence records for tasks 3.3.1–3.3.3.
 
 ## 4. MFT Diagnostics and Folder Options
 
@@ -146,8 +146,8 @@
 - [x] 4.1.1 Add fixed-size versioned diagnostics request/response codecs with a distinct discriminator.
 - [x] 4.1.2 Add saturating LRU bytes/limit/count/index-bytes/hit/miss/generation counters in the Service.
 - [x] 4.1.3 Add bounded Host client timeout and map connection failure to unavailable telemetry.
-- [ ] 4.1.4 Add local round-trip, malformed, truncated, unauthorized/remote, overflow, and redaction-shape tests.
-- [ ] 4.1.5 Write G-MFT-DIAGNOSTICS evidence records for tasks 4.1.1–4.1.4.
+- [x] 4.1.4 Add local round-trip, malformed, truncated, unauthorized/remote, overflow, and redaction-shape tests.
+- [x] 4.1.5 Write G-MFT-DIAGNOSTICS evidence records for tasks 4.1.1–4.1.4.
 
 ### 4.2 Folder Options controls and live telemetry
 
@@ -163,8 +163,8 @@
 - [x] 4.2.2 Render Memory, Disk, and MFT Service rows with bounded/unbounded/unavailable formatting and partial subtotals.
 - [x] 4.2.3 Implement one-second window-scoped refresh, single-flight delivery, stale-generation rejection, and close cancellation.
 - [x] 4.2.4 Add model/UI tests for control independence, formatting, live refresh, no re-entry, stale results, and close lifecycle.
-- [ ] 4.2.5 Add UITest selectors and a deterministic telemetry seam for headful verification.
-- [ ] 4.2.6 Write G-FOLDER-OPTIONS evidence records for tasks 4.2.1–4.2.5.
+- [x] 4.2.5 Add UITest selectors and a deterministic telemetry seam for headful verification.
+- [x] 4.2.6 Write G-FOLDER-OPTIONS evidence records for tasks 4.2.1–4.2.5.
 
 ## 5. Integration, Performance, and Release Evidence
 
@@ -178,12 +178,12 @@
 **Gate／Evidence：** G-AUTOMATED; `target/openspec-evidence/independent-cache-budgets-telemetry-webp/5.1.*`.  
 **完成門檻：** Focused and affected full suites pass offline with no unexplained failure or stale evidence.
 
-- [ ] 5.1.1 Run explorer-model session/settings tests and current/prior golden fixtures.
-- [ ] 5.1.2 Run explorer-jobs memory-cache tests and explorer-shell-win WebP/disk-cache tests.
-- [ ] 5.1.3 Run explorer-app MFT diagnostics, Host telemetry, and disk-sampler tests.
-- [ ] 5.1.4 Run explorer-ui Folder Options tests and affected UITest manifest cases.
-- [ ] 5.1.5 Run affected workspace checks, formatting, `git diff --check`, and strict OpenSpec validation.
-- [ ] 5.1.6 Write G-AUTOMATED evidence records for tasks 5.1.1–5.1.5.
+- [x] 5.1.1 Run explorer-model session/settings tests and current/prior golden fixtures.
+- [x] 5.1.2 Run explorer-jobs memory-cache tests and explorer-shell-win WebP/disk-cache tests.
+- [x] 5.1.3 Run explorer-app MFT diagnostics, Host telemetry, and disk-sampler tests.
+- [x] 5.1.4 Run explorer-ui Folder Options tests and affected UITest manifest cases.
+- [x] 5.1.5 Run affected workspace checks, formatting, `git diff --check`, and strict OpenSpec validation.
+- [x] 5.1.6 Write G-AUTOMATED evidence records for tasks 5.1.1–5.1.5.
 
 ### 5.2 Headful and Release memory profile
 
@@ -195,12 +195,12 @@
 **Gate／Evidence：** G-RELEASE-PROFILE (blocking); `target/openspec-evidence/independent-cache-budgets-telemetry-webp/5.2.*`.  
 **完成門檻：** UITest screenshots show both controls and three updating sections; repeated navigation leaves each owned cache within its selected limit; no sustained monotonic cache growth remains; WebP disk use and responsiveness are reported against the raw baseline.
 
-- [ ] 5.2.1 Build the locked offline Release app, MFT Service, and test installer and record binary hashes.
-- [ ] 5.2.2 Capture Folder Options screenshots showing independent controls, all cache sections, live value change, and unavailable-Service behavior.
-- [ ] 5.2.3 Profile repeated navigation/thumbnail workloads and record per-cache bytes, working set, Private Bytes, handles, and threads over time.
-- [ ] 5.2.4 Compare WebP disk bytes, encode/decode latency, and navigation responsiveness with the raw-RGBA baseline.
-- [ ] 5.2.5 Verify cache limits settle independently and investigate any sustained monotonic growth before passing the gate.
-- [ ] 5.2.6 Write G-RELEASE-PROFILE evidence records for tasks 5.2.1–5.2.5 and index screenshot hashes.
+- [x] 5.2.1 Build the locked offline Release app, MFT Service, and test installer and record binary hashes.
+- [x] 5.2.2 Capture Folder Options screenshots showing independent controls, all cache sections, live value change, and unavailable-Service behavior.
+- [x] 5.2.3 Profile repeated navigation/thumbnail workloads and record per-cache bytes, working set, Private Bytes, handles, and threads over time.
+- [x] 5.2.4 Compare WebP disk bytes, encode/decode latency, and navigation responsiveness with the raw-RGBA baseline.
+- [x] 5.2.5 Verify cache limits settle independently and investigate any sustained monotonic growth before passing the gate.
+- [x] 5.2.6 Write G-RELEASE-PROFILE evidence records for tasks 5.2.1–5.2.5 and index screenshot hashes.
 
 ### 5.3 Final traceability and handoff
 
@@ -212,9 +212,9 @@
 **Gate／Evidence：** G-FINAL; `target/openspec-evidence/independent-cache-budgets-telemetry-webp/final-review.md`.  
 **完成門檻：** Every leaf has passed or evidence-backed terminal disposition, every scenario traces to evidence, no P0/P1 issue remains, and rollback/migration notes match shipped behavior.
 
-- [ ] 5.3.1 Build the proposal-to-design-to-spec-to-task-to-evidence traceability matrix.
-- [ ] 5.3.2 Scan artifacts and implementation for placeholders, contradictions, stale evidence, and undocumented deviations.
-- [ ] 5.3.3 Resolve every conditional leaf as passed, not-applicable with evidence, or superseded with a replacement link.
-- [ ] 5.3.4 Complete final architecture/security/performance review and resolve every P0/P1 finding.
-- [ ] 5.3.5 Record migration, rollback, cache-clearing, and user-facing settings notes.
-- [ ] 5.3.6 Write G-FINAL evidence and mark the change complete only when no required work remains.
+- [x] 5.3.1 Build the proposal-to-design-to-spec-to-task-to-evidence traceability matrix.
+- [x] 5.3.2 Scan artifacts and implementation for placeholders, contradictions, stale evidence, and undocumented deviations.
+- [x] 5.3.3 Resolve every conditional leaf as passed, not-applicable with evidence, or superseded with a replacement link.
+- [x] 5.3.4 Complete final architecture/security/performance review and resolve every P0/P1 finding.
+- [x] 5.3.5 Record migration, rollback, cache-clearing, and user-facing settings notes.
+- [x] 5.3.6 Write G-FINAL evidence and mark the change complete only when no required work remains.

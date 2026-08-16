@@ -32,3 +32,21 @@
 - `bookmark-context-menu.png`：`acd4a5fcba7998249786298bf5329413d7f59e0e81fbe47ccbd1282f4badfefb`
 
 完整 requirement／scenario 到 task／gate／evidence 對應見 `traceability.md`。
+
+## 2026-08-14 completion verification
+
+- Bookmark manager typed edit, delete, persistence, and native row drag/drop reorder are covered by focused UI state and render-contract tests.
+- Lua coverage now includes physical-folder success, non-filesystem rejection, read-only reassignment failure, script exception, injectable runtime startup failure, timeout, and the corresponding user notices.
+- Session restart round-trip preserves typed bookmark payloads, stable IDs, and order.
+- Focused results: explorer-model 5/5 plus restart 1/1; explorer-automation 5/5; explorer-ui bookmark 7/7; `cargo build -p explorer-app` passed.
+- Fresh production-binary headful run passed at `evidence/headful-2026-08-14`; strict OpenSpec validation, UITEST manifest JSON parsing, retired-source negative search, formatting, and `git diff --check` passed.
+
+### Fresh headful SHA-256
+
+- `report.json`: `9c7773b259c26eb8a4d0b465782154c6775e982d8cfe35427014ed25daed403c`
+- `bookmark-context-menu.png`: `99af900a1d327c314c09d4b032ff2ecbfc00f097a4e8e515406992f23340ebf5`
+- `bookmark-manager.png`: `04945376d7c6be06ffad45372ce567feab2c3bf19c7e9c9e43ef2ccb6931b4b4`
+- `bookmark-overflow.png`: `4cc06e6f170407d81fd3660f84a6031120d0e3a9ae2a8d337dd6fda25728f5ba`
+- `bookmark-star-off.png`: `08ee536a9639c8ea5187e8dbf4b298c6a77635a85856dda53c84ad3da71918e0`
+- `bookmark-star-on.png`: `98ba67b9d07a23dc973e340697e5fb07674ee802f2dee51370d68ab3656d36f9`
+- `bookmark-toolbar.png`: `f3ed79cb3520ca96e7c28a29f46ebbb05bd6dffd562bd8852455eed4ec335e2b`

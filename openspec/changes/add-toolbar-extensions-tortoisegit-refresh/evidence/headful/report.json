@@ -1,0 +1,59 @@
+{
+  "schema_version": 2,
+  "run_id": "1786675139-6074827ec2f34649b5dfc0d9786181c4",
+  "started_utc": "unix:1786675139",
+  "workspace": "D:\\SuperExplorer",
+  "git_revision": "fd66c9e8a759",
+  "git_dirty": true,
+  "host": {
+    "windows_build": "26200",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+    "architecture": "x86_64"
+  },
+  "selected_suites": [
+    "quick"
+  ],
+  "selected_cases": [
+    "toolbar-extensions-tortoisegit-refresh"
+  ],
+  "counts": {
+    "PASS": 1
+  },
+  "results": [
+    {
+      "id": "toolbar-extensions-tortoisegit-refresh",
+      "description": "Open the labeled Other and Extensions controls, prove popup exclusivity, validate installed/unavailable TortoiseGit state, invoke refresh, and preserve visible state.",
+      "status": "PASS",
+      "started_utc": "unix:1786675139",
+      "duration_ms": 7781,
+      "command": "powershell.exe -Sta -NoProfile -ExecutionPolicy Bypass -File D:\\SuperExplorer\\scripts\\smoke_toolbar_extensions.ps1 -OutputDirectory D:\\SuperExplorer\\openspec\\changes\\add-toolbar-extensions-tortoisegit-refresh\\evidence\\headful\\evidence\\toolbar-extensions-tortoisegit-refresh -SkipBuild",
+      "exit_code": 0,
+      "terminal_reason": null,
+      "stdout": "logs/toolbar-extensions-tortoisegit-refresh.stdout.log",
+      "stderr": "logs/toolbar-extensions-tortoisegit-refresh.stderr.log",
+      "evidence_directory": "evidence/toolbar-extensions-tortoisegit-refresh",
+      "artifacts": [
+        "evidence/toolbar-extensions-tortoisegit-refresh/report.json",
+        "evidence/toolbar-extensions-tortoisegit-refresh/toolbar-extensions.png",
+        "evidence/toolbar-extensions-tortoisegit-refresh/uia-buttons.txt"
+      ],
+      "requirements": [
+        "add-toolbar-extensions-tortoisegit-refresh/toolbar-shell-extensions/command-bar-exposes-labeled-other-and-extensions-controls",
+        "add-toolbar-extensions-tortoisegit-refresh/toolbar-shell-extensions/command-popups-are-mutually-exclusive-and-keyboard-operable",
+        "add-toolbar-extensions-tortoisegit-refresh/toolbar-shell-extensions/extensions-menu-reflects-tortoisegit-availability",
+        "add-toolbar-extensions-tortoisegit-refresh/toolbar-shell-extensions/installed-environment-uitest-proves-the-interaction",
+        "add-toolbar-extensions-tortoisegit-refresh/toolbar-shell-extensions/tortoisegit-refresh-re-queries-active-overlay-icons"
+      ],
+      "rerun_command": "cargo run -p explorer-uitest -- --manifest uitest/manifest.json --case toolbar-extensions-tortoisegit-refresh",
+      "process": {
+        "launched_pid": 287732,
+        "before_count": 379,
+        "after_count": 377,
+        "detected_residual_pids": [],
+        "residual_pids": [],
+        "cleanup_attempted": false
+      }
+    }
+  ]
+}

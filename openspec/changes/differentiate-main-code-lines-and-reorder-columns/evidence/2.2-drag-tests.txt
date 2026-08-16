@@ -1,0 +1,6 @@
+G3 PASS (2026-08-14)
+
+The explorer-ui details_column focused suite passed 10 tests, including bounded drag state, threshold activation, midpoint insertion, live preview, commit, cancel, Name rejection, resize isolation, and persisted order projection.
+
+The UITEST script now uses an explicit target midpoint, rejects Name movement, and contains a clean-restart order assertion. The registered case is dual-code-lines-reorder-headful.
+

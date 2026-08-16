@@ -1,0 +1,14 @@
+2026-08-14 G3 MFT evidence
+
+- The installed `SuperExplorerMft` LocalSystem service is running from the exact
+  candidate path documented by `mft-sqlite-foreground-persistence`.
+- `folder_size_service::tests::opt_in_mft_service_aggregates_visible_child_directories`: passed.
+- Indexed projection equality, root/node bounds, complete hierarchy-to-aggregate
+  comparison and exact generation binding are covered by focused tests.
+- `helper_prompt_state_coalesces_and_does_not_repeat_terminal_failure`: passed.
+- The non-elevated coordinator records one per-volume in-flight/terminal prompt state;
+  a decline or failure is reused instead of opening another prompt.
+- The exact launched helper has a 30-second wait bound, observes cancellation, and
+  is terminated on timeout/cancellation. Missing helper, malformed output, incomplete
+  enumeration, topology failure, and bounded subtree failure all fall through.
+- `mft_size_map::tests`: 14 passed, 1 explicitly opt-in real-volume test ignored.

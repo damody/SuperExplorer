@@ -1,0 +1,14 @@
+2026-08-14 G7 ABI and packaging evidence
+
+- Official manifests and registrars declare `folder.aggregate` or `folder.tree` exactly.
+- `official_folder_snapshot_requirements_fail_closed_when_undeclared_or_stale`: passed.
+- Runtime authority disable/update-incarnation/stale/tamper rejection tests already pass
+  in `explorer-extension-host`.
+- Folder Size direct fixture tests: 15 passed, 1 child-process helper ignored.
+- Size Map direct fixture tests: 5 passed.
+- Plugin tooling focused folder tests: 3 passed; exact requirement rejection: 1 passed.
+- Installed helper/service/Everything DLL hashes and non-elevated app manifest are in
+  `3.2-installer-check.txt`.
+- Canonical `validate-plugin.ps1` remains blocked because the checked-out protected
+  GPUI revision b3d978d34361087fbb6a9fb92565970943831b4d differs from approved
+  8945e2981b9fd00ca887e042d8adb9acc241b168; no unapproved bundle was generated.

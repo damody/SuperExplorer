@@ -193,13 +193,13 @@
 **Gate／Evidence：** `G-TEN-MINUTE`, `G-FIXED-FILES`, `G-DEFENDER-IO`, `G-NO-SHUTDOWN-WRITE`; `target/openspec-evidence/mft-sqlite-foreground-persistence/5.2.*/result.json`.
 **完成門檻：** At least twenty unfocused minutes show no prohibited writes; focused intervals obey cadence; active files remain fixed; Defender comparison reports CPU/I/O/file events and limitations.
 
-- [ ] 5.2.1 Record the pre-change cache inventory, file-create/write cadence, service/Defender CPU and I/O counters, exact binary identity, and environment metadata using a repeatable procedure.
-- [ ] 5.2.2 Install the candidate package and verify service path, account, binary hash/version, SQLite configuration, and initial migration state.
-- [ ] 5.2.3 Run at least twenty minutes of representative NTFS mutations while Super Explorer is unfocused and record zero periodic transaction/checkpoint/migration/rebuild/cleanup/generation-file events.
-- [ ] 5.2.4 Run focused mutations and injected post-WAL write failures across at least two persistence deadlines and prove no more than one disk-write attempt per volume per ten-minute interval.
+- [x] 5.2.1 Record the pre-change cache inventory, file-create/write cadence, service/Defender CPU and I/O counters, exact binary identity, and environment metadata using a repeatable procedure.
+- [x] 5.2.2 Install the candidate package and verify service path, account, binary hash/version, SQLite configuration, and initial migration state.
+- [x] 5.2.3 Run at least twenty minutes of representative NTFS mutations while Super Explorer is unfocused and record zero periodic transaction/checkpoint/migration/rebuild/cleanup/generation-file events.
+- [x] 5.2.4 Run focused mutations and injected post-WAL write failures across at least two persistence deadlines and prove no more than one disk-write attempt per volume per ten-minute interval.
 - [ ] 5.2.5 Exercise focus loss/reacquisition, multi-window leases, same-user spoof rejection, crash/disconnect/session-switch expiry, SCM stop with pending work, and restart catch-up in installed-service traces.
 - [ ] 5.2.6 Exercise Windows shutdown/reboot with pending work and outstanding WAL frames; prove lifecycle linearization and no implicit close checkpoint, backfill, truncate, or unlink.
-- [ ] 5.2.7 Compare pre/post Defender CPU/I/O and cache file events, state environmental limits, and explicitly exclude working-set-only conclusions.
+- [x] 5.2.7 Compare pre/post Defender CPU/I/O and cache file events, state environmental limits, and explicitly exclude working-set-only conclusions.
 
 ## 6. Final integration and release disposition
 
@@ -213,8 +213,8 @@
 **Gate／Evidence：** All gates; `target/openspec-evidence/mft-sqlite-foreground-persistence/6.1.*/result.json`.
 **完成門檻：** Every scenario traces to passing evidence, all P0/P1 findings are fixed, strict validation passes, and no task/evidence remains stale, blocked, failed, or silently weakened.
 
-- [ ] 6.1.1 Reconcile proposal, design, specs, implementation, installer behavior, diagnostics, scripts, and both related OpenSpec task states against actual evidence.
-- [ ] 6.1.2 Produce the final requirement-to-scenario-to-gate-to-task-to-evidence matrix and identify any evidence made stale or superseded by adjustments.
+- [x] 6.1.1 Reconcile proposal, design, specs, implementation, installer behavior, diagnostics, scripts, and both related OpenSpec task states against actual evidence.
+- [x] 6.1.2 Produce the final requirement-to-scenario-to-gate-to-task-to-evidence matrix and identify any evidence made stale or superseded by adjustments.
 - [ ] 6.1.3 Obtain an independent architecture/security/concurrency/migration/test-completeness review and resolve every P0/P1 finding.
-- [ ] 6.1.4 Run the detailed-task validator, placeholder/contradiction scan, `openspec validate --strict`, and final status checks; save all raw outputs.
-- [ ] 6.1.5 Write the final release/rollback report with exact installed identities, measured cadence, Defender evidence limitations, known residual risks, and approval disposition.
+- [x] 6.1.4 Run the detailed-task validator, placeholder/contradiction scan, `openspec validate --strict`, and final status checks; save all raw outputs.
+- [x] 6.1.5 Write the final release/rollback report with exact installed identities, measured cadence, Defender evidence limitations, known residual risks, and approval disposition.

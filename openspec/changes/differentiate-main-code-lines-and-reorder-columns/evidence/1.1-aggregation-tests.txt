@@ -1,0 +1,15 @@
+G1 PASS (2026-08-14)
+
+Focused commands:
+- cargo test --locked --offline -p explorer-app code_lines --lib
+  Result: 10 passed.
+- cargo test --manifest-path sdk/fixtures/rust-tokei-code-lines-column/Cargo.toml --locked --offline
+  Result: 9 passed; doc tests passed.
+- cargo test --manifest-path sdk/fixtures/lua-tokei-code-lines-column/Cargo.toml --locked --offline
+  Result: 7 passed; doc tests passed.
+
+Covered contracts:
+- Code lines sums every recognized language.
+- Main code lines selects the greatest aggregate language and breaks ties by ascending language name.
+- Mixed-language, single-language, tie, cold-cache, warm-cache, metadata invalidation, and directory-pack paths are distinct and tested.
+

@@ -1,0 +1,9 @@
+# Cache, refresh, and privacy evidence
+
+Merged outcomes use the existing canonical resource identity, two-second lock-owner TTL, refresh generation, and runtime generation tombstones; no polling was added. `lock_owner_cache_is_generation_metadata_and_ttl_scoped` proves generation mismatch and TTL expiry miss. `lock_owner_f5_clears_occupied_state_and_rejects_delayed_pre_refresh_result` proves F5 immediately hides an occupied value, rejects a delayed old-source publication, and admits the fresh empty terminal used after exit or subtree departure. `lock_owner_scope_generations_reject_delayed_refresh_folder_and_tab_results` covers rapid F5, folder, and tab transitions. The Host live-cancellation/revocation tests cover feature-disable rejection while the callback is running and before service use.
+
+The controlled native `cmd.exe` test begins inside a nested fixture, proves exact and parent attribution, changes the same process current directory outside the subtree through its owned stdin, proves both rows clear on a fresh discovery, exits the process, and proves a subsequent discovery remains empty. Focused application and Shell commands pass locked/offline. Source hashes: application `1721909D44204D1412F06CFA28B4A9B115A9A4A26D1AD7A021EF450DB1DD8087`; current-directory probe `28AE614293515CACBE8DEA85725050B58EC58F859B8E707E60F38DEB4D177081`.
+
+Public surface review found only opaque item handles, status, PID, application type, display name, and service name. Current-directory paths, command lines, environment, process handles, and process-control capability are absent. The example manifest requests only `abi`, `filesystem.read`, and `lock-owner.query`.
+
+The remaining cache/headful gap is visual evidence through the production F5 control; the unit lifecycle leaves are complete.

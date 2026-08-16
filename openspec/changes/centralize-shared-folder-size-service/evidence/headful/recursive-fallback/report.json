@@ -1,0 +1,23 @@
+﻿{
+    "status":  "passed",
+    "case_id":  "rust-folder-size-visual-column-headful",
+    "fixture_items":  1000,
+    "exact_value":  "Folder size: 256 B",
+    "data_items":  145,
+    "backend_status":  null,
+    "forced_recursive":  true,
+    "everything_eligible":  false,
+    "uac_prompted":  false,
+    "decorative_bar_automation_nodes":  0,
+    "proportional_bar_visual_delta":  true,
+    "numeric_sort":  true,
+    "proportional_bar_toggle":  true,
+    "f5_generation_recovery":  true,
+    "unchanged_folder_host_cache":  true,
+    "cache_roundtrip_millis":  639,
+    "screenshots":  [
+                        "folder-size-column.png",
+                        "folder-size-bar-on.png",
+                        "folder-size-bar-off.png"
+                    ]
+}

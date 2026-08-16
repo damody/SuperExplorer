@@ -2,52 +2,34 @@
 
 ## Candidate identity
 
-- Installed service: `C:\Program Files\SuperExplorer\superexplorer-mft-service.exe`
-- Service account/startup: `LocalSystem`, automatic, running
-- Installed and release service SHA-256: `f13b4aac7f09f6420ea06c0cac0d210f75b12ab68a5443af0b356d3072bc5672`
-- Installed and release application SHA-256: `a1a0eb2c8443ba4c8872e58142afe8887a580194c71d328a5d55242018934ecb`
-- Installer SHA-256: `1eb6bf237cc887a1e420c011797e987817ae3c73c3e64c264001fe8aeaabcbfc`
-- Version: `0.1.0`; environment: Windows 11 `10.0.26200`
+- Installer `SuperExplorer-Setup-1.2026.8.14-x64.exe`: SHA-256 `B24FB234DEEBB0D6A6C7BBF669A74212B1F816DFC8F6C199739135594AD184C6`.
+- Installed service: `C:\Program Files\SuperExplorer\superexplorer-mft-service.exe`, SHA-256 `A4916F7ADFCC6D7B237F45AECDC5D0329565C651BC17F7E02E8BDAAF1E4DA2E1`.
+- Installed application: SHA-256 `9A7536CC424AC5EF619AB247629E9DA42060A105F0A6ED46A545343B17B65919`.
+- Service is running as `LocalSystem`, start mode `Auto`, from the expected installed path.
+- SQLite is bundled into the service; no external SQLite runtime was added.
 
-The installed hashes equal the release artifacts. SQLite is bundled into the service and no external SQLite runtime is installed.
+## Installed measurements
 
-## Functional disposition
+The clean unfocused trace ran for 1,206.490 seconds with 603 representative mutations. The cache stayed at nine fixed files, emitted zero cache events, and the service read/write byte deltas were both zero.
 
-- Live USN ingestion remains memory-first.
-- Durable SQLite writes require an authenticated foreground lease and the ten-minute attempt/success clocks.
-- The active cache contains nine fixed SQLite members across C, D, and E and no legacy generation files.
-- Folder-size queries remain service-owned. A budget-partial live topology may use the complete durable SQLite metadata when its durable and observed cursors match; it never reads user file contents recursively.
-- Directory rows are excluded from the code-lines provider, preventing navigation from recursively opening a source tree and triggering Defender.
-- Incomplete/unproven folder-size state is reported as partial/calculating rather than exact zero.
-- Switching volumes gives the foreground volume first claim on the fixed live-memory budget and releases background topology with an O(1) snapshot swap.
-- The legacy 512 MiB topology default migrates to 1024 MiB; both SQLite admission and direct MFT scanning use structure-derived per-entry accounting instead of the former 1024-byte row guess.
-- Large exact folders that exceed the interactive subtree-walk bound build one in-memory volume aggregate and retain O(1) answers inside the independent aggregate budget; they no longer degrade to `Partial: 0 KB`.
+The focused trace ran for 1,252.204 seconds with 625 mutations. It observed four WAL events: D at 599,094 ms, C at 600,104 ms, then C and D at 1,201,414 ms. Grouped by volume and 30-second burst windows, each volume made two attempts and successive burst starts were at least ten minutes apart.
 
-The final installed candidate completed its first foreground ten-minute D-drive rebuild and atomically promoted the SQLite snapshot. Installed queries then returned `D:\code` as 236,490,954,612 logical bytes (515,415 files, 74,686 directories), `D:\SuperExplorer` as 116,314,655,258 logical bytes, and the controlled fixture as 2,080 bytes, all with `partial=false`. The fixture's recursive file sum independently matched 2,080 bytes.
+Defender counters are reported only as environmental CPU/I/O telemetry. In the clean unfocused window, Defender read delta was 142,562,505 bytes and write delta was 3,086,584 bytes. No conclusion is drawn from working-set values, and concurrent host activity prevents attributing all Defender I/O to SuperExplorer.
 
-## Defender and I/O evidence
+## Installer lifecycle and rollback
 
-The pre-fix D-drive navigation trace attributed the large recursive read set to SuperExplorer's code-lines directory measurement, not to the MFT service. After directory rows were excluded, a ten-second installed D-drive observation recorded zero SuperExplorer read MiB, zero MFT-service read MiB, and zero Defender CPU/read delta in that interval. The final ten-second idle observation after exact queries for `C:\Users`, `C:\Program Files`, and `D:\code` recorded zero service and Defender read/write delta.
+Repair stopped and restarted the service (PID 268260 to 276588) before replacing files. Silent uninstall exited zero, removed the service, and retained all nine SQLite main/WAL/SHM members. Fresh reinstall restored the current candidate. Rollback installer 1.2026.8.13 (SHA-256 `C1E280BF722B845370EB2EA10CFD8920AB09904CB2EF6BF780FBB15AE71005D6`) installed service hash `1C9CC1BE477007FBDDC601E637E785889B3ADCB0F2FF73BD96C79C20A11B4B4C` without changing cache names or lengths. Reinstalling 1.2026.8.14 restored the exact current service/application hashes.
 
-The immediately preceding candidate's 1,201.232-second unfocused trace recorded 600 representative mutations, no MFT cache file events, a stable six-member active SQLite file set, 1,368 service read bytes, 10,944 service write bytes, zero Defender read bytes, and 181,280 Defender write bytes as environmental telemetry. It is retained as comparative evidence but is not counted for the final cursor/catch-up source fingerprint. Working-set size is never used as evidence of scanning.
+Older builds ignore SQLite rather than reinterpret it as legacy sidecars. The cache remains preserved for rollback and rebuild. An actual pre-SQLite installer was unavailable, so the installed legacy-upgrade procedure remains open even though the deterministic migration fault matrix passes.
 
-## Verification
+## Verification and residual risks
 
-- MFT service unit/integration/fault tests: 94 passed; the opt-in elevated real-D scan test passed in 15.43 seconds and the final installed-canonical catch-up probe passed with 2,077 coalesced changes.
-- Explorer app suites: 158, 20, 93, 2, 1, 9, 1, 1, and 2 passed with zero failures.
-- Extension API: 32 passed; extension host: 296 passed; extension broker: 31 passed, all with zero failures.
-- Tokei installed headful smoke: passed.
-- `cargo fmt --all -- --check`: passed.
-- Relevant locked package check: passed.
-- OpenSpec strict and detailed validation: passed (66 detailed tasks recognized).
-- Evidence-index validation: passed for the currently checked automated evidence leaves.
-
-The repository-wide warnings-as-errors Clippy invocation remains non-countable because pre-existing shared extension/application targets produce numerous unrelated lint failures. This task remains unchecked until a scoped accepted-lint policy or repository cleanup passes honestly.
-
-## Rollback
-
-The installer stops and verifies the service before replacing or deleting its binary, and preserves `%ProgramData%\SuperExplorer\MftIndex`. An older build ignores the SQLite store and may rebuild its legacy MFT cache. Rollback does not reinterpret SQLite files as legacy sidecars and does not require stop-time cache deletion. Failed migration or replacement retains a typed recovery disposition and never admits an unverified store as exact.
+- Formatter, locked package checks, MFT service/application tests, extension host/broker tests, and UI test library pass.
+- Current warnings-denied Clippy is not countable because active cache-budget work contains unrelated truncation lints.
+- A real Windows reboot with pending work is not captured because it would terminate this execution session.
+- Installed crash/disconnect/session-switch coverage is incomplete.
+- The current independent review task is open because the previous review became stale and this run is intentionally single-agent.
 
 ## Approval disposition
 
-Pending the exact-candidate installed foreground/background, lifecycle, reboot, and packaging evidence leaves listed in tasks 4.2.4 and 5.2.1–5.2.7. No unchecked task is represented as passed.
+The implementation and all safely actionable installed measurements pass, but this change is not presented as archive-ready while tasks 4.2.4, 5.1.4, 5.2.5, 5.2.6 and 6.1.3 remain open. No blocked or stale evidence is counted as passed.

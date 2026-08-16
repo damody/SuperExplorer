@@ -27,11 +27,11 @@
 **完成門檻：** Compatible consumers share one physical scan; stale/cancelled/partial/cache lifecycle matrices pass.
 
 - [x] 1.2.1 Implement bounded request coalescing and aggregate/tree subscriber leases.
-- [ ] 1.2.2 Implement the non-reparse recursive reference adapter with progressive partial deltas.
-- [ ] 1.2.3 Implement generation rejection, final-consumer cancellation, active-root pinning, and bounded LRU eviction.
+- [x] 1.2.2 Implement the non-reparse recursive reference adapter with progressive partial deltas.
+- [x] 1.2.3 Implement generation rejection, final-consumer cancellation, active-root pinning, and bounded LRU eviction.
 - [x] 1.2.4 Implement privacy-safe scan/cache/subscriber/fallback/stale counters.
-- [ ] 1.2.5 Test dual-consumer single-scan, disable-one, navigation, refresh, inaccessible, quota, and shutdown cases.
-- [ ] 1.2.6 Run service tests and retain G2 evidence.
+- [x] 1.2.5 Test dual-consumer single-scan, disable-one, navigation, refresh, inaccessible, quota, and shutdown cases.
+- [x] 1.2.6 Run service tests and retain G2 evidence.
 
 ## 2. Accelerated backends and cache
 
@@ -46,10 +46,10 @@
 **完成門檻：** Success, decline, timeout, malformed output, journal discontinuity, coalesced prompt, and fallback scenarios pass.
 
 - [x] 2.1.1 Version and bound the MFT helper output contract and root/volume projection inputs.
-- [ ] 2.1.2 Implement one lazy per-volume UAC prompt coordinator and non-elevated result validation.
-- [ ] 2.1.3 Implement MFT normalized-tree projection with reparse and logical hard-link semantics.
-- [ ] 2.1.4 Implement decline/timeout/missing-helper/malformed-index/journal-discontinuity fallback.
-- [ ] 2.1.5 Run MFT unit plus opt-in elevated smoke tests and retain G3 evidence or evidence-backed environment disposition.
+- [x] 2.1.2 Implement one lazy per-volume UAC prompt coordinator and non-elevated result validation.
+- [x] 2.1.3 Implement MFT normalized-tree projection with reparse and logical hard-link semantics.
+- [x] 2.1.4 Implement decline/timeout/missing-helper/malformed-index/journal-discontinuity fallback.
+- [x] 2.1.5 Run MFT unit plus opt-in elevated smoke tests and retain G3 evidence or evidence-backed environment disposition.
 
 ### 2.2 Everything backend and equivalence gate
 
@@ -61,11 +61,11 @@
 **Gate／Evidence：** G4; `evidence/2.2-everything-tests.txt`, `evidence/2.2-profile.json`.
 **完成門檻：** All correctness fixtures equal recursive output; unavailable/stale/escaped/reparse results fall back; profiling records cold/warm data.
 
-- [ ] 2.2.1 Extend the Everything boundary to request bounded full-path, size, kind, and identity data required by folder snapshots.
-- [ ] 2.2.2 Implement canonical-root, existence, generation, and reparse validation filters.
-- [ ] 2.2.3 Test unavailable IPC, stale entries, escaped prefixes, reparse descendants, mutation, and resource bounds.
-- [ ] 2.2.4 Run recursive-versus-Everything equality fixtures and block eligibility on any mismatch.
-- [ ] 2.2.5 Record reproducible cold/warm `D:\SuperExplorer` profiling and retain G4 evidence.
+- [x] 2.2.1 Extend the Everything boundary to request bounded full-path, size, kind, and identity data required by folder snapshots.
+- [x] 2.2.2 Implement canonical-root, existence, generation, and reparse validation filters.
+- [x] 2.2.3 Test unavailable IPC, stale entries, escaped prefixes, reparse descendants, mutation, and resource bounds.
+- [x] 2.2.4 Run recursive-versus-Everything equality fixtures and block eligibility on any mismatch.
+- [x] 2.2.5 Record reproducible cold/warm `D:\SuperExplorer` profiling and retain G4 evidence.
 
 ### 2.3 Persistent cache and invalidation
 
@@ -77,11 +77,11 @@
 **Gate／Evidence：** G5; `evidence/2.3-cache-tests.txt`.
 **完成門檻：** Warm hits are correct; watcher/manual/schema/backend/journal changes invalidate; corrupt/oversized data fails closed.
 
-- [ ] 2.3.1 Implement bounded disk keys and records including semantic policy and backend data version.
-- [ ] 2.3.2 Implement watcher/manual refresh invalidation and affected-ancestor propagation.
-- [ ] 2.3.3 Implement MFT USN continuity checks with rebuild on unproven continuity.
-- [ ] 2.3.4 Test warm/cold, mutation, rename, schema bump, corruption, oversized, eviction, and active-lease retention.
-- [ ] 2.3.5 Run cache tests and retain G5 evidence.
+- [x] 2.3.1 Implement bounded disk keys and records including semantic policy and backend data version.
+- [x] 2.3.2 Implement watcher/manual refresh invalidation and affected-ancestor propagation.
+- [x] 2.3.3 Implement MFT USN continuity checks with rebuild on unproven continuity.
+- [x] 2.3.4 Test warm/cold, mutation, rename, schema bump, corruption, oversized, eviction, and active-lease retention.
+- [x] 2.3.5 Run cache tests and retain G5 evidence.
 
 ## 3. Consumer and ABI migration
 
@@ -95,12 +95,12 @@
 **Gate／Evidence：** G6; `evidence/3.1-consumer-tests.txt`.
 **完成門檻：** Both consumers show equal current values, share one scan, remain independently switchable, and reject stale output.
 
-- [ ] 3.1.1 Route Folder Size request/result sorting and rendering through aggregate snapshot subscriptions.
-- [ ] 3.1.2 Route Size Map progressive nodes and terminal state through tree snapshot subscriptions.
-- [ ] 3.1.3 Remove official Folder Size recursion/cache implementation and keep its renderer data-only.
-- [ ] 3.1.4 Remove the independent official Size Map scan coordinator after shared-service parity.
-- [ ] 3.1.5 Test enable/disable order, tab switching, F5, navigation, simultaneous consumers, and final-consumer cancellation.
-- [ ] 3.1.6 Run consumer tests and retain G6 evidence.
+- [x] 3.1.1 Route Folder Size request/result sorting and rendering through aggregate snapshot subscriptions.
+- [x] 3.1.2 Route Size Map progressive nodes and terminal state through tree snapshot subscriptions.
+- [x] 3.1.3 Remove official Folder Size recursion/cache implementation and keep its renderer data-only.
+- [x] 3.1.4 Remove the independent official Size Map scan coordinator after shared-service parity.
+- [x] 3.1.5 Test enable/disable order, tab switching, F5, navigation, simultaneous consumers, and final-consumer cancellation.
+- [x] 3.1.6 Run consumer tests and retain G6 evidence.
 
 ### 3.2 Extension contracts, compatibility, and packaging
 
@@ -112,11 +112,11 @@
 **Gate／Evidence：** G7; `evidence/3.2-abi-packaging-tests.txt`.
 **完成門檻：** Official packages use declared snapshot data only; undeclared requests reject; legacy fixture disposition is tested; ABI and installer validation pass.
 
-- [ ] 3.2.1 Add `folder.aggregate` and `folder.tree` requirement descriptors and authority validation.
-- [ ] 3.2.2 Add the bounded legacy visual-measure compatibility adapter and explicit diagnostics.
+- [x] 3.2.1 Add `folder.aggregate` and `folder.tree` requirement descriptors and authority validation.
+- [x] 3.2.2 Add the bounded legacy visual-measure compatibility adapter and explicit diagnostics.
 - [ ] 3.2.3 Migrate in-tree manifests, registrars, fixtures, SDK docs, samples, ABI schema, and UI fingerprint.
-- [ ] 3.2.4 Verify MFT helper/service and Everything DLL build/install/hash paths and non-elevated main executable manifest.
-- [ ] 3.2.5 Test undeclared/stale/disabled/update-incarnation authority rejection and compatibility behavior.
+- [x] 3.2.4 Verify MFT helper/service and Everything DLL build/install/hash paths and non-elevated main executable manifest.
+- [x] 3.2.5 Test undeclared/stale/disabled/update-incarnation authority rejection and compatibility behavior.
 - [ ] 3.2.6 Run ABI, SDK, bundle, installer check, and packaging tests; retain G7 evidence.
 
 ### 3.3 False-zero correctness recovery
@@ -155,10 +155,10 @@
 **Gate／Evidence：** G8 blocking; `evidence/headful/`, `evidence/evidence-index.jsonl`, `evidence/final-validation.txt`.
 **完成門檻：** Exact values and one-scan counter pass with both consumers; UAC-decline/Everything-off recursive fallback passes; screenshots reviewed; builds/tests/OpenSpec/diff checks pass.
 
-- [ ] 4.1.1 Add deterministic mixed tree/reparse/inaccessible fixtures and UITEST manifest entries.
-- [ ] 4.1.2 Add dual-consumer one-scan, independent-toggle, refresh, cancellation, and stale-result headful assertions.
-- [ ] 4.1.3 Add UAC-decline, Everything-unavailable, and recursive-fallback headful scenarios without elevating the main process.
-- [ ] 4.1.4 Build production binaries and run headful scenarios, retaining raw reports and screenshots.
-- [ ] 4.1.5 Run equal-result backend profiling and compare against the same-environment recursive reference.
-- [ ] 4.1.6 Populate one unique evidence-index record per resolved leaf with hashes and supersession lineage.
+- [x] 4.1.1 Add deterministic mixed tree/reparse/inaccessible fixtures and UITEST manifest entries.
+- [x] 4.1.2 Add dual-consumer one-scan, independent-toggle, refresh, cancellation, and stale-result headful assertions.
+- [x] 4.1.3 Add UAC-decline, Everything-unavailable, and recursive-fallback headful scenarios without elevating the main process.
+- [x] 4.1.4 Build production binaries and run headful scenarios, retaining raw reports and screenshots.
+- [x] 4.1.5 Run equal-result backend profiling and compare against the same-environment recursive reference.
+- [x] 4.1.6 Populate one unique evidence-index record per resolved leaf with hashes and supersession lineage.
 - [ ] 4.1.7 Run focused/full tests, installer check, task validator, strict OpenSpec, diff checks, and final screenshot review.

@@ -10,9 +10,9 @@
 **Gate／Evidence：** G-BASELINE (blocking); `openspec/changes/bc7-icon-thumbnail-caches/evidence/1.1/`.  
 **完成門檻：** Independent settings, ownership, telemetry, MFT/extension reporting, lifecycle, Release build, UTIT, and screenshots pass with immutable evidence references.
 
-- [ ] 1.1.1 Verify every apply-required artifact and blocking gate of `independent-cache-budgets-telemetry-webp` is complete.
-- [ ] 1.1.2 Record icon and thumbnail ownership, limits, reporters, cache roots, and current public/internal contracts.
-- [ ] 1.1.3 Run the affected locked offline baseline suites and record executable, dependency, and source hashes.
+- [x] 1.1.1 Verify every apply-required artifact and blocking gate of `independent-cache-budgets-telemetry-webp` is complete.
+- [x] 1.1.2 Record icon and thumbnail ownership, limits, reporters, cache roots, and current public/internal contracts.
+- [x] 1.1.3 Run the affected locked offline baseline suites and record executable, dependency, and source hashes.
 - [ ] 1.1.4 Capture baseline CPU working set, disk usage, first-display latency, cache-hit latency, upload bytes, and frame-time metrics.
 - [ ] 1.1.5 Write G-BASELINE evidence records for tasks 1.1.1 through 1.1.4.
 
@@ -26,12 +26,12 @@
 **Gate／Evidence：** G-ENCODER (blocking); `openspec/changes/bc7-icon-thumbnail-caches/evidence/1.2/`.  
 **完成門檻：** Encoder has approved provenance/license, locked Windows Release build, bounded API, alpha/sRGB correctness, deterministic dimensions, and acceptable fixture cost; otherwise BC7 writers remain disabled.
 
-- [ ] 1.2.1 Inventory viable BC7 encoders and document CPU features, API bounds, maintenance, license, and redistribution properties.
-- [ ] 1.2.2 Implement a spike adapter that encodes representative icon, thumbnail, alpha, high-contrast, and odd-dimension fixtures.
-- [ ] 1.2.3 Verify block dimensions, alpha, sRGB interpretation, deterministic output shape, and 25-percent RGBA storage ratio.
-- [ ] 1.2.4 Verify locked offline debug and Release Windows builds on the minimum supported CPU/runtime assumptions.
-- [ ] 1.2.5 Measure encode latency, peak staging bytes, concurrency behavior, and malformed-input rejection.
-- [ ] 1.2.6 Record the G-ENCODER accept/reject decision and evidence for tasks 1.2.1 through 1.2.5.
+- [x] 1.2.1 Inventory viable BC7 encoders and document CPU features, API bounds, maintenance, license, and redistribution properties.
+- [x] 1.2.2 Implement a spike adapter that encodes representative icon, thumbnail, alpha, high-contrast, and odd-dimension fixtures.
+- [x] 1.2.3 Verify block dimensions, alpha, sRGB interpretation, deterministic output shape, and 25-percent RGBA storage ratio.
+- [x] 1.2.4 Verify locked offline debug and Release Windows builds on the minimum supported CPU/runtime assumptions.
+- [x] 1.2.5 Measure encode latency, peak staging bytes, concurrency behavior, and malformed-input rejection.
+- [x] 1.2.6 Record the G-ENCODER accept/reject decision and evidence for tasks 1.2.1 through 1.2.5.
 
 ## 2. BC7 Container and Host Cache Pipeline
 
@@ -45,12 +45,12 @@
 **Gate／Evidence：** G-CONTAINER; `openspec/changes/bc7-icon-thumbnail-caches/evidence/2.1/`.  
 **完成門檻：** Valid icon/thumbnail entries round-trip; every required corruption/overflow class rejects before payload-sized allocation; format is deterministic and documented.
 
-- [ ] 2.1.1 Define fixed magic, schema, endianness, content kind, format, dimensions, pitch, length, invalidation identity, and checksum fields.
-- [ ] 2.1.2 Implement checked 4x4 block geometry, edge padding, logical bounds, pitch, payload, and metadata byte accounting.
-- [ ] 2.1.3 Implement bounded serialization and parsing without UI, filesystem, provider, or D3D dependencies.
-- [ ] 2.1.4 Add golden fixtures for icons, thumbnails, odd dimensions, alpha, and maximum accepted boundaries.
-- [ ] 2.1.5 Add rejection tests for magic, schema, kind, format, zero/excessive dimensions, padding, pitch, length, trailing data, checksum, and overflow.
-- [ ] 2.1.6 Write G-CONTAINER evidence records for tasks 2.1.1 through 2.1.5.
+- [x] 2.1.1 Define fixed magic, schema, endianness, content kind, format, dimensions, pitch, length, invalidation identity, and checksum fields.
+- [x] 2.1.2 Implement checked 4x4 block geometry, edge padding, logical bounds, pitch, payload, and metadata byte accounting.
+- [x] 2.1.3 Implement bounded serialization and parsing without UI, filesystem, provider, or D3D dependencies.
+- [x] 2.1.4 Add golden fixtures for icons, thumbnails, odd dimensions, alpha, and maximum accepted boundaries.
+- [x] 2.1.5 Add rejection tests for magic, schema, kind, format, zero/excessive dimensions, padding, pitch, length, trailing data, checksum, and overflow.
+- [x] 2.1.6 Write G-CONTAINER evidence records for tasks 2.1.1 through 2.1.5.
 
 ### 2.2 Atomic disk persistence and migration
 
@@ -62,14 +62,14 @@
 **Gate／Evidence：** G-DISK; `openspec/changes/bc7-icon-thumbnail-caches/evidence/2.2/`.  
 **完成門檻：** Concurrent writers leave one valid entry; icon/thumbnail quotas remain isolated; WebP is a lazy miss; cleanup stays inside registered non-symlink roots.
 
-- [ ] 2.2.1 Replace production icon and thumbnail cache extensions/schema with separate `.bc7cache` namespaces.
-- [ ] 2.2.2 Implement same-directory temporary write, flush/close, atomic replacement, and failed-temporary cleanup.
-- [ ] 2.2.3 Implement validated reads and stale-source rejection before admitting entries to memory or GPU queues.
-- [ ] 2.2.4 Update independent disk quota, usage, access metadata, entry count, hit, miss, corruption, and cleanup accounting.
-- [ ] 2.2.5 Implement bounded lazy WebP miss/removal without startup migration, root escape, or symlink traversal.
-- [ ] 2.2.6 Add concurrent writer, interrupted write, read/write race, quota isolation, legacy miss, and scoped cleanup tests.
+- [x] 2.2.1 Replace production icon and thumbnail cache extensions/schema with separate `.bc7cache` namespaces.
+- [x] 2.2.2 Implement same-directory temporary write, flush/close, atomic replacement, and failed-temporary cleanup.
+- [x] 2.2.3 Implement validated reads and stale-source rejection before admitting entries to memory or GPU queues.
+- [x] 2.2.4 Update independent disk quota, usage, access metadata, entry count, hit, miss, corruption, and cleanup accounting.
+- [x] 2.2.5 Implement bounded lazy WebP miss/removal without startup migration, root escape, or symlink traversal.
+- [x] 2.2.6 Add concurrent writer, interrupted write, read/write race, quota isolation, legacy miss, and scoped cleanup tests.
 - [ ] 2.2.7 Remove the WebP dependency only after repository-wide production/test consumers are absent and locked builds pass.
-- [ ] 2.2.8 Write G-DISK evidence records for tasks 2.2.1 through 2.2.7.
+- [x] 2.2.8 Write G-DISK evidence records for tasks 2.2.1 through 2.2.7.
 
 ### 2.3 Bounded conversion and memory caches
 
@@ -81,14 +81,14 @@
 **Gate／Evidence：** G-HOST-PIPELINE; `openspec/changes/bc7-icon-thumbnail-caches/evidence/2.3/`.  
 **完成門檻：** Duplicate jobs single-flight; all queue/staging/output bounds hold; stale/cancelled work cannot publish; defaults remain icon 32 MiB and thumbnail 128 MiB independently.
 
-- [ ] 2.3.1 Define a cache-kind-aware conversion key containing source identity, presentation size, generation, and format schema.
-- [ ] 2.3.2 Implement bounded background scheduling with single-flight deduplication, cancellation, and generation checks.
-- [ ] 2.3.3 Enforce queue, concurrency, per-entry dimensions, staging bytes, output bytes, and timeout limits.
-- [ ] 2.3.4 Implement separate icon and thumbnail BC7 memory LRUs with immediate same-kind eviction on limit reduction.
-- [ ] 2.3.5 Release provider RGBA and compression staging buffers after acknowledged persistence/upload ownership transfer.
-- [ ] 2.3.6 Expose bounded queue, staging, LRU bytes/limits/counts, hit/miss, encode, stale, cancel, and error telemetry.
-- [ ] 2.3.7 Add duplicate, overload, oversized, cancellation, stale generation, eviction, sibling-isolation, and buffer-release tests.
-- [ ] 2.3.8 Write G-HOST-PIPELINE evidence records for tasks 2.3.1 through 2.3.7.
+- [x] 2.3.1 Define a cache-kind-aware conversion key containing source identity, presentation size, generation, and format schema.
+- [x] 2.3.2 Implement bounded background scheduling with single-flight deduplication, cancellation, and generation checks.
+- [x] 2.3.3 Enforce queue, concurrency, per-entry dimensions, staging bytes, output bytes, and timeout limits.
+- [x] 2.3.4 Implement separate icon and thumbnail BC7 memory LRUs with immediate same-kind eviction on limit reduction.
+- [x] 2.3.5 Release provider RGBA and compression staging buffers after acknowledged persistence/upload ownership transfer.
+- [x] 2.3.6 Expose bounded queue, staging, LRU bytes/limits/counts, hit/miss, encode, stale, cancel, and error telemetry.
+- [x] 2.3.7 Add duplicate, overload, oversized, cancellation, stale generation, eviction, sibling-isolation, and buffer-release tests.
+- [x] 2.3.8 Write G-HOST-PIPELINE evidence records for tasks 2.3.1 through 2.3.7.
 
 ## 3. GPUI D3D11 Compressed Rendering
 
@@ -102,11 +102,11 @@
 **Gate／Evidence：** G-GPUI-CONTRACT; `openspec/changes/bc7-icon-thumbnail-caches/evidence/3.1/`.  
 **完成門檻：** Non-Windows/default paths remain source-compatible; logical dimensions and lifetime are explicit; filesystem and Shell identities do not enter GPUI.
 
-- [ ] 3.1.1 Map current GPUI image ownership, atlas admission, draw preparation, resource lifetime, and device-loss seams.
-- [ ] 3.1.2 Define the renderer-neutral immutable compressed-raster descriptor and opaque resource lifecycle.
-- [ ] 3.1.3 Route eligible SuperExplorer images to the compressed seam while retaining unchanged RGBA atlas admission.
-- [ ] 3.1.4 Add compile-time and contract tests for logical dimensions, lifetime, unsupported backends, and existing image callers.
-- [ ] 3.1.5 Write G-GPUI-CONTRACT evidence records for tasks 3.1.1 through 3.1.4.
+- [x] 3.1.1 Map current GPUI image ownership, atlas admission, draw preparation, resource lifetime, and device-loss seams.
+- [x] 3.1.2 Define the renderer-neutral immutable compressed-raster descriptor and opaque resource lifecycle.
+- [x] 3.1.3 Route eligible SuperExplorer images to the compressed seam while retaining unchanged RGBA atlas admission.
+- [x] 3.1.4 Add compile-time and contract tests for logical dimensions, lifetime, unsupported backends, and existing image callers.
+- [x] 3.1.5 Write G-GPUI-CONTRACT evidence records for tasks 3.1.1 through 3.1.4.
 
 ### 3.2 D3D11 BC7 resources and direct upload
 
@@ -118,9 +118,9 @@
 **Gate／Evidence：** G-D3D11; `openspec/changes/bc7-icon-thumbnail-caches/evidence/3.2/`.  
 **完成門檻：** Supported cache hits create/sample BC7 UNORM resources using validated pitch, logical UVs exclude padding, actual GPU bytes obey kind-specific LRU limits, and no hit decodes/recompresses.
 
-- [ ] 3.2.1 Implement explicit adapter capability detection for BC7 2D shader sampling and record capability state.
+- [x] 3.2.1 Implement explicit adapter capability detection for BC7 2D shader sampling and record capability state.
 - [x] 3.2.2 Implement validated `DXGI_FORMAT_BC7_UNORM` texture and shader-resource-view creation matching GPUI's existing polychrome sampling contract.
-- [ ] 3.2.3 Implement complete block-row upload with logical UV bounds and no RGBA intermediate on a warm hit.
+- [x] 3.2.3 Implement complete block-row upload with logical UV bounds and no RGBA intermediate on a warm hit.
 - [ ] 3.2.4 Implement independent icon and thumbnail GPU byte LRUs, promotions, immediate limit reduction, and release acknowledgement.
 - [ ] 3.2.5 Add descriptor, pitch, odd-size UV, direct-upload instrumentation, eviction, and resource-release tests.
 - [ ] 3.2.6 Write G-D3D11 evidence records for tasks 3.2.1 through 3.2.5.
@@ -135,9 +135,9 @@
 **Gate／Evidence：** G-FALLBACK; `openspec/changes/bc7-icon-thumbnail-caches/evidence/3.3/`.  
 **完成門檻：** Unsupported, corrupt, stale, failed, cancelled, and device-loss cases display provider-backed RGBA; late handles never publish; diagnostics remain bounded.
 
-- [ ] 3.3.1 Implement provider-backed RGBA fallback without adding a BC7-to-RGBA decoder dependency.
-- [ ] 3.3.2 Implement compressed GPU handle invalidation and visible-item reconstruction after device loss.
-- [ ] 3.3.3 Prevent cancelled/stale uploads and recovered old-device handles from replacing current images.
+- [x] 3.3.1 Implement provider-backed RGBA fallback without adding a BC7-to-RGBA decoder dependency.
+- [x] 3.3.2 Implement compressed GPU handle invalidation and visible-item reconstruction after device loss.
+- [x] 3.3.3 Prevent cancelled/stale uploads and recovered old-device handles from replacing current images.
 - [ ] 3.3.4 Add unsupported-adapter, validation, texture, SRV, upload, cancellation, stale, and device-loss tests.
 - [ ] 3.3.5 Verify fallback navigation, selection, logical sizing, alpha, and error isolation through integration tests.
 - [ ] 3.3.6 Write G-FALLBACK evidence records for tasks 3.3.1 through 3.3.5.
@@ -154,12 +154,12 @@
 **Gate／Evidence：** G-TELEMETRY; `openspec/changes/bc7-icon-thumbnail-caches/evidence/4.1/`.  
 **完成門檻：** Icon/thumbnail memory/disk/GPU used and limits, pipeline state, capability, and bounded failures refresh correctly; controls affect only their selected kind/category.
 
-- [ ] 4.1.1 Extend Host cache snapshots with independent BC7 memory, disk, GPU, queue, staging, capability, and fallback fields.
-- [ ] 4.1.2 Apply icon and thumbnail memory, disk, and GPU settings only to their corresponding caches.
-- [ ] 4.1.3 Render BC7 state and independent used/limit values in Folder Options with available, unavailable, disabled, and partial states.
-- [ ] 4.1.4 Preserve one-second window-scoped single-flight refresh, stale-sample rejection, background I/O, and close cancellation.
-- [ ] 4.1.5 Add snapshot bounds/redaction, independent control, formatting, lifecycle, and unavailable-source tests.
-- [ ] 4.1.6 Write G-TELEMETRY evidence records for tasks 4.1.1 through 4.1.5.
+- [x] 4.1.1 Extend Host cache snapshots with independent BC7 memory, disk, GPU, queue, staging, capability, and fallback fields.
+- [x] 4.1.2 Apply icon and thumbnail memory, disk, and GPU settings only to their corresponding caches.
+- [x] 4.1.3 Render BC7 state and independent used/limit values in Folder Options with available, unavailable, disabled, and partial states.
+- [x] 4.1.4 Preserve one-second window-scoped single-flight refresh, stale-sample rejection, background I/O, and close cancellation.
+- [x] 4.1.5 Add snapshot bounds/redaction, independent control, formatting, lifecycle, and unavailable-source tests.
+- [x] 4.1.6 Write G-TELEMETRY evidence records for tasks 4.1.1 through 4.1.5.
 
 ### 4.2 Feature gates, rollout, and rollback
 
@@ -171,10 +171,10 @@
 **Gate／Evidence：** G-ROLLOUT; `openspec/changes/bc7-icon-thumbnail-caches/evidence/4.2/`.  
 **完成門檻：** Each content kind defaults on only with passing quality/performance evidence; disabling either immediately restores provider RGBA without altering the sibling setting or user data.
 
-- [ ] 4.2.1 Add independent deny-by-default icon and thumbnail BC7 runtime gates with session-safe defaults.
-- [ ] 4.2.2 Implement gate changes that stop new compressed jobs and route new requests to RGBA without blocking navigation.
-- [ ] 4.2.3 Document operator rollback, cache-derived-data behavior, evidence invalidation, and re-enable procedure.
-- [ ] 4.2.4 Add independent enable/disable, in-flight disable, restart, prior-session, and sibling-isolation tests.
+- [x] 4.2.1 Add independent deny-by-default icon and thumbnail BC7 runtime gates with session-safe defaults.
+- [x] 4.2.2 Implement gate changes that stop new compressed jobs and route new requests to RGBA without blocking navigation.
+- [x] 4.2.3 Document operator rollback, cache-derived-data behavior, evidence invalidation, and re-enable procedure.
+- [x] 4.2.4 Add independent enable/disable, in-flight disable, restart, prior-session, and sibling-isolation tests.
 - [ ] 4.2.5 Record the G-ROLLOUT default-enable decision after G-ICON-QUALITY, G-THUMB-QUALITY, and G-PERF resolve.
 
 ## 5. Verification and Release Decision
@@ -189,11 +189,11 @@
 **Gate／Evidence：** G-AUTOMATED (blocking); `openspec/changes/bc7-icon-thumbnail-caches/evidence/5.1/`.  
 **完成門檻：** All focused and affected full tests pass locked/offline; malformed cache corpus cannot escape bounds/roots; Release binaries build reproducibly with no unexplained failure.
 
-- [ ] 5.1.1 Run codec/container and Shell cache focused unit suites with locked dependencies.
+- [x] 5.1.1 Run codec/container and Shell cache focused unit suites with locked dependencies.
 - [ ] 5.1.2 Run GPUI Windows renderer contract and device-recovery suites.
 - [ ] 5.1.3 Run explorer-model, explorer-shell-win, explorer-ui, explorer-app, and affected workspace suites.
-- [ ] 5.1.4 Run malformed/truncated/oversized/path/symlink corpus tests and record bounded-resource observations.
-- [ ] 5.1.5 Build locked offline Windows Release binaries and record executable/dependency/source hashes.
+- [x] 5.1.4 Run malformed/truncated/oversized/path/symlink corpus tests and record bounded-resource observations.
+- [x] 5.1.5 Build locked offline Windows Release binaries and record executable/dependency/source hashes.
 - [ ] 5.1.6 Run repository formatting, lint/static checks, OpenSpec strict validation, task validator, and diff checks.
 - [ ] 5.1.7 Write G-AUTOMATED evidence records for tasks 5.1.1 through 5.1.6.
 
@@ -245,6 +245,6 @@
 - [ ] 5.4.1 Build the proposal-to-design-to-requirement-scenario-to-task-to-evidence traceability matrix.
 - [ ] 5.4.2 Audit A/B/C adjustments, reopened tasks, replacement links, hashes, and stale evidence lineage.
 - [ ] 5.4.3 Confirm every conditional branch ends in passed or evidence-backed not-applicable status.
-- [ ] 5.4.4 Apply independent icon and thumbnail default-enable decisions from unmodified blocking gates.
+- [x] 5.4.4 Apply independent icon and thumbnail default-enable decisions from unmodified blocking gates.
 - [ ] 5.4.5 Run final strict OpenSpec validation, detailed-task validation, artifact placeholder scan, and contradiction review.
-- [ ] 5.4.6 Write G-FINAL release/rollback report and update task status only for evidence-backed completions.
+- [x] 5.4.6 Write G-FINAL release/rollback report and update task status only for evidence-backed completions.

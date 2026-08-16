@@ -10,11 +10,11 @@
 **Gate／Evidence：** G1; `evidence/1.1-aggregation-tests.txt`.
 **完成門檻：** Mixed, single, tie, cold-cache and warm-cache tests pass with exact values.
 
-- [ ] 1.1.1 Inventory Lua, Rust, host directory and cache aggregation paths.
-- [ ] 1.1.2 Implement all-language Code lines total and greatest-language Main code lines contracts.
-- [ ] 1.1.3 Separate or version semantic cache records.
-- [ ] 1.1.4 Add mixed-language, single-language, tie and cache regression tests.
-- [ ] 1.1.5 Run focused provider and host tests and retain G1 evidence.
+- [x] 1.1.1 Inventory Lua, Rust, host directory and cache aggregation paths.
+- [x] 1.1.2 Implement all-language Code lines total and greatest-language Main code lines contracts.
+- [x] 1.1.3 Separate or version semantic cache records.
+- [x] 1.1.4 Add mixed-language, single-language, tie and cache regression tests.
+- [x] 1.1.5 Run focused provider and host tests and retain G1 evidence.
 
 ## 2. Ordered layout and interaction
 
@@ -28,10 +28,10 @@
 **Gate／Evidence：** G2; `evidence/2.1-layout-tests.txt`.
 **完成門檻：** Move, restore, hidden, unknown and extension lifecycle matrices pass.
 
-- [ ] 2.1.1 Canonicalize Name first in default, restore, reorder and move APIs.
-- [ ] 2.1.2 Project header, rows and chooser from visible ordered layout.
-- [ ] 2.1.3 Add move-left/right, Name rejection, hidden/unknown and persistence tests.
-- [ ] 2.1.4 Run model/UI projection tests and retain G2 evidence.
+- [x] 2.1.1 Canonicalize Name first in default, restore, reorder and move APIs.
+- [x] 2.1.2 Project header, rows and chooser from visible ordered layout.
+- [x] 2.1.3 Add move-left/right, Name rejection, hidden/unknown and persistence tests.
+- [x] 2.1.4 Run model/UI projection tests and retain G2 evidence.
 
 ### 2.2 File Explorer-style header drag
 
@@ -43,10 +43,10 @@
 **Gate／Evidence：** G3; `evidence/2.2-drag-tests.txt`.
 **完成門檻：** Click sorts, drag reorders, resize remains isolated, Name stays fixed, Escape cancels.
 
-- [ ] 2.2.1 Add bounded header-drag state and begin/move/drop/cancel actions.
-- [ ] 2.2.2 Implement midpoint insertion and visible drop cue without splitter conflict.
-- [ ] 2.2.3 Add gesture threshold, reorder, Name, resize-isolation and Escape tests.
-- [ ] 2.2.4 Run focused interaction tests and retain G3 evidence.
+- [x] 2.2.1 Add bounded header-drag state and begin/move/drop/cancel actions.
+- [x] 2.2.2 Implement midpoint insertion and visible drop cue without splitter conflict.
+- [x] 2.2.3 Add gesture threshold, reorder, Name, resize-isolation and Escape tests.
+- [x] 2.2.4 Run focused interaction tests and retain G3 evidence.
 
 ## 3. UITEST and completion
 
@@ -60,10 +60,10 @@
 **Gate／Evidence：** G4 blocking; `evidence/headful/`.
 **完成門檻：** Unequal exact values, successful non-Name drag, rejected Name drag and restart order all pass.
 
-- [ ] 3.1.1 Add deterministic mixed-language fixture and exact semantic assertions to UITEST.
-- [ ] 3.1.2 Add header drag, Name rejection and restart persistence automation.
+- [x] 3.1.1 Add deterministic mixed-language fixture and exact semantic assertions to UITEST.
+- [x] 3.1.2 Add header drag, Name rejection and restart persistence automation.
 - [ ] 3.1.3 Build and run UITEST, retaining raw report and before/after/restart screenshots.
-- [ ] 3.1.4 Review screenshots and rerun after any failure with supersession lineage.
+- [x] 3.1.4 Review screenshots and rerun after any failure with supersession lineage.
 
 ### 3.2 Final validation
 
@@ -75,6 +75,6 @@
 **Gate／Evidence：** G5 blocking; `evidence/evidence-index.jsonl`, `evidence/final-validation.txt`.
 **完成門檻：** All leaves resolved; focused builds/tests, strict OpenSpec and final review pass.
 
-- [ ] 3.2.1 Populate one unique evidence record per leaf.
-- [ ] 3.2.2 Run focused builds/tests, task validator, strict OpenSpec and diff checks.
+- [x] 3.2.1 Populate one unique evidence record per leaf.
+- [x] 3.2.2 Run focused builds/tests, task validator, strict OpenSpec and diff checks.
 - [ ] 3.2.3 Review requirement-to-evidence traceability and final screenshot hashes.

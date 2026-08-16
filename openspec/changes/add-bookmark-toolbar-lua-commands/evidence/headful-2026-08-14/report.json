@@ -1,0 +1,23 @@
+﻿{
+    "schema":  "bookmark-toolbar-uitest-v2",
+    "status":  "PASS",
+    "native_context_bookmarks":  [
+                                     "Folder bookmark"
+                                 ],
+    "star_toggle_bookmarks":  [
+                                  "Folder bookmark",
+                                  "File bookmark.txt"
+                              ],
+    "lua_bookmarks_created":  12,
+    "distinct_lua_icon":  true,
+    "overflow_opened":  true,
+    "manager_opened":  true,
+    "artifacts":  [
+                      "bookmark-context-menu.png",
+                      "bookmark-star-on.png",
+                      "bookmark-star-off.png",
+                      "bookmark-toolbar.png",
+                      "bookmark-overflow.png",
+                      "bookmark-manager.png"
+                  ]
+}
