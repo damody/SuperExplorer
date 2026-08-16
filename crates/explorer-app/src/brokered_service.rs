@@ -1763,7 +1763,24 @@ impl ExplorerService for BrokeredExplorerService {
         let icon_disk = explorer_shell_win::icon_disk_cache_stats();
         let thumbnail_disk = explorer_shell_win::thumbnail_disk_cache_stats();
         let (icon_gpu, thumbnail_gpu) = gpui::compressed_gpu_cache_stats();
+        let bc7_pipeline = explorer_shell_win::bc7_pipeline_stats();
+        let bc7_jobs = explorer_shell_win::bc7_job_stats();
         explorer_model::CacheTelemetrySnapshotV1::new(vec![
+            explorer_model::CacheTelemetryEntryV1 {
+                id: explorer_model::CacheTelemetryIdV1::Bc7Pipeline,
+                category: explorer_model::CacheTelemetryCategoryV1::Pipeline,
+                availability: explorer_model::CacheTelemetryAvailabilityV1::Available(
+                    explorer_model::CacheTelemetryValueV1 {
+                        bytes: bc7_pipeline.active_staging_bytes,
+                        limit_bytes: Some(bc7_pipeline.staging_limit_bytes),
+                        entry_count: bc7_pipeline.active_encoders,
+                        counters: Some(explorer_model::CacheTelemetryCountersV1 {
+                            hits: bc7_pipeline.encode_count,
+                            misses: bc7_pipeline.encode_errors,
+                        }),
+                    },
+                ),
+            },
             explorer_model::CacheTelemetryEntryV1 {
                 id: explorer_model::CacheTelemetryIdV1::ExtensionColumnsMemory,
                 category: explorer_model::CacheTelemetryCategoryV1::Memory,
@@ -1933,6 +1950,31 @@ impl ExplorerService for BrokeredExplorerService {
                 availability,
             },
         ])
+        .map(|snapshot| {
+            snapshot.with_bc7_pipeline(explorer_model::Bc7PipelineTelemetryV1 {
+                queued_jobs: bc7_jobs.queued_jobs,
+                queue_limit: bc7_jobs.queue_limit,
+                peak_queued_jobs: bc7_jobs.peak_queued_jobs,
+                active_jobs: bc7_jobs.active_jobs,
+                concurrency_limit: bc7_jobs.concurrency_limit,
+                reserved_staging_bytes: bc7_jobs.reserved_staging_bytes,
+                staging_limit_bytes: bc7_jobs.staging_limit_bytes,
+                submitted_jobs: bc7_jobs.submitted_jobs,
+                completed_jobs: bc7_jobs.completed_jobs,
+                duplicate_jobs: bc7_jobs.duplicate_jobs,
+                overload_rejections: bc7_jobs.overload_rejections,
+                oversized_rejections: bc7_jobs.oversized_rejections,
+                cancelled_jobs: bc7_jobs.cancelled_jobs,
+                stale_jobs: bc7_jobs.stale_jobs,
+                persist_errors: bc7_jobs.persist_errors,
+                fallbacks: bc7_jobs.fallbacks,
+                icon_gpu_uploads: icon_gpu.uploads,
+                icon_gpu_evictions: icon_gpu.evictions,
+                thumbnail_gpu_uploads: thumbnail_gpu.uploads,
+                thumbnail_gpu_evictions: thumbnail_gpu.evictions,
+                gpu_supported: icon_gpu.supported,
+            })
+        })
         .unwrap_or_default()
     }
 

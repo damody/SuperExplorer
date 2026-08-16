@@ -20,6 +20,9 @@ pub enum CacheTelemetryIdV1 {
     MftFileDataMemory,
     MftAggregateMemory,
     MftServiceLru,
+    /// BC7 encoder pipeline. `bytes` is active staging, `entry_count` is active encoders, and
+    /// counters are completed encodes/rejections. No path or content identity is retained.
+    Bc7Pipeline,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -28,6 +31,7 @@ pub enum CacheTelemetryCategoryV1 {
     Disk,
     Gpu,
     MftService,
+    Pipeline,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -60,6 +64,32 @@ pub struct CacheTelemetryEntryV1 {
     pub availability: CacheTelemetryAvailabilityV1,
 }
 
+/// Bounded, identity-free detail for the BC7 conversion and upload path.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Bc7PipelineTelemetryV1 {
+    pub queued_jobs: u64,
+    pub queue_limit: u64,
+    pub peak_queued_jobs: u64,
+    pub active_jobs: u64,
+    pub concurrency_limit: u64,
+    pub reserved_staging_bytes: u64,
+    pub staging_limit_bytes: u64,
+    pub submitted_jobs: u64,
+    pub completed_jobs: u64,
+    pub duplicate_jobs: u64,
+    pub overload_rejections: u64,
+    pub oversized_rejections: u64,
+    pub cancelled_jobs: u64,
+    pub stale_jobs: u64,
+    pub persist_errors: u64,
+    pub fallbacks: u64,
+    pub icon_gpu_uploads: u64,
+    pub icon_gpu_evictions: u64,
+    pub thumbnail_gpu_uploads: u64,
+    pub thumbnail_gpu_evictions: u64,
+    pub gpu_supported: Option<bool>,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CacheTelemetrySubtotalV1 {
     pub bytes: u64,
@@ -69,6 +99,7 @@ pub struct CacheTelemetrySubtotalV1 {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CacheTelemetrySnapshotV1 {
     entries: Vec<CacheTelemetryEntryV1>,
+    bc7_pipeline: Option<Bc7PipelineTelemetryV1>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -94,7 +125,10 @@ impl CacheTelemetrySnapshotV1 {
         if let Some(pair) = entries.windows(2).find(|pair| pair[0].id == pair[1].id) {
             return Err(CacheTelemetrySnapshotErrorV1::DuplicateId(pair[0].id));
         }
-        Ok(Self { entries })
+        Ok(Self {
+            entries,
+            bc7_pipeline: None,
+        })
     }
 
     pub fn entries(&self) -> &[CacheTelemetryEntryV1] {
@@ -103,6 +137,16 @@ impl CacheTelemetrySnapshotV1 {
 
     pub fn entry(&self, id: CacheTelemetryIdV1) -> Option<&CacheTelemetryEntryV1> {
         self.entries.iter().find(|entry| entry.id == id)
+    }
+
+    #[must_use]
+    pub fn with_bc7_pipeline(mut self, telemetry: Bc7PipelineTelemetryV1) -> Self {
+        self.bc7_pipeline = Some(telemetry);
+        self
+    }
+
+    pub const fn bc7_pipeline(&self) -> Option<Bc7PipelineTelemetryV1> {
+        self.bc7_pipeline
     }
 
     pub fn subtotal(&self, category: CacheTelemetryCategoryV1) -> CacheTelemetrySubtotalV1 {
@@ -230,15 +274,21 @@ mod tests {
 
     #[test]
     fn contract_has_no_path_or_free_form_identity_field() {
-        let debug = format!(
-            "{:?}",
-            available(
-                CacheTelemetryIdV1::ExtensionColumnsMemory,
-                CacheTelemetryCategoryV1::Memory,
-                4,
-            )
-        );
+        let snapshot = CacheTelemetrySnapshotV1::new(vec![available(
+            CacheTelemetryIdV1::ExtensionColumnsMemory,
+            CacheTelemetryCategoryV1::Memory,
+            4,
+        )])
+        .unwrap()
+        .with_bc7_pipeline(Bc7PipelineTelemetryV1 {
+            queue_limit: 32,
+            staging_limit_bytes: 64 * 1024 * 1024,
+            gpu_supported: Some(true),
+            ..Default::default()
+        });
+        let debug = format!("{snapshot:?}");
         assert!(!debug.to_ascii_lowercase().contains("path"));
         assert!(!debug.contains(r"C:\"));
+        assert_eq!(snapshot.bc7_pipeline().unwrap().queue_limit, 32);
     }
 }

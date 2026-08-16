@@ -23,12 +23,16 @@ mod drag_drop;
 mod everything;
 pub use everything::{IndexedFolderEntryV1, query_folder_index};
 mod bc7_codec;
+mod bc7_pipeline;
 mod extension;
 mod file_operation;
 mod icon;
 mod icon_disk_cache;
+pub use bc7_codec::{Bc7PipelineStatsV1, bc7_pipeline_stats};
+pub use bc7_pipeline::{Bc7JobStatsV1, job_stats as bc7_job_stats};
 pub use icon_disk_cache::{
-    ShellDiskCacheStatsV1, icon_disk_cache_stats, set_shell_disk_cache_limits,
+    ShellBc7RuntimeGatesV1, ShellDiskCacheStatsV1, icon_disk_cache_stats,
+    set_shell_bc7_runtime_gates, set_shell_disk_cache_limits, shell_bc7_runtime_gates,
     thumbnail_disk_cache_stats,
 };
 mod namespace;

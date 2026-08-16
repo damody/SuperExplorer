@@ -68,6 +68,7 @@ fn load_shell_thumbnail_with_cache(
     disk: Option<&crate::icon_disk_cache::ShellIconDiskCache>,
     allow_compressed: bool,
 ) -> ThumbnailTerminal {
+    let allow_compressed = allow_compressed && crate::icon_disk_cache::thumbnail_bc7_enabled();
     let cache_only = cache_only || requires_cache_only(location);
     if request.context.cancellation.is_cancelled() {
         return ThumbnailTerminal::Fallback(ThumbnailFallbackReason::Cancelled);
@@ -83,7 +84,10 @@ fn load_shell_thumbnail_with_cache(
     if let Some(crate::icon_disk_cache::DiskCacheLoad::Hit(payload)) =
         disk.map(|cache| cache.load_outcome(&disk_key))
     {
-        if allow_compressed && let Some(raster) = payload.bc7 {
+        if allow_compressed
+            && crate::icon_disk_cache::thumbnail_bc7_enabled()
+            && let Some(raster) = payload.bc7.clone()
+        {
             return ThumbnailTerminal::Compressed {
                 source: ThumbnailSource::DiskCache,
                 raster,
@@ -93,7 +97,7 @@ fn load_shell_thumbnail_with_cache(
             width: u32::from(payload.width),
             height: u32::from(payload.height),
             stride: payload.stride,
-            bytes: payload.rgba,
+            bytes: payload.rgba.clone(),
         };
         if pixels.validate(maximum_decoded_bytes).is_ok() {
             return ThumbnailTerminal::Ready {
@@ -166,23 +170,22 @@ fn load_shell_thumbnail_with_cache(
     }
     if let Ok(payload) =
         ShellIconPayload::new(disk_key, width, height, stride, pixels.bytes.clone(), None)
+        && let Some(disk) = disk
+        && compressed_thumbnail_publish_allowed(allow_compressed)
     {
-        if let Some(disk) = disk {
-            if disk.store(&payload) && allow_compressed {
-                if let Some(compressed) = disk.load(&payload.key)
-                    && let Some(raster) = compressed.bc7
-                {
-                    return ThumbnailTerminal::Compressed {
-                        source: if cache_only {
-                            ThumbnailSource::WindowsCache
-                        } else {
-                            ThumbnailSource::Provider
-                        },
-                        raster,
-                    };
-                }
-            }
-        }
+        let now = std::time::Instant::now();
+        let deadline = request
+            .context
+            .deadline
+            .remaining_at(now)
+            .and_then(|remaining| now.checked_add(remaining));
+        let _ = crate::bc7_pipeline::schedule(
+            crate::bc7_codec::Bc7ContentKind::Thumbnail,
+            payload,
+            disk.clone(),
+            Some(request.context.cancellation.clone()),
+            deadline,
+        );
     }
     ThumbnailTerminal::Ready {
         source: if cache_only {
@@ -192,6 +195,10 @@ fn load_shell_thumbnail_with_cache(
         },
         pixels,
     }
+}
+
+fn compressed_thumbnail_publish_allowed(request_started_compressed: bool) -> bool {
+    request_started_compressed && crate::icon_disk_cache::thumbnail_bc7_enabled()
 }
 
 /// Detects cloud/offline placeholders using metadata-only file attributes.
@@ -303,7 +310,30 @@ mod tests {
     }
 
     #[test]
+    fn in_flight_thumbnail_disable_prevents_compressed_publication_without_mutating_icon_gate() {
+        let _guard = crate::icon_disk_cache::BC7_GATE_TEST_LOCK
+            .lock()
+            .expect("gate test lock");
+        crate::icon_disk_cache::set_shell_bc7_runtime_gates(true, true);
+        let request_started_compressed = crate::icon_disk_cache::thumbnail_bc7_enabled();
+        assert!(compressed_thumbnail_publish_allowed(
+            request_started_compressed
+        ));
+
+        crate::icon_disk_cache::set_shell_bc7_runtime_gates(true, false);
+        assert!(crate::icon_disk_cache::icon_bc7_enabled());
+        assert!(!compressed_thumbnail_publish_allowed(
+            request_started_compressed
+        ));
+        crate::icon_disk_cache::set_shell_bc7_runtime_gates(false, false);
+    }
+
+    #[test]
     fn thumbnail_cache_modes_emit_comparable_benchmark() {
+        let _guard = crate::icon_disk_cache::BC7_GATE_TEST_LOCK
+            .lock()
+            .expect("gate test lock");
+        crate::icon_disk_cache::set_shell_bc7_runtime_gates(false, true);
         let _apartment = crate::sta::ApartmentGuard::initialize().expect("STA");
         let fixtures = tempfile::tempdir().expect("benchmark fixtures");
         let escaped = fixtures.path().display().to_string().replace('\'', "''");
@@ -371,13 +401,12 @@ mod tests {
             Some(&disk),
             true,
         );
-        assert!(matches!(
-            primed,
-            ThumbnailTerminal::Compressed {
-                source: ThumbnailSource::Provider,
-                ..
-            }
-        ));
+        assert!(matches!(primed, ThumbnailTerminal::Ready { .. }));
+        let disk_key = disk_key(&project_request, &project_location);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while disk.load(&disk_key).is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let started = Instant::now();
         let project = load_shell_thumbnail_with_cache(
             &project_request,
@@ -402,6 +431,7 @@ mod tests {
             terminal_source(&windows),
             terminal_source(&project),
         );
+        crate::icon_disk_cache::set_shell_bc7_runtime_gates(false, false);
     }
 
     #[test]
