@@ -31,6 +31,21 @@
       "required_artifacts": ["report.json"]
     },
     {
+      "id": "mft-event-ntfs-mutation-matrix",
+      "description": "Exercise create, grow, overwrite, truncate, rename, move, hard-link, delete, and bounded blocked-reader service shutdown on a real NTFS fixture.",
+      "suites": ["full"],
+      "program": "powershell.exe",
+      "arguments": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{workspace_root}\\scripts\\test_mft_event_ntfs_mutations.ps1", "-OutputDirectory", "{evidence_dir}"],
+      "timeout_seconds": 120,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "path", "path": "{workspace_root}\\scripts\\test_mft_event_ntfs_mutations.ps1"}
+      ],
+      "exclusive_resources": ["mft-service", "ntfs-journal"],
+      "covers": ["event-driven-mft-index-updates/*"],
+      "required_artifacts": ["report.json"]
+    },
+    {
       "id": "workspace-format",
       "description": "驗證整個 workspace 的 Rust 格式不會漂移。",
       "suites": ["quick"],
@@ -64,7 +79,7 @@
     },
     {
       "id": "interaction-first-qos-contracts",
-      "description": "Verify bounded interaction-first scheduling, frame draining, stale-result rejection, privacy-safe observations, and overload degradation recovery.",
+      "description": "Verify non-blocking full-queue admission, bounded interaction-first scheduling and frame draining, stale-result rejection, privacy-safe observations, and overload degradation recovery.",
       "suites": ["quick", "full"],
       "program": "cargo.exe",
       "arguments": ["test", "-p", "explorer-jobs", "-p", "explorer-ui", "--locked", "qos", "--", "--nocapture", "--test-threads=1"],
@@ -76,12 +91,13 @@
         "enforce-interaction-first-qos/interaction-first-qos/ui-result-integration-is-frame-bounded",
         "enforce-interaction-first-qos/interaction-first-qos/superseded-work-cannot-mutate-current-presentation",
         "enforce-interaction-first-qos/interaction-first-qos/overload-degrades-optional-work-and-recovers",
-        "enforce-interaction-first-qos/interaction-first-qos/qos-observations-are-bounded-and-privacy-safe"
+        "enforce-interaction-first-qos/interaction-first-qos/qos-observations-are-bounded-and-privacy-safe",
+        "enforce-interaction-first-qos/interaction-first-qos/utit-verifies-real-contention-without-timing-luck"
       ]
     },
     {
       "id": "interaction-first-qos-contention-matrix",
-      "description": "Drive the public command/event protocol through explicit completion and frame gates, proving rapid replacement, bounded delivery, tab closure, and shutdown terminalization with privacy-safe diagnostics.",
+      "description": "Drive a large-directory burst plus competing search/enrichment work through explicit completion and frame gates, proving rapid navigation replacement, bounded delivery, tab closure, and shutdown terminalization with privacy-safe diagnostics.",
       "suites": ["quick", "full"],
       "program": "cargo.exe",
       "arguments": ["test", "-p", "explorer-ui", "--test", "interaction_first_qos_contention", "--locked", "--", "--nocapture", "--test-threads=1"],
@@ -89,7 +105,8 @@
       "prerequisites": [{"kind": "command", "name": "cargo.exe"}],
       "covers": [
         "enforce-interaction-first-qos/interaction-first-qos/ui-result-integration-is-frame-bounded",
-        "enforce-interaction-first-qos/interaction-first-qos/superseded-work-cannot-mutate-current-presentation"
+        "enforce-interaction-first-qos/interaction-first-qos/superseded-work-cannot-mutate-current-presentation",
+        "enforce-interaction-first-qos/interaction-first-qos/utit-verifies-real-contention-without-timing-luck"
       ]
     },
     {
@@ -253,7 +270,8 @@
       "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
       "exclusive_resources": ["ole"],
       "covers": [
-        "enforce-interaction-first-qos/interaction-first-qos/blocking-domains-have-isolated-capacity"
+        "enforce-interaction-first-qos/interaction-first-qos/blocking-domains-have-isolated-capacity",
+        "enforce-interaction-first-qos/interaction-first-qos/utit-verifies-real-contention-without-timing-luck"
       ]
     },
     {
@@ -264,7 +282,8 @@
       "arguments": ["test", "-p", "explorer-shell-win", "--lib", "--locked", "sta::tests::active_search_worker_shutdown_is_bounded_and_releases_its_lifecycle", "--", "--exact", "--nocapture", "--test-threads=1"],
       "timeout_seconds": 300,
       "prerequisites": [{"kind": "windows"}, {"kind": "command", "name": "cargo.exe"}],
-      "exclusive_resources": ["ole"]
+      "exclusive_resources": ["ole"],
+      "covers": ["enforce-interaction-first-qos/interaction-first-qos/utit-verifies-real-contention-without-timing-luck"]
     },
     {
       "id": "workspace-clippy",
@@ -1272,7 +1291,7 @@
         {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"}
       ],
       "exclusive_resources": ["gui", "cursor", "explorer"],
-      "covers": ["folder-options-dedicated-window/folder-options-window/*", "independent-cache-budgets-telemetry-webp/folder-options-cache-usage/*"],
+      "covers": ["folder-options-dedicated-window/folder-options-window/*", "independent-cache-budgets-telemetry-webp/independent-cache-budgets-and-telemetry/folder-options-displays-live-cache-usage"],
       "required_artifacts": ["report.json", "folder-options-cache-controls.png", "folder-options-cache-telemetry.png", "folder-options-cache-mft.png", "folder-options-before-scroll.png", "folder-options-after-scroll.png", "folder-options-after-escape.png"]
     },
     {
@@ -1755,7 +1774,8 @@
       "exclusive_resources": ["gui", "cursor", "explorer"],
       "covers": [
         "build-extensible-plugin-platform/source-example-plugin-suite/folder-size-map-view-example",
-        "build-extensible-plugin-platform/extension-view-modes-and-directory-tree-scan/size-map-semantics-and-accessibility"
+        "build-extensible-plugin-platform/extension-view-modes-and-directory-tree-scan/size-map-semantics-and-accessibility",
+        "centralize-shared-folder-size-service/shared-folder-size-snapshot-service/shared-aggregate-and-tree-snapshots"
       ],
       "required_artifacts": [
         "report.json",
@@ -1765,6 +1785,36 @@
         "size-map-selected.png",
         "size-map-after-f5.png"
       ]
+    },
+    {
+      "id": "folder-size-size-map-shared-scan-headful",
+      "description": "Load Folder Size and Size Map together over the same deterministic recursive snapshots and require Size Map to add cache hits without adding physical scans.",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": [
+        "-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+        "{workspace_root}\\scripts\\smoke_size_map_plugin.ps1",
+        "-Executable", "{workspace_root}\\target\\debug\\SuperExplorer.exe",
+        "-PluginDll", "{workspace_root}\\sdk\\fixtures\\rust-folder-size-map-view\\target\\x86_64-pc-windows-msvc\\debug\\rust_folder_size_map_view.dll",
+        "-FolderSizePluginDll", "{workspace_root}\\sdk\\fixtures\\rust-folder-size-visual-column\\target\\x86_64-pc-windows-msvc\\debug\\rust_folder_size_visual_column.dll",
+        "-InitialPath", "{workspace_root}\\sdk\\fixtures\\rust-folder-size-map-view\\fixtures\\sample",
+        "-OutputDirectory", "{evidence_dir}",
+        "-ExactSizeOnly", "-AssertSharedScan", "-ForceRecursive", "-RenderTimeoutSeconds", "30"
+      ],
+      "timeout_seconds": 180,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"},
+        {"kind": "path", "path": "{workspace_root}\\sdk\\fixtures\\rust-folder-size-map-view\\target\\x86_64-pc-windows-msvc\\debug\\rust_folder_size_map_view.dll"},
+        {"kind": "path", "path": "{workspace_root}\\sdk\\fixtures\\rust-folder-size-visual-column\\target\\x86_64-pc-windows-msvc\\debug\\rust_folder_size_visual_column.dll"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "explorer"],
+      "covers": [
+        "centralize-shared-folder-size-service/extension-jobs-values-and-dynamic-columns/dynamic-column-registry",
+        "centralize-shared-folder-size-service/shared-folder-size-snapshot-service/shared-aggregate-and-tree-snapshots"
+      ],
+      "required_artifacts": ["report.json", "folder-snapshot-counters.json", "details-before.png", "size-map.png"]
     },
     {
       "id": "rust-folder-size-visual-column-headful",
@@ -1796,13 +1846,43 @@
       ],
       "exclusive_resources": ["gui", "cursor", "explorer"],
       "covers": [
-        "build-extensible-plugin-platform/source-example-plugin-suite/folder-size-visual-column-example"
+        "build-extensible-plugin-platform/source-example-plugin-suite/folder-size-visual-column-example",
+        "centralize-shared-folder-size-service/extension-jobs-values-and-dynamic-columns/dynamic-column-registry"
       ],
       "required_artifacts": [
         "report.json",
         "folder-size-column.png",
         "folder-size-bar-on.png",
         "folder-size-bar-off.png"
+      ]
+    },
+    {
+      "id": "folder-size-recursive-fallback-headful",
+      "description": "Disable accelerated folder snapshots deterministically, keep the main process non-elevated, prove Everything remains ineligible, and complete Folder Size through the shared recursive fallback with F5 and Host-cache reuse.",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": [
+        "-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+        "{workspace_root}\\scripts\\smoke_folder_size_visual_column.ps1",
+        "-Executable", "{workspace_root}\\target\\debug\\SuperExplorer.exe",
+        "-PluginDll", "{workspace_root}\\sdk\\fixtures\\rust-folder-size-visual-column\\target\\x86_64-pc-windows-msvc\\debug\\rust_folder_size_visual_column.dll",
+        "-InitialPath", "",
+        "-OutputDirectory", "{evidence_dir}",
+        "-ForceRecursive"
+      ],
+      "timeout_seconds": 180,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"},
+        {"kind": "path", "path": "{workspace_root}\\sdk\\fixtures\\rust-folder-size-visual-column\\target\\x86_64-pc-windows-msvc\\debug\\rust_folder_size_visual_column.dll"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "explorer"],
+      "covers": [
+        "centralize-shared-folder-size-service/shared-folder-size-snapshot-service/lazy-least-privilege-backend-selection"
+      ],
+      "required_artifacts": [
+        "report.json", "folder-size-column.png", "folder-size-bar-on.png", "folder-size-bar-off.png"
       ]
     },
     {
@@ -1975,6 +2055,39 @@
       ]
     },
     {
+      "id": "dual-code-lines-reorder-headful",
+      "description": "Load Code lines and Main code lines together, verify exact mixed-language totals, reject Name movement, and prove a non-Name reorder survives a clean restart.",
+      "suites": ["full", "visual"],
+      "program": "powershell.exe",
+      "arguments": [
+        "-Sta", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+        "{workspace_root}\\scripts\\smoke_tokei_plugin_headful.ps1",
+        "-Executable", "{workspace_root}\\target\\debug\\SuperExplorer.exe",
+        "-PluginDll", "{workspace_root}\\sdk\\fixtures\\rust-tokei-code-lines-column\\target\\x86_64-pc-windows-msvc\\debug\\rust_tokei_code_lines_column.dll",
+        "-SecondPluginDll", "{workspace_root}\\sdk\\fixtures\\lua-tokei-code-lines-column\\target\\x86_64-pc-windows-msvc\\debug\\lua_tokei_code_lines_column.dll",
+        "-OutputDirectory", "{evidence_dir}", "-DirectoryAggregateMode", "-EnableFileCountColumn", "-DualCodeLinesMode"
+      ],
+      "timeout_seconds": 240,
+      "prerequisites": [
+        {"kind": "windows"},
+        {"kind": "interactive_desktop"},
+        {"kind": "path", "path": "{workspace_root}\\target\\debug\\SuperExplorer.exe"},
+        {"kind": "path", "path": "{workspace_root}\\sdk\\fixtures\\rust-tokei-code-lines-column\\target\\x86_64-pc-windows-msvc\\debug\\rust_tokei_code_lines_column.dll"},
+        {"kind": "path", "path": "{workspace_root}\\sdk\\fixtures\\lua-tokei-code-lines-column\\target\\x86_64-pc-windows-msvc\\debug\\lua_tokei_code_lines_column.dll"}
+      ],
+      "exclusive_resources": ["gui", "cursor", "explorer"],
+      "covers": [
+        "differentiate-main-code-lines-and-reorder-columns/extension-jobs-values-and-dynamic-columns/dynamic-column-registry",
+        "differentiate-main-code-lines-and-reorder-columns/extension-jobs-values-and-dynamic-columns/distinct-code-line-aggregation-columns"
+      ],
+      "required_artifacts": [
+        "report.json",
+        "code-lines.png",
+        "columns-reordered.png",
+        "columns-reordered-restarted.png"
+      ]
+    },
+    {
       "id": "rust-lock-owner-headful",
       "description": "Load the discover-only Lock Owner column, attribute native and WOW64 cmd.exe current directories to exact and parent rows, clear them after exit plus F5, and reject delayed results across refresh, tab, folder, and feature changes.",
       "suites": ["full", "visual"],
@@ -2055,7 +2168,7 @@
       "id":"independent-cache-budget-editors-headful","description":"Verify all 14 cache budget editors, 400 px accessible sliders, 24 MB stop, scrolling, Apply/OK persistence, and Cancel rollback.","suites":["full","visual"],"program":"powershell.exe",
       "arguments":["-Sta","-NoProfile","-ExecutionPolicy","Bypass","-File","{workspace_root}\\scripts\\smoke_cache_budget_editors.ps1","-Profile","debug","-OutputDirectory","{evidence_dir}","-SkipBuild"],
       "timeout_seconds":180,"prerequisites":[{"kind":"windows"},{"kind":"interactive_desktop"},{"kind":"path","path":"{workspace_root}\\target\\debug\\SuperExplorer.exe"}],"exclusive_resources":["gui","cursor","explorer"],
-      "covers":["independent-cache-max-editors/folder-options-cache-budget-editors/*","independent-cache-max-editors/cache-budget-commit-correctness/*"],"required_artifacts":["report.json","cache-budgets-apply-2048.png","cache-budgets-ok-4096.png","cache-budgets-cancel-preserves-4096.png"]
+      "covers":["independent-cache-max-editors/independent-cache-budget-controls/independent-cache-budget-contract","independent-cache-max-editors/independent-cache-budget-controls/synchronized-numeric-and-slider-controls","independent-cache-max-editors/independent-cache-budget-controls/transactional-folder-options-commit","independent-cache-max-editors/independent-cache-budget-controls/immediate-owner-propagation-and-telemetry"],"required_artifacts":["report.json","cache-budgets-apply-2048.png","cache-budgets-ok-4096.png","cache-budgets-cancel-preserves-4096.png"]
     }
   ]
 }

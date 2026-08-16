@@ -33,7 +33,9 @@ cargo run -p explorer-app -- --plugin-dll D:\SuperExplorer\sdk\fixtures\rust-fol
 
 The renderer receives copied node IDs, names, kinds, exact-byte availability,
 status, viewport, theme, settings, and generation. It returns normalized
-treemap rectangles only. Select **View → Size Map**, click a rectangle to share
+treemap rectangles only. Its feature and contribution both declare the
+Host-projected `folder.tree` requirement; it does not require filesystem access.
+Select **View → Size Map**, click a rectangle to share
 selection with Details, double-click a folder to navigate, and press **F5** to
 exercise generation/stale-result recovery. The final local smoke writes
 `report.json` plus screenshots under its output directory; only a report whose

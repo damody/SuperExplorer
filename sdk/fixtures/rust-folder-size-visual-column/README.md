@@ -31,22 +31,20 @@ cargo run -p explorer-app --locked --offline -- --plugin-dll D:\SuperExplorer\sd
 ```
 
 Open a filesystem directory in **Details** view. The visible **Folder size**
-column recursively measures child folders on the Plugin worker and renders a
-proportional bar from the public cell context. Right-click the **Folder size**
+column consumes the Host-authoritative `folder.aggregate` value and renders a
+proportional bar from the public cell context. The official runtime never asks
+this renderer to enumerate or measure the filesystem. Right-click the **Folder size**
 header to toggle **Show proportional bar**. The Extensions menu also lists
 `folder-size (Column)` and `folder-size-renderer (GPUI Renderer)`. Run without
 `--plugin-dll` to keep the built-in-only Details view.
 
 ![Completed folder-size values and proportional bars](screenshots/folder-size-column.png)
 
-The foreground measurement hint never cancels an in-flight folder walk. The
-background worker publishes an exact value once the scan has completed; partial
-or error results are never used for numeric sorting or stored as exact values.
-Completed values are cached by this plugin under
-`%LOCALAPPDATA%\RustGpuiExplorer\cache\folder-size\v1` (at most
-256 records). A cache entry is reused only when its canonical directory identity,
-directory modified timestamp, recursive limits, and cache schema match. Changing
-the directory timestamp or settings causes a fresh background scan.
+The manifest and registrar declare `folder.aggregate`. The Host owns coalescing,
+partial/error state, sorting values, persistence, identity, expiry, and
+invalidation. The old measure callback remains only as a bounded compatibility
+surface for legacy local fixtures; the product host logs that it is bypassed and
+does not call it for official Folder Size results.
 
 To customize this example, edit `FolderSizeRenderer::render` for cell text/bar
 appearance, then rerun the four local commands above. The package declares

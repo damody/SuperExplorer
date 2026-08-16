@@ -456,10 +456,13 @@ impl ExtensionRegistrarImplementationV1 for FolderSizeMapRegistrar {
         RResult::ROk(RegistrarOutputV1 {
             outcome: RegistrationOutcomeV1::accepted(1),
             contributions: RVec::from(vec![RegisteredContributionV1 {
-                feature_id: RString::from("size-map"),
+                feature_id: RString::from("view"),
                 contribution_id: RString::from("size-map"),
                 kind: RegisteredContributionKindV1::VIEW_MODE,
-                required_capabilities: RVec::from(vec![RString::from("abi")]),
+                required_capabilities: RVec::from(vec![
+                    RString::from("abi"),
+                    RString::from("folder.tree"),
+                ]),
                 interface_id: PRIMARY_INTERFACE_ID,
                 expected_sort: ROption::RNone,
                 opaque_contract: ROption::RNone,
@@ -714,6 +717,11 @@ mod tests {
         assert_eq!(
             output.contributions[0].kind,
             RegisteredContributionKindV1::VIEW_MODE
+        );
+        assert_eq!(output.contributions[0].feature_id, "view");
+        assert_eq!(
+            output.contributions[0].required_capabilities.as_slice(),
+            ["abi", "folder.tree"]
         );
         assert!(matches!(
             output.contributions[0].size_map_view,

@@ -472,7 +472,11 @@ fn is_exact_folder_size_declarations(manifest: &Manifest) -> bool {
     let expected = [
         ("abi-root", "abi-root", &["abi"][..]),
         ("folder-size", "column", &["abi", "filesystem.read"][..]),
-        ("folder-size-renderer", "renderer", &["abi"][..]),
+        (
+            "folder-size-renderer",
+            "renderer",
+            &["abi", "folder.aggregate"][..],
+        ),
     ];
     let expected_features = ["column", "recalculate", "settings"];
     manifest.features.len() == expected_features.len()
@@ -484,7 +488,7 @@ fn is_exact_folder_size_declarations(manifest: &Manifest) -> bool {
                 actual.id == id
                     && actual.capabilities
                         == if id == "column" {
-                            &["abi", "filesystem.read"][..]
+                            &["abi", "filesystem.read", "folder.aggregate"][..]
                         } else {
                             &["abi"][..]
                         }
@@ -506,7 +510,7 @@ fn is_exact_folder_size_declarations(manifest: &Manifest) -> bool {
 fn is_exact_size_map_declarations(manifest: &Manifest) -> bool {
     manifest.features.len() == 1
         && manifest.features[0].id == "view"
-        && manifest.features[0].capabilities == ["abi", "filesystem.read"]
+        && manifest.features[0].capabilities == ["abi", "folder.tree"]
         && manifest.contributions.len() == 2
         && manifest.contributions[0].id == "abi-root"
         && manifest.contributions[0].kind == "abi-root"
@@ -516,7 +520,7 @@ fn is_exact_size_map_declarations(manifest: &Manifest) -> bool {
         && manifest.contributions[1].id == "size-map"
         && manifest.contributions[1].kind == "view-mode"
         && manifest.contributions[1].feature_id == "view"
-        && manifest.contributions[1].capabilities == ["abi"]
+        && manifest.contributions[1].capabilities == ["abi", "folder.tree"]
         && manifest.contributions[1].payload == "src/lib.rs"
 }
 
@@ -3944,14 +3948,14 @@ mod tests {
   "sdk": { "bundle_id": "@SDK_BUNDLE_ID@", "target": "x86_64-pc-windows-msvc", "abi_schema": @ABI_SCHEMA@, "gpui": false, "ui_abi_fingerprint": null },
   "rust": { "crate_name": "rust-folder-size-visual-column", "entrypoint": "plugin.dll" },
   "features": [
-    { "id": "column", "capabilities": ["abi", "filesystem.read"] },
+    { "id": "column", "capabilities": ["abi", "filesystem.read", "folder.aggregate"] },
     { "id": "recalculate", "capabilities": ["abi"] },
     { "id": "settings", "capabilities": ["abi"] }
   ],
   "contributions": [
     { "id": "abi-root", "feature_id": "column", "kind": "abi-root", "capabilities": ["abi"], "payload": "src/lib.rs" },
     { "id": "folder-size", "feature_id": "column", "kind": "column", "capabilities": ["abi", "filesystem.read"], "payload": "src/lib.rs" },
-    { "id": "folder-size-renderer", "feature_id": "column", "kind": "renderer", "capabilities": ["abi"], "payload": "src/lib.rs" }
+    { "id": "folder-size-renderer", "feature_id": "column", "kind": "renderer", "capabilities": ["abi", "folder.aggregate"], "payload": "src/lib.rs" }
   ],
   "payloads": [{ "path": "src/lib.rs", "size": @SOURCE_SIZE@, "sha256": "@SOURCE_SHA256@", "kind": "rust-source" }],
   "private_dependencies": [],
@@ -3987,10 +3991,10 @@ mod tests {
   "publisher": { "id": "example-publisher", "display_name": "Example", "contacts": [{ "kind": "support", "value": "support@example.invalid" }] },
   "sdk": { "bundle_id": "@SDK_BUNDLE_ID@", "target": "x86_64-pc-windows-msvc", "abi_schema": @ABI_SCHEMA@, "gpui": false, "ui_abi_fingerprint": null },
   "rust": { "crate_name": "rust-folder-size-map-view", "entrypoint": "plugin.dll" },
-  "features": [{ "id": "view", "capabilities": ["abi", "filesystem.read"] }],
+  "features": [{ "id": "view", "capabilities": ["abi", "folder.tree"] }],
   "contributions": [
     { "id": "abi-root", "feature_id": "view", "kind": "abi-root", "capabilities": ["abi"], "payload": "src/lib.rs" },
-    { "id": "size-map", "feature_id": "view", "kind": "view-mode", "capabilities": ["abi"], "payload": "src/lib.rs" }
+    { "id": "size-map", "feature_id": "view", "kind": "view-mode", "capabilities": ["abi", "folder.tree"], "payload": "src/lib.rs" }
   ],
   "payloads": [{ "path": "src/lib.rs", "size": @SOURCE_SIZE@, "sha256": "@SOURCE_SHA256@", "kind": "rust-source" }],
   "private_dependencies": [],
@@ -4007,6 +4011,39 @@ mod tests {
         assert!(report.materialized);
         assert_eq!(manifest.package.id, "rust-folder-size-map-view");
         assert!(is_exact_size_map_declarations(&manifest));
+    }
+
+    #[test]
+    fn official_folder_snapshot_requirements_fail_closed_when_undeclared_or_stale() {
+        let mut visual = manifest_for_test();
+        visual.package.id = "rust-folder-size-visual-column".into();
+        visual.features = vec![
+            Feature {
+                id: "column".into(),
+                capabilities: vec!["abi".into(), "filesystem.read".into(), "folder.aggregate".into()],
+            },
+            Feature { id: "recalculate".into(), capabilities: vec!["abi".into()] },
+            Feature { id: "settings".into(), capabilities: vec!["abi".into()] },
+        ];
+        visual.contributions = vec![
+            Contribution { id: "abi-root".into(), feature_id: "column".into(), kind: "abi-root".into(), capabilities: vec!["abi".into()], payload: "src/lib.rs".into(), max_file_count: None, max_folder_count: None },
+            Contribution { id: "folder-size".into(), feature_id: "column".into(), kind: "column".into(), capabilities: vec!["abi".into(), "filesystem.read".into()], payload: "src/lib.rs".into(), max_file_count: None, max_folder_count: None },
+            Contribution { id: "folder-size-renderer".into(), feature_id: "column".into(), kind: "renderer".into(), capabilities: vec!["abi".into(), "folder.aggregate".into()], payload: "src/lib.rs".into(), max_file_count: None, max_folder_count: None },
+        ];
+        assert!(is_exact_folder_size_declarations(&visual));
+        visual.contributions[2].capabilities = vec!["abi".into()];
+        assert!(!is_exact_folder_size_declarations(&visual));
+
+        let mut tree = manifest_for_test();
+        tree.package.id = "rust-folder-size-map-view".into();
+        tree.features = vec![Feature { id: "view".into(), capabilities: vec!["abi".into(), "folder.tree".into()] }];
+        tree.contributions = vec![
+            Contribution { id: "abi-root".into(), feature_id: "view".into(), kind: "abi-root".into(), capabilities: vec!["abi".into()], payload: "src/lib.rs".into(), max_file_count: None, max_folder_count: None },
+            Contribution { id: "size-map".into(), feature_id: "view".into(), kind: "view-mode".into(), capabilities: vec!["abi".into(), "folder.tree".into()], payload: "src/lib.rs".into(), max_file_count: None, max_folder_count: None },
+        ];
+        assert!(is_exact_size_map_declarations(&tree));
+        tree.features[0].capabilities = vec!["abi".into(), "folder.aggregate".into()];
+        assert!(!is_exact_size_map_declarations(&tree));
     }
 
     #[test]

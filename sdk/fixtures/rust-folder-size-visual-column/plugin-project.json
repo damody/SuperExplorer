@@ -18,7 +18,7 @@
     "entrypoint": "plugin.dll"
   },
   "features": [
-    { "id": "column", "capabilities": ["abi", "filesystem.read"] },
+    { "id": "column", "capabilities": ["abi", "filesystem.read", "folder.aggregate"] },
     { "id": "recalculate", "capabilities": ["abi"] },
     { "id": "settings", "capabilities": ["abi"] }
   ],
@@ -41,7 +41,7 @@
       "id": "folder-size-renderer",
       "feature_id": "column",
       "kind": "renderer",
-      "capabilities": ["abi"],
+      "capabilities": ["abi", "folder.aggregate"],
       "payload": "src/lib.rs"
     }
   ],

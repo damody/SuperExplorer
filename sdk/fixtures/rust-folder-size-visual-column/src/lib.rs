@@ -6,10 +6,11 @@
 //! and renderer traits without declaring FFI callbacks, GPUI types, or root
 //! layout.
 
+use std::{env, fs, path::PathBuf};
+#[cfg(test)]
 use std::{
-    env, fs,
     io::Read as _,
-    path::{Path, PathBuf},
+    path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -31,9 +32,13 @@ use explorer_extension_ui_api::{
 };
 
 const MARKER_ENVIRONMENT_VARIABLE: &str = "RUST_FOLDER_SIZE_REGISTRAR_MARKER";
+#[cfg(test)]
 const CACHE_SCHEMA_VERSION: u32 = 1;
+#[cfg(test)]
 const CACHE_MAX_FILES: usize = 256;
+#[cfg(test)]
 const CACHE_MAX_RECORD_BYTES: u64 = 4 * 1024;
+#[cfg(test)]
 const CACHE_STABILITY_ATTEMPTS: usize = 3;
 const PLUGIN_ID: StableIdV1 = StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 1_001);
 const PRIMARY_INTERFACE_ID: StableIdV1 = StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 1_002);
@@ -45,11 +50,12 @@ struct FolderSizeMeasureColumn;
 impl VisualColumnImplementationV1 for FolderSizeMeasureColumn {
     fn measure_folder_size(
         &self,
-        request: FolderSizeMeasureRequestV1,
+        _: FolderSizeMeasureRequestV1,
     ) -> FolderSizeMeasureResultV1 {
-        // Persistent data-column caching is exclusively host-owned. The
-        // compatibility measure callback computes only the requested value.
-        measure_folder_size_with_cache(&request, None)
+        FolderSizeMeasureResultV1::partial(
+            0,
+            "host folder.aggregate is required; legacy plugin measurement is disabled",
+        )
     }
 
     fn render(&self, context: CellRenderContextV1) -> CellRenderPlanV1 {
@@ -112,6 +118,7 @@ impl VisualColumnImplementationV1 for FolderSizeRenderer {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FolderSizeCacheKey {
     path_key: String,
@@ -120,6 +127,7 @@ struct FolderSizeCacheKey {
     max_depth: u16,
 }
 
+#[cfg(test)]
 impl FolderSizeCacheKey {
     fn from_request(request: &FolderSizeMeasureRequestV1) -> Option<Self> {
         let path = Path::new(request.filesystem_path.as_str());
@@ -164,7 +172,7 @@ impl FolderSizeCacheKey {
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(test, windows))]
 fn root_is_reparse_point(path: &Path) -> bool {
     use std::os::windows::fs::MetadataExt as _;
 
@@ -175,12 +183,12 @@ fn root_is_reparse_point(path: &Path) -> bool {
     })
 }
 
-#[cfg(not(windows))]
+#[cfg(all(test, not(windows)))]
 fn root_is_reparse_point(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink())
 }
 
-#[cfg(windows)]
+#[cfg(all(test, windows))]
 fn directory_identity(canonical: &Path, _: &fs::Metadata) -> String {
     use std::{iter, os::windows::ffi::OsStrExt as _};
 
@@ -264,11 +272,12 @@ fn directory_identity(canonical: &Path, _: &fs::Metadata) -> String {
     format!("win-path:{}", hex_encode(&bytes))
 }
 
-#[cfg(not(windows))]
+#[cfg(all(test, not(windows)))]
 fn directory_identity(canonical: &Path, _: &fs::Metadata) -> String {
     canonical.to_string_lossy().into_owned()
 }
 
+#[cfg(test)]
 fn stable_path_hash(path_key: &str) -> u64 {
     // FNV-1a is intentionally implemented locally rather than using
     // `DefaultHasher`, whose implementation is not a persistent format.
@@ -280,6 +289,7 @@ fn stable_path_hash(path_key: &str) -> u64 {
     hash
 }
 
+#[cfg(test)]
 fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
@@ -290,12 +300,14 @@ fn hex_encode(bytes: &[u8]) -> String {
     encoded
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FolderSizeCacheEntry {
     key: FolderSizeCacheKey,
     exact_bytes: u64,
 }
 
+#[cfg(test)]
 impl FolderSizeCacheEntry {
     fn encode(&self) -> String {
         format!(
@@ -340,6 +352,7 @@ impl FolderSizeCacheEntry {
     }
 }
 
+#[cfg(test)]
 fn plugin_cache_directory() -> Option<PathBuf> {
     env::var_os("LOCALAPPDATA")
         .or_else(|| env::var_os("APPDATA"))
@@ -352,6 +365,7 @@ fn plugin_cache_directory() -> Option<PathBuf> {
         })
 }
 
+#[cfg(test)]
 fn read_cached_exact(cache_directory: Option<&Path>, key: &FolderSizeCacheKey) -> Option<u64> {
     let path = cache_directory?.join(key.file_name());
     let metadata = fs::symlink_metadata(&path).ok()?;
@@ -374,6 +388,7 @@ fn read_cached_exact(cache_directory: Option<&Path>, key: &FolderSizeCacheKey) -
     FolderSizeCacheEntry::decode(key.clone(), contents).map(|entry| entry.exact_bytes)
 }
 
+#[cfg(test)]
 fn prune_cache(cache_directory: &Path) {
     let Ok(entries) = fs::read_dir(cache_directory) else {
         return;
@@ -404,6 +419,7 @@ fn prune_cache(cache_directory: &Path) {
     }
 }
 
+#[cfg(test)]
 fn store_cached_exact(cache_directory: Option<&Path>, entry: &FolderSizeCacheEntry) {
     let Some(cache_directory) = cache_directory else {
         return;
@@ -430,7 +446,7 @@ fn store_cached_exact(cache_directory: Option<&Path>, entry: &FolderSizeCacheEnt
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(test, windows))]
 fn atomic_replace_cache_file(temporary: &Path, destination: &Path) -> std::io::Result<()> {
     use std::{iter, os::windows::ffi::OsStrExt};
 
@@ -469,11 +485,12 @@ fn atomic_replace_cache_file(temporary: &Path, destination: &Path) -> std::io::R
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(all(test, not(windows)))]
 fn atomic_replace_cache_file(temporary: &Path, destination: &Path) -> std::io::Result<()> {
     fs::rename(temporary, destination)
 }
 
+#[cfg(test)]
 fn measure_folder_size_with_cache(
     request: &FolderSizeMeasureRequestV1,
     cache_directory: Option<&Path>,
@@ -514,8 +531,8 @@ fn measure_folder_size_with_cache(
     )
 }
 
+#[cfg(test)]
 fn measure_path_bytes(request: &FolderSizeMeasureRequestV1) -> (u64, Option<RString>) {
-    #[cfg(test)]
     if let Some(marker) = env::var_os("RUST_FOLDER_SIZE_SCAN_MARKER") {
         let _ = fs::write(marker, b"recursive scan entered");
     }
@@ -655,7 +672,10 @@ impl ExtensionRegistrarImplementationV1 for P0ConsumerRegistrar {
                     feature_id: RString::from("column"),
                     contribution_id: RString::from("folder-size-renderer"),
                     kind: RegisteredContributionKindV1::GPUI_RENDERER,
-                    required_capabilities: RVec::from(vec![RString::from("abi")]),
+                    required_capabilities: RVec::from(vec![
+                        RString::from("abi"),
+                        RString::from("folder.aggregate"),
+                    ]),
                     interface_id: PRIMARY_INTERFACE_ID,
                     expected_sort: ROption::RNone,
                     opaque_contract: ROption::RNone,
@@ -766,6 +786,10 @@ mod tests {
         assert_eq!(
             result.contributions[1].contribution_id,
             "folder-size-renderer"
+        );
+        assert_eq!(
+            result.contributions[1].required_capabilities.as_slice(),
+            ["abi", "folder.aggregate"]
         );
     }
 
