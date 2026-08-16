@@ -402,17 +402,19 @@ fn pre_count_extensible_layout_appends_hidden_count_columns_without_losing_prefe
         ("builtin:authors", 188, false),
         ("builtin:tags", 199, false),
     ];
-    let mut persisted = PersistedViewSettings::default();
-    persisted.extensible_column_layout = saved
-        .iter()
-        .map(
-            |(id, width, visible)| explorer_model::PersistedColumnLayoutEntry {
-                id: (*id).to_owned(),
-                width: *width,
-                visible: *visible,
-            },
-        )
-        .collect();
+    let persisted = PersistedViewSettings {
+        extensible_column_layout: saved
+            .iter()
+            .map(
+                |(id, width, visible)| explorer_model::PersistedColumnLayoutEntry {
+                    id: (*id).to_owned(),
+                    width: *width,
+                    visible: *visible,
+                },
+            )
+            .collect(),
+        ..PersistedViewSettings::default()
+    };
 
     let runtime = persisted.to_runtime();
     let entries = runtime.details_layout.entries();
@@ -458,19 +460,21 @@ fn current_extensible_layout_reconciliation_is_idempotent() {
 
 #[test]
 fn corrupt_duplicate_and_oversized_extensible_layouts_fail_closed() {
-    let mut persisted = PersistedViewSettings::default();
-    persisted.extensible_column_layout = vec![
-        explorer_model::PersistedColumnLayoutEntry {
-            id: "builtin:name".to_owned(),
-            width: 280,
-            visible: true,
-        },
-        explorer_model::PersistedColumnLayoutEntry {
-            id: "Org.invalid:value".to_owned(),
-            width: 120,
-            visible: true,
-        },
-    ];
+    let mut persisted = PersistedViewSettings {
+        extensible_column_layout: vec![
+            explorer_model::PersistedColumnLayoutEntry {
+                id: "builtin:name".to_owned(),
+                width: 280,
+                visible: true,
+            },
+            explorer_model::PersistedColumnLayoutEntry {
+                id: "Org.invalid:value".to_owned(),
+                width: 120,
+                visible: true,
+            },
+        ],
+        ..PersistedViewSettings::default()
+    };
     // Runtime conversion is deliberately safe even before the containing
     // session envelope rejects the malformed canonical ID.
     let restored = persisted.to_runtime();
