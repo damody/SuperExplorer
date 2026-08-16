@@ -167,8 +167,8 @@
 
 - [x] 5.2.1 Build the test installer and record exit status, binary versions, and SHA-256.
 - [x] 5.2.2 Install/upgrade the test package and verify the MFT Windows Service binary/version/startup identity.
-- [ ] 5.2.3 Capture before/after evidence that Apply and OK change MFT LRU 512??048 without navigation.
-- [ ] 5.2.4 Change representative UI/Host/GPU/disk/MFT budgets, restart, and capture persistence/telemetry evidence.
+- [x] 5.2.3 Capture before/after evidence that Apply and OK change MFT LRU 512??048 without navigation.
+- [x] 5.2.4 Change representative UI/Host/GPU/disk/MFT budgets, restart, and capture persistence/telemetry evidence.
 - [ ] 5.2.5 Verify partial presentation with a bounded test fixture and capture Details/Size Map evidence.
 
 ### 5.3 Final traceability review
@@ -181,7 +181,7 @@
 **Gate／Evidence：** G-FINAL; `evidence/index.jsonl`, `evidence/final-report.md`.  
 **完成門檻：** Strict OpenSpec validation passes, no placeholders remain, and every leaf has a unique passed/not-applicable/superseded record.
 
-- [ ] 5.3.1 Map proposal outcomes and normative scenarios to gates, task IDs, and immutable evidence records.
-- [ ] 5.3.2 Revalidate task atomicity and mark stale/superseded evidence lineage explicitly.
+- [x] 5.3.1 Map proposal outcomes and normative scenarios to gates, task IDs, and immutable evidence records.
+- [x] 5.3.2 Revalidate task atomicity and mark stale/superseded evidence lineage explicitly.
 - [x] 5.3.3 Run strict OpenSpec validation and write the final report with unresolved risks, if any.
 

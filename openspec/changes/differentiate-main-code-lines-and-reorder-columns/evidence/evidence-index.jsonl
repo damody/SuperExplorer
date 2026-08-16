@@ -1,0 +1,21 @@
+{"task":"1.1.1","status":"pass","evidence":"evidence/1.1-aggregation-tests.txt"}
+{"task":"1.1.2","status":"pass","evidence":"evidence/1.1-aggregation-tests.txt"}
+{"task":"1.1.3","status":"pass","evidence":"evidence/1.1-aggregation-tests.txt"}
+{"task":"1.1.4","status":"pass","evidence":"evidence/1.1-aggregation-tests.txt"}
+{"task":"1.1.5","status":"pass","evidence":"evidence/1.1-aggregation-tests.txt"}
+{"task":"2.1.1","status":"pass","evidence":"evidence/2.1-layout-tests.txt"}
+{"task":"2.1.2","status":"pass","evidence":"evidence/2.1-layout-tests.txt"}
+{"task":"2.1.3","status":"pass","evidence":"evidence/2.1-layout-tests.txt"}
+{"task":"2.1.4","status":"pass","evidence":"evidence/2.1-layout-tests.txt"}
+{"task":"2.2.1","status":"pass","evidence":"evidence/2.2-drag-tests.txt"}
+{"task":"2.2.2","status":"pass","evidence":"evidence/2.2-drag-tests.txt"}
+{"task":"2.2.3","status":"pass","evidence":"evidence/2.2-drag-tests.txt"}
+{"task":"2.2.4","status":"pass","evidence":"evidence/2.2-drag-tests.txt"}
+{"task":"3.1.1","status":"pass","evidence":"scripts/smoke_tokei_plugin_headful.ps1; uitest/manifest.json"}
+{"task":"3.1.2","status":"pass","evidence":"scripts/smoke_tokei_plugin_headful.ps1; uitest/manifest.json"}
+{"task":"3.1.3","status":"blocked","evidence":"evidence/headful-status.md"}
+{"task":"3.1.4","status":"pass","evidence":"evidence/headful-status.md"}
+{"task":"3.2.1","status":"pass","evidence":"evidence/evidence-index.jsonl"}
+{"task":"3.2.2","status":"pass","evidence":"evidence/final-validation.txt"}
+{"task":"3.2.3","status":"blocked","evidence":"evidence/headful-status.md"}
+

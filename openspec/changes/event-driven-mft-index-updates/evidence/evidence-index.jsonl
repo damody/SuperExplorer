@@ -1,0 +1,10 @@
+{"schema_version":1,"gate":"G-PROTOCOL","tasks":["1.1.1","1.1.2","1.1.3","1.1.4","1.1.5"],"result":"passed","authority":"local","evidence":"implementation-evidence-2026-08-14.md"}
+{"schema_version":1,"gate":"G-JOURNAL","tasks":["1.2.1","1.2.2","1.2.3","1.2.4","1.2.5"],"result":"passed","authority":"local","evidence":"implementation-evidence-2026-08-14.md"}
+{"schema_version":1,"gate":"G-INIT","tasks":["2.1.1","2.1.2","2.1.3","2.1.4","2.1.5"],"result":"passed","authority":"local","evidence":"implementation-evidence-2026-08-14.md"}
+{"schema_version":1,"gate":"G-COALESCE","tasks":["2.2.1","2.2.2","2.2.3","2.2.4","2.2.5","2.2.6"],"result":"passed","authority":"local","evidence":"implementation-evidence-2026-08-14.md"}
+{"schema_version":1,"gate":"G-LIFECYCLE","tasks":["2.3.1","2.3.2","2.3.3","2.3.4"],"result":"passed","authority":"local","evidence":"implementation-evidence-2026-08-14.md"}
+{"schema_version":1,"gate":"G-HOST-INDEX","tasks":["3.1.1","3.1.2","3.1.3","3.1.4","3.1.5"],"result":"passed","authority":"local","evidence":"implementation-evidence-2026-08-14.md"}
+{"schema_version":1,"gate":"G-CACHE","tasks":["3.2.1","3.2.2","3.2.3","3.2.4","3.2.5"],"result":"passed","authority":"local","evidence":"implementation-evidence-2026-08-14.md"}
+{"schema_version":1,"gate":"G-MIGRATION","tasks":["4.1.1","4.1.2","4.1.3","4.1.4","4.1.5"],"result":"passed","authority":"local","evidence":"implementation-evidence-2026-08-14.md"}
+{"schema_version":1,"gate":"G-NTFS","tasks":["4.2.1","4.2.2","4.2.3","4.2.4"],"result":"passed-with-explicit-capability-disposition","authority":"local","evidence":"implementation-evidence-2026-08-14.md","raw_report":"target/openspec-evidence/event-driven-mft-index-updates/4.2.ntfs-mutations-local/report.json"}
+{"schema_version":1,"gate":"G-INSTALLED","tasks":["4.3.1","4.3.2","4.3.3","4.3.4","4.3.5","4.3.6"],"result":"passed-scoped-global-coverage-blocked-by-other-changes","authority":"local","evidence":"implementation-evidence-2026-08-14.md"}

@@ -1,0 +1,17 @@
+{
+  "schema": "superexplorer.folder-snapshot-profile.v1",
+  "recorded_at": "2026-08-14T00:00:00+08:00",
+  "root": "D:\\SuperExplorer",
+  "command": "$env:SUPEREXPLORER_PROFILE_FOLDER_ROOT='D:\\SuperExplorer'; cargo test -p explorer-app --lib folder_size_service::tests::opt_in_profile_cold_warm_folder_backends --offline -- --ignored --nocapture",
+  "recursive_cold_ms": 11789,
+  "recursive_warm_ms": 9169,
+  "service_first_ms": 10182,
+  "service_warm_ms": 34,
+  "recursive_bytes": 141041334797,
+  "file_count": 319700,
+  "directory_count": 39953,
+  "everything_query_ms": 0,
+  "everything_result": "Everything SDK is not packaged beside the test executable",
+  "everything_eligible": false,
+  "disposition": "Everything remains fail-closed; shared-service warm reuse equals the recursive reference aggregate"
+}

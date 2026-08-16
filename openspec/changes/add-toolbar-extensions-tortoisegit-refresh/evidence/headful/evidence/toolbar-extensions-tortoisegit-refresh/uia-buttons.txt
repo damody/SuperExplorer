@@ -1,0 +1,67 @@
+﻿Close tab
+New tab
+Minimize
+Maximize or restore; Windows Snap Layout available
+Close
+Back
+Forward
+Up
+Refresh
+本機
+列出磁碟機
+顯示較舊的路徑層級
+Go to headful
+列出 headful 的子資料夾
+Go to evidence
+列出 evidence 的子資料夾
+Go to toolbar-extensions-tortoisegit-refresh
+列出 toolbar-extensions-tortoisegit-refresh 的子資料夾
+Go to fixture
+列出 fixture 的子資料夾
+Add current folder to bookmarks
+Add Lua bookmark
+Manage bookmarks
+Create a new item
+Cut selected items
+Copy selected items
+Paste clipboard items
+Rename selected item
+Share selected items
+Move selected items to the Recycle Bin
+Sort
+View
+其它
+擴充功能
+常用
+Quick access (Unavailable)
+圖庫
+OneDrive - Personal
+Expand
+桌面
+下載
+文件
+圖片
+音樂
+影片
+Libraries
+本機
+Collapse
+本機磁碟 (C:)
+Expand
+新增磁碟區 (D:)
+Expand
+新增磁碟區 (E:)
+Expand
+網路
+Expand
+Recycle Bin
+Name, sorted   ↑
+Filter Name
+Sort by Date modified
+Filter Date modified
+Sort by Type
+Filter Type
+Sort by Size
+Filter Size
+Details view
+Icon view

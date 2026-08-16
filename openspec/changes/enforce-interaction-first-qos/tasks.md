@@ -24,7 +24,7 @@
 
 ## 5. UTIT stress verification
 
-- [ ] 5.1 Add UTIT coverage for copy during navigation, full queues, rapid navigation replacement, competing search/enrichment work, tab closure, and shutdown with active work.
+- [x] 5.1 Add UTIT coverage for copy during navigation, full queues, rapid navigation replacement, competing search/enrichment work, tab closure, and shutdown with active work.
 - [x] 5.2 Ensure contention tests use explicit start/release synchronization and emit QoS diagnostics on failure.
 - [x] 5.3 Run formatting, targeted crate tests, UTIT, and the application build; document environment-only failures separately from regressions.
 

@@ -14,7 +14,7 @@
 - [x] 1.1.2 Implement bounded binary codecs and checksum/commit validation for checkpoint, delta, and status records.
 - [x] 1.1.3 Implement temporary-write, flush, atomic-rename delta publication followed by checkpoint publication.
 - [x] 1.1.4 Add unit tests for round-trip, unsupported schema, checksum failure, truncated file, commit ordering, and idempotent replay boundaries.
-- [ ] 1.1.5 Write the G-PROTOCOL evidence records for tasks 1.1.1–1.1.4.
+- [x] 1.1.5 Write the G-PROTOCOL evidence records for tasks 1.1.1–1.1.4.
 
 ### 1.2 USN Journal access and normalization
 
@@ -30,7 +30,7 @@
 - [x] 1.2.2 Normalize create, delete, rename, data, hard-link, and conservative invalidation reasons into delta changes.
 - [x] 1.2.3 Add cursor compatibility checks for volume identity, journal ID, retained range, and next USN.
 - [x] 1.2.4 Add unit and opt-in NTFS tests for parsing, rename halves, unknown reasons, cursor truncation, and blocked-read cancellation.
-- [ ] 1.2.5 Write the G-JOURNAL evidence records for tasks 1.2.1–1.2.4.
+- [x] 1.2.5 Write the G-JOURNAL evidence records for tasks 1.2.1–1.2.4.
 
 ## 2. Event-Driven Service
 
@@ -47,8 +47,8 @@
 - [x] 2.1.1 Implement eligible NTFS volume discovery and stable per-volume identity without drive-letter-only identity assumptions.
 - [x] 2.1.2 Implement compatible base/checkpoint reuse and initial checkpoint establishment at a safe journal boundary.
 - [x] 2.1.3 Implement serialized recovery for missing/corrupt state, journal mismatch/truncation, generation gaps, and overflow reasons.
-- [ ] 2.1.4 Add state-machine tests for first initialization, compatible restart, failed replacement, and exactly-once recovery scheduling.
-- [ ] 2.1.5 Write the G-INIT evidence records for tasks 2.1.1–2.1.4.
+- [x] 2.1.4 Add state-machine tests for first initialization, compatible restart, failed replacement, and exactly-once recovery scheduling.
+- [x] 2.1.5 Write the G-INIT evidence records for tasks 2.1.1–2.1.4.
 
 ### 2.2 Blocking readers and bounded coalescing
 
@@ -65,7 +65,7 @@
 - [x] 2.2.3 Resolve live file sizes for committed changes and publish ordered durable deltas without retaining a full Service-side index.
 - [x] 2.2.4 Implement count/byte high-water limits whose overflow records diagnostics and schedules recovery without claiming freshness.
 - [x] 2.2.5 Add deterministic coordinator tests for quiet batches, sustained activity, redundant changes, ambiguous rename/link events, and overflow.
-- [ ] 2.2.6 Write the G-COALESCE evidence records for tasks 2.2.1–2.2.5.
+- [x] 2.2.6 Write the G-COALESCE evidence records for tasks 2.2.1–2.2.5.
 
 ### 2.3 Lifecycle and diagnostics
 
@@ -80,7 +80,7 @@
 - [x] 2.3.1 Implement stop-event propagation, journal-read wake/cancellation, worker join, and correct SCM pending/stopped reporting.
 - [x] 2.3.2 Publish atomic per-volume initializing/journal/recovering/error diagnostics with generations, USN, queues, timestamps, and reasons.
 - [x] 2.3.3 Add lifecycle and status tests covering stop during blocked read, stop during debounce, recovery transitions, and error persistence.
-- [ ] 2.3.4 Write the G-LIFECYCLE evidence records for tasks 2.3.1–2.3.3.
+- [x] 2.3.4 Write the G-LIFECYCLE evidence records for tasks 2.3.1–2.3.3.
 
 ## 3. Host Delta Application and Cache Correctness
 
@@ -97,8 +97,8 @@
 - [x] 3.1.1 Implement ordered delta discovery and compatibility/contiguity validation from the last committed Host generation.
 - [x] 3.1.2 Implement create, update, delete, and rename topology mutations on a private materialized index generation.
 - [x] 3.1.3 Implement idempotent replay and atomic publication while retaining the previous generation on any batch failure.
-- [ ] 3.1.4 Add Host tests for contiguous chains, gaps, journal/volume mismatch, corruption, duplicate replay, and all-or-nothing visibility.
-- [ ] 3.1.5 Write the G-HOST-INDEX evidence records for tasks 3.1.1–3.1.4.
+- [x] 3.1.4 Add Host tests for contiguous chains, gaps, journal/volume mismatch, corruption, duplicate replay, and all-or-nothing visibility.
+- [x] 3.1.5 Write the G-HOST-INDEX evidence records for tasks 3.1.1–3.1.4.
 
 ### 3.2 Aggregate and persistent cache invalidation
 
@@ -113,8 +113,8 @@
 - [x] 3.2.1 Derive old ancestry before mutation and new ancestry after mutation, including conservative invalidation for ambiguous topology.
 - [x] 3.2.2 Invalidate/recompute affected aggregates and Host persistent data-column cache keys without clearing unrelated subtrees.
 - [x] 3.2.3 Wire delta generation refresh into existing folder-size requests for built-in Size and enabled/disabled extension configurations.
-- [ ] 3.2.4 Add tests for grow, truncate, create, delete, same-parent rename, cross-parent move, ambiguous link, and unrelated cache retention.
-- [ ] 3.2.5 Write the G-CACHE evidence records for tasks 3.2.1–3.2.4.
+- [x] 3.2.4 Add tests for grow, truncate, create, delete, same-parent rename, cross-parent move, ambiguous link, and unrelated cache retention.
+- [x] 3.2.5 Write the G-CACHE evidence records for tasks 3.2.1–3.2.4.
 
 ## 4. Migration, Packaging, and Verification
 
@@ -140,8 +140,8 @@
 
 - [x] 4.1.1 Implement existing-base adoption or one-time rebuild and versioned sidecar handling without destructive broad cache removal.
 - [x] 4.1.2 Update installer/service packaging only as needed to preserve compatible cache and service lifecycle behavior.
-- [ ] 4.1.3 Add migration tests for legacy base, compatible restart, incompatible schema, interrupted upgrade, and rollback reader behavior.
-- [ ] 4.1.4 Write the G-MIGRATION evidence records for tasks 4.1.1–4.1.3.
+- [x] 4.1.3 Add migration tests for legacy base, compatible restart, incompatible schema, interrupted upgrade, and rollback reader behavior.
+- [x] 4.1.4 Write the G-MIGRATION evidence records for tasks 4.1.1–4.1.3.
 - [x] 4.1.5 Require the installer to confirm `STOPPED` before replacing the MFT service binary, restart it, confirm `RUNNING`, and register the lifecycle contract in UTIT.
 
 ### 4.2 NTFS integration and UTIT registration
@@ -154,8 +154,8 @@
 **Gate／Evidence：** G-NTFS; `target/openspec-evidence/event-driven-mft-index-updates/4.2.*`.  
 **完成門檻：** Real NTFS mutations reach Host values within ten seconds, unrelated cache persists, discontinuity recovers once, and the manifest validates.
 
-- [ ] 4.2.1 Add an isolated NTFS mutation fixture covering create, grow, overwrite, truncate, rename, move, hard-link, and delete.
-- [ ] 4.2.2 Add journal discontinuity and blocked-service-stop integration procedures with truthful capability skips only when NTFS prerequisites are absent.
+- [x] 4.2.1 Add an isolated NTFS mutation fixture covering create, grow, overwrite, truncate, rename, move, hard-link, and delete.
+- [x] 4.2.2 Add journal discontinuity and blocked-service-stop integration procedures with truthful capability skips only when NTFS prerequisites are absent.
 - [x] 4.2.3 Register targeted UTIT cases, required artifacts, requirement selectors, timeouts, and exclusive service resources.
 - [x] 4.2.4 Run the targeted integration/UTIT cases and write G-NTFS evidence records for tasks 4.2.1–4.2.3.
 
@@ -174,4 +174,4 @@
 - [x] 4.3.3 Record at least two idle minutes of working set, private bytes, CPU, base/delta timestamps, and generations and assert no periodic rebuild signature.
 - [x] 4.3.4 Mutate a representative file and assert Host folder size updates within ten seconds while unrelated cache remains valid and memory stays bounded.
 - [x] 4.3.5 Stop the service during a blocked journal read and verify timely clean shutdown, then restart and verify cursor continuation without full rebuild.
-- [ ] 4.3.6 Run formatting, focused tests, strict OpenSpec validation, UTIT manifest validation, scoped diff review, and write the complete G-INSTALLED evidence index.
+- [x] 4.3.6 Run formatting, focused tests, strict OpenSpec validation, UTIT manifest validation, scoped diff review, and write the complete G-INSTALLED evidence index.

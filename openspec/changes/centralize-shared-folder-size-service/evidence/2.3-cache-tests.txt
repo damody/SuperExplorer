@@ -1,0 +1,10 @@
+2026-08-14 G5 cache evidence
+
+- Focused service suite: 18 passed, 0 failed.
+- Persistent records bind schema, canonical root identity, modified stamp, semantic
+  policy version and backend data version; corrupt, oversized and incompatible records
+  fail closed.
+- Manual generation advances may rebind an unchanged modified-date snapshot. Watcher
+  changes invalidate affected ancestors and delete the stale disk record.
+- MFT records are reusable only after the live service proves the same complete
+  generation; unproven continuity rebuilds through the backend chain.

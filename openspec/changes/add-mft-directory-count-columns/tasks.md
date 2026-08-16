@@ -188,7 +188,7 @@
 - [x] 7.1.2 Gate extension folder admission on visibility of every corresponding built-in count column and prevent cached hidden facts from admitting work while preserving ordinary file and unlimited-contribution behavior.
 - [x] 7.1.3 Add and pass focused request-spy and dispatch-spy tests for visible immediate start, restored-visible start, two-column deduplication, both-hidden zero-query, last-hidden suppression, and hidden File Count Code Lines non-dispatch/status.
 - [ ] 7.1.4 Run format, focused model/application/UI/extension tests, bundle verification, strict OpenSpec/task validation, and write indexed correction evidence.
-- [ ] 7.1.5 Rebuild and install through the standard path, then capture real headful evidence that enabling File Count/Folder Count populates MFT-backed values without refresh and that hiding both prevents new count activity.
+- [x] 7.1.5 Rebuild and install through the standard path, then capture real headful evidence that enabling File Count/Folder Count populates MFT-backed values without refresh and that hiding both prevents new count activity.
 
 ### 7.2 Compact Code Lines limit presentation
 
@@ -202,4 +202,4 @@
 
 - [x] 7.2.1 Split admission presentation into short label, complete reason, and limit classification while preserving Pending semantics.
 - [x] 7.2.2 Attach the existing GPUI tooltip lifecycle and warning semantic color to blocked Details cells, with the full reason in the accessible name.
-- [ ] 7.2.3 Add focused tests and headful/accessibility evidence for unavailable, over-limit, and pending states.
+- [x] 7.2.3 Add focused tests and headful/accessibility evidence for unavailable, over-limit, and pending states.

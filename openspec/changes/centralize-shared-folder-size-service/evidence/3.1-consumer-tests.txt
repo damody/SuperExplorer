@@ -1,0 +1,14 @@
+2026-08-14 G6 consumer evidence
+
+- Explorer app folder request coalescing: 1 passed.
+- Explorer app Size Map request merge/overflow terminalization: 1 passed.
+- Explorer UI Folder Size state/sort/generation/status tests: 9 passed.
+- Explorer UI Size Map interaction/tab/stale-session tests: 2 passed.
+- Both runtimes share the same `Arc<Mutex<FolderSizeServiceV1>>`; Folder Size requests
+  aggregate projection and Size Map requests tree projection. Cancelling or switching
+  one UI context does not disable the other feature.
+- Official Folder Size production code is renderer-only; legacy recursion/cache helpers
+  are compiled only for compatibility regression tests. Direct fixture tests: 15 passed,
+  1 process-helper test ignored by the parent matrix.
+- Official Size Map production routing contains no independent scan coordinator; direct
+  renderer tests: 5 passed.

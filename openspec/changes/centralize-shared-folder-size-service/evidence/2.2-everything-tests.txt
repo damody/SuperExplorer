@@ -1,6 +1,9 @@
-Gate: Everything indexed provider boundary
-Date: 2026-08-05 Asia/Taipei
-Command: cargo test -p explorer-shell-win --lib everything --locked --offline
-Result: 7 passed; 0 failed
-Contract: bounded full path + logical size + kind; live metadata, canonical scope,
-reparse, stale size/kind, missing parent, and node quota reject to recursive fallback.
+2026-08-14 G4 Everything boundary evidence
+
+- `cargo test -p explorer-shell-win --lib everything --locked -- --test-threads=1`
+- Result: 8 passed, 0 failed.
+- Full-path, live kind/size, canonical `\\?\` root containment, stale path,
+  escaped prefix, mutation mismatch, cancellation and eligible-node quota checks pass.
+- Everything 1.4 supplies no transaction/checkpoint proving complete current subtree
+  coverage, so the folder snapshot adapter remains intentionally ineligible and falls
+  through to recursive reference instead of publishing an unproven exact zero.

@@ -1,0 +1,22 @@
+﻿{
+    "schema_version":  1,
+    "status":  "PASS",
+    "tortoisegit_installed":  true,
+    "action_log":  "popup-closed-and-visible-shell-items-converged",
+    "command_order":  [
+                          "View",
+                          "其它",
+                          "擴充功能"
+                      ],
+    "selection_before":  1,
+    "oracles":  {
+                    "accessible_traditional_chinese_labels":  true,
+                    "command_order_and_alignment":  true,
+                    "popups_mutually_exclusive":  true,
+                    "outside_click_closes_without_execution":  true,
+                    "installed_command_or_disabled_placeholder":  true,
+                    "refresh_action_converged":  true,
+                    "directory_contents_preserved":  true,
+                    "selection_preserved":  true
+                }
+}

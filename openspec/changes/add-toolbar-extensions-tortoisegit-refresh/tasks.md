@@ -18,5 +18,5 @@
 ## 4. Headful and Verification
 
 - [x] 4.1 Add render-contract coverage for toolbar order, labels, popup identities, TortoiseGit command, and unavailable placeholder.
-- [ ] 4.2 Add or extend a Windows headful UITEST for Extensions menu invocation and truthful installed/unavailable behavior, then map every new requirement in the manifest.
-- [ ] 4.3 Run targeted format, Clippy, model/UI/Shell tests, UITEST coverage validation, headful interop coverage where available, and strict OpenSpec validation.
+- [x] 4.2 Add or extend a Windows headful UITEST for Extensions menu invocation and truthful installed/unavailable behavior, then map every new requirement in the manifest.
+- [x] 4.3 Run targeted format, Clippy, model/UI/Shell tests, UITEST coverage validation, headful interop coverage where available, and strict OpenSpec validation.

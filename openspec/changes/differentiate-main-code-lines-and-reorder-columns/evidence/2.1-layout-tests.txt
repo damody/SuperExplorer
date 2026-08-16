@@ -1,0 +1,13 @@
+G2 PASS (2026-08-14)
+
+Focused commands:
+- cargo test --locked --offline -p explorer-model --test dynamic_columns
+  Result: 14 passed.
+- cargo test --locked --offline -p explorer-ui details_column --lib
+  Result: 10 passed.
+
+Covered contracts:
+- Name is canonicalized first for defaults, restore, reorder, and move.
+- Header, row, and chooser projection share the visible registered order.
+- Move-left/right, Name rejection, hidden/unknown columns, extension lifecycle, and persistence round trips pass.
+

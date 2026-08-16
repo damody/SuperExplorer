@@ -56,7 +56,7 @@
 
 - [x] 2.2.1 對檔案系統檔案與資料夾新增「加入書籤」右鍵操作。
 - [x] 2.2.2 新增工具列 `+` 的 Lua 名稱／原始碼建立與驗證流程。
-- [ ] 2.2.3 實作管理員的型別化編輯、拖曳重排、刪除與持久化互動測試。
+- [x] 2.2.3 實作管理員的型別化編輯、拖曳重排、刪除與持久化互動測試。
 - [x] 2.2.4 將星號 action 與 state target 改為目前分頁的實體資料夾，與檔案清單 selection 完全解耦，並補齊單元測試。
 - [x] 2.2.5 維持星號固定最左側與 20 px 醒目尺寸，並以 headful UITEST 在零選取狀態驗證目前資料夾 `☆ → ★ → ☆ → ★` 及保存截圖。
 
@@ -74,7 +74,7 @@
 
 - [x] 3.1.1 定義具有固定 timeout 的按需 Lua request/result 契約並建立背景排程接線。
 - [x] 3.1.2 建立只注入唯讀 `current_folder` 的 runtime adapter，禁止所有其他 Explorer host API。
-- [ ] 3.1.3 測試實體資料夾成功、非檔案系統拒絕、重新指派、例外、啟動失敗與 timeout。
+- [x] 3.1.3 測試實體資料夾成功、非檔案系統拒絕、重新指派、例外、啟動失敗與 timeout。
 
 ### 3.2 移除 `.explorer.lua` 自動化
 
@@ -103,7 +103,7 @@
 **完成門檻：** 需求情境以自動化或聚焦測試取得可重現證據。
 
 - [x] 4.1.1 登錄書籤工具列 UITEST 並驗證圖示、排序、overflow 與管理操作。
-- [ ] 4.1.2 驗證重啟還原，以及 Lua 成功、拒絕、例外和 timeout 的通知。
+- [x] 4.1.2 驗證重啟還原，以及 Lua 成功、拒絕、例外和 timeout 的通知。
 - [x] 4.1.3 保存測試報告、截圖與 session fixture 雜湊至 evidence index。
 
 ### 4.2 最終驗證
@@ -118,4 +118,4 @@
 
 - [x] 4.2.1 執行格式化與 explorer-model、explorer-automation、explorer-ui、explorer-app 聚焦測試。
 - [x] 4.2.2 執行 UITEST、建立 requirement/scenario 到 task/gate/evidence 追溯矩陣並索引雜湊。
-- [ ] 4.2.3 執行嚴格 OpenSpec 與 detailed task 驗證，審查 scoped diff 並真實更新證據與任務狀態。
+- [x] 4.2.3 執行嚴格 OpenSpec 與 detailed task 驗證，審查 scoped diff 並真實更新證據與任務狀態。

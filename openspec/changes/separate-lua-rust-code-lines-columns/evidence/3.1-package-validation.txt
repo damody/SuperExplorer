@@ -7,3 +7,9 @@ Cause: the shared worktree already contains unrelated, unfinished SDK bundle-man
 Validated alternative evidence (does not close this package gate): both target DLLs build locked/offline, both load together in the production app, and headful verification passes.
 Rust debug DLL SHA-256: 5CC4D470F1D24F5AC2A158D75017DCE8A1878C2CCFA46145B5C511BE3076B97C
 Lua debug DLL SHA-256: D31E5FC5432F09E6AE434B05B8DE30A3E4D04D0DF4C4DA6571628E72F848E725
+
+Retry: 2026-08-14 Asia/Taipei
+Status: BLOCKED (not complete)
+Command: `sdk/scripts/validate-plugin.ps1 -PluginRoot sdk/fixtures/rust-tokei-code-lines-column`, followed by the canonical bundle generator `generate` and `verify` diagnostics.
+Actual: validator again rejected the published SDK inventory with `SESDK-INPUT-001`. A bounded inventory comparison found exactly one stale hash, `sdk/fixtures/lua-tokei-code-lines-column/src/lib.rs`, with no added or removed inventory paths. Canonical regeneration then stopped because the protected GPUI snapshot is not approved for the checked-out parent gitlink: parent/submodule `b3d978d34361087fbb6a9fb92565970943831b4d` (tree `4ab8f5ed07df12cf336ddf310316027168c4ef0c`) versus approved snapshot/sdk-lock `8945e2981b9fd00ca887e042d8adb9acc241b168` (tree `7d4acfda352c13d35a475da381f9b6f9de7a30c2`).
+Disposition: do not regenerate or package until the protected GPUI promotion flow approves the checked-out gitlink and republishes `approved-gpui.json`, `sdk-lock.json`, `bundle-manifest.json`, and `ui-abi-fingerprint.json`. No canonical bundle files were changed by this failed attempt.

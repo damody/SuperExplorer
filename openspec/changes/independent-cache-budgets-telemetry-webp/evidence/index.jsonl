@@ -1,0 +1,11 @@
+{"gate":"G-SETTINGS","status":"passed","evidence":"automated-validation.md","tasks":["1.1.1","1.1.2","1.1.3","1.1.4","1.1.5"]}
+{"gate":"G-MEMORY-LRU","status":"passed","evidence":"automated-validation.md","tasks":["2.1.1","2.1.2","2.1.3","2.1.4","2.1.5"]}
+{"gate":"G-HOST-REPORTERS","status":"passed","evidence":"automated-validation.md","tasks":["2.2.1","2.2.2","2.2.3","2.2.4","2.2.5"]}
+{"gate":"G-DISK-SAMPLER","status":"passed","evidence":"automated-validation.md","tasks":["2.3.1","2.3.2","2.3.3","2.3.4"]}
+{"gate":"G-WEBP","status":"superseded","evidence":"supersession.md","replacement":"../bc7-icon-thumbnail-caches/tasks.md","tasks":["3.1.1","3.1.2","3.1.3","3.1.4","3.1.5","3.2.1","3.2.2","3.2.3","3.2.4","3.2.6","3.2.7","3.3.1","3.3.2","3.3.3","3.3.4"]}
+{"gate":"G-DISK-STATS","status":"passed","evidence":"automated-validation.md","tasks":["3.2.5"]}
+{"gate":"G-MFT-DIAGNOSTICS","status":"passed","evidence":"automated-validation.md","tasks":["4.1.1","4.1.2","4.1.3","4.1.4","4.1.5"]}
+{"gate":"G-FOLDER-OPTIONS","status":"passed-with-replacement","evidence":"release-and-headful.md","replacement":"../refine-cache-telemetry-availability/tasks.md","tasks":["4.2.1","4.2.2","4.2.3","4.2.4","4.2.5","4.2.6","5.2.2"]}
+{"gate":"G-AUTOMATED","status":"passed","evidence":"automated-validation.md","tasks":["5.1.1","5.1.2","5.1.3","5.1.4","5.1.5","5.1.6"]}
+{"gate":"G-RELEASE-PROFILE","status":"passed-with-superseded-profile","evidence":"release-and-headful.md","replacement":"../bc7-icon-thumbnail-caches/tasks.md","tasks":["5.2.1","5.2.3","5.2.4","5.2.5","5.2.6"]}
+{"gate":"G-FINAL","status":"passed","evidence":"final-review.md","tasks":["5.3.1","5.3.2","5.3.3","5.3.4","5.3.5","5.3.6"]}

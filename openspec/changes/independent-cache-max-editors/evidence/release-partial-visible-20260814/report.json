@@ -1,0 +1,12 @@
+﻿{
+    "status":  "passed",
+    "case_id":  "size-map-partial-presentation",
+    "initial_path":  "D:\\SuperExplorer\\openspec\\changes\\independent-cache-max-editors\\evidence\\release-partial-visible-20260814\\aggregate-fixture",
+    "partial_node":  null,
+    "details_partial":  "Folder size: Partial: 1.0 KB",
+    "screenshots":  [
+                        "D:\\SuperExplorer\\openspec\\changes\\independent-cache-max-editors\\evidence\\release-partial-visible-20260814\\details-before.png",
+                        "D:\\SuperExplorer\\openspec\\changes\\independent-cache-max-editors\\evidence\\release-partial-visible-20260814\\size-map.png",
+                        "D:\\SuperExplorer\\openspec\\changes\\independent-cache-max-editors\\evidence\\release-partial-visible-20260814\\details-partial.png"
+                    ]
+}
