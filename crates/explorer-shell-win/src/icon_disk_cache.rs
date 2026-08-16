@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         OnceLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::SystemTime,
 };
@@ -28,8 +28,10 @@ use windows::{
 };
 
 const MAGIC: &[u8; 8] = b"RGXBC7C1";
-const SCHEMA_VERSION: u16 = 5;
-const HEADER_LEN: usize = 8 + 2 + 8 + 2 + 2 + 4 + 1 + 8 + 4;
+const SCHEMA_VERSION: u16 = 6;
+const LITTLE_ENDIAN_MARKER: u8 = 1;
+const BC7_UNORM_FORMAT: u8 = 7;
+const HEADER_LEN: usize = 8 + 2 + 1 + 1 + 1 + 1 + 8 + (5 * 4) + 8 + 4;
 const MAX_ENTRY_BYTES: u64 = 16 * 1024 * 1024;
 const DEFAULT_MAX_ENTRIES: usize = 4_096;
 const DEFAULT_MAX_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
@@ -42,6 +44,16 @@ static ICON_REJECTIONS: AtomicU64 = AtomicU64::new(0);
 static THUMBNAIL_HITS: AtomicU64 = AtomicU64::new(0);
 static THUMBNAIL_MISSES: AtomicU64 = AtomicU64::new(0);
 static THUMBNAIL_REJECTIONS: AtomicU64 = AtomicU64::new(0);
+static ICON_BC7_ENABLED: AtomicBool = AtomicBool::new(false);
+static THUMBNAIL_BC7_ENABLED: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+pub(crate) static BC7_GATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ShellBc7RuntimeGatesV1 {
+    pub icon_enabled: bool,
+    pub thumbnail_enabled: bool,
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ShellDiskCacheStatsV1 {
@@ -53,7 +65,7 @@ pub struct ShellDiskCacheStatsV1 {
     pub rejections: u64,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct ShellIconDiskCache {
     root: Option<PathBuf>,
     max_entries: usize,
@@ -68,7 +80,7 @@ pub(crate) enum DiskCacheEncoding {
 }
 
 pub(crate) enum DiskCacheLoad {
-    Hit(ShellIconPayload),
+    Hit(Box<ShellIconPayload>),
     Miss,
     Rejected,
 }
@@ -91,6 +103,7 @@ impl Default for ShellIconDiskCache {
 }
 
 impl ShellIconDiskCache {
+    #[cfg(test)]
     pub(crate) fn with_root(root: PathBuf) -> Self {
         Self {
             root: Some(root),
@@ -130,6 +143,16 @@ impl ShellIconDiskCache {
         }
     }
 
+    #[cfg(test)]
+    fn with_thumbnail_limits(root: PathBuf, max_entries: usize, max_total_bytes: u64) -> Self {
+        Self {
+            root: Some(root),
+            max_entries: max_entries.max(1),
+            max_total_bytes: max_total_bytes.max(HEADER_LEN as u64 + 4),
+            encoding: DiskCacheEncoding::LossyQuality80,
+        }
+    }
+
     pub(crate) fn load_outcome(&self, key: &ShellIconKey) -> DiskCacheLoad {
         let Some(path) = self.entry_path(key) else {
             self.counters().1.fetch_add(1, Ordering::Relaxed);
@@ -138,7 +161,7 @@ impl ShellIconDiskCache {
         match self.read_entry(&path, key) {
             Ok(Some(payload)) => {
                 self.counters().0.fetch_add(1, Ordering::Relaxed);
-                DiskCacheLoad::Hit(payload)
+                DiskCacheLoad::Hit(Box::new(payload))
             }
             Ok(None) => {
                 self.counters().1.fetch_add(1, Ordering::Relaxed);
@@ -195,15 +218,25 @@ impl ShellIconDiskCache {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn load(&self, key: &ShellIconKey) -> Option<ShellIconPayload> {
         match self.load_outcome(key) {
-            DiskCacheLoad::Hit(payload) => Some(payload),
+            DiskCacheLoad::Hit(payload) => Some(*payload),
             DiskCacheLoad::Miss | DiskCacheLoad::Rejected => None,
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn store(&self, payload: &ShellIconPayload) -> bool {
-        match self.write_entry(payload) {
+        self.store_if(payload, || true)
+    }
+
+    pub(crate) fn store_if(
+        &self,
+        payload: &ShellIconPayload,
+        should_publish: impl FnOnce() -> bool,
+    ) -> bool {
+        match self.write_entry_if(payload, should_publish) {
             Ok(()) => true,
             Err(error) => {
                 tracing::debug!(?error, "Shell icon disk cache write was skipped");
@@ -247,20 +280,28 @@ impl ShellIconDiskCache {
         }
         let mut cursor = 8;
         let schema = take_u16(&bytes, &mut cursor)?;
+        let endianness = take_u8(&bytes, &mut cursor)?;
+        let content_kind = take_u8(&bytes, &mut cursor)?;
+        let format = take_u8(&bytes, &mut cursor)?;
+        let reserved = take_u8(&bytes, &mut cursor)?;
         let digest = take_u64(&bytes, &mut cursor)?;
-        let width = take_u16(&bytes, &mut cursor)?;
-        let height = take_u16(&bytes, &mut cursor)?;
-        let stride = take_u32(&bytes, &mut cursor)?;
-        let pixel_format = take_u8(&bytes, &mut cursor)?;
+        let width = take_u32(&bytes, &mut cursor)?;
+        let height = take_u32(&bytes, &mut cursor)?;
+        let padded_width = take_u32(&bytes, &mut cursor)?;
+        let padded_height = take_u32(&bytes, &mut cursor)?;
+        let row_pitch = take_u32(&bytes, &mut cursor)?;
         let payload_len = take_u64(&bytes, &mut cursor)?;
         let checksum = take_u32(&bytes, &mut cursor)?;
         if schema != SCHEMA_VERSION
+            || endianness != LITTLE_ENDIAN_MARKER
+            || content_kind != self.content_kind() as u8
+            || format != BC7_UNORM_FORMAT
+            || reserved != 0
             || digest != key_digest(key)
-            || pixel_format != self.content_kind() as u8
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "schema, key digest, or pixel format mismatch",
+                "schema, endianness, kind, format, or invalidation identity mismatch",
             ));
         }
         let payload_len = usize::try_from(payload_len)
@@ -272,8 +313,12 @@ impl ShellIconDiskCache {
                 "payload length, stride, or checksum mismatch",
             ));
         }
-        let layout = bc7_codec::checked_layout(u32::from(width), u32::from(height))?;
-        if stride != layout.row_pitch || payload_len != layout.payload_bytes {
+        let layout = bc7_codec::checked_layout(width, height)?;
+        if padded_width != layout.padded_width
+            || padded_height != layout.padded_height
+            || row_pitch != layout.row_pitch
+            || payload_len != layout.payload_bytes
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "BC7 block layout mismatch",
@@ -286,8 +331,8 @@ impl ShellIconDiskCache {
                     Bc7ContentKind::Icon => explorer_model::CompressedRasterKind::Icon,
                     Bc7ContentKind::Thumbnail => explorer_model::CompressedRasterKind::Thumbnail,
                 },
-                width: u32::from(width),
-                height: u32::from(height),
+                width,
+                height,
                 padded_width: layout.padded_width,
                 padded_height: layout.padded_height,
                 row_pitch: layout.row_pitch,
@@ -299,7 +344,25 @@ impl ShellIconDiskCache {
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error:?}")))
     }
 
-    fn write_entry(&self, payload: &ShellIconPayload) -> io::Result<()> {
+    fn write_entry_if(
+        &self,
+        payload: &ShellIconPayload,
+        should_publish: impl FnOnce() -> bool,
+    ) -> io::Result<()> {
+        self.write_entry_impl(payload, false, should_publish)
+    }
+
+    #[cfg(test)]
+    fn write_entry_interrupted_before_publish(&self, payload: &ShellIconPayload) -> io::Result<()> {
+        self.write_entry_impl(payload, true, || true)
+    }
+
+    fn write_entry_impl(
+        &self,
+        payload: &ShellIconPayload,
+        interrupt_before_publish: bool,
+        should_publish: impl FnOnce() -> bool,
+    ) -> io::Result<()> {
         let Some(path) = self.entry_path(&payload.key) else {
             return Ok(());
         };
@@ -319,9 +382,13 @@ impl ShellIconDiskCache {
         let result = (|| {
             file.write_all(MAGIC)?;
             file.write_all(&SCHEMA_VERSION.to_le_bytes())?;
+            file.write_all(&[
+                LITTLE_ENDIAN_MARKER,
+                self.content_kind() as u8,
+                BC7_UNORM_FORMAT,
+                0,
+            ])?;
             file.write_all(&key_digest(&payload.key).to_le_bytes())?;
-            file.write_all(&payload.width.to_le_bytes())?;
-            file.write_all(&payload.height.to_le_bytes())?;
             let encoded = if let Some(raster) = &payload.bc7 {
                 bc7_codec::Bc7Raster {
                     kind: self.content_kind(),
@@ -342,8 +409,11 @@ impl ShellIconDiskCache {
                 )?
             };
             encoded.validate()?;
+            file.write_all(&encoded.width.to_le_bytes())?;
+            file.write_all(&encoded.height.to_le_bytes())?;
+            file.write_all(&encoded.padded_width.to_le_bytes())?;
+            file.write_all(&encoded.padded_height.to_le_bytes())?;
             file.write_all(&encoded.row_pitch.to_le_bytes())?;
-            file.write_all(&[self.content_kind() as u8])?;
             let payload_len = u64::try_from(encoded.blocks.len()).map_err(|_| {
                 io::Error::new(io::ErrorKind::InvalidInput, "icon payload is too large")
             })?;
@@ -352,6 +422,18 @@ impl ShellIconDiskCache {
             file.write_all(&encoded.blocks)?;
             file.sync_all()?;
             drop(file);
+            if interrupt_before_publish {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "injected interruption before atomic publish",
+                ));
+            }
+            if !should_publish() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "BC7 publication was cancelled or superseded",
+                ));
+            }
             match fs::rename(&temporary, &path) {
                 Ok(()) => Ok(()),
                 Err(_error) if path.is_file() => Ok(()),
@@ -427,6 +509,29 @@ pub fn set_shell_disk_cache_limits(icon_bytes: u64, thumbnail_bytes: u64) {
     if let Some(root) = root {
         ShellIconDiskCache::with_root_lossy_thumbnail(root).cleanup(Path::new(""));
     }
+}
+
+/// Applies the independently persisted BC7 rollout gates. Both gates are deny-by-default and
+/// changing either one never mutates its sibling. Callers that observe a disabled gate use the
+/// provider-backed RGBA path and do not admit new compressed entries.
+pub fn set_shell_bc7_runtime_gates(icon_enabled: bool, thumbnail_enabled: bool) {
+    ICON_BC7_ENABLED.store(icon_enabled, Ordering::Release);
+    THUMBNAIL_BC7_ENABLED.store(thumbnail_enabled, Ordering::Release);
+}
+
+pub fn shell_bc7_runtime_gates() -> ShellBc7RuntimeGatesV1 {
+    ShellBc7RuntimeGatesV1 {
+        icon_enabled: ICON_BC7_ENABLED.load(Ordering::Acquire),
+        thumbnail_enabled: THUMBNAIL_BC7_ENABLED.load(Ordering::Acquire),
+    }
+}
+
+pub(crate) fn icon_bc7_enabled() -> bool {
+    ICON_BC7_ENABLED.load(Ordering::Acquire)
+}
+
+pub(crate) fn thumbnail_bc7_enabled() -> bool {
+    THUMBNAIL_BC7_ENABLED.load(Ordering::Acquire)
 }
 
 pub fn icon_disk_cache_stats() -> ShellDiskCacheStatsV1 {
@@ -579,7 +684,12 @@ fn take<const N: usize>(bytes: &[u8], cursor: &mut usize) -> io::Result<[u8; N]>
 mod tests {
     use explorer_model::{LocationDescriptor, ShellIconKey, ShellIconPayload, ShellIconTheme};
 
-    use super::{ShellIconDiskCache, key_digest_for_build};
+    use super::{
+        ShellBc7RuntimeGatesV1, ShellIconDiskCache, key_digest_for_build,
+        set_shell_bc7_runtime_gates, shell_bc7_runtime_gates,
+    };
+
+    type Corruption = (&'static str, Box<dyn Fn(&mut Vec<u8>)>);
 
     fn key(generation: u64) -> ShellIconKey {
         ShellIconKey {
@@ -629,7 +739,7 @@ mod tests {
             .expect("valid entry")
             .path();
         let mut bytes = std::fs::read(&entry).expect("read entry");
-        let pixel_format_offset = 8 + 2 + 8 + 2 + 2 + 4;
+        let pixel_format_offset = 8 + 2 + 1 + 1;
         bytes[pixel_format_offset] = 0xff;
         std::fs::write(&entry, bytes).expect("replace format field");
         assert!(cache.load(&key(7)).is_none());
@@ -652,6 +762,91 @@ mod tests {
         std::fs::write(&entry, b"corrupt").expect("replace entry");
         assert!(cache.load(&key(3)).is_none());
         assert!(!entry.exists());
+    }
+
+    #[test]
+    fn oversized_and_symlink_entries_are_rejected_without_following_outside_targets() {
+        let root = tempfile::tempdir().expect("temp cache");
+        let cache = ShellIconDiskCache::with_root(root.path().to_path_buf());
+        let oversized_key = key(61);
+        let oversized = cache.entry_path(&oversized_key).expect("entry path");
+        std::fs::File::create(&oversized)
+            .and_then(|file| file.set_len(super::MAX_ENTRY_BYTES + 1))
+            .expect("oversized fixture");
+        assert!(matches!(
+            cache.load_outcome(&oversized_key),
+            super::DiskCacheLoad::Rejected
+        ));
+        assert!(!oversized.exists());
+
+        let linked_key = key(62);
+        let linked = cache.entry_path(&linked_key).expect("entry path");
+        let outside = root.path().with_extension("outside-target");
+        std::fs::create_dir(&outside).expect("outside fixture");
+        let sentinel = outside.join("sentinel.txt");
+        std::fs::write(&sentinel, b"outside must remain untouched").expect("outside fixture");
+        let junction = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&linked)
+            .arg(&outside)
+            .output()
+            .expect("junction command");
+        assert!(
+            junction.status.success(),
+            "junction fixture failed: {}",
+            String::from_utf8_lossy(&junction.stderr)
+        );
+        assert!(matches!(
+            cache.load_outcome(&linked_key),
+            super::DiskCacheLoad::Rejected
+        ));
+        assert_eq!(
+            std::fs::read(&sentinel).expect("outside remains"),
+            b"outside must remain untouched"
+        );
+        if linked.exists() {
+            std::fs::remove_dir(&linked).expect("remove junction fixture");
+        }
+        std::fs::remove_dir_all(outside).expect("remove outside fixture");
+    }
+
+    #[test]
+    fn container_rejects_every_bounded_header_and_payload_corruption_class() {
+        let root = tempfile::tempdir().expect("temp cache");
+        let cache = ShellIconDiskCache::with_root(root.path().to_path_buf());
+        let cache_key = key(70);
+        let payload =
+            ShellIconPayload::new(cache_key.clone(), 5, 7, 20, vec![0x80; 5 * 7 * 4], None)
+                .expect("valid payload");
+        assert!(cache.store(&payload));
+        let entry = cache.entry_path(&cache_key).expect("cache path");
+        let valid = std::fs::read(&entry).expect("valid container");
+
+        let corruptions: [Corruption; 13] = [
+            ("magic", Box::new(|bytes| bytes[0] ^= 0xff)),
+            (
+                "schema",
+                Box::new(|bytes| bytes[8..10].copy_from_slice(&0_u16.to_le_bytes())),
+            ),
+            ("endianness", Box::new(|bytes| bytes[10] = 2)),
+            ("kind", Box::new(|bytes| bytes[11] = 2)),
+            ("format", Box::new(|bytes| bytes[12] = 0xff)),
+            ("reserved", Box::new(|bytes| bytes[13] = 1)),
+            ("identity", Box::new(|bytes| bytes[14] ^= 1)),
+            ("zero-width", Box::new(|bytes| bytes[22..26].fill(0))),
+            ("padded-width", Box::new(|bytes| bytes[30..34].fill(0))),
+            ("pitch", Box::new(|bytes| bytes[38..42].fill(0))),
+            ("length", Box::new(|bytes| bytes[42..50].fill(0))),
+            ("checksum", Box::new(|bytes| bytes[50] ^= 1)),
+            ("trailing-data", Box::new(|bytes| bytes.push(0))),
+        ];
+        for (name, corrupt) in corruptions {
+            let mut bytes = valid.clone();
+            corrupt(&mut bytes);
+            std::fs::write(&entry, bytes).expect("write corrupt fixture");
+            assert!(cache.load(&cache_key).is_none(), "accepted {name}");
+            assert!(!entry.exists(), "rejected {name} must be removed");
+        }
     }
 
     #[test]
@@ -831,5 +1026,129 @@ mod tests {
         std::fs::write(&entry, bytes).expect("write old schema");
         assert!(cache.load(&key(21)).is_none());
         assert!(!entry.exists());
+    }
+
+    #[test]
+    fn interrupted_write_removes_temporary_file_without_publishing_an_entry() {
+        let root = tempfile::tempdir().expect("temp cache");
+        let cache = ShellIconDiskCache::with_root(root.path().to_path_buf());
+        let payload =
+            ShellIconPayload::new(key(121), 1, 1, 4, vec![1, 2, 3, 4], None).expect("payload");
+
+        let error = cache
+            .write_entry_interrupted_before_publish(&payload)
+            .expect_err("injected interruption must fail the write");
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        assert!(cache.load(&key(121)).is_none());
+        assert_eq!(
+            std::fs::read_dir(root.path())
+                .expect("read cache")
+                .filter_map(Result::ok)
+                .count(),
+            0,
+            "failed publication must clean its same-directory temporary file"
+        );
+    }
+
+    #[test]
+    fn readers_racing_atomic_publication_observe_only_miss_or_complete_hit() {
+        let root = tempfile::tempdir().expect("temp cache");
+        let cache = std::sync::Arc::new(ShellIconDiskCache::with_root(root.path().to_path_buf()));
+        let cache_key = key(122);
+        let payload = std::sync::Arc::new(
+            ShellIconPayload::new(cache_key.clone(), 4, 4, 16, vec![0x7f; 64], None)
+                .expect("payload"),
+        );
+        let start = std::sync::Arc::new(std::sync::Barrier::new(5));
+        let writer = {
+            let cache = std::sync::Arc::clone(&cache);
+            let payload = std::sync::Arc::clone(&payload);
+            let start = std::sync::Arc::clone(&start);
+            std::thread::spawn(move || {
+                start.wait();
+                assert!(cache.store(&payload));
+            })
+        };
+        let readers = (0..4)
+            .map(|_| {
+                let cache = std::sync::Arc::clone(&cache);
+                let cache_key = cache_key.clone();
+                let start = std::sync::Arc::clone(&start);
+                std::thread::spawn(move || {
+                    start.wait();
+                    for _ in 0..64 {
+                        assert!(!matches!(
+                            cache.load_outcome(&cache_key),
+                            super::DiskCacheLoad::Rejected
+                        ));
+                        std::thread::yield_now();
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        writer.join().expect("writer");
+        for reader in readers {
+            reader.join().expect("reader");
+        }
+        assert!(cache.load(&cache_key).is_some());
+    }
+
+    #[test]
+    fn icon_and_thumbnail_quota_cleanup_is_isolated_by_root_and_kind() {
+        let icon_root = tempfile::tempdir().expect("icon cache");
+        let thumbnail_root = tempfile::tempdir().expect("thumbnail cache");
+        let icons = ShellIconDiskCache::with_limits(icon_root.path().to_path_buf(), 1, 512);
+        let thumbnails = ShellIconDiskCache::with_thumbnail_limits(
+            thumbnail_root.path().to_path_buf(),
+            2,
+            1_024,
+        );
+        for generation in 130..=132 {
+            let payload = ShellIconPayload::new(
+                key(generation),
+                1,
+                1,
+                4,
+                vec![u8::try_from(generation).unwrap(); 4],
+                None,
+            )
+            .expect("payload");
+            assert!(icons.store(&payload));
+            assert!(thumbnails.store(&payload));
+        }
+        assert_eq!(
+            std::fs::read_dir(icon_root.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .count(),
+            1
+        );
+        assert_eq!(
+            std::fs::read_dir(thumbnail_root.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .count(),
+            2
+        );
+        assert!(thumbnails.load(&key(132)).is_some());
+        assert!(icons.load(&key(132)).is_some());
+    }
+
+    #[test]
+    fn runtime_gates_are_independent_and_deny_by_default_after_reset() {
+        let _guard = super::BC7_GATE_TEST_LOCK.lock().expect("gate test lock");
+        set_shell_bc7_runtime_gates(false, false);
+        assert_eq!(shell_bc7_runtime_gates(), ShellBc7RuntimeGatesV1::default());
+
+        set_shell_bc7_runtime_gates(true, false);
+        let icon_only = shell_bc7_runtime_gates();
+        assert!(icon_only.icon_enabled);
+        assert!(!icon_only.thumbnail_enabled);
+
+        set_shell_bc7_runtime_gates(false, true);
+        let thumbnail_only = shell_bc7_runtime_gates();
+        assert!(!thumbnail_only.icon_enabled);
+        assert!(thumbnail_only.thumbnail_enabled);
+        set_shell_bc7_runtime_gates(false, false);
     }
 }

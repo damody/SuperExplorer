@@ -89,26 +89,16 @@ impl ShellIconCache {
 
     pub(crate) fn load(&mut self, key: &ShellIconKey) -> Result<ShellIconPayload, ExplorerError> {
         self.clock = self.clock.wrapping_add(1);
-        if let Some(entry) = self.entries.get_mut(key) {
+        let bc7_enabled = crate::icon_disk_cache::icon_bc7_enabled();
+        if let Some(entry) = self.entries.get_mut(key)
+            && (!bc7_enabled || entry.payload.bc7.is_some())
+        {
             entry.last_used = self.clock;
             self.stats.memory_hits = self.stats.memory_hits.saturating_add(1);
             tracing::debug!(cache_source = "memory", "Shell icon cache hit");
             return Ok(entry.payload.clone());
         }
-        match self.disk.load_outcome(key) {
-            crate::icon_disk_cache::DiskCacheLoad::Hit(payload) => {
-                self.stats.disk_hits = self.stats.disk_hits.saturating_add(1);
-                tracing::debug!(cache_source = "bc7-disk", "Shell icon cache hit");
-                self.insert(payload.clone());
-                return Ok(payload);
-            }
-            crate::icon_disk_cache::DiskCacheLoad::Miss => {
-                self.stats.disk_misses = self.stats.disk_misses.saturating_add(1);
-            }
-            crate::icon_disk_cache::DiskCacheLoad::Rejected => {
-                self.stats.disk_corrupt = self.stats.disk_corrupt.saturating_add(1);
-            }
-        }
+        self.entries.remove(key);
         // Filesystem overlay state (including TortoiseGit) can change while the path and the
         // persisted cache key remain stable across process launches. Ask the live Shell first
         // for existing paths, then refresh the disk entry. The persisted pixels remain a useful
@@ -117,11 +107,15 @@ impl ShellIconCache {
             self.stats.shell_loads = self.stats.shell_loads.saturating_add(1);
             match load(key) {
                 Ok(payload) => {
-                    if !self.disk.store(&payload) {
-                        self.stats.disk_write_failures =
-                            self.stats.disk_write_failures.saturating_add(1);
+                    if crate::icon_disk_cache::icon_bc7_enabled() {
+                        let _ = crate::bc7_pipeline::schedule(
+                            crate::bc7_codec::Bc7ContentKind::Icon,
+                            payload.clone(),
+                            self.disk.clone(),
+                            None,
+                            None,
+                        );
                     }
-                    let payload = self.disk.load(key).unwrap_or(payload);
                     self.insert(payload.clone());
                     tracing::debug!(cache_source = "shell-refresh", "Shell icon cache refreshed");
                     return Ok(payload);
@@ -131,13 +125,37 @@ impl ShellIconCache {
                 }
             }
         }
+        if bc7_enabled {
+            match self.disk.load_outcome(key) {
+                crate::icon_disk_cache::DiskCacheLoad::Hit(payload)
+                    if crate::icon_disk_cache::icon_bc7_enabled() =>
+                {
+                    self.stats.disk_hits = self.stats.disk_hits.saturating_add(1);
+                    tracing::debug!(cache_source = "bc7-disk", "Shell icon cache hit");
+                    self.insert((*payload).clone());
+                    return Ok(*payload);
+                }
+                crate::icon_disk_cache::DiskCacheLoad::Hit(_)
+                | crate::icon_disk_cache::DiskCacheLoad::Miss => {
+                    self.stats.disk_misses = self.stats.disk_misses.saturating_add(1);
+                }
+                crate::icon_disk_cache::DiskCacheLoad::Rejected => {
+                    self.stats.disk_corrupt = self.stats.disk_corrupt.saturating_add(1);
+                }
+            }
+        }
         tracing::debug!(cache_source = "shell", "Shell icon cache miss");
         self.stats.shell_loads = self.stats.shell_loads.saturating_add(1);
         let payload = load(key)?;
-        if !self.disk.store(&payload) {
-            self.stats.disk_write_failures = self.stats.disk_write_failures.saturating_add(1);
+        if crate::icon_disk_cache::icon_bc7_enabled() {
+            let _ = crate::bc7_pipeline::schedule(
+                crate::bc7_codec::Bc7ContentKind::Icon,
+                payload.clone(),
+                self.disk.clone(),
+                None,
+                None,
+            );
         }
-        let payload = self.disk.load(key).unwrap_or(payload);
         self.insert(payload.clone());
         tracing::debug!(
             memory_hits = self.stats.memory_hits,
@@ -536,6 +554,7 @@ mod tests {
         let Some(root) = std::env::var_os(CROSS_PROCESS_CACHE_ROOT) else {
             return;
         };
+        crate::icon_disk_cache::set_shell_bc7_runtime_gates(true, false);
         let phase = std::env::var(CROSS_PROCESS_CACHE_PHASE).expect("helper phase");
         let disk = crate::icon_disk_cache::ShellIconDiskCache::with_root(root.clone().into());
         let mut cache = ShellIconCache::with_disk(2, disk);
@@ -562,6 +581,21 @@ mod tests {
                 (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
             });
         let stats = cache.stats();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline
+            && !std::fs::read_dir(&root)
+                .expect("read persistent cache")
+                .any(|entry| {
+                    entry.is_ok_and(|entry| {
+                        entry
+                            .path()
+                            .extension()
+                            .is_some_and(|ext| ext == "bc7cache")
+                    })
+                })
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         std::fs::write(
             std::path::PathBuf::from(root).join(format!("{phase}.result")),
             format!(
@@ -617,9 +651,12 @@ mod tests {
             std::fs::read_dir(root.path())
                 .expect("read persistent cache")
                 .any(|entry| entry.is_ok_and(|entry| {
-                    entry.path().extension().is_some_and(|ext| ext == "rgba")
+                    entry
+                        .path()
+                        .extension()
+                        .is_some_and(|ext| ext == "bc7cache")
                 })),
-            "live refresh must still persist an exact fallback for later launches"
+            "live refresh must still persist a BC7 fallback for later launches"
         );
     }
 
@@ -687,6 +724,10 @@ mod tests {
 
     #[test]
     fn warm_disk_payload_becomes_a_memory_hit_with_non_sensitive_counters() {
+        let _guard = crate::icon_disk_cache::BC7_GATE_TEST_LOCK
+            .lock()
+            .expect("gate test lock");
+        crate::icon_disk_cache::set_shell_bc7_runtime_gates(true, false);
         let root = tempfile::tempdir().expect("temp cache");
         let disk = crate::icon_disk_cache::ShellIconDiskCache::with_root(root.path().to_path_buf());
         let key = ShellIconKey {
@@ -720,6 +761,7 @@ mod tests {
                 ..Default::default()
             }
         );
+        crate::icon_disk_cache::set_shell_bc7_runtime_gates(false, false);
     }
 
     #[test]

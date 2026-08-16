@@ -40,10 +40,10 @@ pub use cache_budget::{
     cache_budget_descriptor,
 };
 pub use cache_telemetry::{
-    CacheTelemetryAvailabilityV1, CacheTelemetryCategoryV1, CacheTelemetryCountersV1,
-    CacheTelemetryEntryV1, CacheTelemetryIdV1, CacheTelemetrySnapshotErrorV1,
-    CacheTelemetrySnapshotV1, CacheTelemetrySubtotalV1, CacheTelemetryValueV1,
-    MAX_CACHE_TELEMETRY_ENTRIES,
+    Bc7PipelineTelemetryV1, CacheTelemetryAvailabilityV1, CacheTelemetryCategoryV1,
+    CacheTelemetryCountersV1, CacheTelemetryEntryV1, CacheTelemetryIdV1,
+    CacheTelemetrySnapshotErrorV1, CacheTelemetrySnapshotV1, CacheTelemetrySubtotalV1,
+    CacheTelemetryValueV1, MAX_CACHE_TELEMETRY_ENTRIES,
 };
 pub use context_menu::{
     ContextMenuHostCommand, ContextMenuInvocationProfile, ContextMenuOutcome, ContextMenuRequest,

@@ -49,19 +49,25 @@ pub const CACHE_BUDGET_DESCRIPTORS_V1: [CacheBudgetDescriptorV1; 15] = [
     // MiB rows for descriptor reuse.
     descriptor(
         CacheBudgetIdV1::FolderSizeCacheTtlSeconds,
-        DEFAULT_FOLDER_SIZE_CACHE_TTL_SECONDS as u32,
+        DEFAULT_FOLDER_SIZE_CACHE_TTL_SECONDS,
         0,
-        FOLDER_SIZE_CACHE_TTL_MAX_SECONDS as u32,
+        FOLDER_SIZE_CACHE_TTL_MAX_SECONDS,
     ),
 ];
 
 /// Default folder-size host cache reuse window in seconds.
-pub const DEFAULT_FOLDER_SIZE_CACHE_TTL_SECONDS: u64 = 60;
+pub const DEFAULT_FOLDER_SIZE_CACHE_TTL_SECONDS: u32 = 60;
 /// Upper bound for the folder-size host cache reuse window in seconds.
-pub const FOLDER_SIZE_CACHE_TTL_MAX_SECONDS: u64 = 3_600;
+pub const FOLDER_SIZE_CACHE_TTL_MAX_SECONDS: u32 = 3_600;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CacheBudgetSettingsV1 {
+    /// Independent rollout gate for Shell icon BC7. This remains deny-by-default until
+    /// the icon quality and performance gates have immutable passing evidence.
+    pub icon_bc7_enabled: bool,
+    /// Independent rollout gate for Shell thumbnail BC7. This remains deny-by-default until
+    /// the thumbnail quality and performance gates have immutable passing evidence.
+    pub thumbnail_bc7_enabled: bool,
     pub icon_memory_mb: u32,
     pub base_icon_memory_mb: u32,
     pub thumbnail_memory_mb: u32,
@@ -83,6 +89,8 @@ pub struct CacheBudgetSettingsV1 {
 impl Default for CacheBudgetSettingsV1 {
     fn default() -> Self {
         Self {
+            icon_bc7_enabled: false,
+            thumbnail_bc7_enabled: false,
             icon_memory_mb: 24,
             base_icon_memory_mb: 8,
             thumbnail_memory_mb: 128,
@@ -97,7 +105,7 @@ impl Default for CacheBudgetSettingsV1 {
             mft_file_data_mb: 256,
             mft_aggregates_mb: 512,
             mft_lru_mb: 512,
-            folder_size_cache_ttl_seconds: DEFAULT_FOLDER_SIZE_CACHE_TTL_SECONDS as u32,
+            folder_size_cache_ttl_seconds: DEFAULT_FOLDER_SIZE_CACHE_TTL_SECONDS,
         }
     }
 }
@@ -299,8 +307,8 @@ mod tests {
         assert!(stops.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(stops.contains(&24));
         assert_eq!(stops.last(), Some(&1_024));
-        assert_eq!(descriptor.logarithmic_fraction(8), 0.0);
-        assert_eq!(descriptor.logarithmic_fraction(1_024), 1.0);
+        assert!(descriptor.logarithmic_fraction(8).abs() <= f32::EPSILON);
+        assert!((descriptor.logarithmic_fraction(1_024) - 1.0).abs() <= f32::EPSILON);
     }
 
     #[test]
@@ -324,7 +332,7 @@ mod tests {
         let defaults = CacheBudgetSettingsV1::default().normalized();
         assert_eq!(
             defaults.folder_size_cache_ttl_seconds,
-            DEFAULT_FOLDER_SIZE_CACHE_TTL_SECONDS as u32
+            DEFAULT_FOLDER_SIZE_CACHE_TTL_SECONDS
         );
         let mut settings = CacheBudgetSettingsV1::default();
         settings.set(CacheBudgetIdV1::FolderSizeCacheTtlSeconds, u32::MAX);
@@ -332,5 +340,28 @@ mod tests {
             settings.get(CacheBudgetIdV1::FolderSizeCacheTtlSeconds),
             3_600
         );
+    }
+
+    #[test]
+    fn bc7_rollout_gates_are_independent_and_deny_by_default() {
+        let defaults = CacheBudgetSettingsV1::default();
+        assert!(!defaults.icon_bc7_enabled);
+        assert!(!defaults.thumbnail_bc7_enabled);
+
+        let icon_only = CacheBudgetSettingsV1 {
+            icon_bc7_enabled: true,
+            ..defaults
+        }
+        .normalized();
+        assert!(icon_only.icon_bc7_enabled);
+        assert!(!icon_only.thumbnail_bc7_enabled);
+
+        let thumbnail_only = CacheBudgetSettingsV1 {
+            thumbnail_bc7_enabled: true,
+            ..defaults
+        }
+        .normalized();
+        assert!(!thumbnail_only.icon_bc7_enabled);
+        assert!(thumbnail_only.thumbnail_bc7_enabled);
     }
 }
