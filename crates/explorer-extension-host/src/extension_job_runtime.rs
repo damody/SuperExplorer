@@ -5206,6 +5206,319 @@ mod tests {
     }
 
     #[test]
+    fn lock_owner_service_invokes_once_for_the_maximum_item_batch() {
+        let runtime = ExtensionJobRuntimeV1::new(config());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let authority = ExtensionJobAuthorityV1::for_test("lock-owner-max-batch")
+            .with_filesystem_read_for_test()
+            .with_lock_owner_query_for_direct_loader();
+        let mut request =
+            lock_owner_batch_request("lock-owner-max-batch", authority, Arc::clone(&calls));
+        request.items = (0..explorer_extension_api::MAX_LOCK_OWNER_QUERY_ITEMS_V1)
+            .map(|index| HostBatchColumnItemV1 {
+                file_name: RString::from(format!("item-{index}.rs")),
+                source: HostInputStreamSourceV1::from_host_snapshot(vec![1], 1, true).unwrap(),
+                cache_identity: RString::new(),
+                modified_unix_seconds: ROption::RNone,
+                modified_subsec_nanos: 0,
+                source_size: ROption::RNone,
+                lock_owner_resource: Some(PathBuf::from(format!(r"C:\item-{index}.rs"))),
+            })
+            .collect();
+        let ticket = runtime.prepare_batch_column_dispatch(request).unwrap();
+        let items = ticket
+            .context
+            .items
+            .iter()
+            .map(|item| item.item)
+            .collect::<Vec<_>>();
+        let outcome = ticket
+            .context
+            .lock_owner_query
+            .clone()
+            .into_option()
+            .unwrap()
+            .query(LockOwnerQueryRequestV1 {
+                items: items.into(),
+                item_generation: 1,
+                location_generation: 1,
+                deadline_millis: 100,
+                reserved: 0,
+            });
+        assert_eq!(outcome.status, LockOwnerQueryStatusV1::EMPTY);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn lock_owner_callback_observes_cancellation_while_running() {
+        let runtime = ExtensionJobRuntimeV1::new(config());
+        let authority = ExtensionJobAuthorityV1::for_test("lock-owner-live-cancel")
+            .with_filesystem_read_for_test()
+            .with_lock_owner_query_for_direct_loader();
+        let mut request = lock_owner_batch_request(
+            "lock-owner-live-cancel",
+            authority,
+            Arc::new(AtomicUsize::new(0)),
+        );
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+        request.lock_owner_query = Some(HostLockOwnerQueryServiceV1::new(move |_, control| {
+            let _ = started_tx.send(());
+            while !control.is_cancelled() {
+                thread::yield_now();
+            }
+            (LockOwnerQueryStatusV1::CANCELLED, Vec::new())
+        }));
+        let ticket = runtime.prepare_batch_column_dispatch(request).unwrap();
+        let item = ticket.context.items[0].item;
+        let service = ticket
+            .context
+            .lock_owner_query
+            .clone()
+            .into_option()
+            .unwrap();
+        thread::scope(|scope| {
+            let query = scope.spawn(move || {
+                service.query(LockOwnerQueryRequestV1 {
+                    items: RVec::from(vec![item]),
+                    item_generation: 1,
+                    location_generation: 1,
+                    deadline_millis: 5_000,
+                    reserved: 0,
+                })
+            });
+            started_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("callback must start");
+            runtime.revoke_feature_generation(
+                "lock-owner-live-cancel",
+                "test-digest",
+                "test-feature",
+                1,
+            );
+            let outcome = query.join().expect("query thread");
+            assert_eq!(outcome.status, LockOwnerQueryStatusV1::CANCELLED);
+            assert!(outcome.owners.is_empty());
+        });
+    }
+
+    #[test]
+    fn lock_owner_absolute_deadline_is_shared_and_decreases_across_items_and_sources() {
+        let runtime = ExtensionJobRuntimeV1::new(config());
+        let authority = ExtensionJobAuthorityV1::for_test("lock-owner-shared-deadline")
+            .with_filesystem_read_for_test()
+            .with_lock_owner_query_for_direct_loader();
+        let mut request = lock_owner_batch_request(
+            "lock-owner-shared-deadline",
+            authority,
+            Arc::new(AtomicUsize::new(0)),
+        );
+        request.items.push(HostBatchColumnItemV1 {
+            file_name: RString::from("second.rs"),
+            source: HostInputStreamSourceV1::from_host_snapshot(vec![2], 1, true).unwrap(),
+            cache_identity: RString::new(),
+            modified_unix_seconds: ROption::RNone,
+            modified_subsec_nanos: 0,
+            source_size: ROption::RNone,
+            lock_owner_resource: Some(PathBuf::from(r"C:\second.rs")),
+        });
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let callback_observations = Arc::clone(&observations);
+        request.lock_owner_query = Some(HostLockOwnerQueryServiceV1::new(
+            move |resources, control| {
+                let deadline = control.deadline().expect("finite public deadline");
+                for resource in resources {
+                    for source in ["current-directory", "restart-manager"] {
+                        callback_observations.lock().unwrap().push((
+                            resource.item,
+                            source,
+                            deadline,
+                            deadline.saturating_duration_since(Instant::now()),
+                        ));
+                        thread::sleep(Duration::from_millis(2));
+                    }
+                }
+                (LockOwnerQueryStatusV1::EMPTY, Vec::new())
+            },
+        ));
+        let ticket = runtime.prepare_batch_column_dispatch(request).unwrap();
+        let items = ticket
+            .context
+            .items
+            .iter()
+            .map(|item| item.item)
+            .collect::<Vec<_>>();
+        let outcome = ticket
+            .context
+            .lock_owner_query
+            .clone()
+            .into_option()
+            .unwrap()
+            .query(LockOwnerQueryRequestV1 {
+                items: items.into(),
+                item_generation: 1,
+                location_generation: 1,
+                deadline_millis: 250,
+                reserved: 0,
+            });
+
+        assert_eq!(outcome.status, LockOwnerQueryStatusV1::EMPTY);
+        let observations = observations.lock().unwrap();
+        assert_eq!(observations.len(), 4);
+        assert!(
+            observations
+                .iter()
+                .all(|observation| observation.2 == observations[0].2),
+            "all item/source work must receive one absolute deadline"
+        );
+        assert!(
+            observations.windows(2).all(|pair| pair[1].3 < pair[0].3),
+            "remaining time must decrease instead of resetting per item or source"
+        );
+    }
+
+    struct LockOwnerPanicDropProbe(Arc<AtomicUsize>);
+
+    impl Drop for LockOwnerPanicDropProbe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn inject_native_reader_panic(drops: Arc<AtomicUsize>) -> ! {
+        let _native_buffer = LockOwnerPanicDropProbe(drops);
+        panic!("injected native lock-owner reader panic");
+    }
+
+    fn inject_composition_panic(drops: Arc<AtomicUsize>) -> ! {
+        let _restart_manager_projection = LockOwnerPanicDropProbe(Arc::clone(&drops));
+        let _current_directory_projection = LockOwnerPanicDropProbe(drops);
+        panic!("injected lock-owner composition panic");
+    }
+
+    #[test]
+    fn lock_owner_native_reader_panic_is_host_error_with_generations_and_cleanup() {
+        let runtime = ExtensionJobRuntimeV1::new(config());
+        let authority = ExtensionJobAuthorityV1::for_test("lock-owner-native-panic")
+            .with_filesystem_read_for_test()
+            .with_lock_owner_query_for_direct_loader();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut request = lock_owner_batch_request(
+            "lock-owner-native-panic",
+            authority,
+            Arc::new(AtomicUsize::new(0)),
+        );
+        let callback_drops = Arc::clone(&drops);
+        request.lock_owner_query = Some(HostLockOwnerQueryServiceV1::new(move |_, _| {
+            inject_native_reader_panic(Arc::clone(&callback_drops))
+        }));
+        let ticket = runtime.prepare_batch_column_dispatch(request).unwrap();
+        let item = ticket.context.items[0].item;
+        let outcome = ticket
+            .context
+            .lock_owner_query
+            .clone()
+            .into_option()
+            .unwrap()
+            .query(LockOwnerQueryRequestV1 {
+                items: RVec::from(vec![item]),
+                item_generation: 1,
+                location_generation: 1,
+                deadline_millis: 100,
+                reserved: 0,
+            });
+        assert_eq!(outcome.status, LockOwnerQueryStatusV1::HOST_ERROR);
+        assert_eq!(
+            (outcome.item_generation, outcome.location_generation),
+            (1, 1)
+        );
+        assert!(outcome.owners.is_empty());
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn lock_owner_composition_panic_is_host_error_with_generations_and_cleanup() {
+        let runtime = ExtensionJobRuntimeV1::new(config());
+        let authority = ExtensionJobAuthorityV1::for_test("lock-owner-composition-panic")
+            .with_filesystem_read_for_test()
+            .with_lock_owner_query_for_direct_loader();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut request = lock_owner_batch_request(
+            "lock-owner-composition-panic",
+            authority,
+            Arc::new(AtomicUsize::new(0)),
+        );
+        let callback_drops = Arc::clone(&drops);
+        request.lock_owner_query = Some(HostLockOwnerQueryServiceV1::new(move |_, _| {
+            inject_composition_panic(Arc::clone(&callback_drops))
+        }));
+        let ticket = runtime.prepare_batch_column_dispatch(request).unwrap();
+        let item = ticket.context.items[0].item;
+        let outcome = ticket
+            .context
+            .lock_owner_query
+            .clone()
+            .into_option()
+            .unwrap()
+            .query(LockOwnerQueryRequestV1 {
+                items: RVec::from(vec![item]),
+                item_generation: 1,
+                location_generation: 1,
+                deadline_millis: 100,
+                reserved: 0,
+            });
+        assert_eq!(outcome.status, LockOwnerQueryStatusV1::HOST_ERROR);
+        assert_eq!(
+            (outcome.item_generation, outcome.location_generation),
+            (1, 1)
+        );
+        assert!(outcome.owners.is_empty());
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn lock_owner_callback_panic_is_host_error_and_service_remains_usable() {
+        let runtime = ExtensionJobRuntimeV1::new(config());
+        let authority = ExtensionJobAuthorityV1::for_test("lock-owner-panic")
+            .with_filesystem_read_for_test()
+            .with_lock_owner_query_for_direct_loader();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut request =
+            lock_owner_batch_request("lock-owner-panic", authority, Arc::new(AtomicUsize::new(0)));
+        let callback_calls = Arc::clone(&calls);
+        request.lock_owner_query = Some(HostLockOwnerQueryServiceV1::new(move |_, _| {
+            if callback_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                panic!("injected lock-owner callback panic");
+            }
+            (LockOwnerQueryStatusV1::EMPTY, Vec::new())
+        }));
+        let ticket = runtime.prepare_batch_column_dispatch(request).unwrap();
+        let item = ticket.context.items[0].item;
+        let service = ticket
+            .context
+            .lock_owner_query
+            .clone()
+            .into_option()
+            .unwrap();
+        let query = || {
+            service.query(LockOwnerQueryRequestV1 {
+                items: RVec::from(vec![item]),
+                item_generation: 1,
+                location_generation: 1,
+                deadline_millis: 100,
+                reserved: 0,
+            })
+        };
+        let first = query();
+        assert_eq!(first.status, LockOwnerQueryStatusV1::HOST_ERROR);
+        assert_eq!(first.item_generation, 1);
+        assert_eq!(first.location_generation, 1);
+        assert!(first.owners.is_empty());
+        let second = query();
+        assert_eq!(second.status, LockOwnerQueryStatusV1::EMPTY);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
     fn batch_column_dispatch_is_bounded_host_attested_and_generation_safe() {
         let runtime = ExtensionJobRuntimeV1::new(config());
         let observed = Arc::new(Mutex::new((0, InputStreamStatusV1::CLOSED)));
