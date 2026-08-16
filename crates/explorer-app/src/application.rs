@@ -1510,6 +1510,10 @@ impl ApplicationVisualColumnRuntimeV1 {
         renderer: explorer_extension_host::SinglePluginVisualRenderRuntimeV1,
         snapshot_service: Arc<Mutex<crate::folder_size_service::FolderSizeServiceV1>>,
     ) -> Result<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1, Error> {
+        tracing::info!(
+            requirement = "folder.aggregate",
+            "legacy visual-column measurement callback retained for compatibility but bypassed; host snapshot data is authoritative"
+        );
         Self::start_with_renderer(Some(renderer), snapshot_service)
     }
 
@@ -1530,7 +1534,9 @@ impl ApplicationVisualColumnRuntimeV1 {
         let worker_pending = pending.clone();
         let cache = Arc::new(Mutex::new(
             HostExtensionColumnCacheV1::<FolderSizeCachedValueV1>::persistent("folder-size")
-                .with_ttl(explorer_model::DEFAULT_FOLDER_SIZE_CACHE_TTL_SECONDS),
+                .with_ttl(u64::from(
+                    explorer_model::DEFAULT_FOLDER_SIZE_CACHE_TTL_SECONDS,
+                )),
         ));
         let worker_cache = Arc::clone(&cache);
         let worker_snapshot_service = Arc::clone(&snapshot_service);
@@ -1596,6 +1602,16 @@ impl ApplicationVisualColumnRuntimeV1 {
                             .flatten();
                         if let Ok(mut service) = worker_snapshot_service.lock() {
                             service.set_mft_cache_memory_mb(request.mft_cache_memory_mb);
+                        }
+                        if request.require_directory_facts
+                            && let Some(delay_ms) = std::env::var_os(
+                                "SUPEREXPLORER_DIRECTORY_FACTS_VALIDATION_DELAY_MS",
+                            )
+                            .and_then(|value| value.to_string_lossy().parse::<u64>().ok())
+                            .map(|value| value.min(5_000))
+                            .filter(|value| *value > 0)
+                        {
+                            std::thread::sleep(Duration::from_millis(delay_ms));
                         }
                         worker_backend_active.store(true, Ordering::Release);
                         let measured = if let Some(cached) = cached {
@@ -1751,6 +1767,10 @@ impl explorer_ui::folder_size_column::VisualColumnRuntimePortV1
         explorer_shell_win::set_shell_disk_cache_limits(
             u64::from(budgets.icon_disk_mb) * 1024 * 1024,
             u64::from(budgets.thumbnail_disk_mb) * 1024 * 1024,
+        );
+        explorer_shell_win::set_shell_bc7_runtime_gates(
+            budgets.icon_bc7_enabled,
+            budgets.thumbnail_bc7_enabled,
         );
         let to_u16 = |value: u32| value.min(u32::from(u16::MAX)) as u16;
         configure_mft_budget_snapshot(crate::mft_query::MftCacheBudgetLimitsV1 {
@@ -3821,6 +3841,7 @@ fn filesystem_file_identity_v1(_path: &Path) -> Option<Vec<u8>> {
 }
 
 #[cfg(windows)]
+#[cfg(test)]
 fn measure_size_map_tree_from_mft(
     index: &crate::mft_size_map::MftIndexV1,
     root: &Path,
@@ -3886,6 +3907,7 @@ fn measure_size_map_tree_from_mft(
     })
 }
 
+#[cfg(test)]
 fn measure_size_map_tree(
     root: &Path,
     root_item_id: &explorer_model::ShellItemId,
@@ -4071,6 +4093,7 @@ fn measure_size_map_tree(
     project_size_map_tree(root, root_item_id, &nodes, terminal, diagnostic, false)
 }
 
+#[cfg(test)]
 fn project_size_map_tree(
     root: &Path,
     root_item_id: &explorer_model::ShellItemId,
@@ -4166,6 +4189,7 @@ fn project_size_map_tree(
     }
 }
 
+#[cfg(test)]
 fn measure_size_map_path(
     root: &Path,
     max_entries: u32,
@@ -4833,16 +4857,72 @@ pub struct ApplicationLifecycle {
 struct FolderOptionsWindowControllerV1 {
     window: Option<gpui::WindowHandle<explorer_ui::folder_options_window::FolderOptionsWindow>>,
     owner: Option<gpui::WindowHandle<ExplorerRoot>>,
+    lifecycle: FolderOptionsControllerLifecycleV1,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FolderOptionsOpenIntentV1 {
+    Activate { generation: u64 },
+    Create { generation: u64 },
+}
+
+#[derive(Default)]
+struct FolderOptionsControllerLifecycleV1 {
+    generation: u64,
+    live: bool,
+    creating: bool,
+}
+
+impl FolderOptionsControllerLifecycleV1 {
+    fn begin_open(&mut self) -> FolderOptionsOpenIntentV1 {
+        if self.live || self.creating {
+            return FolderOptionsOpenIntentV1::Activate {
+                generation: self.generation,
+            };
+        }
+        self.generation = self.generation.saturating_add(1);
+        self.creating = true;
+        FolderOptionsOpenIntentV1::Create {
+            generation: self.generation,
+        }
+    }
+
+    fn creation_succeeded(&mut self, generation: u64) -> bool {
+        if !self.creating || generation != self.generation {
+            return false;
+        }
+        self.creating = false;
+        self.live = true;
+        true
+    }
+
+    fn creation_failed(&mut self, generation: u64) {
+        if self.creating && generation == self.generation {
+            self.creating = false;
+        }
+    }
+
+    fn close(&mut self) -> bool {
+        let changed = self.live || self.creating;
+        self.live = false;
+        self.creating = false;
+        changed
+    }
 }
 
 impl FolderOptionsWindowControllerV1 {
     fn install(
         &mut self,
+        generation: u64,
         window: gpui::WindowHandle<explorer_ui::folder_options_window::FolderOptionsWindow>,
         owner: gpui::WindowHandle<ExplorerRoot>,
-    ) {
+    ) -> bool {
+        if !self.lifecycle.creation_succeeded(generation) {
+            return false;
+        }
         self.window = Some(window);
         self.owner = Some(owner);
+        true
     }
 
     fn clear(
@@ -4851,6 +4931,7 @@ impl FolderOptionsWindowControllerV1 {
         gpui::WindowHandle<explorer_ui::folder_options_window::FolderOptionsWindow>,
         gpui::WindowHandle<ExplorerRoot>,
     )> {
+        self.lifecycle.close();
         self.window.take().zip(self.owner.take())
     }
 }
@@ -5379,6 +5460,7 @@ impl ApplicationLifecycle {
                                     .update(cx, |_, window, _| window.activate_window())
                                     .is_ok()
                                 {
+                                    let _ = controller.borrow_mut().lifecycle.begin_open();
                                     return true;
                                 }
                                 let _ = controller.borrow_mut().clear();
@@ -5389,6 +5471,10 @@ impl ApplicationLifecycle {
                             let Some(snapshot) = snapshot else {
                                 tracing::warn!("Folder Options window creation lacked its draft snapshot");
                                 return false;
+                            };
+                            let generation = match controller.borrow_mut().lifecycle.begin_open() {
+                                FolderOptionsOpenIntentV1::Create { generation } => generation,
+                                FolderOptionsOpenIntentV1::Activate { .. } => return true,
                             };
                             let options =
                                 explorer_ui::folder_options_window::folder_options_window_options(
@@ -5407,12 +5493,22 @@ impl ApplicationLifecycle {
                             });
                             match opened {
                                 Ok(handle) => {
-                                    controller.borrow_mut().install(handle, owner_window);
+                                    if !controller
+                                        .borrow_mut()
+                                        .install(generation, handle, owner_window)
+                                    {
+                                        tracing::warn!(generation, "Folder Options ignored a stale creation result");
+                                        return false;
+                                    }
                                     let _ = observer_diagnostics
                                         .record_event("folder_options_window_ready", &[]);
                                     true
                                 }
                                 Err(error) => {
+                                    controller
+                                        .borrow_mut()
+                                        .lifecycle
+                                        .creation_failed(generation);
                                     tracing::warn!(%error, "Folder Options window creation failed");
                                     let message = error.to_string();
                                     let _ = observer_diagnostics.record_event(
@@ -6253,6 +6349,38 @@ mod tests {
         JobTerminalV1, LockOwnerApplicationTypeV1, LockOwnerQueryStatusV1, LockOwnerRecordV1,
         PluginItemResultV1, PluginValueV1, SinkSubmitStatusV1,
     };
+
+    #[test]
+    fn folder_options_controller_is_single_instance_retryable_and_idempotently_closed() {
+        let mut lifecycle = super::FolderOptionsControllerLifecycleV1::default();
+        assert_eq!(
+            lifecycle.begin_open(),
+            super::FolderOptionsOpenIntentV1::Create { generation: 1 }
+        );
+        assert_eq!(
+            lifecycle.begin_open(),
+            super::FolderOptionsOpenIntentV1::Activate { generation: 1 }
+        );
+
+        lifecycle.creation_failed(1);
+        assert_eq!(
+            lifecycle.begin_open(),
+            super::FolderOptionsOpenIntentV1::Create { generation: 2 }
+        );
+        assert!(lifecycle.creation_succeeded(2));
+        assert!(!lifecycle.creation_succeeded(1));
+        assert_eq!(
+            lifecycle.begin_open(),
+            super::FolderOptionsOpenIntentV1::Activate { generation: 2 }
+        );
+
+        assert!(lifecycle.close());
+        assert!(!lifecycle.close());
+        assert_eq!(
+            lifecycle.begin_open(),
+            super::FolderOptionsOpenIntentV1::Create { generation: 3 }
+        );
+    }
     use explorer_extension_host::{
         ExtensionJobAuthorityV1, ExtensionJobRuntimeRequestV1, ExtensionJobRuntimeV1,
         ExtensionJobUiIngressV1, ExtensionResultBufferConfigV1,
@@ -6411,6 +6539,80 @@ mod tests {
             ),
             LockOwnerDiscoveryTerminal::Failed(_)
         ));
+    }
+
+    #[test]
+    fn lock_owner_composition_covers_the_frozen_two_source_truth_table() {
+        use LockOwnerDiscoveryTerminal as Terminal;
+
+        fn terminal_kind(value: Terminal) -> &'static str {
+            match value {
+                Terminal::Ready(_) => "ready",
+                Terminal::Empty => "empty",
+                Terminal::Cancelled => "cancelled",
+                Terminal::DeadlineElapsed => "deadline",
+                Terminal::Unavailable(_) => "unavailable",
+                Terminal::Failed(_) => "host-error",
+            }
+        }
+
+        let owner = || Terminal::Ready(vec![test_lock_owner(9, 1, "cmd.exe")]);
+        let unavailable = || Terminal::Unavailable(test_lock_owner_error("unavailable"));
+        let failed = || Terminal::Failed(test_lock_owner_error("failed"));
+        let cases = [
+            (owner(), Terminal::Cancelled, "cancelled"),
+            (Terminal::Cancelled, owner(), "cancelled"),
+            (owner(), Terminal::DeadlineElapsed, "deadline"),
+            (Terminal::DeadlineElapsed, owner(), "deadline"),
+            (owner(), owner(), "ready"),
+            (owner(), Terminal::Empty, "ready"),
+            (Terminal::Empty, owner(), "ready"),
+            (owner(), unavailable(), "ready"),
+            (unavailable(), owner(), "ready"),
+            (owner(), failed(), "ready"),
+            (failed(), owner(), "ready"),
+            (failed(), Terminal::Empty, "host-error"),
+            (Terminal::Empty, failed(), "host-error"),
+            (unavailable(), Terminal::Empty, "unavailable"),
+            (Terminal::Empty, unavailable(), "unavailable"),
+            (Terminal::Empty, Terminal::Empty, "empty"),
+        ];
+        for (restart_manager, current_directory, expected) in cases {
+            assert_eq!(
+                terminal_kind(compose_lock_owner_terminals(
+                    restart_manager,
+                    current_directory
+                )),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn lock_owner_composition_is_input_order_independent_and_truncates_after_sorting() {
+        let maximum = explorer_common::RoadmapLimits::default().lock_recovery_max_owners;
+        let mut ascending = (0..(maximum + 17))
+            .map(|index| test_lock_owner(u32::try_from(index + 1).unwrap(), 1, "cmd.exe"))
+            .collect::<Vec<_>>();
+        let mut descending = ascending.clone();
+        descending.reverse();
+
+        let LockOwnerDiscoveryTerminal::Ready(first) = compose_lock_owner_terminals(
+            LockOwnerDiscoveryTerminal::Ready(ascending.clone()),
+            LockOwnerDiscoveryTerminal::Empty,
+        ) else {
+            panic!("ordered source must produce owners");
+        };
+        let LockOwnerDiscoveryTerminal::Ready(second) = compose_lock_owner_terminals(
+            LockOwnerDiscoveryTerminal::Ready(descending),
+            LockOwnerDiscoveryTerminal::Empty,
+        ) else {
+            panic!("reversed source must produce owners");
+        };
+        ascending.truncate(maximum);
+        assert_eq!(first, ascending);
+        assert_eq!(second, ascending);
+        assert_eq!(first.len(), maximum);
     }
 
     #[test]
@@ -6678,8 +6880,9 @@ mod tests {
             .unwrap();
 
         let folder_cache = Mutex::new(
-            HostExtensionColumnCacheV1::<FolderSizeCachedValueV1>::default()
-                .with_ttl(explorer_model::DEFAULT_FOLDER_SIZE_CACHE_TTL_SECONDS),
+            HostExtensionColumnCacheV1::<FolderSizeCachedValueV1>::default().with_ttl(u64::from(
+                explorer_model::DEFAULT_FOLDER_SIZE_CACHE_TTL_SECONDS,
+            )),
         );
         let original = folder_cache.lock().unwrap().admission(&source).unwrap();
         assert!(folder_cache.lock().unwrap().insert(
@@ -6722,8 +6925,9 @@ mod tests {
                 .iter_mut()
                 .find(|(key, _)| key.canonical_path == changed.key.canonical_path)
                 .expect("ttl entry present");
-            entry.1.2 = unix_seconds_now()
-                .saturating_sub(explorer_model::DEFAULT_FOLDER_SIZE_CACHE_TTL_SECONDS + 1);
+            entry.1.2 = unix_seconds_now().saturating_sub(u64::from(
+                explorer_model::DEFAULT_FOLDER_SIZE_CACHE_TTL_SECONDS + 1,
+            ));
         }
         let (hits, misses) = partition_folder_size_cache_hits(&folder_cache, vec![request]);
         assert!(hits.is_empty());
@@ -6822,6 +7026,98 @@ mod tests {
             now,
         );
         assert!(lock_owner_cache_lookup(&unavailable, 17, now).is_none());
+    }
+
+    #[test]
+    fn lock_owner_f5_clears_occupied_state_and_rejects_delayed_pre_refresh_result() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let key = LockOwnerCacheKeyV1 {
+            canonical_path: PathBuf::from(format!(r"C:\lock-owner-f5-{nonce}")),
+            source_size: 0,
+            modified_seconds: 0,
+            modified_nanos: 0,
+        };
+        let item = ItemHandleV1::from_host([7; 16], 1);
+        let owner = LockOwnerRecordV1 {
+            item,
+            process_id: 77,
+            application_type: LockOwnerApplicationTypeV1::MAIN_WINDOW,
+            display_name: "cmd.exe".into(),
+            service_name: "".into(),
+        };
+        let now = Instant::now();
+        lock_owner_cache_store(
+            key.clone(),
+            40,
+            LockOwnerQueryStatusV1::READY,
+            vec![owner.clone()],
+            now,
+        );
+        assert!(lock_owner_cache_lookup(&key, 40, now).is_some());
+
+        let refreshed_generation = 41;
+        assert!(
+            lock_owner_cache_lookup(&key, refreshed_generation, now).is_none(),
+            "F5 generation must immediately hide the occupied pre-refresh value"
+        );
+        lock_owner_cache_store(
+            key.clone(),
+            40,
+            LockOwnerQueryStatusV1::READY,
+            vec![owner],
+            now,
+        );
+        assert!(
+            lock_owner_cache_lookup(&key, refreshed_generation, now).is_none(),
+            "a delayed pre-F5 source result cannot repopulate the current generation"
+        );
+        lock_owner_cache_store(
+            key.clone(),
+            refreshed_generation,
+            LockOwnerQueryStatusV1::EMPTY,
+            Vec::new(),
+            now,
+        );
+        assert_eq!(
+            lock_owner_cache_lookup(&key, refreshed_generation, now).map(|value| value.0),
+            Some(LockOwnerQueryStatusV1::EMPTY),
+            "fresh discovery after exit or subtree departure clears the cell"
+        );
+    }
+
+    #[test]
+    fn lock_owner_scope_generations_reject_delayed_refresh_folder_and_tab_results() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let key = LockOwnerCacheKeyV1 {
+            canonical_path: PathBuf::from(format!(r"C:\lock-owner-scopes-{nonce}")),
+            source_size: 0,
+            modified_seconds: 0,
+            modified_nanos: 0,
+        };
+        let now = Instant::now();
+        for (transition, stale, current) in [
+            ("rapid F5", 50, 51),
+            ("folder change", 51, 52),
+            ("tab change", 52, 53),
+        ] {
+            lock_owner_cache_store(
+                key.clone(),
+                stale,
+                LockOwnerQueryStatusV1::EMPTY,
+                Vec::new(),
+                now,
+            );
+            assert!(
+                lock_owner_cache_lookup(&key, current, now).is_none(),
+                "{transition} must reject its older source result"
+            );
+        }
     }
 
     #[test]

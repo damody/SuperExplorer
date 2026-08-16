@@ -110,6 +110,27 @@ impl Render for DetailsColumnDragPreview {
             .child(self.label.clone())
     }
 }
+
+#[derive(Clone)]
+struct BookmarkDrag {
+    id: explorer_model::BookmarkId,
+    label: String,
+}
+
+struct BookmarkDragPreview {
+    label: String,
+}
+
+impl Render for BookmarkDragPreview {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(10.0))
+            .py(px(6.0))
+            .rounded(px(4.0))
+            .border(px(1.0))
+            .child(self.label.clone())
+    }
+}
 pub const WINDOW_CHROME_ID: &str = "window-chrome";
 pub const WINDOW_DRAG_REGION_ID: &str = "window-drag-region";
 pub const TAB_STRIP_ID: &str = "tab-strip";
@@ -944,15 +965,45 @@ fn bookmark_manager(
             };
             let remove = ExplorerAction::RemoveBookmark { id };
             let edit = ExplorerAction::EditBookmark { id };
+            let drag_label = bookmark.name.clone();
+            let drop_cb = callback.clone();
             let up_cb = callback.clone();
             let down_cb = callback.clone();
             let remove_cb = callback.clone();
             let edit_cb = callback.clone();
             div()
+                .id(("bookmark-row", id.as_u128() as u64))
+                .role(Role::ListItem)
+                .aria_label(format!("Bookmark {}", bookmark.name))
                 .flex()
                 .items_center()
                 .gap(px(8.0))
                 .py(px(5.0))
+                .cursor_move()
+                .on_drag(
+                    BookmarkDrag {
+                        id,
+                        label: drag_label,
+                    },
+                    |drag, _, _, cx| {
+                        cx.new(|_| BookmarkDragPreview {
+                            label: drag.label.clone(),
+                        })
+                    },
+                )
+                .when_some(drop_cb, move |element, cb| {
+                    element.on_drop(move |drag: &BookmarkDrag, window, cx| {
+                        cb(
+                            &ExplorerAction::MoveBookmark {
+                                id: drag.id,
+                                destination: index,
+                            },
+                            window,
+                            cx,
+                        );
+                        cx.stop_propagation();
+                    })
+                })
                 .child(format!("{icon} {}", bookmark.name))
                 .child(
                     div()
@@ -1500,6 +1551,7 @@ pub(crate) fn folder_options_window_content(
     use crate::actions::FolderOptionsPage;
 
     let page = draft.page;
+    let apply_error = draft.apply_error.clone();
     let settings = draft.settings;
     div()
         .id("folder-options-window-content")
@@ -1628,6 +1680,16 @@ pub(crate) fn folder_options_window_content(
                         .px(px(tokens.layout.divider_keyboard_step.value()))
                         .border_t(px(1.0))
                         .border_color(tokens.theme.colors.divider.to_gpui())
+                        .when_some(apply_error, |footer, error| {
+                            footer.child(
+                                div()
+                                    .id("folder-options-apply-error")
+                                    .role(Role::Alert)
+                                    .flex_1()
+                                    .text_color(tokens.theme.colors.danger.to_gpui())
+                                    .child(error),
+                            )
+                        })
                         .child(folder_option_button(
                             "folder-options-ok",
                             "確定",
@@ -2403,6 +2465,51 @@ fn cache_usage_section(
                 Some(false) => "Unavailable",
                 None => "Detecting",
             }
+        ))
+        .child(format!(
+            "Icon BC7 rollout: {}",
+            if usage.icon_bc7_enabled {
+                "Enabled"
+            } else {
+                "Disabled"
+            }
+        ))
+        .child(format!(
+            "Thumbnail BC7 rollout: {}",
+            if usage.thumbnail_bc7_enabled {
+                "Enabled"
+            } else {
+                "Disabled"
+            }
+        ))
+        .child(format!(
+            "BC7 pipeline: {} active, {} / {} staging, {} encodes, {} errors",
+            usage.bc7_active_encoders.unwrap_or(0),
+            crate::formatting::format_file_size(usage.bc7_active_staging_bytes.unwrap_or(0)),
+            crate::formatting::format_file_size(usage.bc7_staging_limit_bytes.unwrap_or(0)),
+            usage.bc7_encode_count.unwrap_or(0),
+            usage.bc7_encode_errors.unwrap_or(0),
+        ))
+        .child(format!(
+            "BC7 jobs: {} / {} queued, {} / {} active, {} reserved; {} completed, {} duplicate, {} cancelled, {} stale, {} fallback, {} persistence errors",
+            usage.bc7_queued_jobs.unwrap_or(0),
+            usage.bc7_queue_limit.unwrap_or(0),
+            usage.bc7_active_jobs.unwrap_or(0),
+            usage.bc7_concurrency_limit.unwrap_or(0),
+            crate::formatting::format_file_size(usage.bc7_reserved_staging_bytes.unwrap_or(0)),
+            usage.bc7_completed_jobs.unwrap_or(0),
+            usage.bc7_duplicate_jobs.unwrap_or(0),
+            usage.bc7_cancelled_jobs.unwrap_or(0),
+            usage.bc7_stale_jobs.unwrap_or(0),
+            usage.bc7_fallbacks.unwrap_or(0),
+            usage.bc7_persist_errors.unwrap_or(0),
+        ))
+        .child(format!(
+            "BC7 GPU: icon {} uploads / {} evictions; thumbnail {} uploads / {} evictions",
+            usage.icon_gpu_uploads.unwrap_or(0),
+            usage.icon_gpu_evictions.unwrap_or(0),
+            usage.thumbnail_gpu_uploads.unwrap_or(0),
+            usage.thumbnail_gpu_evictions.unwrap_or(0),
         ))
         .child(bounded(
             "Icon GPU",
@@ -3391,7 +3498,7 @@ fn command_extensions_menu_legacy(
             if tortoise_git_available {
                 "更新 TortoiseGit 狀態"
             } else {
-                "沒有其它可用的擴充功能"
+                "沒有可用的擴充功能"
             },
             ExplorerAction::RefreshTortoiseGitStatus,
             tortoise_git_available,
@@ -3744,7 +3851,7 @@ fn command_extensions_menu(
                 if tortoise_git_available {
                     "更新 TortoiseGit 狀態"
                 } else {
-                    "找不到 TortoiseGit"
+                    "沒有可用的擴充功能"
                 },
                 ExplorerAction::RefreshTortoiseGitStatus,
                 tortoise_git_available,
@@ -7221,12 +7328,15 @@ impl RenderOnce for FileViewHost {
                 let (visible_index, _snapshot_index, entry) = item;
                 let code_lines_columns = row_code_lines_columns.clone();
                 let row_column_registry = row_column_registry.clone();
-                let folder_size_visuals = row_folder_size_visuals.clone().filter(|visuals| {
-                    row_column_registry.contains(&visuals.config.descriptor.id)
-                });
+                // Built-in File Count and Folder Count consume the same
+                // host-owned directory facts even when the optional Folder
+                // Size extension column is not registered. Keep those facts
+                // available to the row and gate only the extension renderer.
+                let folder_size_visuals = row_folder_size_visuals.clone();
                 let visual_column_runtime = row_visual_column_runtime.clone().filter(|runtime| {
                     folder_size_visuals.as_ref().is_some_and(|visuals| {
-                        visuals.config.descriptor.id == runtime.config().descriptor.id
+                        row_column_registry.contains(&visuals.config.descriptor.id)
+                            && visuals.config.descriptor.id == runtime.config().descriptor.id
                     })
                 });
                 let editor = rename_editor
@@ -7338,21 +7448,6 @@ impl RenderOnce for FileViewHost {
                                     entry.metadata.size_bytes,
                                 );
                             if !is_file_system_directory {
-                                ordered_detail_cells.push(
-                                    div()
-                                        .w(px(f32::from(
-                                            view_settings.details_column_width(&column_id),
-                                        )))
-                                        .h_full()
-                                        .flex_none()
-                                        .into_any_element(),
-                                );
-                                continue;
-                            }
-                            if folder_size_visuals
-                                .as_ref()
-                                .is_some_and(|visuals| visuals.error_for(&entry.id).is_some())
-                            {
                                 ordered_detail_cells.push(
                                     div()
                                         .w(px(f32::from(
@@ -13171,6 +13266,20 @@ mod tests {
         assert!(dialog.contains(".overflow_y_scroll()"));
         assert!(dialog.contains(".track_scroll(&scroll)"));
         assert!(dialog.contains("cx.stop_propagation()"));
+        assert!(!production.contains("folder-options-overlay"));
+        for required in [
+            "folder-options-general-tab",
+            "folder-options-view-tab",
+            "folder-options-extensions-tab",
+            "folder-options-ok",
+            "folder-options-cancel",
+            "folder-options-apply",
+        ] {
+            assert!(
+                dialog.contains(required),
+                "missing minimum-size action: {required}"
+            );
+        }
         assert!(dialog.contains(".h(px(crate::layout::folder_options::FOOTER_HEIGHT.value()))\n                        .flex_none()"));
 
         let extensions_page = production
@@ -13641,6 +13750,23 @@ mod tests {
         let visible_count = super::bookmark_visible_count(ordered.len(), 420.0);
         assert_eq!(&ordered[..visible_count], &["first", "second"]);
         assert_eq!(&ordered[visible_count..], &["third", "fourth", "fifth"]);
+    }
+
+    #[test]
+    fn bookmark_manager_rows_support_native_drag_reordering() {
+        let production = include_str!("chrome.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source");
+        let manager = production
+            .split("fn bookmark_manager(")
+            .nth(1)
+            .and_then(|source| source.split("fn bookmark_editor(").next())
+            .expect("bookmark manager source");
+        assert!(manager.contains(".on_drag("));
+        assert!(manager.contains("element.on_drop(move |drag: &BookmarkDrag"));
+        assert!(manager.contains("id: drag.id"));
+        assert!(manager.contains("destination: index"));
     }
 
     #[test]

@@ -49,6 +49,43 @@ pub struct FolderOptionsDraft {
     pub settings: explorer_model::ViewSettings,
     pub restore_previous_session: bool,
     pub extension_enabled: Vec<bool>,
+    pub applied_baseline: FolderOptionsAppliedSnapshotV1,
+    pub applied_revision: u64,
+    pub apply_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FolderOptionsAppliedSnapshotV1 {
+    pub settings: explorer_model::ViewSettings,
+    pub restore_previous_session: bool,
+    pub extension_enabled: Vec<bool>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FolderOptionsApplyResultV1 {
+    Applied { revision: u64 },
+    Rejected { reason: FolderOptionsApplyFailureV1 },
+    NoDraft,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FolderOptionsApplyFailureV1 {
+    Validation,
+    Persistence,
+}
+
+impl FolderOptionsDraft {
+    pub fn applied_snapshot(&self) -> FolderOptionsAppliedSnapshotV1 {
+        FolderOptionsAppliedSnapshotV1 {
+            settings: self.settings.clone(),
+            restore_previous_session: self.restore_previous_session,
+            extension_enabled: self.extension_enabled.clone(),
+        }
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.applied_snapshot() != self.applied_baseline
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -488,6 +525,7 @@ pub struct AppViewState {
     tortoise_git_available: bool,
     loaded_extension_summary: Option<String>,
     folder_options: Option<FolderOptionsDraft>,
+    folder_options_applied_revision: u64,
     extensions: Vec<ExtensionOptionV1>,
     restore_previous_session: bool,
     view_show_submenu_open: bool,
@@ -732,6 +770,7 @@ impl AppViewState {
             tortoise_git_available: false,
             loaded_extension_summary: None,
             folder_options: None,
+            folder_options_applied_revision: 0,
             extensions: official_extensions_v1(),
             restore_previous_session: true,
             view_show_submenu_open: false,
@@ -1812,19 +1851,29 @@ impl AppViewState {
 
     pub(crate) fn open_folder_options(&mut self) {
         self.more_menu_open = false;
+        let settings = self.view_settings();
+        let extension_enabled = self
+            .extensions
+            .iter()
+            .map(|extension| extension.enabled)
+            .collect::<Vec<_>>();
+        let applied_baseline = FolderOptionsAppliedSnapshotV1 {
+            settings: settings.clone(),
+            restore_previous_session: self.restore_previous_session,
+            extension_enabled: extension_enabled.clone(),
+        };
         self.folder_options = Some(FolderOptionsDraft {
             page: if std::env::var_os("SUPEREXPLORER_UITEST_OPEN_FOLDER_OPTIONS").is_some() {
                 FolderOptionsPage::View
             } else {
                 FolderOptionsPage::General
             },
-            settings: self.view_settings(),
+            settings,
             restore_previous_session: self.restore_previous_session,
-            extension_enabled: self
-                .extensions
-                .iter()
-                .map(|extension| extension.enabled)
-                .collect(),
+            extension_enabled,
+            applied_baseline,
+            applied_revision: self.folder_options_applied_revision,
+            apply_error: None,
         });
     }
 
@@ -1903,14 +1952,32 @@ impl AppViewState {
     pub(crate) fn reset_folder_options(&mut self) {
         if let Some(draft) = &mut self.folder_options {
             draft.settings = explorer_model::ViewSettings::default();
+            draft.apply_error = None;
         }
     }
 
-    pub(crate) fn apply_folder_options(&mut self) {
+    pub(crate) fn reject_folder_options_apply(
+        &mut self,
+        reason: FolderOptionsApplyFailureV1,
+        error: impl Into<String>,
+    ) -> FolderOptionsApplyResultV1 {
+        if let Some(draft) = &mut self.folder_options {
+            draft.apply_error = Some(error.into());
+            return FolderOptionsApplyResultV1::Rejected { reason };
+        }
+        FolderOptionsApplyResultV1::NoDraft
+    }
+
+    pub(crate) fn apply_folder_options(&mut self) -> FolderOptionsApplyResultV1 {
         if let Some(draft) = self.folder_options.clone() {
-            self.tabs.active_tab_mut().view.settings = draft.settings;
-            self.restore_previous_session = draft.restore_previous_session;
-            for (extension, enabled) in self.extensions.iter_mut().zip(draft.extension_enabled) {
+            let applied = draft.applied_snapshot();
+            self.tabs.active_tab_mut().view.settings = applied.settings.clone();
+            self.restore_previous_session = applied.restore_previous_session;
+            for (extension, enabled) in self
+                .extensions
+                .iter_mut()
+                .zip(applied.extension_enabled.iter().copied())
+            {
                 extension.enabled = enabled;
             }
             if !self.extension_enabled("rust-lock-owner-column") {
@@ -1928,12 +1995,58 @@ impl AppViewState {
             }) {
                 self.tabs.active_tab_mut().view.settings.extension_view_id = None;
             }
+            self.folder_options_applied_revision =
+                self.folder_options_applied_revision.saturating_add(1);
+            if let Some(draft) = &mut self.folder_options {
+                draft.applied_baseline = applied;
+                draft.applied_revision = self.folder_options_applied_revision;
+                draft.apply_error = None;
+            }
+            return FolderOptionsApplyResultV1::Applied {
+                revision: self.folder_options_applied_revision,
+            };
         }
+        FolderOptionsApplyResultV1::NoDraft
     }
 
-    pub(crate) fn confirm_folder_options(&mut self) {
-        self.apply_folder_options();
-        self.folder_options = None;
+    pub(crate) fn confirm_folder_options(&mut self) -> FolderOptionsApplyResultV1 {
+        let result = self.apply_folder_options();
+        if matches!(result, FolderOptionsApplyResultV1::Applied { .. }) {
+            self.folder_options = None;
+        }
+        result
+    }
+
+    /// Applies a newer application-wide settings snapshot while preserving an
+    /// independently edited Folder Options draft.
+    pub fn adopt_applied_folder_options(
+        &mut self,
+        applied: FolderOptionsAppliedSnapshotV1,
+        revision: u64,
+    ) {
+        if revision <= self.folder_options_applied_revision {
+            return;
+        }
+        self.tabs.active_tab_mut().view.settings = applied.settings.clone();
+        self.restore_previous_session = applied.restore_previous_session;
+        for (extension, enabled) in self
+            .extensions
+            .iter_mut()
+            .zip(applied.extension_enabled.iter().copied())
+        {
+            extension.enabled = enabled;
+        }
+        self.folder_options_applied_revision = revision;
+        if let Some(draft) = &mut self.folder_options
+            && !draft.is_dirty()
+        {
+            draft.settings = applied.settings.clone();
+            draft.restore_previous_session = applied.restore_previous_session;
+            draft.extension_enabled = applied.extension_enabled.clone();
+            draft.applied_baseline = applied;
+            draft.applied_revision = revision;
+            draft.apply_error = None;
+        }
     }
 
     pub const fn view_show_submenu_open(&self) -> bool {
@@ -5389,6 +5502,56 @@ mod tests {
         std::fs::remove_dir(fixture).expect("remove bookmark star fixture");
     }
 
+    #[test]
+    fn bookmark_manager_edits_reorders_deletes_and_restores_typed_entries() {
+        let mut state = AppViewState::default();
+        state.add_bookmark(
+            "Folder".into(),
+            explorer_model::BookmarkTarget::Folder {
+                location: explorer_model::LocationDescriptor::file_system(r"C:\folder"),
+            },
+        );
+        state.add_bookmark(
+            "File".into(),
+            explorer_model::BookmarkTarget::File {
+                location: explorer_model::LocationDescriptor::file_system(r"C:\folder\file.txt"),
+            },
+        );
+        state.add_bookmark(
+            "Command".into(),
+            explorer_model::BookmarkTarget::LuaScript {
+                source: "assert(current_folder)".into(),
+            },
+        );
+
+        let file_id = state.bookmarks().entries()[1].id;
+        state.begin_bookmark_editor(Some(file_id));
+        state.update_bookmark_editor_name("Renamed file".into());
+        state.update_bookmark_editor_payload(r"C:\other\renamed.txt".into());
+        assert!(
+            state
+                .commit_bookmark_editor()
+                .expect("typed edit mutation")
+                .changed()
+        );
+        assert!(matches!(
+            &state.bookmarks().entries()[1].target,
+            explorer_model::BookmarkTarget::File { location }
+                if location.path() == Some(std::path::Path::new(r"C:\other\renamed.txt"))
+        ));
+
+        assert!(state.reorder_bookmark(file_id, 0).changed());
+        let command_id = state.bookmarks().entries()[2].id;
+        assert!(state.remove_bookmark(command_id).changed());
+        assert_eq!(state.bookmarks().entries()[0].id, file_id);
+
+        let persisted = serde_json::to_vec(state.bookmarks()).expect("persist bookmarks");
+        let restored = serde_json::from_slice(&persisted).expect("restore bookmarks");
+        let mut restarted = AppViewState::default();
+        restarted.configure_bookmarks(restored);
+        assert_eq!(restarted.bookmarks(), state.bookmarks());
+    }
+
     fn state_with_rows() -> AppViewState {
         let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
             explorer_model::LocationDescriptor::file_system(r"C:\fixture"),
@@ -8256,6 +8419,114 @@ mod tests {
         state.update_folder_options(|settings| settings.cache_budgets.mft_lru_mb = 16_384);
         state.confirm_folder_options();
         assert_eq!(state.view_settings().cache_budgets.mft_lru_mb, 16_384);
+    }
+
+    #[test]
+    fn folder_options_apply_replaces_baseline_and_confirm_closes_only_with_a_draft() {
+        let mut state = AppViewState::default();
+        assert_eq!(
+            state.confirm_folder_options(),
+            super::FolderOptionsApplyResultV1::NoDraft
+        );
+        state.open_folder_options();
+        assert!(!state.folder_options().unwrap().is_dirty());
+        state.update_folder_options(|settings| settings.hidden_items = true);
+        assert!(state.folder_options().unwrap().is_dirty());
+        assert_eq!(
+            state.apply_folder_options(),
+            super::FolderOptionsApplyResultV1::Applied { revision: 1 }
+        );
+        let draft = state.folder_options().expect("Apply keeps the draft open");
+        assert!(!draft.is_dirty());
+        assert_eq!(draft.applied_revision, 1);
+        state.update_folder_options(|settings| settings.file_name_extensions = false);
+        assert_eq!(
+            state.confirm_folder_options(),
+            super::FolderOptionsApplyResultV1::Applied { revision: 2 }
+        );
+        assert!(state.folder_options().is_none());
+    }
+
+    #[test]
+    fn external_applied_settings_update_only_adopts_into_a_clean_draft() {
+        let mut clean = AppViewState::default();
+        clean.open_folder_options();
+        let mut applied = clean
+            .folder_options()
+            .expect("clean draft")
+            .applied_snapshot();
+        applied.settings.hidden_items = true;
+        clean.adopt_applied_folder_options(applied.clone(), 7);
+        let clean_draft = clean.folder_options().expect("adopted clean draft");
+        assert!(clean_draft.settings.hidden_items);
+        assert_eq!(clean_draft.applied_revision, 7);
+        assert!(!clean_draft.is_dirty());
+
+        let mut dirty = AppViewState::default();
+        dirty.open_folder_options();
+        dirty.update_folder_options(|settings| settings.file_name_extensions = false);
+        dirty.adopt_applied_folder_options(applied, 7);
+        let dirty_draft = dirty.folder_options().expect("preserved dirty draft");
+        assert!(!dirty_draft.settings.file_name_extensions);
+        assert!(!dirty_draft.settings.hidden_items);
+        assert_eq!(dirty_draft.applied_revision, 0);
+        assert!(dirty_draft.is_dirty());
+        assert!(dirty.view_settings().hidden_items);
+    }
+
+    #[test]
+    fn one_applied_revision_broadcasts_to_two_live_windows() {
+        let mut owner = AppViewState::default();
+        owner.open_folder_options();
+        owner.update_folder_options(|settings| settings.hidden_items = true);
+        let applied = owner
+            .folder_options()
+            .expect("owner draft")
+            .applied_snapshot();
+        assert_eq!(
+            owner.apply_folder_options(),
+            super::FolderOptionsApplyResultV1::Applied { revision: 1 }
+        );
+
+        let mut first_peer = AppViewState::default();
+        let mut second_peer = AppViewState::default();
+        first_peer.adopt_applied_folder_options(applied.clone(), 1);
+        second_peer.adopt_applied_folder_options(applied, 1);
+        assert!(first_peer.view_settings().hidden_items);
+        assert!(second_peer.view_settings().hidden_items);
+    }
+
+    #[test]
+    fn cancel_escape_and_title_close_share_an_idempotent_discard_transition() {
+        for _close_reason in ["cancel", "escape", "title-close"] {
+            let mut state = AppViewState::default();
+            state.open_folder_options();
+            state.update_folder_options(|settings| settings.hidden_items = true);
+            state.close_folder_options();
+            state.close_folder_options();
+            assert!(state.folder_options().is_none());
+            assert!(!state.view_settings().hidden_items);
+        }
+    }
+
+    #[test]
+    fn rejected_apply_keeps_the_dirty_draft_and_typed_failure() {
+        let mut state = AppViewState::default();
+        state.open_folder_options();
+        state.update_folder_options(|settings| settings.hidden_items = true);
+        assert_eq!(
+            state.reject_folder_options_apply(
+                super::FolderOptionsApplyFailureV1::Persistence,
+                "save failed",
+            ),
+            super::FolderOptionsApplyResultV1::Rejected {
+                reason: super::FolderOptionsApplyFailureV1::Persistence,
+            }
+        );
+        let draft = state.folder_options().expect("failed apply remains open");
+        assert!(draft.is_dirty());
+        assert_eq!(draft.apply_error.as_deref(), Some("save failed"));
+        assert!(!state.view_settings().hidden_items);
     }
 
     #[test]

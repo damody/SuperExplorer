@@ -11,8 +11,8 @@ use std::{
 
 use gpui::{
     App, Bounds, Context, FocusHandle, Focusable, IntoElement, KeyDownEvent, MouseButton,
-    MouseDownEvent, MouseMoveEvent, Pixels, Render, Role, ScrollHandle, SharedString, Window,
-    WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px, size,
+    MouseDownEvent, MouseMoveEvent, Pixels, Render, Role, ScrollHandle, SharedString, Subscription,
+    Window, WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px, size,
 };
 
 use crate::{
@@ -84,6 +84,29 @@ pub struct CacheUsageSnapshotV1 {
     pub thumbnail_gpu_limit: u64,
     pub thumbnail_gpu_entries: u64,
     pub bc7_gpu_supported: Option<bool>,
+    pub icon_bc7_enabled: bool,
+    pub thumbnail_bc7_enabled: bool,
+    pub bc7_active_encoders: Option<u64>,
+    pub bc7_active_staging_bytes: Option<u64>,
+    pub bc7_staging_limit_bytes: Option<u64>,
+    pub bc7_encode_count: Option<u64>,
+    pub bc7_encode_errors: Option<u64>,
+    pub bc7_queued_jobs: Option<u64>,
+    pub bc7_queue_limit: Option<u64>,
+    pub bc7_active_jobs: Option<u64>,
+    pub bc7_concurrency_limit: Option<u64>,
+    pub bc7_reserved_staging_bytes: Option<u64>,
+    pub bc7_submitted_jobs: Option<u64>,
+    pub bc7_completed_jobs: Option<u64>,
+    pub bc7_duplicate_jobs: Option<u64>,
+    pub bc7_cancelled_jobs: Option<u64>,
+    pub bc7_stale_jobs: Option<u64>,
+    pub bc7_fallbacks: Option<u64>,
+    pub bc7_persist_errors: Option<u64>,
+    pub icon_gpu_uploads: Option<u64>,
+    pub icon_gpu_evictions: Option<u64>,
+    pub thumbnail_gpu_uploads: Option<u64>,
+    pub thumbnail_gpu_evictions: Option<u64>,
     pub extension_memory_bytes: Option<u64>,
     pub extension_memory_limit: Option<u64>,
     pub extension_memory_entries: Option<u64>,
@@ -189,6 +212,37 @@ impl CacheUsageSnapshotV1 {
             self.extension_memory_limit = value.limit_bytes;
             self.extension_memory_entries = Some(value.entry_count);
         }
+        if let Some(entry) = telemetry.entry(explorer_model::CacheTelemetryIdV1::Bc7Pipeline)
+            && let explorer_model::CacheTelemetryAvailabilityV1::Available(value) =
+                entry.availability
+        {
+            self.bc7_active_staging_bytes = Some(value.bytes);
+            self.bc7_staging_limit_bytes = value.limit_bytes;
+            self.bc7_active_encoders = Some(value.entry_count);
+            if let Some(counters) = value.counters {
+                self.bc7_encode_count = Some(counters.hits);
+                self.bc7_encode_errors = Some(counters.misses);
+            }
+        }
+        if let Some(details) = telemetry.bc7_pipeline() {
+            self.bc7_queued_jobs = Some(details.queued_jobs);
+            self.bc7_queue_limit = Some(details.queue_limit);
+            self.bc7_active_jobs = Some(details.active_jobs);
+            self.bc7_concurrency_limit = Some(details.concurrency_limit);
+            self.bc7_reserved_staging_bytes = Some(details.reserved_staging_bytes);
+            self.bc7_submitted_jobs = Some(details.submitted_jobs);
+            self.bc7_completed_jobs = Some(details.completed_jobs);
+            self.bc7_duplicate_jobs = Some(details.duplicate_jobs);
+            self.bc7_cancelled_jobs = Some(details.cancelled_jobs);
+            self.bc7_stale_jobs = Some(details.stale_jobs);
+            self.bc7_fallbacks = Some(details.fallbacks);
+            self.bc7_persist_errors = Some(details.persist_errors);
+            self.icon_gpu_uploads = Some(details.icon_gpu_uploads);
+            self.icon_gpu_evictions = Some(details.icon_gpu_evictions);
+            self.thumbnail_gpu_uploads = Some(details.thumbnail_gpu_uploads);
+            self.thumbnail_gpu_evictions = Some(details.thumbnail_gpu_evictions);
+            self.bc7_gpu_supported = details.gpu_supported;
+        }
         for (id, target, limit_target) in [
             (
                 explorer_model::CacheTelemetryIdV1::IconsDisk,
@@ -263,6 +317,30 @@ impl CacheUsageSnapshotV1 {
             extension_memory_bytes,
             extension_memory_limit,
             extension_memory_entries
+        );
+        retain!(
+            explorer_model::CacheTelemetryIdV1::Bc7Pipeline,
+            bc7_active_encoders,
+            bc7_active_staging_bytes,
+            bc7_staging_limit_bytes,
+            bc7_encode_count,
+            bc7_encode_errors,
+            bc7_queued_jobs,
+            bc7_queue_limit,
+            bc7_active_jobs,
+            bc7_concurrency_limit,
+            bc7_reserved_staging_bytes,
+            bc7_submitted_jobs,
+            bc7_completed_jobs,
+            bc7_duplicate_jobs,
+            bc7_cancelled_jobs,
+            bc7_stale_jobs,
+            bc7_fallbacks,
+            bc7_persist_errors,
+            icon_gpu_uploads,
+            icon_gpu_evictions,
+            thumbnail_gpu_uploads,
+            thumbnail_gpu_evictions
         );
         retain!(
             explorer_model::CacheTelemetryIdV1::IconsDisk,
@@ -366,6 +444,25 @@ struct ScrollbarDragV1 {
     grab_offset_y: f32,
 }
 
+fn keyboard_scroll_target(current: f32, viewport: f32, maximum: f32, key: &str) -> Option<f32> {
+    if !current.is_finite() || !viewport.is_finite() || !maximum.is_finite() || viewport <= 0.0 {
+        return None;
+    }
+    let current = current.clamp(0.0, maximum.max(0.0));
+    let target = match key {
+        "pageup" => current - viewport,
+        "pagedown" => current + viewport,
+        "home" => 0.0,
+        "end" => maximum,
+        _ => return None,
+    };
+    Some(target.clamp(0.0, maximum.max(0.0)))
+}
+
+fn terminate_drag(slot: &mut Option<ScrollbarDragV1>) -> bool {
+    slot.take().is_some()
+}
+
 /// Root entity for the independent Folder Options native window.
 pub struct FolderOptionsWindow {
     tokens: UiTokens,
@@ -379,6 +476,7 @@ pub struct FolderOptionsWindow {
     cache_budget_inputs: Vec<gpui::Entity<EditableTextState>>,
     cache_budget_input_baseline: explorer_model::CacheBudgetSettingsV1,
     cache_usage_sampler: Arc<CacheUsageSamplerV1>,
+    _keystroke_subscription: Subscription,
 }
 
 impl Drop for FolderOptionsWindow {
@@ -397,6 +495,41 @@ impl FolderOptionsWindow {
     ) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
+        let options_window = window.window_handle();
+        let keystroke_subscription = cx.observe_keystrokes(move |this, event, window, cx| {
+            if window.window_handle() != options_window {
+                return;
+            }
+            let page = this.snapshot.draft.page;
+            if event.keystroke.key == "escape" {
+                this.close_with_action(
+                    ExplorerAction::CloseFolderOptions,
+                    ActionSource::Keyboard,
+                    window,
+                    cx,
+                );
+            } else if event.keystroke.key == "tab" {
+                if event.keystroke.modifiers.shift {
+                    window.focus_prev(cx);
+                } else {
+                    window.focus_next(cx);
+                }
+            } else if event.keystroke.key == "enter"
+                && !event.keystroke.modifiers.control
+                && !event.keystroke.modifiers.alt
+                && !event.keystroke.modifiers.platform
+            {
+                this.close_with_action(
+                    ExplorerAction::ConfirmFolderOptions,
+                    ActionSource::Keyboard,
+                    window,
+                    cx,
+                );
+            } else if this.keyboard_scroll(page, event.keystroke.key.as_str()) {
+                cx.notify();
+                window.refresh();
+            }
+        });
         let cache_budget_input_baseline = snapshot.draft.settings.cache_budgets;
         let cache_budget_inputs = explorer_model::CACHE_BUDGET_DESCRIPTORS_V1
             .into_iter()
@@ -453,6 +586,7 @@ impl FolderOptionsWindow {
             cache_budget_inputs,
             cache_budget_input_baseline,
             cache_usage_sampler,
+            _keystroke_subscription: keystroke_subscription,
         }
     }
 
@@ -465,7 +599,7 @@ impl FolderOptionsWindow {
     }
 
     fn stop_drag(&mut self) {
-        self.scrollbar_drag = None;
+        terminate_drag(&mut self.scrollbar_drag);
     }
 
     fn update_drag(&mut self, pointer_y: Pixels) -> bool {
@@ -495,18 +629,10 @@ impl FolderOptionsWindow {
         let handle = self.scroll_for_page(page);
         let viewport = f32::from(handle.bounds().size.height).max(0.0);
         let maximum = f32::from(handle.max_offset().y).max(0.0);
-        if viewport <= 0.0 {
-            return false;
-        }
         let current = (-f32::from(handle.offset().y)).clamp(0.0, maximum);
-        let target = match key {
-            "pageup" => current - viewport,
-            "pagedown" => current + viewport,
-            "home" => 0.0,
-            "end" => maximum,
-            _ => return false,
-        }
-        .clamp(0.0, maximum);
+        let Some(target) = keyboard_scroll_target(current, viewport, maximum, key) else {
+            return false;
+        };
         let offset = handle.offset();
         handle.set_offset(point(offset.x, px(-target)));
         true
@@ -521,12 +647,18 @@ impl FolderOptionsWindow {
     ) {
         self.stop_drag();
         let owner = self.owner;
-        if let Err(error) = owner.update(cx, |root, owner_window, cx| {
-            root.dispatch_folder_options_action(action, source, owner_window, cx);
+        match owner.update(cx, |root, owner_window, cx| {
+            root.dispatch_folder_options_action(action, source, owner_window, cx)
         }) {
-            tracing::warn!(%error, "Folder Options owner window is unavailable");
+            Ok(true) => window.remove_window(),
+            Ok(false) => {
+                cx.notify();
+                window.refresh();
+            }
+            Err(error) => {
+                tracing::warn!(%error, "Folder Options owner window is unavailable");
+            }
         }
-        window.remove_window();
     }
 
     fn scrollbar(
@@ -675,6 +807,7 @@ impl Render for FolderOptionsWindow {
                     }
                     budgets.normalized()
                 });
+                let mut action_succeeded = false;
                 match owner.update(cx, |root, owner_window, cx| {
                     if let Some(budgets) = cache_budgets {
                         tracing::info!(
@@ -688,27 +821,33 @@ impl Render for FolderOptionsWindow {
                             cx,
                         );
                     }
-                    root.dispatch_folder_options_action(
+                    let committed = root.dispatch_folder_options_action(
                         action.clone(),
                         ActionSource::Mouse,
                         owner_window,
                         cx,
                     );
-                    root.state
-                        .folder_options()
-                        .map(|draft| FolderOptionsWindowSnapshotV1 {
-                            draft,
-                            extensions: root.state.extensions().to_vec(),
-                            cache_usage: root.cache_usage_snapshot(this.snapshot.cache_usage),
-                        })
+                    (
+                        committed,
+                        root.state
+                            .folder_options()
+                            .map(|draft| FolderOptionsWindowSnapshotV1 {
+                                draft,
+                                extensions: root.state.extensions().to_vec(),
+                                cache_usage: root.cache_usage_snapshot(this.snapshot.cache_usage),
+                            }),
+                    )
                 }) {
-                    Ok(Some(snapshot)) => this.snapshot = snapshot,
-                    Ok(None) if !close => {
+                    Ok((committed, Some(snapshot))) => {
+                        action_succeeded = committed;
+                        this.snapshot = snapshot;
+                    }
+                    Ok((_, None)) if !close => {
                         tracing::warn!(
                             "Folder Options draft disappeared during a non-closing action"
                         );
                     }
-                    Ok(None) => {}
+                    Ok((committed, None)) => action_succeeded = committed,
                     Err(error) => {
                         tracing::warn!(%error, "Folder Options action owner is unavailable");
                     }
@@ -737,9 +876,13 @@ impl Render for FolderOptionsWindow {
                     this.cache_budget_input_baseline = budgets;
                 }
                 this.stop_drag();
-                if close {
+                if close && action_succeeded {
                     window.remove_window();
                 } else {
+                    if matches!(action, ExplorerAction::SetFolderOptionsPage(_)) {
+                        this.focus_handle.focus(window, cx);
+                        window.focus_next(cx);
+                    }
                     cx.notify();
                     window.refresh();
                 }
@@ -779,11 +922,30 @@ impl Render for FolderOptionsWindow {
                     }
                 }),
             )
-            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+            .capture_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {
                     cx.stop_propagation();
                     this.close_with_action(
                         ExplorerAction::CloseFolderOptions,
+                        ActionSource::Keyboard,
+                        window,
+                        cx,
+                    );
+                } else if event.keystroke.key == "tab" {
+                    cx.stop_propagation();
+                    if event.keystroke.modifiers.shift {
+                        window.focus_prev(cx);
+                    } else {
+                        window.focus_next(cx);
+                    }
+                } else if event.keystroke.key == "enter"
+                    && !event.keystroke.modifiers.control
+                    && !event.keystroke.modifiers.alt
+                    && !event.keystroke.modifiers.platform
+                {
+                    cx.stop_propagation();
+                    this.close_with_action(
+                        ExplorerAction::ConfirmFolderOptions,
                         ActionSource::Keyboard,
                         window,
                         cx,
@@ -854,6 +1016,59 @@ mod tests {
     }
 
     #[test]
+    fn folder_options_keyboard_scroll_geometry_clamps_fit_overflow_and_resize_states() {
+        assert_eq!(
+            keyboard_scroll_target(80.0, 100.0, 300.0, "pageup"),
+            Some(0.0)
+        );
+        assert_eq!(
+            keyboard_scroll_target(280.0, 100.0, 300.0, "pagedown"),
+            Some(300.0)
+        );
+        assert_eq!(
+            keyboard_scroll_target(200.0, 100.0, 300.0, "home"),
+            Some(0.0)
+        );
+        assert_eq!(
+            keyboard_scroll_target(0.0, 100.0, 300.0, "end"),
+            Some(300.0)
+        );
+        assert_eq!(keyboard_scroll_target(50.0, 100.0, 0.0, "end"), Some(0.0));
+        assert_eq!(keyboard_scroll_target(50.0, 0.0, 300.0, "end"), None);
+        assert_eq!(
+            keyboard_scroll_target(50.0, 240.0, 80.0, "pagedown"),
+            Some(80.0)
+        );
+    }
+
+    #[test]
+    fn folder_options_scrollbar_capture_termination_is_idempotent_for_every_window_terminal() {
+        for _terminal in [
+            "mouse-up-outside",
+            "escape",
+            "deactivation",
+            "capture-loss",
+            "native-close",
+        ] {
+            let mut drag = Some(ScrollbarDragV1 {
+                page: FolderOptionsPage::Extensions,
+                grab_offset_y: 4.0,
+            });
+            assert!(terminate_drag(&mut drag));
+            assert!(!terminate_drag(&mut drag));
+        }
+    }
+
+    #[test]
+    fn folder_options_physical_pointer_samples_map_once_at_supported_scales() {
+        for scale in [1.0_f32, 1.25, 1.5, 2.0] {
+            let logical = 160.0_f32;
+            let physical = logical * scale;
+            assert!(((physical / scale) - logical).abs() <= f32::EPSILON);
+        }
+    }
+
+    #[test]
     fn disk_sampler_reentry_reuses_latest_completed_snapshot() {
         let expected = CacheUsageSnapshotV1 {
             icon_disk_bytes: Some(41),
@@ -915,8 +1130,42 @@ mod tests {
                 explorer_model::CacheTelemetryCategoryV1::MftService,
                 77,
             ),
+            explorer_model::CacheTelemetryEntryV1 {
+                id: explorer_model::CacheTelemetryIdV1::Bc7Pipeline,
+                category: explorer_model::CacheTelemetryCategoryV1::Pipeline,
+                availability: explorer_model::CacheTelemetryAvailabilityV1::Available(
+                    explorer_model::CacheTelemetryValueV1 {
+                        bytes: 88,
+                        limit_bytes: Some(99),
+                        entry_count: 2,
+                        counters: Some(explorer_model::CacheTelemetryCountersV1 {
+                            hits: 10,
+                            misses: 1,
+                        }),
+                    },
+                ),
+            },
         ])
-        .unwrap();
+        .unwrap()
+        .with_bc7_pipeline(explorer_model::Bc7PipelineTelemetryV1 {
+            queued_jobs: 3,
+            queue_limit: 32,
+            active_jobs: 1,
+            concurrency_limit: 2,
+            reserved_staging_bytes: 128,
+            completed_jobs: 9,
+            duplicate_jobs: 4,
+            cancelled_jobs: 5,
+            stale_jobs: 6,
+            fallbacks: 7,
+            persist_errors: 8,
+            icon_gpu_uploads: 12,
+            icon_gpu_evictions: 13,
+            thumbnail_gpu_uploads: 14,
+            thumbnail_gpu_evictions: 15,
+            gpu_supported: Some(true),
+            ..Default::default()
+        });
         let mut snapshot = CacheUsageSnapshotV1::default();
         snapshot.apply_host_telemetry(&telemetry);
         assert_eq!(snapshot.icon_disk_bytes, Some(11));
@@ -926,6 +1175,20 @@ mod tests {
         assert_eq!(snapshot.mft_volume_index_memory_bytes, Some(55));
         assert_eq!(snapshot.mft_file_data_memory_bytes, Some(66));
         assert_eq!(snapshot.mft_aggregate_memory_bytes, Some(77));
+        assert_eq!(snapshot.bc7_active_staging_bytes, Some(88));
+        assert_eq!(snapshot.bc7_staging_limit_bytes, Some(99));
+        assert_eq!(snapshot.bc7_active_encoders, Some(2));
+        assert_eq!(snapshot.bc7_encode_count, Some(10));
+        assert_eq!(snapshot.bc7_encode_errors, Some(1));
+        assert_eq!(snapshot.bc7_queued_jobs, Some(3));
+        assert_eq!(snapshot.bc7_queue_limit, Some(32));
+        assert_eq!(snapshot.bc7_active_jobs, Some(1));
+        assert_eq!(snapshot.bc7_concurrency_limit, Some(2));
+        assert_eq!(snapshot.bc7_reserved_staging_bytes, Some(128));
+        assert_eq!(snapshot.bc7_fallbacks, Some(7));
+        assert_eq!(snapshot.icon_gpu_uploads, Some(12));
+        assert_eq!(snapshot.thumbnail_gpu_evictions, Some(15));
+        assert_eq!(snapshot.bc7_gpu_supported, Some(true));
     }
 
     #[test]

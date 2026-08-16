@@ -63,6 +63,29 @@ const THUMBNAIL_CONCURRENCY_LIMIT: usize = 2;
 const FOREGROUND_SERVICE_EVENT_CAPACITY: usize = 512;
 const ENRICHMENT_SERVICE_EVENT_CAPACITY: usize = 512;
 
+fn lua_bookmark_request(
+    source: String,
+    current_folder: Option<std::path::PathBuf>,
+) -> Result<explorer_automation::LuaBookmarkRequest, &'static str> {
+    current_folder
+        .map(|current_folder| explorer_automation::LuaBookmarkRequest {
+            source,
+            current_folder,
+            timeout_ms: explorer_automation::BOOKMARK_LUA_TIMEOUT_MS,
+        })
+        .ok_or("Lua bookmarks require a filesystem folder.")
+}
+
+fn lua_bookmark_notice(result: explorer_automation::LuaBookmarkResult) -> String {
+    match result {
+        explorer_automation::LuaBookmarkResult::Completed => "Lua bookmark completed.".to_owned(),
+        explorer_automation::LuaBookmarkResult::TimedOut => "Lua bookmark timed out.".to_owned(),
+        explorer_automation::LuaBookmarkResult::Failed(error) => {
+            format!("Lua bookmark failed: {error}")
+        }
+    }
+}
+
 fn icon_prime_cap(settings: &explorer_model::ViewSettings, dpi: u16) -> usize {
     let logical_size = navigation_pane::view_icon_logical_size_for_settings(settings);
     let physical_size = ((u32::from(dpi) * u32::from(logical_size) + 48) / 96).clamp(16, 1_024);
@@ -1416,8 +1439,11 @@ impl ExplorerRoot {
         source: ActionSource,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         self.handle_action(action, source, window, cx);
+        self.state
+            .folder_options()
+            .is_none_or(|draft| draft.apply_error.is_none())
     }
 
     /// Connects the application-owned folder-size provider to the Details UI.
@@ -1888,6 +1914,15 @@ impl ExplorerRoot {
             changed = true;
         }
         for result in results {
+            if std::env::var_os("SUPEREXPLORER_FOLDER_SNAPSHOT_COUNTERS").is_some() {
+                tracing::info!(
+                    item_id = ?result.item_id,
+                    partial = result.partial,
+                    exact_bytes = ?result.exact_bytes,
+                    directory_facts = ?result.directory_facts,
+                    "validation folder-size result reached UI projection"
+                );
+            }
             if visuals.insert_result(result) {
                 changed = true;
             }
@@ -2765,6 +2800,24 @@ impl ExplorerRoot {
             );
         }
         false
+    }
+
+    fn persist_folder_options_draft(&self) -> bool {
+        let Some(observer) = &self.durable_state_observer else {
+            return false;
+        };
+        let Some(draft) = self.state.folder_options() else {
+            return false;
+        };
+        let mut tabs = self.state.tabs().clone();
+        tabs.active_tab_mut().view.settings = draft.settings.clone();
+        observer(
+            tabs,
+            draft.restore_previous_session,
+            self.state.persisted_quick_access(),
+            self.state.bookmarks().clone(),
+            self.durable_window_placement,
+        )
     }
 
     fn capture_durable_window_placement(&mut self, window: &Window, cx: &App) {
@@ -4904,7 +4957,27 @@ impl ExplorerRoot {
                 "opening context menu for exact hit identity"
             );
         }
-        let durable_action = is_durable_action(&action);
+        let mut durable_action = is_durable_action(&action);
+        if matches!(
+            action,
+            ExplorerAction::ApplyFolderOptions | ExplorerAction::ConfirmFolderOptions
+        ) {
+            if !self.persist_folder_options_draft() {
+                self.state.reject_folder_options_apply(
+                    state::FolderOptionsApplyFailureV1::Persistence,
+                    "Unable to save Folder Options. Check the session storage and try again.",
+                );
+                tracing::warn!(
+                    action = action.name(),
+                    "Folder Options persistence rejected before applying the draft"
+                );
+                cx.notify();
+                return;
+            }
+            // The prospective snapshot was persisted above so the reducer can
+            // now publish it atomically without a second observer submission.
+            durable_action = false;
+        }
         let address_is_editing = matches!(
             self.state.tabs().active_tab().view.address.mode,
             explorer_model::AddressBarMode::Editing
@@ -5159,20 +5232,17 @@ impl ExplorerRoot {
                         cx.notify();
                     }
                     explorer_model::BookmarkTarget::LuaScript { source } => {
-                        let Some(current_folder) = self
+                        let current_folder = self
                             .state
                             .active_location_for_extension_command()
-                            .and_then(|location| location.path().map(std::path::Path::to_path_buf))
-                        else {
-                            self.state
-                                .set_bookmark_notice("Lua bookmarks require a filesystem folder.");
-                            cx.notify();
-                            return;
-                        };
-                        let request = explorer_automation::LuaBookmarkRequest {
-                            source,
-                            current_folder,
-                            timeout_ms: explorer_automation::BOOKMARK_LUA_TIMEOUT_MS,
+                            .and_then(|location| location.path().map(std::path::Path::to_path_buf));
+                        let request = match lua_bookmark_request(source, current_folder) {
+                            Ok(request) => request,
+                            Err(notice) => {
+                                self.state.set_bookmark_notice(notice);
+                                cx.notify();
+                                return;
+                            }
                         };
                         cx.spawn(async move |this, cx| {
                             let result = cx
@@ -5182,18 +5252,7 @@ impl ExplorerRoot {
                                 })
                                 .await;
                             let _ = this.update(cx, |this, cx| {
-                                let notice = match result {
-                                    explorer_automation::LuaBookmarkResult::Completed => {
-                                        "Lua bookmark completed.".to_owned()
-                                    }
-                                    explorer_automation::LuaBookmarkResult::TimedOut => {
-                                        "Lua bookmark timed out.".to_owned()
-                                    }
-                                    explorer_automation::LuaBookmarkResult::Failed(error) => {
-                                        format!("Lua bookmark failed: {error}")
-                                    }
-                                };
-                                this.state.set_bookmark_notice(notice);
+                                this.state.set_bookmark_notice(lua_bookmark_notice(result));
                                 cx.notify();
                             });
                         })
@@ -5900,6 +5959,9 @@ impl ExplorerRoot {
         snapshot.thumbnail_gpu_limit = thumbnail_gpu.limit_bytes;
         snapshot.thumbnail_gpu_entries = thumbnail_gpu.entries;
         snapshot.bc7_gpu_supported = icon_gpu.supported;
+        let budgets = self.state.view_settings().cache_budgets;
+        snapshot.icon_bc7_enabled = budgets.icon_bc7_enabled;
+        snapshot.thumbnail_bc7_enabled = budgets.thumbnail_bc7_enabled;
         snapshot
     }
 
@@ -7427,11 +7489,37 @@ mod tests {
         captured_scrollbar_axis_to_logical, coalesce_directory_events, extension_ui_pump_due,
         file_view_global_command_action, file_view_item_command_action,
         file_view_navigation_target, folder_admission_for_entry, folder_size_result_is_current,
-        is_command_prompt_address, is_passive_pointer_action, physical_client_to_logical,
-        prepare_shell_texture_pixels, seed_active_visual_tab, should_end_address_edit,
-        should_end_inline_rename, synchronize_theme, thumbnail_texture,
-        window_title_for_history_entry,
+        is_command_prompt_address, is_passive_pointer_action, lua_bookmark_notice,
+        lua_bookmark_request, physical_client_to_logical, prepare_shell_texture_pixels,
+        seed_active_visual_tab, should_end_address_edit, should_end_inline_rename,
+        synchronize_theme, thumbnail_texture, window_title_for_history_entry,
     };
+
+    #[test]
+    fn lua_bookmark_request_rejects_non_filesystem_locations() {
+        assert_eq!(
+            lua_bookmark_request("return".into(), None),
+            Err("Lua bookmarks require a filesystem folder.")
+        );
+    }
+
+    #[test]
+    fn lua_bookmark_notices_cover_success_exception_and_timeout() {
+        assert_eq!(
+            lua_bookmark_notice(explorer_automation::LuaBookmarkResult::Completed),
+            "Lua bookmark completed."
+        );
+        assert_eq!(
+            lua_bookmark_notice(explorer_automation::LuaBookmarkResult::TimedOut),
+            "Lua bookmark timed out."
+        );
+        assert_eq!(
+            lua_bookmark_notice(explorer_automation::LuaBookmarkResult::Failed(
+                "expected failure".into()
+            )),
+            "Lua bookmark failed: expected failure"
+        );
+    }
 
     #[derive(Default)]
     struct RecordingDirectoryFactsRuntimeV1 {
@@ -9215,6 +9303,45 @@ mod tests {
 
         cache.invalidate_environment(144, explorer_model::ShellIconTheme::Dark);
         assert!(cache.entries.is_empty());
+    }
+
+    #[test]
+    fn compressed_texture_cannot_replace_a_newer_generation() {
+        let mut cache = VisibleItemIconCache::default();
+        let texture = || {
+            Arc::new(
+                gpui::RenderImage::new_bc7_srgb(gpui::CompressedRaster {
+                    kind: gpui::CompressedRasterKind::Icon,
+                    width: 4,
+                    height: 4,
+                    padded_width: 4,
+                    padded_height: 4,
+                    row_pitch: 16,
+                    blocks: Arc::from([0_u8; 16]),
+                })
+                .expect("valid compressed fixture"),
+            )
+        };
+        let location = explorer_model::LocationDescriptor::file_system(r"C:\bc7-stale.png");
+        let current = explorer_model::ShellIconKey {
+            item_id: None,
+            location: location.clone(),
+            size_bucket: 20,
+            dpi: 96,
+            theme: explorer_model::ShellIconTheme::Light,
+            association_generation: 9,
+            overlay_generation: 9,
+        };
+        let stale = explorer_model::ShellIconKey {
+            association_generation: 8,
+            overlay_generation: 8,
+            ..current.clone()
+        };
+        assert!(cache.insert(&current, texture()));
+        assert!(!cache.insert(&stale, texture()));
+        assert!(cache.entries.contains_key(&current));
+        assert!(!cache.entries.contains_key(&stale));
+        assert_eq!(cache.stats().stale_rejections, 1);
     }
 
     #[test]

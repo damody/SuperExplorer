@@ -24,8 +24,15 @@ pub enum LuaBookmarkResult {
 }
 
 pub fn execute_lua_bookmark(request: &LuaBookmarkRequest) -> LuaBookmarkResult {
+    execute_lua_bookmark_with(request, Lua::new_with)
+}
+
+fn execute_lua_bookmark_with(
+    request: &LuaBookmarkRequest,
+    create_runtime: impl FnOnce(StdLib, LuaOptions) -> mlua::Result<Lua>,
+) -> LuaBookmarkResult {
     let libraries = StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::UTF8;
-    let Ok(lua) = Lua::new_with(libraries, LuaOptions::new()) else {
+    let Ok(lua) = create_runtime(libraries, LuaOptions::new()) else {
         return LuaBookmarkResult::Failed("Unable to start the Lua runtime".into());
     };
     let deadline = Instant::now() + Duration::from_millis(request.timeout_ms.max(1));
@@ -93,6 +100,22 @@ mod tests {
             timeout_ms: BOOKMARK_LUA_TIMEOUT_MS,
         };
         assert_eq!(execute_lua_bookmark(&request), LuaBookmarkResult::Completed);
+    }
+
+    #[test]
+    fn reports_runtime_startup_failure() {
+        let request = LuaBookmarkRequest {
+            source: "return".into(),
+            current_folder: PathBuf::from(r"C:\fixture"),
+            timeout_ms: BOOKMARK_LUA_TIMEOUT_MS,
+        };
+        let result = execute_lua_bookmark_with(&request, |_, _| {
+            Err(mlua::Error::RuntimeError("fixture startup failure".into()))
+        });
+        assert_eq!(
+            result,
+            LuaBookmarkResult::Failed("Unable to start the Lua runtime".into())
+        );
     }
 
     #[test]

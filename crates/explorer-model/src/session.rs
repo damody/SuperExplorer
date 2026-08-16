@@ -279,6 +279,8 @@ impl Default for PersistedViewSettings {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PersistedCacheBudgetSettingsV1 {
+    pub icon_bc7_enabled: bool,
+    pub thumbnail_bc7_enabled: bool,
     pub icon_memory_mb: u32,
     pub base_icon_memory_mb: u32,
     pub thumbnail_memory_mb: u32,
@@ -305,6 +307,8 @@ impl Default for PersistedCacheBudgetSettingsV1 {
 impl From<crate::CacheBudgetSettingsV1> for PersistedCacheBudgetSettingsV1 {
     fn from(value: crate::CacheBudgetSettingsV1) -> Self {
         Self {
+            icon_bc7_enabled: value.icon_bc7_enabled,
+            thumbnail_bc7_enabled: value.thumbnail_bc7_enabled,
             icon_memory_mb: value.icon_memory_mb,
             base_icon_memory_mb: value.base_icon_memory_mb,
             thumbnail_memory_mb: value.thumbnail_memory_mb,
@@ -336,6 +340,8 @@ impl From<PersistedCacheBudgetSettingsV1> for crate::CacheBudgetSettingsV1 {
             value.mft_volume_index_mb
         };
         Self {
+            icon_bc7_enabled: value.icon_bc7_enabled,
+            thumbnail_bc7_enabled: value.thumbnail_bc7_enabled,
             icon_memory_mb: value.icon_memory_mb,
             base_icon_memory_mb: value.base_icon_memory_mb,
             thumbnail_memory_mb: value.thumbnail_memory_mb,
@@ -1719,6 +1725,51 @@ mod tests {
     }
 
     #[test]
+    fn restart_round_trip_restores_typed_bookmarks_and_order() {
+        let initial = HistoryEntry::new(LocationDescriptor::file_system(r"D:\fixture"), "fixture");
+        let window = ExplorerWindowState::new(initial);
+        let mut bookmarks = crate::Bookmarks::default();
+        bookmarks.begin_add(
+            "Folder".into(),
+            crate::BookmarkTarget::Folder {
+                location: LocationDescriptor::file_system(r"D:\fixture\folder"),
+            },
+        );
+        bookmarks.begin_add(
+            "Command".into(),
+            crate::BookmarkTarget::LuaScript {
+                source: "assert(current_folder)".into(),
+            },
+        );
+        let command_id = bookmarks.entries()[1].id;
+        assert!(bookmarks.begin_reorder(command_id, 0).changed());
+
+        let envelope = PersistedSessionEnvelope::project_with_bookmarks(
+            &window,
+            placement(),
+            &[],
+            &bookmarks,
+            true,
+            8,
+            provenance(),
+            RoadmapLimits::default(),
+        )
+        .expect("project bookmarks");
+        let bytes = envelope
+            .encode_pretty(RoadmapLimits::default())
+            .expect("persist session");
+        let restarted = PersistedSessionEnvelope::decode(&bytes, RoadmapLimits::default())
+            .expect("restore session");
+
+        assert_eq!(restarted.payload.bookmarks, bookmarks);
+        assert_eq!(restarted.payload.bookmarks.entries()[0].id, command_id);
+        assert!(matches!(
+            restarted.payload.bookmarks.entries()[0].target,
+            crate::BookmarkTarget::LuaScript { .. }
+        ));
+    }
+
+    #[test]
     fn checksum_schema_unknown_fields_and_enum_versions_are_rejected() {
         let envelope = projected();
         let bytes = envelope
@@ -1886,14 +1937,20 @@ mod tests {
         changed.cache_budgets.icon_memory_mb = 0;
         changed.cache_budgets.mft_lru_mb = u32::MAX;
         changed.cache_budgets.mft_volume_index_mb = 512;
+        changed.cache_budgets.icon_bc7_enabled = true;
+        changed.cache_budgets.thumbnail_bc7_enabled = false;
         let runtime = changed.to_runtime();
         assert_eq!(runtime.cache_budgets.icon_memory_mb, 8);
         assert_eq!(runtime.cache_budgets.mft_lru_mb, 16_384);
         assert_eq!(runtime.cache_budgets.mft_volume_index_mb, 1_024);
+        assert!(runtime.cache_budgets.icon_bc7_enabled);
+        assert!(!runtime.cache_budgets.thumbnail_bc7_enabled);
         let encoded = PersistedViewSettings::from(runtime);
         assert_eq!(encoded.cache_budgets.icon_memory_mb, 8);
         assert_eq!(encoded.cache_budgets.mft_lru_mb, 16_384);
         assert_eq!(encoded.cache_budgets.mft_volume_index_mb, 1_024);
+        assert!(encoded.cache_budgets.icon_bc7_enabled);
+        assert!(!encoded.cache_budgets.thumbnail_bc7_enabled);
     }
 
     #[test]
@@ -1901,7 +1958,7 @@ mod tests {
         let persisted = PersistedViewSettings::default();
         assert_eq!(
             persisted.cache_budgets.folder_size_cache_ttl_seconds,
-            crate::DEFAULT_FOLDER_SIZE_CACHE_TTL_SECONDS as u32
+            crate::DEFAULT_FOLDER_SIZE_CACHE_TTL_SECONDS
         );
 
         let mut changed = persisted.clone();
@@ -1919,7 +1976,7 @@ mod tests {
         let runtime = over.to_runtime();
         assert_eq!(
             runtime.cache_budgets.folder_size_cache_ttl_seconds,
-            crate::FOLDER_SIZE_CACHE_TTL_MAX_SECONDS as u32
+            crate::FOLDER_SIZE_CACHE_TTL_MAX_SECONDS
         );
     }
 }
