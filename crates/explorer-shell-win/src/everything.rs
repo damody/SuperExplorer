@@ -159,19 +159,21 @@ fn query_folder_index_provider(
         }
         let count = provider.result_count();
         for index in 0..count {
-            if output.len() >= max_entries {
-                return Err("Everything result exceeds folder snapshot node limit".to_owned());
-            }
             let path = provider
                 .result_path(index)
                 .ok_or_else(|| "Everything returned an invalid path".to_owned())?;
-            if !path_within_scope(&path, &canonical_root) || path == canonical_root {
-                continue;
-            }
             let metadata = std::fs::symlink_metadata(&path)
                 .map_err(|_| "Everything result is stale".to_owned())?;
             if metadata.file_type().is_symlink() || metadata_is_reparse(&metadata) {
                 return Err("Everything subtree contains a reparse point".to_owned());
+            }
+            let canonical_path = path
+                .canonicalize()
+                .map_err(|_| "Everything result is stale".to_owned())?;
+            if !path_within_scope(&canonical_path, &canonical_root)
+                || canonical_path == canonical_root
+            {
+                continue;
             }
             let is_directory = provider.result_is_folder(index);
             if is_directory != metadata.is_dir() {
@@ -182,8 +184,11 @@ fn query_folder_index_provider(
             if !is_directory && indexed_size != Some(bytes) {
                 return Err("Everything result size is stale".to_owned());
             }
+            if output.len() >= max_entries {
+                return Err("Everything result exceeds folder snapshot node limit".to_owned());
+            }
             output.push(IndexedFolderEntryV1 {
-                path,
+                path: canonical_path,
                 bytes,
                 is_directory,
             });
@@ -466,7 +471,12 @@ fn push_everything_literal(output: &mut String, character: char) {
 
 #[cfg(test)]
 mod tests {
-    use super::{EverythingApi, escape, path_within_scope, query_provider, render_expression};
+    use std::collections::{HashMap, HashSet};
+
+    use super::{
+        EverythingApi, escape, path_within_scope, query_folder_index_provider, query_provider,
+        render_expression,
+    };
 
     #[derive(Default)]
     struct FakeApi {
@@ -476,6 +486,8 @@ mod tests {
         search: String,
         fail: bool,
         queries: usize,
+        folders: HashSet<std::path::PathBuf>,
+        sizes: HashMap<std::path::PathBuf, u64>,
     }
 
     impl EverythingApi for FakeApi {
@@ -508,11 +520,18 @@ mod tests {
                 .get(self.offset.saturating_add(index) as usize)
                 .cloned()
         }
-        fn result_is_folder(&self, _index: u32) -> bool {
-            false
+        fn result_is_folder(&self, index: u32) -> bool {
+            self.result_path(index)
+                .is_some_and(|path| self.folders.contains(&path))
         }
-        fn result_size(&self, _index: u32) -> Option<u64> {
-            Some(0)
+        fn result_size(&self, index: u32) -> Option<u64> {
+            self.result_path(index).map(|path| {
+                self.sizes
+                    .get(&path)
+                    .copied()
+                    .or_else(|| std::fs::metadata(path).ok().map(|metadata| metadata.len()))
+                    .unwrap_or_default()
+            })
         }
         fn last_error(&self) -> u32 {
             55
@@ -555,6 +574,86 @@ mod tests {
             std::path::Path::new(r"C:\foobar\child.txt"),
             std::path::Path::new(r"C:\foo")
         ));
+    }
+
+    #[test]
+    fn folder_index_validates_live_kind_size_scope_staleness_and_bounds() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("everything-folder-index-{nonce}"));
+        let child = root.join("child");
+        let payload = child.join("payload.bin");
+        let escaped = root.with_extension("escaped.bin");
+        std::fs::create_dir_all(&child).unwrap();
+        std::fs::write(&payload, vec![0_u8; 11]).unwrap();
+        std::fs::write(&escaped, vec![0_u8; 7]).unwrap();
+
+        let mut provider = FakeApi {
+            results: vec![child.clone(), payload.clone(), escaped.clone()],
+            folders: HashSet::from([child.clone()]),
+            ..FakeApi::default()
+        };
+        let entries = query_folder_index_provider(&mut provider, &root, 2, || false).unwrap();
+        assert_eq!(entries.len(), 2);
+        let canonical_root = root.canonicalize().unwrap();
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.path.starts_with(&canonical_root))
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .find(|entry| !entry.is_directory)
+                .unwrap()
+                .bytes,
+            11
+        );
+
+        let mut bounded = FakeApi {
+            results: vec![child.clone(), payload.clone()],
+            folders: HashSet::from([child.clone()]),
+            ..FakeApi::default()
+        };
+        assert!(
+            query_folder_index_provider(&mut bounded, &root, 1, || false)
+                .unwrap_err()
+                .contains("node limit")
+        );
+
+        let mut stale = FakeApi {
+            results: vec![root.join("missing")],
+            ..FakeApi::default()
+        };
+        assert!(
+            query_folder_index_provider(&mut stale, &root, 10, || false)
+                .unwrap_err()
+                .contains("stale")
+        );
+
+        let mut mutated = FakeApi {
+            results: vec![payload.clone()],
+            sizes: HashMap::from([(payload.clone(), 10)]),
+            ..FakeApi::default()
+        };
+        assert!(
+            query_folder_index_provider(&mut mutated, &root, 10, || false)
+                .unwrap_err()
+                .contains("size is stale")
+        );
+
+        let mut cancelled = FakeApi {
+            results: vec![payload],
+            ..FakeApi::default()
+        };
+        assert_eq!(
+            query_folder_index_provider(&mut cancelled, &root, 10, || true).unwrap_err(),
+            "cancelled"
+        );
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_file(escaped);
     }
 
     #[test]

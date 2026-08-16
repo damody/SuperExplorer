@@ -509,6 +509,29 @@ pub(crate) fn deltas_after(
     Ok(deltas)
 }
 
+/// Validate one immutable delta against the last committed cursor and return
+/// the cursor that becomes visible only after the caller has applied the whole
+/// batch successfully.
+pub(crate) fn validate_delta_after(
+    cursor: MftCheckpointV2,
+    delta: &MftDeltaV2,
+) -> Result<MftCheckpointV2, String> {
+    if delta.volume != cursor.volume
+        || delta.journal_id != cursor.journal_id
+        || delta.generation != cursor.generation.saturating_add(1)
+        || delta.start_usn != cursor.next_usn
+        || delta.next_usn < delta.start_usn
+    {
+        return Err("MFT service delta chain is not contiguous".to_owned());
+    }
+    Ok(MftCheckpointV2::new(
+        cursor.volume,
+        cursor.journal_id,
+        delta.next_usn,
+        delta.generation,
+    ))
+}
+
 pub(crate) fn remove_volume_sidecars(cache: &Path, letter: char) -> Result<(), String> {
     let prefix = format!("{letter}.");
     for entry in fs::read_dir(cache)
@@ -978,6 +1001,56 @@ mod tests {
         let mismatch = MftCheckpointV2::new(volume, 11, 31, 1);
         assert!(publish_delta_and_checkpoint(temporary.path(), 'D', &delta, &mismatch).is_err());
         assert!(!checkpoint_path(temporary.path(), 'D', 1).exists());
+    }
+
+    #[test]
+    fn delta_chain_accepts_only_the_exact_next_commit_boundary() {
+        let volume = VolumeIdentityV2 { serial: 7 };
+        let cursor = MftCheckpointV2::new(volume, 11, 30, 4);
+        let valid = MftDeltaV2 {
+            schema: SCHEMA_V2,
+            volume,
+            journal_id: 11,
+            generation: 5,
+            start_usn: 30,
+            next_usn: 40,
+            changes: Vec::new(),
+        };
+        assert_eq!(
+            validate_delta_after(cursor, &valid).unwrap(),
+            MftCheckpointV2::new(volume, 11, 40, 5)
+        );
+
+        for invalid in [
+            MftDeltaV2 {
+                generation: 6,
+                ..valid.clone()
+            },
+            MftDeltaV2 {
+                start_usn: 29,
+                ..valid.clone()
+            },
+            MftDeltaV2 {
+                next_usn: 29,
+                ..valid.clone()
+            },
+            MftDeltaV2 {
+                journal_id: 12,
+                ..valid.clone()
+            },
+            MftDeltaV2 {
+                volume: VolumeIdentityV2 { serial: 8 },
+                ..valid.clone()
+            },
+        ] {
+            assert!(validate_delta_after(cursor, &invalid).is_err());
+        }
+
+        let committed = validate_delta_after(cursor, &valid).unwrap();
+        assert!(
+            validate_delta_after(committed, &valid).is_err(),
+            "duplicate replay must not advance the committed cursor"
+        );
     }
 
     #[test]

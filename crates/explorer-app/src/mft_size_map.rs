@@ -13,7 +13,7 @@ use std::{
 
 use windows::{
     Win32::{
-        Foundation::{CloseHandle, HANDLE},
+        Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
         Storage::FileSystem::{
             BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ATTRIBUTE_DIRECTORY, FILE_GENERIC_READ,
             FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle,
@@ -22,7 +22,7 @@ use windows::{
         System::{
             IO::DeviceIoControl,
             Ioctl::{FSCTL_ENUM_USN_DATA, FSCTL_GET_NTFS_FILE_RECORD, MFT_ENUM_DATA_V0},
-            Threading::{INFINITE, WaitForSingleObject},
+            Threading::{TerminateProcess, WaitForSingleObject},
         },
         UI::Shell::{SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW},
     },
@@ -415,6 +415,10 @@ impl MftIndexV1 {
     ) -> Result<Vec<u64>, String> {
         use crate::mft_journal::MftChangeKindV2;
 
+        if change.kind == MftChangeKindV2::Invalidate {
+            return Err("MFT topology change requires recovery".to_owned());
+        }
+
         let mut affected = self.ancestor_references(change.reference);
         if let Some(old) = self.entries.get(&change.reference).cloned()
             && let Some(children) = self.children.get_mut(&old.parent_reference)
@@ -444,9 +448,7 @@ impl MftIndexV1 {
                 self.entries.remove(&change.reference);
                 self.children.remove(&change.reference);
             }
-            MftChangeKindV2::Invalidate => {
-                return Err("MFT topology change requires recovery".to_owned());
-            }
+            MftChangeKindV2::Invalidate => unreachable!("handled before mutation"),
         }
         affected.sort_unstable();
         affected.dedup();
@@ -852,7 +854,11 @@ pub(crate) fn read_volume_index(
     path: &Path,
     cancelled: impl FnMut() -> bool,
 ) -> Result<MftIndexV1, String> {
-    read_volume_index_bounded(path, usize::MAX, usize::MAX, cancelled).map(|(index, _)| index)
+    let (index, complete) = read_volume_index_bounded(path, usize::MAX, usize::MAX, cancelled)?;
+    if !complete {
+        return Err("MFT enumeration did not prove a complete volume index".to_owned());
+    }
+    Ok(index)
 }
 
 pub(crate) fn read_volume_index_bounded(
@@ -913,6 +919,7 @@ pub(crate) fn read_volume_index_bounded(
             if entries.is_empty() {
                 return Err(error.to_string());
             }
+            complete = false;
             break;
         }
         let returned = returned as usize;
@@ -1043,8 +1050,30 @@ pub(crate) fn read_volume_index_with_helper(
         return Err("elevated MFT helper returned no process handle".to_owned());
     }
     let process = HandleGuard(execute.hProcess);
-    // SAFETY: the helper process handle remains owned by `process`.
-    let _ = unsafe { WaitForSingleObject(process.0, INFINITE) };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if cancelled() || std::time::Instant::now() >= deadline {
+            // SAFETY: this is the exact helper process created above; ending it
+            // prevents an elevated orphan from continuing after its bounded
+            // non-elevated requester has cancelled or timed out.
+            let _ = unsafe { TerminateProcess(process.0, 5) };
+            let _ = std::fs::remove_file(&output);
+            return Err(if cancelled() {
+                "elevated MFT helper was cancelled".to_owned()
+            } else {
+                "elevated MFT helper timed out".to_owned()
+            });
+        }
+        // SAFETY: the helper process handle remains owned by `process`.
+        match unsafe { WaitForSingleObject(process.0, 100) } {
+            WAIT_OBJECT_0 => break,
+            WAIT_TIMEOUT => continue,
+            _ => {
+                let _ = std::fs::remove_file(&output);
+                return Err("waiting for elevated MFT helper failed".to_owned());
+            }
+        }
+    }
     let result = read_index(&output);
     let _ = std::fs::remove_file(&output);
     result
@@ -1595,5 +1624,88 @@ mod tests {
         assert!(!index.children[&2].contains(&4));
         assert!(index.children[&3].contains(&4));
         assert_eq!(index.entries[&4].logical_bytes, 9);
+    }
+
+    #[test]
+    fn delta_mutation_matrix_updates_affected_aggregates_and_retains_unrelated_topology() {
+        use crate::mft_journal::{MftChangeKindV2, MftChangeV2};
+
+        let entry =
+            |reference, parent_reference, name: &str, logical_bytes, is_directory| MftEntryV1 {
+                reference,
+                parent_reference,
+                name: name.into(),
+                logical_bytes,
+                allocated_bytes: logical_bytes,
+                is_directory,
+            };
+        let mut index = MftIndexV1::from_entries(BTreeMap::from([
+            (1, entry(1, 1, "root", 0, true)),
+            (2, entry(2, 1, "old", 0, true)),
+            (3, entry(3, 1, "new", 0, true)),
+            (4, entry(4, 2, "payload.bin", 10, false)),
+            (5, entry(5, 3, "unrelated.bin", 7, false)),
+        ]));
+        let change = |kind, reference, parent_reference, name: &str, logical_bytes| MftChangeV2 {
+            kind,
+            reference,
+            parent_reference,
+            name: name.into(),
+            logical_bytes,
+            allocated_bytes: logical_bytes,
+            is_directory: false,
+            reason: 0,
+        };
+        let totals = |index: &MftIndexV1| MftAggregateIndexV1::build(index, 1).unwrap();
+
+        index
+            .apply_change(&change(MftChangeKindV2::Upsert, 4, 2, "payload.bin", 20))
+            .unwrap();
+        assert_eq!(totals(&index).get(2).unwrap().logical_bytes, 20); // grow
+        assert_eq!(totals(&index).get(3).unwrap().logical_bytes, 7); // unrelated retained
+
+        index
+            .apply_change(&change(MftChangeKindV2::Upsert, 4, 2, "payload.bin", 3))
+            .unwrap();
+        assert_eq!(totals(&index).get(2).unwrap().logical_bytes, 3); // truncate/overwrite
+
+        index
+            .apply_change(&change(MftChangeKindV2::Upsert, 6, 2, "created.bin", 5))
+            .unwrap();
+        assert_eq!(totals(&index).get(2).unwrap().logical_bytes, 8); // create
+        index
+            .apply_change(&change(MftChangeKindV2::Delete, 6, 2, "created.bin", 0))
+            .unwrap();
+        assert_eq!(totals(&index).get(2).unwrap().logical_bytes, 3); // delete
+
+        index
+            .apply_change(&change(MftChangeKindV2::Upsert, 4, 2, "renamed.bin", 3))
+            .unwrap();
+        assert_eq!(index.entries[&4].name, "renamed.bin"); // same-parent rename
+        assert_eq!(totals(&index).get(2).unwrap().logical_bytes, 3);
+
+        index
+            .apply_change(&change(MftChangeKindV2::Upsert, 4, 3, "moved.bin", 3))
+            .unwrap();
+        assert_eq!(totals(&index).get(2).unwrap().logical_bytes, 0); // old ancestry
+        assert_eq!(totals(&index).get(3).unwrap().logical_bytes, 10); // new ancestry
+
+        index
+            .apply_change(&change(MftChangeKindV2::Upsert, 7, 3, "hard-link.bin", 3))
+            .unwrap();
+        let linked = totals(&index);
+        assert_eq!(linked.get(3).unwrap().logical_bytes, 13);
+        assert_eq!(linked.get(3).unwrap().file_count, 3); // each directory entry counts
+
+        let entries_before = index.entries.clone();
+        let children_before = index.children.clone();
+        assert!(
+            index
+                .apply_change(&change(MftChangeKindV2::Invalidate, 4, 3, "ambiguous", 0))
+                .is_err()
+        );
+        assert_eq!(index.entries, entries_before);
+        assert_eq!(index.children, children_before); // recovery request is all-or-nothing
+        assert_eq!(index.entries[&5].logical_bytes, 7); // unrelated cache input retained
     }
 }
