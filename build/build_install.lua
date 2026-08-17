@@ -315,7 +315,16 @@ local function main()
     for define, file_path in pairs(superdesktop_inputs) do add_define(define, file_path) end
     local defines_path = path(logs, "installer-defines-" .. options.component .. ".nsh")
     write_file(defines_path, table.concat(define_lines, "\r\n") .. "\r\n")
-    local nsis_args = { "/V4", "/WX", "/DGENERATED_DEFINES=" .. defines_path, nsis_script }
+    local nsis_args = {
+        "/V4",
+        "/WX",
+        "/INPUTCHARSET",
+        "UTF8",
+        "/OUTPUTCHARSET",
+        "UTF8",
+        "/DGENERATED_DEFINES=" .. defines_path,
+        nsis_script,
+    }
     process.run({
         stage = "編譯 NSIS 安裝程式",
         exe = makensis,
