@@ -1,0 +1,16 @@
+{
+  "schema": "installer-input-output-matrix/v1",
+  "result": "passed",
+  "selected_pe_validation": "passed",
+  "selected_missing_and_invalid_fixtures": "passed",
+  "unselected_inputs_not_required": true,
+  "nsis_warnings_as_errors": true,
+  "generated_defines_include": true,
+  "atomic_publish": true,
+  "outputs": [
+    {"component": "all", "path": "dist/SuperExplorer-Setup-1.2026.8.17-x64.exe", "bytes": 12634653, "sha256": "e2234b9213c378e59b32dcc74a81023957cd285f5f705048f97841eec0cedd05"},
+    {"component": "superexplorer", "path": "dist/SuperExplorer-Test-Setup-1.2026.8.17-x64.exe", "bytes": 8776456, "sha256": "000263e7ebb8cf04b98ab1577113a01f8423b31ff54da31a5b94dd17a2ea9e06"},
+    {"component": "superdesktop", "path": "dist/SuperDesktop-Test-Setup-1.2026.8.17-x64.exe", "bytes": 4657962, "sha256": "a993aedcd530c744305435f9b50e01c3a1ba9bfae49bce0d2adab2e07165ef09"}
+  ],
+  "gate": "G-INSTALLER-INPUT"
+}

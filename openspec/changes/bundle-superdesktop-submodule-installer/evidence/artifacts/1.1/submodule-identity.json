@@ -1,0 +1,33 @@
+{
+  "schema": "superdesktop-submodule-identity/v1",
+  "recorded_at": "2026-08-17T03:28:43.8712513Z",
+  "parent_head": "029676ff9887bfa7526263820857390e87088e7a",
+  "submodule": {
+    "path": "SuperDesktop",
+    "origin": "https://github.com/damody/SuperDesktop.git",
+    "head": "dafb9c81809b8d1df47301e825fec7f6fc2b1651",
+    "parent_tree_mode": "160000",
+    "initialized": true,
+    "head_matches_gitlink": true,
+    "worktree_clean": true
+  },
+  "commands": [
+    "git -C SuperDesktop remote get-url origin",
+    "git -C SuperDesktop rev-parse HEAD",
+    "git -C SuperDesktop status --porcelain=v1 --untracked-files=all",
+    "git submodule status -- SuperDesktop",
+    "git ls-files --stage -- SuperDesktop"
+  ],
+  "staged_owned_paths": [
+    ".gitmodules",
+    "SuperDesktop"
+  ],
+  "unexpected_staged_paths": [],
+  "unrelated_parent_status": {
+    "entry_count": 14288,
+    "sha256": "41fcc745519b4552ac3b1ed78409f606580f1e31936028f211bf4d0f2ac5df2",
+    "mutation_performed": false
+  },
+  "gate": "G-SUBMODULE-ADMISSION",
+  "result": "passed"
+}

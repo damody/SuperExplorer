@@ -1,3 +1,6 @@
 [submodule "gpui-ce"]
 	path = vendor/gpui-ce
 	url = https://github.com/damody/gpui-ce-explorer.git
+[submodule "SuperDesktop"]
+	path = SuperDesktop
+	url = https://github.com/damody/SuperDesktop.git

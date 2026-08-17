@@ -1,0 +1,39 @@
+{
+  "schema": "component-installer-final-verification/v1",
+  "recorded_at": "2026-08-17T03:48:00Z",
+  "status": "passed",
+  "quality": {
+    "lua_syntax": "passed",
+    "component_fixture_test": "passed",
+    "installer_handoff_test": "passed",
+    "parent_cargo_fmt": "passed",
+    "superdesktop_cargo_fmt": "passed",
+    "superdesktop_locked_offline_release": "passed-from-submodule-root",
+    "nsis_warnings_as_errors": "passed-all-three-variants",
+    "owned_diff_check": "passed"
+  },
+  "command_correction": {
+    "rejected": "cargo build --manifest-path SuperDesktop/Cargo.toml from parent cwd",
+    "reason": "The parent Cargo source configuration selects a different GPUI feature surface.",
+    "authoritative": "cd SuperDesktop; cargo build --workspace --all-targets --release --locked --offline",
+    "authoritative_result": "passed"
+  },
+  "path_ownership": {
+    "staged_owned_paths": 24,
+    "unexpected_staged_paths": [],
+    "superdesktop_product_source_modified": false,
+    "unrelated_parent_changes_staged_or_reverted": false
+  },
+  "openspec_strict": "passed",
+  "evidence_records": 53,
+  "task_coverage_mappings": 53,
+  "detailed_task_structure": "passed",
+  "gates": {
+    "G-SUBMODULE-ADMISSION": "passed",
+    "G-COMPONENT-ISOLATION": "passed",
+    "G-INSTALLER-INPUT": "passed",
+    "G-INSTALLER-CONTENT": "passed",
+    "G-SHELL-SAFETY": "passed"
+  },
+  "release_disposition": "passed"
+}

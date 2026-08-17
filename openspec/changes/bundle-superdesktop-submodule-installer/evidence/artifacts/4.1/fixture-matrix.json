@@ -1,0 +1,12 @@
+{
+  "schema": "component-installer-fixtures/v1",
+  "result": "passed",
+  "mode_success_cases": 3,
+  "mode_negative_cases": 5,
+  "submodule_success_cases": 1,
+  "submodule_negative_cases": 5,
+  "pe_success_cases": 1,
+  "pe_negative_cases": 2,
+  "component_isolation": "passed",
+  "shell_safety": "passed"
+}

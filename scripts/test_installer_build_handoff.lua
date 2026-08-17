@@ -107,6 +107,7 @@ assert(type(failure.exit_code) == "number" and failure.exit_code ~= 0, "launch f
 local build_script = read_file(path(root, "build", "build_install.lua"))
 local batch = read_file(path(root, "build_install.bat"))
 local test_batch = read_file(path(root, "build_test_install.bat"))
+local desktop_test_batch = read_file(path(root, "build_desktop_test_install.bat"))
 local check_return = assert(build_script:find("if options.check then", 1, true))
 local output_validation = assert(build_script:find('validate_executable(output, "安裝程式")', 1, true))
 local launch = assert(build_script:find("process.start({", output_validation, true))
@@ -116,14 +117,15 @@ assert_contains(build_script:sub(launch), "cwd = dist", "installer launch")
 for _, forbidden in ipairs({ "Get-ChildItem", "latest installer", "newest installer", "*.exe" }) do
     assert_not_contains(build_script, forbidden, "build_install.lua")
 end
-assert_contains(build_script, '"*.rs", ":(exclude)sdk/**"', "installer Rust cleanliness SDK exclusion")
+assert_contains(build_script, '"*.rs"', "installer Rust cleanliness pathspec")
+assert_contains(build_script, '":(exclude)sdk/**"', "installer Rust cleanliness SDK exclusion")
 assert_contains(build_script, '"status", "--porcelain=v1", "--untracked-files=all"',
     "installer Rust cleanliness guard")
-assert_contains(build_script, 'elseif arg[index] == "--allow-dirty" then',
-    "test installer dirty-worktree option")
-assert_contains(build_script, "if not options.allow_dirty then",
-    "production installer cleanliness boundary")
-assert_contains(batch, '"%LUA_EXE%" "%BUILD_SCRIPT%" %*', "build_install.bat")
+assert_contains(build_script, 'installer_components.parse_options(arg)',
+    "component option parser")
+assert_contains(build_script, 'if options.component == "all" then',
+    "formal installer cleanliness boundary")
+assert_contains(batch, '"%LUA_EXE%" "%BUILD_SCRIPT%" --component all %*', "build_install.bat")
 assert_contains(batch, 'exit /b %BUILD_EXIT_CODE%', "build_install.bat")
 assert_contains(batch, "Installer build completed and launched", "build_install.bat")
 assert_contains(batch, "Installer build check completed; no installer was created or launched", "build_install.bat")
@@ -131,13 +133,22 @@ assert_contains(batch, '"%%~A"=="--check"', "build_install.bat")
 assert_not_contains(batch, "pause", "build_install.bat")
 assert_not_contains(batch, "請按任意鍵", "build_install.bat")
 assert_not_contains(batch, "dist\\", "build_install.bat")
-assert_contains(test_batch, '"%LUA_EXE%" "%BUILD_SCRIPT%" --allow-dirty %*',
+assert_contains(test_batch, '"%LUA_EXE%" "%BUILD_SCRIPT%" --component superexplorer --allow-superexplorer-dirty %*',
     "build_test_install.bat")
 assert_contains(test_batch, 'exit /b %BUILD_EXIT_CODE%', "build_test_install.bat")
 assert_contains(test_batch, '"%%~A"=="--check"', "build_test_install.bat")
-assert_contains(test_batch, "Test installer build completed", "build_test_install.bat")
+assert_contains(test_batch, "SuperExplorer test installer build completed", "build_test_install.bat")
 assert_not_contains(test_batch, "git.exe", "build_test_install.bat")
 assert_not_contains(test_batch, "pause", "build_test_install.bat")
+assert_contains(desktop_test_batch,
+    '"%LUA_EXE%" "%BUILD_SCRIPT%" --component superdesktop --allow-superdesktop-dirty %*',
+    "build_desktop_test_install.bat")
+assert_contains(desktop_test_batch, 'exit /b %BUILD_EXIT_CODE%', "build_desktop_test_install.bat")
+assert_contains(desktop_test_batch, '"%%~A"=="--check"', "build_desktop_test_install.bat")
+assert_contains(desktop_test_batch, "SuperDesktop test installer build completed",
+    "build_desktop_test_install.bat")
+assert_not_contains(desktop_test_batch, "git.exe", "build_desktop_test_install.bat")
+assert_not_contains(desktop_test_batch, "pause", "build_desktop_test_install.bat")
 
 write_file(path(output, "report.json"), [[{
   "schema": "installer-build-handoff-v1",

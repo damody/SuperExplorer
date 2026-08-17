@@ -1,4 +1,4 @@
-﻿@echo off
+@echo off
 setlocal
 chcp 65001 >nul
 
@@ -14,16 +14,16 @@ for %%A in (%*) do (
 )
 
 if not exist "%LUA_EXE%" (
-    echo [錯誤] 找不到專案隨附的 Lua 執行環境：%LUA_EXE% 1>&2
+    echo [ERROR] Bundled Lua runtime was not found: %LUA_EXE% 1>&2
     goto :finish
 )
 
 if not exist "%BUILD_SCRIPT%" (
-    echo [錯誤] 找不到安裝程式建置腳本：%BUILD_SCRIPT% 1>&2
+    echo [ERROR] Installer build script was not found: %BUILD_SCRIPT% 1>&2
     goto :finish
 )
 
-"%LUA_EXE%" "%BUILD_SCRIPT%" --component all %*
+"%LUA_EXE%" "%BUILD_SCRIPT%" --component superdesktop --allow-superdesktop-dirty %*
 set "BUILD_EXIT_CODE=%ERRORLEVEL%"
 
 :finish
@@ -31,19 +31,19 @@ echo.
 if not "%BUILD_EXIT_CODE%"=="0" goto :report_failure
 if "%CHECK_ONLY%"=="1" goto :report_check
 if "%NO_LAUNCH%"=="1" goto :report_built
-echo [SUCCESS] Installer build completed and launched.
+echo [SUCCESS] SuperDesktop test installer build completed and launched.
 goto :report_done
 
 :report_built
-echo [SUCCESS] Installer build completed without launching it.
+echo [SUCCESS] SuperDesktop test installer build completed without launching it.
 goto :report_done
 
 :report_check
-echo [SUCCESS] Installer build check completed; no installer was created or launched.
+echo [SUCCESS] SuperDesktop test installer build check completed; no installer was created or launched.
 goto :report_done
 
 :report_failure
-echo [FAILURE] Installer build failed with exit code %BUILD_EXIT_CODE%. 1>&2
+echo [FAILURE] SuperDesktop test installer build failed with exit code %BUILD_EXIT_CODE%. 1>&2
 
 :report_done
 echo.

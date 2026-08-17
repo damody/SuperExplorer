@@ -1,0 +1,617 @@
+{
+    "schema_version":  "1.0.0",
+    "change":  "bundle-superdesktop-submodule-installer",
+    "capabilities":  [
+                         "component-scoped-installer-build"
+                     ],
+    "tasks":  [
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/1.1.1",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-SUBMODULE-ADMISSION"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/1.1.2",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-SUBMODULE-ADMISSION"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/1.1.3",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-SUBMODULE-ADMISSION"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/1.1.4",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-SUBMODULE-ADMISSION"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/1.2.1",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-SUBMODULE-ADMISSION",
+                                    "G-COMPONENT-ISOLATION"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/1.2.2",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-SUBMODULE-ADMISSION",
+                                    "G-COMPONENT-ISOLATION"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/1.2.3",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-SUBMODULE-ADMISSION",
+                                    "G-COMPONENT-ISOLATION"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/1.2.4",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-SUBMODULE-ADMISSION",
+                                    "G-COMPONENT-ISOLATION"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/1.2.5",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-SUBMODULE-ADMISSION",
+                                    "G-COMPONENT-ISOLATION"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/1.2.6",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-SUBMODULE-ADMISSION",
+                                    "G-COMPONENT-ISOLATION"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/2.1.1",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-COMPONENT-ISOLATION"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/2.1.2",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-COMPONENT-ISOLATION"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/2.1.3",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-COMPONENT-ISOLATION"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/2.1.4",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-COMPONENT-ISOLATION"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/2.2.1",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-COMPONENT-ISOLATION",
+                                    "G-INSTALLER-INPUT"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/2.2.2",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-COMPONENT-ISOLATION",
+                                    "G-INSTALLER-INPUT"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/2.2.3",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-COMPONENT-ISOLATION",
+                                    "G-INSTALLER-INPUT"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/2.2.4",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-COMPONENT-ISOLATION",
+                                    "G-INSTALLER-INPUT"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/2.3.1",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-INSTALLER-INPUT"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/2.3.2",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-INSTALLER-INPUT"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/2.3.3",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-INSTALLER-INPUT"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/2.3.4",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-INSTALLER-INPUT"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/2.3.5",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-INSTALLER-INPUT"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/3.1.1",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/3.1.2",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/3.1.3",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/3.1.4",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/3.2.1",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-INSTALLER-CONTENT"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/3.2.2",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-INSTALLER-CONTENT"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/3.2.3",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-INSTALLER-CONTENT"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/3.2.4",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-INSTALLER-CONTENT"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/3.3.1",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/3.3.2",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/3.3.3",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/3.3.4",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/4.1.1",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-SUBMODULE-ADMISSION",
+                                    "G-COMPONENT-ISOLATION",
+                                    "G-INSTALLER-INPUT",
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/4.1.2",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-SUBMODULE-ADMISSION",
+                                    "G-COMPONENT-ISOLATION",
+                                    "G-INSTALLER-INPUT",
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/4.1.3",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-SUBMODULE-ADMISSION",
+                                    "G-COMPONENT-ISOLATION",
+                                    "G-INSTALLER-INPUT",
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/4.1.4",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-SUBMODULE-ADMISSION",
+                                    "G-COMPONENT-ISOLATION",
+                                    "G-INSTALLER-INPUT",
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/4.1.5",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-SUBMODULE-ADMISSION",
+                                    "G-COMPONENT-ISOLATION",
+                                    "G-INSTALLER-INPUT",
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/4.1.6",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-SUBMODULE-ADMISSION",
+                                    "G-COMPONENT-ISOLATION",
+                                    "G-INSTALLER-INPUT",
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/4.2.1",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-INSTALLER-INPUT",
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/4.2.2",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-INSTALLER-INPUT",
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/4.2.3",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-INSTALLER-INPUT",
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/4.2.4",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-INSTALLER-INPUT",
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/4.2.5",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-INSTALLER-INPUT",
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/4.2.6",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-INSTALLER-INPUT",
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/4.3.1",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-SUBMODULE-ADMISSION",
+                                    "G-COMPONENT-ISOLATION",
+                                    "G-INSTALLER-INPUT",
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/4.3.2",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-SUBMODULE-ADMISSION",
+                                    "G-COMPONENT-ISOLATION",
+                                    "G-INSTALLER-INPUT",
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/4.3.3",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-SUBMODULE-ADMISSION",
+                                    "G-COMPONENT-ISOLATION",
+                                    "G-INSTALLER-INPUT",
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/4.3.4",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-SUBMODULE-ADMISSION",
+                                    "G-COMPONENT-ISOLATION",
+                                    "G-INSTALLER-INPUT",
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/4.3.5",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-SUBMODULE-ADMISSION",
+                                    "G-COMPONENT-ISOLATION",
+                                    "G-INSTALLER-INPUT",
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  },
+                  {
+                      "task_id":  "bundle-superdesktop-submodule-installer/4.3.6",
+                      "mandatory":  true,
+                      "capability_id":  "component-scoped-installer-build",
+                      "requirement_id":  "component-scoped-installer-build",
+                      "scenario_id":  "component-mode-and-gate-contract",
+                      "gates":  [
+                                    "G-SUBMODULE-ADMISSION",
+                                    "G-COMPONENT-ISOLATION",
+                                    "G-INSTALLER-INPUT",
+                                    "G-INSTALLER-CONTENT",
+                                    "G-SHELL-SAFETY"
+                                ]
+                  }
+              ]
+}

@@ -1,0 +1,13 @@
+{
+  "schema": "superdesktop-nsis-contract/v1",
+  "result": "passed",
+  "shared_include": "installer/SuperDesktopFiles.nsh",
+  "sha256": "12c18cdf2cd967a7f15526c0e35a55b5b7002c7fcc8846ade52a57a5c456cfea",
+  "required_executables": 5,
+  "shared_install_macro": true,
+  "shared_uninstall_macro": true,
+  "automatic_shell_apply": false,
+  "explorer_termination": false,
+  "reboot_or_logoff": false,
+  "gates": ["G-INSTALLER-CONTENT", "G-SHELL-SAFETY"]
+}
