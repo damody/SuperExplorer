@@ -1,0 +1,12 @@
+{
+  "schema": "installer-batch-routing/v1",
+  "result": "passed",
+  "routes": [
+    {"entry": "build_install.bat", "component": "all", "dirty_allowance": null, "sha256": "25bfb055d195d857259233132fea600dc5e956d1031ec30a61d0c5cb8588b684"},
+    {"entry": "build_test_install.bat", "component": "superexplorer", "dirty_allowance": "superexplorer", "sha256": "b97382218cbffee487dda21f71cc01921a16e5584882cdf98886bcd4412c1b5c"},
+    {"entry": "build_desktop_test_install.bat", "component": "superdesktop", "dirty_allowance": "superdesktop", "sha256": "d745a6de66be7ccd25e8d14edceb8ffd40b6b7bd0ed2578a471233bfe3e10a97"}
+  ],
+  "argument_forwarding": "passed",
+  "check_and_no_launch_messages": "passed",
+  "gate": "G-COMPONENT-ISOLATION"
+}

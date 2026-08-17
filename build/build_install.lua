@@ -12,6 +12,7 @@ local path_util = require("path")
 local process = require("process")
 local publish = require("publish")
 local sdk_version = require("sdk_version")
+local installer_components = require("installer_components")
 
 if script_dir == "build" then
     script_dir = path_util.join(lfs.currentdir(), "build")
@@ -38,6 +39,12 @@ local function read_file(file_path)
     local contents = assert(file:read("*a"))
     assert(file:close())
     return contents
+end
+
+local function write_file(file_path, contents)
+    local file = assert(io.open(file_path, "wb"))
+    assert(file:write(contents))
+    assert(file:close())
 end
 
 local function powershell_literal(value)
@@ -105,158 +112,216 @@ local function find_makensis()
 end
 
 local function parse_options()
-    local options = { check = false, skip_build = false, no_launch = false, allow_dirty = false }
-    for index = 1, #arg do
-        if arg[index] == "--check" then
-            options.check = true
-        elseif arg[index] == "--skip-build" then
-            options.skip_build = true
-        elseif arg[index] == "--no-launch" then
-            options.no_launch = true
-        elseif arg[index] == "--allow-dirty" then
-            options.allow_dirty = true
-        else
-            error("未知參數：" .. tostring(arg[index]), 0)
-        end
+    return installer_components.parse_options(arg)
+end
+
+local function run_capture(stage, cwd, log_path, args)
+    process.run({ stage = stage, exe = "git.exe", args = args, cwd = cwd, log_path = log_path })
+    return read_file(log_path):match("^%s*(.-)%s*$")
+end
+
+local function admit_superdesktop(superdesktop_root, logs, formal)
+    require_file(path(superdesktop_root, "Cargo.toml"), "SuperDesktop Cargo manifest")
+    if not lfs.attributes(path(superdesktop_root, ".git")) then
+        error("SuperDesktop submodule 尚未初始化", 0)
     end
-    return options
+    local head = run_capture(
+        "讀取 SuperDesktop HEAD", superdesktop_root,
+        path(logs, "installer-superdesktop-head.log"), { "rev-parse", "HEAD" }
+    )
+    if not head:match("^[0-9a-fA-F]+$") then error("SuperDesktop HEAD 無效", 0) end
+    if not formal then return head end
+
+    local declared_url = run_capture(
+        "讀取 SuperDesktop .gitmodules URL", root,
+        path(logs, "installer-superdesktop-declared-url.log"),
+        { "config", "-f", ".gitmodules", "--get", "submodule.SuperDesktop.url" }
+    )
+    local configured_url = run_capture(
+        "讀取 SuperDesktop submodule URL", root,
+        path(logs, "installer-superdesktop-configured-url.log"),
+        { "config", "--get", "submodule.SuperDesktop.url" }
+    )
+    local origin_url = run_capture(
+        "讀取 SuperDesktop origin", superdesktop_root,
+        path(logs, "installer-superdesktop-origin.log"), { "remote", "get-url", "origin" }
+    )
+    local tree_entry = run_capture(
+        "讀取 SuperDesktop parent gitlink", root,
+        path(logs, "installer-superdesktop-gitlink.log"), { "ls-files", "--stage", "--", "SuperDesktop" }
+    )
+    local mode, gitlink = tree_entry:match("^(%d+)%s+([0-9a-fA-F]+)%s+0%s+SuperDesktop$")
+    local status = run_capture(
+        "檢查 SuperDesktop 原始碼是否已提交", superdesktop_root,
+        path(logs, "installer-superdesktop-status.log"),
+        { "status", "--porcelain=v1", "--untracked-files=all" }
+    )
+    installer_components.validate_submodule_identity({
+        initialized = true,
+        head = head,
+        declared_url = declared_url,
+        configured_url = configured_url,
+        origin_url = origin_url,
+        mode = mode,
+        gitlink = gitlink,
+        status = status,
+    })
+    return head
 end
 
 local function validate_executable(file_path, description)
-    require_file(file_path, description)
-    local file = assert(io.open(file_path, "rb"))
-    local signature = file:read(2)
-    local size = assert(file:seek("end"))
-    assert(file:close())
-    if signature ~= "MZ" or size < 1024 then
-        error(description .. "不是有效的 Windows 執行檔：" .. file_path, 0)
-    end
-    return size
+    return installer_components.validate_pe(file_path, description)
 end
 
 local function main()
     local options = parse_options()
     local version = commit_version()
     local logs = path(script_dir, "logs")
+    local superdesktop_root = path(root, "SuperDesktop")
 
-    print("SuperExplorer 安裝程式建置")
+    print("SuperExplorer / SuperDesktop 安裝程式建置")
     print("版本庫：" .. root)
     print("版本：" .. version)
+    print("元件模式：" .. options.component)
     print("Lua 執行環境：" .. tostring(arg[-1]))
 
     fs.mkdir_p(logs)
-    if not options.allow_dirty then
+    if options.component == "all" then
         reject_uncommitted_rust(logs)
     end
 
     local makensis = find_makensis()
-    local finalizer = require_file(
-        path(root, "scripts", "finalize_windows_artifact.ps1"),
-        "發行版最終處理腳本"
-    )
-    local nsis_script = require_file(
-        path(root, "installer", "SuperExplorer.nsi"),
-        "NSIS 腳本"
-    )
-    local plugin_specs = {
-        { define = "PLUGIN_FOLDER_SIZE", root = "rust-folder-size-visual-column", dll = "rust_folder_size_visual_column.dll" },
-        { define = "PLUGIN_SIZE_MAP", root = "rust-folder-size-map-view", dll = "rust_folder_size_map_view.dll" },
-        { define = "PLUGIN_RUST_TOKEI", root = "rust-tokei-code-lines-column", dll = "rust_tokei_code_lines_column.dll" },
-        { define = "PLUGIN_LUA_TOKEI", root = "lua-tokei-code-lines-column", dll = "lua_tokei_code_lines_column.dll" },
-        { define = "PLUGIN_LOCK_OWNER", root = "rust-lock-owner-column", dll = "rust_lock_owner_column.dll" },
-        { define = "PLUGIN_EXIF_RENAME", root = "rust-exif-rename-command", dll = "rust_exif_rename_command.dll" },
-        { define = "PLUGIN_7Z", root = "rust-7z-virtual-folder", dll = "rust_7z_virtual_folder.dll" },
-        { define = "PLUGIN_BULK_FOLDER", root = "lua-bulk-folder-generator", dll = "lua_bulk_folder_generator.dll" },
-    }
-    for _, plugin in ipairs(plugin_specs) do
-        plugin.manifest = require_file(path(root, "sdk", "fixtures", plugin.root, "Cargo.toml"), plugin.root .. " manifest")
-        plugin.path = path(root, "sdk", "fixtures", plugin.root, "target", "x86_64-pc-windows-msvc", "release", plugin.dll)
+    local nsis_script = require_file(path(root, "installer", options.component == "superdesktop" and "SuperDesktop.nsi" or "SuperExplorer.nsi"), "NSIS 腳本")
+    if options.include_superdesktop then
+        require_file(path(root, "installer", "SuperDesktopFiles.nsh"), "SuperDesktop NSIS 共用檔")
+        admit_superdesktop(superdesktop_root, logs, options.component == "all")
     end
-    local release_executable = path(root, "target", "release", "SuperExplorer.exe")
-    local broker_executable = path(root, "target", "release", "explorer-extension-broker.exe")
-    local mft_helper_executable = path(root, "target", "release", "superexplorer-mft-helper.exe")
-    local mft_service_executable = path(root, "target", "release", "superexplorer-mft-service.exe")
-    local worker_executable = path(root, "target", "release", "explorer-extension-worker.exe")
-    local everything_dll = path(root, "target", "release", "Everything64.dll")
+
+    local finalizer
+    local plugin_specs = {}
+    local superexplorer_inputs = {}
+    if options.include_superexplorer then
+        finalizer = require_file(path(root, "scripts", "finalize_windows_artifact.ps1"), "發行版最終處理腳本")
+        plugin_specs = {
+            { define = "PLUGIN_FOLDER_SIZE", root = "rust-folder-size-visual-column", dll = "rust_folder_size_visual_column.dll" },
+            { define = "PLUGIN_SIZE_MAP", root = "rust-folder-size-map-view", dll = "rust_folder_size_map_view.dll" },
+            { define = "PLUGIN_RUST_TOKEI", root = "rust-tokei-code-lines-column", dll = "rust_tokei_code_lines_column.dll" },
+            { define = "PLUGIN_LUA_TOKEI", root = "lua-tokei-code-lines-column", dll = "lua_tokei_code_lines_column.dll" },
+            { define = "PLUGIN_LOCK_OWNER", root = "rust-lock-owner-column", dll = "rust_lock_owner_column.dll" },
+            { define = "PLUGIN_EXIF_RENAME", root = "rust-exif-rename-command", dll = "rust_exif_rename_command.dll" },
+            { define = "PLUGIN_7Z", root = "rust-7z-virtual-folder", dll = "rust_7z_virtual_folder.dll" },
+            { define = "PLUGIN_BULK_FOLDER", root = "lua-bulk-folder-generator", dll = "lua_bulk_folder_generator.dll" },
+        }
+        for _, plugin in ipairs(plugin_specs) do
+            plugin.manifest = require_file(path(root, "sdk", "fixtures", plugin.root, "Cargo.toml"), plugin.root .. " manifest")
+            plugin.path = path(root, "sdk", "fixtures", plugin.root, "target", "x86_64-pc-windows-msvc", "release", plugin.dll)
+        end
+        superexplorer_inputs = {
+            APP_EXE = path(root, "target", "release", "SuperExplorer.exe"),
+            BROKER_EXE = path(root, "target", "release", "explorer-extension-broker.exe"),
+            MFT_HELPER_EXE = path(root, "target", "release", "superexplorer-mft-helper.exe"),
+            MFT_SERVICE_EXE = path(root, "target", "release", "superexplorer-mft-service.exe"),
+            WORKER_EXE = path(root, "target", "release", "explorer-extension-worker.exe"),
+            EVERYTHING_DLL = path(root, "target", "release", "Everything64.dll"),
+        }
+    end
+
+    local superdesktop_inputs = {}
+    if options.include_superdesktop then
+        local release = path(superdesktop_root, "target", "release")
+        superdesktop_inputs = {
+            SD_APP_EXE = path(release, "superdesktop-app.exe"),
+            SD_GUARDIAN_EXE = path(release, "superdesktop-guardian.exe"),
+            SD_INSTALLER_EXE = path(release, "shell-installer.exe"),
+            SD_PROVIDER_EXE = path(release, "shell-provider-host.exe"),
+            SD_NOTIFICATION_EXE = path(release, "notification-area-host.exe"),
+        }
+    end
+
     local dist = path(root, "dist")
-    local output = path(dist, "SuperExplorer-Setup-" .. version .. "-x64.exe")
+    local output_stem = options.component == "all" and "SuperExplorer-Setup-"
+        or options.component == "superexplorer" and "SuperExplorer-Test-Setup-"
+        or "SuperDesktop-Test-Setup-"
+    local output = path(dist, output_stem .. version .. "-x64.exe")
     local temporary_name = assert(os.tmpname():match("[^\\/]+$"))
-    local temporary_output = path(dist, "." .. temporary_name .. "-SuperExplorer-Setup.exe")
+    local temporary_output = path(dist, "." .. temporary_name .. "-" .. output_stem .. "temporary.exe")
 
     print("NSIS 執行環境：" .. makensis)
 
     if options.check then
-        print("[完成] 安裝程式建置輸入與工具皆可使用")
+        print("[完成] " .. options.component .. " 安裝程式工具、layout 與 admission 皆可使用")
         return 0
     end
 
     fs.mkdir_p(dist)
 
     if not options.skip_build then
-        process.run({
-            stage = "建置並驗證發行版執行檔",
-            exe = "powershell.exe",
-            args = {
-                "-NoLogo", "-NoProfile", "-NonInteractive",
-                "-ExecutionPolicy", "Bypass",
-                "-File", finalizer,
-                "-Profile", "release",
-            },
-            cwd = root,
-            log_path = path(logs, "installer-release.log"),
-        })
-        for _, plugin in ipairs(plugin_specs) do
-        process.run({
-            stage = "建置內附 rust-folder-size-visual-column Plugin",
-            exe = "powershell.exe",
-            args = {
-                "-NoLogo", "-NoProfile", "-NonInteractive",
-                "-ExecutionPolicy", "Bypass", "-Command",
-                "$ErrorActionPreference='Stop'; & cargo.exe build --manifest-path "
-                    .. powershell_literal(plugin.manifest)
-                    .. " --release --target x86_64-pc-windows-msvc --locked --offline; exit $LASTEXITCODE",
-            },
-            cwd = root,
-            log_path = path(logs, "installer-plugin-" .. plugin.root .. "-release.log"),
-        }) end
+        if options.include_superexplorer then
+            process.run({
+                stage = "建置並驗證 SuperExplorer 發行版執行檔",
+                exe = "powershell.exe",
+                args = { "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", finalizer, "-Profile", "release" },
+                cwd = root,
+                log_path = path(logs, "installer-superexplorer-release.log"),
+            })
+            for _, plugin in ipairs(plugin_specs) do
+                process.run({
+                    stage = "建置內附 " .. plugin.root .. " Plugin",
+                    exe = "powershell.exe",
+                    args = {
+                        "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
+                        "$ErrorActionPreference='Stop'; & cargo.exe build --manifest-path " .. powershell_literal(plugin.manifest)
+                            .. " --release --target x86_64-pc-windows-msvc --locked --offline; exit $LASTEXITCODE",
+                    },
+                    cwd = root,
+                    log_path = path(logs, "installer-plugin-" .. plugin.root .. "-release.log"),
+                })
+            end
+        end
+        if options.include_superdesktop then
+            process.run({
+                stage = "建置 SuperDesktop locked offline release workspace",
+                exe = "cargo.exe",
+                args = { "build", "--workspace", "--all-targets", "--release", "--locked", "--offline" },
+                cwd = superdesktop_root,
+                log_path = path(logs, "installer-superdesktop-release.log"),
+            })
+        end
     end
 
-    local application_size = validate_executable(release_executable, "發行版執行檔")
-    validate_executable(broker_executable, "extension broker")
-    validate_executable(mft_helper_executable, "MFT helper")
-    validate_executable(mft_service_executable, "MFT service")
-    validate_executable(worker_executable, "extension worker")
-    validate_executable(everything_dll, "Everything SDK DLL")
-    local plugin_size = 0
-    for _, plugin in ipairs(plugin_specs) do
-        plugin_size = plugin_size + validate_executable(plugin.path, plugin.root .. " Plugin DLL")
+    local selected_size = 0
+    for define, file_path in pairs(superexplorer_inputs) do
+        selected_size = selected_size + validate_executable(file_path, "SuperExplorer " .. define)
     end
+    for _, plugin in ipairs(plugin_specs) do
+        selected_size = selected_size + validate_executable(plugin.path, plugin.root .. " Plugin DLL")
+    end
+    for define, file_path in pairs(superdesktop_inputs) do
+        selected_size = selected_size + validate_executable(file_path, "SuperDesktop " .. define)
+    end
+
     os.remove(temporary_output)
+    local define_lines = {}
+    local function add_define(name, value)
+        value = tostring(value)
+        if value:find('["\r\n]') then error("NSIS define 含有不允許的字元：" .. name, 0) end
+        define_lines[#define_lines + 1] = string.format('!define %s "%s"', name, value)
+    end
+    add_define("APP_VERSION", version)
+    add_define("OUTPUT_FILE", temporary_output)
+    if options.component == "all" then define_lines[#define_lines + 1] = "!define INCLUDE_SUPERDESKTOP 1" end
+    for define, file_path in pairs(superexplorer_inputs) do add_define(define, file_path) end
+    for _, plugin in ipairs(plugin_specs) do add_define(plugin.define, plugin.path) end
+    for define, file_path in pairs(superdesktop_inputs) do add_define(define, file_path) end
+    local defines_path = path(logs, "installer-defines-" .. options.component .. ".nsh")
+    write_file(defines_path, table.concat(define_lines, "\r\n") .. "\r\n")
+    local nsis_args = { "/V4", "/WX", "/DGENERATED_DEFINES=" .. defines_path, nsis_script }
     process.run({
         stage = "編譯 NSIS 安裝程式",
         exe = makensis,
-        args = {
-            "/V4", "/WX",
-            "/DAPP_VERSION=" .. version,
-            "/DAPP_EXE=" .. release_executable,
-            "/DBROKER_EXE=" .. broker_executable,
-            "/DMFT_HELPER_EXE=" .. mft_helper_executable,
-            "/DMFT_SERVICE_EXE=" .. mft_service_executable,
-            "/DWORKER_EXE=" .. worker_executable,
-            "/DEVERYTHING_DLL=" .. everything_dll,
-            "/DPLUGIN_FOLDER_SIZE=" .. plugin_specs[1].path,
-            "/DPLUGIN_SIZE_MAP=" .. plugin_specs[2].path,
-            "/DPLUGIN_RUST_TOKEI=" .. plugin_specs[3].path,
-            "/DPLUGIN_LUA_TOKEI=" .. plugin_specs[4].path,
-            "/DPLUGIN_LOCK_OWNER=" .. plugin_specs[5].path,
-            "/DPLUGIN_EXIF_RENAME=" .. plugin_specs[6].path,
-            "/DPLUGIN_7Z=" .. plugin_specs[7].path,
-            "/DPLUGIN_BULK_FOLDER=" .. plugin_specs[8].path,
-            "/DOUTPUT_FILE=" .. temporary_output,
-            nsis_script,
-        },
+        args = nsis_args,
         cwd = root,
-        log_path = path(logs, "installer-nsis.log"),
+        log_path = path(logs, "installer-nsis-" .. options.component .. ".log"),
     })
     validate_executable(temporary_output, "暫存安裝程式")
     publish.apk(temporary_output, output)
@@ -270,13 +335,12 @@ local function main()
         })
     end
 
-    print(string.format("[完成] 應用程式：%s（%d 位元組）", release_executable, application_size))
-    print(string.format("[完成] 內附 8 個 Plugin（%d 位元組）", plugin_size))
+    print(string.format("[完成] 模式：%s，選取輸入合計 %d 位元組", options.component, selected_size))
     print(string.format("[完成] 安裝程式：%s（%d 位元組）", output, installer_size))
     if options.no_launch then
         print("[完成] 已略過啟動安裝程式")
     else
-        print("[完成] 已啟動本次建置的 SuperExplorer 安裝程式")
+        print("[完成] 已啟動本次建置的 " .. options.component .. " 安裝程式")
     end
     return 0
 end

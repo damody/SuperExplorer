@@ -1,0 +1,10 @@
+{
+  "schema": "superexplorer-installer-variants/v1",
+  "result": "passed",
+  "source": "installer/SuperExplorer.nsi",
+  "sha256": "98348ed70c49045911f17a35ee9b757a001147e24ea6785e82acbf9ab5e136b5",
+  "superexplorer_only": {"superdesktop_content": false, "service_and_plugins_preserved": true},
+  "combined": {"superdesktop_content": true, "adjacent_to_superexplorer": true, "combined_uninstall": true},
+  "languages": ["English", "TradChinese", "SimpChinese"],
+  "gate": "G-INSTALLER-CONTENT"
+}

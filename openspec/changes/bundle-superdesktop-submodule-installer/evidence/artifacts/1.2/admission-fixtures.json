@@ -1,0 +1,12 @@
+{
+  "schema": "installer-admission-fixtures/v1",
+  "result": "passed",
+  "component_modes": ["all", "superexplorer", "superdesktop"],
+  "successful_mode_cases": 3,
+  "negative_mode_cases": 5,
+  "successful_submodule_cases": 1,
+  "negative_submodule_cases": ["missing-initialization", "wrong-origin", "missing-gitlink", "gitlink-mismatch", "dirty-formal-source"],
+  "diagnostics_stable": true,
+  "source": "evidence/artifacts/4.1/fixture-matrix.json",
+  "gates": ["G-SUBMODULE-ADMISSION", "G-COMPONENT-ISOLATION"]
+}

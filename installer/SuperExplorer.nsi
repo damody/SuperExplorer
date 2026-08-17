@@ -6,6 +6,10 @@
 ${Using:StrFunc} StrStr
 ${Using:StrFunc} UnStrStr
 
+!ifdef GENERATED_DEFINES
+    !include "${GENERATED_DEFINES}"
+!endif
+
 !ifndef APP_VERSION
     !error "APP_VERSION must be provided by build_install.lua"
 !endif
@@ -32,6 +36,10 @@ ${Using:StrFunc} UnStrStr
 !endif
 !ifndef PLUGIN_FOLDER_SIZE
     !error "All eight bundled plugin paths must be provided by build_install.lua"
+!endif
+
+!ifdef INCLUDE_SUPERDESKTOP
+    !include "SuperDesktopFiles.nsh"
 !endif
 
 !define PRODUCT_NAME "SuperExplorer"
@@ -177,6 +185,10 @@ service_ready_for_files:
     File /oname=rust_7z_virtual_folder.dll "${PLUGIN_7Z}"
     File /oname=lua_bulk_folder_generator.dll "${PLUGIN_BULK_FOLDER}"
 
+    !ifdef INCLUDE_SUPERDESKTOP
+        !insertmacro InstallSuperDesktopFiles "$INSTDIR"
+    !endif
+
     SetOutPath "$INSTDIR"
     nsExec::ExecToStack '"$SYSDIR\sc.exe" query SuperExplorerMft'
     Pop $0
@@ -309,6 +321,10 @@ un.service_ready_for_delete:
         MessageBox MB_ICONSTOP|MB_OK "無法刪除 SuperExplorer MFT Windows Service；解除安裝尚未刪除服務執行檔。$\r$\n$\r$\n$1"
         Abort
     ${EndIf}
+
+    !ifdef INCLUDE_SUPERDESKTOP
+        !insertmacro UninstallSuperDesktopFiles "$INSTDIR"
+    !endif
 
     Delete "$DESKTOP\${PRODUCT_NAME}.lnk"
     Delete "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk"

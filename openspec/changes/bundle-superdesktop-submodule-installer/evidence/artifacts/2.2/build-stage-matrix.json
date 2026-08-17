@@ -1,0 +1,17 @@
+{
+  "schema": "installer-build-stage-matrix/v1",
+  "result": "passed",
+  "lua_sha256": "2e436d0c6ec039d64b7f2c61540b8e8adfe8af85b1fdbada14dd8695127553b9",
+  "component_module_sha256": "43b5efc4fc188d26df779ee1741288351e514025b05932a9bd886870a6fc3f4e",
+  "modes": {
+    "all": {"superexplorer": true, "plugins": 8, "superdesktop": true},
+    "superexplorer": {"superexplorer": true, "plugins": 8, "superdesktop": false},
+    "superdesktop": {"superexplorer": false, "plugins": 0, "superdesktop": true}
+  },
+  "superdesktop_command": "cargo build --workspace --all-targets --release --locked --offline",
+  "logs": [
+    {"path": "build/logs/installer-superexplorer-release.log", "sha256": "062e73e8a16c642bee75f9e6e5eed08573b39b9ae804f9f334667127743f597a"},
+    {"path": "build/logs/installer-superdesktop-release.log", "sha256": "a2f9f7889e88ba38ddcfecdb5afc8516742ad9186965960a94adbbe4ac21b5ad"}
+  ],
+  "gates": ["G-COMPONENT-ISOLATION", "G-INSTALLER-INPUT"]
+}

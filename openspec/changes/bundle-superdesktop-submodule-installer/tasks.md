@@ -14,10 +14,10 @@ All leaves are mandatory. Every checked leaf must map to a unique evidence recor
 **Gate／Evidence：** `G-SUBMODULE-ADMISSION`; `evidence/artifacts/1.1/submodule-identity.json`.
 **完成門檻：** URL, parent gitlink, initialized checkout, and HEAD agree; only owned paths are staged.
 
-- [ ] 1.1.1 Capture and validate the nested SuperDesktop repository origin, exact HEAD, and clean Git metadata boundary.
-- [ ] 1.1.2 Register `SuperDesktop` in `.gitmodules` with the approved GitHub URL and preserve the validated checkout as the parent gitlink.
-- [ ] 1.1.3 Verify `git submodule status`, configured URL, parent tree mode `160000`, and checkout HEAD all agree.
-- [ ] 1.1.4 Record path-scoped parent status proving unrelated worktree changes were neither staged nor reverted.
+- [x] 1.1.1 Capture and validate the nested SuperDesktop repository origin, exact HEAD, and clean Git metadata boundary.
+- [x] 1.1.2 Register `SuperDesktop` in `.gitmodules` with the approved GitHub URL and preserve the validated checkout as the parent gitlink.
+- [x] 1.1.3 Verify `git submodule status`, configured URL, parent tree mode `160000`, and checkout HEAD all agree.
+- [x] 1.1.4 Record path-scoped parent status proving unrelated worktree changes were neither staged nor reverted.
 
 ### 1.2 Implement component and dirty-policy admission
 
@@ -29,12 +29,12 @@ All leaves are mandatory. Every checked leaf must map to a unique evidence recor
 **Gate／Evidence：** `G-COMPONENT-ISOLATION`, `G-SUBMODULE-ADMISSION`; `evidence/artifacts/1.2/admission-fixtures.json`.
 **完成門檻：** All three modes and both test allowances are explicit; every invalid or drifting formal state fails before compilation.
 
-- [ ] 1.2.1 Add exclusive `all`, `superexplorer`, and `superdesktop` option parsing with early rejection of unknown/conflicting modes.
-- [ ] 1.2.2 Preserve the existing relevant SuperExplorer source-status check for formal `all` admission.
-- [ ] 1.2.3 Add initialized-submodule, approved-origin, parent-gitlink, and checkout-HEAD checks for formal `all` admission.
-- [ ] 1.2.4 Add relevant SuperDesktop source-status rejection for formal `all` without treating ignored target/evidence output as source drift.
-- [ ] 1.2.5 Ensure SuperExplorer test admission does not execute SuperDesktop Git checks and SuperDesktop test admission does not execute parent cleanliness checks.
-- [ ] 1.2.6 Emit component-specific structured logs and stable diagnostics for each rejected admission state.
+- [x] 1.2.1 Add exclusive `all`, `superexplorer`, and `superdesktop` option parsing with early rejection of unknown/conflicting modes.
+- [x] 1.2.2 Preserve the existing relevant SuperExplorer source-status check for formal `all` admission.
+- [x] 1.2.3 Add initialized-submodule, approved-origin, parent-gitlink, and checkout-HEAD checks for formal `all` admission.
+- [x] 1.2.4 Add relevant SuperDesktop source-status rejection for formal `all` without treating ignored target/evidence output as source drift.
+- [x] 1.2.5 Ensure SuperExplorer test admission does not execute SuperDesktop Git checks and SuperDesktop test admission does not execute parent cleanliness checks.
+- [x] 1.2.6 Emit component-specific structured logs and stable diagnostics for each rejected admission state.
 
 ## 2. Route and Build Selected Products
 
@@ -48,10 +48,10 @@ All leaves are mandatory. Every checked leaf must map to a unique evidence recor
 **Gate／Evidence：** `G-COMPONENT-ISOLATION`; `evidence/artifacts/2.1/batch-routing.json`.
 **完成門檻：** Each BAT passes exactly its declared mode and reports check/build/launch outcomes accurately.
 
-- [ ] 2.1.1 Make `build_install.bat` pass formal `all` mode without a dirty allowance.
-- [ ] 2.1.2 Make `build_test_install.bat` pass `superexplorer` mode with only the existing SuperExplorer test dirty allowance.
-- [ ] 2.1.3 Add `build_desktop_test_install.bat` passing `superdesktop` mode with only the SuperDesktop test dirty allowance.
-- [ ] 2.1.4 Preserve argument forwarding and accurate `--check`/`--no-launch` success messages in all entry points.
+- [x] 2.1.1 Make `build_install.bat` pass formal `all` mode without a dirty allowance.
+- [x] 2.1.2 Make `build_test_install.bat` pass `superexplorer` mode with only the existing SuperExplorer test dirty allowance.
+- [x] 2.1.3 Add `build_desktop_test_install.bat` passing `superdesktop` mode with only the SuperDesktop test dirty allowance.
+- [x] 2.1.4 Preserve argument forwarding and accurate `--check`/`--no-launch` success messages in all entry points.
 
 ### 2.2 Implement selected-component build pipelines
 
@@ -63,10 +63,10 @@ All leaves are mandatory. Every checked leaf must map to a unique evidence recor
 **Gate／Evidence：** `G-COMPONENT-ISOLATION`, `G-INSTALLER-INPUT`; `evidence/artifacts/2.2/build-stage-matrix.json`.
 **完成門檻：** Each mode executes only its selected product build; SuperDesktop commands are locked/offline/all-targets.
 
-- [ ] 2.2.1 Gate the existing SuperExplorer release finalizer and eight plugin builds behind SuperExplorer selection.
-- [ ] 2.2.2 Add the SuperDesktop `--workspace --all-targets --release --locked --offline` Cargo build behind SuperDesktop selection.
-- [ ] 2.2.3 Give SuperDesktop and each existing SuperExplorer/plugin stage distinct structured log paths.
-- [ ] 2.2.4 Make `--check` skip all compilation and make `--skip-build` skip only selected compilation stages.
+- [x] 2.2.1 Gate the existing SuperExplorer release finalizer and eight plugin builds behind SuperExplorer selection.
+- [x] 2.2.2 Add the SuperDesktop `--workspace --all-targets --release --locked --offline` Cargo build behind SuperDesktop selection.
+- [x] 2.2.3 Give SuperDesktop and each existing SuperExplorer/plugin stage distinct structured log paths.
+- [x] 2.2.4 Make `--check` skip all compilation and make `--skip-build` skip only selected compilation stages.
 
 ### 2.3 Validate inputs, version outputs, and publish atomically
 
@@ -78,11 +78,11 @@ All leaves are mandatory. Every checked leaf must map to a unique evidence recor
 **Gate／Evidence：** `G-INSTALLER-INPUT`; `evidence/artifacts/2.3/input-output-matrix.json`.
 **完成門檻：** Selected PE inputs and installer pass validation; unselected files are not required; failed builds preserve prior outputs.
 
-- [ ] 2.3.1 Define and validate the five SuperDesktop-owned executable inputs without packaging a second SuperExplorer binary.
-- [ ] 2.3.2 Validate only selected component inputs for existence, `MZ` signature, and minimum size in normal and `--skip-build` paths.
-- [ ] 2.3.3 Generate formal, SuperExplorer-test, and SuperDesktop-test output names from the existing commit-date version.
-- [ ] 2.3.4 Pass only selected absolute input paths and component defines to NSIS with warnings-as-errors.
-- [ ] 2.3.5 Validate the temporary installer before atomic publication and launch only the newly published selected-mode output.
+- [x] 2.3.1 Define and validate the five SuperDesktop-owned executable inputs without packaging a second SuperExplorer binary.
+- [x] 2.3.2 Validate only selected component inputs for existence, `MZ` signature, and minimum size in normal and `--skip-build` paths.
+- [x] 2.3.3 Generate formal, SuperExplorer-test, and SuperDesktop-test output names from the existing commit-date version.
+- [x] 2.3.4 Pass only selected absolute input paths and component defines to NSIS with warnings-as-errors.
+- [x] 2.3.5 Validate the temporary installer before atomic publication and launch only the newly published selected-mode output.
 
 ## 3. Compose Component-Scoped NSIS Installers
 
@@ -96,10 +96,10 @@ All leaves are mandatory. Every checked leaf must map to a unique evidence recor
 **Gate／Evidence：** `G-INSTALLER-CONTENT`, `G-SHELL-SAFETY`; `evidence/artifacts/3.1/superdesktop-nsis-contract.json`.
 **完成門檻：** One shared file set drives both variants and contains no applying Shell mutation.
 
-- [ ] 3.1.1 Define compile-time validation for all five SuperDesktop executable paths.
-- [ ] 3.1.2 Add shared install macros for SuperDesktop files, preview-safe shortcut, and component metadata.
-- [ ] 3.1.3 Add shared uninstall macros that remove only declared SuperDesktop files, shortcuts, and metadata.
-- [ ] 3.1.4 Add a static safety guard/test rejecting Shell apply, login-Shell writes, Explorer termination, reboot, or logoff actions.
+- [x] 3.1.1 Define compile-time validation for all five SuperDesktop executable paths.
+- [x] 3.1.2 Add shared install macros for SuperDesktop files, preview-safe shortcut, and component metadata.
+- [x] 3.1.3 Add shared uninstall macros that remove only declared SuperDesktop files, shortcuts, and metadata.
+- [x] 3.1.4 Add a static safety guard/test rejecting Shell apply, login-Shell writes, Explorer termination, reboot, or logoff actions.
 
 ### 3.2 Extend the SuperExplorer installer for isolated and combined builds
 
@@ -111,10 +111,10 @@ All leaves are mandatory. Every checked leaf must map to a unique evidence recor
 **Gate／Evidence：** `G-INSTALLER-CONTENT`; `evidence/artifacts/3.2/superexplorer-variant-contract.json`.
 **完成門檻：** SuperExplorer-only contains zero Desktop actions; combined places Desktop binaries adjacent and uninstalls both sets.
 
-- [ ] 3.2.1 Add an explicit combined-mode define without changing existing SuperExplorer service/plugin behavior.
-- [ ] 3.2.2 Compose SuperDesktop install/shortcut metadata only in combined mode with executables adjacent to `SuperExplorer.exe`.
-- [ ] 3.2.3 Compose SuperDesktop removal only in combined-mode uninstall and keep SuperExplorer-only uninstall free of Desktop paths.
-- [ ] 3.2.4 Keep version metadata, elevation, compression, localization, and finish-page behavior valid in both variants.
+- [x] 3.2.1 Add an explicit combined-mode define without changing existing SuperExplorer service/plugin behavior.
+- [x] 3.2.2 Compose SuperDesktop install/shortcut metadata only in combined mode with executables adjacent to `SuperExplorer.exe`.
+- [x] 3.2.3 Compose SuperDesktop removal only in combined-mode uninstall and keep SuperExplorer-only uninstall free of Desktop paths.
+- [x] 3.2.4 Keep version metadata, elevation, compression, localization, and finish-page behavior valid in both variants.
 
 ### 3.3 Add the SuperDesktop-only test installer
 
@@ -126,10 +126,10 @@ All leaves are mandatory. Every checked leaf must map to a unique evidence recor
 **Gate／Evidence：** `G-INSTALLER-CONTENT`, `G-SHELL-SAFETY`; `evidence/artifacts/3.3/superdesktop-only-contract.json`.
 **完成門檻：** Installer/uninstaller touch only the SuperDesktop root/metadata and launch preview-safe app behavior.
 
-- [ ] 3.3.1 Add required defines, product metadata, pages, languages, and `$PROGRAMFILES64\SuperDesktop` installation root.
-- [ ] 3.3.2 Install the shared five-file set and create only SuperDesktop shortcuts/uninstall metadata.
-- [ ] 3.3.3 Remove only SuperDesktop-owned files and metadata during uninstall.
-- [ ] 3.3.4 Configure finish-page execution without an applying Shell installer command or automatic SuperExplorer fallback.
+- [x] 3.3.1 Add required defines, product metadata, pages, languages, and `$PROGRAMFILES64\SuperDesktop` installation root.
+- [x] 3.3.2 Install the shared five-file set and create only SuperDesktop shortcuts/uninstall metadata.
+- [x] 3.3.3 Remove only SuperDesktop-owned files and metadata during uninstall.
+- [x] 3.3.4 Configure finish-page execution without an applying Shell installer command or automatic SuperExplorer fallback.
 
 ## 4. Verify Isolation, Safety, and Release Outputs
 
@@ -143,12 +143,12 @@ All leaves are mandatory. Every checked leaf must map to a unique evidence recor
 **Gate／Evidence：** All four gates; `evidence/artifacts/4.1/fixture-matrix.json`.
 **完成門檻：** Every success/failure boundary has deterministic evidence and stable expected diagnostic.
 
-- [ ] 4.1.1 Verify direct Lua and all three BAT routes select exactly one expected component mode.
-- [ ] 4.1.2 Verify unknown/conflicting modes fail before Git, Cargo, NSIS, publication, or launch.
-- [ ] 4.1.3 Verify missing initialization, wrong origin, gitlink mismatch, and dirty formal SuperDesktop fixtures are rejected.
-- [ ] 4.1.4 Verify SuperExplorer-only mode performs no SuperDesktop Git/Cargo/input step.
-- [ ] 4.1.5 Verify SuperDesktop-only mode performs no parent cleanliness, SuperExplorer finalizer, or plugin step.
-- [ ] 4.1.6 Verify missing/invalid selected PE fails while missing unselected PE does not block the build.
+- [x] 4.1.1 Verify direct Lua and all three BAT routes select exactly one expected component mode.
+- [x] 4.1.2 Verify unknown/conflicting modes fail before Git, Cargo, NSIS, publication, or launch.
+- [x] 4.1.3 Verify missing initialization, wrong origin, gitlink mismatch, and dirty formal SuperDesktop fixtures are rejected.
+- [x] 4.1.4 Verify SuperExplorer-only mode performs no SuperDesktop Git/Cargo/input step.
+- [x] 4.1.5 Verify SuperDesktop-only mode performs no parent cleanliness, SuperExplorer finalizer, or plugin step.
+- [x] 4.1.6 Verify missing/invalid selected PE fails while missing unselected PE does not block the build.
 
 ### 4.2 Build and inspect all installer variants
 
@@ -160,12 +160,12 @@ All leaves are mandatory. Every checked leaf must map to a unique evidence recor
 **Gate／Evidence：** `G-INSTALLER-INPUT`, `G-INSTALLER-CONTENT`, `G-SHELL-SAFETY`; `evidence/artifacts/4.2/installer-build-matrix.json`.
 **完成門檻：** Check mode and no-launch builds pass for each variant, hashes/content are indexed, and no Shell mutation is observed.
 
-- [ ] 4.2.1 Run `--check` for formal combined mode and prove zero compilation/publication/launch.
-- [ ] 4.2.2 Run `--check` for SuperExplorer-only and SuperDesktop-only modes and prove unselected isolation.
-- [ ] 4.2.3 Build the SuperExplorer-only test installer with `--no-launch` and validate PE/content hashes.
-- [ ] 4.2.4 Build the SuperDesktop-only test installer with `--no-launch` and validate PE/content hashes.
-- [ ] 4.2.5 Build the clean formal combined installer with `--no-launch` and validate PE/content hashes.
-- [ ] 4.2.6 Inspect all three install/uninstall tables and confirm component-scoped removal plus zero automatic Shell takeover.
+- [x] 4.2.1 Run `--check` for formal combined mode and prove zero compilation/publication/launch.
+- [x] 4.2.2 Run `--check` for SuperExplorer-only and SuperDesktop-only modes and prove unselected isolation.
+- [x] 4.2.3 Build the SuperExplorer-only test installer with `--no-launch` and validate PE/content hashes.
+- [x] 4.2.4 Build the SuperDesktop-only test installer with `--no-launch` and validate PE/content hashes.
+- [x] 4.2.5 Build the clean formal combined installer with `--no-launch` and validate PE/content hashes.
+- [x] 4.2.6 Inspect all three install/uninstall tables and confirm component-scoped removal plus zero automatic Shell takeover.
 
 ### 4.3 Final quality, traceability, and handoff
 
@@ -177,9 +177,9 @@ All leaves are mandatory. Every checked leaf must map to a unique evidence recor
 **Gate／Evidence：** All gates; `evidence/artifacts/4.3/final-verification.json`.
 **完成門檻：** All tasks have valid evidence, strict validation passes, no placeholders remain, and unrelated worktree state is unchanged.
 
-- [ ] 4.3.1 Run focused Lua/build tests and NSIS warnings-as-errors checks with zero failures.
-- [ ] 4.3.2 Run SuperExplorer formatting/static checks affected by the installer scripts and SuperDesktop locked offline release build validation.
-- [ ] 4.3.3 Generate requirement/scenario/gate/task/evidence coverage and hash every retained artifact.
-- [ ] 4.3.4 Run `openspec validate bundle-superdesktop-submodule-installer --strict` and detailed task/evidence validation.
-- [ ] 4.3.5 Verify owned-path Git diff/staging contains no unrelated parent changes or SuperDesktop product-code edits.
-- [ ] 4.3.6 Publish the final passed disposition for `G-SUBMODULE-ADMISSION`, `G-COMPONENT-ISOLATION`, `G-INSTALLER-INPUT`, `G-INSTALLER-CONTENT`, and `G-SHELL-SAFETY`.
+- [x] 4.3.1 Run focused Lua/build tests and NSIS warnings-as-errors checks with zero failures.
+- [x] 4.3.2 Run SuperExplorer formatting/static checks affected by the installer scripts and SuperDesktop locked offline release build validation.
+- [x] 4.3.3 Generate requirement/scenario/gate/task/evidence coverage and hash every retained artifact.
+- [x] 4.3.4 Run `openspec validate bundle-superdesktop-submodule-installer --strict` and detailed task/evidence validation.
+- [x] 4.3.5 Verify owned-path Git diff/staging contains no unrelated parent changes or SuperDesktop product-code edits.
+- [x] 4.3.6 Publish the final passed disposition for `G-SUBMODULE-ADMISSION`, `G-COMPONENT-ISOLATION`, `G-INSTALLER-INPUT`, `G-INSTALLER-CONTENT`, and `G-SHELL-SAFETY`.

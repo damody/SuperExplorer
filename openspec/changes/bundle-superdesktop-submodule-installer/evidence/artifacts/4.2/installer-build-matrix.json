@@ -1,0 +1,15 @@
+{
+  "schema": "component-installer-build-matrix/v1",
+  "recorded_at": "2026-08-17T03:40:00Z",
+  "result": "passed",
+  "check_modes": ["all", "superexplorer", "superdesktop"],
+  "no_launch": true,
+  "installers": [
+    {"component": "all", "path": "dist/SuperExplorer-Setup-1.2026.8.17-x64.exe", "bytes": 12634653, "sha256": "e2234b9213c378e59b32dcc74a81023957cd285f5f705048f97841eec0cedd05", "pe": "passed", "nsis_log_sha256": "ab852cb1c5c13f028141898f4d06844d3dbd71b072073f2ebdb2673892b5b4b9"},
+    {"component": "superexplorer", "path": "dist/SuperExplorer-Test-Setup-1.2026.8.17-x64.exe", "bytes": 8776456, "sha256": "000263e7ebb8cf04b98ab1577113a01f8423b31ff54da31a5b94dd17a2ea9e06", "pe": "passed", "nsis_log_sha256": "c0ca4130e5fcfe01e58c3b02fb0b8c6eb32c5f7cd4dead37c6f45ff687f78ded"},
+    {"component": "superdesktop", "path": "dist/SuperDesktop-Test-Setup-1.2026.8.17-x64.exe", "bytes": 4657962, "sha256": "a993aedcd530c744305435f9b50e01c3a1ba9bfae49bce0d2adab2e07165ef09", "pe": "passed", "nsis_log_sha256": "4c94ddf4cb7cb5cfb2b94c9384fe28018c7b0056721935249f319bee3f0b255b"}
+  ],
+  "component_scoped_install_uninstall": "passed",
+  "automatic_shell_takeover": false,
+  "gates": ["G-INSTALLER-INPUT", "G-INSTALLER-CONTENT", "G-SHELL-SAFETY"]
+}

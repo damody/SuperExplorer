@@ -23,7 +23,7 @@ if not exist "%BUILD_SCRIPT%" (
     goto :finish
 )
 
-"%LUA_EXE%" "%BUILD_SCRIPT%" --allow-dirty %*
+"%LUA_EXE%" "%BUILD_SCRIPT%" --component superexplorer --allow-superexplorer-dirty %*
 set "BUILD_EXIT_CODE=%ERRORLEVEL%"
 
 :finish
@@ -31,19 +31,19 @@ echo.
 if not "%BUILD_EXIT_CODE%"=="0" goto :report_failure
 if "%CHECK_ONLY%"=="1" goto :report_check
 if "%NO_LAUNCH%"=="1" goto :report_built
-echo [SUCCESS] Test installer build completed and launched.
+echo [SUCCESS] SuperExplorer test installer build completed and launched.
 goto :report_done
 
 :report_built
-echo [SUCCESS] Test installer build completed without launching it.
+echo [SUCCESS] SuperExplorer test installer build completed without launching it.
 goto :report_done
 
 :report_check
-echo [SUCCESS] Test installer build check completed; no installer was created or launched.
+echo [SUCCESS] SuperExplorer test installer build check completed; no installer was created or launched.
 goto :report_done
 
 :report_failure
-echo [FAILURE] Test installer build failed with exit code %BUILD_EXIT_CODE%. 1>&2
+echo [FAILURE] SuperExplorer test installer build failed with exit code %BUILD_EXIT_CODE%. 1>&2
 
 :report_done
 echo.

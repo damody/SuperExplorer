@@ -1,0 +1,12 @@
+{
+  "schema": "superdesktop-only-installer/v1",
+  "result": "passed",
+  "source": "installer/SuperDesktop.nsi",
+  "sha256": "f59d11a8965015c17a86cf8d9e4732212686a04d8c253218656c4055f6f24cfd",
+  "install_root": "$PROGRAMFILES64\\SuperDesktop",
+  "superdesktop_executables": 5,
+  "superexplorer_content": false,
+  "preview_safe_finish_action": true,
+  "component_scoped_uninstall": true,
+  "gates": ["G-INSTALLER-CONTENT", "G-SHELL-SAFETY"]
+}
