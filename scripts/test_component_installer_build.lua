@@ -122,7 +122,7 @@ assert_contains(explorer_nsis, '!insertmacro UninstallSuperDesktopFiles "$INSTDI
 assert_contains(desktop_nsis, 'InstallDir "$PROGRAMFILES64\\${PRODUCT_NAME}"', "desktop install root")
 for _, executable in ipairs({
     "superdesktop-app.exe", "superdesktop-guardian.exe", "shell-installer.exe",
-    "shell-provider-host.exe", "notification-area-host.exe",
+    "shell-provider-host.exe", "notification-area-host.exe", "taskbar-state-host.exe",
 }) do
     assert_contains(desktop_include, executable, "desktop shared file set")
 end

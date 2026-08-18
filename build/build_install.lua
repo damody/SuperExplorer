@@ -236,6 +236,7 @@ local function main()
             SD_PROVIDER_EXE = path(release, "shell-provider-host.exe"),
             SD_NOTIFICATION_EXE = path(release, "notification-area-host.exe"),
             SD_STATUS_EXE = path(release, "system-status-host.exe"),
+            SD_TASKBAR_STATE_EXE = path(release, "taskbar-state-host.exe"),
         }
     end
 

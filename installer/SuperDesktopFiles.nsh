@@ -19,6 +19,9 @@
 !ifndef SD_STATUS_EXE
     !error "SD_STATUS_EXE must be provided by build_install.lua"
 !endif
+!ifndef SD_TASKBAR_STATE_EXE
+    !error "SD_TASKBAR_STATE_EXE must be provided by build_install.lua"
+!endif
 
 !define SUPERDESKTOP_PRODUCT_KEY "Software\SuperDesktop"
 !define SUPERDESKTOP_UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\SuperDesktop"
@@ -32,6 +35,7 @@
     File /oname=shell-provider-host.exe "${SD_PROVIDER_EXE}"
     File /oname=notification-area-host.exe "${SD_NOTIFICATION_EXE}"
     File /oname=system-status-host.exe "${SD_STATUS_EXE}"
+    File /oname=taskbar-state-host.exe "${SD_TASKBAR_STATE_EXE}"
 
     CreateDirectory "$SMPROGRAMS\SuperDesktop"
     CreateShortcut "$SMPROGRAMS\SuperDesktop\SuperDesktop.lnk" "${TARGET}\superdesktop-app.exe"
@@ -59,6 +63,7 @@
     Delete "${TARGET}\shell-provider-host.exe"
     Delete "${TARGET}\notification-area-host.exe"
     Delete "${TARGET}\system-status-host.exe"
+    Delete "${TARGET}\taskbar-state-host.exe"
     DeleteRegKey HKLM "${SUPERDESKTOP_UNINSTALL_KEY}"
     DeleteRegKey HKLM "${SUPERDESKTOP_PRODUCT_KEY}"
 !macroend
