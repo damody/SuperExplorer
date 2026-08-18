@@ -126,10 +126,10 @@ Windows 圖形介面與視覺檢查需要互動式桌面工作階段。常用進
 
 SuperExplorer 是**專有、Source Available（原始碼可檢視）軟體**，不是開源軟體。您僅能依下列適用文件檢視原始碼、準備貢獻或開發相容插件；禁止未經授權重新散布、發布修改後的核心版本或商業利用核心程式。
 
-- [終端使用者授權協議](EULA.zh-TW.md)
-- [Plugin SDK 授權條款](PLUGIN-SDK-LICENSE.zh-TW.md)
-- [貢獻指南](CONTRIBUTING.zh-TW.md)
-- [貢獻者授權協議](CLA.zh-TW.md)
-- [插件發布協議](PLUGIN-PUBLISHING-AGREEMENT.zh-TW.md)
+- [終端使用者授權協議](docs/EULA.zh-TW.md)
+- [Plugin SDK 授權條款](docs/PLUGIN-SDK-LICENSE.zh-TW.md)
+- [貢獻指南](docs/CONTRIBUTING.zh-TW.md)
+- [貢獻者授權協議](docs/CLA.zh-TW.md)
+- [插件發布協議](docs/PLUGIN-PUBLISHING-AGREEMENT.zh-TW.md)
 
 包括 `vendor/`、`third_party/` 及 `build/tools/` 下素材在內的第三方元件，仍依其各自的授權與 NOTICE 文件規範。

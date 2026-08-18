@@ -136,10 +136,10 @@ See [Final Handoff](docs/FINAL_HANDOFF.md) for the detailed validation state and
 
 SuperExplorer is **proprietary, source-available software**. It is not open-source software. You may inspect the source and prepare contributions or compatible plugins only under the applicable documents below; unauthorized redistribution, publication of modified core versions, and commercial use of the core are prohibited.
 
-- [EULA](EULA.md)
-- [Plugin SDK License](PLUGIN-SDK-LICENSE.md)
-- [Contributing guide](CONTRIBUTING.md)
-- [Contributor License Agreement](CLA.md)
-- [Plugin Publishing Agreement](PLUGIN-PUBLISHING-AGREEMENT.md)
+- [EULA](docs/EULA.md)
+- [Plugin SDK License](docs/PLUGIN-SDK-LICENSE.md)
+- [Contributing guide](docs/CONTRIBUTING.md)
+- [Contributor License Agreement](docs/CLA.md)
+- [Plugin Publishing Agreement](docs/PLUGIN-PUBLISHING-AGREEMENT.md)
 
 Third-party components, including materials under `vendor/`, `third_party/`, and `build/tools/`, remain governed by their own license and notice files.
