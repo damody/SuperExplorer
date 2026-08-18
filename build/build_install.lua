@@ -235,6 +235,7 @@ local function main()
             SD_INSTALLER_EXE = path(release, "shell-installer.exe"),
             SD_PROVIDER_EXE = path(release, "shell-provider-host.exe"),
             SD_NOTIFICATION_EXE = path(release, "notification-area-host.exe"),
+            SD_STATUS_EXE = path(release, "system-status-host.exe"),
         }
     end
 
