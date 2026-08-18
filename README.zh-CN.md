@@ -124,10 +124,10 @@ Windows 图形界面和视觉检查需要交互式桌面会话。常用入口包
 
 SuperExplorer 是**专有、Source Available（源代码可查看）软件**，不是开源软件。您仅可依下列适用文件查看源代码、准备贡献或开发兼容插件；禁止未经授权再分发、发布修改后的核心版本或商业利用核心程序。
 
-- [最终用户许可协议](EULA.zh-CN.md)
-- [Plugin SDK 许可条款](PLUGIN-SDK-LICENSE.zh-CN.md)
-- [贡献指南](CONTRIBUTING.zh-CN.md)
-- [贡献者许可协议](CLA.zh-CN.md)
-- [插件发布协议](PLUGIN-PUBLISHING-AGREEMENT.zh-CN.md)
+- [最终用户许可协议](docs/EULA.zh-CN.md)
+- [Plugin SDK 许可条款](docs/PLUGIN-SDK-LICENSE.zh-CN.md)
+- [贡献指南](docs/CONTRIBUTING.zh-CN.md)
+- [贡献者许可协议](docs/CLA.zh-CN.md)
+- [插件发布协议](docs/PLUGIN-PUBLISHING-AGREEMENT.zh-CN.md)
 
 包括 `vendor/`、`third_party/` 及 `build/tools/` 下材料在内的第三方组件，仍依其各自的许可和 NOTICE 文件规范。
