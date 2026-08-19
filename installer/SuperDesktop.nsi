@@ -37,7 +37,8 @@ VIAddVersionKey /LANG=1033 "ProductVersion" "${APP_VERSION}"
 
 !define MUI_ABORTWARNING
 !define MUI_FINISHPAGE_RUN "$INSTDIR\superdesktop-app.exe"
-!define MUI_FINISHPAGE_RUN_TEXT "Run SuperDesktop in preview mode"
+!define MUI_FINISHPAGE_RUN_TEXT "執行 SuperDesktop"
+!define MUI_FINISHPAGE_RUN_PARAMETERS "--shell"
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES

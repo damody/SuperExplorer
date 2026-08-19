@@ -147,7 +147,15 @@ assert_contains(build, 'options.component == "superdesktop" and "SuperDesktop.ns
 assert_contains(explorer_nsis, "!ifdef INCLUDE_SUPERDESKTOP", "combined installer guard")
 assert_contains(explorer_nsis, '!insertmacro InstallSuperDesktopFiles "$INSTDIR"', "combined install")
 assert_contains(explorer_nsis, '!insertmacro UninstallSuperDesktopFiles "$INSTDIR"', "combined uninstall")
+assert_contains(explorer_nsis, '!define MUI_FINISHPAGE_RUN "$INSTDIR\\superdesktop-app.exe"',
+    "combined installer finish launch")
+assert_contains(explorer_nsis, '!define MUI_FINISHPAGE_RUN_PARAMETERS "--shell"',
+    "combined installer shell mode")
 assert_contains(desktop_nsis, 'InstallDir "$PROGRAMFILES64\\${PRODUCT_NAME}"', "desktop install root")
+assert_contains(desktop_nsis, '!define MUI_FINISHPAGE_RUN "$INSTDIR\\superdesktop-app.exe"',
+    "desktop installer finish launch")
+assert_contains(desktop_nsis, '!define MUI_FINISHPAGE_RUN_PARAMETERS "--shell"',
+    "desktop installer shell mode")
 for _, executable in ipairs({
     "superdesktop-app.exe", "superdesktop-guardian.exe", "shell-installer.exe",
     "shell-provider-host.exe", "notification-area-host.exe", "taskbar-state-host.exe",
