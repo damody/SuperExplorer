@@ -156,6 +156,12 @@ assert_contains(desktop_nsis, '!define MUI_FINISHPAGE_RUN "$INSTDIR\\superdeskto
     "desktop installer finish launch")
 assert_contains(desktop_nsis, '!define MUI_FINISHPAGE_RUN_PARAMETERS "--shell"',
     "desktop installer shell mode")
+assert_contains(desktop_include,
+    'CreateShortcut "$SMPROGRAMS\\SuperDesktop\\SuperDesktop.lnk" "${TARGET}\\superdesktop-app.exe" "--shell"',
+    "start menu shell launch")
+assert_contains(desktop_include,
+    'CreateShortcut "$DESKTOP\\SuperDesktop.lnk" "${TARGET}\\superdesktop-app.exe" "--shell"',
+    "desktop shortcut shell launch")
 for _, executable in ipairs({
     "superdesktop-app.exe", "superdesktop-guardian.exe", "shell-installer.exe",
     "shell-provider-host.exe", "notification-area-host.exe", "taskbar-state-host.exe",

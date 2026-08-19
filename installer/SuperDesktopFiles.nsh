@@ -38,8 +38,8 @@
     File /oname=taskbar-state-host.exe "${SD_TASKBAR_STATE_EXE}"
 
     CreateDirectory "$SMPROGRAMS\SuperDesktop"
-    CreateShortcut "$SMPROGRAMS\SuperDesktop\SuperDesktop.lnk" "${TARGET}\superdesktop-app.exe"
-    CreateShortcut "$DESKTOP\SuperDesktop.lnk" "${TARGET}\superdesktop-app.exe"
+    CreateShortcut "$SMPROGRAMS\SuperDesktop\SuperDesktop.lnk" "${TARGET}\superdesktop-app.exe" "--shell"
+    CreateShortcut "$DESKTOP\SuperDesktop.lnk" "${TARGET}\superdesktop-app.exe" "--shell"
 
     WriteRegStr HKLM "${SUPERDESKTOP_PRODUCT_KEY}" "InstallDir" "${TARGET}"
     WriteRegStr HKLM "${SUPERDESKTOP_UNINSTALL_KEY}" "DisplayName" "SuperDesktop"
