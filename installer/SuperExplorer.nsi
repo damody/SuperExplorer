@@ -171,6 +171,9 @@ service_stop_timeout:
 
 service_ready_for_files:
     DetailPrint "SuperExplorer MFT Windows Service is absent or STOPPED; installing files."
+    !ifdef INCLUDE_SUPERDESKTOP
+        !insertmacro QuiesceSuperDesktopFiles "$INSTDIR"
+    !endif
     SetOutPath "$INSTDIR"
     SetOverwrite on
 
