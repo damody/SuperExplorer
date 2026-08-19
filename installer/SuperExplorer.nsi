@@ -77,10 +77,16 @@ VIAddVersionKey /LANG=1033 "FileVersion" "${APP_VERSION}"
 VIAddVersionKey /LANG=1033 "ProductVersion" "${APP_VERSION}"
 
 !define MUI_ABORTWARNING
-!define MUI_FINISHPAGE_RUN "$INSTDIR\SuperExplorer.exe"
-!define MUI_FINISHPAGE_RUN_TEXT "執行 SuperExplorer"
 !define PLUGIN_ARGS "--plugin-dll $\"$INSTDIR\plugins\rust_folder_size_visual_column.dll$\" --plugin-dll $\"$INSTDIR\plugins\rust_folder_size_map_view.dll$\" --plugin-dll $\"$INSTDIR\plugins\rust_tokei_code_lines_column.dll$\" --plugin-dll $\"$INSTDIR\plugins\lua_tokei_code_lines_column.dll$\" --plugin-dll $\"$INSTDIR\plugins\rust_lock_owner_column.dll$\" --plugin-dll $\"$INSTDIR\plugins\rust_exif_rename_command.dll$\" --plugin-dll $\"$INSTDIR\plugins\rust_7z_virtual_folder.dll$\" --plugin-dll $\"$INSTDIR\plugins\lua_bulk_folder_generator.dll$\""
-!define MUI_FINISHPAGE_RUN_PARAMETERS "${PLUGIN_ARGS}"
+!ifdef INCLUDE_SUPERDESKTOP
+    !define MUI_FINISHPAGE_RUN "$INSTDIR\superdesktop-app.exe"
+    !define MUI_FINISHPAGE_RUN_TEXT "執行 SuperDesktop"
+    !define MUI_FINISHPAGE_RUN_PARAMETERS "--shell"
+!else
+    !define MUI_FINISHPAGE_RUN "$INSTDIR\SuperExplorer.exe"
+    !define MUI_FINISHPAGE_RUN_TEXT "執行 SuperExplorer"
+    !define MUI_FINISHPAGE_RUN_PARAMETERS "${PLUGIN_ARGS}"
+!endif
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
