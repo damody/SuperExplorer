@@ -146,12 +146,18 @@ assert_contains(build, 'options.component == "superdesktop" and "SuperDesktop.ns
     "NSIS mode selection")
 assert_contains(explorer_nsis, "!ifdef INCLUDE_SUPERDESKTOP", "combined installer guard")
 assert_contains(explorer_nsis, '!insertmacro InstallSuperDesktopFiles "$INSTDIR"', "combined install")
+assert_contains(explorer_nsis, '!insertmacro QuiesceSuperDesktopFiles "$INSTDIR"',
+    "combined process quiescence")
 assert_contains(explorer_nsis, '!insertmacro UninstallSuperDesktopFiles "$INSTDIR"', "combined uninstall")
 assert_contains(explorer_nsis, '!define MUI_FINISHPAGE_RUN "$INSTDIR\\superdesktop-app.exe"',
     "combined installer finish launch")
 assert_contains(explorer_nsis, '!define MUI_FINISHPAGE_RUN_PARAMETERS "--shell"',
     "combined installer shell mode")
 assert_contains(desktop_nsis, 'InstallDir "$PROGRAMFILES64\\${PRODUCT_NAME}"', "desktop install root")
+assert_contains(desktop_nsis, '!insertmacro QuiesceSuperDesktopFiles "$INSTDIR"',
+    "desktop process quiescence")
+assert_contains(desktop_include, 'superdesktop-process-closer.exe', "embedded process closer")
+assert_contains(desktop_include, 'quiesce --install-dir "${TARGET}"', "exact install root quiescence")
 assert_contains(desktop_nsis, '!define MUI_FINISHPAGE_RUN "$INSTDIR\\superdesktop-app.exe"',
     "desktop installer finish launch")
 assert_contains(desktop_nsis, '!define MUI_FINISHPAGE_RUN_PARAMETERS "--shell"',

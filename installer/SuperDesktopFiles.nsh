@@ -26,6 +26,21 @@
 !define SUPERDESKTOP_PRODUCT_KEY "Software\SuperDesktop"
 !define SUPERDESKTOP_UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\SuperDesktop"
 
+!macro QuiesceSuperDesktopFiles TARGET
+    InitPluginsDir
+    SetOutPath "$PLUGINSDIR"
+    File /oname=superdesktop-process-closer.exe "${SD_INSTALLER_EXE}"
+    nsExec::ExecToStack '"$PLUGINSDIR\superdesktop-process-closer.exe" quiesce --install-dir "${TARGET}"'
+    Pop $0
+    Pop $1
+    ${If} $0 != 0
+        DetailPrint "Unable to close running SuperExplorer/SuperDesktop processes: exit=$0 $1"
+        MessageBox MB_ICONSTOP|MB_OK "無法自動關閉執行中的 SuperExplorer 或 SuperDesktop：$1"
+        Abort
+    ${EndIf}
+    DetailPrint "Running SuperExplorer/SuperDesktop processes closed and verified: $1"
+!macroend
+
 !macro InstallSuperDesktopFiles TARGET
     SetOutPath "${TARGET}"
     SetOverwrite on

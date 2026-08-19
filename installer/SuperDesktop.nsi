@@ -1,6 +1,7 @@
 Unicode True
 
 !include "MUI2.nsh"
+!include "LogicLib.nsh"
 
 !ifdef GENERATED_DEFINES
     !include "${GENERATED_DEFINES}"
@@ -54,6 +55,7 @@ VIAddVersionKey /LANG=1033 "ProductVersion" "${APP_VERSION}"
 
 Section "SuperDesktop" SEC_MAIN
     SetShellVarContext current
+    !insertmacro QuiesceSuperDesktopFiles "$INSTDIR"
     !insertmacro InstallSuperDesktopFiles "$INSTDIR"
     WriteUninstaller "$INSTDIR\Uninstall.exe"
 SectionEnd
