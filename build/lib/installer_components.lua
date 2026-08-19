@@ -11,6 +11,7 @@ function M.parse_options(values)
         component = nil,
         allow_superexplorer_dirty = false,
         allow_superdesktop_dirty = false,
+        ignore_superdesktop_evidence_logs = false,
     }
     local index = 1
     while index <= #values do
@@ -25,6 +26,8 @@ function M.parse_options(values)
             options.allow_superexplorer_dirty = true
         elseif value == "--allow-superdesktop-dirty" then
             options.allow_superdesktop_dirty = true
+        elseif value == "--ignore-superdesktop-evidence-logs" then
+            options.ignore_superdesktop_evidence_logs = true
         elseif value == "--component" then
             index = index + 1
             if index > #values then error("--component 缺少模式", 0) end
@@ -47,9 +50,27 @@ function M.parse_options(values)
     if options.allow_superdesktop_dirty and options.component ~= "superdesktop" then
         error("--allow-superdesktop-dirty 只能用於 superdesktop 模式", 0)
     end
+    if options.ignore_superdesktop_evidence_logs and options.component ~= "all" then
+        error("--ignore-superdesktop-evidence-logs can only be used with --component all", 0)
+    end
     options.include_superexplorer = options.component == "all" or options.component == "superexplorer"
     options.include_superdesktop = options.component == "all" or options.component == "superdesktop"
     return options
+end
+
+function M.filter_superdesktop_status(status, ignore_evidence_logs)
+    status = tostring(status or "")
+    if not ignore_evidence_logs or status == "" then return status end
+
+    local remaining = {}
+    for line in status:gmatch("[^\r\n]+") do
+        local untracked_path = line:match("^%?%? (.+)$")
+        if untracked_path then untracked_path = untracked_path:gsub("\\", "/") end
+        local generated_evidence_log = untracked_path
+            and untracked_path:match("^openspec/.+/evidence/.+%.log$") ~= nil
+        if not generated_evidence_log then remaining[#remaining + 1] = line end
+    end
+    return table.concat(remaining, "\n")
 end
 
 function M.validate_submodule_identity(identity)

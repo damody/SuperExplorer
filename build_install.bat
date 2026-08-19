@@ -23,7 +23,7 @@ if not exist "%BUILD_SCRIPT%" (
     goto :finish
 )
 
-"%LUA_EXE%" "%BUILD_SCRIPT%" --component all %*
+"%LUA_EXE%" "%BUILD_SCRIPT%" --component all --ignore-superdesktop-evidence-logs %*
 set "BUILD_EXIT_CODE=%ERRORLEVEL%"
 
 :finish
