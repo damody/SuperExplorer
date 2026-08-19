@@ -120,7 +120,7 @@ local function run_capture(stage, cwd, log_path, args)
     return read_file(log_path):match("^%s*(.-)%s*$")
 end
 
-local function admit_superdesktop(superdesktop_root, logs, formal)
+local function admit_superdesktop(superdesktop_root, logs, formal, ignore_evidence_logs)
     require_file(path(superdesktop_root, "Cargo.toml"), "SuperDesktop Cargo manifest")
     if not lfs.attributes(path(superdesktop_root, ".git")) then
         error("SuperDesktop submodule 尚未初始化", 0)
@@ -156,6 +156,7 @@ local function admit_superdesktop(superdesktop_root, logs, formal)
         path(logs, "installer-superdesktop-status.log"),
         { "status", "--porcelain=v1", "--untracked-files=all" }
     )
+    status = installer_components.filter_superdesktop_status(status, ignore_evidence_logs)
     installer_components.validate_submodule_identity({
         initialized = true,
         head = head,
@@ -194,7 +195,12 @@ local function main()
     local nsis_script = require_file(path(root, "installer", options.component == "superdesktop" and "SuperDesktop.nsi" or "SuperExplorer.nsi"), "NSIS 腳本")
     if options.include_superdesktop then
         require_file(path(root, "installer", "SuperDesktopFiles.nsh"), "SuperDesktop NSIS 共用檔")
-        admit_superdesktop(superdesktop_root, logs, options.component == "all")
+        admit_superdesktop(
+            superdesktop_root,
+            logs,
+            options.component == "all",
+            options.ignore_superdesktop_evidence_logs
+        )
     end
 
     local finalizer

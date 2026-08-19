@@ -125,7 +125,9 @@ assert_contains(build_script, 'installer_components.parse_options(arg)',
     "component option parser")
 assert_contains(build_script, 'if options.component == "all" then',
     "formal installer cleanliness boundary")
-assert_contains(batch, '"%LUA_EXE%" "%BUILD_SCRIPT%" --component all %*', "build_install.bat")
+assert_contains(batch,
+    '"%LUA_EXE%" "%BUILD_SCRIPT%" --component all --ignore-superdesktop-evidence-logs %*',
+    "build_install.bat")
 assert_contains(batch, 'exit /b %BUILD_EXIT_CODE%', "build_install.bat")
 assert_contains(batch, "Installer build completed and launched", "build_install.bat")
 assert_contains(batch, "Installer build check completed; no installer was created or launched", "build_install.bat")
