@@ -1,0 +1,47 @@
+{
+    "schema":  "volume-generation-recovery/v1",
+    "result":  "passed",
+    "app_sha256":  "3b6343aded448c1987bf6247fa064fadf886c032e63b227ee6f847756215c5c5",
+    "original_audio":  {
+                           "volume_percent":  6,
+                           "muted":  false
+                       },
+    "pointer":  {
+                    "target":  10,
+                    "observed":  {
+                                     "volume_percent":  10,
+                                     "muted":  false
+                                 },
+                    "host_restart":  {
+                                         "command_host_pid":  16920,
+                                         "stopped_observer_pid":  25860,
+                                         "replacement_observer_pid":  18524
+                                     },
+                    "physical_pointer":  true
+                },
+    "keyboard":  {
+                     "target":  15,
+                     "observed":  {
+                                      "volume_percent":  15,
+                                      "muted":  false
+                                  },
+                     "host_restart":  {
+                                          "command_host_pid":  16920,
+                                          "stopped_observer_pid":  18524,
+                                          "replacement_observer_pid":  15692
+                                      },
+                     "keyboard_arrow":  true
+                 },
+    "recovery_trace_count":  2,
+    "status_command_error_absent":  true,
+    "screenshots":  [
+                        {
+                            "name":  "pointer-recovered.png",
+                            "sha256":  "4904e41b3c8fbcaa457d0a5829ffd6820875805ea853f6b9d8dea09edb1da32e"
+                        },
+                        {
+                            "name":  "keyboard-recovered.png",
+                            "sha256":  "678cb4e671f91d8c93eef015695a4df9428a56e347f43b95b3199bd3a72ea421"
+                        }
+                    ]
+}

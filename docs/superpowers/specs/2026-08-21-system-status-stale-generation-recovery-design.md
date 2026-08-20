@@ -6,7 +6,7 @@ Keep SuperDesktop volume, mute, input, and network controls responsive when `sys
 
 ## Existing defect
 
-The UI builds `SystemStatusCommandRequest.expected_host_generation` from `StatusReconciler::snapshot`. `SystemStatusClient` starts or restarts the host as needed, but a newly started host has a different generation. The host correctly rejects the old request before executing it. `apply_system_status_action` then fetches a fresh snapshot but never retries, so volume and mute controls appear broken.
+The UI builds `SystemStatusCommandRequest.expected_host_generation` from `StatusReconciler::snapshot`. The periodic observer and the UI command path currently own separate `SystemStatusClient` children, so the reconciler can describe observer host B while the command is delivered to host A. A restart creates the same mismatch. The receiving host correctly rejects the old request before executing it. `apply_system_status_action` then fetches a fresh snapshot but never retries, so volume and mute controls appear broken.
 
 ## Decision
 
@@ -14,9 +14,10 @@ Add one bounded recovery cycle at the system-status command boundary:
 
 1. Send the command with the reconciler's current host generation.
 2. If the terminal is not `StaleGeneration`, preserve the existing terminal and snapshot reconciliation behavior.
-3. On `StaleGeneration`, do not apply or report that obsolete terminal. Fetch an authoritative snapshot from the same client, apply it, and rebuild the request with the new host generation, a new correlation ID, and a fresh deadline.
-4. Retry the unchanged command exactly once.
-5. Fetch and apply a final snapshot after the terminal so UI state reflects the authoritative Windows observation.
+3. On `StaleGeneration`, do not apply or report that obsolete terminal. Fetch an authoritative snapshot from the same command client and retain that host generation in the logical command session. Offer the snapshot to the UI reconciler, but do not require the observer host lineage to accept it before retrying.
+4. Rebuild the request with the command-session generation, a new correlation ID, and a fresh deadline.
+5. Retry the unchanged command exactly once.
+6. Fetch and apply a final snapshot after the terminal so UI state reflects the authoritative Windows observation; the periodic observer remains the fallback if its independent host lineage supersedes the command snapshot.
 
 The initial stale request is safe to retry because the host compares generation before dispatching any platform command. A second stale generation, timeout, provider failure, invalid response, or snapshot failure remains terminal and is printed to the console through the existing error reporter. Successful recovery emits trace markers but no error.
 
