@@ -1,0 +1,71 @@
+{
+  "schema": "openspec-task-evidence/v1",
+  "change": "align-start-menu-with-taskbar-setting",
+  "captured_at": "2026-08-21T02:25:52.7352650+08:00",
+  "source": {
+    "parent_commit": "65b8d240cf542bc309cb3954769ccb56c6c2c32c",
+    "superdesktop_commit": "a7ca29429291aae6262fde42a73a19ef6741f17b"
+  },
+  "artifacts": {
+    "headful_report": {
+      "path": "evidence/headful/cases/gui-start/start/report.json",
+      "sha256": "7A69F9A17E6DBA3153FF4965E62BDC66513E9FAB5B1C7CD240D8FC5B6CEC2F84",
+      "result": "passed",
+      "default_left_inset_dip": 12.0,
+      "center_offset_dip": 0.0
+    },
+    "left_screenshot": {
+      "path": "evidence/headful/cases/gui-start/start/home.png",
+      "sha256": "7A46A9848A2E6691FB86C42499CFD4627714D84B41D90A622C4957D1CD839139"
+    },
+    "center_screenshot": {
+      "path": "evidence/headful/cases/gui-start/start/centered.png",
+      "sha256": "CD7D7C8B56C37DA7C8956A478543D5E47F4FBF41F7197436633E080A72C2AFF5"
+    },
+    "release_app": {
+      "path": "SuperDesktop/target/release/superdesktop-app.exe",
+      "bytes": 21958656,
+      "sha256": "1E4BB8AE9E1BAE1D7663B5E691F3B9A429C4422B78B8FE9885BAF8DD405BE909"
+    },
+    "installer": {
+      "path": "dist/SuperExplorer-Setup-1.2026.8.21-x64.exe",
+      "bytes": 14188341,
+      "sha256": "9C7840DE485B5BCA9934903BE73D38BF5256DF7DD1FA5DA39F1E49EEB05BC245",
+      "superdesktop_included": true,
+      "launched": false
+    }
+  },
+  "commands": [
+    {"id": "focused-settings-store", "command": "cargo test -p settings-store", "exit_status": 0, "actual": "15 passed"},
+    {"id": "focused-taskbar-ui", "command": "cargo test -p taskbar-ui", "exit_status": 0, "actual": "85 passed"},
+    {"id": "focused-superdesktop-app", "command": "cargo test -p superdesktop-app", "exit_status": 0, "actual": "64 passed"},
+    {"id": "workspace", "command": "cargo test --workspace --all-targets", "exit_status": 0, "actual": "all workspace targets passed"},
+    {"id": "clippy", "command": "cargo clippy --workspace --all-targets -- -D warnings", "exit_status": 0, "actual": "passed without warnings"},
+    {"id": "release", "command": "cargo build --workspace --all-targets --release --locked --offline", "exit_status": 0, "actual": "release build passed"},
+    {"id": "headful", "command": "superdesktop-utit run --suite shell-parity --case gui-start", "exit_status": 0, "actual": "selected case passed; filtered run decision Partial"},
+    {"id": "headful-validation", "command": "superdesktop-utit validate-report evidence/headful/report.json", "exit_status": 0, "actual": "validated headful: Partial"},
+    {"id": "installer", "command": "build_install.bat --no-launch", "exit_status": 0, "actual": "installer built with SuperDesktop files"}
+  ],
+  "tasks": [
+    {"task_id": "1.1", "status": "passed", "evidence": "superdesktop commit; focused-superdesktop-app"},
+    {"task_id": "1.2", "status": "passed", "evidence": "superdesktop commit; focused-superdesktop-app"},
+    {"task_id": "1.3", "status": "passed", "evidence": "focused-superdesktop-app"},
+    {"task_id": "2.1", "status": "passed", "evidence": "superdesktop commit; focused-superdesktop-app"},
+    {"task_id": "2.2", "status": "passed", "evidence": "headful report; start/report.log"},
+    {"task_id": "2.3", "status": "passed", "evidence": "focused-superdesktop-app; headful report"},
+    {"task_id": "3.1", "status": "passed", "evidence": "superdesktop commit; focused-taskbar-ui"},
+    {"task_id": "3.2", "status": "passed", "evidence": "focused-settings-store; focused-taskbar-ui"},
+    {"task_id": "4.1", "status": "passed", "evidence": "three focused commands"},
+    {"task_id": "4.2", "status": "passed", "evidence": "workspace"},
+    {"task_id": "4.3", "status": "passed", "evidence": "clippy"},
+    {"task_id": "4.4", "status": "passed", "evidence": "release; release_app hash"},
+    {"task_id": "5.1", "status": "passed", "evidence": "left_screenshot; default_left_inset_dip"},
+    {"task_id": "5.2", "status": "passed", "evidence": "center_screenshot; center_offset_dip; shell-hotkey trace"},
+    {"task_id": "5.3", "status": "passed", "evidence": "headful report and validation"},
+    {"task_id": "5.4", "status": "passed", "evidence": "installer hash and build output"},
+    {"task_id": "6.1", "status": "passed", "evidence": "this index"},
+    {"task_id": "6.2", "status": "passed", "evidence": "strict validation run after index creation"},
+    {"task_id": "6.3", "status": "passed", "evidence": "SuperDesktop a7ca2942; parent integration 65b8d24 and closure commit"
+    }
+  ]
+}
