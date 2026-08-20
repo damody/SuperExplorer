@@ -1,0 +1,85 @@
+{
+  "schema": "superdesktop-utit-run/v1",
+  "run_id": "headful",
+  "suite": "shell-parity",
+  "partial": true,
+  "started_unix_ms": 1787251956729,
+  "finished_unix_ms": 1787251965503,
+  "workspace": "\\\\?\\D:\\SuperExplorer\\SuperDesktop",
+  "host": {
+    "windows_build": 26200,
+    "architecture": "AMD64",
+    "interactive": true,
+    "monitor_count": 1,
+    "explorer_running": true,
+    "workspace_revision": "a7ca29429291aae6262fde42a73a19ef6741f17b",
+    "tools": [
+      "cargo",
+      "certutil",
+      "git",
+      "openspec",
+      "powershell"
+    ]
+  },
+  "counts": {
+    "selected": 1,
+    "passed": 1,
+    "failed": 0,
+    "blocked": 0,
+    "skipped": 0,
+    "not_applicable": 0
+  },
+  "decision": "partial",
+  "cases": [
+    {
+      "id": "gui-volume-generation-recovery",
+      "title": "Volume pointer and keyboard recovery across status-host generations",
+      "state": "passed",
+      "reason": "passed",
+      "duration_ms": 8610,
+      "exit_code": 0,
+      "timed_out": false,
+      "argv": [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "D:\\SuperExplorer\\SuperDesktop\\scripts\\capture-volume-generation-recovery.ps1",
+        "-Workspace",
+        "D:\\SuperExplorer\\SuperDesktop",
+        "-EvidenceDirectory",
+        "D:\\SuperExplorer\\openspec\\changes\\recover-system-status-stale-generation\\evidence\\headful\\cases\\gui-volume-generation-recovery/volume-recovery"
+      ],
+      "stdout": {
+        "path": "cases/gui-volume-generation-recovery/stdout.log",
+        "bytes": 2123,
+        "sha256": "4763ea725b0bde01987bef89675232db07c9519e44ec52f234558d8dff2b90ba"
+      },
+      "stderr": null,
+      "artifacts": [
+        {
+          "path": "cases/gui-volume-generation-recovery/volume-recovery/headful-report.json",
+          "bytes": 2122,
+          "sha256": "e0ec4102becb1b86a4a12925dd14da8fe9cb18674cc2083984d8db6dfa69f047"
+        },
+        {
+          "path": "cases/gui-volume-generation-recovery/volume-recovery/pointer-recovered.png",
+          "bytes": 6875125,
+          "sha256": "4904e41b3c8fbcaa457d0a5829ffd6820875805ea853f6b9d8dea09edb1da32e"
+        },
+        {
+          "path": "cases/gui-volume-generation-recovery/volume-recovery/keyboard-recovered.png",
+          "bytes": 6875089,
+          "sha256": "678cb4e671f91d8c93eef015695a4df9428a56e347f43b95b3199bd3a72ea421"
+        },
+        {
+          "path": "cases/gui-volume-generation-recovery/volume-recovery/volume-recovery.log",
+          "bytes": 2675,
+          "sha256": "b6ab6af45ef002a3fc4b968aad6485dca21dcebdda32995d24af1ec5f0ee7e68"
+        }
+      ],
+      "recovery_verified": true
+    }
+  ]
+}
