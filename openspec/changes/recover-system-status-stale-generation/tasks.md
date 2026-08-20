@@ -30,7 +30,7 @@
 
 ## 5. Packaging and closure
 
-- [ ] 5.1 Build the no-launch installer and bind its hash to the updated SuperDesktop executable
-- [ ] 5.2 Record every task result, command, artifact, and hash in the evidence index
-- [ ] 5.3 Run strict OpenSpec validation with all tasks complete
-- [ ] 5.4 Commit SuperDesktop, update the parent gitlink, and commit final integration
+- [x] 5.1 Build the no-launch installer and bind its hash to the updated SuperDesktop executable
+- [x] 5.2 Record every task result, command, artifact, and hash in the evidence index
+- [x] 5.3 Run strict OpenSpec validation with all tasks complete
+- [x] 5.4 Commit SuperDesktop, update the parent gitlink, and commit final integration
