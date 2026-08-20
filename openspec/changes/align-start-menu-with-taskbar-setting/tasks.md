@@ -27,10 +27,10 @@
 - [x] 5.1 Add a headful UTIT case that proves default-left Start bounds
 - [x] 5.2 Extend the headful case to change alignment, reopen through the keyboard path, and prove centered bounds
 - [x] 5.3 Run the headful UTIT case and retain screenshot, bounds, trace, and console evidence
-- [ ] 5.4 Build the installer and verify it contains the updated SuperDesktop executable
+- [x] 5.4 Build the installer and verify it contains the updated SuperDesktop executable
 
 ## 6. Integration and closure
 
-- [ ] 6.1 Record verification results and artifact hashes in the OpenSpec evidence index
-- [ ] 6.2 Validate the OpenSpec change strictly and mark every task complete only with passing evidence
-- [ ] 6.3 Commit SuperDesktop changes, update the parent submodule pointer, and commit the parent OpenSpec integration
+- [x] 6.1 Record verification results and artifact hashes in the OpenSpec evidence index
+- [x] 6.2 Validate the OpenSpec change strictly and mark every task complete only with passing evidence
+- [x] 6.3 Commit SuperDesktop changes, update the parent submodule pointer, and commit the parent OpenSpec integration
