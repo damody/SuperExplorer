@@ -60,15 +60,20 @@ end
 
 function M.filter_superdesktop_status(status, ignore_evidence_logs)
     status = tostring(status or "")
-    if not ignore_evidence_logs or status == "" then return status end
+    if status == "" then return status end
 
     local remaining = {}
     for line in status:gmatch("[^\r\n]+") do
+        local status_path = line:sub(4):gsub("\\", "/"):gsub('^"', ""):gsub('"$', "")
+        local generated_test_result = not status_path:find(" -> ", 1, true)
+            and (status_path == "utit-results" or status_path:match("^utit%-results/") ~= nil)
         local untracked_path = line:match("^%?%? (.+)$")
         if untracked_path then untracked_path = untracked_path:gsub("\\", "/") end
-        local generated_evidence_log = untracked_path
+        local generated_evidence_log = ignore_evidence_logs and untracked_path
             and untracked_path:match("^openspec/.+/evidence/.+%.log$") ~= nil
-        if not generated_evidence_log then remaining[#remaining + 1] = line end
+        if not generated_test_result and not generated_evidence_log then
+            remaining[#remaining + 1] = line
+        end
     end
     return table.concat(remaining, "\n")
 end

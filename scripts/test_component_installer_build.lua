@@ -72,8 +72,16 @@ local evidence_logs = table.concat({
 }, "\n")
 assert(components.filter_superdesktop_status(evidence_logs, true) == "")
 assert(components.filter_superdesktop_status(evidence_logs, false) == evidence_logs)
+local test_results = table.concat({
+    "?? utit-results/gui-taskbar-live/report.json",
+    " M utit-results/gui-taskbar-live/summary.md",
+    "?? utit-results\\gui-taskbar-live\\taskbar.png",
+}, "\n")
+assert(components.filter_superdesktop_status(test_results, true) == "")
+assert(components.filter_superdesktop_status(test_results, false) == "")
 local mixed_status = table.concat({
     "?? openspec/changes/example/evidence/focused/stdout.log",
+    "?? utit-results/gui-taskbar-live/report.json",
     " M crates/taskbar-ui/src/start.rs",
     "?? openspec/changes/example/evidence/focused/report.json",
     "?? build/installer.log",
@@ -147,6 +155,8 @@ assert_contains(build, 'if options.include_superexplorer then', "SuperExplorer s
 assert_contains(build, 'if options.include_superdesktop then', "SuperDesktop selection")
 assert_contains(build, '"--workspace", "--all-targets", "--release", "--locked", "--offline"',
     "SuperDesktop reproducible build")
+assert_contains(build, '":(exclude)**/utit-results/**"', "generated test-result Rust exclusion")
+assert_contains(build, '":(exclude)utit-results/**"', "SuperDesktop test-result status exclusion")
 assert_contains(build, 'options.component == "superdesktop" and "SuperDesktop.nsi" or "SuperExplorer.nsi"',
     "NSIS mode selection")
 assert_contains(explorer_nsis, "!ifdef INCLUDE_SUPERDESKTOP", "combined installer guard")
