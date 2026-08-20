@@ -40,14 +40,18 @@ local function quote_windows(value)
 end
 
 function M.resolve(repo_root)
-    local command = "git -C " .. quote_windows(repo_root) .. " show -s --format=%H%n%cI HEAD 2>NUL"
+    local command = "git -C " .. quote_windows(repo_root) .. " show -s --format=%H%n%cI HEAD 2>&1"
     local pipe = assert(io.popen(command, "r"))
     local output = pipe:read("*a")
     local ok = pipe:close()
-    if not ok then error("git show failed in " .. tostring(repo_root), 0) end
+    if not ok then
+        local detail = trim(output)
+        if detail == "" then detail = "Git 未提供錯誤輸出" end
+        error("無法讀取 Git 提交資訊：" .. tostring(repo_root) .. "\n" .. detail, 0)
+    end
     local commit, timestamp, extra = output:match("^([^\r\n]+)\r?\n([^\r\n]+)\r?\n?(.*)$")
     if not commit or extra ~= "" or not commit:match("^%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x$") then
-        error("malformed git show output", 0)
+        error("Git 提交資訊格式無效：\n" .. trim(output), 0)
     end
     local parsed = M.parse_timestamp(timestamp)
     return { commit = commit, iso_date = parsed.iso_date, version = parsed.version }

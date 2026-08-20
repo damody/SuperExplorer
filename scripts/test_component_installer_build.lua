@@ -6,6 +6,7 @@ assert(root, "script must be located under the workspace scripts directory")
 package.path = root .. "/build/lib/?.lua;" .. package.path
 
 local components = require("installer_components")
+local sdk_version = require("sdk_version")
 
 local function read_file(file_path)
     local file = assert(io.open(file_path, "rb"))
@@ -33,6 +34,10 @@ local function expect_failure(label, expected, action)
     assert(not ok, label .. " unexpectedly passed")
     assert(tostring(failure):find(expected, 1, true), label .. " wrong diagnostic: " .. tostring(failure))
 end
+
+expect_failure("missing Git repository", "無法讀取 Git 提交資訊", function()
+    sdk_version.resolve(root .. "/target/missing-git-repository")
+end)
 
 local all = components.parse_options({ "--component", "all", "--check", "--no-launch" })
 assert(all.component == "all" and all.include_superexplorer and all.include_superdesktop)

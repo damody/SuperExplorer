@@ -105,6 +105,7 @@ assert(failure.cwd == fixture, "launch failure lost its working directory")
 assert(type(failure.exit_code) == "number" and failure.exit_code ~= 0, "launch failure lost its exit code")
 
 local build_script = read_file(path(root, "build", "build_install.lua"))
+local sdk_version = read_file(path(root, "build", "lib", "sdk_version.lua"))
 local batch = read_file(path(root, "build_install.bat"))
 local test_batch = read_file(path(root, "build_test_install.bat"))
 local desktop_test_batch = read_file(path(root, "build_desktop_test_install.bat"))
@@ -129,10 +130,31 @@ assert_contains(batch,
     '"%LUA_EXE%" "%BUILD_SCRIPT%" --component all --ignore-superdesktop-evidence-logs %*',
     "build_install.bat")
 assert_contains(batch, 'exit /b %BUILD_EXIT_CODE%', "build_install.bat")
+assert(batch:sub(1, 3) ~= "\239\187\191", "build_install.bat must not contain a UTF-8 BOM")
+assert_contains(batch, '"%SystemRoot%\\System32\\chcp.com" 65001',
+    "build_install.bat UTF-8 setup")
+assert_contains(batch, '"%ProgramFiles%\\Git\\cmd\\git.exe"',
+    "build_install.bat Git fallback")
+assert_contains(batch, 'if not defined GIT_EXE (', "build_install.bat Git requirement")
+assert_contains(batch, 'set "PATH=%GIT_BIN_DIR%;%SystemRoot%\\System32;',
+    "build_install.bat deterministic tool path")
+assert_not_contains(batch, 'set "GIT_DIR=', "build_install.bat Git environment isolation")
 assert_contains(batch, "Installer build completed and launched", "build_install.bat")
 assert_contains(batch, "Installer build check completed; no installer was created or launched", "build_install.bat")
 assert_contains(batch, '"%%~A"=="--check"', "build_install.bat")
-assert_not_contains(batch, "pause", "build_install.bat")
+assert_contains(batch, 'set "PAUSE_ON_FAILURE=0"', "build_install.bat")
+assert_contains(batch, 'if "%~1"=="" if not defined CI set "PAUSE_ON_FAILURE=1"',
+    "build_install.bat")
+assert_contains(batch, 'if not "%PAUSE_ON_FAILURE%"=="1" goto :report_done',
+    "build_install.bat")
+assert_contains(batch, "pause >nul", "build_install.bat")
+local successful_paths = assert(batch:match("\n:finish(.-)\n:report_failure"))
+local failure_path = assert(batch:match("\n:report_failure(.-)\n:report_done"))
+assert_not_contains(successful_paths, "pause >nul", "build_install.bat success paths")
+assert_contains(failure_path, "pause >nul", "build_install.bat failure path")
+assert_contains(sdk_version, "無法讀取 Git 提交資訊", "sdk_version Git diagnostic")
+assert_contains(sdk_version, "2>&1", "sdk_version Git stderr capture")
+assert_not_contains(sdk_version, "2>NUL", "sdk_version Git stderr capture")
 assert_not_contains(batch, "請按任意鍵", "build_install.bat")
 assert_not_contains(batch, "dist\\", "build_install.bat")
 assert_contains(test_batch, '"%LUA_EXE%" "%BUILD_SCRIPT%" --component superexplorer --allow-superexplorer-dirty %*',
