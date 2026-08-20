@@ -68,6 +68,7 @@ local function reject_uncommitted_rust(logs)
             "*.rs",
             ":(exclude)sdk/**",
             ":(exclude)openspec/**/evidence/**",
+            ":(exclude)**/utit-results/**",
         },
         cwd = root,
         log_path = status_log,
@@ -154,7 +155,10 @@ local function admit_superdesktop(superdesktop_root, logs, formal, ignore_eviden
     local status = run_capture(
         "檢查 SuperDesktop 原始碼是否已提交", superdesktop_root,
         path(logs, "installer-superdesktop-status.log"),
-        { "status", "--porcelain=v1", "--untracked-files=all" }
+        {
+            "status", "--porcelain=v1", "--untracked-files=all", "--", ".",
+            ":(exclude)utit-results/**",
+        }
     )
     status = installer_components.filter_superdesktop_status(status, ignore_evidence_logs)
     installer_components.validate_submodule_identity({
