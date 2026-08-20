@@ -1,0 +1,100 @@
+{
+    "schema":  "windows11-owned-start-production/v3",
+    "result":  "passed",
+    "app_sha256":  "1E4BB8AE9E1BAE1D7663B5E691F3B9A429C4422B78B8FE9885BAF8DD405BE909",
+    "owned_start_pid":  45580,
+    "taskbar_pid":  45580,
+    "system_start_process_ids_before":  [
+                                            14384,
+                                            40084
+                                        ],
+    "system_start_process_ids_after":  [
+                                           14384,
+                                           40084
+                                       ],
+    "new_system_start_process_ids":  [
+
+                                     ],
+    "explorer_absent_during_capture":  true,
+    "explorer_recovered":  true,
+    "locale":  "zh-TW",
+    "home_sections":  [
+                          "已釘選",
+                          "建議",
+                          "電源"
+                      ],
+    "power_collapsed":  true,
+    "all_apps_count":  75,
+    "footer":  {
+                   "action_count":  1,
+                   "settings_absent":  true,
+                   "power_bounds":  {
+                                        "left":  1026,
+                                        "top":  1883,
+                                        "width":  70,
+                                        "height":  70
+                                    },
+                   "power_width_dip":  40,
+                   "power_height_dip":  40,
+                   "power_right_inset_dip":  32.571428571428569
+               },
+    "default_left_home_bounds":  {
+                                     "left":  9,
+                                     "top":  733,
+                                     "right":  1153,
+                                     "bottom":  2005,
+                                     "client_left":  21,
+                                     "client_top":  733,
+                                     "client_width":  1120,
+                                     "client_height":  1260,
+                                     "left_inset_dip":  12,
+                                     "uia_left":  9,
+                                     "uia_top":  733,
+                                     "uia_width":  1144,
+                                     "uia_height":  1272
+                                 },
+    "centered_keyboard_bounds":  {
+                                     "left":  1348,
+                                     "top":  733,
+                                     "right":  2492,
+                                     "bottom":  2005,
+                                     "client_left":  1360,
+                                     "client_top":  733,
+                                     "client_width":  1120,
+                                     "client_height":  1260,
+                                     "center_offset_dip":  0,
+                                     "uia_left":  1348,
+                                     "uia_top":  733,
+                                     "uia_width":  1144,
+                                     "uia_height":  1272
+                                 },
+    "taskbar_bounds":  {
+                           "left":  -12,
+                           "top":  2020,
+                           "right":  3852,
+                           "bottom":  2172
+                       },
+    "monitor_bounds":  {
+                           "left":  0,
+                           "top":  0,
+                           "right":  3840,
+                           "bottom":  2160
+                       },
+    "geometry":  {
+                     "dpi":  168,
+                     "scale":  1.75,
+                     "width_dip":  653.71428571428567,
+                     "height_dip":  726.85714285714289,
+                     "taskbar_gap_dip":  8.5714285714285712,
+                     "overlap_physical_px":  -15,
+                     "contained":  true
+                 },
+    "home_screenshot":  "home.png",
+    "home_sha256":  "7A46A9848A2E6691FB86C42499CFD4627714D84B41D90A622C4957D1CD839139",
+    "centered_screenshot":  "centered.png",
+    "centered_sha256":  "CD7D7C8B56C37DA7C8956A478543D5E47F4FBF41F7197436633E080A72C2AFF5",
+    "all_apps_screenshot":  "all-apps.png",
+    "all_apps_sha256":  "0E6DEC2C3FB769B4F95CBB68A95FFFA3D870BE56BD2148C9A766B08BEE3B2BA3",
+    "power_screenshot":  "power.png",
+    "power_sha256":  "D4B219B390B1AD08B965D17B85AD588078C3A84F7825E4726EB927749E943616"
+}

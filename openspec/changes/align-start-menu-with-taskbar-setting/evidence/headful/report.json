@@ -1,0 +1,96 @@
+{
+  "schema": "superdesktop-utit-run/v1",
+  "run_id": "headful",
+  "suite": "shell-parity",
+  "partial": true,
+  "started_unix_ms": 1787250040401,
+  "finished_unix_ms": 1787250055929,
+  "workspace": "\\\\?\\D:\\SuperExplorer\\SuperDesktop",
+  "host": {
+    "windows_build": 26200,
+    "architecture": "AMD64",
+    "interactive": true,
+    "monitor_count": 1,
+    "explorer_running": true,
+    "workspace_revision": "d70be01a5711ad30bc70e7baf8f6dde53d00a7e5",
+    "tools": [
+      "cargo",
+      "certutil",
+      "git",
+      "openspec",
+      "powershell"
+    ]
+  },
+  "counts": {
+    "selected": 1,
+    "passed": 1,
+    "failed": 0,
+    "blocked": 0,
+    "skipped": 0,
+    "not_applicable": 0
+  },
+  "decision": "partial",
+  "cases": [
+    {
+      "id": "gui-start",
+      "title": "Owned Start home and all apps",
+      "state": "passed",
+      "reason": "passed",
+      "duration_ms": 15097,
+      "exit_code": 0,
+      "timed_out": false,
+      "argv": [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "D:\\SuperExplorer\\SuperDesktop\\scripts\\capture-start-production.ps1",
+        "-Workspace",
+        "D:\\SuperExplorer\\SuperDesktop",
+        "-OutputPath",
+        "D:\\SuperExplorer\\SuperDesktop\\openspec\\changes\\align-start-menu-with-taskbar-setting\\evidence\\headful\\cases\\gui-start/start/report.json",
+        "-HomeScreenshotPath",
+        "D:\\SuperExplorer\\SuperDesktop\\openspec\\changes\\align-start-menu-with-taskbar-setting\\evidence\\headful\\cases\\gui-start/start/home.png",
+        "-CenteredScreenshotPath",
+        "D:\\SuperExplorer\\SuperDesktop\\openspec\\changes\\align-start-menu-with-taskbar-setting\\evidence\\headful\\cases\\gui-start/start/centered.png",
+        "-AllAppsScreenshotPath",
+        "D:\\SuperExplorer\\SuperDesktop\\openspec\\changes\\align-start-menu-with-taskbar-setting\\evidence\\headful\\cases\\gui-start/start/all-apps.png",
+        "-PowerScreenshotPath",
+        "D:\\SuperExplorer\\SuperDesktop\\openspec\\changes\\align-start-menu-with-taskbar-setting\\evidence\\headful\\cases\\gui-start/start/power.png",
+        "-Locale",
+        "zh-TW",
+        "-SuppressExplorer"
+      ],
+      "stdout": {
+        "path": "cases/gui-start/stdout.log",
+        "bytes": 4581,
+        "sha256": "019a3c19f6e850581a05f4a29f456631abdbc1f32bfa7f0405ae7347685612ac"
+      },
+      "stderr": null,
+      "artifacts": [
+        {
+          "path": "cases/gui-start/start/report.json",
+          "bytes": 4580,
+          "sha256": "7a69f9a17e6dba3153ff4965e62bdc66513e9fab5b1c7cd240d8fc5b6cec2f84"
+        },
+        {
+          "path": "cases/gui-start/start/home.png",
+          "bytes": 127625,
+          "sha256": "7a46a9848a2e6691fb86c42499cfd4627714d84b41d90a622c4957d1cd839139"
+        },
+        {
+          "path": "cases/gui-start/start/centered.png",
+          "bytes": 129511,
+          "sha256": "cd7d7c8b56c37da7c8956a478543d5e47f4fbf41f7197436633e080a72c2aff5"
+        },
+        {
+          "path": "cases/gui-start/start/all-apps.png",
+          "bytes": 132514,
+          "sha256": "0e6dec2c3fb769b4f95cbb68a95fffa3d870be56bd2148c9a766b08bee3b2ba3"
+        }
+      ],
+      "recovery_verified": true
+    }
+  ]
+}
