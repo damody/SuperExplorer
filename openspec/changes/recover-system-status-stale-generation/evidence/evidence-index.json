@@ -1,0 +1,80 @@
+{
+  "schema": "openspec-task-evidence/v1",
+  "change": "recover-system-status-stale-generation",
+  "captured_at": "2026-08-21T02:55:51.4905865+08:00",
+  "source": {
+    "parent_integration_commit": "d1a1f7816571ffda124fa1d4a76dc8a14233dbab",
+    "superdesktop_commit": "2810f50403079f93f776e41206f65183f9eaec13"
+  },
+  "artifacts": {
+    "headful_report": {
+      "path": "evidence/headful/cases/gui-volume-generation-recovery/volume-recovery/headful-report.json",
+      "bytes": 2122,
+      "sha256": "E0EC4102BECB1B86A4A12925DD14DA8FE9CB18674CC2083984D8DB6DFA69F047",
+      "result": "passed",
+      "pointer_volume": "6 -> 10",
+      "keyboard_volume": "10 -> 15",
+      "recovery_trace_count": 2,
+      "status_command_error_absent": true,
+      "original_audio_restored": true
+    },
+    "pointer_screenshot": {
+      "path": "evidence/headful/cases/gui-volume-generation-recovery/volume-recovery/pointer-recovered.png",
+      "sha256": "4904E41B3C8FBCAA457D0A5829FFD6820875805EA853F6B9D8DEA09EDB1DA32E"
+    },
+    "keyboard_screenshot": {
+      "path": "evidence/headful/cases/gui-volume-generation-recovery/volume-recovery/keyboard-recovered.png",
+      "sha256": "678CB4E671F91D8C93EEF015695A4DF9428A56E347F43B95B3199BD3A72EA421"
+    },
+    "release_app": {
+      "path": "SuperDesktop/target/release/superdesktop-app.exe",
+      "bytes": 21961728,
+      "sha256": "3B6343ADED448C1987BF6247FA064FADF886C032E63B227EE6F847756215C5C5"
+    },
+    "installer": {
+      "path": "dist/SuperExplorer-Setup-1.2026.8.21-x64.exe",
+      "bytes": 14186383,
+      "sha256": "B465F3F5F35B819EDEE2E08591233224E19021406794ECD1E3D125CB4D036639",
+      "superdesktop_included": true,
+      "launched": false
+    }
+  },
+  "commands": [
+    {"id":"focused-app","command":"cargo test -p superdesktop-app","exit_status":0,"actual":"69 passed"},
+    {"id":"focused-host","command":"cargo test -p system-status-host","exit_status":0,"actual":"7 unit plus host-process passed"},
+    {"id":"focused-protocol","command":"cargo test -p shell-provider-protocol","exit_status":0,"actual":"25 passed"},
+    {"id":"focused-platform","command":"cargo test -p platform-win","exit_status":0,"actual":"104 passed"},
+    {"id":"focused-taskbar-ui","command":"cargo test -p taskbar-ui","exit_status":0,"actual":"85 passed"},
+    {"id":"focused-utit","command":"cargo test -p superdesktop-utit","exit_status":0,"actual":"19 passed"},
+    {"id":"workspace","command":"cargo test --workspace --all-targets","exit_status":0,"actual":"all targets passed"},
+    {"id":"clippy","command":"cargo clippy --workspace --all-targets -- -D warnings","exit_status":0,"actual":"passed without warnings"},
+    {"id":"release","command":"cargo build --workspace --all-targets --release --locked --offline","exit_status":0,"actual":"passed"},
+    {"id":"headful","command":"superdesktop-utit run --suite shell-parity --case gui-volume-generation-recovery","exit_status":0,"actual":"selected case passed; filtered decision Partial"},
+    {"id":"headful-validation","command":"superdesktop-utit validate-report evidence/headful/report.json","exit_status":0,"actual":"validated headful: Partial"},
+    {"id":"installer","command":"build_install.bat --no-launch","exit_status":0,"actual":"installer built and included updated SuperDesktop"}
+  ],
+  "tasks": [
+    {"task_id":"1.1","status":"passed","evidence":"superdesktop commit; focused-app"},
+    {"task_id":"1.2","status":"passed","evidence":"focused-app stale classification tests"},
+    {"task_id":"1.3","status":"passed","evidence":"focused-app dual-host and retry tests; headful"},
+    {"task_id":"1.4","status":"passed","evidence":"focused-app second-stale and resync-failure tests"},
+    {"task_id":"1.5","status":"passed","evidence":"superdesktop commit; workspace"},
+    {"task_id":"2.1","status":"passed","evidence":"focused-app ordinary success/provider failure"},
+    {"task_id":"2.2","status":"passed","evidence":"focused-app volume and mute recovery"},
+    {"task_id":"2.3","status":"passed","evidence":"focused-app invalid response, second stale, resync transport"},
+    {"task_id":"2.4","status":"passed","evidence":"focused-app correlation/deadline/two-attempt assertions"},
+    {"task_id":"2.5","status":"passed","evidence":"focused-host generation-before-dispatch contract"},
+    {"task_id":"3.1","status":"passed","evidence":"focused-app/host/protocol/platform commands"},
+    {"task_id":"3.2","status":"passed","evidence":"workspace"},
+    {"task_id":"3.3","status":"passed","evidence":"clippy"},
+    {"task_id":"3.4","status":"passed","evidence":"release; release_app hash"},
+    {"task_id":"4.1","status":"passed","evidence":"headful original_audio and restoration observation"},
+    {"task_id":"4.2","status":"passed","evidence":"headful two observer-host restart records"},
+    {"task_id":"4.3","status":"passed","evidence":"headful endpoint convergence, recovery count, zero command errors"},
+    {"task_id":"4.4","status":"passed","evidence":"headful report, screenshots, validated run report"},
+    {"task_id":"5.1","status":"passed","evidence":"installer and release_app hashes"},
+    {"task_id":"5.2","status":"passed","evidence":"this index"},
+    {"task_id":"5.3","status":"passed","evidence":"strict validation after index creation"},
+    {"task_id":"5.4","status":"passed","evidence":"SuperDesktop 2810f504; parent d1a1f78 and closure commit"}
+  ]
+}
