@@ -17,7 +17,7 @@ Two alternatives were rejected:
 
 The low-level keyboard hook will maintain explicit left/right Windows-key and Shift-key state. Chords are recognized from this tracked state, with `GetAsyncKeyState` retained only as a recovery signal. A Windows-key release opens Start only when no chord consumed the gesture.
 
-Win+D starts a session containing the exact HWND, process ID, and stable window identity of each eligible visible window successfully minimized by SuperDesktop. The second Win+D restores only that set. Because minimized windows are intentionally hidden off the desktop, the restore snapshot is merged with `MinimizedWindowShelf` observations before planning. Stale or reused HWNDs remain excluded.
+Win+D starts a session containing the exact HWND, process ID, and stable window identity of each eligible visible window successfully minimized by SuperDesktop. The second Win+D restores only that set. The minimized shelf preserves `WINDOWPLACEMENT` and moves only the minimized-icon position beyond the virtual screen; it does not use `SW_HIDE`, which physical testing proved non-reversible for some application frameworks. Restore resets the minimized position before applying the exact restore action. Stale or reused HWNDs remain excluded.
 
 Win+Shift+S invokes only the Windows `ms-screenclip` overlay. In owned-shell mode a short-lived, verified Explorer broker may be used solely to activate the system protocol and must be cleaned up after the overlay is observed; it must never become the persistent shell.
 
