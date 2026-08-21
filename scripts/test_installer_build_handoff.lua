@@ -126,6 +126,10 @@ assert_contains(build_script, 'installer_components.parse_options(arg)',
     "component option parser")
 assert_contains(build_script, 'if options.component == "all" then',
     "formal installer cleanliness boundary")
+assert_contains(build_script, 'path(logs, "installer-superdesktop-status.log")',
+    "SuperDesktop status capture")
+assert_contains(build_script, 'echo_output = echo_output',
+    "captured command output control")
 assert_contains(batch,
     '"%LUA_EXE%" "%BUILD_SCRIPT%" --component all --ignore-superdesktop-openspec-untracked %*',
     "build_install.bat")

@@ -63,6 +63,7 @@ end
 
 function M.run(spec)
     assert(type(spec) == "table" and spec.stage and spec.exe and spec.cwd and spec.log_path)
+    local echo_output = spec.echo_output ~= false
     local script = {
         "$ErrorActionPreference = 'Stop'",
         "$ProgressPreference = 'SilentlyContinue'",
@@ -110,7 +111,9 @@ function M.run(spec)
         tail_lines[#tail_lines + 1] = line
         if #tail_lines > 40 then table.remove(tail_lines, 1) end
         assert(log:write(chunk)); assert(log:flush())
-        io.stdout:write(chunk); io.stdout:flush()
+        if echo_output then
+            io.stdout:write(chunk); io.stdout:flush()
+        end
     end
     local ok, _, exit_code = pipe:close()
     assert(log:close())
