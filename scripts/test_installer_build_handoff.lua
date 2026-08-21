@@ -127,7 +127,7 @@ assert_contains(build_script, 'installer_components.parse_options(arg)',
 assert_contains(build_script, 'if options.component == "all" then',
     "formal installer cleanliness boundary")
 assert_contains(batch,
-    '"%LUA_EXE%" "%BUILD_SCRIPT%" --component all --ignore-superdesktop-evidence-logs %*',
+    '"%LUA_EXE%" "%BUILD_SCRIPT%" --component all --ignore-superdesktop-openspec-untracked %*',
     "build_install.bat")
 assert_contains(batch, 'exit /b %BUILD_EXIT_CODE%', "build_install.bat")
 assert(batch:sub(1, 3) ~= "\239\187\191", "build_install.bat must not contain a UTF-8 BOM")

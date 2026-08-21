@@ -121,7 +121,7 @@ local function run_capture(stage, cwd, log_path, args)
     return read_file(log_path):match("^%s*(.-)%s*$")
 end
 
-local function admit_superdesktop(superdesktop_root, logs, formal, ignore_evidence_logs)
+local function admit_superdesktop(superdesktop_root, logs, formal, ignore_openspec_untracked)
     require_file(path(superdesktop_root, "Cargo.toml"), "SuperDesktop Cargo manifest")
     if not lfs.attributes(path(superdesktop_root, ".git")) then
         error("SuperDesktop submodule 尚未初始化", 0)
@@ -160,7 +160,7 @@ local function admit_superdesktop(superdesktop_root, logs, formal, ignore_eviden
             ":(exclude)utit-results/**",
         }
     )
-    status = installer_components.filter_superdesktop_status(status, ignore_evidence_logs)
+    status = installer_components.filter_superdesktop_status(status, ignore_openspec_untracked)
     installer_components.validate_submodule_identity({
         initialized = true,
         head = head,
@@ -203,7 +203,7 @@ local function main()
             superdesktop_root,
             logs,
             options.component == "all",
-            options.ignore_superdesktop_evidence_logs
+            options.ignore_superdesktop_openspec_untracked
         )
     end
 
