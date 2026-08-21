@@ -22,6 +22,15 @@
 !ifndef SD_TASKBAR_STATE_EXE
     !error "SD_TASKBAR_STATE_EXE must be provided by build_install.lua"
 !endif
+!ifndef SD_IDENTITY_MSIX
+    !error "SD_IDENTITY_MSIX must be provided by build_install.lua"
+!endif
+!ifndef SD_IDENTITY_CER
+    !error "SD_IDENTITY_CER must be provided by build_install.lua"
+!endif
+!ifndef SD_IDENTITY_REGISTER_PS1
+    !error "SD_IDENTITY_REGISTER_PS1 must be provided by build_install.lua"
+!endif
 
 !define SUPERDESKTOP_PRODUCT_KEY "Software\SuperDesktop"
 !define SUPERDESKTOP_UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\SuperDesktop"
@@ -51,6 +60,19 @@
     File /oname=notification-area-host.exe "${SD_NOTIFICATION_EXE}"
     File /oname=system-status-host.exe "${SD_STATUS_EXE}"
     File /oname=taskbar-state-host.exe "${SD_TASKBAR_STATE_EXE}"
+    File /oname=SuperDesktop.WindowsShell.msix "${SD_IDENTITY_MSIX}"
+    File /oname=SuperDesktop.WindowsShell.cer "${SD_IDENTITY_CER}"
+    File /oname=register-windows-identity-package.ps1 "${SD_IDENTITY_REGISTER_PS1}"
+
+    nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${TARGET}\register-windows-identity-package.ps1" -PackagePath "${TARGET}\SuperDesktop.WindowsShell.msix" -InstallDirectory "${TARGET}" -CertificatePath "${TARGET}\SuperDesktop.WindowsShell.cer"'
+    Pop $0
+    Pop $1
+    ${If} $0 != 0
+        DetailPrint "SuperDesktop Windows notification identity registration failed: exit=$0 $1"
+        MessageBox MB_ICONSTOP|MB_OK "無法註冊 SuperDesktop 的 Windows 通知事件權限：$1"
+        Abort
+    ${EndIf}
+    DetailPrint "SuperDesktop Windows notification identity registered."
 
     CreateDirectory "$SMPROGRAMS\SuperDesktop"
     CreateShortcut "$SMPROGRAMS\SuperDesktop\SuperDesktop.lnk" "${TARGET}\superdesktop-app.exe" "--shell"
@@ -69,6 +91,7 @@
 !macroend
 
 !macro UninstallSuperDesktopFiles TARGET
+    nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Get-AppxPackage -Name SuperDesktop.WindowsShell -ErrorAction SilentlyContinue | Remove-AppxPackage -ErrorAction SilentlyContinue"'
     Delete "$DESKTOP\SuperDesktop.lnk"
     Delete "$SMPROGRAMS\SuperDesktop\SuperDesktop.lnk"
     RMDir "$SMPROGRAMS\SuperDesktop"
@@ -79,6 +102,9 @@
     Delete "${TARGET}\notification-area-host.exe"
     Delete "${TARGET}\system-status-host.exe"
     Delete "${TARGET}\taskbar-state-host.exe"
+    Delete "${TARGET}\SuperDesktop.WindowsShell.msix"
+    Delete "${TARGET}\SuperDesktop.WindowsShell.cer"
+    Delete "${TARGET}\register-windows-identity-package.ps1"
     DeleteRegKey HKLM "${SUPERDESKTOP_UNINSTALL_KEY}"
     DeleteRegKey HKLM "${SUPERDESKTOP_PRODUCT_KEY}"
 !macroend
