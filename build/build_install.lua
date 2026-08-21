@@ -310,7 +310,7 @@ local function main()
     if options.include_superdesktop then
         process.run({
             stage = "建置 SuperDesktop Windows notification identity package",
-            exe = "powershell.exe",
+            exe = path(assert(os.getenv("SystemRoot")), "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
             args = {
                 "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
                 path(superdesktop_root, "scripts", "prepare-windows-identity-package.ps1"),
