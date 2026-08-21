@@ -41,7 +41,7 @@ if not exist "%BUILD_SCRIPT%" (
     goto :finish
 )
 
-"%LUA_EXE%" "%BUILD_SCRIPT%" --component all --ignore-superdesktop-evidence-logs %*
+"%LUA_EXE%" "%BUILD_SCRIPT%" --component all --ignore-superdesktop-openspec-untracked %*
 set "BUILD_EXIT_CODE=%ERRORLEVEL%"
 
 :finish

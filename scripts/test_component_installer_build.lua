@@ -41,10 +41,10 @@ end)
 
 local all = components.parse_options({ "--component", "all", "--check", "--no-launch" })
 assert(all.component == "all" and all.include_superexplorer and all.include_superdesktop)
-local formal_with_evidence_logs = components.parse_options({
-    "--component", "all", "--ignore-superdesktop-evidence-logs",
+local formal_with_openspec_untracked = components.parse_options({
+    "--component", "all", "--ignore-superdesktop-openspec-untracked",
 })
-assert(formal_with_evidence_logs.ignore_superdesktop_evidence_logs)
+assert(formal_with_openspec_untracked.ignore_superdesktop_openspec_untracked)
 local explorer = components.parse_options({ "--component=superexplorer", "--allow-superexplorer-dirty" })
 assert(explorer.include_superexplorer and not explorer.include_superdesktop and explorer.allow_superexplorer_dirty)
 local desktop = components.parse_options({ "--component", "superdesktop", "--allow-superdesktop-dirty" })
@@ -61,17 +61,17 @@ end)
 expect_failure("desktop allowance leak", "只能用於 superdesktop", function()
     components.parse_options({ "--component", "all", "--allow-superdesktop-dirty" })
 end)
-expect_failure("evidence log allowance leak", "can only be used with --component all", function()
-    components.parse_options({ "--component", "superdesktop", "--ignore-superdesktop-evidence-logs" })
+expect_failure("OpenSpec untracked allowance leak", "can only be used with --component all", function()
+    components.parse_options({ "--component", "superdesktop", "--ignore-superdesktop-openspec-untracked" })
 end)
 
-local evidence_logs = table.concat({
+local openspec_untracked = table.concat({
     "?? openspec/changes/example/evidence/focused/stdout.log",
-    "?? openspec/changes/example/evidence/focused/stderr.log",
-    "?? openspec/changes/example/evidence/focused/report.log",
+    "?? openspec/changes/example/evidence/focused/report.json",
+    "?? openspec/changes/example/proposal.md",
 }, "\n")
-assert(components.filter_superdesktop_status(evidence_logs, true) == "")
-assert(components.filter_superdesktop_status(evidence_logs, false) == evidence_logs)
+assert(components.filter_superdesktop_status(openspec_untracked, true) == "")
+assert(components.filter_superdesktop_status(openspec_untracked, false) == openspec_untracked)
 local test_results = table.concat({
     "?? utit-results/gui-taskbar-live/report.json",
     " M utit-results/gui-taskbar-live/summary.md",
@@ -84,12 +84,12 @@ local mixed_status = table.concat({
     "?? utit-results/gui-taskbar-live/report.json",
     " M crates/taskbar-ui/src/start.rs",
     "?? openspec/changes/example/evidence/focused/report.json",
+    "?? openspec/changes/example/proposal.md",
     "?? build/installer.log",
     " M openspec/changes/example/evidence/focused/tracked.log",
 }, "\n")
 assert(components.filter_superdesktop_status(mixed_status, true) == table.concat({
     " M crates/taskbar-ui/src/start.rs",
-    "?? openspec/changes/example/evidence/focused/report.json",
     "?? build/installer.log",
     " M openspec/changes/example/evidence/focused/tracked.log",
 }, "\n"))
@@ -148,7 +148,7 @@ local explorer_nsis = read_file(root .. "/installer/SuperExplorer.nsi")
 local desktop_nsis = read_file(root .. "/installer/SuperDesktop.nsi")
 local desktop_include = read_file(root .. "/installer/SuperDesktopFiles.nsh")
 
-assert_contains(formal_batch, "--component all --ignore-superdesktop-evidence-logs", "formal batch")
+assert_contains(formal_batch, "--component all --ignore-superdesktop-openspec-untracked", "formal batch")
 assert_contains(explorer_batch, "--component superexplorer --allow-superexplorer-dirty", "explorer batch")
 assert_contains(desktop_batch, "--component superdesktop --allow-superdesktop-dirty", "desktop batch")
 assert_contains(build, 'if options.include_superexplorer then', "SuperExplorer selection")
