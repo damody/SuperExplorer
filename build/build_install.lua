@@ -237,6 +237,7 @@ local function main()
     end
 
     local superdesktop_inputs = {}
+    local superdesktop_identity_inputs = {}
     if options.include_superdesktop then
         local release = path(superdesktop_root, "target", "release")
         superdesktop_inputs = {
@@ -247,6 +248,12 @@ local function main()
             SD_NOTIFICATION_EXE = path(release, "notification-area-host.exe"),
             SD_STATUS_EXE = path(release, "system-status-host.exe"),
             SD_TASKBAR_STATE_EXE = path(release, "taskbar-state-host.exe"),
+        }
+        local identity = path(superdesktop_root, "build", "windows-identity")
+        superdesktop_identity_inputs = {
+            SD_IDENTITY_MSIX = path(identity, "SuperDesktop.WindowsShell.msix"),
+            SD_IDENTITY_CER = path(identity, "SuperDesktop.WindowsShell.cer"),
+            SD_IDENTITY_REGISTER_PS1 = path(superdesktop_root, "scripts", "register-windows-identity-package.ps1"),
         }
     end
 
@@ -300,6 +307,19 @@ local function main()
             })
         end
     end
+    if options.include_superdesktop then
+        process.run({
+            stage = "建置 SuperDesktop Windows notification identity package",
+            exe = "powershell.exe",
+            args = {
+                "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+                path(superdesktop_root, "scripts", "prepare-windows-identity-package.ps1"),
+                "-OutputDirectory", path(superdesktop_root, "build", "windows-identity"),
+            },
+            cwd = superdesktop_root,
+            log_path = path(logs, "installer-superdesktop-identity.log"),
+        })
+    end
 
     local selected_size = 0
     for define, file_path in pairs(superexplorer_inputs) do
@@ -310,6 +330,10 @@ local function main()
     end
     for define, file_path in pairs(superdesktop_inputs) do
         selected_size = selected_size + validate_executable(file_path, "SuperDesktop " .. define)
+    end
+    for define, file_path in pairs(superdesktop_identity_inputs) do
+        require_file(file_path, "SuperDesktop " .. define)
+        selected_size = selected_size + assert(lfs.attributes(file_path, "size"))
     end
 
     os.remove(temporary_output)
@@ -325,6 +349,7 @@ local function main()
     for define, file_path in pairs(superexplorer_inputs) do add_define(define, file_path) end
     for _, plugin in ipairs(plugin_specs) do add_define(plugin.define, plugin.path) end
     for define, file_path in pairs(superdesktop_inputs) do add_define(define, file_path) end
+    for define, file_path in pairs(superdesktop_identity_inputs) do add_define(define, file_path) end
     local defines_path = path(logs, "installer-defines-" .. options.component .. ".nsh")
     write_file(defines_path, table.concat(define_lines, "\r\n") .. "\r\n")
     local nsis_args = {
