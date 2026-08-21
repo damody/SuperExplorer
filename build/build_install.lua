@@ -116,8 +116,15 @@ local function parse_options()
     return installer_components.parse_options(arg)
 end
 
-local function run_capture(stage, cwd, log_path, args)
-    process.run({ stage = stage, exe = "git.exe", args = args, cwd = cwd, log_path = log_path })
+local function run_capture(stage, cwd, log_path, args, echo_output)
+    process.run({
+        stage = stage,
+        exe = "git.exe",
+        args = args,
+        cwd = cwd,
+        log_path = log_path,
+        echo_output = echo_output,
+    })
     return read_file(log_path):match("^%s*(.-)%s*$")
 end
 
@@ -158,7 +165,8 @@ local function admit_superdesktop(superdesktop_root, logs, formal, ignore_opensp
         {
             "status", "--porcelain=v1", "--untracked-files=all", "--", ".",
             ":(exclude)utit-results/**",
-        }
+        },
+        false
     )
     status = installer_components.filter_superdesktop_status(status, ignore_openspec_untracked)
     installer_components.validate_submodule_identity({
