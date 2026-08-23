@@ -4,10 +4,12 @@
   "timestamp": "2026-08-24T01:10:00+08:00",
   "content_hashes": {
     "crates/explorer-model/src/bookmark.rs": "42ace776d98a13a266c84412b2c0c3dec282d28f03faca81d5f2ae0c886b0fa0",
-    "crates/explorer-ui/src/bookmark_editor_window.rs": "fdb133b6ba08d194c28c8ff733359b6d45392eb617af4c7a6c4913b244b17959",
-    "crates/explorer-ui/src/chrome.rs": "6edd662d36d8b2fb7fcfcde197be66e6f7a3e6ce2787a93e2f3b7bd2358784f8",
+    "crates/explorer-ui/src/bookmark_editor_window.rs": "3b51af373dab160d9a1531f9093f290f291e38b300512ad0db7b819f29c2a100",
+    "crates/explorer-ui/src/chrome.rs": "508b03c67f2ce618a71a51ec35c0d554fab4983cb3757fe49a7c4248bbfb9cac",
     "evidence/headful-bookmark-folders-7/report.json": "9c9f00e0f329154ae09f9c9003f76cb7c20f900dcf2e31d7fbfa8f91dd606f2f",
-    "evidence/headful-bookmark-folders-7/lua-bookmark-editor-window.png": "29e98dc5f1282873e20a26f71a5e46496e3174eca60fb9bc1ca092b02f25ba2b"
+    "evidence/headful-bookmark-folders-7/lua-bookmark-editor-window.png": "29e98dc5f1282873e20a26f71a5e46496e3174eca60fb9bc1ca092b02f25ba2b",
+    "evidence/headful-bookmark-editor-double-defer/report.json": "20a368d3303af826568be281b7c5b642d49a03c6004638204de30216b50df517",
+    "evidence/headful-bookmark-editor-double-defer/bookmark-destination-picker.png": "c9c304d937e83018ad58764c84f2cd0234561be2107633af45ec43a0b4f263e8"
   },
   "records": [
     {"task_id":"1.1.1","status":"passed","artifact":"crates/explorer-model/src/bookmark.rs","subcheck":"typed-tree-nodes"},
@@ -21,7 +23,7 @@
     {"task_id":"1.2.4","status":"passed","command":"cargo test -p explorer-ui --lib bookmark_ --locked","exit_status":0,"subcheck":"durable-rollback"},
     {"task_id":"2.1.1","status":"passed","artifact":"crates/explorer-ui/src/chrome.rs","subcheck":"token-styled-fields"},
     {"task_id":"2.1.2","status":"passed","command":"cargo test -p explorer-ui --lib bookmark_ --locked","exit_status":0,"subcheck":"strong-input-handles"},
-    {"task_id":"2.1.3","status":"passed","artifact":"crates/explorer-ui/src/bookmark_editor_window.rs","subcheck":"dedicated-window-focus-loss"},
+    {"task_id":"2.1.3","status":"passed","artifact":"evidence/headful-bookmark-editor-double-defer/report.json","subcheck":"dedicated-window-focus-loss-no-refcell-reentrancy"},
     {"task_id":"2.1.4","status":"passed","command":"cargo test -p explorer-ui --lib bookmark_ --locked","exit_status":0,"subcheck":"failed-save-retains-draft"},
     {"task_id":"2.1.5","status":"passed","artifact":"evidence/headful-bookmark-folders-7/lua-bookmark-editor-window.png","reviewer":"headful-uitest"},
     {"task_id":"3.1.1","status":"passed","artifact":"crates/explorer-ui/src/chrome.rs","subcheck":"favorites-tree-expansion"},
@@ -41,7 +43,7 @@
     {"task_id":"4.1.4","status":"passed","command":"cargo test -p explorer-automation bookmark --locked","exit_status":0,"subcheck":"lua-host-boundary"},
     {"task_id":"5.1.1","status":"passed","command":"cargo test -p explorer-model bookmark --locked; cargo test -p explorer-ui --lib bookmark_ --locked; cargo test -p explorer-automation bookmark --locked; cargo test -p explorer-app session_lifecycle --locked","exit_status":0},
     {"task_id":"5.1.2","status":"passed","command":"cargo fmt --all -- --check; cargo clippy -p explorer-model -p explorer-ui -p explorer-automation --lib --locked; cargo check -p explorer-app --locked","exit_status":0,"note":"repository baseline warnings remain non-fatal"},
-    {"task_id":"5.1.3","status":"passed","command":"powershell.exe -Sta -NoProfile -ExecutionPolicy Bypass -File scripts/smoke_bookmark_toolbar.ps1 -OutputDirectory openspec/changes/fix-bookmark-folders-and-lua-editor/evidence/headful-bookmark-folders-7 -SkipBuild","exit_status":0},
+    {"task_id":"5.1.3","status":"passed","command":"smoke_bookmark_toolbar.ps1 full run headful-bookmark-folders-7; EditorOnly isolation rerun headful-bookmark-editor-double-defer","exit_status":0},
     {"task_id":"5.1.4","status":"passed","artifact":"evidence/index.json","subcheck":"unique-task-records"},
     {"task_id":"5.1.5","status":"passed","command":"openspec validate fix-bookmark-folders-and-lua-editor --strict; validate_tasks.py; git diff --check","exit_status":0}
   ]

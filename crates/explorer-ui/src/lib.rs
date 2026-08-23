@@ -1055,8 +1055,6 @@ pub struct ExplorerRoot {
     address_input: Option<gpui::Entity<EditableTextState>>,
     search_input: Option<gpui::Entity<EditableTextState>>,
     rename_input: Option<gpui::Entity<EditableTextState>>,
-    bookmark_name_input: Option<gpui::Entity<EditableTextState>>,
-    bookmark_payload_input: Option<gpui::Entity<EditableTextState>>,
     bookmark_folder_name_input: Option<gpui::Entity<EditableTextState>>,
     pointer_capture_factory: Option<PointerCaptureFactory>,
     pointer_capture: Option<Box<dyn PointerCaptureSession>>,
@@ -1391,8 +1389,6 @@ impl ExplorerRoot {
             address_input: None,
             search_input: None,
             rename_input: None,
-            bookmark_name_input: None,
-            bookmark_payload_input: None,
             bookmark_folder_name_input: None,
             pointer_capture_factory: None,
             pointer_capture: None,
@@ -1455,9 +1451,15 @@ impl ExplorerRoot {
         self.state.bookmark_editor()?;
         Some(bookmark_editor_window::BookmarkEditorWindowSnapshotV1 {
             state: self.state.clone(),
-            name_input: self.bookmark_name_input.clone()?,
-            payload_input: self.bookmark_payload_input.clone()?,
         })
+    }
+
+    pub fn update_bookmark_editor_name_from_window(&mut self, value: String) {
+        self.state.update_bookmark_editor_name(value);
+    }
+
+    pub fn update_bookmark_editor_payload_from_window(&mut self, value: String) {
+        self.state.update_bookmark_editor_payload(value);
     }
 
     pub fn dispatch_bookmark_editor_action(
@@ -2608,8 +2610,6 @@ impl ExplorerRoot {
             address_input: None,
             search_input: None,
             rename_input: None,
-            bookmark_name_input: None,
-            bookmark_payload_input: None,
             bookmark_folder_name_input: None,
             pointer_capture_factory: None,
             pointer_capture: None,
@@ -2707,8 +2707,6 @@ impl ExplorerRoot {
             address_input: None,
             search_input: None,
             rename_input: None,
-            bookmark_name_input: None,
-            bookmark_payload_input: None,
             bookmark_folder_name_input: None,
             pointer_capture_factory: None,
             pointer_capture: None,
@@ -3483,35 +3481,6 @@ impl ExplorerRoot {
         self.rename_input = Some(rename);
     }
 
-    fn reset_bookmark_editor_inputs(&mut self, cx: &mut Context<Self>) {
-        let Some(editor) = self.state.bookmark_editor().cloned() else {
-            return;
-        };
-        let payload = match &editor.target {
-            explorer_model::BookmarkTarget::Folder { location }
-            | explorer_model::BookmarkTarget::File { location } => location
-                .path()
-                .map_or_else(String::new, |path| path.to_string_lossy().into_owned()),
-            explorer_model::BookmarkTarget::LuaScript { source } => source.clone(),
-        };
-        let name = cx.new(|cx| EditableTextState::new(StringStorage::from(editor.name), cx));
-        cx.subscribe(&name, |this, input, _: &TextChanged, cx| {
-            this.state
-                .update_bookmark_editor_name(input.read(cx).as_str().to_owned());
-            cx.notify();
-        })
-        .detach();
-        let payload = cx.new(|cx| EditableTextState::new(StringStorage::from(payload), cx));
-        cx.subscribe(&payload, |this, input, _: &TextChanged, cx| {
-            this.state
-                .update_bookmark_editor_payload(input.read(cx).as_str().to_owned());
-            cx.notify();
-        })
-        .detach();
-        self.bookmark_name_input = Some(name);
-        self.bookmark_payload_input = Some(payload);
-    }
-
     fn present_bookmark_editor_window(&mut self, cx: &mut Context<Self>) {
         let Some(snapshot) = self.bookmark_editor_window_snapshot() else {
             return;
@@ -3522,8 +3491,6 @@ impl ExplorerRoot {
             .is_some_and(|observer| observer(snapshot, cx));
         if !opened {
             self.state.cancel_bookmark_editor();
-            self.bookmark_name_input = None;
-            self.bookmark_payload_input = None;
             self.state
                 .set_bookmark_notice("Unable to open the bookmark editor window.");
         }
@@ -5136,7 +5103,6 @@ impl ExplorerRoot {
         }
         if action == ExplorerAction::AddLuaBookmark {
             self.state.begin_bookmark_editor(None);
-            self.reset_bookmark_editor_inputs(cx);
             cx.on_next_frame(window, |this, _, cx| {
                 this.present_bookmark_editor_window(cx);
             });
@@ -5144,7 +5110,6 @@ impl ExplorerRoot {
         }
         if let ExplorerAction::EditBookmark { id } = action {
             self.state.begin_bookmark_editor(Some(id));
-            self.reset_bookmark_editor_inputs(cx);
             cx.on_next_frame(window, |this, _, cx| {
                 this.present_bookmark_editor_window(cx);
             });
@@ -5152,8 +5117,6 @@ impl ExplorerRoot {
         }
         if action == ExplorerAction::CancelBookmarkEditor {
             self.state.cancel_bookmark_editor();
-            self.bookmark_name_input = None;
-            self.bookmark_payload_input = None;
             cx.notify();
         }
         if action == ExplorerAction::SaveBookmarkEditor {
@@ -5168,8 +5131,6 @@ impl ExplorerRoot {
                     self.state
                         .set_bookmark_notice("Unable to save the bookmark.");
                 } else {
-                    self.bookmark_name_input = None;
-                    self.bookmark_payload_input = None;
                 }
             } else {
                 self.state.set_bookmark_notice("Bookmark name is required.");
@@ -5278,8 +5239,6 @@ impl ExplorerRoot {
                             .set_bookmark_notice("Unable to remove the bookmark.");
                     } else {
                         self.state.cancel_bookmark_editor();
-                        self.bookmark_name_input = None;
-                        self.bookmark_payload_input = None;
                         self.state.set_bookmark_notice("Bookmark removed.");
                     }
                     cx.notify();
@@ -5343,7 +5302,6 @@ impl ExplorerRoot {
                         |name| name.to_string_lossy().into_owned(),
                     );
                 self.state.begin_new_bookmark_editor(name, target);
-                self.reset_bookmark_editor_inputs(cx);
                 cx.on_next_frame(window, |this, _, cx| {
                     this.present_bookmark_editor_window(cx);
                 });
@@ -5369,7 +5327,6 @@ impl ExplorerRoot {
                     };
                     self.state.begin_new_bookmark_editor(name, target);
                 }
-                self.reset_bookmark_editor_inputs(cx);
                 cx.on_next_frame(window, |this, _, cx| {
                     this.present_bookmark_editor_window(cx);
                 });
@@ -7090,13 +7047,7 @@ impl Render for ExplorerRoot {
                 self.search_input.as_ref().map(gpui::Entity::downgrade),
                 self.rename_input.as_ref().map(gpui::Entity::downgrade),
             )
-            .with_bookmark_editor_inputs(
-                self.bookmark_name_input
-                    .as_ref()
-                    .map(gpui::Entity::downgrade),
-                self.bookmark_payload_input
-                    .as_ref()
-                    .map(gpui::Entity::downgrade),
+            .with_bookmark_folder_editor_input(
                 self.bookmark_folder_name_input
                     .as_ref()
                     .map(gpui::Entity::downgrade),

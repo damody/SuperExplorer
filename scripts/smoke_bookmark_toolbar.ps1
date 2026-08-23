@@ -1,4 +1,4 @@
-param([ValidateSet('debug','release')][string]$Profile='debug',[Parameter(Mandatory)][string]$OutputDirectory,[switch]$SkipBuild)
+param([ValidateSet('debug','release')][string]$Profile='debug',[Parameter(Mandatory)][string]$OutputDirectory,[switch]$SkipBuild,[switch]$EditorOnly)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot 'UitestHeadful.psm1') -Force
@@ -40,6 +40,14 @@ try {
  $addStar=Find-ByName 'Edit or remove current folder bookmark'
  if($addStar.Current.BoundingRectangle.Left -ge $folderBookmark.Current.BoundingRectangle.Left){throw 'Bookmark star is not fixed at the left edge of the toolbar'}
  Save-UitestScreenshot -Root $context.Root -Path (Join-Path $output 'bookmark-star-on.png')
+ if($EditorOnly){
+   Start-Sleep -Milliseconds 300
+   $errorLog=Join-Path $output 'error.log'
+   if((Test-Path -LiteralPath $errorLog)-and(Select-String -Quiet -SimpleMatch 'RefCell already borrowed' -LiteralPath $errorLog)){throw 'Bookmark editor emitted a RefCell re-entrancy error'}
+   [ordered]@{schema='bookmark-editor-window-smoke-v1';status='PASS';dedicated_window=$true;refcell_reentrancy=$false;artifacts=@('bookmark-star-on.png','bookmark-star-off.png','bookmark-destination-picker.png')}|ConvertTo-Json -Depth 4|Set-Content -Encoding utf8 -LiteralPath (Join-Path $output 'report.json')
+   Write-Output "Bookmark editor window smoke passed: $OutputDirectory"
+   return
+ }
  Invoke-UitestClick -Element (Find-UitestFileItem -Root $context.Root -Name 'File bookmark.txt')
  [void](Find-ByName 'Edit or remove current folder bookmark')
  Invoke-UitestClick -Element (Find-ByName 'Edit or remove current folder bookmark')

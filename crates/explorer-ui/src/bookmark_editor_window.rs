@@ -6,7 +6,7 @@ use gpui::{
     App, Bounds, Context, FocusHandle, Focusable, IntoElement, Render, SharedString, Window,
     WindowBounds, WindowHandle, WindowOptions, div, prelude::*, px, size,
 };
-use gpui_elements::editable_text::EditableTextState;
+use gpui_elements::editable_text::{EditableTextState, StringStorage, TextChanged};
 
 use crate::{
     ExplorerRoot, UiTokens,
@@ -18,8 +18,6 @@ use crate::{
 #[derive(Clone)]
 pub struct BookmarkEditorWindowSnapshotV1 {
     pub state: AppViewState,
-    pub name_input: gpui::Entity<EditableTextState>,
-    pub payload_input: gpui::Entity<EditableTextState>,
 }
 
 pub fn bookmark_editor_window_options(cx: &App) -> WindowOptions {
@@ -44,6 +42,8 @@ pub struct BookmarkEditorWindow {
     tokens: UiTokens,
     owner: WindowHandle<ExplorerRoot>,
     snapshot: BookmarkEditorWindowSnapshotV1,
+    name_input: gpui::Entity<EditableTextState>,
+    payload_input: gpui::Entity<EditableTextState>,
     focus_handle: FocusHandle,
     was_active: bool,
 }
@@ -62,14 +62,65 @@ impl BookmarkEditorWindow {
     ) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
-        let name = snapshot.name_input.clone();
+        let editor = snapshot
+            .state
+            .bookmark_editor()
+            .cloned()
+            .expect("bookmark editor snapshot requires a draft");
+        let payload = match editor.target {
+            explorer_model::BookmarkTarget::Folder { location }
+            | explorer_model::BookmarkTarget::File { location } => location
+                .path()
+                .map_or_else(String::new, |path| path.to_string_lossy().into_owned()),
+            explorer_model::BookmarkTarget::LuaScript { source } => source,
+        };
+        let name_input = cx.new(|cx| EditableTextState::new(StringStorage::from(editor.name), cx));
+        let payload_input = cx.new(|cx| EditableTextState::new(StringStorage::from(payload), cx));
+        let name_owner = owner;
+        cx.subscribe(&name_input, move |_, input, _: &TextChanged, cx| {
+            let value = input.read(cx).as_str().to_owned();
+            let _ = name_owner.update(cx, |root, _, cx| {
+                root.update_bookmark_editor_name_from_window(value);
+                cx.notify();
+            });
+        })
+        .detach();
+        let payload_owner = owner;
+        cx.subscribe(&payload_input, move |_, input, _: &TextChanged, cx| {
+            let value = input.read(cx).as_str().to_owned();
+            let _ = payload_owner.update(cx, |root, _, cx| {
+                root.update_bookmark_editor_payload_from_window(value);
+                cx.notify();
+            });
+        })
+        .detach();
+        let name = name_input.clone();
         window.defer(cx, move |window, cx| {
-            name.read(cx).focus_handle(cx).focus(window, cx);
+            window.defer(cx, move |window, cx| {
+                let input_focus = name.read(cx).focus_handle(cx).clone();
+                input_focus.focus(window, cx);
+            });
+        });
+        let close_owner = owner;
+        window.on_window_should_close(cx, move |_, cx| {
+            let _ = close_owner.update(cx, |root, owner_window, cx| {
+                if root.bookmark_editor_window_snapshot().is_some() {
+                    root.dispatch_bookmark_editor_action(
+                        ExplorerAction::CancelBookmarkEditor,
+                        ActionSource::Programmatic,
+                        owner_window,
+                        cx,
+                    );
+                }
+            });
+            true
         });
         Self {
             tokens,
             owner,
             snapshot,
+            name_input,
+            payload_input,
             focus_handle,
             was_active: false,
         }
@@ -144,8 +195,8 @@ impl Render for BookmarkEditorWindow {
             .child(chrome::bookmark_editor(
                 self.tokens,
                 &self.snapshot.state,
-                Some(gpui::Entity::downgrade(&self.snapshot.name_input)),
-                Some(gpui::Entity::downgrade(&self.snapshot.payload_input)),
+                Some(gpui::Entity::downgrade(&self.name_input)),
+                Some(gpui::Entity::downgrade(&self.payload_input)),
                 Some(on_action),
             ))
     }
