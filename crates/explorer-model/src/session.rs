@@ -638,8 +638,13 @@ impl PersistedSessionEnvelope {
                 maximum: limits.max_state_payload_bytes,
             });
         }
-        let envelope: Self = serde_json::from_slice(bytes).map_err(SessionValidationError::json)?;
+        let mut envelope: Self =
+            serde_json::from_slice(bytes).map_err(SessionValidationError::json)?;
         envelope.validate(limits)?;
+        if envelope.payload.bookmarks.uses_legacy_encoding() {
+            envelope.payload.bookmarks.upgrade_encoding();
+            envelope.checksum = envelope.calculate_checksum()?;
+        }
         Ok(envelope)
     }
 
@@ -821,15 +826,31 @@ impl PersistedSessionEnvelope {
         }
         let mut bookmark_ids = HashSet::new();
         let mut bookmark_orders = HashSet::new();
+        for (index, folder) in self.payload.bookmarks.folders().iter().enumerate() {
+            validate_text(
+                &folder.name,
+                &format!("bookmark_folders[{index}].name"),
+                MAX_PIN_NAME_BYTES,
+            )?;
+            if !bookmark_ids.insert(folder.id)
+                || !bookmark_orders.insert((folder.parent_id, folder.order))
+            {
+                return Err(SessionValidationError::Invariant(
+                    "bookmark folders contain duplicate identity or sibling order".to_owned(),
+                ));
+            }
+        }
         for (index, bookmark) in self.payload.bookmarks.entries().iter().enumerate() {
             validate_text(
                 &bookmark.name,
                 &format!("bookmarks[{index}].name"),
                 MAX_PIN_NAME_BYTES,
             )?;
-            if !bookmark_ids.insert(bookmark.id) || !bookmark_orders.insert(bookmark.order) {
+            if !bookmark_ids.insert(bookmark.id)
+                || !bookmark_orders.insert((bookmark.parent_id, bookmark.order))
+            {
                 return Err(SessionValidationError::Invariant(
-                    "bookmarks contain duplicate identity or order".to_owned(),
+                    "bookmarks contain duplicate identity or sibling order".to_owned(),
                 ));
             }
             match &bookmark.target {
@@ -1767,6 +1788,40 @@ mod tests {
             restarted.payload.bookmarks.entries()[0].target,
             crate::BookmarkTarget::LuaScript { .. }
         ));
+    }
+
+    #[test]
+    fn current_schema_flat_bookmarks_validate_before_upgrading_tree_encoding() {
+        let id = uuid::Uuid::new_v4();
+        let legacy_json = format!(
+            r#"[{{"id":"{id}","name":"Legacy","order":0,"target":{{"kind":"lua_script","source":"return 1"}}}}]"#
+        );
+        let bookmarks: crate::Bookmarks =
+            serde_json::from_str(&legacy_json).expect("legacy bookmark payload");
+        let initial = HistoryEntry::new(LocationDescriptor::file_system(r"D:\fixture"), "fixture");
+        let window = ExplorerWindowState::new(initial);
+        let envelope = PersistedSessionEnvelope::project_with_bookmarks(
+            &window,
+            placement(),
+            &[],
+            &bookmarks,
+            true,
+            9,
+            provenance(),
+            RoadmapLimits::default(),
+        )
+        .expect("project legacy bookmarks");
+        let bytes = envelope
+            .encode_pretty(RoadmapLimits::default())
+            .expect("encode legacy-compatible session");
+        let upgraded = PersistedSessionEnvelope::decode(&bytes, RoadmapLimits::default())
+            .expect("validate old checksum before upgrade");
+        assert_eq!(upgraded.payload.bookmarks.entries()[0].id, id);
+        assert!(
+            serde_json::to_string(&upgraded.payload.bookmarks)
+                .expect("encode upgraded bookmarks")
+                .contains("\"version\":2")
+        );
     }
 
     #[test]

@@ -26,9 +26,9 @@ The existing completed bookmark change stores `Bookmarks` as an ordered flat col
 
 State owns one draft with destination-folder ID and edit/remove mode. The star, contextual "Add bookmark", manager edit, and folder commands populate that draft; the chrome renders a single labelled dialog and tree picker. Direct star toggling was rejected because it cannot select a folder and differs from the requested Firefox interaction.
 
-### Explicit editor field styling and lifecycle
+### Dedicated transient editor window with explicit field styling
 
-The modal uses a reusable form-field style derived from UI tokens, strong entity handles until close, initial name-field focus, keyboard Escape cancel, and backdrop-safe event handling. Successful durable mutation clears input entities; failed persistence restores the mutation and leaves draft/input values intact. Raw unstyled text controls are rejected because their visual behavior is theme-dependent.
+Both the toolbar `+` and current-folder star open the same dedicated native GPUI window, aligned with Explorer's transient bookmark-editing behavior rather than covering the main file view. The window uses a reusable form-field style derived from UI tokens, strong entity handles until close, initial name-field focus, and keyboard Escape cancel. After the window has first become active, any activation loss cancels the draft and closes the window. Successful durable mutation closes and clears input entities; failed persistence keeps the window, mutation draft, and input values intact. Raw unstyled text controls and an in-main-window overlay are rejected because their visual and focus behavior is theme-dependent and caused the reported stuck surface.
 
 ### Bookmark folders are logical, not filesystem folders
 

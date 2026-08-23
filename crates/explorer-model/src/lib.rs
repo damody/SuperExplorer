@@ -26,13 +26,17 @@ mod navigation;
 mod operation;
 mod preview;
 mod protocol;
+mod remote;
 mod session;
 mod thumbnail;
 mod window;
 
 use explorer_common::LifecyclePhase;
 
-pub use bookmark::{Bookmark, BookmarkId, BookmarkMutation, BookmarkTarget, Bookmarks};
+pub use bookmark::{
+    Bookmark, BookmarkFolder, BookmarkFolderId, BookmarkId, BookmarkMutation, BookmarkTarget,
+    Bookmarks,
+};
 pub use cache_budget::{
     CACHE_BUDGET_DESCRIPTORS_V1, CACHE_BUDGET_SLIDER_STOPS_MB_V1, CacheBudgetDescriptorV1,
     CacheBudgetIdV1, CacheBudgetSettingsV1, DEFAULT_FOLDER_SIZE_CACHE_TTL_SECONDS,
@@ -109,6 +113,10 @@ pub use protocol::{
     ShellIconKey, ShellIconPayload, ShellIconPayloadError, ShellIconTheme, ShellNewItemDescriptor,
     ShellNewItemRecipe, ShellNewValidationError, TerminalLedger, TerminalViolation,
     TransferEffects, base_icon_key, classify_base_icon,
+};
+pub use remote::{
+    RemoteAddress, RemoteAddressError, RemoteProviderKind, SftpProfile, SftpProfileError,
+    new_remote_container_identity,
 };
 pub use session::{
     PersistedColumn, PersistedColumnLayoutEntry, PersistedColumnWidths, PersistedExtensionSort,
