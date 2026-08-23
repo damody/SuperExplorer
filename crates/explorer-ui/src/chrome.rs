@@ -244,8 +244,6 @@ pub struct ExplorerWindow {
     address_input: Option<gpui::WeakEntity<EditableTextState>>,
     search_input: Option<gpui::WeakEntity<EditableTextState>>,
     rename_input: Option<gpui::WeakEntity<EditableTextState>>,
-    bookmark_name_input: Option<gpui::WeakEntity<EditableTextState>>,
-    bookmark_payload_input: Option<gpui::WeakEntity<EditableTextState>>,
     bookmark_folder_name_input: Option<gpui::WeakEntity<EditableTextState>>,
     breadcrumb_menu_focus: Option<gpui::FocusHandle>,
     command_menu_focus: Option<gpui::FocusHandle>,
@@ -277,8 +275,6 @@ impl ExplorerWindow {
             address_input: None,
             search_input: None,
             rename_input: None,
-            bookmark_name_input: None,
-            bookmark_payload_input: None,
             bookmark_folder_name_input: None,
             breadcrumb_menu_focus: None,
             command_menu_focus: None,
@@ -332,14 +328,10 @@ impl ExplorerWindow {
     }
 
     #[must_use]
-    pub fn with_bookmark_editor_inputs(
+    pub fn with_bookmark_folder_editor_input(
         mut self,
-        name: Option<gpui::WeakEntity<EditableTextState>>,
-        payload: Option<gpui::WeakEntity<EditableTextState>>,
         folder_name: Option<gpui::WeakEntity<EditableTextState>>,
     ) -> Self {
-        self.bookmark_name_input = name;
-        self.bookmark_payload_input = payload;
         self.bookmark_folder_name_input = folder_name;
         self
     }
