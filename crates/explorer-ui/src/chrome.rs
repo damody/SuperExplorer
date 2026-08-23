@@ -1089,6 +1089,9 @@ fn bookmark_editor(
     callback: Option<ActionCallback>,
 ) -> impl IntoElement {
     let editor = state.bookmark_editor().expect("editor is open");
+    let colors = tokens.theme.colors;
+    let (input_text, input_selection, input_selection_text, input_caret) =
+        editable_input_colors(tokens);
     let payload_label = match editor.target {
         explorer_model::BookmarkTarget::LuaScript { .. } => {
             "Lua 原始碼（僅可使用唯讀 current_folder）"
@@ -1126,8 +1129,17 @@ fn bookmark_editor(
                         text_input("bookmark-name-input")
                             .state(input)
                             .multiline(false)
+                            .caret_blink_interval_500ms()
                             .w_full()
-                            .h(px(34.0)),
+                            .h(px(34.0))
+                            .px(px(8.0))
+                            .bg(colors.control_fill.to_gpui())
+                            .text_color(input_text)
+                            .selection_color(input_selection.into())
+                            .selection_text_color(input_selection_text.into())
+                            .caret_color(input_caret.into())
+                            .border(px(1.0))
+                            .border_color(colors.focus.to_gpui()),
                     )
                 })
                 .child(payload_label)
@@ -1136,8 +1148,17 @@ fn bookmark_editor(
                         text_input("bookmark-payload-input")
                             .state(input)
                             .multiline(true)
+                            .caret_blink_interval_500ms()
                             .w_full()
-                            .h(px(220.0)),
+                            .h(px(220.0))
+                            .p(px(8.0))
+                            .bg(colors.control_fill.to_gpui())
+                            .text_color(input_text)
+                            .selection_color(input_selection.into())
+                            .selection_text_color(input_selection_text.into())
+                            .caret_color(input_caret.into())
+                            .border(px(1.0))
+                            .border_color(colors.focus.to_gpui()),
                     )
                 })
                 .child(
@@ -13788,6 +13809,33 @@ mod tests {
         assert!(star < bookmarks, "star must be the first toolbar control");
         assert!(toolbar.contains(".text_size(px(20.0))"));
         assert!(!toolbar.contains(".absolute()\n                .left(px("));
+    }
+
+    #[test]
+    fn lua_bookmark_editor_uses_visible_token_styled_inputs() {
+        let source = include_str!("chrome.rs");
+        let editor = source
+            .split("fn bookmark_editor(")
+            .nth(1)
+            .and_then(|section| {
+                section
+                    .split("fn session_reset_confirmation_dialog(")
+                    .next()
+            })
+            .expect("bookmark editor source");
+        for required in [
+            "bookmark-name-input",
+            "bookmark-payload-input",
+            ".bg(colors.control_fill.to_gpui())",
+            ".text_color(input_text)",
+            ".caret_color(input_caret.into())",
+            ".border_color(colors.focus.to_gpui())",
+        ] {
+            assert!(
+                editor.contains(required),
+                "missing visible editor control contract: {required}"
+            );
+        }
     }
 }
 #[test]
