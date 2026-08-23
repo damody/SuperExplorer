@@ -457,6 +457,13 @@ pub(crate) struct BookmarkEditorDraft {
     pub(crate) id: Option<explorer_model::BookmarkId>,
     pub(crate) name: String,
     pub(crate) target: explorer_model::BookmarkTarget,
+    pub(crate) parent_id: Option<explorer_model::BookmarkFolderId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BookmarkFolderEditorDraft {
+    pub(crate) id: explorer_model::BookmarkFolderId,
+    pub(crate) name: String,
 }
 
 #[derive(Clone, Debug)]
@@ -494,7 +501,11 @@ pub struct AppViewState {
     bookmark_notice: Option<String>,
     bookmark_manager_open: bool,
     bookmark_overflow_open: bool,
+    bookmark_folder_menu: Option<explorer_model::BookmarkFolderId>,
+    expanded_bookmark_folders: HashSet<explorer_model::BookmarkFolderId>,
+    bookmark_folder_delete_confirmation: Option<(explorer_model::BookmarkFolderId, usize)>,
     bookmark_editor: Option<BookmarkEditorDraft>,
+    bookmark_folder_editor: Option<BookmarkFolderEditorDraft>,
     broker_health: BrokerUiHealth,
     session_reset_confirmation: Option<explorer_model::SessionResetScope>,
     confirmed_session_reset: Option<explorer_model::SessionResetScope>,
@@ -734,7 +745,11 @@ impl AppViewState {
             bookmark_notice: None,
             bookmark_manager_open: false,
             bookmark_overflow_open: false,
+            bookmark_folder_menu: None,
+            expanded_bookmark_folders: HashSet::new(),
+            bookmark_folder_delete_confirmation: None,
             bookmark_editor: None,
+            bookmark_folder_editor: None,
             broker_health: BrokerUiHealth::Healthy,
             session_reset_confirmation: None,
             confirmed_session_reset: None,
@@ -958,6 +973,22 @@ impl AppViewState {
         target: explorer_model::BookmarkTarget,
     ) -> explorer_model::BookmarkMutation {
         self.bookmarks.begin_add(name, target)
+    }
+
+    pub(crate) fn add_bookmark_folder(
+        &mut self,
+        name: String,
+        parent_id: Option<explorer_model::BookmarkFolderId>,
+    ) -> explorer_model::BookmarkMutation {
+        self.bookmarks.begin_add_folder(name, parent_id)
+    }
+
+    pub(crate) fn remove_bookmark_folder(
+        &mut self,
+        id: explorer_model::BookmarkFolderId,
+        allow_non_empty: bool,
+    ) -> explorer_model::BookmarkMutation {
+        self.bookmarks.begin_remove_folder(id, allow_non_empty)
     }
 
     pub(crate) fn remove_bookmark(
@@ -2800,6 +2831,46 @@ impl AppViewState {
         self.bookmark_overflow_open = !self.bookmark_overflow_open;
     }
 
+    pub(crate) const fn bookmark_folder_menu(&self) -> Option<explorer_model::BookmarkFolderId> {
+        self.bookmark_folder_menu
+    }
+
+    pub(crate) fn toggle_bookmark_folder_menu(&mut self, id: explorer_model::BookmarkFolderId) {
+        self.bookmark_folder_menu = (self.bookmark_folder_menu != Some(id)).then_some(id);
+        if !self.expanded_bookmark_folders.remove(&id) {
+            self.expanded_bookmark_folders.insert(id);
+        }
+    }
+
+    pub(crate) fn bookmark_folder_expanded(&self, id: explorer_model::BookmarkFolderId) -> bool {
+        self.expanded_bookmark_folders.contains(&id)
+    }
+
+    pub(crate) fn request_bookmark_folder_delete(&mut self, id: explorer_model::BookmarkFolderId) {
+        if self.bookmarks.folder(id).is_some() {
+            self.bookmark_folder_delete_confirmation =
+                Some((id, self.bookmarks.descendant_count(id)));
+        }
+    }
+
+    pub(crate) const fn bookmark_folder_delete_confirmation(
+        &self,
+    ) -> Option<(explorer_model::BookmarkFolderId, usize)> {
+        self.bookmark_folder_delete_confirmation
+    }
+
+    pub(crate) fn cancel_bookmark_folder_delete(&mut self) {
+        self.bookmark_folder_delete_confirmation = None;
+    }
+
+    pub(crate) fn take_bookmark_folder_delete(
+        &mut self,
+    ) -> Option<explorer_model::BookmarkFolderId> {
+        self.bookmark_folder_delete_confirmation
+            .take()
+            .map(|(id, _)| id)
+    }
+
     pub(crate) fn bookmark_editor(&self) -> Option<&BookmarkEditorDraft> {
         self.bookmark_editor.as_ref()
     }
@@ -2812,6 +2883,7 @@ impl AppViewState {
                 id: Some(bookmark.id),
                 name: bookmark.name.clone(),
                 target: bookmark.target.clone(),
+                parent_id: bookmark.parent_id,
             },
             None => BookmarkEditorDraft {
                 id: None,
@@ -2819,12 +2891,80 @@ impl AppViewState {
                 target: explorer_model::BookmarkTarget::LuaScript {
                     source: "-- current_folder is a read-only string\n".to_owned(),
                 },
+                parent_id: None,
             },
         });
     }
 
+    pub(crate) fn begin_new_bookmark_editor(
+        &mut self,
+        name: String,
+        target: explorer_model::BookmarkTarget,
+    ) {
+        self.bookmark_editor = Some(BookmarkEditorDraft {
+            id: None,
+            name,
+            target,
+            parent_id: None,
+        });
+    }
+
+    pub(crate) fn select_bookmark_editor_parent(
+        &mut self,
+        parent_id: Option<explorer_model::BookmarkFolderId>,
+    ) {
+        if parent_id.is_none_or(|id| self.bookmarks.folder(id).is_some())
+            && let Some(editor) = &mut self.bookmark_editor
+        {
+            editor.parent_id = parent_id;
+        }
+    }
+
     pub(crate) fn cancel_bookmark_editor(&mut self) {
         self.bookmark_editor = None;
+    }
+
+    pub(crate) fn restore_bookmark_editor(&mut self, editor: BookmarkEditorDraft) {
+        self.bookmark_editor = Some(editor);
+    }
+
+    pub(crate) fn begin_bookmark_folder_editor(&mut self, id: explorer_model::BookmarkFolderId) {
+        self.bookmark_folder_editor =
+            self.bookmarks
+                .folder(id)
+                .map(|folder| BookmarkFolderEditorDraft {
+                    id,
+                    name: folder.name.clone(),
+                });
+    }
+
+    pub(crate) const fn bookmark_folder_editor(&self) -> Option<&BookmarkFolderEditorDraft> {
+        self.bookmark_folder_editor.as_ref()
+    }
+
+    pub(crate) fn update_bookmark_folder_editor_name(&mut self, name: String) {
+        if let Some(editor) = &mut self.bookmark_folder_editor {
+            editor.name = name;
+        }
+    }
+
+    pub(crate) fn cancel_bookmark_folder_editor(&mut self) {
+        self.bookmark_folder_editor = None;
+    }
+
+    pub(crate) fn restore_bookmark_folder_editor(&mut self, editor: BookmarkFolderEditorDraft) {
+        self.bookmark_folder_editor = Some(editor);
+    }
+
+    pub(crate) fn commit_bookmark_folder_editor(
+        &mut self,
+    ) -> Option<explorer_model::BookmarkMutation> {
+        let editor = self.bookmark_folder_editor.take()?;
+        if editor.name.trim().is_empty() {
+            self.bookmark_folder_editor = Some(editor);
+            return None;
+        }
+        Some(self.bookmarks.begin_rename_folder(editor.id, editor.name))
     }
 
     pub(crate) fn update_bookmark_editor_name(&mut self, name: String) {
@@ -2860,8 +3000,13 @@ impl AppViewState {
             return None;
         }
         Some(match editor.id {
-            Some(id) => self.bookmarks.begin_update(id, editor.name, editor.target),
-            None => self.bookmarks.begin_add(editor.name, editor.target),
+            Some(id) => {
+                self.bookmarks
+                    .begin_update_in(id, editor.name, editor.target, editor.parent_id)
+            }
+            None => self
+                .bookmarks
+                .begin_add_to(editor.name, editor.target, editor.parent_id),
         })
     }
 
@@ -5550,6 +5695,48 @@ mod tests {
         let mut restarted = AppViewState::default();
         restarted.configure_bookmarks(restored);
         assert_eq!(restarted.bookmarks(), state.bookmarks());
+    }
+
+    #[test]
+    fn bookmark_editor_selects_persistent_folder_destination_and_folder_crud_rolls_back() {
+        let mut state = AppViewState::default();
+        let add_folder = state.add_bookmark_folder("Work".into(), None);
+        assert!(add_folder.changed());
+        let folder_id = state.bookmarks().folders()[0].id;
+
+        state.begin_new_bookmark_editor(
+            "Command".into(),
+            explorer_model::BookmarkTarget::LuaScript {
+                source: "return 1".into(),
+            },
+        );
+        state.select_bookmark_editor_parent(Some(folder_id));
+        let add = state
+            .commit_bookmark_editor()
+            .expect("folder destination mutation");
+        assert!(add.changed());
+        assert_eq!(state.bookmarks().entries()[0].parent_id, Some(folder_id));
+
+        state.begin_bookmark_folder_editor(folder_id);
+        state.update_bookmark_folder_editor_name("Projects".into());
+        assert!(
+            state
+                .commit_bookmark_folder_editor()
+                .expect("rename mutation")
+                .changed()
+        );
+        assert_eq!(state.bookmarks().folders()[0].name, "Projects");
+
+        state.request_bookmark_folder_delete(folder_id);
+        assert_eq!(
+            state.bookmark_folder_delete_confirmation(),
+            Some((folder_id, 1))
+        );
+        let remove = state.remove_bookmark_folder(folder_id, true);
+        assert!(remove.changed());
+        assert!(state.bookmarks().entries().is_empty());
+        state.rollback_bookmark(remove);
+        assert_eq!(state.bookmarks().entries()[0].parent_id, Some(folder_id));
     }
 
     fn state_with_rows() -> AppViewState {

@@ -16,6 +16,7 @@
 
 pub mod actions;
 pub mod automation;
+pub mod bookmark_editor_window;
 pub mod chrome;
 pub mod code_lines_column;
 pub mod diagnostics;
@@ -1056,6 +1057,7 @@ pub struct ExplorerRoot {
     rename_input: Option<gpui::Entity<EditableTextState>>,
     bookmark_name_input: Option<gpui::Entity<EditableTextState>>,
     bookmark_payload_input: Option<gpui::Entity<EditableTextState>>,
+    bookmark_folder_name_input: Option<gpui::Entity<EditableTextState>>,
     pointer_capture_factory: Option<PointerCaptureFactory>,
     pointer_capture: Option<Box<dyn PointerCaptureSession>>,
     durable_state_observer: Option<DurableStateObserver>,
@@ -1065,6 +1067,7 @@ pub struct ExplorerRoot {
     command_prompt_launcher: Option<CommandPromptLauncher>,
     bookmark_file_launcher: Option<BookmarkFileLauncher>,
     folder_options_window_observer: Option<FolderOptionsWindowObserver>,
+    bookmark_editor_window_observer: Option<BookmarkEditorWindowObserver>,
     last_window_title: Option<String>,
     navigation_history_release_deadline: Option<Instant>,
     safe_mode_offers: Vec<SafeModeOfferV1>,
@@ -1127,6 +1130,12 @@ pub type FolderOptionsWindowObserver = std::rc::Rc<
     dyn Fn(
         bool,
         Option<folder_options_window::FolderOptionsWindowSnapshotV1>,
+        &mut gpui::Context<ExplorerRoot>,
+    ) -> bool,
+>;
+pub type BookmarkEditorWindowObserver = std::rc::Rc<
+    dyn Fn(
+        bookmark_editor_window::BookmarkEditorWindowSnapshotV1,
         &mut gpui::Context<ExplorerRoot>,
     ) -> bool,
 >;
@@ -1384,6 +1393,7 @@ impl ExplorerRoot {
             rename_input: None,
             bookmark_name_input: None,
             bookmark_payload_input: None,
+            bookmark_folder_name_input: None,
             pointer_capture_factory: None,
             pointer_capture: None,
             durable_state_observer: None,
@@ -1393,6 +1403,7 @@ impl ExplorerRoot {
             command_prompt_launcher: None,
             bookmark_file_launcher: None,
             folder_options_window_observer: None,
+            bookmark_editor_window_observer: None,
             last_window_title: None,
             navigation_history_release_deadline: None,
             safe_mode_offers: Vec::new(),
@@ -1429,6 +1440,34 @@ impl ExplorerRoot {
 
     pub fn attach_folder_options_window_observer(&mut self, observer: FolderOptionsWindowObserver) {
         self.folder_options_window_observer = Some(observer);
+    }
+
+    pub fn attach_bookmark_editor_window_observer(
+        &mut self,
+        observer: BookmarkEditorWindowObserver,
+    ) {
+        self.bookmark_editor_window_observer = Some(observer);
+    }
+
+    pub fn bookmark_editor_window_snapshot(
+        &self,
+    ) -> Option<bookmark_editor_window::BookmarkEditorWindowSnapshotV1> {
+        self.state.bookmark_editor()?;
+        Some(bookmark_editor_window::BookmarkEditorWindowSnapshotV1 {
+            state: self.state.clone(),
+            name_input: self.bookmark_name_input.clone()?,
+            payload_input: self.bookmark_payload_input.clone()?,
+        })
+    }
+
+    pub fn dispatch_bookmark_editor_action(
+        &mut self,
+        action: ExplorerAction,
+        source: ActionSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.handle_action(action, source, window, cx);
     }
 
     /// Applies one action from the dedicated Folder Options native window
@@ -2571,6 +2610,7 @@ impl ExplorerRoot {
             rename_input: None,
             bookmark_name_input: None,
             bookmark_payload_input: None,
+            bookmark_folder_name_input: None,
             pointer_capture_factory: None,
             pointer_capture: None,
             durable_state_observer: None,
@@ -2580,6 +2620,7 @@ impl ExplorerRoot {
             command_prompt_launcher: None,
             bookmark_file_launcher: None,
             folder_options_window_observer: None,
+            bookmark_editor_window_observer: None,
             last_window_title: None,
             navigation_history_release_deadline: None,
             safe_mode_offers: Vec::new(),
@@ -2668,6 +2709,7 @@ impl ExplorerRoot {
             rename_input: None,
             bookmark_name_input: None,
             bookmark_payload_input: None,
+            bookmark_folder_name_input: None,
             pointer_capture_factory: None,
             pointer_capture: None,
             durable_state_observer: None,
@@ -2677,6 +2719,7 @@ impl ExplorerRoot {
             command_prompt_launcher: None,
             bookmark_file_launcher: None,
             folder_options_window_observer: None,
+            bookmark_editor_window_observer: None,
             last_window_title: None,
             navigation_history_release_deadline: None,
             safe_mode_offers: Vec::new(),
@@ -3467,6 +3510,38 @@ impl ExplorerRoot {
         .detach();
         self.bookmark_name_input = Some(name);
         self.bookmark_payload_input = Some(payload);
+    }
+
+    fn present_bookmark_editor_window(&mut self, cx: &mut Context<Self>) {
+        let Some(snapshot) = self.bookmark_editor_window_snapshot() else {
+            return;
+        };
+        let opened = self
+            .bookmark_editor_window_observer
+            .clone()
+            .is_some_and(|observer| observer(snapshot, cx));
+        if !opened {
+            self.state.cancel_bookmark_editor();
+            self.bookmark_name_input = None;
+            self.bookmark_payload_input = None;
+            self.state
+                .set_bookmark_notice("Unable to open the bookmark editor window.");
+        }
+    }
+
+    fn reset_bookmark_folder_editor_input(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.state.bookmark_folder_editor().cloned() else {
+            return;
+        };
+        let input = cx.new(|cx| EditableTextState::new(StringStorage::from(editor.name), cx));
+        cx.subscribe(&input, |this, input, _: &TextChanged, cx| {
+            this.state
+                .update_bookmark_folder_editor_name(input.read(cx).as_str().to_owned());
+            cx.notify();
+        })
+        .detach();
+        input.update(cx, EditableTextState::select_document);
+        self.bookmark_folder_name_input = Some(input);
     }
 
     fn submit_active_location_load(&mut self) {
@@ -5062,21 +5137,17 @@ impl ExplorerRoot {
         if action == ExplorerAction::AddLuaBookmark {
             self.state.begin_bookmark_editor(None);
             self.reset_bookmark_editor_inputs(cx);
-            if let Some(input) = self.bookmark_name_input.clone() {
-                window.defer(cx, move |window, cx| {
-                    input.read(cx).focus_handle(cx).focus(window, cx);
-                });
-            }
+            cx.on_next_frame(window, |this, _, cx| {
+                this.present_bookmark_editor_window(cx);
+            });
             cx.notify();
         }
         if let ExplorerAction::EditBookmark { id } = action {
             self.state.begin_bookmark_editor(Some(id));
             self.reset_bookmark_editor_inputs(cx);
-            if let Some(input) = self.bookmark_name_input.clone() {
-                window.defer(cx, move |window, cx| {
-                    input.read(cx).focus_handle(cx).focus(window, cx);
-                });
-            }
+            cx.on_next_frame(window, |this, _, cx| {
+                this.present_bookmark_editor_window(cx);
+            });
             cx.notify();
         }
         if action == ExplorerAction::CancelBookmarkEditor {
@@ -5086,19 +5157,134 @@ impl ExplorerRoot {
             cx.notify();
         }
         if action == ExplorerAction::SaveBookmarkEditor {
+            let draft = self.state.bookmark_editor().cloned();
             if let Some(mutation) = self.state.commit_bookmark_editor() {
                 self.state.set_bookmark_notice("Bookmark saved.");
                 if !self.notify_durable_state() {
                     self.state.rollback_bookmark(mutation);
+                    if let Some(draft) = draft {
+                        self.state.restore_bookmark_editor(draft);
+                    }
                     self.state
                         .set_bookmark_notice("Unable to save the bookmark.");
+                } else {
+                    self.bookmark_name_input = None;
+                    self.bookmark_payload_input = None;
                 }
-                self.bookmark_name_input = None;
-                self.bookmark_payload_input = None;
             } else {
                 self.state.set_bookmark_notice("Bookmark name is required.");
             }
             cx.notify();
+        }
+        if let ExplorerAction::SelectBookmarkDestination { parent_id } = action {
+            self.state.select_bookmark_editor_parent(parent_id);
+            cx.notify();
+        }
+        if let ExplorerAction::AddBookmarkFolder { parent_id } = action {
+            let mutation = self
+                .state
+                .add_bookmark_folder("新資料夾".to_owned(), parent_id);
+            if mutation.changed() {
+                if !self.notify_durable_state() {
+                    self.state.rollback_bookmark(mutation);
+                    self.state
+                        .set_bookmark_notice("Unable to save the bookmark folder.");
+                } else {
+                    self.state.set_bookmark_notice("Bookmark folder created.");
+                    if let Some(id) = self
+                        .state
+                        .bookmarks()
+                        .child_folders(parent_id)
+                        .max_by_key(|folder| folder.order)
+                        .map(|folder| folder.id)
+                    {
+                        self.state.begin_bookmark_folder_editor(id);
+                        self.reset_bookmark_folder_editor_input(cx);
+                        if let Some(input) = self.bookmark_folder_name_input.clone() {
+                            window.defer(cx, move |window, cx| {
+                                input.read(cx).focus_handle(cx).focus(window, cx);
+                            });
+                        }
+                    }
+                }
+                cx.notify();
+            }
+        }
+        if let ExplorerAction::EditBookmarkFolder { id } = action {
+            self.state.begin_bookmark_folder_editor(id);
+            self.reset_bookmark_folder_editor_input(cx);
+            if let Some(input) = self.bookmark_folder_name_input.clone() {
+                window.defer(cx, move |window, cx| {
+                    input.read(cx).focus_handle(cx).focus(window, cx);
+                });
+            }
+            cx.notify();
+        }
+        if action == ExplorerAction::CancelBookmarkFolderEditor {
+            self.state.cancel_bookmark_folder_editor();
+            self.bookmark_folder_name_input = None;
+            cx.notify();
+        }
+        if action == ExplorerAction::SaveBookmarkFolderEditor {
+            let draft = self.state.bookmark_folder_editor().cloned();
+            if let Some(mutation) = self.state.commit_bookmark_folder_editor() {
+                if !self.notify_durable_state() {
+                    self.state.rollback_bookmark(mutation);
+                    if let Some(draft) = draft {
+                        self.state.restore_bookmark_folder_editor(draft);
+                    }
+                    self.state
+                        .set_bookmark_notice("Unable to rename the bookmark folder.");
+                } else {
+                    self.bookmark_folder_name_input = None;
+                    self.state.set_bookmark_notice("Bookmark folder renamed.");
+                }
+            } else {
+                self.state
+                    .set_bookmark_notice("Bookmark folder name is required.");
+            }
+            cx.notify();
+        }
+        if let ExplorerAction::RemoveBookmarkFolder { id } = action {
+            self.state.request_bookmark_folder_delete(id);
+            cx.notify();
+        }
+        if action == ExplorerAction::CancelRemoveBookmarkFolder {
+            self.state.cancel_bookmark_folder_delete();
+            cx.notify();
+        }
+        if action == ExplorerAction::ConfirmRemoveBookmarkFolder
+            && let Some(id) = self.state.take_bookmark_folder_delete()
+        {
+            let mutation = self.state.remove_bookmark_folder(id, true);
+            if mutation.changed() {
+                if !self.notify_durable_state() {
+                    self.state.rollback_bookmark(mutation);
+                    self.state
+                        .set_bookmark_notice("Unable to remove the bookmark folder.");
+                } else {
+                    self.state.set_bookmark_notice("Bookmark folder removed.");
+                }
+                cx.notify();
+            }
+        }
+        if action == ExplorerAction::RemoveEditingBookmark {
+            if let Some(id) = self.state.bookmark_editor().and_then(|editor| editor.id) {
+                let mutation = self.state.remove_bookmark(id);
+                if mutation.changed() {
+                    if !self.notify_durable_state() {
+                        self.state.rollback_bookmark(mutation);
+                        self.state
+                            .set_bookmark_notice("Unable to remove the bookmark.");
+                    } else {
+                        self.state.cancel_bookmark_editor();
+                        self.bookmark_name_input = None;
+                        self.bookmark_payload_input = None;
+                        self.state.set_bookmark_notice("Bookmark removed.");
+                    }
+                    cx.notify();
+                }
+            }
         }
         if action == ExplorerAction::ToggleBookmarkManager {
             self.state.toggle_bookmark_manager();
@@ -5106,6 +5292,10 @@ impl ExplorerRoot {
         }
         if action == ExplorerAction::ToggleBookmarkOverflow {
             self.state.toggle_bookmark_overflow();
+            cx.notify();
+        }
+        if let ExplorerAction::ToggleBookmarkFolderMenu { id } = action {
+            self.state.toggle_bookmark_folder_menu(id);
             cx.notify();
         }
         if let ExplorerAction::RemoveBookmark { id } = action {
@@ -5134,8 +5324,7 @@ impl ExplorerRoot {
         }
         if action == ExplorerAction::AddSelectedToBookmarks {
             let selected = self.state.selected_items_for_extension_command();
-            let mut mutations = Vec::new();
-            for item in selected {
+            if let Some(item) = selected.into_iter().next() {
                 let target = if item.location.path().is_some_and(std::path::Path::is_dir) {
                     explorer_model::BookmarkTarget::Folder {
                         location: item.location.clone(),
@@ -5153,28 +5342,19 @@ impl ExplorerRoot {
                         || "Bookmark".to_owned(),
                         |name| name.to_string_lossy().into_owned(),
                     );
-                mutations.push(self.state.add_bookmark(name, target));
-            }
-            if mutations
-                .iter()
-                .any(explorer_model::BookmarkMutation::changed)
-            {
-                self.state.set_bookmark_notice("Bookmark added.");
-                if !self.notify_durable_state() {
-                    for mutation in mutations.into_iter().rev() {
-                        self.state.rollback_bookmark(mutation);
-                    }
-                    self.state
-                        .set_bookmark_notice("Unable to save the bookmark.");
-                }
+                self.state.begin_new_bookmark_editor(name, target);
+                self.reset_bookmark_editor_inputs(cx);
+                cx.on_next_frame(window, |this, _, cx| {
+                    this.present_bookmark_editor_window(cx);
+                });
                 cx.notify();
             }
         }
         if action == ExplorerAction::ToggleCurrentFolderBookmark {
             if let Some((target, existing_id)) = self.state.current_folder_bookmark_target_and_id()
             {
-                let mutation = if let Some(id) = existing_id {
-                    self.state.remove_bookmark(id)
+                if let Some(id) = existing_id {
+                    self.state.begin_bookmark_editor(Some(id));
                 } else {
                     let name = match &target {
                         explorer_model::BookmarkTarget::Folder { location }
@@ -5187,21 +5367,13 @@ impl ExplorerRoot {
                             ),
                         explorer_model::BookmarkTarget::LuaScript { .. } => unreachable!(),
                     };
-                    self.state.add_bookmark(name, target)
-                };
-                if mutation.changed() {
-                    self.state.set_bookmark_notice(if existing_id.is_some() {
-                        "Bookmark removed."
-                    } else {
-                        "Bookmark added."
-                    });
-                    if !self.notify_durable_state() {
-                        self.state.rollback_bookmark(mutation);
-                        self.state
-                            .set_bookmark_notice("Unable to save the bookmark change.");
-                    }
-                    cx.notify();
+                    self.state.begin_new_bookmark_editor(name, target);
                 }
+                self.reset_bookmark_editor_inputs(cx);
+                cx.on_next_frame(window, |this, _, cx| {
+                    this.present_bookmark_editor_window(cx);
+                });
+                cx.notify();
             }
         }
         if let ExplorerAction::ActivateBookmark { id } = action {
@@ -6925,6 +7097,9 @@ impl Render for ExplorerRoot {
                 self.bookmark_payload_input
                     .as_ref()
                     .map(gpui::Entity::downgrade),
+                self.bookmark_folder_name_input
+                    .as_ref()
+                    .map(gpui::Entity::downgrade),
             )
             .with_breadcrumb_menu_focus(self.breadcrumb_menu_focus.clone())
             .with_command_menu_focus(self.command_menu_focus.clone())
@@ -6985,6 +7160,39 @@ impl Render for ExplorerRoot {
                 }),
             )
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if this.state.bookmark_editor().is_some() && event.keystroke.key == "escape" {
+                    cx.stop_propagation();
+                    this.handle_action(
+                        ExplorerAction::CancelBookmarkEditor,
+                        ActionSource::Keyboard,
+                        window,
+                        cx,
+                    );
+                    return;
+                }
+                if this.state.bookmark_folder_editor().is_some() && event.keystroke.key == "escape"
+                {
+                    cx.stop_propagation();
+                    this.handle_action(
+                        ExplorerAction::CancelBookmarkFolderEditor,
+                        ActionSource::Keyboard,
+                        window,
+                        cx,
+                    );
+                    return;
+                }
+                if this.state.bookmark_folder_delete_confirmation().is_some()
+                    && event.keystroke.key == "escape"
+                {
+                    cx.stop_propagation();
+                    this.handle_action(
+                        ExplorerAction::CancelRemoveBookmarkFolder,
+                        ActionSource::Keyboard,
+                        window,
+                        cx,
+                    );
+                    return;
+                }
                 if this.state.about_dialog().is_some() {
                     cx.stop_propagation();
                     if event.keystroke.key == "escape" {

@@ -1,0 +1,21 @@
+﻿{
+    "schema":  "bookmark-toolbar-uitest-v4",
+    "status":  "PASS",
+    "star_editor_verified":  true,
+    "bookmark_folder_created":  true,
+    "bookmark_folder_context_opened":  true,
+    "editor_focus_loss_cancelled":  true,
+    "lua_bookmarks_created":  4,
+    "distinct_lua_icon":  true,
+    "manager_opened":  true,
+    "artifacts":  [
+                      "bookmark-star-on.png",
+                      "bookmark-star-off.png",
+                      "bookmark-destination-picker.png",
+                      "bookmark-folder-manager.png",
+                      "bookmark-folder-context.png",
+                      "lua-bookmark-editor-window.png",
+                      "bookmark-toolbar.png",
+                      "bookmark-manager.png"
+                  ]
+}

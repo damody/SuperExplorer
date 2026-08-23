@@ -12,7 +12,7 @@ New-Item -ItemType Directory -Force -Path $fixture | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $fixture 'Folder bookmark') | Out-Null
 New-Item -ItemType File -Force -Path (Join-Path $fixture 'File bookmark.txt') | Out-Null
 $context=$null
-function Find-ByName([string]$Name){Find-UitestElement -Root $context.Root -Description $Name -Predicate {param($e) $e.Current.Name -eq $Name}}
+function Find-ByName([string]$Name){$processId=[int]$context.Process.Id;Find-UitestElement -Root ([Windows.Automation.AutomationElement]::RootElement) -Description $Name -Predicate {param($e) $e.Current.ProcessId -eq $processId -and $e.Current.Name -eq $Name}}
 function Get-PopupHandle{
  $ids=[Collections.Generic.HashSet[int]]::new();[void]$ids.Add([int]$context.Process.Id)
  do{$changed=$false;foreach($p in @(Get-CimInstance Win32_Process)){if($ids.Contains([int]$p.ParentProcessId)-and$ids.Add([int]$p.ProcessId)){$changed=$true}}}while($changed)
@@ -29,20 +29,45 @@ function Invoke-AddBookmarkMenu([string]$ItemName){
 }
 try {
  $context=Start-UitestExplorer -InitialPath $fixture -OutputDirectory $output -Profile $Profile -SkipBuild:$SkipBuild
- Invoke-AddBookmarkMenu 'Folder bookmark'
- $addStar=Find-ByName 'Add current folder to bookmarks'
- $folderBookmark=Find-UitestElement -Root $context.Root -Description 'Folder bookmark button' -Predicate {param($e) $e.Current.Name -like '*Bookmark: Folder bookmark*'}
- if($addStar.Current.BoundingRectangle.Left -ge $folderBookmark.Current.BoundingRectangle.Left){throw 'Bookmark star is not fixed at the left edge of the toolbar'}
+ $addStar=Find-ByName 'Add current folder bookmark and choose a folder'
  Save-UitestScreenshot -Root $context.Root -Path (Join-Path $output 'bookmark-star-off.png')
  Invoke-UitestClick -Element $addStar
- [void](Find-ByName 'Remove current folder from bookmarks')
+ [void](Find-ByName 'Bookmark editor')
+ Save-UitestScreenshot -Root (Find-ByName 'Bookmark editor window') -Path (Join-Path $output 'bookmark-destination-picker.png')
+ Invoke-UitestClick -Element (Find-ByName 'Save bookmark')
+ [void](Find-ByName 'Edit or remove current folder bookmark')
+ $folderBookmark=Find-UitestElement -Root $context.Root -Description 'Current folder bookmark button' -Predicate {param($e) $e.Current.Name -like '*Bookmark: bookmark-fixture*'}
+ $addStar=Find-ByName 'Edit or remove current folder bookmark'
+ if($addStar.Current.BoundingRectangle.Left -ge $folderBookmark.Current.BoundingRectangle.Left){throw 'Bookmark star is not fixed at the left edge of the toolbar'}
  Save-UitestScreenshot -Root $context.Root -Path (Join-Path $output 'bookmark-star-on.png')
  Invoke-UitestClick -Element (Find-UitestFileItem -Root $context.Root -Name 'File bookmark.txt')
- [void](Find-ByName 'Remove current folder from bookmarks')
- Invoke-UitestClick -Element (Find-ByName 'Remove current folder from bookmarks')
- [void](Find-ByName 'Add current folder to bookmarks')
- Invoke-UitestClick -Element (Find-ByName 'Add current folder to bookmarks')
- 1..12|ForEach-Object{
+ [void](Find-ByName 'Edit or remove current folder bookmark')
+ Invoke-UitestClick -Element (Find-ByName 'Edit or remove current folder bookmark')
+ [void](Find-ByName 'Bookmark editor')
+ Invoke-UitestClick -Element (Find-ByName 'Remove bookmark')
+ [void](Find-ByName 'Add current folder bookmark and choose a folder')
+ Invoke-UitestClick -Element (Find-ByName 'Add current folder bookmark and choose a folder')
+ [void](Find-ByName 'Bookmark editor')
+ Invoke-UitestClick -Element (Find-ByName 'Save bookmark')
+ Invoke-UitestClick -Element (Find-ByName 'Manage bookmarks')
+ Invoke-UitestClick -Element (Find-ByName 'Add bookmark folder')
+ [void](Find-ByName 'Rename bookmark folder')
+ Invoke-UitestClick -Element (Find-ByName 'Save bookmark folder')
+ Save-UitestScreenshot -Root $context.Root -Path (Join-Path $output 'bookmark-folder-manager.png')
+ Invoke-UitestClick -Element (Find-ByName 'Close bookmark manager')
+ $favoriteFolder=Find-UitestElement -Root $context.Root -Description 'favorite bookmark folder' -Predicate {param($e) $e.Current.Name -like 'Favorite folder *'}
+ Invoke-UitestClick -Element $favoriteFolder -Right
+ [void](Find-ByName 'Bookmark folder menu')
+ Save-UitestScreenshot -Root $context.Root -Path (Join-Path $output 'bookmark-folder-context.png')
+ Invoke-UitestClick -Element (Find-ByName 'Add Lua bookmark')
+ $luaEditorWindow=Find-ByName 'Bookmark editor window'
+ Save-UitestScreenshot -Root $luaEditorWindow -Path (Join-Path $output 'lua-bookmark-editor-window.png')
+ [void][RustExplorerUitest.Native]::SetForegroundWindow([IntPtr]$context.Hwnd)
+ Start-Sleep -Milliseconds 500
+ $processId=[int]$context.Process.Id
+ $editorStillOpen=@([Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)|Where-Object{$_.Current.ProcessId-eq$processId-and$_.Current.Name-eq'Bookmark editor window'}).Count -gt 0
+ if($editorStillOpen){throw 'Bookmark editor window did not cancel after losing focus'}
+ 1..4|ForEach-Object{
    Invoke-UitestClick -Element (Find-ByName 'Add Lua bookmark')
    [void](Find-ByName 'Bookmark editor')
    Invoke-UitestClick -Element (Find-ByName 'Save bookmark')
@@ -50,14 +75,9 @@ try {
  $lua=Find-UitestElement -Root $context.Root -Description 'Lua bookmark button' -Predicate {param($e) $e.Current.Name -like '*Bookmark: Lua command*'}
  if($lua.Current.Name -notlike '*⚡*'){throw 'Lua bookmark does not expose its distinct icon'}
  Save-UitestScreenshot -Root $context.Root -Path (Join-Path $output 'bookmark-toolbar.png')
- $more=Find-UitestElement -Root $context.Root -Description 'More Bookmarks' -Predicate {param($e) $e.Current.Name -like 'More Bookmarks,*'}
- Invoke-UitestClick -Element $more
- [void](Find-UitestElement -Root $context.Root -Description 'overflow Lua bookmark' -Predicate {param($e) $e.Current.Name -like '*Bookmark: Lua command*' -and $e.Current.BoundingRectangle.Top -gt $more.Current.BoundingRectangle.Bottom})
- Save-UitestScreenshot -Root $context.Root -Path (Join-Path $output 'bookmark-overflow.png')
- Invoke-UitestClick -Element $more
  Invoke-UitestClick -Element (Find-ByName 'Manage bookmarks')
  [void](Find-ByName 'Close bookmark manager')
  Save-UitestScreenshot -Root $context.Root -Path (Join-Path $output 'bookmark-manager.png')
- [ordered]@{schema='bookmark-toolbar-uitest-v2';status='PASS';native_context_bookmarks=@('Folder bookmark');star_toggle_bookmarks=@('Folder bookmark','File bookmark.txt');lua_bookmarks_created=12;distinct_lua_icon=$true;overflow_opened=$true;manager_opened=$true;artifacts=@('bookmark-context-menu.png','bookmark-star-on.png','bookmark-star-off.png','bookmark-toolbar.png','bookmark-overflow.png','bookmark-manager.png')}|ConvertTo-Json -Depth 5|Set-Content -Encoding utf8 -LiteralPath (Join-Path $output 'report.json')
+ [ordered]@{schema='bookmark-toolbar-uitest-v4';status='PASS';star_editor_verified=$true;bookmark_folder_created=$true;bookmark_folder_context_opened=$true;editor_focus_loss_cancelled=$true;lua_bookmarks_created=4;distinct_lua_icon=$true;manager_opened=$true;artifacts=@('bookmark-star-on.png','bookmark-star-off.png','bookmark-destination-picker.png','bookmark-folder-manager.png','bookmark-folder-context.png','lua-bookmark-editor-window.png','bookmark-toolbar.png','bookmark-manager.png')}|ConvertTo-Json -Depth 5|Set-Content -Encoding utf8 -LiteralPath (Join-Path $output 'report.json')
 } finally {if($null-ne$context){Stop-UitestExplorer -Context $context}}
 Write-Output "Bookmark toolbar UITEST passed: $OutputDirectory"

@@ -4860,6 +4860,23 @@ struct FolderOptionsWindowControllerV1 {
     lifecycle: FolderOptionsControllerLifecycleV1,
 }
 
+#[derive(Default)]
+struct BookmarkEditorWindowControllerV1 {
+    window: Option<gpui::WindowHandle<explorer_ui::bookmark_editor_window::BookmarkEditorWindow>>,
+    owner: Option<gpui::WindowHandle<ExplorerRoot>>,
+}
+
+impl BookmarkEditorWindowControllerV1 {
+    fn clear(
+        &mut self,
+    ) -> Option<(
+        gpui::WindowHandle<explorer_ui::bookmark_editor_window::BookmarkEditorWindow>,
+        gpui::WindowHandle<ExplorerRoot>,
+    )> {
+        self.window.take().zip(self.owner.take())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FolderOptionsOpenIntentV1 {
     Activate { generation: u64 },
@@ -5327,6 +5344,8 @@ impl ApplicationLifecycle {
 
                 let folder_options_controller =
                     Rc::new(RefCell::new(FolderOptionsWindowControllerV1::default()));
+                let bookmark_editor_controller =
+                    Rc::new(RefCell::new(BookmarkEditorWindowControllerV1::default()));
 
                 cx.on_app_quit(move |_| {
                     if let Err(error) = shutdown_shared(&shutdown_resources) {
@@ -5346,6 +5365,8 @@ impl ApplicationLifecycle {
                 .detach();
 
                 let folder_options_controller_for_close = Rc::clone(&folder_options_controller);
+                let bookmark_editor_controller_for_close =
+                    Rc::clone(&bookmark_editor_controller);
                 cx.on_window_closed(move |cx, closed_id| {
                     let closing = {
                         let mut controller = folder_options_controller_for_close.borrow_mut();
@@ -5370,6 +5391,33 @@ impl ApplicationLifecycle {
                             });
                         } else {
                             let _ = options.update(cx, |_, window, _| window.remove_window());
+                        }
+                    }
+                    let bookmark_closing = {
+                        let mut controller = bookmark_editor_controller_for_close.borrow_mut();
+                        let editor_closed = controller
+                            .window
+                            .is_some_and(|handle| handle.window_id() == closed_id);
+                        let owner_closed = controller
+                            .owner
+                            .is_some_and(|handle| handle.window_id() == closed_id);
+                        (editor_closed || owner_closed)
+                            .then(|| (editor_closed, controller.clear()))
+                    };
+                    if let Some((editor_closed, Some((editor, owner)))) = bookmark_closing {
+                        if editor_closed {
+                            let _ = owner.update(cx, |root, owner_window, cx| {
+                                if root.bookmark_editor_window_snapshot().is_some() {
+                                    root.dispatch_bookmark_editor_action(
+                                        explorer_ui::actions::ExplorerAction::CancelBookmarkEditor,
+                                        explorer_ui::actions::ActionSource::Programmatic,
+                                        owner_window,
+                                        cx,
+                                    );
+                                }
+                            });
+                        } else {
+                            let _ = editor.update(cx, |_, window, _| window.remove_window());
                         }
                     }
                     if cx.windows().is_empty() {
@@ -5401,6 +5449,8 @@ impl ApplicationLifecycle {
                 let code_lines_runtimes_for_window = code_lines_runtimes.clone();
                 let size_map_runtime_for_window = size_map_runtime.clone();
                 let folder_options_controller_for_window = Rc::clone(&folder_options_controller);
+                let bookmark_editor_controller_for_window =
+                    Rc::clone(&bookmark_editor_controller);
                 let folder_options_diagnostics = diagnostics.clone();
                 let fixture_diagnostics = diagnostics.clone();
                 let tokens = fixture_tokens(fixture_for_window.as_ref());
@@ -5451,6 +5501,8 @@ impl ApplicationLifecycle {
                         )
                     });
                     let controller = Rc::clone(&folder_options_controller_for_window);
+                    let bookmark_controller =
+                        Rc::clone(&bookmark_editor_controller_for_window);
                     let observer_diagnostics = folder_options_diagnostics.clone();
                     root.update(cx, |root, _| {
                         root.attach_folder_options_window_observer(Rc::new(move |create, snapshot, cx| {
@@ -5515,6 +5567,42 @@ impl ApplicationLifecycle {
                                         "folder_options_window_create_failed",
                                         &[("error", &message)],
                                     );
+                                    false
+                                }
+                            }
+                        }));
+                        root.attach_bookmark_editor_window_observer(Rc::new(move |snapshot, cx| {
+                            let existing = bookmark_controller.borrow().window;
+                            if let Some(existing) = existing {
+                                if existing
+                                    .update(cx, |_, window, _| window.activate_window())
+                                    .is_ok()
+                                {
+                                    return true;
+                                }
+                                let _ = bookmark_controller.borrow_mut().clear();
+                            }
+                            let options = explorer_ui::bookmark_editor_window::bookmark_editor_window_options(cx);
+                            let opened = cx.open_window(options, move |window, cx| {
+                                cx.new(|cx| {
+                                    explorer_ui::bookmark_editor_window::BookmarkEditorWindow::new(
+                                        tokens,
+                                        owner_window,
+                                        snapshot,
+                                        window,
+                                        cx,
+                                    )
+                                })
+                            });
+                            match opened {
+                                Ok(handle) => {
+                                    let mut controller = bookmark_controller.borrow_mut();
+                                    controller.window = Some(handle);
+                                    controller.owner = Some(owner_window);
+                                    true
+                                }
+                                Err(error) => {
+                                    tracing::warn!(%error, "Bookmark editor window creation failed");
                                     false
                                 }
                             }

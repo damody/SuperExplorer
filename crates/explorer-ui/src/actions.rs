@@ -281,8 +281,28 @@ pub enum ExplorerAction {
     },
     SaveBookmarkEditor,
     CancelBookmarkEditor,
+    SelectBookmarkDestination {
+        parent_id: Option<explorer_model::BookmarkFolderId>,
+    },
+    AddBookmarkFolder {
+        parent_id: Option<explorer_model::BookmarkFolderId>,
+    },
+    EditBookmarkFolder {
+        id: explorer_model::BookmarkFolderId,
+    },
+    SaveBookmarkFolderEditor,
+    CancelBookmarkFolderEditor,
+    RemoveBookmarkFolder {
+        id: explorer_model::BookmarkFolderId,
+    },
+    ConfirmRemoveBookmarkFolder,
+    CancelRemoveBookmarkFolder,
+    RemoveEditingBookmark,
     ToggleBookmarkManager,
     ToggleBookmarkOverflow,
+    ToggleBookmarkFolderMenu {
+        id: explorer_model::BookmarkFolderId,
+    },
     RemoveBookmark {
         id: explorer_model::BookmarkId,
     },
@@ -616,8 +636,18 @@ impl ExplorerAction {
             Self::EditBookmark { .. } => "EditBookmark",
             Self::SaveBookmarkEditor => "SaveBookmarkEditor",
             Self::CancelBookmarkEditor => "CancelBookmarkEditor",
+            Self::SelectBookmarkDestination { .. } => "SelectBookmarkDestination",
+            Self::AddBookmarkFolder { .. } => "AddBookmarkFolder",
+            Self::EditBookmarkFolder { .. } => "EditBookmarkFolder",
+            Self::SaveBookmarkFolderEditor => "SaveBookmarkFolderEditor",
+            Self::CancelBookmarkFolderEditor => "CancelBookmarkFolderEditor",
+            Self::RemoveBookmarkFolder { .. } => "RemoveBookmarkFolder",
+            Self::ConfirmRemoveBookmarkFolder => "ConfirmRemoveBookmarkFolder",
+            Self::CancelRemoveBookmarkFolder => "CancelRemoveBookmarkFolder",
+            Self::RemoveEditingBookmark => "RemoveEditingBookmark",
             Self::ToggleBookmarkManager => "ToggleBookmarkManager",
             Self::ToggleBookmarkOverflow => "ToggleBookmarkOverflow",
+            Self::ToggleBookmarkFolderMenu { .. } => "ToggleBookmarkFolderMenu",
             Self::RemoveBookmark { .. } => "RemoveBookmark",
             Self::MoveBookmark { .. } => "MoveBookmark",
             Self::CopySelectedPaths => "CopySelectedPaths",
@@ -1395,8 +1425,18 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::EditBookmark { .. }
         | ExplorerAction::SaveBookmarkEditor
         | ExplorerAction::CancelBookmarkEditor
+        | ExplorerAction::SelectBookmarkDestination { .. }
+        | ExplorerAction::AddBookmarkFolder { .. }
+        | ExplorerAction::EditBookmarkFolder { .. }
+        | ExplorerAction::SaveBookmarkFolderEditor
+        | ExplorerAction::CancelBookmarkFolderEditor
+        | ExplorerAction::RemoveBookmarkFolder { .. }
+        | ExplorerAction::ConfirmRemoveBookmarkFolder
+        | ExplorerAction::CancelRemoveBookmarkFolder
+        | ExplorerAction::RemoveEditingBookmark
         | ExplorerAction::ToggleBookmarkManager
         | ExplorerAction::ToggleBookmarkOverflow
+        | ExplorerAction::ToggleBookmarkFolderMenu { .. }
         | ExplorerAction::RemoveBookmark { .. }
         | ExplorerAction::MoveBookmark { .. } => true,
         ExplorerAction::CloseWindow => availability.is_enabled(CommandKind::CloseWindow),
@@ -1850,8 +1890,18 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         | ExplorerAction::EditBookmark { .. }
         | ExplorerAction::SaveBookmarkEditor
         | ExplorerAction::CancelBookmarkEditor
+        | ExplorerAction::SelectBookmarkDestination { .. }
+        | ExplorerAction::AddBookmarkFolder { .. }
+        | ExplorerAction::EditBookmarkFolder { .. }
+        | ExplorerAction::SaveBookmarkFolderEditor
+        | ExplorerAction::CancelBookmarkFolderEditor
+        | ExplorerAction::RemoveBookmarkFolder { .. }
+        | ExplorerAction::ConfirmRemoveBookmarkFolder
+        | ExplorerAction::CancelRemoveBookmarkFolder
+        | ExplorerAction::RemoveEditingBookmark
         | ExplorerAction::ToggleBookmarkManager
         | ExplorerAction::ToggleBookmarkOverflow
+        | ExplorerAction::ToggleBookmarkFolderMenu { .. }
         | ExplorerAction::RemoveBookmark { .. }
         | ExplorerAction::MoveBookmark { .. } => FocusSurface::CommandBar,
         ExplorerAction::OpenAboutDialog => {

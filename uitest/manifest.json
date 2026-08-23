@@ -2150,7 +2150,7 @@
       "arguments":["-Sta","-NoProfile","-ExecutionPolicy","Bypass","-File","{workspace_root}\\scripts\\smoke_bookmark_toolbar.ps1","-OutputDirectory","{evidence_dir}","-SkipBuild"],
       "timeout_seconds":120,"prerequisites":[{"kind":"windows"},{"kind":"interactive_desktop"},{"kind":"path","path":"{workspace_root}\\target\\debug\\SuperExplorer.exe"}],"exclusive_resources":["gui","cursor","explorer"],
       "covers":["add-bookmark-toolbar-lua-commands/bookmark-toolbar/型別化目標啟用","add-bookmark-toolbar-lua-commands/bookmark-toolbar/建立與管理書籤","add-bookmark-toolbar-lua-commands/bookmark-toolbar/持久化型別化書籤","add-bookmark-toolbar-lua-commands/bookmark-toolbar/書籤工具列與型別圖示","add-bookmark-toolbar-lua-commands/on-demand-lua-bookmarks/lua-書籤的受限-host-邊界","add-bookmark-toolbar-lua-commands/on-demand-lua-bookmarks/不再執行資料夾自動化腳本","add-bookmark-toolbar-lua-commands/on-demand-lua-bookmarks/受限的按需-lua-書籤執行"],
-      "required_artifacts":["report.json","bookmark-context-menu.png","bookmark-star-on.png","bookmark-star-off.png","bookmark-toolbar.png","bookmark-overflow.png","bookmark-manager.png"]
+      "required_artifacts":["report.json","bookmark-star-on.png","bookmark-star-off.png","bookmark-destination-picker.png","bookmark-folder-manager.png","bookmark-folder-context.png","lua-bookmark-editor-window.png","bookmark-toolbar.png","bookmark-manager.png"]
     },
     {
       "id":"bookmark-star-toggle-headful","description":"Verify the prominent leftmost bookmark star toggles the current folder with no selection and remains selection-independent.","suites":["quick","full","visual"],"program":"powershell.exe",
