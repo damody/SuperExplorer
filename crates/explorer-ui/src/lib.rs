@@ -5062,11 +5062,21 @@ impl ExplorerRoot {
         if action == ExplorerAction::AddLuaBookmark {
             self.state.begin_bookmark_editor(None);
             self.reset_bookmark_editor_inputs(cx);
+            if let Some(input) = self.bookmark_name_input.clone() {
+                window.defer(cx, move |window, cx| {
+                    input.read(cx).focus_handle(cx).focus(window, cx);
+                });
+            }
             cx.notify();
         }
         if let ExplorerAction::EditBookmark { id } = action {
             self.state.begin_bookmark_editor(Some(id));
             self.reset_bookmark_editor_inputs(cx);
+            if let Some(input) = self.bookmark_name_input.clone() {
+                window.defer(cx, move |window, cx| {
+                    input.read(cx).focus_handle(cx).focus(window, cx);
+                });
+            }
             cx.notify();
         }
         if action == ExplorerAction::CancelBookmarkEditor {
