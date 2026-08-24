@@ -31,3 +31,15 @@ The system SHALL open the same dedicated bookmark editor window rather than imme
 #### Scenario: Non-filesystem location
 - **WHEN** the current location is not a physical filesystem folder
 - **THEN** the system MUST disable the star and MUST NOT create a bookmark draft
+
+### Requirement: Filesystem bookmark targets are read-only
+
+The system SHALL display the target of a folder or file bookmark as a compact read-only path in the bookmark editor. The system MUST NOT expose that target through an editable text control and MUST preserve the exact target when the user changes the name or logical destination. Lua source SHALL remain editable.
+
+#### Scenario: Edit a folder bookmark
+- **WHEN** the user opens an existing folder bookmark editor and changes its name or destination
+- **THEN** the system MUST display the folder path without accepting edits and MUST persist the original target unchanged
+
+#### Scenario: Edit a Lua bookmark
+- **WHEN** the user opens an existing Lua bookmark editor
+- **THEN** the system MUST display an editable Lua-source field and persist valid source changes

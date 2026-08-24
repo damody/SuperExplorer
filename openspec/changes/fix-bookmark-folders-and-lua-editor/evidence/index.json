@@ -1,15 +1,18 @@
 {
   "schema": "superexplorer-evidence-index-v1",
   "change": "fix-bookmark-folders-and-lua-editor",
-  "timestamp": "2026-08-24T01:10:00+08:00",
+  "timestamp": "2026-08-24T08:20:00+08:00",
   "content_hashes": {
     "crates/explorer-model/src/bookmark.rs": "42ace776d98a13a266c84412b2c0c3dec282d28f03faca81d5f2ae0c886b0fa0",
-    "crates/explorer-ui/src/bookmark_editor_window.rs": "3b51af373dab160d9a1531f9093f290f291e38b300512ad0db7b819f29c2a100",
-    "crates/explorer-ui/src/chrome.rs": "508b03c67f2ce618a71a51ec35c0d554fab4983cb3757fe49a7c4248bbfb9cac",
+    "crates/explorer-ui/src/bookmark_editor_window.rs": "e3e9751688fd79cb27992c40e9271e128a3ff4514bee01cdd87619a5238c9e62",
+    "crates/explorer-ui/src/chrome.rs": "b0bc44aba76d8b432387f8a004051101d3f6ace70633c1838cfb3a2e3486eafb",
     "evidence/headful-bookmark-folders-7/report.json": "9c9f00e0f329154ae09f9c9003f76cb7c20f900dcf2e31d7fbfa8f91dd606f2f",
     "evidence/headful-bookmark-folders-7/lua-bookmark-editor-window.png": "29e98dc5f1282873e20a26f71a5e46496e3174eca60fb9bc1ca092b02f25ba2b",
     "evidence/headful-bookmark-editor-double-defer/report.json": "20a368d3303af826568be281b7c5b642d49a03c6004638204de30216b50df517",
-    "evidence/headful-bookmark-editor-double-defer/bookmark-destination-picker.png": "c9c304d937e83018ad58764c84f2cd0234561be2107633af45ec43a0b4f263e8"
+    "evidence/headful-bookmark-editor-double-defer/bookmark-destination-picker.png": "c9c304d937e83018ad58764c84f2cd0234561be2107633af45ec43a0b4f263e8",
+    "crates/explorer-ui/src/state.rs": "42fa66b2b166b147792b39d9b93599cfb6bdcc82cb59b07c5f9acee79dfa8724",
+    "evidence/headful-readonly-final/report.json": "ca6f9f0b198f97589e23e8f3b0e12829035e8d51435efbef849ad8ca2af9b0be",
+    "evidence/headful-readonly-final/bookmark-destination-picker.png": "4d325719654d16b8f793abb52bcf1e6ff4fbe798b06cc77db07f70a6b6ae58b4"
   },
   "records": [
     {"task_id":"1.1.1","status":"passed","artifact":"crates/explorer-model/src/bookmark.rs","subcheck":"typed-tree-nodes"},
@@ -45,6 +48,13 @@
     {"task_id":"5.1.2","status":"passed","command":"cargo fmt --all -- --check; cargo clippy -p explorer-model -p explorer-ui -p explorer-automation --lib --locked; cargo check -p explorer-app --locked","exit_status":0,"note":"repository baseline warnings remain non-fatal"},
     {"task_id":"5.1.3","status":"passed","command":"smoke_bookmark_toolbar.ps1 full run headful-bookmark-folders-7; EditorOnly isolation rerun headful-bookmark-editor-double-defer","exit_status":0},
     {"task_id":"5.1.4","status":"passed","artifact":"evidence/index.json","subcheck":"unique-task-records"},
-    {"task_id":"5.1.5","status":"passed","command":"openspec validate fix-bookmark-folders-and-lua-editor --strict; validate_tasks.py; git diff --check","exit_status":0}
+    {"task_id":"5.1.5","status":"passed","command":"openspec validate fix-bookmark-folders-and-lua-editor --strict; validate_tasks.py; git diff --check","exit_status":0},
+    {"task_id":"6.1.1","status":"passed","artifact":"evidence/headful-readonly-final/bookmark-destination-picker.png","subcheck":"compact-read-only-folder-target"},
+    {"task_id":"6.1.2","status":"passed","command":"cargo test -p explorer-ui bookmark --lib","exit_status":0,"subcheck":"filesystem-target-immutable-lua-source-editable"},
+    {"task_id":"6.2.1","status":"passed","artifact":"crates/explorer-ui/src/state.rs","subcheck":"pointer-position-and-dismiss-lifecycle"},
+    {"task_id":"6.2.2","status":"passed","command":"cargo test -p explorer-ui bookmark_context_menu_exposes_typed_commands_and_all_projection_hooks --lib","exit_status":0,"subcheck":"five-projection-hooks"},
+    {"task_id":"6.2.3","status":"passed","artifact":"crates/explorer-ui/src/chrome.rs","subcheck":"typed-open-run-new-tab-edit-move-delete"},
+    {"task_id":"6.3.1","status":"passed","command":"cargo fmt --all -- --check; cargo test -p explorer-model bookmark --lib; cargo test -p explorer-ui bookmark --lib; cargo test -p explorer-automation bookmark --lib; cargo check -p explorer-app --bin SuperExplorer; smoke_bookmark_toolbar.ps1 -EditorOnly","exit_status":0,"note":"repository baseline warnings remain non-fatal"},
+    {"task_id":"6.3.2","status":"passed","command":"openspec validate fix-bookmark-folders-and-lua-editor --strict; git diff --check","exit_status":0}
   ]
 }

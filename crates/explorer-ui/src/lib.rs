@@ -4845,6 +4845,39 @@ impl ExplorerRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let ExplorerAction::OpenBookmarkContextMenu { id, x, y } = action {
+            self.state.open_bookmark_context_menu(id, x, y);
+            cx.notify();
+            return;
+        }
+        if action == ExplorerAction::CloseBookmarkContextMenu {
+            self.state.close_bookmark_context_menu();
+            cx.notify();
+            return;
+        }
+        if self.state.bookmark_context_menu().is_some() {
+            self.state.close_bookmark_context_menu();
+            cx.notify();
+        }
+        if let ExplorerAction::OpenBookmarkInNewTab { id } = action {
+            let is_folder = self
+                .state
+                .bookmarks()
+                .entries()
+                .iter()
+                .find(|bookmark| bookmark.id == id)
+                .is_some_and(|bookmark| {
+                    matches!(
+                        bookmark.target,
+                        explorer_model::BookmarkTarget::Folder { .. }
+                    )
+                });
+            if is_folder {
+                self.handle_action(ExplorerAction::NewTab, source, window, cx);
+                self.handle_action(ExplorerAction::ActivateBookmark { id }, source, window, cx);
+            }
+            return;
+        }
         if action == ExplorerAction::OpenFolderOptions
             && self
                 .folder_options_window_observer
@@ -6894,6 +6927,7 @@ impl Render for ExplorerRoot {
             self.state.close_extensions_menu();
             self.state.close_new_menu();
             self.state.cancel_permanent_delete_confirmation();
+            self.state.close_bookmark_context_menu();
         }
         if self.state.scrollbar_drag_session().is_some() && !window.is_window_active() {
             self.terminate_scrollbar_drag(
@@ -7111,6 +7145,16 @@ impl Render for ExplorerRoot {
                 }),
             )
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if this.state.bookmark_context_menu().is_some() && event.keystroke.key == "escape" {
+                    cx.stop_propagation();
+                    this.handle_action(
+                        ExplorerAction::CloseBookmarkContextMenu,
+                        ActionSource::Keyboard,
+                        window,
+                        cx,
+                    );
+                    return;
+                }
                 if this.state.bookmark_editor().is_some() && event.keystroke.key == "escape" {
                     cx.stop_propagation();
                     this.handle_action(

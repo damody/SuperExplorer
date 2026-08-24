@@ -466,6 +466,13 @@ pub(crate) struct BookmarkFolderEditorDraft {
     pub(crate) name: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct BookmarkContextMenuState {
+    pub(crate) id: explorer_model::BookmarkId,
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+}
+
 #[derive(Clone, Debug)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -502,6 +509,7 @@ pub struct AppViewState {
     bookmark_manager_open: bool,
     bookmark_overflow_open: bool,
     bookmark_folder_menu: Option<explorer_model::BookmarkFolderId>,
+    bookmark_context_menu: Option<BookmarkContextMenuState>,
     expanded_bookmark_folders: HashSet<explorer_model::BookmarkFolderId>,
     bookmark_folder_delete_confirmation: Option<(explorer_model::BookmarkFolderId, usize)>,
     bookmark_editor: Option<BookmarkEditorDraft>,
@@ -746,6 +754,7 @@ impl AppViewState {
             bookmark_manager_open: false,
             bookmark_overflow_open: false,
             bookmark_folder_menu: None,
+            bookmark_context_menu: None,
             expanded_bookmark_folders: HashSet::new(),
             bookmark_folder_delete_confirmation: None,
             bookmark_editor: None,
@@ -2842,6 +2851,31 @@ impl AppViewState {
         }
     }
 
+    pub(crate) const fn bookmark_context_menu(&self) -> Option<BookmarkContextMenuState> {
+        self.bookmark_context_menu
+    }
+
+    pub(crate) fn open_bookmark_context_menu(
+        &mut self,
+        id: explorer_model::BookmarkId,
+        x: f32,
+        y: f32,
+    ) {
+        if self.bookmarks.entries().iter().any(|entry| entry.id == id) {
+            self.bookmark_context_menu = Some(BookmarkContextMenuState {
+                id,
+                x: x.max(0.0),
+                y: y.max(0.0),
+            });
+            self.bookmark_overflow_open = false;
+            self.bookmark_folder_menu = None;
+        }
+    }
+
+    pub(crate) fn close_bookmark_context_menu(&mut self) {
+        self.bookmark_context_menu = None;
+    }
+
     pub(crate) fn bookmark_folder_expanded(&self, id: explorer_model::BookmarkFolderId) -> bool {
         self.expanded_bookmark_folders.contains(&id)
     }
@@ -2975,21 +3009,12 @@ impl AppViewState {
 
     pub(crate) fn update_bookmark_editor_payload(&mut self, payload: String) {
         if let Some(editor) = &mut self.bookmark_editor {
-            editor.target = match &editor.target {
-                explorer_model::BookmarkTarget::Folder { .. } => {
-                    explorer_model::BookmarkTarget::Folder {
-                        location: LocationDescriptor::file_system(payload),
-                    }
-                }
-                explorer_model::BookmarkTarget::File { .. } => {
-                    explorer_model::BookmarkTarget::File {
-                        location: LocationDescriptor::file_system(payload),
-                    }
-                }
-                explorer_model::BookmarkTarget::LuaScript { .. } => {
-                    explorer_model::BookmarkTarget::LuaScript { source: payload }
-                }
-            };
+            if matches!(
+                editor.target,
+                explorer_model::BookmarkTarget::LuaScript { .. }
+            ) {
+                editor.target = explorer_model::BookmarkTarget::LuaScript { source: payload };
+            }
         }
     }
 
@@ -5682,11 +5707,25 @@ mod tests {
         assert!(matches!(
             &state.bookmarks().entries()[1].target,
             explorer_model::BookmarkTarget::File { location }
-                if location.path() == Some(std::path::Path::new(r"C:\other\renamed.txt"))
+                if location.path() == Some(std::path::Path::new(r"C:\folder\file.txt"))
+        ));
+
+        let command_id = state.bookmarks().entries()[2].id;
+        state.begin_bookmark_editor(Some(command_id));
+        state.update_bookmark_editor_payload("return current_folder".into());
+        assert!(
+            state
+                .commit_bookmark_editor()
+                .expect("Lua source mutation")
+                .changed()
+        );
+        assert!(matches!(
+            &state.bookmarks().entries()[2].target,
+            explorer_model::BookmarkTarget::LuaScript { source }
+                if source == "return current_folder"
         ));
 
         assert!(state.reorder_bookmark(file_id, 0).changed());
-        let command_id = state.bookmarks().entries()[2].id;
         assert!(state.remove_bookmark(command_id).changed());
         assert_eq!(state.bookmarks().entries()[0].id, file_id);
 
@@ -5695,6 +5734,30 @@ mod tests {
         let mut restarted = AppViewState::default();
         restarted.configure_bookmarks(restored);
         assert_eq!(restarted.bookmarks(), state.bookmarks());
+    }
+
+    #[test]
+    fn bookmark_context_menu_tracks_pointer_and_closes_without_mutating_bookmarks() {
+        let mut state = AppViewState::default();
+        state.add_bookmark(
+            "Folder".into(),
+            explorer_model::BookmarkTarget::Folder {
+                location: explorer_model::LocationDescriptor::file_system(r"C:\folder"),
+            },
+        );
+        let id = state.bookmarks().entries()[0].id;
+        state.open_bookmark_context_menu(id, 321.0, 123.0);
+        assert_eq!(
+            state.bookmark_context_menu(),
+            Some(super::BookmarkContextMenuState {
+                id,
+                x: 321.0,
+                y: 123.0,
+            })
+        );
+        state.close_bookmark_context_menu();
+        assert_eq!(state.bookmark_context_menu(), None);
+        assert_eq!(state.bookmarks().entries().len(), 1);
     }
 
     #[test]

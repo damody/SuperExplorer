@@ -275,6 +275,15 @@ pub enum ExplorerAction {
     ActivateBookmark {
         id: explorer_model::BookmarkId,
     },
+    OpenBookmarkInNewTab {
+        id: explorer_model::BookmarkId,
+    },
+    OpenBookmarkContextMenu {
+        id: explorer_model::BookmarkId,
+        x: f32,
+        y: f32,
+    },
+    CloseBookmarkContextMenu,
     AddLuaBookmark,
     EditBookmark {
         id: explorer_model::BookmarkId,
@@ -632,6 +641,9 @@ impl ExplorerAction {
             Self::AddSelectedToBookmarks => "AddSelectedToBookmarks",
             Self::ToggleCurrentFolderBookmark => "ToggleCurrentFolderBookmark",
             Self::ActivateBookmark { .. } => "ActivateBookmark",
+            Self::OpenBookmarkInNewTab { .. } => "OpenBookmarkInNewTab",
+            Self::OpenBookmarkContextMenu { .. } => "OpenBookmarkContextMenu",
+            Self::CloseBookmarkContextMenu => "CloseBookmarkContextMenu",
             Self::AddLuaBookmark => "AddLuaBookmark",
             Self::EditBookmark { .. } => "EditBookmark",
             Self::SaveBookmarkEditor => "SaveBookmarkEditor",
@@ -1421,6 +1433,9 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         }
         ExplorerAction::ToggleTheme => availability.is_enabled(CommandKind::ToggleTheme),
         ExplorerAction::ActivateBookmark { .. }
+        | ExplorerAction::OpenBookmarkInNewTab { .. }
+        | ExplorerAction::OpenBookmarkContextMenu { .. }
+        | ExplorerAction::CloseBookmarkContextMenu
         | ExplorerAction::AddLuaBookmark
         | ExplorerAction::EditBookmark { .. }
         | ExplorerAction::SaveBookmarkEditor
@@ -1886,6 +1901,9 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             FocusSurface::CommandBar
         }
         ExplorerAction::ActivateBookmark { .. }
+        | ExplorerAction::OpenBookmarkInNewTab { .. }
+        | ExplorerAction::OpenBookmarkContextMenu { .. }
+        | ExplorerAction::CloseBookmarkContextMenu
         | ExplorerAction::AddLuaBookmark
         | ExplorerAction::EditBookmark { .. }
         | ExplorerAction::SaveBookmarkEditor

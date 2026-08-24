@@ -28,11 +28,17 @@ State owns one draft with destination-folder ID and edit/remove mode. The star, 
 
 ### Dedicated transient editor window with explicit field styling
 
-Both the toolbar `+` and current-folder star open the same dedicated native GPUI window, aligned with Explorer's transient bookmark-editing behavior rather than covering the main file view. The window uses a reusable form-field style derived from UI tokens, strong entity handles until close, initial name-field focus, and keyboard Escape cancel. After the window has first become active, any activation loss cancels the draft and closes the window. Successful durable mutation closes and clears input entities; failed persistence keeps the window, mutation draft, and input values intact. Raw unstyled text controls and an in-main-window overlay are rejected because their visual and focus behavior is theme-dependent and caused the reported stuck surface.
+Both the toolbar `+` and current-folder star open the same dedicated native GPUI window, aligned with Explorer's transient bookmark-editing behavior rather than covering the main file view. The window uses a reusable form-field style derived from UI tokens, strong entity handles until close, window-level initial focus, and keyboard Escape cancel. It does not programmatically re-focus an editable child during window construction because GPUI can re-enter that entity while accessibility initializes; users can immediately click or tab into the name field. After the window has first become active, any activation loss cancels the draft and closes the window. Successful durable mutation closes and clears input entities; failed persistence keeps the window, mutation draft, and input values intact. Raw unstyled text controls and an in-main-window overlay are rejected because their visual and focus behavior is theme-dependent and caused the reported stuck surface.
 
 ### Bookmark folders are logical, not filesystem folders
 
 Left navigation exposes a logical favourites subtree with expand/collapse state. Folder and bookmark context commands are routed through Explorer actions rather than invoking the Windows Shell context menu. Deleting a non-empty logical folder requires a confirmation showing the number of descendants. Delete always affects bookmarks only.
+
+### Typed payload editing and a shared bookmark context menu
+
+The bookmark editor distinguishes mutable Lua source from immutable filesystem targets. Folder and file bookmarks show their resolved target as a compact read-only value; only the name and logical destination can be changed. This prevents an edit dialog from silently converting a bookmark into an arbitrary path while still making its target clear. Lua bookmarks retain the source editor because the script is their editable payload.
+
+Every bookmark projection routes right-click through one typed context-menu state. Folder bookmarks offer current-tab and new-tab navigation; file bookmarks offer Shell open; Lua bookmarks offer execution. All types also offer edit/move (through the shared destination editor) and delete. The menu dismisses after a command, Escape, pointer interaction outside it, or main-window activation loss.
 
 ## Risks / Trade-offs
 

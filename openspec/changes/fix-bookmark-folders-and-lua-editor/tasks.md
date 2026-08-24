@@ -45,7 +45,7 @@
 
 - [x] 2.1.1 建立使用 token 顏色、border、caret、selection 的可重用書籤表單欄位。
 - [x] 2.1.2 將 Lua name/source 控件改用表單欄位並保留強 entity handle 至關閉。
-- [x] 2.1.3 以專用原生視窗承載 `+`／星號編輯器，開啟時聚焦名稱欄，並在取消、Escape 或視窗失焦時關閉及清理 handles。
+- [x] 2.1.3 以專用原生視窗承載 `+`／星號編輯器，開啟時聚焦視窗，並在取消、Escape 或視窗失焦時關閉及清理 handles。
 - [x] 2.1.4 持久化失敗時保留專用視窗與 draft，成功時才清除。
 - [x] 2.1.5 新增 UI state/chrome regression tests 及 headful Lua editor screenshot。
 
@@ -118,3 +118,21 @@
 - [x] 5.1.3 執行/擴充 headful UITEST，保存 Lua editor、folder context、destination picker、star edit/remove screenshots。
 - [x] 5.1.4 將每個 leaf 的 command、result、exit status、hash、timestamp 與 gate 寫入 evidence index。
 - [x] 5.1.5 執行 strict OpenSpec validation、task validator、traceability review 與 scoped-diff review。
+
+## 6. 唯讀目標與書籤右鍵選單
+
+### 6.1 型別安全的編輯器
+
+- [x] 6.1.1 將 Folder/File 目標改為緊湊唯讀路徑，Lua 保留可編輯原始碼。
+- [x] 6.1.2 阻止 Folder/File payload update 並新增目標不變 regression tests。
+
+### 6.2 跨投影右鍵操作
+
+- [x] 6.2.1 新增帶游標位置的書籤右鍵選單 state/actions 與關閉生命週期。
+- [x] 6.2.2 在工具列、overflow、folder menu、manager 與 favourites 書籤列接上右鍵選單。
+- [x] 6.2.3 實作依型別開啟/執行、新分頁、編輯/移動及刪除命令。
+
+### 6.3 驗收
+
+- [x] 6.3.1 執行 focused tests、formatter、clippy/compile checks 與 headful UI 驗證。
+- [x] 6.3.2 更新 evidence index 並執行 strict OpenSpec 與 scoped-diff review。

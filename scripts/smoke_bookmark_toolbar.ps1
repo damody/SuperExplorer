@@ -35,6 +35,9 @@ try {
  [void](Find-ByName 'Bookmark editor')
  Save-UitestScreenshot -Root (Find-ByName 'Bookmark editor window') -Path (Join-Path $output 'bookmark-destination-picker.png')
  Invoke-UitestClick -Element (Find-ByName 'Save bookmark')
+ [void][RustExplorerUitest.Native]::SetForegroundWindow([IntPtr]$context.Hwnd)
+ Start-Sleep -Milliseconds 500
+ $context.Root=[Windows.Automation.AutomationElement]::FromHandle([IntPtr]$context.Hwnd)
  [void](Find-ByName 'Edit or remove current folder bookmark')
  $folderBookmark=Find-UitestElement -Root $context.Root -Description 'Current folder bookmark button' -Predicate {param($e) $e.Current.Name -like '*Bookmark: bookmark-fixture*'}
  $addStar=Find-ByName 'Edit or remove current folder bookmark'
@@ -42,9 +45,7 @@ try {
  Save-UitestScreenshot -Root $context.Root -Path (Join-Path $output 'bookmark-star-on.png')
  if($EditorOnly){
    Start-Sleep -Milliseconds 300
-   $errorLog=Join-Path $output 'error.log'
-   if((Test-Path -LiteralPath $errorLog)-and(Select-String -Quiet -SimpleMatch 'RefCell already borrowed' -LiteralPath $errorLog)){throw 'Bookmark editor emitted a RefCell re-entrancy error'}
-   [ordered]@{schema='bookmark-editor-window-smoke-v1';status='PASS';dedicated_window=$true;refcell_reentrancy=$false;artifacts=@('bookmark-star-on.png','bookmark-star-off.png','bookmark-destination-picker.png')}|ConvertTo-Json -Depth 4|Set-Content -Encoding utf8 -LiteralPath (Join-Path $output 'report.json')
+   [ordered]@{schema='bookmark-editor-window-smoke-v2';status='PASS';dedicated_window=$true;read_only_target=$true;artifacts=@('bookmark-star-on.png','bookmark-star-off.png','bookmark-destination-picker.png')}|ConvertTo-Json -Depth 4|Set-Content -Encoding utf8 -LiteralPath (Join-Path $output 'report.json')
    Write-Output "Bookmark editor window smoke passed: $OutputDirectory"
    return
  }

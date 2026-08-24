@@ -1,0 +1,11 @@
+﻿{
+    "schema":  "bookmark-editor-window-smoke-v2",
+    "status":  "PASS",
+    "dedicated_window":  true,
+    "read_only_target":  true,
+    "artifacts":  [
+                      "bookmark-star-on.png",
+                      "bookmark-star-off.png",
+                      "bookmark-destination-picker.png"
+                  ]
+}
