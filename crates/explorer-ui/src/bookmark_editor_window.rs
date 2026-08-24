@@ -6,7 +6,7 @@ use gpui::{
     App, Bounds, Context, FocusHandle, Focusable, IntoElement, Render, SharedString, Window,
     WindowBounds, WindowHandle, WindowOptions, div, prelude::*, px, size,
 };
-use gpui_elements::editable_text::{EditableTextState, StringStorage, TextChanged};
+use gpui_elements::editable_text::{EditableTextState, StringStorage};
 
 use crate::{
     ExplorerRoot, UiTokens,
@@ -24,7 +24,7 @@ pub fn bookmark_editor_window_options(cx: &App) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
-            size(px(680.0), px(680.0)),
+            size(px(620.0), px(560.0)),
             cx,
         ))),
         titlebar: Some(gpui::TitlebarOptions {
@@ -33,7 +33,7 @@ pub fn bookmark_editor_window_options(cx: &App) -> WindowOptions {
         }),
         kind: gpui::WindowKind::Normal,
         is_resizable: true,
-        window_min_size: Some(size(px(520.0), px(520.0))),
+        window_min_size: Some(size(px(520.0), px(460.0))),
         ..Default::default()
     }
 }
@@ -44,6 +44,7 @@ pub struct BookmarkEditorWindow {
     snapshot: BookmarkEditorWindowSnapshotV1,
     name_input: gpui::Entity<EditableTextState>,
     payload_input: gpui::Entity<EditableTextState>,
+    payload_editable: bool,
     focus_handle: FocusHandle,
     was_active: bool,
 }
@@ -61,12 +62,15 @@ impl BookmarkEditorWindow {
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
-        focus_handle.focus(window, cx);
         let editor = snapshot
             .state
             .bookmark_editor()
             .cloned()
             .expect("bookmark editor snapshot requires a draft");
+        let payload_editable = matches!(
+            editor.target,
+            explorer_model::BookmarkTarget::LuaScript { .. }
+        );
         let payload = match editor.target {
             explorer_model::BookmarkTarget::Folder { location }
             | explorer_model::BookmarkTarget::File { location } => location
@@ -76,31 +80,6 @@ impl BookmarkEditorWindow {
         };
         let name_input = cx.new(|cx| EditableTextState::new(StringStorage::from(editor.name), cx));
         let payload_input = cx.new(|cx| EditableTextState::new(StringStorage::from(payload), cx));
-        let name_owner = owner;
-        cx.subscribe(&name_input, move |_, input, _: &TextChanged, cx| {
-            let value = input.read(cx).as_str().to_owned();
-            let _ = name_owner.update(cx, |root, _, cx| {
-                root.update_bookmark_editor_name_from_window(value);
-                cx.notify();
-            });
-        })
-        .detach();
-        let payload_owner = owner;
-        cx.subscribe(&payload_input, move |_, input, _: &TextChanged, cx| {
-            let value = input.read(cx).as_str().to_owned();
-            let _ = payload_owner.update(cx, |root, _, cx| {
-                root.update_bookmark_editor_payload_from_window(value);
-                cx.notify();
-            });
-        })
-        .detach();
-        let name = name_input.clone();
-        window.defer(cx, move |window, cx| {
-            window.defer(cx, move |window, cx| {
-                let input_focus = name.read(cx).focus_handle(cx).clone();
-                input_focus.focus(window, cx);
-            });
-        });
         let close_owner = owner;
         window.on_window_should_close(cx, move |_, cx| {
             let _ = close_owner.update(cx, |root, owner_window, cx| {
@@ -121,6 +100,7 @@ impl BookmarkEditorWindow {
             snapshot,
             name_input,
             payload_input,
+            payload_editable,
             focus_handle,
             was_active: false,
         }
@@ -134,7 +114,20 @@ impl BookmarkEditorWindow {
         cx: &mut Context<Self>,
     ) {
         let owner = self.owner;
+        let input_values = (action == ExplorerAction::SaveBookmarkEditor).then(|| {
+            (
+                self.name_input.read(cx).as_str().to_owned(),
+                self.payload_editable
+                    .then(|| self.payload_input.read(cx).as_str().to_owned()),
+            )
+        });
         match owner.update(cx, |root, owner_window, cx| {
+            if let Some((name, payload)) = input_values {
+                root.update_bookmark_editor_name_from_window(name);
+                if let Some(payload) = payload {
+                    root.update_bookmark_editor_payload_from_window(payload);
+                }
+            }
             root.dispatch_bookmark_editor_action(action, source, owner_window, cx);
             root.bookmark_editor_window_snapshot()
         }) {
@@ -196,7 +189,8 @@ impl Render for BookmarkEditorWindow {
                 self.tokens,
                 &self.snapshot.state,
                 Some(gpui::Entity::downgrade(&self.name_input)),
-                Some(gpui::Entity::downgrade(&self.payload_input)),
+                self.payload_editable
+                    .then(|| gpui::Entity::downgrade(&self.payload_input)),
                 Some(on_action),
             ))
     }
