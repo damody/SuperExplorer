@@ -22,6 +22,14 @@ Each aggregate request identifies the volume, folder file reference, and request
 
 Cross-restart optimization comes from the service-owned SQLite MFT index. The in-memory result LRU intentionally starts cold after service restart; its first miss uses the optimized SQLite or in-memory aggregate index rather than walking user files. Successful results then warm the shared LRU for every connected Super Explorer process.
 
+## Active-Volume Paging and Exactness Recovery
+
+The volume-index and file-data budgets are global across mounted volumes. They are a bounded working set, not a requirement that C, D, and every other NTFS volume remain complete in memory simultaneously. A Details query makes its target volume the active volume. If that volume is incomplete because another volume consumed the shared budget, the service must page non-active volume indexes out of memory, preserve their durable SQLite stores, and give the target volume first claim on the complete configured budget.
+
+Paging is serialized per target volume and generation. The leader releases non-active memory, removes the target's incomplete in-memory snapshot so scratch accounting does not double-count it, then loads the target's complete durable SQLite snapshot and catches it up through the USN journal. If the durable cursor cannot be caught up safely, the leader rebuilds the target index from NTFS metadata. Joined folder queries wait for the same recovery rather than receiving an immediate partial aggregate. The result and recovered index are published only if the observed journal generation remains current.
+
+The service maintains the hard memory ceilings throughout the swap. It never deletes another volume's SQLite store and never reads user-file contents. Later navigation to an evicted volume performs the same bounded paging operation. If the target volume by itself cannot fit its configured volume-index or file-data limit, that is a genuine budget failure and the diagnostic reports the measured requirement and configured limit.
+
 ## Shared Service Data Flow
 
 1. Super Explorer submits a bounded aggregate query directly to the MFT Service.
@@ -30,8 +38,9 @@ Cross-restart optimization comes from the service-owned SQLite MFT index. The in
 4. A hit promotes the entry using a service-global monotonic access sequence and returns it immediately.
 5. Concurrent misses for the same key join one single-flight computation.
 6. The computation prefers an already-built memory aggregate index, then a read-only SQLite aggregate query, and only builds missing aggregate state when required.
-7. Only a complete result is published to all joined waiters and admitted to the shared LRU. A partial source result is rejected as unavailable and includes a diagnostic reason.
-8. Every response includes its service generation. The Host rejects responses for a cancelled request, an obsolete tab generation, or a superseded view.
+7. If the target volume is incomplete because of global budget pressure, the miss joins or leads active-volume recovery instead of publishing partial data.
+8. Only a complete result is published to all joined waiters and admitted to the shared LRU. A partial source result remains internal while recovery is in progress.
+9. Every response includes its service generation. The Host rejects responses for a cancelled request, an obsolete tab generation, or a superseded view.
 
 No Details aggregate request uses recursive Host scanning as a fallback. This keeps expensive filesystem work centralized and lets all Super Explorer clients benefit from the same optimized data.
 
@@ -63,11 +72,11 @@ Raising an LRU limit does not recreate evicted results. Future optimized queries
 
 The Host retains only bounded current-view request state. It deduplicates repeated UI submissions for the same item and generation, cancels obsolete view generations, and projects accepted service responses into the visible columns.
 
-Every visible request must reach a terminal UI state within ten seconds:
+Every visible request must reach a terminal UI state within ten seconds. The service spends that interval attempting exact active-volume recovery; it must not immediately convert an ordinary memory-budget trim into failure:
 
 - a complete response displays the exact aggregate;
 - a typed partial response is treated as unavailable and its lower-bound numeric fields are never displayed;
-- service unavailable, malformed response, partial response, or ten-second response timeout displays exactly `Unavailable`;
+- service unavailable, malformed response, unrecoverable exactness failure, or ten-second response timeout displays exactly `Unavailable`;
 - cancellation ends the obsolete request without publishing into the new view.
 
 Cache maintenance and telemetry failures degrade to a service cache miss. They must not prevent an aggregate query from using the live or SQLite index. Host recursive scanning is not used to hide service failures, and no row may remain indefinitely at `Calculating...` after its request has terminated.
@@ -76,7 +85,7 @@ The Host schedules visible folders with bounded parallelism so one slow folder d
 
 ## Detailed Failure Diagnostics
 
-The cell intentionally exposes only `Unavailable`. The local console records the full reason at both boundaries. The MFT Service record includes request identifier, canonical path, volume and file reference, elapsed time, result source attempts, cache hit/miss state, observed and durable journal cursors, exactness state, configured budgets, failure stage, and error chain. The Super Explorer record includes tab/request generation, item identity, path, elapsed time, IPC outcome, partial flag if received, and the complete service/client error chain. Diagnostics must never change a partial numeric result into an exact value.
+The cell exposes `Unavailable` only after the exactness attempt reaches a genuine terminal failure. The local console records the full reason at both boundaries. The MFT Service record includes request identifier, canonical path, volume and file reference, elapsed time, result source attempts, cache hit/miss state, observed and durable journal cursors, exactness state, configured and measured memory requirements, active-volume paging stage, failure stage, and error chain. The Super Explorer record includes tab/request generation, item identity, path, elapsed time, IPC outcome, partial flag if received, and the complete service/client error chain. Diagnostics must never change a partial numeric result into an exact value.
 
 ## Folder Options Usage Telemetry
 
@@ -116,5 +125,7 @@ Focused unit and integration coverage must verify:
 - bounded scheduling that allows a later visible folder to finish while an earlier request is slow;
 - telemetry forwarding through service decorators and current-usage rendering after refresh;
 - service restart followed by an optimized SQLite result and subsequent shared LRU hit.
+- C-to-D and D-to-C active-volume swaps that evict only in-memory working sets, retain SQLite stores, honor peak budgets, coalesce recovery, and return exact aggregates instead of immediate unavailable results;
+- a target-volume-alone budget failure that waits for the recovery decision and reports measured versus configured requirements;
 
 Installed focused validation visits `D:\`, `D:\SuperExplorer`, and `D:\UE_5.7` in that order, waits ten seconds at each location, and confirms at least one visible child folder has an exact size while every completed failure is `Unavailable` rather than partial or indefinite `Calculating...`. Folder Options must show measured current usage or confirmed `Unavailable` for every cache budget row. A second Super Explorer instance may be used to demonstrate shared warm-cache hits. Evidence records latency, result LRU counters, entry/byte limits, telemetry, and MFT Service working set. Code Lines `Limit` presentation remains unchanged.
