@@ -30,7 +30,7 @@ Cross-restart optimization comes from the service-owned SQLite MFT index. The in
 4. A hit promotes the entry using a service-global monotonic access sequence and returns it immediately.
 5. Concurrent misses for the same key join one single-flight computation.
 6. The computation prefers an already-built memory aggregate index, then a read-only SQLite aggregate query, and only builds missing aggregate state when required.
-7. A complete or explicitly typed partial result is published to all joined waiters. Cacheable results enter the shared LRU and are subject to its hard limits.
+7. Only a complete result is published to all joined waiters and admitted to the shared LRU. A partial source result is rejected as unavailable and includes a diagnostic reason.
 8. Every response includes its service generation. The Host rejects responses for a cancelled request, an obsolete tab generation, or a superseded view.
 
 No Details aggregate request uses recursive Host scanning as a fallback. This keeps expensive filesystem work centralized and lets all Super Explorer clients benefit from the same optimized data.
@@ -55,7 +55,7 @@ Evicting result entries never removes SQLite MFT index rows, the live volume ind
 
 Journal application invalidates cached results for every changed folder and its known ancestors before advancing that volume's cache generation. Unaffected entries are then valid through the new generation and remain warm. An entry not proven valid through the current volume cache generation must never satisfy a lookup. When the service cannot prove the exact affected ancestor set, it clears the result entries for that volume rather than risking a stale exact value.
 
-Single-flight state is generation-bound. A generation change prevents an old computation from entering the current LRU. Existing waiters receive a typed stale/partial/unavailable outcome or retry against the new generation; the old result is never presented as current.
+Single-flight state is generation-bound. A generation change prevents an old computation from entering the current LRU. Existing waiters receive a typed stale/unavailable outcome or retry against the new generation; the old result is never presented as current.
 
 Raising an LRU limit does not recreate evicted results. Future optimized queries repopulate them. Lowering the limit affects only result retention and must not mark the underlying MFT index incomplete.
 
@@ -63,18 +63,28 @@ Raising an LRU limit does not recreate evicted results. Future optimized queries
 
 The Host retains only bounded current-view request state. It deduplicates repeated UI submissions for the same item and generation, cancels obsolete view generations, and projects accepted service responses into the visible columns.
 
-Every visible request must reach a terminal UI state:
+Every visible request must reach a terminal UI state within ten seconds:
 
 - a complete response displays the exact aggregate;
-- a typed partial response displays the existing partial presentation;
-- service unavailable, malformed response, or response timeout displays an explicit unavailable result;
+- a typed partial response is treated as unavailable and its lower-bound numeric fields are never displayed;
+- service unavailable, malformed response, partial response, or ten-second response timeout displays exactly `Unavailable`;
 - cancellation ends the obsolete request without publishing into the new view.
 
 Cache maintenance and telemetry failures degrade to a service cache miss. They must not prevent an aggregate query from using the live or SQLite index. Host recursive scanning is not used to hide service failures, and no row may remain indefinitely at `Calculating...` after its request has terminated.
 
+The Host schedules visible folders with bounded parallelism so one slow folder does not block every later row. For the acceptance locations `D:\`, `D:\SuperExplorer`, and `D:\UE_5.7`, at least one visible child folder must reach a complete value within ten seconds of navigation. This is an installed acceptance gate, not permission to display an incomplete value.
+
+## Detailed Failure Diagnostics
+
+The cell intentionally exposes only `Unavailable`. The local console records the full reason at both boundaries. The MFT Service record includes request identifier, canonical path, volume and file reference, elapsed time, result source attempts, cache hit/miss state, observed and durable journal cursors, exactness state, configured budgets, failure stage, and error chain. The Super Explorer record includes tab/request generation, item identity, path, elapsed time, IPC outcome, partial flag if received, and the complete service/client error chain. Diagnostics must never change a partial numeric result into an exact value.
+
+## Folder Options Usage Telemetry
+
+Every `ExplorerService` decorator must forward `cache_telemetry_snapshot` to its inner service unless it deliberately supplies a complete replacement. Opening Folder Options, entering the View page, and applying cache budgets refreshes the snapshot. Pending refreshes retain the last measured byte count; a confirmed query failure is rendered as `Unavailable / <limit>`. Available telemetry always renders the current measured bytes rather than an em dash or slider-derived estimate.
+
 ## Migration and Existing Host Cache
 
-The obsolete Host Details aggregate cache is no longer read or written. On startup, a versioned maintenance pass validates the exact `%LOCALAPPDATA%\SuperExplorer\folder-snapshot-cache` directory and removes at most 256 regular cache files per process launch, oldest first, until the obsolete namespace is empty across subsequent launches. Symlinks, reparse points, subdirectories, unexpected files, and targets outside that exact cache directory are never followed or removed. Failure to remove an old record is non-fatal and does not block service queries. No source directory, including `D:\trace`, is modified.
+The obsolete Host Details aggregate cache is no longer read or written. On startup, a versioned maintenance pass validates the exact `%LOCALAPPDATA%\SuperExplorer\folder-snapshot-cache\v2` namespace and removes at most 256 immediate regular `.json` cache files per process launch, oldest first, until the obsolete namespace is empty across subsequent launches. Symlinks, reparse points, subdirectories, unexpected files, and targets outside that exact namespace are never followed or removed. Failure to remove an old record is non-fatal and does not block service queries. No source directory, including `D:\trace`, is modified.
 
 Tree projections still needed by Size Map must use a separate namespace and ownership boundary so migration cannot remove active Size Map data accidentally.
 
@@ -102,7 +112,9 @@ Focused unit and integration coverage must verify:
 - invalidation of affected folders and ancestors, rejection of old-generation results, and safe volume fallback when the affected set is unknown;
 - one single-flight computation for concurrent same-key requests from distinct clients;
 - direct Host-to-service Details queries with no Host folder snapshot hit and no recursive fallback;
-- terminal complete, partial, unavailable, timeout, cancellation, and stale-response behavior;
+- terminal complete, partial-as-unavailable, timeout, cancellation, and stale-response behavior;
+- bounded scheduling that allows a later visible folder to finish while an earlier request is slow;
+- telemetry forwarding through service decorators and current-usage rendering after refresh;
 - service restart followed by an optimized SQLite result and subsequent shared LRU hit.
 
-Installed focused validation opens `D:\trace` in Details view and confirms that every visible folder reaches an exact, partial, or explicit unavailable terminal state. A second Super Explorer instance queries the same folders and demonstrates shared warm-cache hits. Evidence records cold and warm latency, result LRU counters, entry/byte limits, eviction behavior, and MFT Service working set. Code Lines `Limit` presentation remains unchanged.
+Installed focused validation visits `D:\`, `D:\SuperExplorer`, and `D:\UE_5.7` in that order, waits ten seconds at each location, and confirms at least one visible child folder has an exact size while every completed failure is `Unavailable` rather than partial or indefinite `Calculating...`. Folder Options must show measured current usage or confirmed `Unavailable` for every cache budget row. A second Super Explorer instance may be used to demonstrate shared warm-cache hits. Evidence records latency, result LRU counters, entry/byte limits, telemetry, and MFT Service working set. Code Lines `Limit` presentation remains unchanged.
