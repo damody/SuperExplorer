@@ -12,6 +12,7 @@
 
 pub mod diagnostics;
 pub mod error;
+pub mod process;
 pub mod roadmap;
 
 use serde::{Deserialize, Serialize};
@@ -23,6 +24,7 @@ pub use diagnostics::{
     record_process_error_message,
 };
 pub use error::{ExplorerError, ExplorerErrorKind};
+pub use process::configure_background_command;
 pub use roadmap::{
     ROADMAP_LIMITS_SCHEMA_VERSION, RequestDeadline, RoadmapLimits, RoadmapLimitsError,
     TerminalClaim, TerminalDisposition, TerminalGate,

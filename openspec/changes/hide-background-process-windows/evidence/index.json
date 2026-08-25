@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "source_revision": "ac057f26b4a3472fe338d510086d425004d22a26",
+  "timestamp": "2026-08-25T16:48:33.180Z",
+  "records": [
+    {
+      "record_id": "inventory-and-baseline",
+      "artifact_or_command": "process-launch-inventory.json and pre-change source review",
+      "expected": "Every process launch is classified and the baseline is recorded without claiming compliance.",
+      "actual": "Seven production sites classified; test runner, test modules, tests directories, and build.rs are excluded by explicit rules; baseline identified the release GUI subsystem plus missing ADB/automation flags.",
+      "exit_status": 0,
+      "reviewer": "primary-integrator",
+      "sha256": "21d8d79299e68af631bf2c0182a5d83ac3ffcc7c87b5acdbd6fe91143991bf2e",
+      "gates": ["INV-1", "EVID-1"],
+      "adjustment_id": null,
+      "subchecks": {
+        "1.1.1": "passed", "1.1.2": "passed", "1.1.3": "passed",
+        "1.2.1": "passed", "1.2.2": "passed", "1.2.3": "passed"
+      }
+    },
+    {
+      "record_id": "implementation-review",
+      "artifact_or_command": "scoped code and manifest review",
+      "expected": "One common hidden-background policy is used by all internal production launchers, while the app and explicit terminal retain consoles.",
+      "actual": "Common configurator added; app GUI subsystem attribute removed; ADB, both automation hosts, broker, worker, and worker child migrated; visible command prompt preserved.",
+      "exit_status": 0,
+      "reviewer": "primary-integrator",
+      "sha256": "4eb2a950be94fdd6fe8158800668be2e203472daa97215f98c3ea8559f466a23",
+      "gates": ["POLICY-1", "PARENT-1", "VISIBLE-1", "ADB-1", "AUTO-1", "EXT-1"],
+      "adjustment_id": null,
+      "subchecks": {
+        "2.1.1": "passed", "2.1.2": "passed",
+        "2.2.1": "passed", "2.2.2": "passed", "2.2.3": "passed",
+        "3.1.1": "passed", "3.2.1": "passed", "3.2.2": "passed",
+        "3.3.1": "passed", "3.3.2": "passed"
+      }
+    },
+    {
+      "record_id": "focused-runtime-tests",
+      "artifact_or_command": "cargo focused test suites and real ADB discovery",
+      "expected": "Hidden children preserve output, failure, timeout, cancellation, Job Object, broker recovery, and orphan cleanup behavior.",
+      "actual": "82 common/remote/automation tests and 31 broker tests passed; installed ADB device discovery passed; one unrelated interactive broker test remained ignored.",
+      "exit_status": 0,
+      "reviewer": "cargo-test",
+      "sha256": "635ba464826c9aa2d17c3a6c61e78c117fc6a67f3e2f124b4acf5fe84e8eee10",
+      "gates": ["POLICY-1", "ADB-1", "AUTO-LIFECYCLE-1", "EXT-LIFECYCLE-1"],
+      "adjustment_id": null,
+      "subchecks": {
+        "2.1.3": "passed", "2.1.4": "passed",
+        "3.1.2": "passed", "3.1.3": "passed", "3.1.4": "passed",
+        "3.2.3": "passed", "3.2.4": "passed", "3.2.5": "passed",
+        "3.3.3": "passed", "3.3.4": "passed", "4.2.5": "passed",
+        "5.1.2": "passed", "5.1.3": "passed"
+      }
+    },
+    {
+      "record_id": "inventory-validator",
+      "artifact_or_command": "python scripts/check_background_process_policy.py and unittest self-tests",
+      "expected": "Repository passes; injected unknown production launch fails; test-only launch is excluded.",
+      "actual": "Repository validation passed and both self-tests passed.",
+      "exit_status": 0,
+      "reviewer": "python-unittest",
+      "sha256": "21d8d79299e68af631bf2c0182a5d83ac3ffcc7c87b5acdbd6fe91143991bf2e",
+      "gates": ["INV-2"],
+      "adjustment_id": null,
+      "subchecks": {"4.1.1": "passed", "4.1.2": "passed", "4.1.3": "passed"}
+    },
+    {
+      "record_id": "debug-release-build-window-policy",
+      "artifact_or_command": "debug/release cargo builds, PE subsystem verifier, GetConsoleWindow runtime test, and broker window inspection",
+      "expected": "Both app profiles are console-subsystem executables and background children own no visible console.",
+      "actual": "Both builds passed and report subsystem 3; configured child observed null GetConsoleWindow with captured output; broker suite found no visible broker/worker top-level windows.",
+      "exit_status": 0,
+      "reviewer": "primary-integrator",
+      "sha256": "efaabb49a81fd73a2398620d5fdf624a82437b88c3ad04eede393f6e9c2fb2c3",
+      "gates": ["WINDOW-DEBUG-1", "WINDOW-RELEASE-1", "BUILD-1"],
+      "adjustment_id": null,
+      "subchecks": {
+        "4.2.1": "passed", "4.2.2": "passed", "4.2.3": "passed", "4.2.4": "passed",
+        "5.1.1": "passed", "5.1.4": "passed"
+      }
+    },
+    {
+      "record_id": "traceability-audit",
+      "artifact_or_command": "traceability.md, evidence reconciliation, atomic leaf review",
+      "expected": "Every normative scenario and completed task maps to current implementation and immutable evidence.",
+      "actual": "All scenarios mapped; hashes reconciled; no superseded, stale, failed, blocked, or missing task evidence remains before final strict validation.",
+      "exit_status": 0,
+      "reviewer": "primary-integrator",
+      "sha256": "a0249d1d2b93eb54fd45a7c0ff0a0a09ffecead975428a93d1c34cb826b6fd9a",
+      "gates": ["TRACE-1"],
+      "adjustment_id": null,
+      "subchecks": {"5.2.1": "passed", "5.2.2": "passed", "5.2.3": "passed"}
+    },
+    {
+      "record_id": "final-strict-validation",
+      "artifact_or_command": "validate_tasks.py and openspec validate hide-background-process-windows --strict",
+      "expected": "Detailed task structure and strict OpenSpec validation pass after evidence reconciliation.",
+      "actual": "Task validator reported L1=5 L2=11 L3=42 PASS and strict OpenSpec validation reported the change valid.",
+      "exit_status": 0,
+      "reviewer": "openspec-cli",
+      "sha256": "d24886f9322a95654ff17c005c37bd9cada79ad07dc506fd14cffd6f15019a83",
+      "gates": ["FINAL-1"],
+      "adjustment_id": null,
+      "subchecks": {"5.2.4": "passed"}
+    }
+  ]
+}

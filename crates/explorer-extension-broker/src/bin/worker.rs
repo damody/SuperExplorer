@@ -64,9 +64,10 @@ fn main() {
     match mode {
         "hang" | "slow" => std::thread::sleep(std::time::Duration::from_secs(60)),
         "child-process" => {
-            let child = std::process::Command::new("cmd.exe")
-                .args(["/d", "/c", "exit", "0"])
-                .spawn();
+            let mut command = std::process::Command::new("cmd.exe");
+            command.args(["/d", "/c", "exit", "0"]);
+            explorer_common::configure_background_command(&mut command);
+            let child = command.spawn();
             if child.is_ok() {
                 std::process::exit(6);
             }

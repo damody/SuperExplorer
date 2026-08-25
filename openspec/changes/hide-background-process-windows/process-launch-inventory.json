@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "scan_roots": ["crates"],
+  "source_rules": {
+    "build_rs": "build-time",
+    "tests_directory": "test-only",
+    "mod_tests_suffix": "test-only"
+  },
+  "file_classifications": [
+    {
+      "path": "crates/explorer-uitest/src/lib.rs",
+      "classification": "test-runner",
+      "rationale": "The crate is the standalone UI test harness, not a shipped SuperExplorer runtime component."
+    }
+  ],
+  "source_contracts": [
+    {
+      "path": "crates/explorer-app/src/main.rs",
+      "forbidden_anchor": "windows_subsystem",
+      "rationale": "Debug and release SuperExplorer builds must both use the console subsystem."
+    },
+    {
+      "path": "crates/explorer-shell-win/src/lib.rs",
+      "required_anchor": "command.creation_flags(CREATE_NEW_CONSOLE);",
+      "required_count": 1,
+      "rationale": "Open Command Prompt is the sole production visible-console exception."
+    }
+  ],
+  "sites": [
+    {
+      "path": "crates/explorer-automation/src/process_host.rs",
+      "anchor": "let mut command = Command::new(&request.executable);",
+      "classification": "hidden-background",
+      "required_anchor": "configure_background_command(&mut command);",
+      "rationale": "Runs authorized automation executables and scripts without an interactive terminal."
+    },
+    {
+      "path": "crates/explorer-automation-win/src/process.rs",
+      "anchor": "let mut command = Command::new(&request.executable);",
+      "classification": "hidden-background",
+      "required_anchor": "configure_background_command(&mut command);",
+      "rationale": "Runs Job-contained automation children without an interactive terminal."
+    },
+    {
+      "path": "crates/explorer-extension-broker/src/lib.rs",
+      "anchor": "let mut command = Command::new(&self.executable);",
+      "classification": "hidden-background",
+      "required_anchor": "configure_background_command(&mut command);",
+      "rationale": "Starts the persistent internal extension broker."
+    },
+    {
+      "path": "crates/explorer-extension-broker/src/main.rs",
+      "anchor": "let mut command = Command::new(executable);",
+      "classification": "hidden-background",
+      "required_anchor": "configure_background_command(&mut command);",
+      "rationale": "Starts a disposable internal extension worker."
+    },
+    {
+      "path": "crates/explorer-extension-broker/src/bin/worker.rs",
+      "anchor": "let mut command = std::process::Command::new(\"cmd.exe\");",
+      "classification": "hidden-background",
+      "required_anchor": "explorer_common::configure_background_command(&mut command);",
+      "rationale": "Exercises and contains a worker-owned background child process."
+    },
+    {
+      "path": "crates/explorer-remote/src/adb.rs",
+      "anchor": "let mut command = Command::new(executable);",
+      "classification": "hidden-background",
+      "required_anchor": "configure_background_command(&mut command);",
+      "rationale": "Runs startup discovery and remote ADB operations."
+    },
+    {
+      "path": "crates/explorer-shell-win/src/lib.rs",
+      "anchor": "let mut command = std::process::Command::new(\"cmd.exe\");",
+      "classification": "explicit-visible",
+      "required_anchor": "command.creation_flags(CREATE_NEW_CONSOLE);",
+      "rationale": "The user explicitly selected Open Command Prompt."
+    }
+  ]
+}
