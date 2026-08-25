@@ -17,6 +17,7 @@ use crate::{
     AutomationError, AutomationErrorKind, AutomationFuture, AutomationResult, ProcessHost,
     ProcessRequest, ProcessResult,
 };
+use explorer_common::configure_background_command;
 
 const DEFAULT_OUTPUT_LIMIT: usize = 1024 * 1024;
 
@@ -211,12 +212,15 @@ impl Future for ProcessFuture {
 use std::future::Future;
 
 fn run_blocking(request: &ProcessRequest, output_limit: usize) -> AutomationResult<ProcessResult> {
-    let mut child = Command::new(&request.executable)
+    let mut command = Command::new(&request.executable);
+    command
         .args(&request.arguments)
         .current_dir(&request.cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure_background_command(&mut command);
+    let mut child = command
         .spawn()
         .map_err(|_| process_error("process.spawn"))?;
     let stdout = child
@@ -291,9 +295,14 @@ fn process_error(operation: &'static str) -> AutomationError {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::{
+        path::{Path, PathBuf},
+        time::Duration,
+    };
 
-    use super::{ProcessPolicy, ScriptDeletionRisk};
+    use crate::{CorrelationId, ProcessRequest};
+
+    use super::{ProcessPolicy, ScriptDeletionRisk, run_blocking};
 
     #[test]
     fn direct_policy_rejects_shells_and_script_files() {
@@ -320,5 +329,31 @@ mod tests {
             ProcessPolicy::scan_script("Invoke-Expression $dynamic", "ps1"),
             ScriptDeletionRisk::Indeterminate
         );
+    }
+
+    #[test]
+    fn native_host_captures_background_console_output() {
+        let request = ProcessRequest {
+            executable: PathBuf::from("where.exe"),
+            arguments: vec!["cmd.exe".into()],
+            cwd: std::env::current_dir().expect("current directory"),
+            timeout_ms: u64::try_from(Duration::from_secs(5).as_millis()).expect("timeout"),
+            correlation_id: CorrelationId::new(),
+        };
+        let result = run_blocking(&request, 4096).expect("run controlled console command");
+        assert_eq!(result.exit_code, 0);
+        assert!(String::from_utf8_lossy(&result.stdout).contains("cmd.exe"));
+    }
+
+    #[test]
+    fn native_host_preserves_spawn_failure() {
+        let request = ProcessRequest {
+            executable: PathBuf::from("missing-superexplorer-background-command.exe"),
+            arguments: Vec::new(),
+            cwd: std::env::current_dir().expect("current directory"),
+            timeout_ms: 100,
+            correlation_id: CorrelationId::new(),
+        };
+        assert!(run_blocking(&request, 4096).is_err());
     }
 }

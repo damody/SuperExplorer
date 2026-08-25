@@ -12,6 +12,7 @@ use std::{
 };
 
 use anyhow::{Context as _, Result, bail};
+use explorer_common::configure_background_command;
 use explorer_model::{CancellationToken, LocationDescriptor, VirtualLocationDescriptor};
 
 use crate::{RemoteEntry, RemoteProvider};
@@ -58,11 +59,14 @@ impl AdbCommandRunner for SystemAdbCommandRunner {
         cancellation: &CancellationToken,
         timeout: Duration,
     ) -> Result<Output> {
-        let mut child = Command::new(executable)
+        let mut command = Command::new(executable);
+        command
             .args(arguments)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        configure_background_command(&mut command);
+        let mut child = command
             .spawn()
             .with_context(|| format!("could not start adb at {}", executable.display()))?;
         let stdout = bounded_reader(child.stdout.take().context("ADB stdout was unavailable")?);
@@ -541,6 +545,10 @@ fn parse_devices(stdout: &str) -> Result<Vec<AdbDevice>> {
 
 #[cfg(test)]
 mod tests {
+    use std::{ffi::OsString, path::Path, time::Duration};
+
+    use explorer_model::CancellationToken;
+
     use super::*;
 
     #[test]
@@ -558,5 +566,64 @@ mod tests {
     fn rejects_command_injection_in_path_or_serial() {
         assert!(validate_serial("serial\nother").is_err());
         assert!(validate_remote_path("sdcard/Download").is_err());
+    }
+
+    #[test]
+    fn system_runner_captures_background_console_output() {
+        let output = SystemAdbCommandRunner
+            .run(
+                Path::new("where.exe"),
+                &[OsString::from("cmd.exe")],
+                &CancellationToken::new(),
+                Duration::from_secs(5),
+            )
+            .expect("run controlled console command");
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("cmd.exe"));
+    }
+
+    #[test]
+    fn system_runner_preserves_timeout() {
+        let error = SystemAdbCommandRunner
+            .run(
+                Path::new("ping.exe"),
+                &[
+                    OsString::from("-n"),
+                    OsString::from("30"),
+                    OsString::from("127.0.0.1"),
+                ],
+                &CancellationToken::new(),
+                Duration::from_millis(25),
+            )
+            .expect_err("controlled command must time out");
+        assert!(error.to_string().contains("timed out"));
+    }
+
+    #[test]
+    fn system_runner_preserves_cancellation() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let error = SystemAdbCommandRunner
+            .run(
+                Path::new("ping.exe"),
+                &[
+                    OsString::from("-n"),
+                    OsString::from("30"),
+                    OsString::from("127.0.0.1"),
+                ],
+                &cancellation,
+                Duration::from_secs(5),
+            )
+            .expect_err("controlled command must be cancelled");
+        assert!(error.to_string().contains("cancelled"));
+    }
+
+    #[test]
+    fn real_adb_discovery_uses_hidden_system_runner_when_available() {
+        let Ok(client) = AdbClient::discover() else {
+            return;
+        };
+        let devices = client.devices().expect("query real ADB device inventory");
+        assert!(devices.iter().all(|device| !device.serial.is_empty()));
     }
 }

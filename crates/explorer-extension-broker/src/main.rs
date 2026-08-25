@@ -10,6 +10,7 @@
 )]
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+use explorer_common::configure_background_command;
 use explorer_extension_protocol::{
     BrokerRequestId, Frame, FrameDecoder, MessageKind, PROTOCOL_VERSION, SessionNonce,
     StartPayload, authenticate,
@@ -488,11 +489,7 @@ fn prepare_worker() -> Result<PreparedWorker, ()> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt as _;
-        command.creation_flags(0x0800_0000);
-    }
+    configure_background_command(&mut command);
     let job = WorkerJob::create().map_err(|_| ())?;
     let mut child = command.spawn().map_err(|_| ())?;
     if job.assign(&child).is_err() {

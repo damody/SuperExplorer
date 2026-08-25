@@ -28,6 +28,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use explorer_common::configure_background_command;
 use explorer_extension_protocol::{
     BrokerRequestId, ContextMenuPayload, Frame, FrameDecoder, MAXIMUM_FRAME_BYTES, MessageKind,
     OperationClass as ProtocolOperationClass, PROTOCOL_VERSION, PreviewMessage,
@@ -779,11 +780,7 @@ impl BrokerClientInner {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt as _;
-            command.creation_flags(0x0800_0000);
-        }
+        configure_background_command(&mut command);
         let mut child = command.spawn().map_err(|_| BrokerClientError::Start)?;
         let Some(stdin) = child.stdin.take() else {
             let _ = child.kill();

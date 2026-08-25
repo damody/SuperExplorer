@@ -1806,6 +1806,7 @@ name = "explorer-automation-win"
 version = "0.1.0"
 dependencies = [
  "explorer-automation",
+ "explorer-common",
  "globset",
  "notify",
  "serde_json",
@@ -1913,6 +1914,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "explorer-common",
  "explorer-model",
  "rpassword",
  "russh",

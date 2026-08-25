@@ -22,6 +22,7 @@ use explorer_automation::{
     AutomationError, AutomationErrorKind, AutomationFuture, AutomationResult, ProcessHost,
     ProcessPolicy, ProcessRequest, ProcessResult,
 };
+use explorer_common::configure_background_command;
 use windows::Win32::{
     Foundation::{CloseHandle, HANDLE},
     System::JobObjects::{
@@ -163,12 +164,15 @@ fn run_contained(
     cancelled: &AtomicBool,
 ) -> AutomationResult<ProcessResult> {
     let job = OwnedJob::create()?;
-    let mut child = Command::new(&request.executable)
+    let mut command = Command::new(&request.executable);
+    command
         .args(&request.arguments)
         .current_dir(&request.cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure_background_command(&mut command);
+    let mut child = command
         .spawn()
         .map_err(|_| process_error("process.spawn"))?;
     job.assign(&child)?;
@@ -259,6 +263,33 @@ mod tests {
     use explorer_automation::{AutomationErrorKind, CorrelationId, ProcessRequest};
 
     use super::run_contained;
+
+    #[test]
+    fn contained_host_captures_background_console_output() {
+        let request = ProcessRequest {
+            executable: PathBuf::from("where.exe"),
+            arguments: vec!["cmd.exe".into()],
+            cwd: std::env::current_dir().expect("current directory"),
+            timeout_ms: 5_000,
+            correlation_id: CorrelationId::new(),
+        };
+        let result = run_contained(&request, 4096, &AtomicBool::new(false))
+            .expect("run controlled console command");
+        assert_eq!(result.exit_code, 0);
+        assert!(String::from_utf8_lossy(&result.stdout).contains("cmd.exe"));
+    }
+
+    #[test]
+    fn contained_host_preserves_spawn_failure() {
+        let request = ProcessRequest {
+            executable: PathBuf::from("missing-superexplorer-background-command.exe"),
+            arguments: Vec::new(),
+            cwd: std::env::current_dir().expect("current directory"),
+            timeout_ms: 100,
+            correlation_id: CorrelationId::new(),
+        };
+        assert!(run_contained(&request, 4096, &AtomicBool::new(false)).is_err());
+    }
 
     #[test]
     fn timeout_terminates_a_job_containing_a_descendant_process() {
