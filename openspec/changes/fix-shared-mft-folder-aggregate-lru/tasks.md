@@ -167,6 +167,7 @@
 - [x] 3.3.1 Forward `cache_telemetry_snapshot` through `RemoteExplorerService`.
 - [x] 3.3.2 Refresh usage on Folder Options open, View-page selection, and cache-budget application while retaining prior measured bytes during pending samples.
 - [x] 3.3.3 Add focused telemetry forwarding and usage-label tests.
+- [x] 3.3.4 Group the five MFT Service resource rows in Folder Options and annotate shared ownership plus restart persistence without grouping Folder size cache TTL.
 
 ### 3.4 Completion-order batch folder queries
 
@@ -227,6 +228,7 @@
 - [ ] 5.1.5 Produce a proposal→decision→requirement/scenario→task→evidence traceability matrix and index all immutable logs/hashes.
 - [x] 5.1.6 Run focused detailed-error frame, named-pipe round-trip, installer console-contract, release check, and matched app/service build verification.
 - [ ] 5.1.7 Run the focused batch protocol, completion-order scheduler, Host dispatcher, cancellation, and legacy-compatibility tests.
+- [x] 5.1.8 Run the focused Folder Options MFT resource-group UI contract test and the smallest `explorer-ui` compile check.
 
 ### 5.2 Installed `D:\trace` shared-cache acceptance
 

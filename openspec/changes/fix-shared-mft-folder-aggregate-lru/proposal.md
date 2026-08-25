@@ -13,6 +13,7 @@ Folder aggregate requests currently pass through a Host-owned snapshot cache and
 - Schedule visible folder queries with bounded parallelism so one slow folder cannot block all later rows.
 - Submit visible folder requests through a bounded batch IPC stream; the service shares one volume recovery, computes independent folders concurrently, and returns each item as soon as it finishes.
 - Forward and refresh cache telemetry through service decorators so Folder Options shows measured current usage or confirmed `Unavailable`.
+- Visually group and label the five MFT Service-owned resource budgets so their shared service ownership and restart persistence are unambiguous.
 - Retire the obsolete Host Details snapshot namespace through bounded, path-validated cleanup while keeping Size Map projection caching isolated.
 - Extend privacy-safe service diagnostics for LRU, single-flight, invalidation, and result-source verification.
 - Keep existing Code Lines `Limit` admission behavior unchanged.
