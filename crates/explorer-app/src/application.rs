@@ -6309,17 +6309,31 @@ fn create_session_persistence(
     let quick_access = loaded
         .as_ref()
         .map_or_else(Vec::new, |envelope| envelope.payload.quick_access.clone());
-    let bookmarks = loaded
+    let legacy_bookmarks = loaded
         .as_ref()
         .map_or_else(explorer_model::Bookmarks::default, |envelope| {
             envelope.payload.bookmarks.clone()
         });
+    let bookmark_store = crate::bookmark_store::WindowsBookmarkStore::from_environment(limits).ok();
+    let bookmarks = bookmark_store.as_ref().map_or_else(
+        || legacy_bookmarks.clone(),
+        |store| {
+            let resolution = store.load_or_migrate(&legacy_bookmarks);
+            if let Some(warning) = &resolution.warning {
+                tracing::warn!(operation = "bookmark_load_or_migrate", %warning, "Independent bookmark persistence is temporarily unavailable");
+            }
+            resolution.bookmarks
+        },
+    );
     let restore_enabled = loaded
         .as_ref()
         .is_none_or(|envelope| envelope.payload.restore_enabled);
     let store: Arc<dyn explorer_model::SessionStore> = Arc::new(store);
-    let coordinator = crate::session_lifecycle::PersistenceCoordinator::start(
+    let bookmark_store = bookmark_store
+        .map(|store| Arc::new(store) as Arc<dyn crate::bookmark_store::BookmarkStore>);
+    let coordinator = crate::session_lifecycle::PersistenceCoordinator::start_with_bookmarks(
         store,
+        bookmark_store,
         Duration::from_millis(limits.preview_debounce_ms.max(250)),
         Duration::from_secs(2),
     );

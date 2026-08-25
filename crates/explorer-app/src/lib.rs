@@ -15,6 +15,7 @@
 )]
 
 pub mod application;
+pub mod bookmark_store;
 pub mod branding;
 mod brokered_service;
 mod folder_size_service;

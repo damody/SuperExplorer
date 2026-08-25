@@ -12,6 +12,8 @@ use explorer_model::{
     PersistedWindowPlacement, SessionProvenance, SessionStore, SessionStoreError,
 };
 
+use crate::bookmark_store::BookmarkStore;
+
 /// Accepted durable reducer transitions. Pointer motion and render state cannot enter this API.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DurableTransition {
@@ -143,6 +145,16 @@ pub struct PersistenceCoordinator {
 impl PersistenceCoordinator {
     /// Starts one bounded worker. Only the latest full snapshot is retained.
     pub fn start(store: Arc<dyn SessionStore>, debounce: Duration, retry: Duration) -> Self {
+        Self::start_with_bookmarks(store, None, debounce, retry)
+    }
+
+    /// Starts one worker that writes independent bookmark data before session compatibility data.
+    pub fn start_with_bookmarks(
+        store: Arc<dyn SessionStore>,
+        bookmark_store: Option<Arc<dyn BookmarkStore>>,
+        debounce: Duration,
+        retry: Duration,
+    ) -> Self {
         let shared = Arc::new((
             Mutex::new(CoordinatorState {
                 latest: None,
@@ -156,7 +168,14 @@ impl PersistenceCoordinator {
         let worker_shared = Arc::clone(&shared);
         let worker = thread::Builder::new()
             .name("explorer-session-store".to_owned())
-            .spawn(move || worker_loop(store.as_ref(), &worker_shared, retry))
+            .spawn(move || {
+                worker_loop(
+                    store.as_ref(),
+                    bookmark_store.as_deref(),
+                    &worker_shared,
+                    retry,
+                )
+            })
             .ok();
         Self {
             shared,
@@ -238,6 +257,7 @@ impl Drop for PersistenceCoordinator {
 
 fn worker_loop(
     store: &dyn SessionStore,
+    bookmark_store: Option<&dyn BookmarkStore>,
     shared: &Arc<(Mutex<CoordinatorState>, Condvar)>,
     retry: Duration,
 ) {
@@ -277,9 +297,12 @@ fn worker_loop(
         let result = if let Some(scope) = reset {
             store.reset(scope)
         } else if let Some(snapshot) = &snapshot {
-            snapshot
-                .project()
-                .and_then(|envelope| store.save(&envelope))
+            snapshot.project().and_then(|envelope| {
+                if let Some(bookmark_store) = bookmark_store {
+                    bookmark_store.save(&envelope.payload.bookmarks)?;
+                }
+                store.save(&envelope)
+            })
         } else {
             Ok(())
         };
@@ -444,6 +467,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::bookmark_store::BookmarkStore;
 
     struct RecordingStore {
         generations: Mutex<Vec<u64>>,
@@ -490,6 +514,39 @@ mod tests {
         }
 
         fn reset(&self, _scope: SessionResetScope) -> Result<(), SessionStoreError> {
+            Ok(())
+        }
+    }
+
+    struct RecordingBookmarkStore {
+        writes: Mutex<Vec<explorer_model::Bookmarks>>,
+        failures_remaining: AtomicUsize,
+    }
+
+    impl RecordingBookmarkStore {
+        fn new(failures: usize) -> Self {
+            Self {
+                writes: Mutex::new(Vec::new()),
+                failures_remaining: AtomicUsize::new(failures),
+            }
+        }
+    }
+
+    impl BookmarkStore for RecordingBookmarkStore {
+        fn save(&self, bookmarks: &explorer_model::Bookmarks) -> Result<(), SessionStoreError> {
+            if self
+                .failures_remaining
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                    value.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(SessionStoreError::StorageFull);
+            }
+            self.writes
+                .lock()
+                .expect("bookmark writes")
+                .push(bookmarks.clone());
             Ok(())
         }
     }
@@ -560,6 +617,83 @@ mod tests {
         assert_eq!(health.failed_writes, 1);
         assert_eq!(health.successful_writes, 1);
         assert!(!health.dirty);
+    }
+
+    #[test]
+    fn flush_writes_independent_bookmarks_before_session() {
+        let session_store = Arc::new(RecordingStore::new(Duration::ZERO, 0));
+        let bookmark_store = Arc::new(RecordingBookmarkStore::new(0));
+        let mut coordinator = PersistenceCoordinator::start_with_bookmarks(
+            session_store.clone(),
+            Some(bookmark_store.clone()),
+            Duration::ZERO,
+            Duration::from_millis(5),
+        );
+        coordinator.accepted(DurableTransition::ViewSettingsChanged, snapshot(1));
+        assert!(coordinator.flush(Duration::from_secs(1)));
+        assert_eq!(bookmark_store.writes.lock().expect("writes").len(), 1);
+        assert_eq!(
+            *session_store.generations.lock().expect("generations"),
+            vec![1]
+        );
+        assert!(coordinator.shutdown(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn bookmark_failure_retries_latest_snapshot() {
+        let session_store = Arc::new(RecordingStore::new(Duration::ZERO, 0));
+        let bookmark_store = Arc::new(RecordingBookmarkStore::new(1));
+        let mut coordinator = PersistenceCoordinator::start_with_bookmarks(
+            session_store.clone(),
+            Some(bookmark_store.clone()),
+            Duration::ZERO,
+            Duration::from_millis(5),
+        );
+        coordinator.accepted(DurableTransition::NavigationCommitted, snapshot(1));
+        thread::sleep(Duration::from_millis(2));
+        coordinator.accepted(DurableTransition::TabReordered, snapshot(2));
+        assert!(coordinator.flush(Duration::from_secs(2)));
+        assert_eq!(bookmark_store.writes.lock().expect("writes").len(), 1);
+        assert_eq!(
+            *session_store.generations.lock().expect("generations"),
+            vec![2]
+        );
+        let health = coordinator.health();
+        assert_eq!(health.failed_writes, 1);
+        assert_eq!(health.successful_writes, 1);
+        assert!(coordinator.shutdown(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn session_resets_do_not_touch_bookmark_store() {
+        let session_store = Arc::new(RecordingStore::new(Duration::ZERO, 0));
+        let bookmark_store = Arc::new(RecordingBookmarkStore::new(0));
+        let mut coordinator = PersistenceCoordinator::start_with_bookmarks(
+            session_store,
+            Some(bookmark_store.clone()),
+            Duration::ZERO,
+            Duration::from_millis(5),
+        );
+        coordinator.accepted(DurableTransition::ViewSettingsChanged, snapshot(1));
+        assert!(coordinator.flush(Duration::from_secs(1)));
+        let writes_before_reset = bookmark_store.writes.lock().expect("writes").len();
+        assert!(
+            coordinator
+                .handle()
+                .request_reset(SessionResetScope::Session)
+        );
+        assert!(coordinator.flush(Duration::from_secs(1)));
+        assert!(
+            coordinator
+                .handle()
+                .request_reset(SessionResetScope::AllRoadmapState)
+        );
+        assert!(coordinator.flush(Duration::from_secs(1)));
+        assert_eq!(
+            bookmark_store.writes.lock().expect("writes").len(),
+            writes_before_reset
+        );
+        assert!(coordinator.shutdown(Duration::from_secs(1)));
     }
 
     #[test]
