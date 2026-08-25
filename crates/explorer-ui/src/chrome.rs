@@ -6950,6 +6950,7 @@ fn navigation_item_row(
     let location = item.location.clone();
     let available = item.availability == NavigationItemAvailability::Available;
     let has_chevron = available
+        && item.location.is_some()
         && (item.kind == NavigationItemKind::Section
             || matches!(
                 item.icon,
@@ -6958,6 +6959,8 @@ fn navigation_item_row(
                         | crate::navigation_pane::NavigationIcon::OneDrive
                         | crate::navigation_pane::NavigationIcon::Network
                         | crate::navigation_pane::NavigationIcon::Folder
+                        | crate::navigation_pane::NavigationIcon::Phone
+                        | crate::navigation_pane::NavigationIcon::Server
                 )
             ));
     let toggle_location = item.location.clone();
@@ -10015,24 +10018,11 @@ fn folder_size_detail_cell(
     let measurement_error = visuals.error_for(entry_id);
     let maximum = visuals.maximum_value();
     let item_id = extension_render_item_id(entry_id);
-    if visuals.partial_pending_for(entry_id) {
-        let label = "Calculating...";
-        let width = f32::from(view_settings.details_column_width(&descriptor.id));
-        return div()
-            .id(format!("folder-size-column-{visible_index}"))
-            .role(Role::Status)
-            .aria_label(format!("{}: {label}", descriptor.display_name))
-            .w(px(width))
-            .h_full()
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_end()
-            .child(label)
-            .into_any_element();
-    }
-    if let Some(bytes) = partial_bytes {
-        let label = format!("Partial: {}", format_explorer_size(bytes));
+    if visuals.partial_pending_for(entry_id)
+        || partial_bytes.is_some()
+        || measurement_error.is_some()
+    {
+        let label = "Unavailable";
         let width = f32::from(view_settings.details_column_width(&descriptor.id));
         return div()
             .id(format!("folder-size-column-{visible_index}"))

@@ -25,7 +25,7 @@ use std::{
     ffi::c_void,
     path::PathBuf,
     sync::{
-        Arc, Mutex, OnceLock, RwLock,
+        Arc, Condvar, Mutex, OnceLock, RwLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -38,7 +38,11 @@ use std::{
 // lease expires promptly, so hidden count columns do not keep MFT work alive.
 const QUERY_DEMAND_LEASE_ID_V1: u128 = u128::MAX;
 const QUERY_DEMAND_LEASE_OWNER_V1: u64 = u64::MAX;
-const QUERY_DEMAND_LEASE_TTL_V1: Duration = Duration::from_secs(5);
+const QUERY_DEMAND_LEASE_TTL_V1: Duration = Duration::from_secs(12);
+const ACTIVE_VOLUME_EXACT_WAIT_V1: Duration = Duration::from_millis(9_000);
+const FOLDER_QUERY_PARALLELISM_PER_VOLUME_V1: usize = 4;
+const RESULT_LRU_MIN_ENTRY_BYTES_V1: usize = 192;
+const RESULT_LRU_MAX_ENTRIES_V1: usize = 262_144;
 
 fn renew_query_demand_lease(focus_leases: &Arc<Mutex<mft_persistence::FocusLeaseRegistryV1>>) {
     if let Ok(mut leases) = focus_leases.lock() {
@@ -390,6 +394,7 @@ enum StartupStoreV1 {
     ExistingCanonical,
     ExistingCanonicalCleanupPending,
     LegacyMigrationPending,
+    RebuildPersistencePending,
     ReplacementRecoveryPending,
     FreshRebuildRequired,
     LiveBudgetLimited,
@@ -438,11 +443,20 @@ struct LiveBudgetStateV1 {
     limits: mft_query::MftCacheBudgetLimitsV1,
     epoch: u64,
     preferred_volume: Option<char>,
+    active_recovery: Option<ActiveVolumeRecoveryIdentityV1>,
     blocked_volumes: HashSet<char>,
     reserved_volume_bytes: usize,
     reserved_file_bytes: usize,
     reserved_persisted_bytes: u64,
     persisted_prune_pending: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ActiveVolumeRecoveryIdentityV1 {
+    letter: char,
+    journal_id: u64,
+    observed_generation: u64,
+    budget_epoch: u64,
 }
 
 impl Default for LiveBudgetStateV1 {
@@ -451,6 +465,7 @@ impl Default for LiveBudgetStateV1 {
             limits: default_cache_budget_limits(),
             epoch: 0,
             preferred_volume: None,
+            active_recovery: None,
             blocked_volumes: HashSet::new(),
             reserved_volume_bytes: 0,
             reserved_file_bytes: 0,
@@ -631,26 +646,159 @@ fn prefer_live_volume(
     let mut budgets = live_budgets
         .lock()
         .map_err(|_| "MFT live budget state is unavailable".to_owned())?;
-    if budgets.preferred_volume == Some(letter) {
-        return Ok(());
-    }
     let mut live = live_volumes
         .lock()
         .map_err(|_| "MFT live volume state is unavailable".to_owned())?;
+    if let Some(recovery) = budgets.active_recovery
+        && recovery.letter != letter
+        && !budgets.blocked_volumes.contains(&recovery.letter)
+        && live
+            .get(&recovery.letter)
+            .is_some_and(|runtime| !runtime.is_exact())
+    {
+        return Err(format!(
+            "active-volume exact recovery is already in progress: recovering_volume={} requested_volume={letter} journal_id={} observed_generation={} recovery_epoch={}",
+            recovery.letter,
+            recovery.journal_id,
+            recovery.observed_generation,
+            recovery.budget_epoch,
+        ));
+    }
+    if let Some(recovering_letter) = budgets.preferred_volume
+        && recovering_letter != letter
+        && budgets.active_recovery.is_none()
+        && !budgets.blocked_volumes.contains(&recovering_letter)
+        && live
+            .get(&recovering_letter)
+            .is_some_and(|runtime| !runtime.is_exact())
+    {
+        return Err(format!(
+            "active-volume exact recovery is already in progress: recovering_volume={recovering_letter} requested_volume={letter} recovery_epoch={}",
+            budgets.epoch,
+        ));
+    }
+    let target = live
+        .get(&letter)
+        .ok_or_else(|| "MFT live volume is unavailable".to_owned())?;
+    let target_exact = target.is_exact();
+    let target_observed = target.observed;
+    if budgets.preferred_volume == Some(letter)
+        && (target_exact || !budgets.blocked_volumes.contains(&letter))
+    {
+        return Ok(());
+    }
     budgets.preferred_volume = Some(letter);
     budgets.epoch = budgets.epoch.saturating_add(1);
+    for (volume_letter, runtime) in live.iter_mut() {
+        if *volume_letter != letter || !runtime.is_exact() {
+            runtime.evict_index_for_active_volume_paging();
+        }
+        if *volume_letter != letter {
+            budgets.blocked_volumes.insert(*volume_letter);
+        }
+    }
+    // Removing the target from the blocked set is the watcher-facing recovery
+    // signal. The budget epoch makes one failed attempt retryable without
+    // allowing sibling folder queries to restart the same volume recovery.
     budgets.blocked_volumes.remove(&letter);
-    // Explorer's active location gets first claim on the existing hard
-    // budget, but changing tabs must not discard a complete background index
-    // when all admitted volumes already fit. Background/restored tabs can
-    // legitimately issue column queries too; unconditional displacement here
-    // made those requests oscillate the preferred volume and turned an exact
-    // foreground Folder Size back into `Partial: 0 KB` after every commit.
-    // The ordered budget pass below keeps every fitting index and trims only
-    // when the independent hard ceiling is actually exceeded.
-    let trimmed = enforce_live_budgets_locked(&mut live, &budgets);
-    budgets.blocked_volumes.extend(trimmed);
+    budgets.active_recovery = (!target_exact).then(|| ActiveVolumeRecoveryIdentityV1 {
+        letter,
+        journal_id: target_observed.journal_id,
+        observed_generation: target_observed.generation,
+        budget_epoch: budgets.epoch,
+    });
     Ok(())
+}
+
+fn wait_for_active_volume_exact(
+    live_budgets: &Arc<Mutex<LiveBudgetStateV1>>,
+    live_volumes: &Arc<Mutex<HashMap<char, mft_runtime::VolumeMemoryRuntimeV1>>>,
+    letter: char,
+    deadline: Duration,
+) -> Result<(), String> {
+    let started = Instant::now();
+    loop {
+        let (exact, observed, durable, memory) = {
+            let live = live_volumes
+                .lock()
+                .map_err(|_| "MFT live volume state is unavailable".to_owned())?;
+            let volume = live
+                .get(&letter)
+                .ok_or_else(|| "MFT live volume is unavailable".to_owned())?;
+            (
+                volume.is_exact(),
+                volume.observed,
+                volume.durable,
+                volume.index.memory_breakdown(),
+            )
+        };
+        if exact {
+            if let Ok(mut budgets) = live_budgets.lock()
+                && budgets
+                    .active_recovery
+                    .is_some_and(|recovery| recovery.letter == letter)
+            {
+                budgets.active_recovery = None;
+            }
+            return Ok(());
+        }
+        if STOPPED.load(Ordering::Acquire) {
+            return Err("MFT service stopped during active-volume recovery".to_owned());
+        }
+        let (blocked, volume_limit, file_limit, epoch) = {
+            let budgets = live_budgets
+                .lock()
+                .map_err(|_| "MFT live budget state is unavailable".to_owned())?;
+            (
+                budgets.blocked_volumes.contains(&letter),
+                usize::from(budgets.limits.volume_index_mb) * 1024 * 1024,
+                usize::from(budgets.limits.file_data_mb) * 1024 * 1024,
+                budgets.epoch,
+            )
+        };
+        if blocked {
+            if let Ok(mut budgets) = live_budgets.lock()
+                && budgets
+                    .active_recovery
+                    .is_some_and(|recovery| recovery.letter == letter)
+            {
+                budgets.active_recovery = None;
+            }
+            return Err(format!(
+                "active-volume exact recovery failed: volume={letter} stage=budget_or_rebuild epoch={epoch} observed_journal_id={} observed_next_usn={} observed_generation={} durable_journal_id={} durable_next_usn={} durable_generation={} measured_volume_index_bytes={} configured_volume_index_bytes={} measured_file_data_bytes={} configured_file_data_bytes={}",
+                observed.journal_id,
+                observed.next_usn,
+                observed.generation,
+                durable.journal_id,
+                durable.next_usn,
+                durable.generation,
+                memory.volume_index_bytes,
+                volume_limit,
+                memory.file_data_bytes,
+                file_limit,
+            ));
+        }
+        if started.elapsed() >= deadline {
+            if let Ok(mut budgets) = live_budgets.lock()
+                && budgets
+                    .active_recovery
+                    .is_some_and(|recovery| recovery.letter == letter)
+            {
+                budgets.active_recovery = None;
+            }
+            return Err(format!(
+                "active-volume exact recovery deadline exceeded: volume={letter} deadline_ms={} observed_generation={} durable_generation={} measured_volume_index_bytes={} configured_volume_index_bytes={} measured_file_data_bytes={} configured_file_data_bytes={}",
+                deadline.as_millis(),
+                observed.generation,
+                durable.generation,
+                memory.volume_index_bytes,
+                volume_limit,
+                memory.file_data_bytes,
+                file_limit,
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn update_runtime_under_live_budget(
@@ -1268,7 +1416,7 @@ fn run_event_driven_service() {
     // responsive. Their result cache is shared so a durable SQLite aggregate
     // is computed only once per folder/generation instead of once per pipe
     // worker; all other volume state and hard budgets are shared as well.
-    let shared_query_cache = Arc::new(Mutex::new(ServiceFolderAggregateCacheV1::default()));
+    let shared_query_cache = Arc::new(SharedFolderQueryServiceV1::default());
     let query_workers = (0..4)
         .map(|_| {
             let query_cache_worker = Arc::clone(&shared_query_cache);
@@ -1285,24 +1433,36 @@ fn run_event_driven_service() {
                 mft_query::serve_queries(
                     || STOPPED.load(Ordering::Acquire),
                     |letter, reference, cache_memory_mb, requested_path| {
+                        let started = Instant::now();
                         renew_query_demand_lease(&folder_query_focus_leases);
                         let _checkpoint_guard = query_checkpoint_gate_worker
                             .read()
                             .map_err(|_| "MFT query/checkpoint gate is unavailable".to_owned())?;
                         let _activity = QueryActivityGuardV1::enter(&query_activity_worker);
-                        query_cache_diagnostics
-                            .lock()
-                            .map_err(|_| "MFT Service query cache is unavailable".to_owned())?
-                            .query_live(
-                                &query_live_volumes,
-                                &query_live_budgets,
-                                &query_root,
-                                &PathBuf::from(format!("{letter}:\\")),
-                                requested_path.as_deref(),
+                        let result = query_cache_diagnostics.query_live(
+                            &query_live_volumes,
+                            &query_live_budgets,
+                            &query_root,
+                            &PathBuf::from(format!("{letter}:\\")),
+                            requested_path.as_deref(),
+                            letter,
+                            reference,
+                            cache_memory_mb,
+                        );
+                        result.map_err(|error| {
+                            let detail = format!(
+                                "MFT_FOLDER_SIZE_UNAVAILABLE path={} volume={} reference={} elapsed_ms={} cache_memory_mb={} stage=service_query error={error}",
+                                requested_path
+                                    .as_deref()
+                                    .map_or_else(|| "<reference-only>".to_owned(), |path| path.display().to_string()),
                                 letter,
                                 reference,
+                                started.elapsed().as_millis(),
                                 cache_memory_mb,
-                            )
+                            );
+                            eprintln!("{detail}");
+                            detail
+                        })
                     },
                     |letter, reference, requested_path| {
                         renew_query_demand_lease(&subtree_query_focus_leases);
@@ -1334,6 +1494,7 @@ fn run_event_driven_service() {
                     },
                     || {
                         query_cache_worker
+                            .cache
                             .lock()
                             .map_err(|_| "MFT Service query cache is unavailable".to_owned())
                             .and_then(|cache| {
@@ -1352,6 +1513,7 @@ fn run_event_driven_service() {
                     },
                     |value| {
                         query_cache_worker
+                            .cache
                             .lock()
                             .map_err(|_| "MFT Service query cache is unavailable".to_owned())
                             .and_then(|mut cache| {
@@ -1408,6 +1570,352 @@ struct ServiceFolderAggregateCacheV1 {
     limits_configured: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct ServiceFolderFlightKeyV1 {
+    volume_serial: u64,
+    reference: u64,
+    generation: u64,
+}
+
+#[derive(Default)]
+struct ServiceFolderFlightV1 {
+    result: Mutex<Option<Result<mft_query::FolderAggregateQueryV1, String>>>,
+    ready: Condvar,
+}
+
+/// Coordinates expensive folder computations without holding the result-cache
+/// lock. Same-folder requests share one computation; unrelated folders keep
+/// using the independent named-pipe workers.
+struct SharedFolderQueryServiceV1 {
+    cache: Mutex<ServiceFolderAggregateCacheV1>,
+    flights: Mutex<HashMap<ServiceFolderFlightKeyV1, Arc<ServiceFolderFlightV1>>>,
+    volume_query_counts: Mutex<HashMap<char, usize>>,
+    volume_query_ready: Condvar,
+}
+
+impl Default for SharedFolderQueryServiceV1 {
+    fn default() -> Self {
+        Self {
+            cache: Mutex::new(ServiceFolderAggregateCacheV1::default()),
+            flights: Mutex::new(HashMap::new()),
+            volume_query_counts: Mutex::new(HashMap::new()),
+            volume_query_ready: Condvar::new(),
+        }
+    }
+}
+
+struct VolumeQueryPermitV1<'a> {
+    service: &'a SharedFolderQueryServiceV1,
+    letter: char,
+}
+
+impl Drop for VolumeQueryPermitV1<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut counts) = self.service.volume_query_counts.lock() {
+            if let Some(count) = counts.get_mut(&self.letter) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    counts.remove(&self.letter);
+                }
+            }
+            self.service.volume_query_ready.notify_all();
+        }
+    }
+}
+
+impl SharedFolderQueryServiceV1 {
+    fn acquire_volume_query(&self, letter: char) -> Result<VolumeQueryPermitV1<'_>, String> {
+        let mut counts = self
+            .volume_query_counts
+            .lock()
+            .map_err(|_| "MFT Service volume query limiter is unavailable".to_owned())?;
+        while counts.get(&letter).copied().unwrap_or_default()
+            >= FOLDER_QUERY_PARALLELISM_PER_VOLUME_V1
+            && !STOPPED.load(Ordering::Acquire)
+        {
+            counts = self
+                .volume_query_ready
+                .wait(counts)
+                .map_err(|_| "MFT Service volume query limiter is unavailable".to_owned())?;
+        }
+        if STOPPED.load(Ordering::Acquire) {
+            return Err("MFT Service stopped before volume query could start".to_owned());
+        }
+        *counts.entry(letter).or_default() += 1;
+        Ok(VolumeQueryPermitV1 {
+            service: self,
+            letter,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn query_live(
+        &self,
+        live_volumes: &Arc<Mutex<HashMap<char, mft_runtime::VolumeMemoryRuntimeV1>>>,
+        live_budgets: &Arc<Mutex<LiveBudgetStateV1>>,
+        cache_root: &std::path::Path,
+        volume_root: &std::path::Path,
+        requested_path: Option<&std::path::Path>,
+        letter: char,
+        reference: u64,
+        cache_memory_mb: u16,
+    ) -> Result<mft_query::FolderAggregateQueryV1, String> {
+        let _volume_query_permit = self.acquire_volume_query(letter)?;
+        prefer_live_volume(live_budgets, live_volumes, letter)?;
+        wait_for_active_volume_exact(
+            live_budgets,
+            live_volumes,
+            letter,
+            ACTIVE_VOLUME_EXACT_WAIT_V1,
+        )?;
+        let (observed, durable, exact, index) = {
+            let live = live_volumes
+                .lock()
+                .map_err(|_| "MFT live volume state is unavailable".to_owned())?;
+            let volume = live
+                .get(&letter)
+                .ok_or_else(|| "MFT live volume is unavailable".to_owned())?;
+            (
+                volume.observed,
+                volume.durable,
+                volume.is_exact(),
+                Arc::clone(&volume.index),
+            )
+        };
+        let volume_serial = mft_size_map::volume_serial_number(volume_root)?;
+        let key = ServiceFolderFlightKeyV1 {
+            volume_serial,
+            reference,
+            generation: observed.generation,
+        };
+        let durable_available = requested_path.is_some()
+            && observed == durable
+            && durable_snapshot_matches_current_journal(volume_root, durable);
+
+        {
+            let mut cache = self
+                .cache
+                .lock()
+                .map_err(|_| "MFT Service query cache is unavailable".to_owned())?;
+            if !cache.limits_configured {
+                cache.set_limit(cache_memory_mb);
+            }
+            // A result from an older observed generation is no longer a
+            // proven fact. Retire the entire affected volume conservatively;
+            // another drive's entries remain warm and available.
+            cache.retire_stale_volume_results(letter, observed.generation);
+            cache.clock = cache.clock.wrapping_add(1).max(1);
+            let clock = cache.clock;
+            let hit = cache
+                .results
+                .get_mut(&(letter, reference))
+                .and_then(|(cached, last_use)| {
+                    (cached.generation == observed.generation
+                        && !cached.partial
+                        && (exact || durable_available))
+                        .then(|| {
+                            *last_use = clock;
+                            *cached
+                        })
+                });
+            if let Some(cached) = hit {
+                cache.hits = cache.hits.saturating_add(1);
+                return Ok(cached);
+            }
+            cache.misses = cache.misses.saturating_add(1);
+        }
+
+        let (flight, leader) = {
+            let mut flights = self
+                .flights
+                .lock()
+                .map_err(|_| "MFT Service single-flight registry is unavailable".to_owned())?;
+            match flights.get(&key) {
+                Some(flight) => (Arc::clone(flight), false),
+                None => {
+                    let flight = Arc::new(ServiceFolderFlightV1::default());
+                    flights.insert(key, Arc::clone(&flight));
+                    (flight, true)
+                }
+            }
+        };
+        if !leader {
+            let mut result = flight
+                .result
+                .lock()
+                .map_err(|_| "MFT Service shared computation is unavailable".to_owned())?;
+            while result.is_none() && !STOPPED.load(Ordering::Acquire) {
+                result = flight
+                    .ready
+                    .wait(result)
+                    .map_err(|_| "MFT Service shared computation is unavailable".to_owned())?;
+            }
+            return result.clone().unwrap_or_else(|| {
+                Err("MFT Service stopped before folder computation completed".to_owned())
+            });
+        }
+
+        let aggregate_limit = self
+            .cache
+            .lock()
+            .map_err(|_| "MFT Service query cache is unavailable".to_owned())?
+            .limits
+            .aggregate_mb as usize
+            * 1024
+            * 1024;
+        let computed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            compute_folder_aggregate_uncached(
+                cache_root,
+                volume_root,
+                requested_path,
+                reference,
+                observed,
+                durable,
+                exact,
+                &index,
+                aggregate_limit,
+            )
+        }))
+        .unwrap_or_else(|_| Err("MFT folder aggregate computation failed".to_owned()))
+        .and_then(|value| {
+            require_exact_folder_aggregate(value, observed, durable, exact, aggregate_limit)
+        })
+        .and_then(|value| {
+            let current = live_volumes
+                .lock()
+                .map_err(|_| "MFT live volume state is unavailable".to_owned())?
+                .get(&letter)
+                .map(|volume| volume.observed)
+                .ok_or_else(|| "MFT live volume is unavailable".to_owned())?;
+            (current == observed)
+                .then_some(value)
+                .ok_or_else(|| "MFT folder aggregate generation changed during query".to_owned())
+        });
+
+        if let Ok(value) = computed {
+            if let Ok(mut cache) = self.cache.lock() {
+                cache.clock = cache.clock.wrapping_add(1).max(1);
+                let clock = cache.clock;
+                cache.generation = cache.generation.max(value.generation);
+                cache.results.insert((letter, reference), (value, clock));
+                cache.recount_result_bytes();
+                cache.evict_for(0);
+            }
+        }
+        if let Ok(mut result) = flight.result.lock() {
+            *result = Some(computed.clone());
+            flight.ready.notify_all();
+        }
+        if let Ok(mut flights) = self.flights.lock() {
+            flights.remove(&key);
+        }
+        computed
+    }
+}
+
+fn require_exact_folder_aggregate(
+    value: mft_query::FolderAggregateQueryV1,
+    observed: mft_persistence::JournalCursorV1,
+    durable: mft_persistence::JournalCursorV1,
+    volume_exact: bool,
+    aggregate_limit: usize,
+) -> Result<mft_query::FolderAggregateQueryV1, String> {
+    (!value.partial).then_some(value).ok_or_else(|| {
+        format!(
+            "exact folder aggregate is unavailable: source returned partial; observed_journal_id={} observed_next_usn={} observed_generation={} durable_journal_id={} durable_next_usn={} durable_generation={} volume_exact={} aggregate_limit_bytes={} logical_bytes={} file_count={} directory_count={}",
+            observed.journal_id,
+            observed.next_usn,
+            observed.generation,
+            durable.journal_id,
+            durable.next_usn,
+            durable.generation,
+            volume_exact,
+            aggregate_limit,
+            value.logical_bytes,
+            value.file_count,
+            value.directory_count,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_folder_aggregate_uncached(
+    cache_root: &std::path::Path,
+    volume_root: &std::path::Path,
+    requested_path: Option<&std::path::Path>,
+    reference: u64,
+    observed: mft_persistence::JournalCursorV1,
+    durable: mft_persistence::JournalCursorV1,
+    exact: bool,
+    index: &mft_size_map::MftIndexV1,
+    aggregate_limit: usize,
+) -> Result<mft_query::FolderAggregateQueryV1, String> {
+    let from_aggregate =
+        |aggregate: mft_size_map::MftAggregateV1, partial| mft_query::FolderAggregateQueryV1 {
+            generation: observed.generation,
+            logical_bytes: aggregate.logical_bytes,
+            allocated_bytes: aggregate.allocated_bytes,
+            file_count: aggregate.file_count,
+            directory_count: aggregate.directory_count,
+            partial,
+        };
+    if requested_path.is_some()
+        && observed == durable
+        && durable_snapshot_matches_current_journal(volume_root, durable)
+    {
+        let sqlite_path = cache_root.join(format!(
+            "{}.mft.sqlite3",
+            volume_root
+                .to_string_lossy()
+                .chars()
+                .next()
+                .unwrap_or('C')
+                .to_ascii_uppercase()
+        ));
+        let expected_volume = mft_journal::VolumeIdentityV2 {
+            serial: mft_size_map::volume_serial_number(volume_root)?,
+        };
+        if let Ok(aggregate) = mft_sqlite::MftSqliteStoreV1::query_folder_aggregate_read_only(
+            &sqlite_path,
+            cache_root,
+            expected_volume,
+            durable,
+            reference,
+            &HashSet::new(),
+        ) && durable_snapshot_matches_current_journal(volume_root, durable)
+        {
+            return Ok(from_aggregate(aggregate, false));
+        }
+    }
+    let deadline = Instant::now() + QUERY_FALLBACK_SCAN_BUDGET;
+    match index.aggregate_subtree_bounded(reference, QUERY_FALLBACK_MAX_ENTRIES, || {
+        STOPPED.load(Ordering::Acquire) || Instant::now() >= deadline
+    }) {
+        Ok(aggregate) => Ok(from_aggregate(aggregate, !exact)),
+        Err(error) if exact && error.contains("interactive bound") => {
+            if index.projected_aggregate_bytes() > aggregate_limit {
+                return Ok(mft_query::FolderAggregateQueryV1 {
+                    generation: observed.generation,
+                    partial: true,
+                    ..Default::default()
+                });
+            }
+            let aggregates =
+                mft_size_map::MftAggregateIndexV1::build_cancelled(index, 8, &STOPPED)?;
+            aggregates
+                .get(reference)
+                .map(|aggregate| from_aggregate(aggregate, false))
+                .ok_or_else(|| "folder aggregate is unavailable".to_owned())
+        }
+        Err(_) if !exact => Ok(mft_query::FolderAggregateQueryV1 {
+            generation: observed.generation,
+            partial: true,
+            ..Default::default()
+        }),
+        Err(error) => Err(error),
+    }
+}
+
 impl Default for ServiceFolderAggregateCacheV1 {
     fn default() -> Self {
         Self {
@@ -1448,6 +1956,16 @@ fn journal_metadata_matches_durable(
 }
 
 impl ServiceFolderAggregateCacheV1 {
+    fn retire_stale_volume_results(&mut self, letter: char, current_generation: u64) {
+        let before = self.results.len();
+        self.results.retain(|(volume, _), (value, _)| {
+            *volume != letter || value.generation == current_generation
+        });
+        if self.results.len() != before {
+            self.recount_result_bytes();
+        }
+    }
+
     fn query_live(
         &mut self,
         live_volumes: &Arc<Mutex<HashMap<char, mft_runtime::VolumeMemoryRuntimeV1>>>,
@@ -1464,7 +1982,7 @@ impl ServiceFolderAggregateCacheV1 {
         }
         prefer_live_volume(live_budgets, live_volumes, letter)?;
         self.clock = self.clock.wrapping_add(1).max(1);
-        let (mut observed, durable, exact) = {
+        let (observed, durable, exact) = {
             let live = live_volumes
                 .lock()
                 .map_err(|_| "MFT live volume state is unavailable".to_owned())?;
@@ -1483,11 +2001,8 @@ impl ServiceFolderAggregateCacheV1 {
             && durable_snapshot_matches_current_journal(_volume_root, durable);
         if let Some((cached, last_use)) = self.results.get_mut(&(letter, reference))
             && cached.generation == observed.generation
-            && if cached.partial {
-                !exact && !durable_read_available
-            } else {
-                exact || durable_read_available
-            }
+            && !cached.partial
+            && (exact || durable_read_available)
         {
             *last_use = self.clock;
             self.hits = self.hits.saturating_add(1);
@@ -1587,16 +2102,11 @@ impl ServiceFolderAggregateCacheV1 {
                     // recursive file-content scanner.
                     let aggregate_limit = usize::from(self.limits.aggregate_mb) * 1024 * 1024;
                     if index.projected_aggregate_bytes() > aggregate_limit {
-                        let result = mft_query::FolderAggregateQueryV1 {
-                            generation: observed.generation,
-                            partial: true,
-                            ..Default::default()
-                        };
-                        self.results
-                            .insert((letter, reference), (result, self.clock));
-                        self.recount_result_bytes();
-                        self.evict_for(0);
-                        return Ok(result);
+                        return Err(format!(
+                            "exact folder aggregate is unavailable: projected aggregate bytes {} exceed configured limit {}",
+                            index.projected_aggregate_bytes(),
+                            aggregate_limit,
+                        ));
                     }
                     // Do not retain an old volume aggregate while allocating
                     // its replacement; the configured aggregate budget is a
@@ -1637,49 +2147,10 @@ impl ServiceFolderAggregateCacheV1 {
                 Err(error) => return Err(error),
             }
         }
-        // Inexact state must remain interactive. Building a whole-volume
-        // aggregate here lets a few Explorer rows occupy every pipe worker for
-        // minutes while a foreground catch-up is still running. Aggregate only
-        // the requested retained subtree; it is a known lower bound and remains
-        // typed partial until the volume becomes exact. Missing/trimmed roots
-        // deliberately return an unknown partial result, never an exact 0 KB.
-        let index = {
-            let live = live_volumes
-                .lock()
-                .map_err(|_| "MFT live volume state is unavailable".to_owned())?;
-            let volume = live
-                .get(&letter)
-                .ok_or_else(|| "MFT live volume is unavailable".to_owned())?;
-            observed = volume.observed;
-            Arc::clone(&volume.index)
-        };
-        let deadline = Instant::now() + QUERY_FALLBACK_SCAN_BUDGET;
-        let aggregate = index
-            .aggregate_subtree_bounded(reference, QUERY_FALLBACK_MAX_ENTRIES, || {
-                STOPPED.load(Ordering::Acquire) || Instant::now() >= deadline
-            })
-            .ok();
-        let result = aggregate.map_or_else(
-            || mft_query::FolderAggregateQueryV1 {
-                generation: observed.generation,
-                partial: true,
-                ..Default::default()
-            },
-            |aggregate| mft_query::FolderAggregateQueryV1 {
-                generation: observed.generation,
-                logical_bytes: aggregate.logical_bytes,
-                allocated_bytes: aggregate.allocated_bytes,
-                file_count: aggregate.file_count,
-                directory_count: aggregate.directory_count,
-                partial: true,
-            },
-        );
-        self.generation = self.generation.max(observed.generation);
-        self.results
-            .insert((letter, reference), (result, self.clock));
-        self.recount_result_bytes();
-        self.evict_for(0);
-        Ok(result)
+        Err(format!(
+            "exact folder aggregate is unavailable: volume index is incomplete; observed_generation={} durable_generation={}",
+            observed.generation, durable.generation,
+        ))
     }
 
     fn set_limits(
@@ -1727,6 +2198,7 @@ impl ServiceFolderAggregateCacheV1 {
             let persisted_raised = limits.persisted_index_mb > budgets.limits.persisted_index_mb;
             if limits != budgets.limits {
                 budgets.epoch = budgets.epoch.wrapping_add(1).max(1);
+                budgets.active_recovery = None;
             }
             budgets.limits = limits;
             budgets.persisted_prune_pending = persisted_cache_bytes(cache_root)
@@ -2064,7 +2536,11 @@ impl ServiceFolderAggregateCacheV1 {
     }
 
     fn evict_for(&mut self, incoming: usize) {
-        while self.estimated_bytes.saturating_add(incoming) > self.limit_bytes {
+        let entry_limit =
+            (self.limit_bytes / RESULT_LRU_MIN_ENTRY_BYTES_V1).clamp(1, RESULT_LRU_MAX_ENTRIES_V1);
+        while self.estimated_bytes.saturating_add(incoming) > self.limit_bytes
+            || self.results.len() > entry_limit
+        {
             let Some(key) = self
                 .results
                 .iter()
@@ -2079,10 +2555,10 @@ impl ServiceFolderAggregateCacheV1 {
     }
 
     fn recount_result_bytes(&mut self) {
-        self.estimated_bytes = self.results.len().saturating_mul(std::mem::size_of::<(
-            (char, u64),
-            (mft_query::FolderAggregateQueryV1, u64),
-        )>());
+        self.estimated_bytes = self
+            .results
+            .len()
+            .saturating_mul(RESULT_LRU_MIN_ENTRY_BYTES_V1);
     }
 
     fn live_aggregate_bytes(&self) -> usize {
@@ -2704,7 +3180,8 @@ fn watch_volume_memory(
                 StartupStoreV1::ReplacementRecoveryCatchupPending
                 | StartupStoreV1::ReplacementRecoveryPending => (5, 6),
                 StartupStoreV1::InvalidCanonicalQuarantineRequired => (2, 5),
-                StartupStoreV1::FreshRebuildRequired => (3, 1),
+                StartupStoreV1::FreshRebuildRequired
+                | StartupStoreV1::RebuildPersistencePending => (3, 1),
                 StartupStoreV1::LiveBudgetLimited => (0, 7),
                 StartupStoreV1::CanonicalLiveBudgetLimited => (0, 7),
                 StartupStoreV1::LiveBudgetLimitedCleanupPending => (4, 7),
@@ -3167,9 +3644,22 @@ fn watch_volume_memory(
         }
         if !runtime_exact && startup_store == StartupStoreV1::InvalidCanonicalQuarantineRequired {
             let now = monotonic_now();
-            let focused = focus_leases
+            let (focused, query_demand) = focus_leases
                 .lock()
-                .is_ok_and(|mut leases| leases.any_focused(now));
+                .map(|mut leases| {
+                    let query_demand = leases.contains_active(QUERY_DEMAND_LEASE_ID_V1, now);
+                    (leases.any_focused(now), query_demand)
+                })
+                .unwrap_or_default();
+            if query_demand {
+                // Quarantine is a durability operation and must not stand in
+                // front of a foreground exact-memory rebuild. Preserve the
+                // suspect canonical file untouched for rollback, publish a
+                // complete live MFT scan first, and replace persistence later.
+                startup_store = StartupStoreV1::FreshRebuildRequired;
+                schedule.expedite_initial_recovery(now);
+                continue;
+            }
             if schedule.decision(now, true, focused)
                 == mft_persistence::PersistenceDecisionV1::BeginAttempt
             {
@@ -3212,7 +3702,7 @@ fn watch_volume_memory(
                 schedule.expedite_initial_recovery(now);
             }
             let current_budget_epoch = live_budgets.lock().ok().map(|budgets| budgets.epoch);
-            if focused && current_budget_epoch != read_only_reload_epoch {
+            if focused && !query_demand && current_budget_epoch != read_only_reload_epoch {
                 // A failed bounded load must not be retried every 100 ms. Retry
                 // only after an actual budget/preference epoch change.
                 read_only_reload_epoch = current_budget_epoch;
@@ -3348,13 +3838,14 @@ fn watch_volume_memory(
                             budgets.blocked_volumes.extend(trimmed);
                             (volume_remaining, file_remaining, budgets.epoch, reservation)
                         };
-                        let (index, budget_complete) = mft_size_map::read_volume_index_bounded(
+                        let (index, scan) = mft_size_map::read_volume_index_bounded(
                             &root,
                             volume_remaining,
                             file_remaining,
                             || STOPPED.load(Ordering::Acquire),
                         )?;
-                        if !budget_complete {
+                        if scan.volume_limit_hit || scan.file_limit_hit {
+                            let memory = index.memory_breakdown();
                             let partial_cursor = mft_persistence::JournalCursorV1 {
                                 journal_id: journal_before.journal_id,
                                 next_usn: journal_before.next_usn,
@@ -3373,9 +3864,16 @@ fn watch_volume_memory(
                             if let Ok(mut budgets) = live_budgets.lock() {
                                 budgets.blocked_volumes.insert(letter);
                             }
-                            return Err(
-                                "MFT full index exceeds the configured live budget".to_owned()
-                            );
+                            return Err(format!(
+                                "MFT full index exceeds the configured live budget: scanned_entries={} volume_limit_hit={} file_limit_hit={} measured_volume_index_bytes={} configured_volume_index_bytes={} observed_file_data_bytes={} configured_file_data_bytes={}",
+                                scan.scanned_entries,
+                                scan.volume_limit_hit,
+                                scan.file_limit_hit,
+                                memory.volume_index_bytes,
+                                volume_remaining,
+                                scan.observed_file_data_bytes,
+                                file_remaining,
+                            ));
                         }
                         let initial_cursor = mft_persistence::JournalCursorV1 {
                             journal_id: journal_before.journal_id,
@@ -3392,12 +3890,6 @@ fn watch_volume_memory(
                         if STOPPED.load(Ordering::Acquire) {
                             return Err("MFT service stopping before rebuild promotion".to_owned());
                         }
-                        // Every SQLite/file-set mutation shares this gate. It is
-                        // intentionally acquired after the read-only MFT scan,
-                        // then held through allowance measurement and atomic
-                        // promotion so another volume cannot consume the same
-                        // persisted-cache slack.
-                        let _persisted_guard = persisted_write_guard()?;
                         let current_limits = live_budgets
                             .lock()
                             .map_err(|_| "MFT live budget state is unavailable".to_owned())?;
@@ -3430,71 +3922,11 @@ fn watch_volume_memory(
                             }
                             return Err("MFT rebuild budget changed before first write".to_owned());
                         }
-                        let persisted_limit =
-                            u64::from(current_limits.limits.persisted_index_mb) * 1024 * 1024;
                         drop(live);
                         drop(current_limits);
-                        let replace_existing = sqlite_path.exists();
-                        let candidate_allowance = persisted_candidate_allowance(
-                            &cache,
-                            &sqlite_path,
-                            persisted_limit,
-                            replace_existing,
-                        );
-                        if candidate_allowance == 0 {
-                            return Err("MFT rebuild has no persisted-budget allowance".to_owned());
-                        }
-                        // A full MFT scan can take longer than the persistence
-                        // interval. Advance the attempt clock only at the first
-                        // SQLite write boundary, not before the read-only scan.
-                        begin_persistence_attempt(&mut schedule, &focus_leases)?;
-                        let temporary = cache.join(format!("{letter}.mft.sqlite3.migration-tmp"));
-                        let candidate =
-                            mft_sqlite::MftSqliteStoreV1::snapshot_focused_bounded_linearized(
-                                &temporary,
-                                &sqlite_path,
-                                &cache,
-                                mft_sqlite::StoreIdentityV1 {
-                                    volume: checkpoint.volume,
-                                    cursor: durable,
-                                    complete: true,
-                                },
-                                &index,
-                                replace_existing,
-                                candidate_allowance,
-                                &LIFECYCLE_BARRIER,
-                                || {
-                                    live_budgets
-                                        .lock()
-                                        .is_ok_and(|budgets| budgets.epoch == source_epoch)
-                                        && focus_leases.lock().is_ok_and(|mut leases| {
-                                            leases.any_focused(monotonic_now())
-                                        })
-                                },
-                            )?;
-                        Ok((index, durable, candidate, reservation))
+                        Ok((index, durable, reservation))
                     });
-                if let Ok((index, durable, candidate, reservation)) = rebuilt {
-                    let marker = persisted_incomplete_path(&cache, letter);
-                    let marker_cleanup = if marker.exists() {
-                        LIFECYCLE_BARRIER.invoke(|| {
-                            if !focus_leases
-                                .lock()
-                                .is_ok_and(|mut leases| leases.any_focused(monotonic_now()))
-                            {
-                                return Err("MFT focus lease expired before prune marker cleanup"
-                                    .to_owned());
-                            }
-                            std::fs::remove_file(&marker).map_err(|error| error.to_string())
-                        })
-                    } else {
-                        Ok(())
-                    };
-                    if marker_cleanup.is_err() {
-                        store = Some(candidate);
-                        startup_store = StartupStoreV1::LiveBudgetLimited;
-                        continue;
-                    }
+                if let Ok((index, durable, reservation)) = rebuilt {
                     let installed = update_runtime_and_release_reservation(
                         &live_budgets,
                         &live_volumes,
@@ -3512,10 +3944,13 @@ fn watch_volume_memory(
                         durable.generation,
                     );
                     next_usn = durable.next_usn;
-                    store = Some(candidate);
                     match installed {
                         Ok((true, _)) => {
-                            startup_store = StartupStoreV1::ExistingCanonical;
+                            // Foreground exactness is a memory concern. Publish
+                            // the complete scan immediately; rebuilding the
+                            // durable SQLite accelerator happens afterward and
+                            // must not consume the interactive query deadline.
+                            startup_store = StartupStoreV1::RebuildPersistencePending;
                             budget_blocked_epoch = None;
                         }
                         Ok((false, epoch)) => {
@@ -3524,7 +3959,6 @@ fn watch_volume_memory(
                         }
                         Err(_) => startup_store = StartupStoreV1::FreshRebuildRequired,
                     }
-                    schedule.record_success(monotonic_record_time());
                 }
             }
             std::thread::sleep(Duration::from_millis(100));
@@ -3734,10 +4168,13 @@ fn watch_volume_memory(
                     .map(mft_runtime::VolumeMemoryRuntimeV1::has_pending)
             })
             .unwrap_or(false);
-        if startup_store == StartupStoreV1::LegacyMigrationPending
-            && schedule.decision(now, true, focused)
-                == mft_persistence::PersistenceDecisionV1::BeginAttempt
+        if matches!(
+            startup_store,
+            StartupStoreV1::LegacyMigrationPending | StartupStoreV1::RebuildPersistencePending
+        ) && schedule.decision(now, true, focused)
+            == mft_persistence::PersistenceDecisionV1::BeginAttempt
         {
+            let replace_existing = startup_store == StartupStoreV1::RebuildPersistencePending;
             let migration_snapshot = live_budgets
                 .lock()
                 .map_err(|_| "MFT live budget state is unavailable".to_owned())
@@ -3788,8 +4225,12 @@ fn watch_volume_memory(
             let migrated = migration_snapshot.and_then(
                 |(index, cursor, persisted_limit, source_epoch, _reservation)| {
                     let _persisted_guard = persisted_write_guard()?;
-                    let candidate_allowance =
-                        persisted_candidate_allowance(&cache, &sqlite_path, persisted_limit, false);
+                    let candidate_allowance = persisted_candidate_allowance(
+                        &cache,
+                        &sqlite_path,
+                        persisted_limit,
+                        replace_existing,
+                    );
                     if candidate_allowance == 0 {
                         return Err("MFT migration has no persisted-budget allowance".to_owned());
                     }
@@ -3806,7 +4247,7 @@ fn watch_volume_memory(
                                 complete: true,
                             },
                             &index,
-                            false,
+                            replace_existing,
                             candidate_allowance,
                             &LIFECYCLE_BARRIER,
                             || {
@@ -4565,6 +5006,239 @@ mod tests {
     }
 
     #[test]
+    fn active_volume_swap_preserves_cursors_and_persisted_store() {
+        let root = temporary_root("active-volume-sqlite-retention");
+        let sqlite = root.join("D.mft.sqlite3");
+        std::fs::write(&sqlite, b"durable-fixture").unwrap();
+        let cursor = mft_persistence::JournalCursorV1 {
+            journal_id: 2,
+            next_usn: 3,
+            generation: 4,
+        };
+        let live = Arc::new(Mutex::new(HashMap::from([
+            (
+                'C',
+                mft_runtime::VolumeMemoryRuntimeV1::new(fixture(64), cursor),
+            ),
+            (
+                'D',
+                mft_runtime::VolumeMemoryRuntimeV1::new(fixture(64), cursor),
+            ),
+        ])));
+        let budgets = Arc::new(Mutex::new(LiveBudgetStateV1::default()));
+
+        prefer_live_volume(&budgets, &live, 'D').unwrap();
+        {
+            let live = live.lock().unwrap();
+            assert!(live[&'C'].index.entries.is_empty());
+            assert_eq!(live[&'C'].durable, cursor);
+            assert!(live[&'D'].is_exact());
+        }
+        prefer_live_volume(&budgets, &live, 'C').unwrap();
+        {
+            let live = live.lock().unwrap();
+            assert!(live[&'D'].index.entries.is_empty());
+            assert_eq!(live[&'D'].durable, cursor);
+            let used = live.values().fold(
+                mft_size_map::MftIndexMemoryBreakdownV1::default(),
+                |mut total, runtime| {
+                    let memory = runtime.index.memory_breakdown();
+                    total.volume_index_bytes += memory.volume_index_bytes;
+                    total.file_data_bytes += memory.file_data_bytes;
+                    total
+                },
+            );
+            let limits = budgets.lock().unwrap().limits;
+            assert!(used.volume_index_bytes <= usize::from(limits.volume_index_mb) * 1024 * 1024);
+            assert!(used.file_data_bytes <= usize::from(limits.file_data_mb) * 1024 * 1024);
+        }
+        assert_eq!(std::fs::read(&sqlite).unwrap(), b"durable-fixture");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn incomplete_preferred_volume_signals_one_recovery_epoch() {
+        let cursor = mft_persistence::JournalCursorV1 {
+            journal_id: 2,
+            next_usn: 3,
+            generation: 4,
+        };
+        let live = Arc::new(Mutex::new(HashMap::from([(
+            'D',
+            mft_runtime::VolumeMemoryRuntimeV1::rebuild_required(fixture(32), cursor),
+        )])));
+        let budgets = Arc::new(Mutex::new(LiveBudgetStateV1 {
+            preferred_volume: Some('D'),
+            blocked_volumes: HashSet::from(['D']),
+            ..LiveBudgetStateV1::default()
+        }));
+
+        prefer_live_volume(&budgets, &live, 'D').unwrap();
+        let recovery_epoch = budgets.lock().unwrap().epoch;
+        assert!(!budgets.lock().unwrap().blocked_volumes.contains(&'D'));
+        assert_eq!(
+            budgets.lock().unwrap().active_recovery,
+            Some(ActiveVolumeRecoveryIdentityV1 {
+                letter: 'D',
+                journal_id: cursor.journal_id,
+                observed_generation: cursor.generation,
+                budget_epoch: recovery_epoch,
+            })
+        );
+        assert!(live.lock().unwrap()[&'D'].index.entries.is_empty());
+
+        prefer_live_volume(&budgets, &live, 'D').unwrap();
+        assert_eq!(budgets.lock().unwrap().epoch, recovery_epoch);
+    }
+
+    #[test]
+    fn another_volume_cannot_preempt_active_exact_recovery() {
+        let cursor = mft_persistence::JournalCursorV1 {
+            journal_id: 2,
+            next_usn: 3,
+            generation: 4,
+        };
+        let live = Arc::new(Mutex::new(HashMap::from([
+            (
+                'C',
+                mft_runtime::VolumeMemoryRuntimeV1::new(fixture(8), cursor),
+            ),
+            (
+                'D',
+                mft_runtime::VolumeMemoryRuntimeV1::rebuild_required(fixture(1), cursor),
+            ),
+        ])));
+        let budgets = Arc::new(Mutex::new(LiveBudgetStateV1 {
+            preferred_volume: Some('D'),
+            ..LiveBudgetStateV1::default()
+        }));
+
+        let error = prefer_live_volume(&budgets, &live, 'C').unwrap_err();
+
+        assert!(error.contains("recovering_volume=D"));
+        assert!(error.contains("requested_volume=C"));
+        assert_eq!(budgets.lock().unwrap().preferred_volume, Some('D'));
+        assert!(!live.lock().unwrap()[&'C'].index.entries.is_empty());
+    }
+
+    #[test]
+    fn folder_query_waits_for_active_volume_to_become_exact() {
+        STOPPED.store(false, Ordering::Release);
+        let cursor = mft_persistence::JournalCursorV1 {
+            journal_id: 2,
+            next_usn: 3,
+            generation: 4,
+        };
+        let live = Arc::new(Mutex::new(HashMap::from([(
+            'D',
+            mft_runtime::VolumeMemoryRuntimeV1::rebuild_required(fixture(1), cursor),
+        )])));
+        let budgets = Arc::new(Mutex::new(LiveBudgetStateV1 {
+            preferred_volume: Some('D'),
+            ..LiveBudgetStateV1::default()
+        }));
+        let worker_live = Arc::clone(&live);
+        let worker = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            worker_live
+                .lock()
+                .unwrap()
+                .get_mut(&'D')
+                .unwrap()
+                .replace_with_exact(fixture(2), cursor);
+        });
+
+        wait_for_active_volume_exact(&budgets, &live, 'D', Duration::from_secs(1)).unwrap();
+        worker.join().unwrap();
+        assert!(live.lock().unwrap()[&'D'].is_exact());
+    }
+
+    #[test]
+    fn budget_trimmed_target_returns_exact_after_active_recovery() {
+        STOPPED.store(false, Ordering::Release);
+        let cursor = mft_persistence::JournalCursorV1 {
+            journal_id: 2,
+            next_usn: 3,
+            generation: 4,
+        };
+        let live = Arc::new(Mutex::new(HashMap::from([(
+            'D',
+            mft_runtime::VolumeMemoryRuntimeV1::rebuild_required(fixture(1), cursor),
+        )])));
+        let budgets = Arc::new(Mutex::new(LiveBudgetStateV1 {
+            preferred_volume: Some('D'),
+            ..LiveBudgetStateV1::default()
+        }));
+        let worker_live = Arc::clone(&live);
+        let worker = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            worker_live
+                .lock()
+                .unwrap()
+                .get_mut(&'D')
+                .unwrap()
+                .replace_with_exact(fixture(32), cursor);
+        });
+
+        wait_for_active_volume_exact(&budgets, &live, 'D', Duration::from_secs(1)).unwrap();
+        worker.join().unwrap();
+        let live = live.lock().unwrap();
+        let runtime = &live[&'D'];
+        let result = compute_folder_aggregate_uncached(
+            std::path::Path::new("."),
+            std::path::Path::new(r"D:\"),
+            None,
+            1,
+            runtime.observed,
+            runtime.durable,
+            runtime.is_exact(),
+            &runtime.index,
+            usize::MAX,
+        )
+        .and_then(|value| {
+            require_exact_folder_aggregate(
+                value,
+                runtime.observed,
+                runtime.durable,
+                runtime.is_exact(),
+                usize::MAX,
+            )
+        })
+        .unwrap();
+
+        assert!(!result.partial);
+        assert_eq!(result.file_count, 31);
+    }
+
+    #[test]
+    fn active_volume_budget_failure_reports_measured_and_configured_bytes() {
+        STOPPED.store(false, Ordering::Release);
+        let cursor = mft_persistence::JournalCursorV1 {
+            journal_id: 2,
+            next_usn: 3,
+            generation: 4,
+        };
+        let live = Arc::new(Mutex::new(HashMap::from([(
+            'D',
+            mft_runtime::VolumeMemoryRuntimeV1::rebuild_required(fixture(32), cursor),
+        )])));
+        let budgets = Arc::new(Mutex::new(LiveBudgetStateV1 {
+            preferred_volume: Some('D'),
+            blocked_volumes: HashSet::from(['D']),
+            ..LiveBudgetStateV1::default()
+        }));
+
+        let error = wait_for_active_volume_exact(&budgets, &live, 'D', Duration::from_millis(100))
+            .unwrap_err();
+
+        assert!(error.contains("stage=budget_or_rebuild"));
+        assert!(error.contains("measured_volume_index_bytes="));
+        assert!(error.contains("configured_volume_index_bytes="));
+        assert!(error.contains("measured_file_data_bytes="));
+        assert!(error.contains("configured_file_data_bytes="));
+    }
+
+    #[test]
     fn live_budget_survives_rebuild_and_raise_allows_exact_repopulation() {
         let root = temporary_root("live-budget-rebuild");
         let cursor = mft_persistence::JournalCursorV1 {
@@ -4848,8 +5522,7 @@ mod tests {
             );
         }
         cache.recount_result_bytes();
-        let one = std::mem::size_of::<((char, u64), (mft_query::FolderAggregateQueryV1, u64))>();
-        cache.limit_bytes = one * 2;
+        cache.limit_bytes = RESULT_LRU_MIN_ENTRY_BYTES_V1 * 2;
         cache.evict_for(0);
         assert_eq!(cache.results.len(), 2);
         assert!(!cache.results.contains_key(&('C', 1)));
@@ -4858,7 +5531,62 @@ mod tests {
     }
 
     #[test]
-    fn live_query_uses_observed_generation_and_returns_typed_partial_for_rebuild() {
+    fn shared_service_caps_parallel_folder_queries_per_volume() {
+        STOPPED.store(false, Ordering::Release);
+        let service = Arc::new(SharedFolderQueryServiceV1::default());
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let start = Arc::new(std::sync::Barrier::new(12));
+        let workers = (0..12)
+            .map(|_| {
+                let service = Arc::clone(&service);
+                let active = Arc::clone(&active);
+                let maximum = Arc::clone(&maximum);
+                let start = Arc::clone(&start);
+                std::thread::spawn(move || {
+                    start.wait();
+                    let _permit = service.acquire_volume_query('D').unwrap();
+                    let current = active.fetch_add(1, Ordering::AcqRel) + 1;
+                    maximum.fetch_max(current, Ordering::AcqRel);
+                    std::thread::sleep(Duration::from_millis(20));
+                    active.fetch_sub(1, Ordering::AcqRel);
+                })
+            })
+            .collect::<Vec<_>>();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(maximum.load(Ordering::Acquire), 4);
+        assert!(service.volume_query_counts.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn generation_advance_retires_only_that_volumes_stale_results() {
+        let mut cache = ServiceFolderAggregateCacheV1::default();
+        for (letter, reference, generation) in [('C', 1, 4), ('C', 2, 5), ('D', 3, 4)] {
+            cache.results.insert(
+                (letter, reference),
+                (
+                    mft_query::FolderAggregateQueryV1 {
+                        generation,
+                        ..Default::default()
+                    },
+                    reference,
+                ),
+            );
+        }
+        cache.recount_result_bytes();
+
+        cache.retire_stale_volume_results('C', 5);
+
+        assert!(!cache.results.contains_key(&('C', 1)));
+        assert!(cache.results.contains_key(&('C', 2)));
+        assert!(cache.results.contains_key(&('D', 3)));
+        assert_eq!(cache.estimated_bytes, RESULT_LRU_MIN_ENTRY_BYTES_V1 * 2);
+    }
+
+    #[test]
+    fn live_query_uses_observed_generation_and_rejects_inexact_rebuild() {
         let cursor = mft_persistence::JournalCursorV1 {
             journal_id: 2,
             next_usn: 3,
@@ -4901,7 +5629,7 @@ mod tests {
         assert!(cache.live_aggregates.is_empty());
         assert_eq!(cache.results.len(), 2);
         live.lock().unwrap().get_mut(&'C').unwrap().mark_inexact();
-        let partial = cache
+        let unavailable = cache
             .query_live(
                 &live,
                 &budgets,
@@ -4912,13 +5640,44 @@ mod tests {
                 1,
                 128,
             )
-            .unwrap();
-        assert_eq!(partial.generation, 4);
-        assert!(partial.partial);
-        assert_eq!(partial.logical_bytes, 9);
-        assert_eq!(partial.file_count, 3);
+            .unwrap_err();
+        assert!(unavailable.contains("volume index is incomplete"));
         assert!(cache.live_aggregates.is_empty());
+        assert!(cache.results.values().all(|(value, _)| !value.partial));
         assert_eq!(cache.limit_bytes, 128 * 1024 * 1024);
+    }
+
+    #[test]
+    fn shared_service_rejects_partial_values_with_cursor_diagnostics() {
+        let observed = mft_persistence::JournalCursorV1 {
+            journal_id: 11,
+            next_usn: 22,
+            generation: 33,
+        };
+        let durable = mft_persistence::JournalCursorV1 {
+            journal_id: 11,
+            next_usn: 20,
+            generation: 32,
+        };
+        let error = require_exact_folder_aggregate(
+            mft_query::FolderAggregateQueryV1 {
+                generation: 33,
+                logical_bytes: 41,
+                file_count: 7,
+                directory_count: 3,
+                partial: true,
+                ..Default::default()
+            },
+            observed,
+            durable,
+            false,
+            512,
+        )
+        .unwrap_err();
+        assert!(error.contains("source returned partial"));
+        assert!(error.contains("observed_generation=33"));
+        assert!(error.contains("durable_generation=32"));
+        assert!(error.contains("logical_bytes=41"));
     }
 
     #[test]

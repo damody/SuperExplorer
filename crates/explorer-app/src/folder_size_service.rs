@@ -1394,6 +1394,81 @@ fn persistent_snapshot_path(root: &Path, modified_stamp: u128) -> Option<PathBuf
         })
 }
 
+const OBSOLETE_SNAPSHOT_CLEANUP_LIMIT_V1: usize = 256;
+
+/// Retires the former Details snapshot cache in bounded, path-safe batches.
+/// Size Map data uses different namespaces and is never traversed here.
+pub(crate) fn retire_obsolete_details_snapshots_v1() {
+    let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") else {
+        return;
+    };
+    let base = PathBuf::from(local_app_data)
+        .join("SuperExplorer")
+        .join("folder-snapshot-cache");
+    retire_obsolete_details_snapshots_at_v1(&base);
+}
+
+fn retire_obsolete_details_snapshots_at_v1(base: &Path) {
+    let directory = base.join("v2");
+    let Ok(root_metadata) = fs::symlink_metadata(&directory) else {
+        return;
+    };
+    if !root_metadata.is_dir()
+        || root_metadata.file_type().is_symlink()
+        || is_reparse_point(&root_metadata)
+    {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(&directory) else {
+        return;
+    };
+    let mut eligible = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.parent() != Some(directory.as_path())
+            || path.extension().and_then(|value| value.to_str()) != Some("json")
+        {
+            continue;
+        }
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_file()
+            || metadata.file_type().is_symlink()
+            || is_reparse_point(&metadata)
+            || metadata.len() > MAX_SNAPSHOT_BYTES_V1
+        {
+            continue;
+        }
+        let valid = fs::File::open(&path)
+            .ok()
+            .and_then(|file| {
+                let mut bytes = Vec::new();
+                file.take(MAX_SNAPSHOT_BYTES_V1 + 1)
+                    .read_to_end(&mut bytes)
+                    .ok()
+                    .filter(|_| bytes.len() as u64 <= MAX_SNAPSHOT_BYTES_V1)
+                    .map(|_| bytes)
+            })
+            .and_then(|bytes| serde_json::from_slice::<PersistentSnapshotRecordV1>(&bytes).ok())
+            .is_some_and(|record| record.schema == PERSISTENT_RECORD_SCHEMA_V1);
+        if valid {
+            eligible.push((metadata.modified().unwrap_or(std::time::UNIX_EPOCH), path));
+        }
+    }
+    eligible.sort_by_key(|(modified, path)| (*modified, path.clone()));
+    let eligible_count = eligible.len();
+    for (_, path) in eligible
+        .into_iter()
+        .take(OBSOLETE_SNAPSHOT_CLEANUP_LIMIT_V1)
+    {
+        let _ = fs::remove_file(path);
+    }
+    if eligible_count <= OBSOLETE_SNAPSHOT_CLEANUP_LIMIT_V1 {
+        let _ = fs::write(base.join("details-results-owned-by-mft-service.v1"), b"1\n");
+    }
+}
+
 fn persistent_root_identity(root: &Path) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     root.to_string_lossy()
@@ -1576,6 +1651,73 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn obsolete_details_snapshot_cleanup_is_bounded_and_non_recursive() {
+        let base = fixture_root("obsolete-cleanup");
+        let directory = base.join("v2");
+        fs::create_dir_all(directory.join("nested")).unwrap();
+        let record = PersistentSnapshotRecordV1 {
+            schema: PERSISTENT_RECORD_SCHEMA_V1,
+            key: PersistentSnapshotKeyV1 {
+                root_identity: 1,
+                modified_stamp: 1,
+                semantic_policy_version: SEMANTIC_POLICY_VERSION_V1,
+                backend_data_version: 2,
+            },
+            snapshot: FolderSnapshotV1 {
+                schema: 1,
+                root_id: SnapshotNodeIdV1(1),
+                refresh_generation: 1,
+                mft_generation: Some(1),
+                method: SnapshotMethodV1::Mft,
+                status: SnapshotStatusV1::Complete,
+                diagnostic: None,
+                aggregate: FolderAggregateSnapshotV1 {
+                    recursive_bytes: 0,
+                    direct_bytes: 0,
+                    file_count: 0,
+                    directory_count: 1,
+                    status: SnapshotStatusV1::Complete,
+                },
+                nodes: Vec::new(),
+            },
+        };
+        let bytes = serde_json::to_vec(&record).unwrap();
+        for index in 0..257 {
+            fs::write(directory.join(format!("{index:03}.json")), &bytes).unwrap();
+        }
+        fs::write(directory.join("invalid.json"), b"not-json").unwrap();
+        fs::write(directory.join("nested").join("keep.json"), &bytes).unwrap();
+
+        retire_obsolete_details_snapshots_at_v1(&base);
+
+        let valid_remaining = fs::read_dir(&directory)
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                entry.file_name().to_string_lossy() != "invalid.json"
+                    && entry.path().extension().and_then(|value| value.to_str()) == Some("json")
+            })
+            .count();
+        assert_eq!(valid_remaining, 1);
+        assert!(directory.join("invalid.json").is_file());
+        assert!(directory.join("nested").join("keep.json").is_file());
+        assert!(
+            !base
+                .join("details-results-owned-by-mft-service.v1")
+                .exists()
+        );
+
+        retire_obsolete_details_snapshots_at_v1(&base);
+        assert!(
+            base.join("details-results-owned-by-mft-service.v1")
+                .is_file()
+        );
+        assert!(directory.join("invalid.json").is_file());
+        assert!(directory.join("nested").join("keep.json").is_file());
+        let _ = fs::remove_dir_all(base);
     }
 
     #[test]

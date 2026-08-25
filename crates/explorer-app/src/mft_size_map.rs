@@ -13,7 +13,7 @@ use std::{
 
 use windows::{
     Win32::{
-        Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        Foundation::{CloseHandle, ERROR_HANDLE_EOF, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
         Storage::FileSystem::{
             BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ATTRIBUTE_DIRECTORY, FILE_GENERIC_READ,
             FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle,
@@ -26,7 +26,7 @@ use windows::{
         },
         UI::Shell::{SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW},
     },
-    core::PCWSTR,
+    core::{HRESULT, PCWSTR},
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,6 +67,14 @@ pub(crate) struct MftAggregateV1 {
 pub(crate) struct MftIndexMemoryBreakdownV1 {
     pub(crate) volume_index_bytes: usize,
     pub(crate) file_data_bytes: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct MftBoundedReadDiagnosticsV1 {
+    pub(crate) scanned_entries: usize,
+    pub(crate) observed_file_data_bytes: usize,
+    pub(crate) volume_limit_hit: bool,
+    pub(crate) file_limit_hit: bool,
 }
 
 #[derive(Debug)]
@@ -854,8 +862,8 @@ pub(crate) fn read_volume_index(
     path: &Path,
     cancelled: impl FnMut() -> bool,
 ) -> Result<MftIndexV1, String> {
-    let (index, complete) = read_volume_index_bounded(path, usize::MAX, usize::MAX, cancelled)?;
-    if !complete {
+    let (index, diagnostics) = read_volume_index_bounded(path, usize::MAX, usize::MAX, cancelled)?;
+    if diagnostics.volume_limit_hit || diagnostics.file_limit_hit {
         return Err("MFT enumeration did not prove a complete volume index".to_owned());
     }
     Ok(index)
@@ -866,7 +874,7 @@ pub(crate) fn read_volume_index_bounded(
     volume_limit_bytes: usize,
     file_limit_bytes: usize,
     mut cancelled: impl FnMut() -> bool,
-) -> Result<(MftIndexV1, bool), String> {
+) -> Result<(MftIndexV1, MftBoundedReadDiagnosticsV1), String> {
     let volume = volume_device_path(path)?;
     let wide = std::ffi::OsStr::new(&volume)
         .encode_wide()
@@ -895,7 +903,7 @@ pub(crate) fn read_volume_index_bounded(
     let mut entries = BTreeMap::new();
     let maximum_entries = maximum_entries_for_volume_budget(volume_limit_bytes);
     let mut estimated_file_bytes = 0_usize;
-    let mut complete = true;
+    let mut diagnostics = MftBoundedReadDiagnosticsV1::default();
     'scan: loop {
         if cancelled() {
             return Err("MFT scan cancelled".to_owned());
@@ -916,11 +924,14 @@ pub(crate) fn read_volume_index_bounded(
             )
         };
         if let Err(error) = result {
-            if entries.is_empty() {
-                return Err(error.to_string());
+            if is_mft_enumeration_eof(error.code()) {
+                break;
             }
-            complete = false;
-            break;
+            return Err(format!(
+                "FSCTL_ENUM_USN_DATA failed after {} records at MFT cursor {}: {error}",
+                entries.len(),
+                cursor.StartFileReferenceNumber,
+            ));
         }
         let returned = returned as usize;
         if returned <= 8 {
@@ -946,7 +957,7 @@ pub(crate) fn read_volume_index_bounded(
                 let name_end = name_start.saturating_add(name_len);
                 if name_end <= offset + record_length && name_len.is_multiple_of(2) {
                     if entries.len() >= maximum_entries {
-                        complete = false;
+                        diagnostics.volume_limit_hit = true;
                         break 'scan;
                     }
                     let utf16_name = output[name_start..name_end]
@@ -954,12 +965,15 @@ pub(crate) fn read_volume_index_bounded(
                         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
                         .collect::<Vec<_>>();
                     let decoded_name = String::from_utf16_lossy(&utf16_name);
+                    diagnostics.observed_file_data_bytes = diagnostics
+                        .observed_file_data_bytes
+                        .saturating_add(decoded_name.capacity());
                     let next_file = estimated_file_bytes.saturating_add(decoded_name.capacity());
                     let name = if next_file <= file_limit_bytes {
                         estimated_file_bytes = next_file;
                         decoded_name
                     } else {
-                        complete = false;
+                        diagnostics.file_limit_hit = true;
                         String::new()
                     };
                     let (logical_bytes, allocated_bytes) =
@@ -979,6 +993,7 @@ pub(crate) fn read_volume_index_bounded(
                             is_directory: attributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0,
                         },
                     );
+                    diagnostics.scanned_entries = diagnostics.scanned_entries.saturating_add(1);
                 }
             }
             offset += record_length;
@@ -995,10 +1010,14 @@ pub(crate) fn read_volume_index_bounded(
     }
     let mut index = MftIndexV1 { entries, children };
     if index.memory_breakdown().volume_index_bytes > volume_limit_bytes {
-        complete = false;
+        diagnostics.volume_limit_hit = true;
         index.trim_volume_index_to_bytes(volume_limit_bytes);
     }
-    Ok((index, complete))
+    Ok((index, diagnostics))
+}
+
+fn is_mft_enumeration_eof(code: HRESULT) -> bool {
+    code == HRESULT::from_win32(ERROR_HANDLE_EOF.0)
 }
 
 pub(crate) fn read_volume_index_with_helper(
@@ -1213,6 +1232,14 @@ fn read_u64(bytes: &[u8], offset: usize) -> Option<u64> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn mft_enumeration_treats_handle_eof_as_success_only() {
+        assert!(is_mft_enumeration_eof(HRESULT::from_win32(
+            ERROR_HANDLE_EOF.0
+        )));
+        assert!(!is_mft_enumeration_eof(HRESULT::from_win32(5)));
+    }
+
     fn budget_fixture(entries: usize) -> MftIndexV1 {
         let mut records = BTreeMap::new();
         let mut children = BTreeMap::new();
@@ -1265,10 +1292,12 @@ mod tests {
         let root = std::env::var_os("SUPEREXPLORER_REAL_MFT_VOLUME")
             .map(std::path::PathBuf::from)
             .expect("SUPEREXPLORER_REAL_MFT_VOLUME must name an NTFS root");
-        let (index, complete) =
+        let (index, diagnostics) =
             read_volume_index_bounded(&root, 1_024 * 1024 * 1024, 256 * 1024 * 1024, || false)
                 .expect("bounded real-volume scan");
-        assert!(complete, "real volume should fit the configured budgets");
+        assert!(!diagnostics.volume_limit_hit);
+        assert!(!diagnostics.file_limit_hit);
+        assert_eq!(diagnostics.scanned_entries, index.entries.len());
         assert!(!index.entries.is_empty());
         let memory = index.memory_breakdown();
         assert!(memory.volume_index_bytes <= 1_024 * 1024 * 1024);
