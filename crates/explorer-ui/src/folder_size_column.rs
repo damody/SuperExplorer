@@ -3,14 +3,7 @@
 //! The application owns the asynchronous folder walk.  This module owns only
 //! the copied descriptor/value projection consumed by GPUI.
 
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-    sync::Arc,
-    time::{Duration, Instant},
-};
-
-const PARTIAL_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Instant};
 
 pub use explorer_extension_ui_api::{CellRenderContextV1, CellRenderPlanV1};
 
@@ -203,16 +196,20 @@ impl FolderSizeColumnVisuals {
 
     pub fn insert_result(&mut self, result: FolderSizeResultV1) -> bool {
         let key = FolderSizeSnapshotKeyV1::from(&result.context);
+        let rejected_partial = result.partial;
         let value = FolderSizeValueV1 {
-            exact_bytes: result.exact_bytes,
-            directory_facts: (!result.partial)
+            exact_bytes: (!rejected_partial).then_some(result.exact_bytes).flatten(),
+            directory_facts: (!rejected_partial)
                 .then_some(result.directory_facts)
                 .flatten(),
-            partial: result.partial,
-            error: result.error,
-            retry_after: result
-                .partial
-                .then(|| Instant::now() + PARTIAL_RETRY_INTERVAL),
+            partial: false,
+            error: result.error.or_else(|| {
+                rejected_partial.then(|| {
+                    "MFT Service returned an incomplete folder aggregate; exact size is unavailable"
+                        .to_owned()
+                })
+            }),
+            retry_after: None,
         };
         if self
             .context
@@ -506,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_value_is_displayable_but_excluded_from_exact_sort_domain() {
+    fn partial_value_becomes_unavailable_and_is_excluded_from_sort_domain() {
         let current = context(TabId::new(), 1);
         let id = item(77);
         let mut visuals = FolderSizeColumnVisuals::new(VisualColumnConfigV1::default());
@@ -519,13 +516,14 @@ mod tests {
             partial: true,
             error: None,
         });
-        assert_eq!(visuals.partial_value_for(&id), Some(1_250));
+        assert_eq!(visuals.partial_value_for(&id), None);
         assert_eq!(visuals.value_for(&id), None);
         assert_eq!(visuals.exact_sort_values().get(&id), Some(&None));
+        assert!(visuals.error_for(&id).unwrap().contains("incomplete"));
     }
 
     #[test]
-    fn zero_partial_is_pending_and_becomes_retryable_without_entering_sort_domain() {
+    fn zero_partial_is_terminal_unavailable_without_automatic_retry() {
         let current = context(TabId::new(), 1);
         let id = item(78);
         let mut visuals = FolderSizeColumnVisuals::new(VisualColumnConfigV1::default());
@@ -539,17 +537,16 @@ mod tests {
             error: None,
         });
 
-        assert!(visuals.partial_pending_for(&id));
+        assert!(!visuals.partial_pending_for(&id));
         assert_eq!(visuals.partial_value_for(&id), None);
         assert_eq!(visuals.exact_sort_values().get(&id), Some(&None));
         assert!(visuals.take_due_retries(Instant::now()).is_empty());
-        assert_eq!(
+        assert!(
             visuals
-                .take_due_retries(Instant::now() + PARTIAL_RETRY_INTERVAL)
-                .as_slice(),
-            &[(current.tab_id, current.generation, id)]
+                .take_due_retries(Instant::now() + std::time::Duration::from_secs(1))
+                .is_empty()
         );
-        assert!(!visuals.has_value_for_context(&current, &item(78)));
+        assert!(visuals.has_value_for_context(&current, &item(78)));
     }
 
     #[test]

@@ -806,8 +806,6 @@ impl explorer_ui::ExtensionUiPumpPortV1 for ApplicationExtensionUiPumpV1 {
 struct ApplicationVisualColumnRuntimeV1 {
     pending: Arc<(Mutex<PendingFolderSizeWorkV1>, Condvar)>,
     results: Mutex<mpsc::Receiver<explorer_ui::folder_size_column::FolderSizeResultV1>>,
-    cached_results: Mutex<Vec<explorer_ui::folder_size_column::FolderSizeResultV1>>,
-    cache: Arc<Mutex<HostExtensionColumnCacheV1<FolderSizeCachedValueV1>>>,
     renderer: Option<AsyncCellRendererV1>,
     backend_status: Arc<AtomicU8>,
     backend_active: Arc<AtomicBool>,
@@ -1413,6 +1411,44 @@ struct PendingFolderSizeWorkV1 {
     stopped: bool,
 }
 
+const FOLDER_SIZE_QUERY_DEADLINE_V1: Duration = Duration::from_secs(10);
+
+fn query_folder_size_with_deadline_v1(
+    path: &Path,
+    cache_memory_mb: u16,
+) -> Result<crate::mft_query::FolderAggregateQueryV1, String> {
+    let path = path.to_path_buf();
+    let diagnostic_path = path.clone();
+    let (sender, receiver) = mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("mft-folder-query-deadline".to_owned())
+        .spawn(move || {
+            let _ = sender.send(crate::mft_query::query_folder(&path, cache_memory_mb));
+        })
+        .map_err(|error| format!("failed to start MFT query thread: {error}"))?;
+    receive_folder_size_query_v1(receiver, &diagnostic_path, FOLDER_SIZE_QUERY_DEADLINE_V1)
+}
+
+fn receive_folder_size_query_v1(
+    receiver: mpsc::Receiver<Result<crate::mft_query::FolderAggregateQueryV1, String>>,
+    diagnostic_path: &Path,
+    deadline: Duration,
+) -> Result<crate::mft_query::FolderAggregateQueryV1, String> {
+    receiver
+        .recv_timeout(deadline)
+        .map_err(|error| match error {
+            mpsc::RecvTimeoutError::Timeout => format!(
+                "MFT Service exact folder aggregate deadline exceeded: path={} deadline_ms={}",
+                diagnostic_path.display(),
+                deadline.as_millis(),
+            ),
+            mpsc::RecvTimeoutError::Disconnected => format!(
+                "MFT Service exact folder aggregate worker disconnected: path={}",
+                diagnostic_path.display(),
+            ),
+        })?
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct FolderSizeWorkIdentityV1 {
     tab_id: explorer_model::TabId,
@@ -1462,6 +1498,55 @@ fn take_folder_size_requests(
     requests
 }
 
+fn take_folder_size_request(
+    state: &mut PendingFolderSizeWorkV1,
+) -> Option<explorer_ui::folder_size_column::FolderSizeRequestV1> {
+    let pending = state.requests.as_mut()?;
+    let request = pending.first().cloned()?;
+    pending.remove(0);
+    if pending.is_empty() {
+        state.requests = None;
+    }
+    state.in_flight.insert(
+        FolderSizeWorkIdentityV1::from(&request),
+        request.context.request_id,
+    );
+    Some(request)
+}
+
+fn take_folder_size_batch(
+    state: &mut PendingFolderSizeWorkV1,
+    limit: usize,
+) -> Vec<explorer_ui::folder_size_column::FolderSizeRequestV1> {
+    let Some(pending) = state.requests.as_mut() else {
+        return Vec::new();
+    };
+    let Some(first) = pending.first() else {
+        state.requests = None;
+        return Vec::new();
+    };
+    let context = first.context.clone();
+    let mut batch = Vec::with_capacity(limit.min(pending.len()));
+    let mut index = 0;
+    while index < pending.len() && batch.len() < limit {
+        if pending[index].context == context {
+            batch.push(pending.remove(index));
+        } else {
+            index += 1;
+        }
+    }
+    if pending.is_empty() {
+        state.requests = None;
+    }
+    state.in_flight.extend(batch.iter().map(|request| {
+        (
+            FolderSizeWorkIdentityV1::from(request),
+            request.context.request_id,
+        )
+    }));
+    batch
+}
+
 fn finish_folder_size_request(
     pending: &(Mutex<PendingFolderSizeWorkV1>, Condvar),
     request: &explorer_ui::folder_size_column::FolderSizeRequestV1,
@@ -1504,6 +1589,85 @@ fn cancel_folder_size_context(
         .retain(|_, request_id| *request_id != context.request_id);
 }
 
+fn publish_mft_folder_result_v1(
+    pending: &(Mutex<PendingFolderSizeWorkV1>, Condvar),
+    backend_status: &AtomicU8,
+    result_tx: &mpsc::SyncSender<explorer_ui::folder_size_column::FolderSizeResultV1>,
+    request: explorer_ui::folder_size_column::FolderSizeRequestV1,
+    started: Instant,
+    measured: Result<crate::mft_query::FolderAggregateQueryV1, String>,
+) -> bool {
+    finish_folder_size_request(pending, &request);
+    if folder_size_request_cancelled(pending, &request) {
+        return true;
+    }
+    let measured = measured.and_then(|aggregate| {
+        (!aggregate.partial)
+            .then_some((
+                aggregate.logical_bytes,
+                Some(explorer_ui::folder_size_column::DirectoryFactsV1 {
+                    mft_generation: aggregate.generation,
+                    file_count: aggregate.file_count,
+                    folder_count: aggregate.directory_count.saturating_sub(1),
+                }),
+            ))
+            .ok_or_else(|| {
+                format!(
+                    "MFT Service returned partial aggregate (generation={}, logical_bytes={}, file_count={}, directory_count={})",
+                    aggregate.generation,
+                    aggregate.logical_bytes,
+                    aggregate.file_count,
+                    aggregate.directory_count,
+                )
+            })
+    });
+    let (exact_bytes, directory_facts, error) = match measured {
+        Ok((exact_bytes, directory_facts)) => (Some(exact_bytes), directory_facts, None),
+        Err(reason) => {
+            let service_diagnostics =
+                crate::mft_query::query_durability_diagnostics().map(|volumes| {
+                    volumes.into_iter().find(|volume| {
+                        request
+                            .path
+                            .to_string_lossy()
+                            .as_bytes()
+                            .first()
+                            .is_some_and(|letter| letter.to_ascii_uppercase() == volume.volume)
+                    })
+                });
+            let diagnostic = format!(
+                "SUPEREXPLORER_FOLDER_SIZE_UNAVAILABLE path={} tab_id={:?} request_id={:?} generation={} item_id={:?} elapsed_ms={} stage=mft_service_batch_query error={reason} service_diagnostics={service_diagnostics:?}",
+                request.path.display(),
+                request.context.tab_id,
+                request.context.request_id,
+                request.context.generation.value(),
+                request.item_id,
+                started.elapsed().as_millis(),
+            );
+            eprintln!("{diagnostic}");
+            explorer_common::record_process_error_message(
+                ErrorSeverity::Error,
+                "folder_size",
+                "mft_service_batch_query",
+                &diagnostic,
+                Some(file!()),
+            );
+            backend_status.store(4, Ordering::Release);
+            (None, None, Some(reason))
+        }
+    };
+    result_tx
+        .send(explorer_ui::folder_size_column::FolderSizeResultV1 {
+            context: request.context,
+            item_id: request.item_id,
+            exact_bytes,
+            directory_facts,
+            partial: false,
+            error,
+        })
+        .is_ok()
+}
+
 impl ApplicationVisualColumnRuntimeV1 {
     fn start(
         _measure: explorer_extension_host::SinglePluginVisualMeasureRuntimeV1,
@@ -1525,32 +1689,25 @@ impl ApplicationVisualColumnRuntimeV1 {
 
     fn start_with_renderer(
         renderer: Option<explorer_extension_host::SinglePluginVisualRenderRuntimeV1>,
-        snapshot_service: Arc<Mutex<crate::folder_size_service::FolderSizeServiceV1>>,
+        _snapshot_service: Arc<Mutex<crate::folder_size_service::FolderSizeServiceV1>>,
     ) -> Result<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1, Error> {
         let pending = Arc::new((
             Mutex::new(PendingFolderSizeWorkV1::default()),
             Condvar::new(),
         ));
-        let worker_pending = pending.clone();
-        let cache = Arc::new(Mutex::new(
-            HostExtensionColumnCacheV1::<FolderSizeCachedValueV1>::persistent("folder-size")
-                .with_ttl(u64::from(
-                    explorer_model::DEFAULT_FOLDER_SIZE_CACHE_TTL_SECONDS,
-                )),
-        ));
-        let worker_cache = Arc::clone(&cache);
-        let worker_snapshot_service = Arc::clone(&snapshot_service);
         let backend_status = Arc::new(AtomicU8::new(0));
         let backend_active = Arc::new(AtomicBool::new(false));
-        let worker_backend_status = Arc::clone(&backend_status);
-        let worker_backend_active = Arc::clone(&backend_active);
         let (result_tx, result_rx) =
             mpsc::sync_channel::<explorer_ui::folder_size_column::FolderSizeResultV1>(1_024);
+        let worker_pending = Arc::clone(&pending);
+        let worker_backend_status = Arc::clone(&backend_status);
+        let worker_backend_active = Arc::clone(&backend_active);
+        let worker_result_tx = result_tx.clone();
         std::thread::Builder::new()
-            .name("p0-folder-size".to_owned())
+            .name("p0-folder-size-batch".to_owned())
             .spawn(move || {
                 loop {
-                    let requests = {
+                    let batch = {
                         let (lock, ready) = &*worker_pending;
                         let mut state = lock
                             .lock()
@@ -1563,168 +1720,128 @@ impl ApplicationVisualColumnRuntimeV1 {
                         if state.stopped {
                             return;
                         }
-                        take_folder_size_requests(&mut state)
+                        take_folder_size_batch(&mut state, 256)
                     };
-                    let cache_root =
-                        request_cache_root(requests.iter().map(|request| request.path.as_path()));
-                    for request in requests {
+                    if batch.is_empty() {
+                        continue;
+                    }
+                    let mut active = HashMap::new();
+                    for (index, request) in batch.into_iter().enumerate() {
                         if folder_size_request_cancelled(&worker_pending, &request) {
                             finish_folder_size_request(&worker_pending, &request);
-                            continue;
-                        }
-                        if !fs::metadata(&request.path).is_ok_and(folder_size_candidate) {
+                        } else if !fs::metadata(&request.path).is_ok_and(folder_size_candidate) {
                             finish_folder_size_request(&worker_pending, &request);
-                            let _ = result_tx.send(
-                                explorer_ui::folder_size_column::FolderSizeResultV1 {
+                            if worker_result_tx
+                                .send(explorer_ui::folder_size_column::FolderSizeResultV1 {
                                     context: request.context,
                                     item_id: request.item_id,
                                     exact_bytes: None,
                                     directory_facts: None,
                                     partial: false,
                                     error: None,
-                                },
-                            );
-                            continue;
-                        }
-                        let cache_admission = worker_cache
-                            .lock()
-                            .ok()
-                            .and_then(|cache| cache.admission(&request.path));
-                        let cached = (!request.require_directory_facts)
-                            .then(|| {
-                                cache_admission.as_ref().and_then(|admission| {
-                                    worker_cache
-                                        .lock()
-                                        .ok()
-                                        .and_then(|cache| cache.get(admission))
                                 })
-                            })
-                            .flatten();
-                        if let Ok(mut service) = worker_snapshot_service.lock() {
-                            service.set_mft_cache_memory_mb(request.mft_cache_memory_mb);
-                        }
-                        if request.require_directory_facts
-                            && let Some(delay_ms) = std::env::var_os(
-                                "SUPEREXPLORER_DIRECTORY_FACTS_VALIDATION_DELAY_MS",
-                            )
-                            .and_then(|value| value.to_string_lossy().parse::<u64>().ok())
-                            .map(|value| value.min(5_000))
-                            .filter(|value| *value > 0)
-                        {
-                            std::thread::sleep(Duration::from_millis(delay_ms));
-                        }
-                        worker_backend_active.store(true, Ordering::Release);
-                        let measured = if let Some(cached) = cached {
-                            worker_backend_status.store(1, Ordering::Release);
-                            Ok((cached.exact_bytes, None, false, None))
-                        } else {
-                            worker_snapshot_service
-                                .lock()
-                                .map_err(|_| anyhow::anyhow!("folder snapshot service poisoned"))
-                                .and_then(|mut service| {
-                                    service
-                                        .aggregate_or_scan(
-                                            &request.path,
-                                            request.context.generation.value(),
-                                            request.require_directory_facts,
-                                            || {
-                                                folder_size_request_cancelled(
-                                                    &worker_pending,
-                                                    &request,
-                                                )
-                                            },
-                                            |method| {
-                                                worker_backend_status.store(
-                                                    match method {
-                                                        crate::folder_size_service::SnapshotMethodV1::Mft => 2,
-                                                        crate::folder_size_service::SnapshotMethodV1::Recursive => 3,
-                                                        crate::folder_size_service::SnapshotMethodV1::Everything => 2,
-                                                    },
-                                                    Ordering::Release,
-                                                );
-                                            },
-                                        )
-                                        .map_err(Error::msg)
-                                })
-                                .map(|(snapshot, service_cache_hit)| {
-                                    if service_cache_hit {
-                                        worker_backend_status.store(1, Ordering::Release);
-                                    } else {
-                                        worker_backend_status.store(
-                                            match snapshot.method {
-                                                crate::folder_size_service::SnapshotMethodV1::Mft => 2,
-                                                crate::folder_size_service::SnapshotMethodV1::Recursive => 3,
-                                                crate::folder_size_service::SnapshotMethodV1::Everything => 2,
-                                            },
-                                            Ordering::Release,
-                                        );
-                                    }
-                                    let partial = snapshot.status
-                                        != crate::folder_size_service::SnapshotStatusV1::Complete;
-                                    let facts = exact_directory_facts(
-                                        snapshot.status,
-                                        snapshot.mft_generation,
-                                        snapshot.aggregate.file_count,
-                                        snapshot.aggregate.directory_count,
-                                    );
-                                    (
-                                        snapshot.aggregate.recursive_bytes,
-                                        facts,
-                                        partial,
-                                        snapshot.diagnostic.clone(),
-                                    )
-                                })
-                        };
-                        worker_backend_active.store(false, Ordering::Release);
-                        finish_folder_size_request(&worker_pending, &request);
-                        if folder_size_request_cancelled(&worker_pending, &request) {
-                            continue;
-                        }
-                        let (exact_bytes, directory_facts, partial, error) = match measured {
-                            Ok((exact_bytes, directory_facts, partial, error)) => {
-                                (Some(exact_bytes), directory_facts, partial, error)
+                                .is_err()
+                            {
+                                return;
                             }
-                            Err(error) => (None, None, true, Some(error.to_string())),
-                        };
-                        if exact_bytes.is_none() {
-                            worker_backend_status.store(4, Ordering::Release);
-                        }
-                        if let (Some(admission), Some(exact_bytes)) = (cache_admission, exact_bytes)
-                            && !partial
-                            && error.is_none()
-                            && host_extension_column_cache_key(&request.path).as_ref()
-                                == Some(&admission.key)
-                            && let Ok(mut cache) = worker_cache.lock()
-                        {
-                            cache.insert(admission, FolderSizeCachedValueV1 { exact_bytes });
-                        }
-                        if result_tx
-                            .send(explorer_ui::folder_size_column::FolderSizeResultV1 {
-                                context: request.context,
-                                item_id: request.item_id,
-                                exact_bytes,
-                                directory_facts,
-                                partial,
-                                error,
-                            })
-                            .is_err()
-                        {
-                            break;
+                        } else {
+                            active.insert(index as u64 + 1, (request, Instant::now()));
                         }
                     }
-                    if let Some(root) = cache_root
-                        && let Ok(mut service) = worker_snapshot_service.lock()
+                    if active.is_empty() {
+                        continue;
+                    }
+                    if active
+                        .values()
+                        .any(|(request, _)| request.require_directory_facts)
+                        && let Some(delay_ms) =
+                            std::env::var_os("SUPEREXPLORER_DIRECTORY_FACTS_VALIDATION_DELAY_MS")
+                                .and_then(|value| value.to_string_lossy().parse::<u64>().ok())
+                                .map(|value| value.min(5_000))
+                                .filter(|value| *value > 0)
                     {
-                        service.retain_cache_window(&root, 3);
+                        std::thread::sleep(Duration::from_millis(delay_ms));
+                    }
+                    let cache_memory_mb = active
+                        .values()
+                        .next()
+                        .map(|(request, _)| request.mft_cache_memory_mb)
+                        .unwrap_or_default();
+                    let mut protocol_requests = active
+                        .iter()
+                        .map(
+                            |(request_id, (request, _))| crate::mft_query::FolderBatchRequestV1 {
+                                request_id: *request_id,
+                                path: request.path.clone(),
+                            },
+                        )
+                        .collect::<Vec<_>>();
+                    protocol_requests.sort_unstable_by_key(|request| request.request_id);
+                    worker_backend_active.store(true, Ordering::Release);
+                    worker_backend_status.store(2, Ordering::Release);
+                    let batch_context = active
+                        .values()
+                        .next()
+                        .map(|(request, _)| request.context.clone());
+                    let batch_result = crate::mft_query::query_folders_batch(
+                        &protocol_requests,
+                        cache_memory_mb,
+                        || {
+                            let state = worker_pending
+                                .0
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            state.stopped
+                                || batch_context.as_ref().is_some_and(|context| {
+                                    state.cancelled.contains(&context.request_id)
+                                })
+                        },
+                        |completion| {
+                            let Some((request, started)) = active.remove(&completion.request_id)
+                            else {
+                                return Err(format!(
+                                    "MFT folder batch completed unknown request {}",
+                                    completion.request_id
+                                ));
+                            };
+                            publish_mft_folder_result_v1(
+                                &worker_pending,
+                                &worker_backend_status,
+                                &worker_result_tx,
+                                request,
+                                started,
+                                completion.result,
+                            )
+                            .then_some(())
+                            .ok_or_else(|| "folder-size result receiver disconnected".to_owned())
+                        },
+                    );
+                    worker_backend_active.store(false, Ordering::Release);
+                    if let Err(error) = batch_result {
+                        for (_, (request, started)) in active.drain() {
+                            if !publish_mft_folder_result_v1(
+                                &worker_pending,
+                                &worker_backend_status,
+                                &worker_result_tx,
+                                request,
+                                started,
+                                Err(error.clone()),
+                            ) {
+                                return;
+                            }
+                        }
+                    } else {
+                        for (_, (request, _)) in active.drain() {
+                            finish_folder_size_request(&worker_pending, &request);
+                        }
                     }
                 }
             })
-            .context("failed to start P0 folder-size worker")?;
+            .context("failed to start P0 folder-size batch worker")?;
+        drop(result_tx);
         Ok(Arc::new(Self {
             pending,
             results: Mutex::new(result_rx),
-            cached_results: Mutex::new(Vec::new()),
-            cache,
             backend_status,
             backend_active,
             directory_facts_active: AtomicBool::new(false),
@@ -1780,13 +1897,6 @@ impl explorer_ui::folder_size_column::VisualColumnRuntimePortV1
             aggregate_mb: to_u16(budgets.mft_aggregates_mb),
             lru_mb: to_u16(budgets.mft_lru_mb),
         });
-        // 0 disables TTL reuse (a changed directory mtime rescans immediately);
-        // any positive value reuses the last measurement for that many seconds.
-        let ttl = (budgets.folder_size_cache_ttl_seconds != 0)
-            .then_some(u64::from(budgets.folder_size_cache_ttl_seconds));
-        if let Ok(mut cache) = self.cache.lock() {
-            cache.set_ttl_seconds(ttl);
-        }
     }
 
     fn set_directory_facts_active(&self, active: bool) {
@@ -1814,23 +1924,15 @@ impl explorer_ui::folder_size_column::VisualColumnRuntimePortV1
         &self,
         requests: Vec<explorer_ui::folder_size_column::FolderSizeRequestV1>,
     ) {
-        let (hits, misses) = partition_folder_size_cache_hits(&self.cache, requests);
-        if !hits.is_empty() {
-            self.backend_status.store(1, Ordering::Release);
-            self.backend_active.store(false, Ordering::Release);
-        }
-        if let Ok(mut cached_results) = self.cached_results.lock() {
-            cached_results.extend(hits);
-        }
-        if misses.is_empty() {
+        if requests.is_empty() {
             return;
         }
         let (lock, ready) = &*self.pending;
         let mut state = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        enqueue_folder_size_requests(&mut state, misses);
-        ready.notify_one();
+        enqueue_folder_size_requests(&mut state, requests);
+        ready.notify_all();
     }
 
     fn cancel_folder_size_context(&self, context: &explorer_model::RequestContext) {
@@ -1842,24 +1944,15 @@ impl explorer_ui::folder_size_column::VisualColumnRuntimePortV1
         ready.notify_one();
     }
 
-    fn invalidate_directory_cache(&self, directory: &Path) {
-        if let Ok(mut cache) = self.cache.lock() {
-            cache.invalidate_directory(directory);
-        }
-    }
+    fn invalidate_directory_cache(&self, _directory: &Path) {}
 
     fn drain_folder_size_results(
         &self,
     ) -> Vec<explorer_ui::folder_size_column::FolderSizeResultV1> {
-        let mut ready = self
-            .cached_results
-            .lock()
-            .map_or_else(|_| Vec::new(), |mut results| std::mem::take(&mut *results));
         let Ok(results) = self.results.lock() else {
-            return ready;
+            return Vec::new();
         };
-        ready.extend(results.try_iter());
-        ready
+        results.try_iter().collect()
     }
 
     fn drain_render_results(&self) -> bool {
@@ -5023,6 +5116,7 @@ impl ApplicationLifecycle {
         let mut code_lines_runtimes = Vec::new();
         let mut size_map_runtime = None;
         let mut virtual_folder_runtime = None;
+        crate::folder_size_service::retire_obsolete_details_snapshots_v1();
         let folder_size_service = Arc::new(Mutex::new(
             crate::folder_size_service::FolderSizeServiceV1::with_capacity(256),
         ));
@@ -6355,11 +6449,11 @@ impl Drop for ApplicationLifecycle {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::HashMap,
+        collections::{HashMap, HashSet},
         fs,
         path::{Path, PathBuf},
         sync::atomic::{AtomicU64, AtomicUsize, Ordering},
-        sync::{Arc, Mutex},
+        sync::{Arc, Mutex, mpsc},
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
@@ -6459,8 +6553,9 @@ mod tests {
         partition_code_lines_cache_hits, partition_folder_size_cache_hits,
         partition_size_map_projection, prepare_code_lines_batch_inputs, project_size_map_plan,
         read_code_lines_directory_cache, read_code_lines_file_bounded,
-        read_code_lines_path_bounded, should_restore_saved_tabs, size_map_node_id,
-        size_map_render_key, take_folder_size_requests, unix_seconds_now,
+        read_code_lines_path_bounded, receive_folder_size_query_v1, should_restore_saved_tabs,
+        size_map_node_id, size_map_render_key, take_folder_size_batch, take_folder_size_request,
+        take_folder_size_requests, unix_seconds_now,
     };
 
     struct FakeSafeModePortV1 {
@@ -8041,6 +8136,88 @@ mod tests {
             pending.requests.as_ref().unwrap()[2].item_id,
             ShellItemId::from_provider_bytes(3_u64.to_le_bytes()).unwrap()
         );
+    }
+
+    #[test]
+    fn folder_size_workers_claim_independent_visible_requests() {
+        let context = RequestContext::new(TabId::new(), Generation::new(1));
+        let request = |id: u64| explorer_ui::folder_size_column::FolderSizeRequestV1 {
+            context: context.clone(),
+            item_id: ShellItemId::from_provider_bytes(id.to_le_bytes()).unwrap(),
+            path: format!(r"C:\fixture\{id}").into(),
+            mft_cache_memory_mb: 512,
+            require_directory_facts: false,
+        };
+        let mut pending = PendingFolderSizeWorkV1::default();
+        enqueue_folder_size_requests(&mut pending, (1..=4).map(request).collect());
+
+        let claimed = (0..4)
+            .map(|_| take_folder_size_request(&mut pending).unwrap().item_id)
+            .collect::<HashSet<_>>();
+
+        assert_eq!(claimed.len(), 4);
+        assert!(pending.requests.is_none());
+        assert_eq!(pending.in_flight.len(), 4);
+    }
+
+    #[test]
+    fn folder_size_batch_preserves_visible_order_and_one_view_generation() {
+        let first = RequestContext::new(TabId::new(), Generation::new(1));
+        let second = RequestContext::new(TabId::new(), Generation::new(2));
+        let request = |context: RequestContext, id: u64| {
+            explorer_ui::folder_size_column::FolderSizeRequestV1 {
+                context,
+                item_id: ShellItemId::from_provider_bytes(id.to_le_bytes()).unwrap(),
+                path: format!(r"C:\fixture\{id}").into(),
+                mft_cache_memory_mb: 512,
+                require_directory_facts: false,
+            }
+        };
+        let mut pending = PendingFolderSizeWorkV1::default();
+        enqueue_folder_size_requests(
+            &mut pending,
+            vec![
+                request(first.clone(), 1),
+                request(first.clone(), 2),
+                request(second, 9),
+                request(first, 3),
+            ],
+        );
+
+        let batch = take_folder_size_batch(&mut pending, 2);
+        let ids = batch
+            .iter()
+            .map(|request| {
+                request
+                    .path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["1", "2"]);
+        assert_eq!(pending.in_flight.len(), 2);
+        assert_eq!(pending.requests.as_ref().unwrap().len(), 2);
+        assert_eq!(
+            pending.requests.as_ref().unwrap()[0].path,
+            PathBuf::from(r"C:\fixture\9")
+        );
+    }
+
+    #[test]
+    fn folder_size_query_deadline_is_terminal_and_diagnostic() {
+        let (_sender, receiver) = mpsc::channel();
+        let error = receive_folder_size_query_v1(
+            receiver,
+            Path::new(r"D:\fixture"),
+            Duration::from_millis(1),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("deadline exceeded"));
+        assert!(error.contains(r"D:\fixture"));
+        assert!(error.contains("deadline_ms=1"));
     }
 
     #[test]

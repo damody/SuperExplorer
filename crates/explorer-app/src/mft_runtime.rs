@@ -113,6 +113,13 @@ impl VolumeMemoryRuntimeV1 {
         self.pending_bytes = 0;
     }
 
+    /// Releases only the in-memory working set while preserving the durable
+    /// and observed cursors needed to reload/catch up the persisted index.
+    pub(crate) fn evict_index_for_active_volume_paging(&mut self) {
+        self.index = Arc::new(MftIndexV1::from_entries(std::collections::BTreeMap::new()));
+        self.mark_inexact();
+    }
+
     /// Advances diagnostic/query freshness while a memory-budget-limited
     /// topology remains intentionally partial. No entry mutation is retained,
     /// so the state stays inexact and can never be persisted from this cursor.
@@ -273,6 +280,22 @@ mod tests {
         assert_eq!(runtime.durable.next_usn, 10);
         assert_eq!(runtime.observed.next_usn, 12);
         assert_eq!(runtime.observed.generation, 1);
+        assert!(!runtime.has_pending());
+    }
+
+    #[test]
+    fn active_volume_paging_releases_memory_but_preserves_cursors() {
+        let mut runtime = VolumeMemoryRuntimeV1::new(base(), cursor());
+        runtime.observe(change(20, "pending"), 11).unwrap();
+        let durable = runtime.durable;
+        let observed = runtime.observed;
+
+        runtime.evict_index_for_active_volume_paging();
+
+        assert!(runtime.index.entries.is_empty());
+        assert_eq!(runtime.durable, durable);
+        assert_eq!(runtime.observed, observed);
+        assert!(!runtime.is_exact());
         assert!(!runtime.has_pending());
     }
 }
