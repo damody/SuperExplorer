@@ -40,9 +40,10 @@ path selected by the user.
 ### ADB classification
 
 ADB enumeration will use a machine-readable shell probe that reports each direct child's name,
-link status, resolved target type, and failure status. Arguments remain separate host-side ADB argv
-elements; any device-side script data is fixed code, and the validated directory path is supplied as
-a positional argument rather than interpolated into script text.
+link status, resolved target type, and failure status. Because `adb shell` joins host arguments into
+one remote command, the validated parent path is
+base64-encoded into a safe data-only assignment prefix and decoded by the fixed probe. Raw path
+bytes never enter remote shell syntax.
 
 Resolution tracks visited link paths and enforces a finite hop limit. A missing or inaccessible
 target becomes a broken link. Re-visiting a link or exhausting the hop limit becomes a circular
