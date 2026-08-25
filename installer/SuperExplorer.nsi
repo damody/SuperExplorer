@@ -362,6 +362,11 @@ un.service_ready_for_delete:
     Delete "$INSTDIR\Uninstall.exe"
     RMDir "$INSTDIR"
 
+    ; Per-user bookmarks under
+    ; %LOCALAPPDATA%\RustGpuiExplorer\bookmarks\v1 are user-owned durable data.
+    ; Install, upgrade, repair, uninstall, and reinstall must preserve them.
+    DetailPrint "Preserving per-user SuperExplorer bookmarks for reinstall."
+
     ; MFT durability state is service-owned. Upgrade, repair, and uninstall
     ; deliberately preserve both legacy and SQLite caches so a rollback can
     ; ignore SQLite and rebuild legacy state without stop-time deletion.

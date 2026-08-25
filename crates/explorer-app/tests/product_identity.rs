@@ -87,6 +87,7 @@ fn product_rename_preserves_all_persisted_data_roots() {
         .and_then(Path::parent)
         .expect("workspace root");
     for relative in [
+        "crates/explorer-app/src/bookmark_store.rs",
         "crates/explorer-app/src/session_store.rs",
         "crates/explorer-common/src/diagnostics.rs",
         "crates/explorer-search/src/local_index.rs",
@@ -100,6 +101,32 @@ fn product_rename_preserves_all_persisted_data_roots() {
             text.contains("RustGpuiExplorer"),
             "persisted compatibility root changed in {}",
             path.display()
+        );
+    }
+}
+
+#[test]
+fn installer_preserves_independent_bookmark_store() {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace root");
+    let installer = std::fs::read_to_string(workspace.join("installer/SuperExplorer.nsi"))
+        .expect("read installer source");
+    let bookmark_store =
+        std::fs::read_to_string(workspace.join("crates/explorer-app/src/bookmark_store.rs"))
+            .expect("read bookmark store source");
+
+    assert!(bookmark_store.contains("RustGpuiExplorer\\\\bookmarks\\\\v1"));
+    assert!(installer.contains("%LOCALAPPDATA%\\RustGpuiExplorer\\bookmarks\\v1"));
+    assert!(installer.contains("must preserve them"));
+    for destructive in [
+        "RMDir /r \"$LOCALAPPDATA\\RustGpuiExplorer",
+        "Delete \"$LOCALAPPDATA\\RustGpuiExplorer\\bookmarks",
+    ] {
+        assert!(
+            !installer.contains(destructive),
+            "installer must not delete bookmark user data: {destructive}"
         );
     }
 }

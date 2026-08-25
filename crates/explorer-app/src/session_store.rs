@@ -309,7 +309,11 @@ fn map_io(error: io::Error) -> SessionStoreError {
     unsafe_code,
     reason = "Windows atomic replacement requires NUL-terminated path pointers for the duration of the FFI call"
 )]
-fn replace_with_backup(temporary: &Path, current: &Path, backup: &Path) -> io::Result<()> {
+pub(crate) fn replace_with_backup(
+    temporary: &Path,
+    current: &Path,
+    backup: &Path,
+) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt as _;
     use windows::{
         Win32::Storage::FileSystem::{
@@ -356,7 +360,11 @@ fn replace_with_backup(temporary: &Path, current: &Path, backup: &Path) -> io::R
 }
 
 #[cfg(not(windows))]
-fn replace_with_backup(temporary: &Path, current: &Path, backup: &Path) -> io::Result<()> {
+pub(crate) fn replace_with_backup(
+    temporary: &Path,
+    current: &Path,
+    backup: &Path,
+) -> io::Result<()> {
     if current.exists() {
         let _ = fs::remove_file(backup);
         fs::rename(current, backup)?;
@@ -486,13 +494,20 @@ mod tests {
     }
 
     #[test]
-    fn reset_scopes_do_not_delete_unrelated_app_data() {
+    fn reset_scopes_do_not_delete_unrelated_app_data_or_bookmarks() {
         let directory = TempDir::new().expect("temporary directory");
         let store =
             WindowsSessionStore::at_root(directory.path().join("state"), RoadmapLimits::default());
         store.save(&snapshot(1)).expect("save");
         let unrelated = directory.path().join("logs.txt");
         fs::write(&unrelated, b"keep").expect("unrelated");
+        let bookmark = directory
+            .path()
+            .join("bookmarks")
+            .join("v1")
+            .join("bookmarks.json");
+        fs::create_dir_all(bookmark.parent().expect("bookmark parent")).expect("bookmark root");
+        fs::write(&bookmark, b"independent bookmarks").expect("bookmark fixture");
         store
             .reset(SessionResetScope::QuickAccess)
             .expect("reset pins");
@@ -512,6 +527,18 @@ mod tests {
         assert_eq!(
             store.load().expect("defaults").source,
             SessionLoadSource::Defaults
+        );
+        assert_eq!(
+            fs::read(&bookmark).expect("bookmarks preserved"),
+            b"independent bookmarks"
+        );
+        store.save(&snapshot(2)).expect("save after session reset");
+        store
+            .reset(SessionResetScope::AllRoadmapState)
+            .expect("reset all state");
+        assert_eq!(
+            fs::read(&bookmark).expect("bookmarks preserved"),
+            b"independent bookmarks"
         );
         assert!(unrelated.exists());
     }
