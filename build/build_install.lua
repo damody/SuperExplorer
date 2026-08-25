@@ -354,6 +354,7 @@ local function main()
     add_define("APP_VERSION", version)
     add_define("OUTPUT_FILE", temporary_output)
     if options.component == "all" then define_lines[#define_lines + 1] = "!define INCLUDE_SUPERDESKTOP 1" end
+    if options.component == "superexplorer" then define_lines[#define_lines + 1] = "!define TEST_INSTALL 1" end
     for define, file_path in pairs(superexplorer_inputs) do add_define(define, file_path) end
     for _, plugin in ipairs(plugin_specs) do add_define(plugin.define, plugin.path) end
     for define, file_path in pairs(superdesktop_inputs) do add_define(define, file_path) end

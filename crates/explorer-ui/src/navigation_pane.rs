@@ -1,6 +1,9 @@
 //! Typed Windows Explorer navigation-pane presentation data.
 
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::{OnceLock, RwLock},
+};
 
 use explorer_model::{LocationDescriptor, ShellIconKey, ShellIconTheme, SyntheticRoot};
 
@@ -23,6 +26,40 @@ pub enum NavigationIcon {
     Network,
     Libraries,
     RecycleBin,
+    Phone,
+    Server,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdbNavigationDevice {
+    pub serial: String,
+    pub label: String,
+    pub available: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SftpNavigationProfile {
+    pub alias: String,
+    pub label: String,
+    pub container_identity: [u8; 16],
+    pub available: bool,
+}
+
+static ADB_NAVIGATION_DEVICES: OnceLock<RwLock<Vec<AdbNavigationDevice>>> = OnceLock::new();
+static SFTP_NAVIGATION_PROFILES: OnceLock<RwLock<Vec<SftpNavigationProfile>>> = OnceLock::new();
+
+pub fn configure_adb_navigation_devices(devices: Vec<AdbNavigationDevice>) {
+    *ADB_NAVIGATION_DEVICES
+        .get_or_init(|| RwLock::new(Vec::new()))
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = devices;
+}
+
+pub fn configure_sftp_navigation_profiles(profiles: Vec<SftpNavigationProfile>) {
+    *SFTP_NAVIGATION_PROFILES
+        .get_or_init(|| RwLock::new(Vec::new()))
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = profiles;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -107,12 +144,14 @@ impl NavigationItem {
         expanded: bool,
     ) -> Self {
         let label = label.into();
+        let icon_location =
+            (!matches!(location, LocationDescriptor::Virtual(_))).then(|| location.clone());
         Self {
             id: format!("tree-{:016x}", navigation_location_hash(&location)),
             label,
             kind: NavigationItemKind::Location,
             icon: Some(NavigationIcon::Folder),
-            icon_location: Some(location.clone()),
+            icon_location,
             location: Some(location),
             depth,
             pinned: false,
@@ -152,6 +191,36 @@ impl NavigationItem {
             depth: 0,
             pinned: false,
             expanded: false,
+            availability: NavigationItemAvailability::Available,
+        }
+    }
+
+    fn phone_root() -> Self {
+        Self {
+            id: "phones".to_owned(),
+            label: "手機".to_owned(),
+            kind: NavigationItemKind::Section,
+            icon: Some(NavigationIcon::Phone),
+            location: None,
+            icon_location: None,
+            depth: 0,
+            pinned: false,
+            expanded: true,
+            availability: NavigationItemAvailability::Available,
+        }
+    }
+
+    fn sftp_root() -> Self {
+        Self {
+            id: "sftp".to_owned(),
+            label: "SFTP".to_owned(),
+            kind: NavigationItemKind::Section,
+            icon: Some(NavigationIcon::Server),
+            location: None,
+            icon_location: None,
+            depth: 0,
+            pinned: false,
+            expanded: true,
             availability: NavigationItemAvailability::Available,
         }
     }
@@ -362,6 +431,62 @@ pub fn windows_navigation_items_with_pins(
         0,
         false,
     ));
+    items.push(NavigationItem::separator("phones-separator"));
+    items.push(NavigationItem::phone_root());
+    let devices = ADB_NAVIGATION_DEVICES
+        .get_or_init(|| RwLock::new(Vec::new()))
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    for device in devices {
+        let location =
+            explorer_model::RemoteAddress::parse(&format!("adb://{}/sdcard", device.serial))
+                .ok()
+                .and_then(|address| address.to_deterministic_location(1).ok());
+        items.push(NavigationItem {
+            id: format!("phone-{}", device.serial),
+            label: device.label,
+            kind: NavigationItemKind::Location,
+            icon: Some(NavigationIcon::Phone),
+            icon_location: None,
+            location: device.available.then_some(location).flatten(),
+            depth: 1,
+            pinned: false,
+            expanded: false,
+            availability: if device.available {
+                NavigationItemAvailability::Available
+            } else {
+                NavigationItemAvailability::Unavailable
+            },
+        });
+    }
+    items.push(NavigationItem::sftp_root());
+    let profiles = SFTP_NAVIGATION_PROFILES
+        .get_or_init(|| RwLock::new(Vec::new()))
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    for profile in profiles {
+        let location = explorer_model::RemoteAddress::parse(&format!("sftp://{}/", profile.alias))
+            .ok()
+            .and_then(|address| address.to_location(profile.container_identity, 1).ok());
+        items.push(NavigationItem {
+            id: format!("sftp-profile-{}", profile.alias),
+            label: profile.label,
+            kind: NavigationItemKind::Location,
+            icon: Some(NavigationIcon::Server),
+            icon_location: None,
+            location: profile.available.then_some(location).flatten(),
+            depth: 1,
+            pinned: false,
+            expanded: false,
+            availability: if profile.available {
+                NavigationItemAvailability::Available
+            } else {
+                NavigationItemAvailability::Unavailable
+            },
+        });
+    }
     items.push(NavigationItem::location(
         "recycle-bin",
         "Recycle Bin",
@@ -386,6 +511,11 @@ pub fn is_selected(item: &NavigationItem, current: Option<&LocationDescriptor>) 
                     && right
                         .to_ascii_lowercase()
                         .starts_with(&left.to_ascii_lowercase()))
+        }
+        (Some(LocationDescriptor::Virtual(left)), Some(LocationDescriptor::Virtual(right))) => {
+            left.provider_id == right.provider_id
+                && left.container_identity == right.container_identity
+                && right.components.starts_with(&left.components)
         }
         (Some(left), Some(right)) => left == right,
         _ => false,
@@ -539,6 +669,40 @@ mod tests {
             &item,
             Some(&LocationDescriptor::file_system(r"d:\fixture"))
         ));
+    }
+
+    #[test]
+    fn remote_roots_show_devices_profiles_and_select_nested_paths() {
+        configure_adb_navigation_devices(vec![AdbNavigationDevice {
+            serial: "phone-123".to_owned(),
+            label: "Pixel (phone-123)".to_owned(),
+            available: true,
+        }]);
+        configure_sftp_navigation_profiles(vec![SftpNavigationProfile {
+            alias: "production".to_owned(),
+            label: "production".to_owned(),
+            container_identity: [9; 16],
+            available: true,
+        }]);
+        let items = windows_navigation_items();
+        assert!(items.iter().any(|item| item.id == "phones"));
+        assert!(items.iter().any(|item| item.id == "sftp"));
+        let phone = items
+            .iter()
+            .find(|item| item.id == "phone-phone-123")
+            .expect("phone row");
+        let nested = explorer_model::RemoteAddress::parse("adb://phone-123/sdcard/Download")
+            .unwrap()
+            .to_deterministic_location(1)
+            .unwrap();
+        assert!(is_selected(phone, Some(&nested)));
+        let remote_child = NavigationItem::child_container("Download", nested, 2, false);
+        assert!(remote_child.icon_location.is_none());
+        assert!(
+            items
+                .iter()
+                .any(|item| item.id == "sftp-profile-production")
+        );
     }
 
     #[test]

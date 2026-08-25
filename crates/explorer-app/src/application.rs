@@ -5349,11 +5349,23 @@ impl ApplicationLifecycle {
         let retry_client = broker_client.clone();
         let broker_retry: explorer_ui::BrokerRetryObserver =
             Arc::new(move || broker_ui_health(&retry_client));
+        explorer_ui::navigation_pane::configure_adb_navigation_devices(
+            crate::remote_service::discover_adb_navigation_devices(),
+        );
+        explorer_ui::navigation_pane::configure_sftp_navigation_profiles(
+            crate::remote_service::configured_sftp_navigation_profiles(),
+        );
+        crate::remote_service::start_adb_navigation_refresh();
         let shell_service: Arc<dyn explorer_model::ExplorerService> =
             Arc::new(crate::brokered_service::BrokeredExplorerService::new(
                 Arc::clone(&shell_sta),
                 broker_client,
                 self.take_virtual_folder_runtime()?,
+            ));
+        let shell_service: Arc<dyn explorer_model::ExplorerService> =
+            Arc::new(crate::remote_service::RemoteExplorerService::new(
+                shell_service,
+                crate::remote_service::configured_remote_providers(),
             ));
         let shutdown_resources = Arc::clone(&self.resources);
         let safe_mode_offers = self.safe_mode_ui_offers()?;

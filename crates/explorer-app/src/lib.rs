@@ -32,6 +32,7 @@ mod mft_size_map;
 #[cfg(windows)]
 mod mft_sqlite;
 mod pointer_capture;
+mod remote_service;
 pub mod session_lifecycle;
 pub mod session_store;
 pub mod startup;

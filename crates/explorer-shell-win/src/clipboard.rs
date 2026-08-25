@@ -21,7 +21,7 @@ use windows::Win32::{
         Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
         Ole::{
             CF_HDROP, DROPEFFECT_COPY, DROPEFFECT_MOVE, OleFlushClipboard, OleGetClipboard,
-            OleSetClipboard, ReleaseStgMedium,
+            OleInitialize, OleSetClipboard, OleUninitialize, ReleaseStgMedium,
         },
     },
     UI::Shell::{
@@ -29,6 +29,47 @@ use windows::Win32::{
         HDROP, ILFindLastID, SHCreateDataObject, SHCreateShellItemArrayFromIDLists,
     },
 };
+
+/// Reads only native file-drop clipboard data on a short-lived OLE STA. Text, HTML, and image
+/// formats are ignored and never cleared, so file Paste cannot consume ordinary clipboard data.
+pub fn read_native_file_clipboard()
+-> Result<Option<(Vec<ItemDescriptor>, ClipboardMode)>, ExplorerError> {
+    // SAFETY: this function is called from a fresh worker thread and balances OLE initialization.
+    unsafe { OleInitialize(None) }
+        .map_err(|error| native_clipboard_error("initialize OLE clipboard worker", &error))?;
+    let result = (|| {
+        // SAFETY: format inspection does not acquire or mutate clipboard ownership.
+        if unsafe { IsClipboardFormatAvailable(u32::from(CF_HDROP.0)) }.is_err() {
+            return Ok(None);
+        }
+        let data = get_clipboard_with_retry("read native file clipboard", Duration::from_secs(2))?;
+        let mode = preferred_mode(&data).unwrap_or(ClipboardMode::Copy);
+        read_hdrop_items(&data).map(|items| Some((items, mode)))
+    })();
+    // SAFETY: balances the successful OleInitialize on this worker thread.
+    unsafe { OleUninitialize() };
+    result
+}
+
+/// Publishes local filesystem items as a standard Shell file clipboard object. Only file-drop
+/// formats are authored; text and image clipboard payloads are never interpreted or merged.
+pub fn publish_native_file_clipboard(
+    items: Vec<ItemDescriptor>,
+    mode: ClipboardMode,
+) -> Result<(), ExplorerError> {
+    // SAFETY: callers use a dedicated worker thread and initialization is balanced below.
+    unsafe { OleInitialize(None) }
+        .map_err(|error| native_clipboard_error("initialize OLE clipboard worker", &error))?;
+    let result = (|| {
+        let mut runtime = ClipboardRuntime::new();
+        runtime.copy_or_cut(items, mode)?;
+        runtime.shutdown();
+        Ok(())
+    })();
+    // SAFETY: balances successful OleInitialize on this worker thread.
+    unsafe { OleUninitialize() };
+    result
+}
 
 #[cfg(test)]
 pub(crate) static CLIPBOARD_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

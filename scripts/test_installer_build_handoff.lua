@@ -167,7 +167,11 @@ assert_contains(test_batch, 'exit /b %BUILD_EXIT_CODE%', "build_test_install.bat
 assert_contains(test_batch, '"%%~A"=="--check"', "build_test_install.bat")
 assert_contains(test_batch, "SuperExplorer test installer build completed", "build_test_install.bat")
 assert_not_contains(test_batch, "git.exe", "build_test_install.bat")
-assert_not_contains(test_batch, "pause", "build_test_install.bat")
+assert_contains(test_batch, 'set "KEEP_CONSOLE=0"', "build_test_install.bat")
+assert_contains(test_batch, 'if "%~1"=="" if not defined CI set "KEEP_CONSOLE=1"',
+    "build_test_install.bat interactive console")
+assert_contains(test_batch, "pause >nul", "build_test_install.bat interactive console")
+assert_contains(test_batch, "RustGpuiExplorer\\logs\\error.log", "build_test_install.bat error log hint")
 assert_contains(desktop_test_batch,
     '"%LUA_EXE%" "%BUILD_SCRIPT%" --component superdesktop --allow-superdesktop-dirty %*',
     "build_desktop_test_install.bat")

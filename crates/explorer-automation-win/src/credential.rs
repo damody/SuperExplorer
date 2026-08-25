@@ -38,6 +38,22 @@ impl CredentialStore for WindowsCredentialStore {
     }
 }
 
+/// Reads a current-user secret synchronously for composition roots that do not own an async
+/// executor. Returned values must remain short-lived and must never be formatted or persisted.
+pub fn load_windows_credential(key: &str) -> Result<Option<String>, AutomationError> {
+    load_credential(key)
+}
+
+/// Stores a current-user secret in Windows Credential Manager.
+pub fn store_windows_credential(key: &str, secret: String) -> Result<(), AutomationError> {
+    store_credential(key, secret)
+}
+
+/// Removes a current-user secret from Windows Credential Manager.
+pub fn remove_windows_credential(key: &str) -> Result<(), AutomationError> {
+    remove_credential(key)
+}
+
 fn load_credential(key: &str) -> Result<Option<String>, AutomationError> {
     let target = wide_target(key)?;
     let mut raw: *mut CREDENTIALW = ptr::null_mut();

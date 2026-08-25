@@ -23,7 +23,19 @@ use explorer_model::WorkspaceModel;
 use explorer_shell_win::ShellPlatform;
 use explorer_ui::ExplorerUiState;
 
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn AllocConsole() -> i32;
+}
+
 fn main() {
+    let diagnostics_console = diagnostics_console_requested();
+    if diagnostics_console {
+        // SAFETY: AllocConsole takes no pointers and creates one console for
+        // this process. Failure is non-fatal because persistent logging still
+        // captures client diagnostics.
+        let _ = unsafe { AllocConsole() };
+    }
     let build = AppBuildInfo::current();
     let diagnostics =
         match initialize_diagnostics(DiagnosticsConfig::from_environment(build.package_version)) {
@@ -33,6 +45,15 @@ fn main() {
                 return;
             }
         };
+    if diagnostics_console {
+        eprintln!(
+            "SuperExplorer diagnostics console is active. Persistent error log: {}",
+            diagnostics.error_log_path().map_or_else(
+                || "Unavailable".to_owned(),
+                |path| path.display().to_string()
+            )
+        );
+    }
     install_panic_hook(diagnostics.clone());
     if let Err(error) = run(build, &diagnostics) {
         diagnostics.record_error(
@@ -83,6 +104,9 @@ fn parse_plugin_dll_arguments() -> anyhow::Result<Vec<std::path::PathBuf>> {
     let mut plugin_dlls = Vec::new();
 
     while let Some(argument) = arguments.next() {
+        if argument == "--diagnostics-console" {
+            continue;
+        }
         if argument != "--plugin-dll" {
             anyhow::bail!("unsupported argument: {}", argument.to_string_lossy());
         }
@@ -93,4 +117,8 @@ fn parse_plugin_dll_arguments() -> anyhow::Result<Vec<std::path::PathBuf>> {
     }
 
     Ok(plugin_dlls)
+}
+
+fn diagnostics_console_requested() -> bool {
+    std::env::args_os().any(|argument| argument == "--diagnostics-console")
 }
