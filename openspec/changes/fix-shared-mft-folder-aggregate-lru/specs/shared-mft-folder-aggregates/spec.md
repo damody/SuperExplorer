@@ -217,6 +217,11 @@ The system SHALL forward cache telemetry through service decorators and SHALL re
 - **WHEN** a cache telemetry source returns a confirmed failure
 - **THEN** its row SHALL display `Unavailable / <limit>`
 
+#### Scenario: MFT resource ownership is shown
+- **WHEN** the Folder Options View page renders cache budgets
+- **THEN** the five MFT Service-owned resource rows SHALL appear inside one labeled bordered group
+- **AND** the group SHALL state that all SuperExplorer processes share the resources, distinguish restart-persistent disk index data from restart-rebuilt memory caches, and exclude Folder size cache TTL
+
 ### Requirement: Unavailable folder sizes have detailed local diagnostics
 The system SHALL display only `Unavailable` in a failed Folder size cell, the MFT Service SHALL return its complete bounded failure reason to the requesting client, and the client SHALL emit a detailed local console and persistent-log reason sufficient to identify the failed stage and service state.
 

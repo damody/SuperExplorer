@@ -2867,8 +2867,8 @@ fn cache_budget_controls(
                 .flex()
                 .flex_col()
                 .gap(px(tokens.layout.control_padding_horizontal.value()))
-                .children(
-                    explorer_model::CACHE_BUDGET_DESCRIPTORS_V1
+                .children({
+                    let mut rows = explorer_model::CACHE_BUDGET_DESCRIPTORS_V1
                         .into_iter()
                         .zip(labels)
                         .zip(inputs)
@@ -3057,8 +3057,44 @@ fn cache_budget_controls(
                                                 )
                                         })),
                                 )
-                        }),
-                ),
+                        });
+                    let mut grouped_rows = rows
+                        .by_ref()
+                        .take(9)
+                        .map(IntoElement::into_any_element)
+                        .collect::<Vec<_>>();
+                    let mft_rows = rows.by_ref().take(5).collect::<Vec<_>>();
+                    grouped_rows.push(
+                        div()
+                            .id("folder-options-mft-service-resources")
+                            .role(Role::Group)
+                            .aria_label("MFT Service resources")
+                            .flex()
+                            .flex_col()
+                            .gap(px(tokens.layout.control_padding_horizontal.value()))
+                            .p(px(tokens.layout.control_padding_horizontal.value()))
+                            .rounded(px(tokens.layout.corner_radius.value()))
+                            .border(px(1.0))
+                            .border_color(tokens.theme.colors.divider.to_gpui())
+                            .child(
+                                div()
+                                    .text_size(px(tokens.typography.address.size.value()))
+                                    .child("MFT Service 資源"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(tokens.typography.tooltip.size.value()))
+                                    .text_color(tokens.theme.colors.text_secondary.to_gpui())
+                                    .child(
+                                        "由所有 SuperExplorer 程序共用；磁碟索引會保留，記憶體快取會在 MFT Service 重新啟動後重建。",
+                                    ),
+                            )
+                            .children(mft_rows)
+                            .into_any_element(),
+                    );
+                    grouped_rows.extend(rows.map(IntoElement::into_any_element));
+                    grouped_rows
+                }),
         )
 }
 
@@ -12643,12 +12679,29 @@ mod tests {
             "\"end\"",
             "Persisted MFT index",
             "Folder aggregates memory",
+            "folder-options-mft-service-resources",
+            "MFT Service resources",
+            "MFT Service 資源",
+            "由所有 SuperExplorer 程序共用",
+            "磁碟索引會保留",
+            "記憶體快取會在 MFT Service 重新啟動後重建",
         ] {
             assert!(
                 production.contains(marker),
                 "missing cache UI marker: {marker}"
             );
         }
+
+        let mft_group_start = production
+            .find("folder-options-mft-service-resources")
+            .expect("MFT Service resource group");
+        let ttl_row = production
+            .find("CacheBudgetIdV1::FolderSizeCacheTtlSeconds")
+            .expect("Folder size cache TTL row");
+        assert!(
+            mft_group_start > ttl_row,
+            "the MFT resource group must be assembled separately from the TTL row"
+        );
     }
 
     fn empty_render_image() -> std::sync::Arc<gpui::RenderImage> {

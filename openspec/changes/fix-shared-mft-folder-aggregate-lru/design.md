@@ -107,6 +107,8 @@ The service records a structured console line for every rejected or failed aggre
 
 No recursive Host fallback masks service failure. Recovery occurs through refresh or a later visible retry after service reconnection.
 
+The five service-owned rows (`Persisted MFT index`, volume-index memory, file-data memory, folder-aggregate memory, and result LRU) are rendered inside one bordered `MFT Service 資源` group. Its annotation states that all SuperExplorer processes share the resources, the persisted index survives service restart, and the four memory-backed resources rebuild after restart. `Folder size cache TTL` remains outside this group because it is a query-reuse setting rather than MFT Service resource usage.
+
 ### 7. Obsolete Host cache cleanup is bounded and path-safe
 
 Startup maintenance resolves the exact `%LOCALAPPDATA%\SuperExplorer\folder-snapshot-cache\v2` namespace without following symlinks or reparse points. It examines only immediate regular `.json` files matching the obsolete snapshot record shape and removes at most 256 oldest files per launch. Directories, links, unexpected records, and anything outside the validated namespace are skipped. Cleanup failure is logged without blocking startup or aggregate queries.
