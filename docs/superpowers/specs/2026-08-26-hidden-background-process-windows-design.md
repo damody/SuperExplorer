@@ -2,7 +2,7 @@
 
 ## Goal
 
-SuperExplorer must never flash or open a console window for commands that the product runs internally. The debug SuperExplorer executable keeps its own console so developers can observe diagnostics. The release executable remains a Windows-subsystem application. A console may be created only when the user explicitly invokes the product action that opens Command Prompt.
+SuperExplorer must never flash or open a console window for commands that the product runs internally. Both debug and release SuperExplorer executables keep their own console while the product remains under development so diagnostics and unresolved failures stay observable. A separate console may be created only when the user explicitly invokes the product action that opens Command Prompt.
 
 ## Scope
 
@@ -16,10 +16,10 @@ Introduce one small Windows process-configuration helper at the lowest shared la
 
 Every production background process launch must pass through this helper or apply an equivalent reviewed configuration when a crate boundary prevents reuse. Callers continue to use direct executable paths and argument arrays. The change must not introduce shell-string composition, detach processes from existing job-object lifecycle control, or discard redirected stdout and stderr.
 
-The application entry-point subsystem attributes remain unchanged:
+The application entry-point subsystem configuration changes to keep the parent console visible in every build profile:
 
 - Debug builds keep the SuperExplorer console visible.
-- Release builds use the Windows subsystem and do not create a SuperExplorer console.
+- Release builds also keep the SuperExplorer console visible while the product remains under development.
 - Background children are hidden in both debug and release builds.
 - The explicit Open Command Prompt action creates a visible console in both build modes.
 
@@ -48,11 +48,11 @@ Add focused tests for the shared configuration and each production launcher. Win
 4. the explicit Open Command Prompt action retains `CREATE_NEW_CONSOLE`;
 5. source inventory rejects new unclassified production `Command::new` sites or missing hidden-window configuration.
 
-Run focused crate tests first, followed by the relevant workspace architecture checks and a headful Windows smoke that launches SuperExplorer in debug mode. The smoke must confirm that the debug parent console remains present while startup ADB discovery and representative background commands create no additional visible console.
+Run focused crate tests first, followed by the relevant workspace architecture checks and headful Windows smokes that launch SuperExplorer in debug and release modes. Each smoke must confirm that the parent console remains present while startup ADB discovery and representative background commands create no additional visible console.
 
 ## Non-goals
 
-- Removing or hiding the debug SuperExplorer console.
+- Removing or hiding the SuperExplorer parent console in either debug or release builds.
 - Replacing direct process execution with PowerShell, `cmd.exe`, or another shell host.
 - Changing command permissions, output policy, cancellation behavior, or remote-provider semantics.
 - Suppressing an explicitly requested Command Prompt window.
