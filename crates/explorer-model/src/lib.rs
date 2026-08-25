@@ -116,7 +116,7 @@ pub use protocol::{
 };
 pub use remote::{
     RemoteAddress, RemoteAddressError, RemoteProviderKind, SftpProfile, SftpProfileError,
-    new_remote_container_identity,
+    new_remote_container_identity, remote_container_identity,
 };
 pub use session::{
     PersistedColumn, PersistedColumnLayoutEntry, PersistedColumnWidths, PersistedExtensionSort,

@@ -13,6 +13,7 @@ members = [
     "crates/explorer-extension-host",
     "crates/explorer-jobs",
     "crates/explorer-model",
+    "crates/explorer-remote",
     "crates/explorer-search",
     "crates/explorer-shell-win",
     "crates/explorer-test-support",
@@ -31,6 +32,7 @@ publish = false
 
 [workspace.dependencies]
 anyhow = "1.0"
+async-trait = "0.1"
 chrono = "0.4.45"
 chrono-tz = "0.10.4"
 crossbeam-channel = "0.5"
@@ -50,6 +52,9 @@ mlua = { version = "0.11.6", features = ["async", "lua54", "send", "serialize", 
 globset = "0.4.16"
 notify = "8.2.0"
 reqwest = { version = "0.12.22", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+russh = "0.48"
+russh-sftp = "2.0"
+rpassword = "7.4"
 rusqlite = { version = "0.32", features = ["bundled"] }
 smallvec = "1.15.2"
 tempfile = "3.20"
@@ -57,6 +62,7 @@ thiserror = "2.0"
 tokei = { version = "=14.0.0", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tokio = { version = "1", features = ["fs", "io-util", "rt-multi-thread", "time"] }
 uuid = { version = "1.17", features = ["serde", "v4", "v5"] }
 windows = { version = "=0.61.3", features = [
     "Win32_Foundation",

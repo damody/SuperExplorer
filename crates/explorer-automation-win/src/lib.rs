@@ -19,7 +19,10 @@ mod watcher;
 mod win_event;
 
 pub use clipboard::WindowsClipboardHost;
-pub use credential::WindowsCredentialStore;
+pub use credential::{
+    WindowsCredentialStore, load_windows_credential, remove_windows_credential,
+    store_windows_credential,
+};
 pub use input_hook::InputObservationHook;
 pub use process::WindowsJobProcessHost;
 pub use system_events::SystemEventSource;

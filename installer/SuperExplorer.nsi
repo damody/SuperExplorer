@@ -78,6 +78,11 @@ VIAddVersionKey /LANG=1033 "ProductVersion" "${APP_VERSION}"
 
 !define MUI_ABORTWARNING
 !define PLUGIN_ARGS "--plugin-dll $\"$INSTDIR\plugins\rust_folder_size_visual_column.dll$\" --plugin-dll $\"$INSTDIR\plugins\rust_folder_size_map_view.dll$\" --plugin-dll $\"$INSTDIR\plugins\rust_tokei_code_lines_column.dll$\" --plugin-dll $\"$INSTDIR\plugins\lua_tokei_code_lines_column.dll$\" --plugin-dll $\"$INSTDIR\plugins\rust_lock_owner_column.dll$\" --plugin-dll $\"$INSTDIR\plugins\rust_exif_rename_command.dll$\" --plugin-dll $\"$INSTDIR\plugins\rust_7z_virtual_folder.dll$\" --plugin-dll $\"$INSTDIR\plugins\lua_bulk_folder_generator.dll$\""
+!ifdef TEST_INSTALL
+    !define APP_ARGS "--diagnostics-console ${PLUGIN_ARGS}"
+!else
+    !define APP_ARGS "${PLUGIN_ARGS}"
+!endif
 !ifdef INCLUDE_SUPERDESKTOP
     !define MUI_FINISHPAGE_RUN "$INSTDIR\superdesktop-app.exe"
     !define MUI_FINISHPAGE_RUN_TEXT "執行 SuperDesktop"
@@ -85,7 +90,7 @@ VIAddVersionKey /LANG=1033 "ProductVersion" "${APP_VERSION}"
 !else
     !define MUI_FINISHPAGE_RUN "$INSTDIR\SuperExplorer.exe"
     !define MUI_FINISHPAGE_RUN_TEXT "執行 SuperExplorer"
-    !define MUI_FINISHPAGE_RUN_PARAMETERS "${PLUGIN_ARGS}"
+    !define MUI_FINISHPAGE_RUN_PARAMETERS "${APP_ARGS}"
 !endif
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
@@ -236,8 +241,8 @@ service_running:
     WriteUninstaller "$INSTDIR\Uninstall.exe"
 
     CreateDirectory "$SMPROGRAMS\${PRODUCT_NAME}"
-    CreateShortcut "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk" "$INSTDIR\SuperExplorer.exe" "${PLUGIN_ARGS}"
-    CreateShortcut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\SuperExplorer.exe" "${PLUGIN_ARGS}"
+    CreateShortcut "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk" "$INSTDIR\SuperExplorer.exe" "${APP_ARGS}"
+    CreateShortcut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\SuperExplorer.exe" "${APP_ARGS}"
 
     WriteRegStr HKLM "${PRODUCT_REG_KEY}" "InstallDir" "$INSTDIR"
     WriteRegStr HKLM "${PRODUCT_UNINSTALL_KEY}" "DisplayName" "${PRODUCT_NAME}"

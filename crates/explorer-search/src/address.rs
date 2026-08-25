@@ -18,6 +18,17 @@ pub fn parse_address(input: &str) -> Result<LocationDescriptor, AddressParseErro
         return Ok(LocationDescriptor::ParsingName(value.to_owned()));
     }
     if let Some((provider, remainder)) = value.split_once("://") {
+        if matches!(provider.to_ascii_lowercase().as_str(), "adb" | "sftp") {
+            return explorer_model::RemoteAddress::parse(value)
+                .and_then(|address| {
+                    address
+                        .to_deterministic_location(1)
+                        .map_err(|_| explorer_model::RemoteAddressError::InvalidComponent)
+                })
+                .map_err(|error| AddressParseError {
+                    message: error.to_string(),
+                });
+        }
         let valid_provider = !provider.is_empty()
             && provider.len() <= 64
             && provider.bytes().all(|byte| {
@@ -93,6 +104,14 @@ mod tests {
         assert!(parse_address(r"C:\Users\fixture").is_ok());
         assert!(parse_address(r"\\server\share\folder").is_ok());
         assert!(parse_address("shell:Downloads").is_ok());
+        assert_eq!(
+            parse_address("adb://device-123/sdcard/Download").unwrap(),
+            explorer_model::RemoteAddress::parse("adb://device-123/sdcard/Download")
+                .unwrap()
+                .to_deterministic_location(1)
+                .unwrap()
+        );
+        assert!(parse_address("sftp://production/root").is_ok());
         assert_eq!(
             parse_address("rust-7z://09090909090909090909090909090909/5/src/nested").unwrap(),
             LocationDescriptor::try_virtual(

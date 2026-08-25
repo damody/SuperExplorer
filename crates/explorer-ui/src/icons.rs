@@ -237,6 +237,20 @@ pub fn navigation_icon(icon: NavigationIcon, tokens: UiTokens) -> impl IntoEleme
             .border(px(1.0))
             .border_color(colors.computer_border.to_gpui())
             .bg(colors.computer.to_gpui()),
+        NavigationIcon::Phone => div()
+            .w(px(size * 0.58))
+            .h(px(size * 0.92))
+            .rounded(px(3.0))
+            .border(px(1.5))
+            .border_color(colors.computer_border.to_gpui())
+            .bg(colors.computer.to_gpui()),
+        NavigationIcon::Server => div()
+            .w(px(size * 0.9))
+            .h(px(size * 0.72))
+            .rounded(px(2.0))
+            .border(px(1.0))
+            .border_color(colors.drive_border.to_gpui())
+            .bg(colors.drive.to_gpui()),
         NavigationIcon::Downloads => div()
             .w(px(size * 0.2))
             .h(px(size * 0.9))
