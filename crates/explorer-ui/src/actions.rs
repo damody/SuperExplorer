@@ -1012,12 +1012,17 @@ pub struct ActionTrace {
     pub outcome: ActionOutcome,
 }
 
+fn action_dispatches_at_info(action: &ExplorerAction) -> bool {
+    !matches!(action, ExplorerAction::UpdateFileDrag { .. })
+}
+
 pub fn dispatch_action(
     state: &mut AppViewState,
     action: ExplorerAction,
     source: ActionSource,
 ) -> ActionTrace {
     let action_name = action.name();
+    let dispatches_at_info = action_dispatches_at_info(&action);
     let available = action_available(state, &action);
     let synchronize_command_popup_focus = matches!(
         &action,
@@ -1145,13 +1150,23 @@ pub fn dispatch_action(
         handled_surface,
         outcome,
     };
-    tracing::info!(
-        action = trace.action_name,
-        source = ?trace.source,
-        handled_surface = ?trace.handled_surface,
-        outcome = ?trace.outcome,
-        "Explorer action dispatched"
-    );
+    if dispatches_at_info {
+        tracing::info!(
+            action = trace.action_name,
+            source = ?trace.source,
+            handled_surface = ?trace.handled_surface,
+            outcome = ?trace.outcome,
+            "Explorer action dispatched"
+        );
+    } else {
+        tracing::trace!(
+            action = trace.action_name,
+            source = ?trace.source,
+            handled_surface = ?trace.handled_surface,
+            outcome = ?trace.outcome,
+            "Explorer high-frequency action dispatched"
+        );
+    }
     trace
 }
 
@@ -2327,7 +2342,7 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
 mod tests {
     use super::{
         ActionOutcome, ActionSource, BindingConflict, DEFAULT_BINDINGS, ExplorerAction, KeyBinding,
-        dispatch_action, validate_bindings,
+        action_dispatches_at_info, dispatch_action, validate_bindings,
     };
     use crate::{
         focus::FocusSurface,
@@ -2335,6 +2350,23 @@ mod tests {
         state::AppViewState,
         theme::ThemeMode,
     };
+
+    #[test]
+    fn only_file_drag_pointer_updates_bypass_info_dispatch_logging() {
+        let pointer_update = ExplorerAction::UpdateFileDrag { x: 1.0, y: 2.0 };
+        assert!(!action_dispatches_at_info(&pointer_update));
+        assert!(action_dispatches_at_info(&ExplorerAction::BeginFileDrag {
+            x: 1.0,
+            y: 2.0,
+            button: explorer_model::DragButton::Left,
+        }));
+        assert!(action_dispatches_at_info(&ExplorerAction::CancelFileDrag));
+        assert!(action_dispatches_at_info(&ExplorerAction::Refresh));
+
+        let mut state = writable_state();
+        let trace = dispatch_action(&mut state, pointer_update, ActionSource::Mouse);
+        assert_eq!(trace.outcome, ActionOutcome::Disabled);
+    }
 
     fn writable_state() -> AppViewState {
         let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
