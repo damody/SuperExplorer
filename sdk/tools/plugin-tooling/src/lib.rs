@@ -110,6 +110,8 @@ struct Contribution {
     max_file_count: Option<u64>,
     #[serde(default)]
     max_folder_count: Option<u64>,
+    #[serde(default)]
+    file_systems: BTreeSet<String>,
 }
 
 #[derive(Deserialize)]
@@ -1746,6 +1748,26 @@ fn validate_manifest(manifest: &Manifest, root: &Path, expected: &ExpectedSdk) -
     let mut contributions = BTreeSet::new();
     for (index, contribution) in manifest.contributions.iter().enumerate() {
         let path = format!("contributions[{index}]");
+        if contribution.kind != "column" && !contribution.file_systems.is_empty() {
+            diagnostics.push(diagnostic(
+                "SESDK-CONTRIBUTION-008",
+                "manifest",
+                &format!("{path}.file_systems"),
+                "file_systems is valid only on data-column contributions",
+            ));
+        }
+        if let Some(value) = contribution
+            .file_systems
+            .iter()
+            .find(|value| !matches!(value.as_str(), "local" | "adb" | "sftp"))
+        {
+            diagnostics.push(diagnostic(
+                "SESDK-CONTRIBUTION-009",
+                "manifest",
+                &format!("{path}.file_systems"),
+                format!("unknown filesystem `{value}`; expected local, adb, or sftp"),
+            ));
+        }
         if (contribution.max_file_count.is_some() || contribution.max_folder_count.is_some())
             && contribution.kind != "column"
         {
@@ -4026,9 +4048,9 @@ mod tests {
             Feature { id: "settings".into(), capabilities: vec!["abi".into()] },
         ];
         visual.contributions = vec![
-            Contribution { id: "abi-root".into(), feature_id: "column".into(), kind: "abi-root".into(), capabilities: vec!["abi".into()], payload: "src/lib.rs".into(), max_file_count: None, max_folder_count: None },
-            Contribution { id: "folder-size".into(), feature_id: "column".into(), kind: "column".into(), capabilities: vec!["abi".into(), "filesystem.read".into()], payload: "src/lib.rs".into(), max_file_count: None, max_folder_count: None },
-            Contribution { id: "folder-size-renderer".into(), feature_id: "column".into(), kind: "renderer".into(), capabilities: vec!["abi".into(), "folder.aggregate".into()], payload: "src/lib.rs".into(), max_file_count: None, max_folder_count: None },
+            Contribution { id: "abi-root".into(), feature_id: "column".into(), kind: "abi-root".into(), capabilities: vec!["abi".into()], payload: "src/lib.rs".into(), max_file_count: None, max_folder_count: None, file_systems: BTreeSet::new() },
+            Contribution { id: "folder-size".into(), feature_id: "column".into(), kind: "column".into(), capabilities: vec!["abi".into(), "filesystem.read".into()], payload: "src/lib.rs".into(), max_file_count: None, max_folder_count: None, file_systems: BTreeSet::from(["local".into()]) },
+            Contribution { id: "folder-size-renderer".into(), feature_id: "column".into(), kind: "renderer".into(), capabilities: vec!["abi".into(), "folder.aggregate".into()], payload: "src/lib.rs".into(), max_file_count: None, max_folder_count: None, file_systems: BTreeSet::new() },
         ];
         assert!(is_exact_folder_size_declarations(&visual));
         visual.contributions[2].capabilities = vec!["abi".into()];
@@ -4038,8 +4060,8 @@ mod tests {
         tree.package.id = "rust-folder-size-map-view".into();
         tree.features = vec![Feature { id: "view".into(), capabilities: vec!["abi".into(), "folder.tree".into()] }];
         tree.contributions = vec![
-            Contribution { id: "abi-root".into(), feature_id: "view".into(), kind: "abi-root".into(), capabilities: vec!["abi".into()], payload: "src/lib.rs".into(), max_file_count: None, max_folder_count: None },
-            Contribution { id: "size-map".into(), feature_id: "view".into(), kind: "view-mode".into(), capabilities: vec!["abi".into(), "folder.tree".into()], payload: "src/lib.rs".into(), max_file_count: None, max_folder_count: None },
+            Contribution { id: "abi-root".into(), feature_id: "view".into(), kind: "abi-root".into(), capabilities: vec!["abi".into()], payload: "src/lib.rs".into(), max_file_count: None, max_folder_count: None, file_systems: BTreeSet::new() },
+            Contribution { id: "size-map".into(), feature_id: "view".into(), kind: "view-mode".into(), capabilities: vec!["abi".into(), "folder.tree".into()], payload: "src/lib.rs".into(), max_file_count: None, max_folder_count: None, file_systems: BTreeSet::new() },
         ];
         assert!(is_exact_size_map_declarations(&tree));
         tree.features[0].capabilities = vec!["abi".into(), "folder.aggregate".into()];
@@ -4119,6 +4141,7 @@ mod tests {
             payload: "src/lib.rs".into(),
             max_file_count: Some(0),
             max_folder_count: Some(u64::MAX),
+            file_systems: BTreeSet::new(),
         });
 
         let diagnostics = validate_manifest(&manifest, &directory.0, &expected_for_test());

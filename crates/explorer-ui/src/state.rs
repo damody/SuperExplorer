@@ -2114,6 +2114,35 @@ impl AppViewState {
                 .details_layout
                 .reorder_known(preview.preview_order.iter().cloned());
         }
+        let file_system = self
+            .tabs
+            .active_tab()
+            .history
+            .current()
+            .and_then(|entry| entry.location.file_system_kind());
+        settings.details_layout.retain_effective(|column| {
+            self.column_registry.get(column).is_some_and(|descriptor| {
+                file_system.is_some_and(|kind| descriptor.file_systems.contains(kind))
+            })
+        });
+        if matches!(
+            file_system,
+            Some(explorer_model::FileSystemKind::Adb | explorer_model::FileSystemKind::Sftp)
+        ) {
+            settings
+                .details_layout
+                .set_visible(&explorer_model::ColumnId::Permissions, true);
+        }
+        let sort_applicable = settings.sort.column == explorer_model::ColumnId::Name
+            || self
+                .column_registry
+                .get(&settings.sort.column)
+                .is_some_and(|descriptor| {
+                    file_system.is_some_and(|kind| descriptor.file_systems.contains(kind))
+                });
+        if !sort_applicable {
+            settings.sort = explorer_model::SortDescriptor::default();
+        }
         settings
     }
 
@@ -2224,6 +2253,16 @@ impl AppViewState {
     }
 
     pub(crate) fn set_sort_column(&mut self, column: explorer_model::ColumnId) {
+        if !self.column_registry.get(&column).is_some_and(|descriptor| {
+            self.tabs
+                .active_tab()
+                .history
+                .current()
+                .and_then(|entry| entry.location.file_system_kind())
+                .is_some_and(|kind| descriptor.file_systems.contains(kind))
+        }) {
+            return;
+        }
         let sort = &mut self.tabs.active_tab_mut().view.settings.sort;
         if sort.column == column {
             sort.direction = match sort.direction {
@@ -2248,6 +2287,7 @@ impl AppViewState {
                 | explorer_model::ColumnId::Authors
                 | explorer_model::ColumnId::Tags
                 | explorer_model::ColumnId::Title => explorer_model::SortDirection::Ascending,
+                explorer_model::ColumnId::Permissions => explorer_model::SortDirection::Ascending,
                 explorer_model::ColumnId::Extension { .. } => {
                     explorer_model::SortDirection::Ascending
                 }
@@ -2292,6 +2332,7 @@ impl AppViewState {
                     explorer_model::ColumnId::Authors => entry.metadata.authors_display.is_some(),
                     explorer_model::ColumnId::Tags => entry.metadata.tags_display.is_some(),
                     explorer_model::ColumnId::Title => entry.metadata.title_display.is_some(),
+                    explorer_model::ColumnId::Permissions => entry.metadata.unix_mode.is_some(),
                     explorer_model::ColumnId::FileCount | explorer_model::ColumnId::FolderCount => {
                         entry.is_container
                     }
@@ -2314,6 +2355,9 @@ impl AppViewState {
         column: explorer_model::ColumnId,
         width: u16,
     ) {
+        if !self.details_column_applicable(&column) {
+            return;
+        }
         if let Some(descriptor) = self.column_registry.get(&column) {
             self.tabs
                 .active_tab_mut()
@@ -2328,6 +2372,9 @@ impl AppViewState {
         self.details_column_menu.clone()
     }
     pub fn open_details_column_menu(&mut self, column: explorer_model::ColumnId) {
+        if !self.details_column_applicable(&column) {
+            return;
+        }
         self.details_column_menu = Some(column);
         self.details_filter_menu = None;
         self.sort_menu_open = false;
@@ -2345,6 +2392,9 @@ impl AppViewState {
     }
 
     pub fn open_details_filter_menu(&mut self, column: explorer_model::ColumnId) {
+        if !self.details_column_applicable(&column) {
+            return;
+        }
         self.details_filter_menu = if self.details_filter_menu == Some(column.clone()) {
             None
         } else {
@@ -2434,6 +2484,17 @@ impl AppViewState {
         if column == explorer_model::ColumnId::Name {
             return;
         }
+        let applicable = self.column_registry.get(&column).is_some_and(|descriptor| {
+            self.tabs
+                .active_tab()
+                .history
+                .current()
+                .and_then(|entry| entry.location.file_system_kind())
+                .is_some_and(|kind| descriptor.file_systems.contains(kind))
+        });
+        if !applicable {
+            return;
+        }
         self.tabs
             .active_tab_mut()
             .view
@@ -2448,6 +2509,17 @@ impl AppViewState {
     pub fn details_column_visible(&self, column: explorer_model::ColumnId) -> bool {
         self.column_registry.contains(&column)
             && self.view_settings().details_column_visible(&column)
+    }
+    fn details_column_applicable(&self, column: &explorer_model::ColumnId) -> bool {
+        *column == explorer_model::ColumnId::Name
+            || self.column_registry.get(column).is_some_and(|descriptor| {
+                self.tabs
+                    .active_tab()
+                    .history
+                    .current()
+                    .and_then(|entry| entry.location.file_system_kind())
+                    .is_some_and(|kind| descriptor.file_systems.contains(kind))
+            })
     }
     pub fn auto_size_all_details_columns(&mut self) {
         let columns = self
@@ -2478,6 +2550,7 @@ impl AppViewState {
             explorer_model::ColumnId::Title => "標題",
             explorer_model::ColumnId::FileCount => "File Count",
             explorer_model::ColumnId::FolderCount => "Folder Count",
+            explorer_model::ColumnId::Permissions => "Permissions",
             explorer_model::ColumnId::Extension { .. } => "擴充欄位",
         };
         let header_width = estimated_text_width(header) + 32.0;
@@ -2527,6 +2600,11 @@ impl AppViewState {
                 explorer_model::ColumnId::FileCount | explorer_model::ColumnId::FolderCount => {
                     estimated_text_width("9999999999") + 16.0
                 }
+                explorer_model::ColumnId::Permissions => {
+                    estimated_text_width(&explorer_model::format_unix_mode(
+                        entry.metadata.unix_mode,
+                    )) + 16.0
+                }
                 explorer_model::ColumnId::Extension { .. } => 16.0,
             })
             .fold(header_width, f32::max);
@@ -2545,7 +2623,7 @@ impl AppViewState {
         column: explorer_model::ColumnId,
         pointer_x: f32,
     ) {
-        if !pointer_x.is_finite() {
+        if !pointer_x.is_finite() || !self.details_column_visible(column.clone()) {
             return;
         }
         self.end_marquee();
@@ -2602,6 +2680,13 @@ impl AppViewState {
         column: explorer_model::ColumnId,
         before: Option<explorer_model::ColumnId>,
     ) -> bool {
+        if !self.details_column_applicable(&column)
+            || before
+                .as_ref()
+                .is_some_and(|target| !self.details_column_applicable(target))
+        {
+            return false;
+        }
         self.tabs
             .active_tab_mut()
             .view
@@ -2619,17 +2704,14 @@ impl AppViewState {
         target_right: f32,
     ) -> bool {
         if column == explorer_model::ColumnId::Name
-            || !self.column_registry.contains(&column)
-            || !self.column_registry.contains(&target)
+            || !self.details_column_visible(column.clone())
+            || !self.details_column_visible(target.clone())
         {
             return self.cancel_details_column_drag();
         }
         let tab_id = self.tabs.active_tab_id();
-        let persisted_order = self
-            .tabs
-            .active_tab()
-            .view
-            .settings
+        let effective_settings = self.view_settings();
+        let persisted_order = effective_settings
             .details_layout
             .visible_registered(&self.column_registry)
             .map(|entry| entry.id.clone())
@@ -6732,6 +6814,47 @@ mod tests {
         state.begin_details_column_resize(explorer_model::ColumnId::Name, 100.0);
         assert!(state.details_column_resize_active());
         assert!(state.marquee_session().is_none());
+    }
+
+    #[test]
+    fn remote_details_projection_hides_local_columns_without_rewriting_preferences() {
+        let location =
+            explorer_model::LocationDescriptor::try_virtual("adb", [7; 16], 1, None, Vec::new())
+                .unwrap();
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            location, "device",
+        ));
+        state
+            .tabs
+            .active_tab_mut()
+            .view
+            .settings
+            .details_layout
+            .set_visible(&explorer_model::ColumnId::Authors, true);
+        state.tabs.active_tab_mut().view.settings.sort.column = explorer_model::ColumnId::Authors;
+
+        let effective = state.view_settings();
+        assert!(effective.details_column_visible(&explorer_model::ColumnId::Name));
+        assert!(effective.details_column_visible(&explorer_model::ColumnId::Permissions));
+        assert!(
+            effective
+                .details_layout
+                .entry(&explorer_model::ColumnId::Authors)
+                .is_none()
+        );
+        assert_eq!(effective.sort, explorer_model::SortDescriptor::default());
+        assert!(
+            state
+                .tabs
+                .active_tab()
+                .view
+                .settings
+                .details_column_visible(&explorer_model::ColumnId::Authors)
+        );
+        assert_eq!(
+            state.tabs.active_tab().view.settings.sort.column,
+            explorer_model::ColumnId::Authors
+        );
     }
 
     #[test]

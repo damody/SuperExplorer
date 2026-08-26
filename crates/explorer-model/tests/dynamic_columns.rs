@@ -14,6 +14,7 @@ fn extension_descriptor(id: ColumnId) -> ColumnDescriptor {
         maximum_width: 600,
         alignment: ColumnAlignment::End,
         applicability: ColumnApplicability::Containers,
+        file_systems: explorer_model::ColumnFileSystems::LOCAL,
         sort_semantics: ColumnSortSemantics::Bytes,
         cost: ColumnCost::BackgroundAggregate,
     }
@@ -306,6 +307,7 @@ fn legacy_runtime_migration_preserves_custom_prefix_and_appends_built_ins() {
             ColumnId::Tags,
             ColumnId::FileCount,
             ColumnId::FolderCount,
+            ColumnId::Permissions,
         ]
     );
     assert_eq!(runtime.details_layout.width(&ColumnId::Size), Some(233));
@@ -418,7 +420,7 @@ fn pre_count_extensible_layout_appends_hidden_count_columns_without_losing_prefe
 
     let runtime = persisted.to_runtime();
     let entries = runtime.details_layout.entries();
-    assert_eq!(entries.len(), 10);
+    assert_eq!(entries.len(), 11);
     for (entry, (id, width, visible)) in entries.iter().zip(saved) {
         assert_eq!(entry.id.stable_id(), id);
         assert_eq!(entry.width, width);
@@ -430,6 +432,9 @@ fn pre_count_extensible_layout_appends_hidden_count_columns_without_losing_prefe
     assert_eq!(entries[9].id, ColumnId::FolderCount);
     assert_eq!(entries[9].width, 104);
     assert!(!entries[9].visible);
+    assert_eq!(entries[10].id, ColumnId::Permissions);
+    assert_eq!(entries[10].width, 190);
+    assert!(!entries[10].visible);
 }
 
 #[test]

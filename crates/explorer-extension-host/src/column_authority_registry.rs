@@ -316,6 +316,11 @@ fn public_descriptor(
             3 => ColumnApplicability::Containers,
             _ => return Err(ColumnAuthorityRegistryErrorV1::InvalidIdentity),
         },
+        file_systems: explorer_model::ColumnFileSystems::from_bits(
+            u8::try_from(descriptor.file_systems.into_raw())
+                .map_err(|_| ColumnAuthorityRegistryErrorV1::InvalidIdentity)?,
+        )
+        .ok_or(ColumnAuthorityRegistryErrorV1::InvalidIdentity)?,
         sort_semantics,
         cost: match descriptor.cost.into_raw() {
             1 => ColumnCost::Immediate,
@@ -344,6 +349,7 @@ mod tests {
             maximum_width: 600,
             alignment: ColumnAlignment::End,
             applicability: ColumnApplicability::AllEntries,
+            file_systems: explorer_model::ColumnFileSystems::LOCAL,
             sort_semantics: ColumnSortSemantics::Bytes,
             cost: ColumnCost::BackgroundBatch,
         }

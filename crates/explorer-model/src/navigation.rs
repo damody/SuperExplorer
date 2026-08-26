@@ -221,8 +221,54 @@ pub struct FileEntryMetadata {
     pub title_display: Option<String>,
     pub drive: Option<DriveMetadata>,
     pub filesystem_attributes: u32,
+    #[serde(default)]
+    pub unix_mode: Option<u32>,
     pub unavailable_reason: Option<String>,
     pub namespace_capabilities: crate::NamespaceCapabilities,
+}
+
+/// Formats a Unix mode as a POSIX symbolic value followed by its four-digit
+/// octal permission bits. Missing metadata remains visibly unavailable.
+#[must_use]
+pub fn format_unix_mode(mode: Option<u32>) -> String {
+    let Some(mode) = mode else {
+        return "—".to_owned();
+    };
+    let kind = match mode & 0o170_000 {
+        0o140_000 => 's',
+        0o120_000 => 'l',
+        0o100_000 => '-',
+        0o060_000 => 'b',
+        0o040_000 => 'd',
+        0o020_000 => 'c',
+        0o010_000 => 'p',
+        _ => '?',
+    };
+    let bit = |mask, present| if mode & mask != 0 { present } else { '-' };
+    let special = |execute_mask, special_mask, lower, upper| match (
+        mode & execute_mask != 0,
+        mode & special_mask != 0,
+    ) {
+        (true, true) => lower,
+        (false, true) => upper,
+        (true, false) => 'x',
+        (false, false) => '-',
+    };
+    let symbolic = [
+        kind,
+        bit(0o400, 'r'),
+        bit(0o200, 'w'),
+        special(0o100, 0o4000, 's', 'S'),
+        bit(0o040, 'r'),
+        bit(0o020, 'w'),
+        special(0o010, 0o2000, 's', 'S'),
+        bit(0o004, 'r'),
+        bit(0o002, 'w'),
+        special(0o001, 0o1000, 't', 'T'),
+    ]
+    .into_iter()
+    .collect::<String>();
+    format!("{symbolic} ({:04o})", mode & 0o7777)
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -849,6 +895,7 @@ pub enum ColumnId {
     Title,
     FileCount,
     FolderCount,
+    Permissions,
     Extension {
         package_id: String,
         column_id: String,
@@ -856,7 +903,7 @@ pub enum ColumnId {
 }
 
 impl ColumnId {
-    pub const BUILT_INS: [Self; 10] = [
+    pub const BUILT_INS: [Self; 11] = [
         Self::Name,
         Self::DateModified,
         Self::Type,
@@ -867,9 +914,10 @@ impl ColumnId {
         Self::Title,
         Self::FileCount,
         Self::FolderCount,
+        Self::Permissions,
     ];
 
-    pub const ALL: [Self; 10] = Self::BUILT_INS;
+    pub const ALL: [Self; 11] = Self::BUILT_INS;
 
     /// Constructs a plugin-owned ID in the durable `package_id:column_id` namespace.
     ///
@@ -907,6 +955,7 @@ impl ColumnId {
             Self::Title => "builtin:title".to_owned(),
             Self::FileCount => "builtin:file_count".to_owned(),
             Self::FolderCount => "builtin:folder_count".to_owned(),
+            Self::Permissions => "builtin:permissions".to_owned(),
             Self::Extension {
                 package_id,
                 column_id,
@@ -933,6 +982,7 @@ impl ColumnId {
             "builtin:title" => return Ok(Self::Title),
             "builtin:file_count" => return Ok(Self::FileCount),
             "builtin:folder_count" => return Ok(Self::FolderCount),
+            "builtin:permissions" => return Ok(Self::Permissions),
             _ => {}
         }
         let Some((package_id, column_id)) = stable_id.split_once(':') else {
@@ -1113,6 +1163,36 @@ pub enum ColumnApplicability {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ColumnFileSystems(u8);
+
+impl ColumnFileSystems {
+    pub const NONE: Self = Self(0);
+    pub const LOCAL: Self = Self(1);
+    pub const ADB: Self = Self(2);
+    pub const SFTP: Self = Self(4);
+    pub const REMOTE: Self = Self(Self::ADB.0 | Self::SFTP.0);
+    pub const ALL: Self = Self(Self::LOCAL.0 | Self::REMOTE.0);
+
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Option<Self> {
+        if bits & !Self::ALL.0 == 0 {
+            Some(Self(bits))
+        } else {
+            None
+        }
+    }
+
+    pub const fn contains(self, kind: crate::FileSystemKind) -> bool {
+        let bit = match kind {
+            crate::FileSystemKind::Local => Self::LOCAL.0,
+            crate::FileSystemKind::Adb => Self::ADB.0,
+            crate::FileSystemKind::Sftp => Self::SFTP.0,
+        };
+        self.0 & bit != 0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ColumnSortSemantics {
     /// A host-comparable UTF-8 stable sort key.
     Text,
@@ -1153,6 +1233,7 @@ pub struct ColumnDescriptor {
     pub maximum_width: u16,
     pub alignment: ColumnAlignment,
     pub applicability: ColumnApplicability,
+    pub file_systems: ColumnFileSystems,
     pub sort_semantics: ColumnSortSemantics,
     pub cost: ColumnCost,
 }
@@ -1510,6 +1591,13 @@ impl OrderedColumnLayout {
         self.set_visible(id, !visible)
     }
 
+    /// Removes entries only from an ephemeral effective projection. Persisted
+    /// layouts should retain every known and unknown entry for later restore.
+    pub fn retain_effective(&mut self, mut predicate: impl FnMut(&ColumnId) -> bool) {
+        self.entries
+            .retain(|entry| entry.id == ColumnId::Name || predicate(&entry.id));
+    }
+
     /// Inserts a registered descriptor only once; re-registering a plugin never resets a user's
     /// width, visibility, or ordering preference.
     pub fn ensure_descriptor(&mut self, descriptor: &ColumnDescriptor, visible: bool) -> bool {
@@ -1628,7 +1716,7 @@ impl Default for OrderedColumnLayout {
     }
 }
 
-fn builtin_column_descriptors() -> [ColumnDescriptor; 10] {
+fn builtin_column_descriptors() -> [ColumnDescriptor; 11] {
     [
         builtin_descriptor(
             ColumnId::Name,
@@ -1696,6 +1784,19 @@ fn builtin_column_descriptors() -> [ColumnDescriptor; 10] {
         ),
         builtin_aggregate_descriptor(ColumnId::FileCount, "File Count"),
         builtin_aggregate_descriptor(ColumnId::FolderCount, "Folder Count"),
+        ColumnDescriptor {
+            id: ColumnId::Permissions,
+            display_name: "Permissions".to_owned(),
+            value_type: ColumnValueType::Integer,
+            default_width: 190,
+            minimum_width: OrderedColumnLayout::MINIMUM_WIDTH,
+            maximum_width: OrderedColumnLayout::MAXIMUM_WIDTH,
+            alignment: ColumnAlignment::Start,
+            applicability: ColumnApplicability::AllEntries,
+            file_systems: ColumnFileSystems::REMOTE,
+            sort_semantics: ColumnSortSemantics::Integer,
+            cost: ColumnCost::Immediate,
+        },
     ]
 }
 
@@ -1709,6 +1810,7 @@ fn builtin_aggregate_descriptor(id: ColumnId, display_name: &str) -> ColumnDescr
         maximum_width: OrderedColumnLayout::MAXIMUM_WIDTH,
         alignment: ColumnAlignment::End,
         applicability: ColumnApplicability::Containers,
+        file_systems: ColumnFileSystems::LOCAL,
         sort_semantics: ColumnSortSemantics::Integer,
         cost: ColumnCost::BackgroundAggregate,
     }
@@ -1722,6 +1824,12 @@ fn builtin_descriptor(
     alignment: ColumnAlignment,
     sort_semantics: ColumnSortSemantics,
 ) -> ColumnDescriptor {
+    let file_systems = match &id {
+        ColumnId::Name | ColumnId::DateModified | ColumnId::Type | ColumnId::Size => {
+            ColumnFileSystems::ALL
+        }
+        _ => ColumnFileSystems::LOCAL,
+    };
     ColumnDescriptor {
         id,
         display_name: display_name.to_owned(),
@@ -1731,6 +1839,7 @@ fn builtin_descriptor(
         maximum_width: OrderedColumnLayout::MAXIMUM_WIDTH,
         alignment,
         applicability: ColumnApplicability::AllEntries,
+        file_systems,
         sort_semantics,
         cost: ColumnCost::Immediate,
     }
@@ -3397,5 +3506,25 @@ mod tests {
         assert_eq!(normalized_mft_folder_cache_memory_mb(16_384), 16_384);
         assert_eq!(normalized_mft_folder_cache_memory_mb(16_385), 16_384);
         assert_eq!(normalized_mft_folder_cache_memory_mb(u16::MAX), 16_384);
+    }
+
+    #[test]
+    fn unix_modes_include_type_special_bits_and_four_digit_octal() {
+        assert_eq!(format_unix_mode(Some(0o040755)), "drwxr-xr-x (0755)");
+        assert_eq!(format_unix_mode(Some(0o100644)), "-rw-r--r-- (0644)");
+        assert_eq!(format_unix_mode(Some(0o104755)), "-rwsr-xr-x (4755)");
+        assert_eq!(format_unix_mode(Some(0o102640)), "-rw-r-S--- (2640)");
+        assert_eq!(format_unix_mode(Some(0o101644)), "-rw-r--r-T (1644)");
+        assert_eq!(format_unix_mode(Some(0o000755)), "?rwxr-xr-x (0755)");
+        assert_eq!(format_unix_mode(None), "—");
+    }
+
+    #[test]
+    fn filesystem_scope_is_closed_and_fail_closed() {
+        assert!(ColumnFileSystems::ALL.contains(crate::FileSystemKind::Local));
+        assert!(ColumnFileSystems::REMOTE.contains(crate::FileSystemKind::Adb));
+        assert!(ColumnFileSystems::REMOTE.contains(crate::FileSystemKind::Sftp));
+        assert!(!ColumnFileSystems::REMOTE.contains(crate::FileSystemKind::Local));
+        assert_eq!(ColumnFileSystems::from_bits(8), None);
     }
 }

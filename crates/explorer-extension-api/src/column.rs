@@ -33,6 +33,33 @@ wire_enum!(ColumnProviderCostV1 {
     BACKGROUND_AGGREGATE = 4,
 });
 
+/// Closed bit set describing the filesystems on which a column may run.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, StableAbi)]
+pub struct ColumnFileSystemsV1(u32);
+
+impl ColumnFileSystemsV1 {
+    pub const NONE: Self = Self(0);
+    pub const LOCAL: Self = Self(1 << 0);
+    pub const ADB: Self = Self(1 << 1);
+    pub const SFTP: Self = Self(1 << 2);
+    pub const REMOTE: Self = Self(Self::ADB.0 | Self::SFTP.0);
+    pub const ALL: Self = Self(Self::LOCAL.0 | Self::REMOTE.0);
+
+    #[must_use]
+    pub const fn from_raw(raw: u32) -> Self {
+        Self(raw)
+    }
+    #[must_use]
+    pub const fn into_raw(self) -> u32 {
+        self.0
+    }
+    #[must_use]
+    pub const fn is_known(self) -> bool {
+        self.0 & !Self::ALL.0 == 0
+    }
+}
+
 /// Package-local canonical column ID. The authority envelope supplies the
 /// package namespace, so two packages may safely use the same local ID.
 #[repr(transparent)]
@@ -96,6 +123,7 @@ pub struct ColumnDescriptorV1 {
     pub maximum_width: u16,
     pub alignment: ColumnAlignmentV1,
     pub applicability: ColumnApplicabilityV1,
+    pub file_systems: ColumnFileSystemsV1,
     pub cost: ColumnProviderCostV1,
     pub stable_sort_kind: ROption<StableSortValueKindV1>,
     pub provider_interface_id: StableIdV1,
@@ -142,6 +170,7 @@ impl ColumnDescriptorV1 {
         }
         if !self.alignment.is_known()
             || !self.applicability.is_known()
+            || !self.file_systems.is_known()
             || !self.cost.is_known()
             || self.value_kind.into_raw() == 0
         {
@@ -194,6 +223,7 @@ mod tests {
             maximum_width: 600,
             alignment: ColumnAlignmentV1::END,
             applicability: ColumnApplicabilityV1::CONTAINERS,
+            file_systems: ColumnFileSystemsV1::LOCAL,
             cost: ColumnProviderCostV1::BACKGROUND_AGGREGATE,
             stable_sort_kind: ROption::RSome(StableSortValueKindV1::BYTES),
             provider_interface_id: StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 10),
@@ -253,9 +283,9 @@ mod tests {
         assert_eq!(
             hashes,
             [
-                0x74bc_aa34_e18b_c12b,
-                0xcec8_3635_553f_2b3e,
-                0x9de8_1b4e_393d_e548,
+                0x7e31_2f55_b763_0cb0,
+                0xaa96_1f12_e8dc_3838,
+                0x65da_86e6_31fc_6fb8,
             ]
         );
     }

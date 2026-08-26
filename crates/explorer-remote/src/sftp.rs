@@ -236,6 +236,7 @@ impl RemoteProvider for SftpProvider {
                     location: LocationDescriptor::Virtual(child),
                     kind,
                     size: entry.metadata().size,
+                    unix_mode: entry.metadata().permissions,
                 });
             }
             Self::disconnect(session).await;

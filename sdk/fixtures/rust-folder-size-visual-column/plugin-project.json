@@ -34,6 +34,7 @@
       "id": "folder-size",
       "feature_id": "column",
       "kind": "column",
+      "file_systems": ["local"],
       "capabilities": ["abi", "filesystem.read"],
       "payload": "src/lib.rs"
     },

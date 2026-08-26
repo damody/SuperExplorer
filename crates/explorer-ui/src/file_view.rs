@@ -117,6 +117,10 @@ fn filter_value(entry: &FileEntry, column: &ColumnId) -> (String, String) {
         }
         ColumnId::Tags => text_filter_value(entry.metadata.tags_display.as_deref(), "tags"),
         ColumnId::Title => text_filter_value(entry.metadata.title_display.as_deref(), "title"),
+        ColumnId::Permissions => text_filter_value(
+            Some(explorer_model::format_unix_mode(entry.metadata.unix_mode).as_str()),
+            "permissions",
+        ),
         ColumnId::FileCount | ColumnId::FolderCount | ColumnId::Extension { .. } => {
             ("extension:unavailable".into(), "無法使用".into())
         }
@@ -383,6 +387,11 @@ fn compare_file_entries(
         ColumnId::Title => compare_text(
             left.metadata.title_display.as_deref(),
             right.metadata.title_display.as_deref(),
+            sort.direction,
+        ),
+        ColumnId::Permissions => compare_optional(
+            left.metadata.unix_mode,
+            right.metadata.unix_mode,
             sort.direction,
         ),
         ColumnId::FileCount | ColumnId::FolderCount | ColumnId::Extension { .. } => Ordering::Equal,

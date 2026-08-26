@@ -54,9 +54,10 @@ pub use context_menu::{
     ContextMenuSession, ContextMenuSessionState, MenuPoint,
 };
 pub use domain::{
-    CancellationRegistration, CancellationSignalReport, CancellationToken, Generation,
-    LocationDescriptor, LocationDescriptorValidationError, MAX_LOCATION_DESCRIPTOR_BYTES,
-    RequestContext, RequestRejection, ShellItemId, SyntheticRoot, TabId, VirtualLocationDescriptor,
+    CancellationRegistration, CancellationSignalReport, CancellationToken, FileSystemKind,
+    Generation, LocationDescriptor, LocationDescriptorValidationError,
+    MAX_LOCATION_DESCRIPTOR_BYTES, RequestContext, RequestRejection, ShellItemId, SyntheticRoot,
+    TabId, VirtualLocationDescriptor,
 };
 pub use drag_drop::{
     AutoScrollDirection, DragButton, DragEffect, DragModifiers, DragSession, DragSessionState,
@@ -79,16 +80,16 @@ pub use namespace::{
 pub use navigation::{
     AddressBarMode, AddressBarState, BreadcrumbIconHint, BreadcrumbMenuItem, BreadcrumbSegment,
     BreadcrumbSegmentId, ColumnAlignment, ColumnApplicability, ColumnCost, ColumnDescriptor,
-    ColumnId, ColumnIdError, ColumnLayoutEntry, ColumnRegistry, ColumnRegistryError,
-    ColumnSortSemantics, ColumnValueType, DEFAULT_ICON_CACHE_MEMORY_MB,
+    ColumnFileSystems, ColumnId, ColumnIdError, ColumnLayoutEntry, ColumnRegistry,
+    ColumnRegistryError, ColumnSortSemantics, ColumnValueType, DEFAULT_ICON_CACHE_MEMORY_MB,
     DEFAULT_MFT_FOLDER_CACHE_MEMORY_MB, DEFAULT_THUMBNAIL_CACHE_MEMORY_MB, DirectorySnapshot,
     DirectoryState, DriveAvailability, DriveKind, DriveMetadata, FileEntry, FileEntryMetadata,
     HistoryEntry, MAX_ICON_CACHE_MEMORY_MB, MAX_MFT_FOLDER_CACHE_MEMORY_MB,
     MAX_THUMBNAIL_CACHE_MEMORY_MB, MIN_MFT_FOLDER_CACHE_MEMORY_MB, MenuFocusMovement,
     NavigationHistory, OrderedColumnLayout, PresentationChange, SelectionModel, SortDescriptor,
     SortDirection, TabRequestScopes, TabSearchState, TabState, TabViewState, ViewAnchor, ViewMode,
-    ViewSettings, default_icon_size_for_mode, effective_icon_size, location_breadcrumbs,
-    normalized_icon_cache_memory_mb, normalized_mft_folder_cache_memory_mb,
+    ViewSettings, default_icon_size_for_mode, effective_icon_size, format_unix_mode,
+    location_breadcrumbs, normalized_icon_cache_memory_mb, normalized_mft_folder_cache_memory_mb,
     normalized_thumbnail_cache_memory_mb,
 };
 pub use operation::{

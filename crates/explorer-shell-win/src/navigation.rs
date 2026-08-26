@@ -1290,6 +1290,7 @@ fn entry_metadata(
                 // Shell archives can advertise SFGAO_FOLDER because they are browsable
                 // containers; Explorer still shows their on-disk file size in Details view.
                 size_bytes: (!metadata.is_dir()).then_some(metadata.len()),
+                unix_mode: None,
                 type_display,
                 filesystem_attributes: metadata.file_attributes(),
                 unavailable_reason: None,

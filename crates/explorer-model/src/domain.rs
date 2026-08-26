@@ -149,7 +149,22 @@ pub enum LocationDescriptor {
     Virtual(VirtualLocationDescriptor),
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum FileSystemKind {
+    Local,
+    Adb,
+    Sftp,
+}
+
 impl LocationDescriptor {
+    pub fn file_system_kind(&self) -> Option<FileSystemKind> {
+        match self {
+            Self::FileSystem(_) => Some(FileSystemKind::Local),
+            Self::Virtual(location) if location.provider_id == "adb" => Some(FileSystemKind::Adb),
+            Self::Virtual(location) if location.provider_id == "sftp" => Some(FileSystemKind::Sftp),
+            _ => None,
+        }
+    }
     /// Creates a filesystem descriptor without resolving or touching the path.
     pub fn file_system(path: impl Into<PathBuf>) -> Self {
         Self::FileSystem(path.into())
