@@ -122,6 +122,7 @@ mod tests {
                     maximum_width: 600,
                     alignment: ColumnAlignment::End,
                     applicability: ColumnApplicability::AllEntries,
+                    file_systems: explorer_model::ColumnFileSystems::LOCAL,
                     sort_semantics: ColumnSortSemantics::Bytes,
                     cost: ColumnCost::BackgroundAggregate,
                 }],

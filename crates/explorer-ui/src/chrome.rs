@@ -8265,6 +8265,7 @@ impl RenderOnce for FileViewHost {
                 let authors = entry.metadata.authors_display.clone().unwrap_or_default();
                 let tags = entry.metadata.tags_display.clone().unwrap_or_default();
                 let title = entry.metadata.title_display.clone().unwrap_or_default();
+                let permissions = explorer_model::format_unix_mode(entry.metadata.unix_mode);
                 // File Count and Folder Count are directory facts. Some shell
                 // providers report a synthetic size for directories, which is
                 // relevant to Folder Size but must not suppress count requests.
@@ -8299,6 +8300,7 @@ impl RenderOnce for FileViewHost {
                             explorer_model::ColumnId::Title => Some(title.clone()),
                             explorer_model::ColumnId::FileCount => Some(file_count.clone()),
                             explorer_model::ColumnId::FolderCount => Some(folder_count.clone()),
+                            explorer_model::ColumnId::Permissions => Some(permissions.clone()),
                             _ => None,
                         };
                         if let Some(text) = builtin_text {
@@ -13048,6 +13050,11 @@ mod tests {
                 right.metadata.title_display.as_deref(),
                 sort.direction,
             ),
+            explorer_model::ColumnId::Permissions => compare_optional(
+                left.metadata.unix_mode,
+                right.metadata.unix_mode,
+                sort.direction,
+            ),
             explorer_model::ColumnId::FileCount | explorer_model::ColumnId::FolderCount => {
                 Ordering::Equal
             }
@@ -13488,6 +13495,7 @@ mod tests {
             maximum_width: 600,
             alignment: explorer_model::ColumnAlignment::End,
             applicability: explorer_model::ColumnApplicability::AllEntries,
+            file_systems: explorer_model::ColumnFileSystems::LOCAL,
             sort_semantics: explorer_model::ColumnSortSemantics::Integer,
             cost: explorer_model::ColumnCost::BackgroundBatch,
         };

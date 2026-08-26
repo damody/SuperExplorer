@@ -380,6 +380,7 @@ pub fn folder_size_column_descriptor() -> ColumnDescriptor {
         maximum_width: 360,
         alignment: ColumnAlignment::End,
         applicability: ColumnApplicability::Containers,
+        file_systems: explorer_model::ColumnFileSystems::LOCAL,
         sort_semantics: ColumnSortSemantics::Bytes,
         cost: ColumnCost::BackgroundAggregate,
     }

@@ -29,6 +29,7 @@ fn remote_file_entry(entry: RemoteEntry) -> Option<FileEntry> {
         is_container: entry.kind.is_container(),
         metadata: FileEntryMetadata {
             size_bytes: entry.size,
+            unix_mode: entry.unix_mode,
             type_display: Some(entry.kind.type_display().to_owned()),
             namespace_capabilities: NamespaceCapabilities::from_public_bits(
                 NamespaceCapabilities::OPEN
@@ -1348,6 +1349,7 @@ mod tests {
                 location: location.clone(),
                 kind,
                 size: Some(12),
+                unix_mode: Some(0o100644),
             };
             let row = remote_file_entry(remote_entry.clone()).expect("row identity");
             assert_eq!(row.location, location);

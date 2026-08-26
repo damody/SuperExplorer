@@ -27,7 +27,8 @@ emit_entry() {
     entry_path="$2"
     entry_name=${entry_path##*/}
     entry_hex=$(printf '%s' "$entry_name" | od -An -tx1 | tr -d '[:space:]') || exit 21
-    printf '%s\t%s\n' "$entry_kind" "$entry_hex"
+    entry_mode=$(stat -c '%f' "$entry_path" 2>/dev/null || true)
+    printf '%s\t%s\t%s\n' "$entry_kind" "$entry_hex" "$entry_mode"
 }
 
 [ -d "$parent_path" ] || exit 20
@@ -88,6 +89,7 @@ done
 pub struct AdbDirectoryEntry {
     pub name: String,
     pub kind: RemoteEntryKind,
+    pub unix_mode: Option<u32>,
 }
 
 /// Non-secret ADB device state reported by `adb devices -l`.
@@ -480,6 +482,7 @@ impl<R: AdbCommandRunner> RemoteProvider for AdbProvider<R> {
                     location: LocationDescriptor::Virtual(child),
                     kind: raw.kind,
                     size: None,
+                    unix_mode: raw.unix_mode,
                 })
             })
             .collect()
@@ -603,9 +606,15 @@ fn parse_directory_entries(stdout: &[u8]) -> Result<Vec<AdbDirectoryEntry>> {
         .lines()
         .filter(|line| !line.is_empty())
         .map(|line| {
-            let (token, encoded_name) = line
-                .split_once('\t')
+            let mut fields = line.splitn(3, '\t');
+            let token = fields.next().unwrap_or_default();
+            let encoded_name = fields
+                .next()
                 .context("ADB directory record has no kind separator")?;
+            let unix_mode = fields
+                .next()
+                .filter(|value| !value.is_empty())
+                .and_then(|value| u32::from_str_radix(value, 16).ok());
             if encoded_name.len() % 2 != 0 || encoded_name.is_empty() {
                 bail!("ADB directory record has an invalid encoded name");
             }
@@ -634,7 +643,11 @@ fn parse_directory_entries(stdout: &[u8]) -> Result<Vec<AdbDirectoryEntry>> {
                 "c" => RemoteEntryKind::CircularSymlink,
                 _ => bail!("ADB directory record kind is invalid"),
             };
-            Ok(AdbDirectoryEntry { name, kind })
+            Ok(AdbDirectoryEntry {
+                name,
+                kind,
+                unix_mode,
+            })
         })
         .collect()
 }
@@ -748,34 +761,52 @@ mod tests {
             vec![
                 AdbDirectoryEntry {
                     name: "file".to_owned(),
-                    kind: RemoteEntryKind::File
+                    kind: RemoteEntryKind::File,
+                    unix_mode: None,
                 },
                 AdbDirectoryEntry {
                     name: "dir".to_owned(),
-                    kind: RemoteEntryKind::Directory
+                    kind: RemoteEntryKind::Directory,
+                    unix_mode: None,
                 },
                 AdbDirectoryEntry {
                     name: "file-link".to_owned(),
-                    kind: RemoteEntryKind::FileSymlink
+                    kind: RemoteEntryKind::FileSymlink,
+                    unix_mode: None,
                 },
                 AdbDirectoryEntry {
                     name: "dir-link".to_owned(),
-                    kind: RemoteEntryKind::DirectorySymlink
+                    kind: RemoteEntryKind::DirectorySymlink,
+                    unix_mode: None,
                 },
                 AdbDirectoryEntry {
                     name: "broken".to_owned(),
-                    kind: RemoteEntryKind::BrokenSymlink
+                    kind: RemoteEntryKind::BrokenSymlink,
+                    unix_mode: None,
                 },
                 AdbDirectoryEntry {
                     name: "cycle".to_owned(),
-                    kind: RemoteEntryKind::CircularSymlink
+                    kind: RemoteEntryKind::CircularSymlink,
+                    unix_mode: None,
                 },
                 AdbDirectoryEntry {
                     name: "space and \ttab".to_owned(),
-                    kind: RemoteEntryKind::File
+                    kind: RemoteEntryKind::File,
+                    unix_mode: None,
                 },
             ]
         );
+    }
+
+    #[test]
+    fn parses_optional_hex_unix_mode_without_failing_the_entry() {
+        let entries = parse_directory_entries(
+            b"d\t416e64726f6964\t41ed\nf\t62726f6b656e\tnot-hex\nf\t6d697373696e67\n",
+        )
+        .unwrap();
+        assert_eq!(entries[0].unix_mode, Some(0o040755));
+        assert_eq!(entries[1].unix_mode, None);
+        assert_eq!(entries[2].unix_mode, None);
     }
 
     #[test]

@@ -11,6 +11,7 @@ pub struct RemoteEntry {
     pub location: LocationDescriptor,
     pub kind: RemoteEntryKind,
     pub size: Option<u64>,
+    pub unix_mode: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

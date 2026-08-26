@@ -57,6 +57,7 @@
         "kind": { "enum": ["abi-root", "gpui", "column", "renderer", "recalculate", "settings", "view-mode"] },
         "max_file_count": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
         "max_folder_count": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "file_systems": { "type": "array", "uniqueItems": true, "items": { "enum": ["local", "adb", "sftp"] } },
         "capabilities": { "type": "array", "items": { "type": "string" } },
         "payload": { "type": "string" }
       }

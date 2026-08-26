@@ -1351,7 +1351,10 @@ impl TryFrom<&ColumnId> for PersistedColumn {
             ColumnId::Authors => Ok(Self::Authors),
             ColumnId::Tags => Ok(Self::Tags),
             ColumnId::Title => Ok(Self::Title),
-            ColumnId::FileCount | ColumnId::FolderCount | ColumnId::Extension { .. } => Err(()),
+            ColumnId::FileCount
+            | ColumnId::FolderCount
+            | ColumnId::Permissions
+            | ColumnId::Extension { .. } => Err(()),
         }
     }
 }

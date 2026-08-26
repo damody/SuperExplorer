@@ -14,7 +14,7 @@
     { "id": "rust-lock-owner", "capabilities": ["abi", "filesystem.read", "lock-owner.query"] }
   ],
   "contributions": [
-    { "id": "rust-lock-owner:owners", "feature_id": "rust-lock-owner", "kind": "column", "capabilities": ["abi", "filesystem.read", "lock-owner.query"], "payload": "src/lib.rs" },
+    { "id": "rust-lock-owner:owners", "feature_id": "rust-lock-owner", "kind": "column", "file_systems": ["local"], "capabilities": ["abi", "filesystem.read", "lock-owner.query"], "payload": "src/lib.rs" },
     { "id": "rust-lock-owner:owners-renderer", "feature_id": "rust-lock-owner", "kind": "renderer", "capabilities": ["abi"], "payload": "src/lib.rs" }
   ],
   "payloads": [

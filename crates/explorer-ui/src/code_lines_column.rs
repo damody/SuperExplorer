@@ -231,6 +231,7 @@ pub fn code_lines_column_descriptor() -> ColumnDescriptor {
         maximum_width: 360,
         alignment: ColumnAlignment::End,
         applicability: ColumnApplicability::AllEntries,
+        file_systems: explorer_model::ColumnFileSystems::LOCAL,
         sort_semantics: ColumnSortSemantics::Integer,
         cost: ColumnCost::BackgroundBatch,
     }
@@ -249,6 +250,7 @@ pub fn lock_owner_column_descriptor() -> ColumnDescriptor {
         maximum_width: 480,
         alignment: ColumnAlignment::Start,
         applicability: ColumnApplicability::Files,
+        file_systems: explorer_model::ColumnFileSystems::LOCAL,
         sort_semantics: ColumnSortSemantics::Integer,
         cost: ColumnCost::BackgroundBatch,
     }
