@@ -15,11 +15,80 @@ use anyhow::{Context as _, Result, bail};
 use explorer_common::configure_background_command;
 use explorer_model::{CancellationToken, LocationDescriptor, VirtualLocationDescriptor};
 
-use crate::{RemoteEntry, RemoteProvider};
+use crate::{RemoteEntry, RemoteEntryKind, RemoteProvider};
 
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MAX_CAPTURE_BYTES: u64 = 8 * 1024 * 1024;
+const ADB_LIST_SCRIPT: &str = r#"
+parent_path=$(printf '%s' "$parent_b64" | base64 -d) || exit 22
+emit_entry() {
+    entry_kind="$1"
+    entry_path="$2"
+    entry_name=${entry_path##*/}
+    entry_hex=$(printf '%s' "$entry_name" | od -An -tx1 | tr -d '[:space:]') || exit 21
+    printf '%s\t%s\n' "$entry_kind" "$entry_hex"
+}
+
+[ -d "$parent_path" ] || exit 20
+for entry_path in "$parent_path"/* "$parent_path"/.[!.]* "$parent_path"/..?*; do
+    [ -e "$entry_path" ] || [ -L "$entry_path" ] || continue
+    if [ ! -L "$entry_path" ]; then
+        if [ -d "$entry_path" ]; then
+            emit_entry d "$entry_path"
+        else
+            emit_entry f "$entry_path"
+        fi
+        continue
+    fi
+
+    current_path="$entry_path"
+    visited_paths="
+$current_path
+"
+    link_hops=0
+    while [ -L "$current_path" ]; do
+        if [ "$link_hops" -ge 40 ]; then
+            emit_entry c "$entry_path"
+            continue 2
+        fi
+        link_target=$(readlink "$current_path") || {
+            emit_entry b "$entry_path"
+            continue 2
+        }
+        case "$link_target" in
+            /*) next_path="$link_target" ;;
+            *) next_path="${current_path%/*}/$link_target" ;;
+        esac
+        case "$visited_paths" in
+            *"
+$next_path
+"*)
+                emit_entry c "$entry_path"
+                continue 2
+                ;;
+        esac
+        visited_paths="$visited_paths$next_path
+"
+        current_path="$next_path"
+        link_hops=$((link_hops + 1))
+    done
+
+    if [ -d "$current_path" ]; then
+        emit_entry ld "$entry_path"
+    elif [ -e "$current_path" ]; then
+        emit_entry lf "$entry_path"
+    else
+        emit_entry b "$entry_path"
+    fi
+done
+"#;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdbDirectoryEntry {
+    pub name: String,
+    pub kind: RemoteEntryKind,
+}
 
 /// Non-secret ADB device state reported by `adb devices -l`.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -149,7 +218,7 @@ impl<R: AdbCommandRunner> AdbClient<R> {
 
     /// Lists direct children of an Android directory. The directory is supplied as one argv
     /// element and never interpolated into a host shell command.
-    pub fn list_directory(&self, serial: &str, path: &str) -> Result<Vec<String>> {
+    pub fn list_directory(&self, serial: &str, path: &str) -> Result<Vec<AdbDirectoryEntry>> {
         self.list_directory_cancellable(serial, path, &CancellationToken::new())
     }
 
@@ -158,7 +227,7 @@ impl<R: AdbCommandRunner> AdbClient<R> {
         serial: &str,
         path: &str,
         cancellation: &CancellationToken,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<AdbDirectoryEntry>> {
         validate_serial(serial)?;
         validate_remote_path(path)?;
         let output = self.runner.run(
@@ -167,20 +236,16 @@ impl<R: AdbCommandRunner> AdbClient<R> {
                 OsString::from("-s"),
                 OsString::from(serial),
                 OsString::from("shell"),
-                OsString::from("ls"),
-                OsString::from("-1Ap"),
-                OsString::from("--"),
-                OsString::from(path),
+                OsString::from(format!(
+                    "parent_b64={};\n{ADB_LIST_SCRIPT}",
+                    encode_base64(path.as_bytes())
+                )),
             ],
             cancellation,
             DEFAULT_COMMAND_TIMEOUT,
         )?;
         ensure_success(&output, "list directory")?;
-        Ok(String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter(|entry| !entry.is_empty())
-            .map(str::to_owned)
-            .collect())
+        parse_directory_entries(&output.stdout)
     }
 
     fn device_command(
@@ -313,6 +378,29 @@ impl<R: AdbCommandRunner> AdbClient<R> {
     }
 }
 
+fn encode_base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let bits = u32::from(chunk[0]) << 16
+            | u32::from(chunk.get(1).copied().unwrap_or(0)) << 8
+            | u32::from(chunk.get(2).copied().unwrap_or(0));
+        output.push(TABLE[((bits >> 18) & 0x3f) as usize] as char);
+        output.push(TABLE[((bits >> 12) & 0x3f) as usize] as char);
+        output.push(if chunk.len() > 1 {
+            TABLE[((bits >> 6) & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+        output.push(if chunk.len() > 2 {
+            TABLE[(bits & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    output
+}
+
 pub struct AdbProvider<R = SystemAdbCommandRunner> {
     client: AdbClient<R>,
     devices: Mutex<HashMap<[u8; 16], String>>,
@@ -383,15 +471,14 @@ impl<R: AdbCommandRunner> RemoteProvider for AdbProvider<R> {
             .list_directory_cancellable(&serial, &parent, cancellation)?
             .into_iter()
             .map(|raw| {
-                let is_directory = raw.ends_with('/');
-                let name = raw.trim_end_matches('/').to_owned();
+                let name = raw.name;
                 let mut child = location.clone();
                 child.components.push(name.clone());
                 child.entry_id = None;
                 Ok(RemoteEntry {
                     name,
                     location: LocationDescriptor::Virtual(child),
-                    is_directory,
+                    kind: raw.kind,
                     size: None,
                 })
             })
@@ -510,6 +597,48 @@ fn validate_remote_path(value: &str) -> Result<()> {
     Ok(())
 }
 
+fn parse_directory_entries(stdout: &[u8]) -> Result<Vec<AdbDirectoryEntry>> {
+    let stdout = std::str::from_utf8(stdout).context("ADB directory output is not UTF-8")?;
+    stdout
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let (token, encoded_name) = line
+                .split_once('\t')
+                .context("ADB directory record has no kind separator")?;
+            if encoded_name.len() % 2 != 0 || encoded_name.is_empty() {
+                bail!("ADB directory record has an invalid encoded name");
+            }
+            let mut bytes = Vec::with_capacity(encoded_name.len() / 2);
+            for pair in encoded_name.as_bytes().chunks_exact(2) {
+                let digits = std::str::from_utf8(pair)
+                    .context("ADB directory record name is not hexadecimal")?;
+                bytes.push(
+                    u8::from_str_radix(digits, 16)
+                        .context("ADB directory record name is not hexadecimal")?,
+                );
+            }
+            let name = String::from_utf8(bytes).context("ADB entry name is not UTF-8")?;
+            if name.is_empty()
+                || matches!(name.as_str(), "." | "..")
+                || name.contains(['/', '\\', '\0', '\r', '\n'])
+            {
+                bail!("ADB directory record name is invalid");
+            }
+            let kind = match token {
+                "f" => RemoteEntryKind::File,
+                "d" => RemoteEntryKind::Directory,
+                "lf" => RemoteEntryKind::FileSymlink,
+                "ld" => RemoteEntryKind::DirectorySymlink,
+                "b" => RemoteEntryKind::BrokenSymlink,
+                "c" => RemoteEntryKind::CircularSymlink,
+                _ => bail!("ADB directory record kind is invalid"),
+            };
+            Ok(AdbDirectoryEntry { name, kind })
+        })
+        .collect()
+}
+
 fn parse_devices(stdout: &str) -> Result<Vec<AdbDevice>> {
     let mut output = Vec::new();
     for line in stdout
@@ -545,11 +674,51 @@ fn parse_devices(stdout: &str) -> Result<Vec<AdbDevice>> {
 
 #[cfg(test)]
 mod tests {
-    use std::{ffi::OsString, path::Path, time::Duration};
+    use std::{
+        ffi::OsString,
+        path::Path,
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
 
     use explorer_model::CancellationToken;
 
     use super::*;
+
+    #[derive(Clone)]
+    struct FakeRunner {
+        stdout: Arc<Vec<u8>>,
+        arguments: Arc<Mutex<Vec<OsString>>>,
+    }
+
+    impl FakeRunner {
+        fn with_stdout(stdout: impl Into<Vec<u8>>) -> Self {
+            Self {
+                stdout: Arc::new(stdout.into()),
+                arguments: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    impl AdbCommandRunner for FakeRunner {
+        fn run(
+            &self,
+            _: &Path,
+            arguments: &[OsString],
+            cancellation: &CancellationToken,
+            _: Duration,
+        ) -> Result<Output> {
+            if cancellation.is_cancelled() {
+                bail!("fixture ADB command cancelled");
+            }
+            *self.arguments.lock().unwrap() = arguments.to_vec();
+            Ok(Output {
+                status: std::process::ExitStatus::default(),
+                stdout: self.stdout.as_ref().clone(),
+                stderr: Vec::new(),
+            })
+        }
+    }
 
     #[test]
     fn parses_authorized_and_unauthorized_devices() {
@@ -566,6 +735,106 @@ mod tests {
     fn rejects_command_injection_in_path_or_serial() {
         assert!(validate_serial("serial\nother").is_err());
         assert!(validate_remote_path("sdcard/Download").is_err());
+    }
+
+    #[test]
+    fn parses_every_structured_directory_kind_and_hostile_safe_names() {
+        let entries = parse_directory_entries(
+            b"f\t66696c65\nd\t646972\nlf\t66696c652d6c696e6b\nld\t6469722d6c696e6b\nb\t62726f6b656e\nc\t6379636c65\nf\t737061636520616e642009746162\n",
+        )
+        .unwrap();
+        assert_eq!(
+            entries,
+            vec![
+                AdbDirectoryEntry {
+                    name: "file".to_owned(),
+                    kind: RemoteEntryKind::File
+                },
+                AdbDirectoryEntry {
+                    name: "dir".to_owned(),
+                    kind: RemoteEntryKind::Directory
+                },
+                AdbDirectoryEntry {
+                    name: "file-link".to_owned(),
+                    kind: RemoteEntryKind::FileSymlink
+                },
+                AdbDirectoryEntry {
+                    name: "dir-link".to_owned(),
+                    kind: RemoteEntryKind::DirectorySymlink
+                },
+                AdbDirectoryEntry {
+                    name: "broken".to_owned(),
+                    kind: RemoteEntryKind::BrokenSymlink
+                },
+                AdbDirectoryEntry {
+                    name: "cycle".to_owned(),
+                    kind: RemoteEntryKind::CircularSymlink
+                },
+                AdbDirectoryEntry {
+                    name: "space and \ttab".to_owned(),
+                    kind: RemoteEntryKind::File
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_or_unrepresentable_directory_records() {
+        assert!(parse_directory_entries(b"wat\t66696c65\n").is_err());
+        assert!(parse_directory_entries(b"f\t123\n").is_err());
+        assert!(parse_directory_entries(b"f\t6261640a6e616d65\n").is_err());
+        assert!(parse_directory_entries(b"f-no-tab\n").is_err());
+    }
+
+    #[test]
+    fn adb_listing_uses_fixed_script_and_encoded_parent_path() {
+        let runner = FakeRunner::with_stdout(b"ld\t70686f746f73\n".to_vec());
+        let client = AdbClient::new(PathBuf::from("fixture-adb.exe"), runner.clone());
+        let entries = client
+            .list_directory("emulator-5554", "/storage/emulated/0")
+            .unwrap();
+        assert_eq!(entries[0].kind, RemoteEntryKind::DirectorySymlink);
+
+        let arguments = runner.arguments.lock().unwrap();
+        assert_eq!(arguments[2], "shell");
+        assert_eq!(arguments.len(), 4);
+        let remote_command = arguments[3].to_string_lossy();
+        assert!(remote_command.contains(ADB_LIST_SCRIPT));
+        assert!(remote_command.starts_with("parent_b64=L3N0b3JhZ2UvZW11bGF0ZWQvMA==;"));
+        assert!(!remote_command.contains("/storage/emulated/0"));
+        assert_eq!(encode_base64(b"/"), "Lw==");
+    }
+
+    #[test]
+    fn adb_provider_preserves_link_side_location_and_cancellation() {
+        let runner = FakeRunner::with_stdout(b"ld\t6c696e6b\n".to_vec());
+        let provider = AdbProvider::new(AdbClient::new(PathBuf::from("fixture-adb.exe"), runner));
+        provider
+            .register_device([9; 16], "device-9".to_owned())
+            .unwrap();
+        let location = VirtualLocationDescriptor {
+            provider_id: "adb".to_owned(),
+            public_authority: Some("device-9".to_owned()),
+            container_identity: [9; 16],
+            container_generation: 1,
+            entry_id: None,
+            components: vec!["data".to_owned()],
+        };
+        let entry = provider
+            .list(&location, &CancellationToken::new())
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(entry.kind, RemoteEntryKind::DirectorySymlink);
+        assert!(matches!(
+            entry.location,
+            LocationDescriptor::Virtual(child)
+                if child.components == ["data".to_owned(), "link".to_owned()]
+        ));
+
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        assert!(provider.list(&location, &cancellation).is_err());
     }
 
     #[test]
@@ -625,5 +894,31 @@ mod tests {
         };
         let devices = client.devices().expect("query real ADB device inventory");
         assert!(devices.iter().all(|device| !device.serial.is_empty()));
+    }
+
+    #[test]
+    fn real_adb_root_listing_uses_structured_probe_when_device_is_available() {
+        let Ok(client) = AdbClient::discover() else {
+            return;
+        };
+        let Some(device) = client
+            .devices()
+            .expect("query real ADB device inventory")
+            .into_iter()
+            .find(|device| device.state == AdbDeviceState::Device)
+        else {
+            return;
+        };
+        let entries = client
+            .list_directory(&device.serial, "/")
+            .expect("list real ADB root with structured probe");
+        assert!(entries.iter().all(|entry| !entry.name.is_empty()));
+        if let Some(sdcard) = entries.iter().find(|entry| entry.name == "sdcard") {
+            assert_eq!(
+                sdcard.kind,
+                RemoteEntryKind::DirectorySymlink,
+                "Android /sdcard must be navigable through its symbolic link",
+            );
+        }
     }
 }

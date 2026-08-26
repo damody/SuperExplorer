@@ -1,7 +1,7 @@
 //! Password-authenticated SFTP provider with pinned SSH host keys.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::Path,
     sync::{Arc, Mutex},
     time::Duration,
@@ -17,13 +17,16 @@ use russh::{
     client::{self, Config, Handle, Handler},
     keys::ssh_key::{HashAlg, PublicKey},
 };
-use russh_sftp::client::SftpSession;
+use russh_sftp::client::{SftpSession, error::Error as SftpError};
+use russh_sftp::protocol::StatusCode;
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     runtime::{Builder, Runtime},
 };
 
-use crate::{RemoteEntry, RemoteProvider};
+use crate::{RemoteEntry, RemoteEntryKind, RemoteProvider};
+
+const MAX_SYMLINK_HOPS: usize = 40;
 
 struct ProfileSecret(String);
 
@@ -96,6 +99,13 @@ impl SftpProvider {
                 }),
             );
         Ok(())
+    }
+
+    pub fn remove_profile(&self, identity: [u8; 16]) {
+        self.profiles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&identity);
     }
 
     /// Opens only the SSH transport long enough to obtain the presented host fingerprint.
@@ -213,10 +223,18 @@ impl RemoteProvider for SftpProvider {
                 let mut child = location.clone();
                 child.components.push(name.clone());
                 child.entry_id = None;
+                let file_type = entry.file_type();
+                let kind = if file_type.is_symlink() {
+                    resolve_sftp_symlink(&sftp, &entry.path(), cancellation).await?
+                } else if file_type.is_dir() {
+                    RemoteEntryKind::Directory
+                } else {
+                    RemoteEntryKind::File
+                };
                 output.push(RemoteEntry {
                     name,
                     location: LocationDescriptor::Virtual(child),
-                    is_directory: entry.file_type().is_dir(),
+                    kind,
                     size: entry.metadata().size,
                 });
             }
@@ -390,6 +408,111 @@ impl RemoteProvider for SftpProvider {
     }
 }
 
+async fn resolve_sftp_symlink(
+    sftp: &SftpSession,
+    link_path: &str,
+    cancellation: &CancellationToken,
+) -> Result<RemoteEntryKind> {
+    let mut current =
+        normalize_sftp_path(link_path, None).context("SFTP symbolic-link path is invalid")?;
+    let mut visited = HashSet::new();
+
+    for hop in 0..=MAX_SYMLINK_HOPS {
+        ensure_sftp_not_cancelled(cancellation)?;
+        if !visited.insert(current.clone()) {
+            return Ok(RemoteEntryKind::CircularSymlink);
+        }
+        let metadata = match sftp.symlink_metadata(&current).await {
+            Ok(metadata) => metadata,
+            Err(error) if unresolved_sftp_target(&error) => {
+                return Ok(RemoteEntryKind::BrokenSymlink);
+            }
+            Err(error) => return Err(error).context("inspect SFTP symbolic link"),
+        };
+        if metadata.is_dir() {
+            return Ok(RemoteEntryKind::DirectorySymlink);
+        }
+        if !metadata.is_symlink() {
+            return Ok(RemoteEntryKind::FileSymlink);
+        }
+        if hop == MAX_SYMLINK_HOPS {
+            return Ok(RemoteEntryKind::CircularSymlink);
+        }
+        let target = match sftp.read_link(&current).await {
+            Ok(target) => target,
+            Err(error) if unresolved_sftp_target(&error) => {
+                return Ok(RemoteEntryKind::BrokenSymlink);
+            }
+            Err(error) => return Err(error).context("read SFTP symbolic link"),
+        };
+        current = match next_sftp_link_path(&current, &target, &visited) {
+            Ok(next) => next,
+            Err(kind) => return Ok(kind),
+        };
+    }
+
+    unreachable!("bounded SFTP symbolic-link loop always returns")
+}
+
+fn ensure_sftp_not_cancelled(cancellation: &CancellationToken) -> Result<()> {
+    if cancellation.is_cancelled() {
+        bail!("SFTP operation cancelled");
+    }
+    Ok(())
+}
+
+fn unresolved_sftp_target(error: &SftpError) -> bool {
+    matches!(
+        error,
+        SftpError::Status(status)
+            if matches!(
+                status.status_code,
+                StatusCode::NoSuchFile | StatusCode::PermissionDenied | StatusCode::Failure
+            )
+    )
+}
+
+fn next_sftp_link_path(
+    current: &str,
+    target: &str,
+    visited: &HashSet<String>,
+) -> std::result::Result<String, RemoteEntryKind> {
+    let Some(next) = normalize_sftp_path(current, Some(target)) else {
+        return Err(RemoteEntryKind::BrokenSymlink);
+    };
+    if visited.contains(&next) {
+        Err(RemoteEntryKind::CircularSymlink)
+    } else {
+        Ok(next)
+    }
+}
+
+fn normalize_sftp_path(link_path: &str, target: Option<&str>) -> Option<String> {
+    if link_path.contains(['\0', '\r', '\n']) || !link_path.starts_with('/') {
+        return None;
+    }
+    let candidate = match target {
+        None => link_path.to_owned(),
+        Some(target) if target.contains(['\0', '\r', '\n']) || target.is_empty() => return None,
+        Some(target) if target.starts_with('/') => target.to_owned(),
+        Some(target) => {
+            let parent = link_path.rsplit_once('/').map_or("/", |(parent, _)| parent);
+            format!("{parent}/{target}")
+        }
+    };
+    let mut components = Vec::new();
+    for component in candidate.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                components.pop();
+            }
+            component => components.push(component),
+        }
+    }
+    Some(format!("/{}", components.join("/")))
+}
+
 async fn remove_tree(
     sftp: &SftpSession,
     root: &str,
@@ -439,9 +562,75 @@ fn remote_path(location: &VirtualLocationDescriptor) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use russh_sftp::protocol::Status;
 
     #[test]
     fn profile_secret_has_no_debug_representation() {
         assert!(!std::any::type_name::<ProfileSecret>().is_empty());
+    }
+
+    #[test]
+    fn normalizes_relative_and_absolute_sftp_link_targets() {
+        assert_eq!(
+            normalize_sftp_path("/root/links/photos", Some("../media/./photos")),
+            Some("/root/media/photos".to_owned())
+        );
+        assert_eq!(
+            normalize_sftp_path("/root/links/photos", Some("/srv/photos")),
+            Some("/srv/photos".to_owned())
+        );
+        assert_eq!(
+            normalize_sftp_path("/root/links/photos", Some("../../../srv")),
+            Some("/srv".to_owned())
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_sftp_link_targets() {
+        assert_eq!(normalize_sftp_path("relative/link", Some("target")), None);
+        assert_eq!(normalize_sftp_path("/root/link", Some("")), None);
+        assert_eq!(normalize_sftp_path("/root/link", Some("bad\nname")), None);
+    }
+
+    #[test]
+    fn repeated_normalized_sftp_paths_are_detectable_as_cycles() {
+        let start = normalize_sftp_path("/root/a", None).unwrap();
+        let mut visited = HashSet::new();
+        assert!(visited.insert(start.clone()));
+        assert_eq!(
+            next_sftp_link_path(&start, "../root/a", &visited),
+            Err(RemoteEntryKind::CircularSymlink)
+        );
+        assert_eq!(MAX_SYMLINK_HOPS, 40);
+    }
+
+    #[test]
+    fn sftp_resolution_distinguishes_broken_targets_from_transport_failures() {
+        let status = |status_code| {
+            SftpError::Status(Status {
+                id: 1,
+                status_code,
+                error_message: String::new(),
+                language_tag: String::new(),
+            })
+        };
+        assert!(unresolved_sftp_target(&status(StatusCode::NoSuchFile)));
+        assert!(unresolved_sftp_target(&status(
+            StatusCode::PermissionDenied
+        )));
+        assert!(!unresolved_sftp_target(&status(StatusCode::ConnectionLost)));
+        assert!(!unresolved_sftp_target(&SftpError::Timeout));
+        assert_eq!(
+            next_sftp_link_path("/root/link", "bad\nname", &HashSet::new()),
+            Err(RemoteEntryKind::BrokenSymlink)
+        );
+    }
+
+    #[test]
+    fn sftp_resolution_honours_cancellation() {
+        let cancellation = CancellationToken::new();
+        assert!(ensure_sftp_not_cancelled(&cancellation).is_ok());
+        cancellation.cancel();
+        assert!(ensure_sftp_not_cancelled(&cancellation).is_err());
     }
 }

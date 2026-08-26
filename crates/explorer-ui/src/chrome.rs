@@ -5223,6 +5223,15 @@ impl NavigationBar {
 impl RenderOnce for NavigationBar {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let layout = self.tokens.layout;
+        let has_address_error = self.state.tabs().active_tab().view.address.error.is_some();
+        let navigation_height = layout.address_bar_height.value()
+            + if has_address_error {
+                layout.minimum_hit_target.value()
+            } else {
+                0.0
+            };
+        let navigation_top_padding =
+            (layout.address_bar_height.value() - layout.minimum_hit_target.value()) / 2.0;
         let available = self.state.command_availability();
         let history_menu = self.state.navigation_history_menu_direction();
         let history_index = self.state.navigation_history_menu_index();
@@ -5238,10 +5247,11 @@ impl RenderOnce for NavigationBar {
             .role(Role::Document)
             .relative()
             .aria_label("Explorer navigation bar")
-            .h(px(layout.address_bar_height.value()))
+            .h(px(navigation_height))
             .flex_none()
             .flex()
-            .items_center()
+            .items_start()
+            .pt(px(navigation_top_padding))
             .gap(px(layout.content_spacing.value()))
             .px(px(layout.control_padding_horizontal.value()))
             .border_b(px(layout.focus_stroke.value()))

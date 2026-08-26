@@ -439,10 +439,9 @@ pub fn windows_navigation_items_with_pins(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
     for device in devices {
-        let location =
-            explorer_model::RemoteAddress::parse(&format!("adb://{}/sdcard", device.serial))
-                .ok()
-                .and_then(|address| address.to_deterministic_location(1).ok());
+        let location = explorer_model::RemoteAddress::parse(&format!("adb://{}/", device.serial))
+            .ok()
+            .and_then(|address| address.to_deterministic_location(1).ok());
         items.push(NavigationItem {
             id: format!("phone-{}", device.serial),
             label: device.label,
@@ -691,6 +690,10 @@ mod tests {
             .iter()
             .find(|item| item.id == "phone-phone-123")
             .expect("phone row");
+        assert!(matches!(
+            phone.location.as_ref(),
+            Some(LocationDescriptor::Virtual(remote)) if remote.components.is_empty()
+        ));
         let nested = explorer_model::RemoteAddress::parse("adb://phone-123/sdcard/Download")
             .unwrap()
             .to_deterministic_location(1)

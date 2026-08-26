@@ -1,0 +1,11 @@
+{
+  "gate": "SLINK-CONTRACT",
+  "timestamp": "2026-08-26T01:43:50.0967524+08:00",
+  "source_revision": "8cef852ec8514b31575597a140f86ab9a4c3d73e",
+  "command": "cargo test -p explorer-remote --lib --locked",
+  "expected": "RemoteEntryKind semantics compile and every kind assertion passes",
+  "actual": "20 passed; 0 failed",
+  "exit_status": 0,
+  "artifact_sha256": "E019D527A9BCC533435B3A72CD7AC56377317812C9B7B5DB19DAE07E136133E1",
+  "task_ids": ["1.1.1", "1.1.2", "1.1.3", "1.1.4"]
+}

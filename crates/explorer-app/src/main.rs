@@ -23,6 +23,12 @@ use explorer_shell_win::ShellPlatform;
 use explorer_ui::ExplorerUiState;
 
 #[link(name = "kernel32")]
+#[expect(
+    unsafe_code,
+    reason = "AllocConsole is exposed only through the Win32 system ABI"
+)]
+// SAFETY: The declaration matches kernel32's parameterless BOOL-returning
+// AllocConsole signature and is invoked only by this process entry point.
 unsafe extern "system" {
     fn AllocConsole() -> i32;
 }
@@ -33,6 +39,10 @@ fn main() {
         // SAFETY: AllocConsole takes no pointers and creates one console for
         // this process. Failure is non-fatal because persistent logging still
         // captures client diagnostics.
+        #[expect(
+            unsafe_code,
+            reason = "creating the optional diagnostics console requires calling AllocConsole"
+        )]
         let _ = unsafe { AllocConsole() };
     }
     let build = AppBuildInfo::current();

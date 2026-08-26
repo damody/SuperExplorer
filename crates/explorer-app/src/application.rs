@@ -2738,9 +2738,15 @@ fn store_code_lines_directory_cache(
 }
 
 #[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "atomic cache activation requires declaring and invoking Win32 MoveFileExW"
+)]
 fn replace_code_lines_cache_file(temporary: &Path, destination: &Path) -> std::io::Result<()> {
     use std::{iter, os::windows::ffi::OsStrExt as _};
     #[link(name = "kernel32")]
+    // SAFETY: This declaration matches the documented kernel32 MoveFileExW
+    // system ABI; both pointer arguments are supplied as NUL-terminated UTF-16.
     unsafe extern "system" {
         fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
     }
@@ -3919,6 +3925,10 @@ fn filesystem_file_identity_v1(path: &Path) -> Option<Vec<u8>> {
     let size = u32::try_from(size_of::<FILE_ID_INFO>()).ok()?;
     // SAFETY: `file` owns a live handle for the duration of this call and
     // `info` is writable storage of exactly the advertised FILE_ID_INFO size.
+    #[expect(
+        unsafe_code,
+        reason = "reading FILE_ID_INFO requires the raw-handle Win32 API"
+    )]
     unsafe {
         GetFileInformationByHandleEx(handle, FileIdInfo, (&raw mut info).cast(), size).ok()?;
     }
@@ -5362,10 +5372,12 @@ impl ApplicationLifecycle {
                 broker_client,
                 self.take_virtual_folder_runtime()?,
             ));
+        let remote_runtime = crate::remote_service::configured_remote_runtime();
+        let sftp_login_runtime = Arc::clone(&remote_runtime);
         let shell_service: Arc<dyn explorer_model::ExplorerService> =
             Arc::new(crate::remote_service::RemoteExplorerService::new(
                 shell_service,
-                crate::remote_service::configured_remote_providers(),
+                Arc::clone(&remote_runtime.providers),
             ));
         let shutdown_resources = Arc::clone(&self.resources);
         let safe_mode_offers = self.safe_mode_ui_offers()?;
@@ -5559,6 +5571,10 @@ impl ApplicationLifecycle {
                     let controller = Rc::clone(&folder_options_controller_for_window);
                     let observer_diagnostics = folder_options_diagnostics.clone();
                     root.update(cx, |root, _| {
+                        let runtime = Arc::clone(&sftp_login_runtime);
+                        root.attach_sftp_address_login_observer(Arc::new(move |input| {
+                            runtime.login_address(input)
+                        }));
                         root.attach_folder_options_window_observer(Rc::new(move |create, snapshot, cx| {
                             let existing = controller.borrow().window;
                             if let Some(existing) = existing {

@@ -31,6 +31,44 @@ pub struct RemoteAddress {
     pub components: Vec<String>,
 }
 
+/// A direct SFTP address submission. `username_hint` is transient and never becomes part of the
+/// canonical location stored by tabs, history, bookmarks, or diagnostics.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SftpAddressInput {
+    pub address: RemoteAddress,
+    pub username_hint: Option<String>,
+}
+
+impl SftpAddressInput {
+    pub fn parse(input: &str) -> Result<Self, RemoteAddressError> {
+        let remainder = input
+            .strip_prefix("sftp://")
+            .or_else(|| input.strip_prefix("SFTP://"))
+            .ok_or(RemoteAddressError::UnsupportedScheme)?;
+        let (authority, path) = remainder.split_once('/').unwrap_or((remainder, ""));
+        let (host, username_hint) = authority
+            .split_once('@')
+            .map_or((authority, None), |(host, username)| {
+                (host, Some(username.to_owned()))
+            });
+        validate_authority(host)?;
+        if username_hint.as_deref().is_some_and(|value| {
+            value.is_empty() || value.len() > 255 || value.contains([':', '@', '\0'])
+        }) {
+            return Err(RemoteAddressError::InvalidAuthority);
+        }
+        let canonical = if path.is_empty() {
+            format!("sftp://{host}/")
+        } else {
+            format!("sftp://{host}/{path}")
+        };
+        Ok(Self {
+            address: RemoteAddress::parse(&canonical)?,
+            username_hint,
+        })
+    }
+}
+
 /// Persistable SFTP connection metadata. Passwords intentionally have no field here;
 /// callers store them in the platform credential vault under `credential_target()`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -158,13 +196,18 @@ impl RemoteAddress {
         container_identity: [u8; 16],
         generation: u64,
     ) -> Result<LocationDescriptor, LocationDescriptorValidationError> {
-        LocationDescriptor::try_virtual(
+        let mut location = LocationDescriptor::try_virtual(
             self.provider.provider_id(),
             container_identity,
             generation,
             None,
             self.components.clone(),
-        )
+        )?;
+        if let LocationDescriptor::Virtual(descriptor) = &mut location {
+            descriptor.public_authority = Some(self.authority.clone());
+        }
+        location.validate()?;
+        Ok(location)
     }
 
     /// Creates a stable non-secret identity from provider kind and authority. This lets direct
@@ -280,6 +323,14 @@ mod tests {
         ] {
             assert!(RemoteAddress::parse(unsafe_address).is_err());
         }
+    }
+
+    #[test]
+    fn direct_sftp_username_hint_is_transient_and_canonicalized() {
+        let input = SftpAddressInput::parse("sftp://45.32.49.125@root/").unwrap();
+        assert_eq!(input.username_hint.as_deref(), Some("root"));
+        assert_eq!(input.address.canonical(), "sftp://45.32.49.125");
+        assert!(!format!("{:?}", input.address).contains("root"));
     }
 
     #[test]

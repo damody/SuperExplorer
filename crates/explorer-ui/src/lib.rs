@@ -1064,6 +1064,7 @@ pub struct ExplorerRoot {
     broker_retry_observer: Option<BrokerRetryObserver>,
     command_prompt_launcher: Option<CommandPromptLauncher>,
     bookmark_file_launcher: Option<BookmarkFileLauncher>,
+    sftp_address_login_observer: Option<SftpAddressLoginObserver>,
     folder_options_window_observer: Option<FolderOptionsWindowObserver>,
     bookmark_editor_window_observer: Option<BookmarkEditorWindowObserver>,
     last_window_title: Option<String>,
@@ -1122,6 +1123,8 @@ pub type CommandPromptLauncher =
     Arc<dyn Fn(Option<std::path::PathBuf>) -> Result<(), String> + Send + Sync>;
 pub type BookmarkFileLauncher =
     Arc<dyn Fn(explorer_model::LocationDescriptor) -> Result<(), String> + Send + Sync>;
+pub type SftpAddressLoginObserver =
+    Arc<dyn Fn(&str) -> Result<Option<explorer_model::LocationDescriptor>, String> + Send + Sync>;
 /// Application-owned bridge that creates or activates the singleton Folder
 /// Options native window after the reducer has created a fresh draft.
 pub type FolderOptionsWindowObserver = std::rc::Rc<
@@ -1398,6 +1401,7 @@ impl ExplorerRoot {
             broker_retry_observer: None,
             command_prompt_launcher: None,
             bookmark_file_launcher: None,
+            sftp_address_login_observer: None,
             folder_options_window_observer: None,
             bookmark_editor_window_observer: None,
             last_window_title: None,
@@ -1432,6 +1436,29 @@ impl ExplorerRoot {
 
     pub fn attach_command_prompt_launcher(&mut self, launcher: CommandPromptLauncher) {
         self.command_prompt_launcher = Some(launcher);
+    }
+
+    pub fn attach_sftp_address_login_observer(&mut self, observer: SftpAddressLoginObserver) {
+        self.sftp_address_login_observer = Some(observer);
+    }
+
+    fn begin_address_navigation(&mut self, value: &str) -> Option<explorer_model::ExplorerCommand> {
+        if !value.to_ascii_lowercase().starts_with("sftp://") {
+            return self.state.begin_address_submission(value);
+        }
+        match self
+            .sftp_address_login_observer
+            .as_ref()
+            .map(|observer| observer(value))
+        {
+            Some(Ok(Some(location))) => self.state.begin_active_navigation(location, false),
+            Some(Ok(None)) => None,
+            Some(Err(error)) => {
+                self.state.fail_address_submission(error);
+                None
+            }
+            None => self.state.begin_address_submission(value),
+        }
     }
 
     pub fn attach_folder_options_window_observer(&mut self, observer: FolderOptionsWindowObserver) {
@@ -2619,6 +2646,7 @@ impl ExplorerRoot {
             broker_retry_observer: None,
             command_prompt_launcher: None,
             bookmark_file_launcher: None,
+            sftp_address_login_observer: None,
             folder_options_window_observer: None,
             bookmark_editor_window_observer: None,
             last_window_title: None,
@@ -2716,6 +2744,7 @@ impl ExplorerRoot {
             broker_retry_observer: None,
             command_prompt_launcher: None,
             bookmark_file_launcher: None,
+            sftp_address_login_observer: None,
             folder_options_window_observer: None,
             bookmark_editor_window_observer: None,
             last_window_title: None,
@@ -3548,6 +3577,7 @@ impl ExplorerRoot {
                 .filter(|candidate| allow_prefetch || candidate.id == tab_id)
                 .filter_map(|tab| tab.history.current().map(|entry| entry.location.clone())),
         )
+        .filter(|location| !is_remote_virtual_location(location))
         .map(|location| navigation_pane::shell_icon_key(&location, theme, self.shell_icon_dpi))
         .chain(std::iter::once(
             navigation_pane::generic_breadcrumb_folder_icon_key(
@@ -3626,6 +3656,7 @@ impl ExplorerRoot {
             .collect::<HashSet<_>>();
         let current_shell_keys = entries
             .iter()
+            .filter(|entry| !is_remote_virtual_location(&entry.location))
             .map(|entry| {
                 let mut key = file_icon_cache_key(
                     entry,
@@ -3712,6 +3743,9 @@ impl ExplorerRoot {
             .cloned()
             .collect::<HashSet<_>>();
         for entry in entries.iter().take(FILE_VIEWPORT_ICON_REQUEST_CAP) {
+            if is_remote_virtual_location(&entry.location) {
+                continue;
+            }
             let representative = navigation_pane::file_icon_key_for_size(
                 entry,
                 theme,
@@ -3755,6 +3789,9 @@ impl ExplorerRoot {
         }
         let mut keys = Vec::with_capacity(remaining_shell);
         for entry in entries.iter().take(FILE_VIEWPORT_ICON_REQUEST_CAP) {
+            if is_remote_virtual_location(&entry.location) {
+                continue;
+            }
             if keys.len() == remaining_shell {
                 break;
             }
@@ -4267,6 +4304,7 @@ impl ExplorerRoot {
         };
         let keys = locations
             .into_iter()
+            .filter(|location| !is_remote_virtual_location(location))
             .map(|location| navigation_pane::shell_icon_key(location, theme, self.shell_icon_dpi))
             .collect::<HashSet<_>>();
         for key in keys {
@@ -5352,10 +5390,16 @@ impl ExplorerRoot {
                         | explorer_model::BookmarkTarget::File { location } => location
                             .path()
                             .and_then(std::path::Path::file_name)
-                            .map_or_else(
-                                || "Bookmark".to_owned(),
-                                |name| name.to_string_lossy().into_owned(),
-                            ),
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .or_else(|| match location {
+                                explorer_model::LocationDescriptor::Virtual(remote) => remote
+                                    .components
+                                    .last()
+                                    .cloned()
+                                    .or_else(|| remote.public_authority.clone()),
+                                _ => None,
+                            })
+                            .unwrap_or_else(|| "Bookmark".to_owned()),
                         explorer_model::BookmarkTarget::LuaScript { .. } => unreachable!(),
                     };
                     self.state.begin_new_bookmark_editor(name, target);
@@ -5377,7 +5421,9 @@ impl ExplorerRoot {
             if let Some(bookmark) = bookmark {
                 match bookmark.target {
                     explorer_model::BookmarkTarget::Folder { location } => {
-                        if !location.path().is_some_and(std::path::Path::is_dir) {
+                        if matches!(location, explorer_model::LocationDescriptor::FileSystem(_))
+                            && !location.path().is_some_and(std::path::Path::is_dir)
+                        {
                             self.state.set_bookmark_notice(
                                 "Unable to open bookmark: the folder no longer exists.",
                             );
@@ -5862,7 +5908,7 @@ impl ExplorerRoot {
                 }
                 self.state.begin_refresh_navigation()
             }
-            ExplorerAction::SubmitAddress(value) => self.state.begin_address_submission(value),
+            ExplorerAction::SubmitAddress(value) => self.begin_address_navigation(value),
             ExplorerAction::ActivateBreadcrumbSegment { location }
             | ExplorerAction::ActivateBreadcrumbChild { location }
             | ExplorerAction::ActivateNavigationItem { location } => {
@@ -6498,7 +6544,7 @@ impl ExplorerRoot {
                     if self.try_launch_command_prompt(&input, cx) {
                         return;
                     }
-                    if let Some(command) = self.state.begin_address_submission(&input) {
+                    if let Some(command) = self.begin_address_navigation(&input) {
                         self.submit_command(command);
                     }
                 }
@@ -6866,6 +6912,14 @@ fn namespace_thumbnail_supported(entry: &explorer_model::FileEntry) -> bool {
         &explorer_model::NamespaceAvailability::Available,
         entry.metadata.namespace_capabilities,
         explorer_model::NamespaceCommand::Thumbnail,
+    )
+}
+
+fn is_remote_virtual_location(location: &explorer_model::LocationDescriptor) -> bool {
+    matches!(
+        location,
+        explorer_model::LocationDescriptor::Virtual(remote)
+            if matches!(remote.provider_id.as_str(), "adb" | "sftp")
     )
 }
 
@@ -10286,6 +10340,67 @@ mod tests {
                     r"C:\fixture\{index}.txt"
                 ))
         }));
+    }
+
+    #[test]
+    fn remote_rows_never_submit_windows_shell_enrichment_commands() {
+        let service = Arc::new(RecordingService::default());
+        let mut root = ExplorerRoot {
+            service: Some(service.clone()),
+            ..ExplorerRoot::default()
+        };
+        let tab = root.state.tabs().active_tab();
+        let context = explorer_model::RequestContext::new(tab.id, tab.generation);
+        let location = explorer_model::LocationDescriptor::Virtual(
+            explorer_model::VirtualLocationDescriptor {
+                provider_id: "adb".to_owned(),
+                public_authority: Some("HA245TSY".to_owned()),
+                container_identity: [9; 16],
+                container_generation: 1,
+                entry_id: Some(1),
+                components: vec!["sdcard".to_owned()],
+            },
+        );
+        let entry = explorer_model::FileEntry {
+            id: explorer_model::ShellItemId::from_provider_bytes([9]).expect("identity"),
+            location: location.clone(),
+            display_name: "sdcard".to_owned(),
+            is_container: true,
+            metadata: explorer_model::FileEntryMetadata::default(),
+        };
+
+        root.submit_file_icon_loads(&context, &[entry]);
+        root.submit_location_icon_loads(&context, [&location]);
+
+        assert!(service.0.lock().unwrap().is_empty());
+        assert!(root.pending_icon_keys.is_empty());
+        assert!(root.pending_thumbnail_keys.is_empty());
+    }
+
+    #[test]
+    fn sftp_username_hint_is_intercepted_and_navigates_to_canonical_host() {
+        let mut root = ExplorerRoot::default();
+        root.attach_sftp_address_login_observer(Arc::new(|input| {
+            let parsed = explorer_model::SftpAddressInput::parse(input)
+                .map_err(|error| error.to_string())?;
+            parsed
+                .address
+                .to_deterministic_location(1)
+                .map(Some)
+                .map_err(|error| error.to_string())
+        }));
+
+        let command = root
+            .begin_address_navigation("sftp://45.32.49.125@root/")
+            .expect("canonical navigation");
+        let explorer_model::ExplorerCommand::Navigate { location, .. } = command else {
+            panic!("expected navigation");
+        };
+        let explorer_model::LocationDescriptor::Virtual(location) = location else {
+            panic!("expected virtual SFTP location");
+        };
+        assert_eq!(location.public_authority.as_deref(), Some("45.32.49.125"));
+        assert!(location.components.is_empty());
     }
 
     #[test]

@@ -1,0 +1,12 @@
+{
+  "gate": "SLINK-ADB",
+  "timestamp": "2026-08-26T01:43:50.0967524+08:00",
+  "source_revision": "8cef852ec8514b31575597a140f86ab9a4c3d73e",
+  "command": "cargo test -p explorer-remote --lib --locked",
+  "expected": "Structured ADB parsing, safe encoded paths, all link states, cancellation, and real /sdcard classification pass",
+  "actual": "20 passed; 0 failed; emulator-5554 /sdcard classified DirectorySymlink",
+  "exit_status": 0,
+  "artifact_sha256": "F670008162CD98AC55612D45B3DC88490ED7DA4007D961A4A94B461F5AE7BAD8",
+  "adjustment_id": "B-ADB-SHELL-ARGV-2026-08-26",
+  "task_ids": ["2.1.1", "2.1.2", "2.1.3", "2.1.4"]
+}

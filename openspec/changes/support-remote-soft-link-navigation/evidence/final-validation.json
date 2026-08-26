@@ -1,0 +1,41 @@
+{
+  "gate": "SLINK-REL",
+  "timestamp": "2026-08-26T01:43:50.0967524+08:00",
+  "source_revision": "8cef852ec8514b31575597a140f86ab9a4c3d73e",
+  "checks": [
+    {
+      "task_id": "3.2.1",
+      "command": "cargo fmt --all -- --check",
+      "expected": "exit 0",
+      "actual": "exit 0",
+      "exit_status": 0
+    },
+    {
+      "task_id": "3.2.2",
+      "command": "focused explorer-remote, explorer-app remote_service, explorer-ui state, and navigation-pane tests",
+      "expected": "all focused affected tests pass",
+      "actual": "20 + 3 + 1 + 1 passed; 0 failed",
+      "exit_status": 0
+    },
+    {
+      "task_id": "3.2.3",
+      "command": "cargo check --workspace --locked",
+      "expected": "exit 0",
+      "actual": "exit 0 with pre-existing warnings",
+      "exit_status": 0
+    },
+    {
+      "task_id": "3.2.4",
+      "command": "openspec validate support-remote-soft-link-navigation --strict",
+      "expected": "valid",
+      "actual": "valid",
+      "exit_status": 0
+    }
+  ],
+  "supplemental_full_test": {
+    "command": "cargo test -p explorer-remote -p explorer-app -p explorer-ui --lib --locked",
+    "actual": "explorer-app 203 passed; explorer-ui 340 passed and 7 unrelated existing UI tests failed",
+    "related_failures": false,
+    "failed_areas": ["popup state", "chrome layout/text", "icon cache", "thumbnail cache"]
+  }
+}

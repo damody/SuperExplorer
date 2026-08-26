@@ -2233,6 +2233,14 @@ fn parsing_text(location: &LocationDescriptor) -> String {
         LocationDescriptor::ParsingName(name) => name.clone(),
         LocationDescriptor::ShellNamespace(_) | LocationDescriptor::KnownFolder(_) => String::new(),
         LocationDescriptor::Virtual(location) => {
+            if let Some(authority) = location.public_authority.as_deref() {
+                let suffix = location.components.join("/");
+                return if suffix.is_empty() {
+                    format!("{}://{authority}", location.provider_id)
+                } else {
+                    format!("{}://{authority}/{suffix}", location.provider_id)
+                };
+            }
             const HEX: &[u8; 16] = b"0123456789abcdef";
             let mut identity = String::with_capacity(location.container_identity.len() * 2);
             for byte in location.container_identity {
@@ -2272,7 +2280,10 @@ pub fn location_breadcrumbs(location: &LocationDescriptor) -> Vec<BreadcrumbSegm
             segments.push(BreadcrumbSegment {
                 id: BreadcrumbSegmentId(hasher.finish()),
                 display_name: if depth == 0 {
-                    virtual_location.provider_id.clone()
+                    virtual_location
+                        .public_authority
+                        .clone()
+                        .unwrap_or_else(|| virtual_location.provider_id.clone())
                 } else {
                     virtual_location.components[depth - 1].clone()
                 },
@@ -2738,6 +2749,17 @@ mod tests {
             history.go_forward().map(|entry| &entry.location),
             Some(&nested)
         );
+    }
+
+    #[test]
+    fn adb_address_uses_public_serial_not_internal_identity_or_generation() {
+        let location = crate::RemoteAddress::parse("adb://emulator-5554/sdcard/Android")
+            .unwrap()
+            .to_deterministic_location(1)
+            .unwrap();
+        let address = AddressBarState::for_entry(&HistoryEntry::new(location, "Android"));
+        assert_eq!(address.draft, "adb://emulator-5554/sdcard/Android");
+        assert!(!address.draft.contains("/1/"));
     }
 
     #[test]

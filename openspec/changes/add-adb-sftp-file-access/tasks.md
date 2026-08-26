@@ -107,6 +107,7 @@
 - [x] 4.1.2 Add direct remote address parsing and title/breadcrumb display.
 - [ ] 4.1.3 Add Add/Connect SFTP dialog with password masking and Credential Manager submission.
 - [ ] 4.1.4 Add UI interaction/redaction tests and record UI-1 evidence.
+- [x] 4.1.5 Allow ADB and SFTP folders to be saved and reopened as bookmarks.
 
 ### 4.2 Remote operation safety
 
