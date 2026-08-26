@@ -180,12 +180,20 @@ pub(crate) struct UsnEventV2 {
 struct HandleGuard(HANDLE);
 
 impl Drop for HandleGuard {
+    #[expect(
+        unsafe_code,
+        reason = "releasing a volume or journal event handle requires Win32 CloseHandle"
+    )]
     fn drop(&mut self) {
         // SAFETY: this guard exclusively owns the handle.
         let _ = unsafe { CloseHandle(self.0) };
     }
 }
 
+#[expect(
+    unsafe_code,
+    reason = "opening an NTFS volume for journal access requires the raw Win32 CreateFileW API"
+)]
 fn open_volume(root: &Path, overlapped: bool) -> Result<HandleGuard, String> {
     let device = crate::mft_size_map::volume_device_path(root)?;
     let wide = std::ffi::OsStr::new(&device)
@@ -212,6 +220,10 @@ fn open_volume(root: &Path, overlapped: bool) -> Result<HandleGuard, String> {
     Ok(HandleGuard(handle))
 }
 
+#[expect(
+    unsafe_code,
+    reason = "querying USN journal metadata requires Win32 DeviceIoControl with raw storage"
+)]
 pub(crate) fn query_journal(root: &Path) -> Result<JournalMetadataV2, String> {
     let handle = open_volume(root, false)?;
     let mut data = USN_JOURNAL_DATA_V0::default();
@@ -241,6 +253,13 @@ pub(crate) fn query_journal(root: &Path) -> Result<JournalMetadataV2, String> {
     })
 }
 
+#[expect(
+    unsafe_code,
+    reason = "reading the USN journal requires Win32 event, OVERLAPPED, cancellation, and result APIs"
+)]
+// SAFETY: The owned volume and event handles, input structure, output buffer,
+// byte counter, and OVERLAPPED storage remain live through completion or the
+// cancellation drain; returned byte lengths are checked before record parsing.
 pub(crate) fn read_journal_once(
     root: &Path,
     checkpoint: MftCheckpointV2,

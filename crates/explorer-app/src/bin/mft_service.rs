@@ -159,6 +159,11 @@ fn begin_persistence_attempt(
 struct WinHandle(HANDLE);
 
 impl Drop for WinHandle {
+    #[expect(
+        unsafe_code,
+        reason = "releasing an owned Windows service handle requires Win32 CloseHandle"
+    )]
+    // SAFETY: WinHandle has exclusive ownership of a valid handle and closes it exactly once.
     fn drop(&mut self) {
         if !self.0.is_invalid() {
             let _ = unsafe { CloseHandle(self.0) };
@@ -170,6 +175,11 @@ fn filetime_u64(value: FILETIME) -> u64 {
     (u64::from(value.dwHighDateTime) << 32) | u64::from(value.dwLowDateTime)
 }
 
+#[expect(
+    unsafe_code,
+    reason = "reading process creation identity requires Win32 GetProcessTimes output pointers"
+)]
+// SAFETY: process is an open query handle and all four outputs point to initialized FILETIME storage.
 fn process_creation_100ns(process: HANDLE) -> Result<u64, String> {
     let mut creation = FILETIME::default();
     let mut exit = FILETIME::default();
@@ -192,6 +202,11 @@ fn process_creation_100ns(process: HANDLE) -> Result<u64, String> {
     Ok(creation)
 }
 
+#[expect(
+    unsafe_code,
+    reason = "binding focus authorization to this service requires a raw Win32 process handle"
+)]
+// SAFETY: OpenProcess receives this live process ID; its validated result is immediately owned by WinHandle.
 fn initialize_protected_focus_image() -> Result<(), String> {
     let path = std::env::current_exe()
         .map_err(|error| error.to_string())?
@@ -214,6 +229,12 @@ fn initialize_protected_focus_image() -> Result<(), String> {
         .map_err(|_| "protected focus image was initialized twice".to_owned())
 }
 
+#[expect(
+    unsafe_code,
+    reason = "querying a Windows token user requires the Win32 variable-buffer protocol"
+)]
+// SAFETY: The first call obtains the required size; the second passes a writable allocation of
+// that size while token remains open, and validates the API result before using the bytes.
 fn token_user_buffer(token: HANDLE) -> Result<Vec<u8>, String> {
     let mut needed = 0_u32;
     let _ = unsafe { GetTokenInformation(token, TokenUser, None, 0, &raw mut needed) };
@@ -234,6 +255,13 @@ fn token_user_buffer(token: HANDLE) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+#[expect(
+    unsafe_code,
+    reason = "authorizing a focus-pipe client requires raw Win32 process, token, SID, and session APIs"
+)]
+// SAFETY: The connected pipe and derived process/token handles remain valid throughout; variable
+// token buffers are size-checked before TOKEN_USER reads, SID pointers stay owned, and the image
+// buffer length bounds the UTF-16 slice.
 fn authorize_focus_pipe(pipe: isize) -> Result<(u64, isize), String> {
     let mut pid = 0_u32;
     unsafe { GetNamedPipeClientProcessId(HANDLE(pipe as *mut c_void), &raw mut pid) }
@@ -326,6 +354,12 @@ struct ServiceStatus {
 }
 
 #[link(name = "advapi32")]
+#[expect(
+    unsafe_code,
+    reason = "hosting the MFT indexer as a Windows service requires the native SCM ABI"
+)]
+// SAFETY: These declarations mirror the documented SCM ABI; call sites keep pointed-to service
+// tables, names, callbacks, and status structures alive for each synchronous use.
 unsafe extern "system" {
     fn StartServiceCtrlDispatcherW(table: *const ServiceTableEntryW) -> i32;
     fn RegisterServiceCtrlHandlerW(
@@ -339,6 +373,13 @@ fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain([0]).collect()
 }
 
+#[expect(
+    unsafe_code,
+    reason = "the Windows SCM requires an unsafe system-ABI control callback"
+)]
+// SAFETY: SCM supplies the scalar control value. This callback dereferences no foreign pointers
+// and only performs panic-free atomic/lifecycle state transitions; Rust prevents unwinding across
+// the system ABI by aborting on an unexpected panic.
 unsafe extern "system" fn control_handler(control: u32) {
     if matches!(control, SERVICE_CONTROL_STOP | SERVICE_CONTROL_SHUTDOWN) {
         LIFECYCLE_BARRIER.close();
@@ -346,6 +387,12 @@ unsafe extern "system" fn control_handler(control: u32) {
     }
 }
 
+#[expect(
+    unsafe_code,
+    reason = "the Windows SCM requires an unsafe system-ABI service entry callback"
+)]
+// SAFETY: SCM owns invocation and the unused argv pointer is never dereferenced. The registered
+// callback and terminated service name remain valid; Rust prevents unwinding across the system ABI.
 unsafe extern "system" fn service_main(_: u32, _: *mut *mut u16) {
     let name = wide(SERVICE_NAME);
     // SAFETY: SCM owns the service callback lifetime and the UTF-16 name is terminated.
@@ -363,6 +410,11 @@ unsafe extern "system" fn service_main(_: u32, _: *mut *mut u16) {
     report(handle, SERVICE_STOPPED, 0);
 }
 
+#[expect(
+    unsafe_code,
+    reason = "publishing Windows service state requires the native SetServiceStatus API"
+)]
+// SAFETY: handle is the live value returned by SCM and status is fully initialized for the call.
 fn report(handle: *mut c_void, state: u32, controls: u32) {
     let status = ServiceStatus {
         service_type: SERVICE_WIN32_OWN_PROCESS,
@@ -1284,6 +1336,12 @@ fn run_pending_legacy_cleanup(
     true
 }
 
+#[expect(
+    unsafe_code,
+    reason = "tracking active-console changes requires the Win32 session identifier API"
+)]
+// SAFETY: WTSGetActiveConsoleSessionId takes no pointers and returns a value sentinel that is
+// compared before it influences focus-lease state.
 fn run_event_driven_service() {
     let cache = cache_root();
     if std::fs::create_dir_all(&cache).is_err() {
@@ -2859,6 +2917,12 @@ fn prepare_volume(
     Ok(committed)
 }
 
+#[expect(
+    unsafe_code,
+    reason = "atomically publishing an MFT base index requires Win32 ReplaceFileW"
+)]
+// SAFETY: Both filesystem paths are NUL-terminated and remain alive for the synchronous call;
+// replacement is limited to the service-owned cache destination.
 fn publish_base_index(
     temporary: &std::path::Path,
     destination: &std::path::Path,
@@ -5933,7 +5997,12 @@ fn main() {
             main: None,
         },
     ];
-    // SAFETY: table is terminated and remains alive until the dispatcher returns.
+    #[expect(
+        unsafe_code,
+        reason = "entering the Windows service dispatcher requires the native SCM API"
+    )]
+    // SAFETY: table is terminated and remains alive until the dispatcher returns; its callback
+    // uses the required system ABI and the mutable service-name buffer also remains alive.
     if unsafe { StartServiceCtrlDispatcherW(table.as_ptr()) } == 0 {
         // Developer smoke mode: initialize/reuse each volume once when launched outside SCM.
         let cache = cache_root();

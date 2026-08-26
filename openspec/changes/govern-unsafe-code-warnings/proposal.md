@@ -1,6 +1,6 @@
 ## Why
 
-Normal workspace compilation currently emits roughly 194–212 `unsafe_code` diagnostics from 113 canonical Windows FFI and raw-pointer locations. The warning volume obscures newly introduced unsafe boundaries and prevents the repository's warnings-as-errors quality gate from serving as an actionable regression signal.
+The implementation baseline emits 215 `unsafe_code` diagnostics from 116 canonical Windows FFI and raw-pointer locations. Three dirty-tree `remote_service.rs` locations added after planning are included by `ADJ-B-001`. The warning volume obscures newly introduced unsafe boundaries and prevents the repository's warnings-as-errors quality gate from serving as an actionable regression signal.
 
 ## What Changes
 
@@ -27,4 +27,4 @@ None. This change does not alter product behavior or existing public capability 
 - No public API, ABI, dependency, persistence format, installer, or runtime behavior changes are intended.
 - Existing uncommitted user work must be preserved; edits are restricted to diagnostic locations and their safety documentation.
 - Existing unrelated `dead_code`, Clippy, and all-target test compilation failures remain outside this change and must be reported accurately rather than hidden.
-- Pre-existing broad unsafe suppressions outside the 113-location default-feature normal-target baseline are inventoried as deferred residual risk; removing them is a later cleanup wave.
+- Pre-existing broad unsafe suppressions outside the 116-location default-feature normal-target baseline are inventoried as deferred residual risk; removing them is a later cleanup wave.

@@ -146,6 +146,12 @@ struct SecurityAttributes {
 
 #[cfg(windows)]
 #[link(name = "kernel32")]
+#[expect(
+    unsafe_code,
+    reason = "focus lease transport uses Win32 named-pipe and handle APIs"
+)]
+// SAFETY: These declarations match the documented system ABI. Callers keep
+// referenced UTF-16 names, buffers, byte counts, and OVERLAPPED values live.
 unsafe extern "system" {
     fn CreateNamedPipeW(
         name: *const u16,
@@ -305,6 +311,12 @@ fn focus_reporter_worker(receiver: mpsc::Receiver<ReporterCommandV1>) {
 }
 
 #[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "opening the focus lease named pipe requires Win32 handle APIs"
+)]
+// SAFETY: The pipe name remains NUL-terminated and live for both calls; the
+// returned sentinel is checked before ownership is transferred to OwnedHandle.
 fn connect_focus_pipe() -> Result<OwnedHandle, String> {
     let name = wide(FOCUS_PIPE_NAME);
     let _ = unsafe { WaitNamedPipeW(name.as_ptr(), 250) };
@@ -341,6 +353,12 @@ fn send_focus_frame(handle: isize, frame: FocusFrameV1) -> Result<(), String> {
 
 #[cfg(windows)]
 #[link(name = "advapi32")]
+#[expect(
+    unsafe_code,
+    reason = "constructing the focus pipe ACL requires the Win32 SDDL converter"
+)]
+// SAFETY: The signature matches advapi32; the returned local allocation is
+// captured by LocalMemory and released with the corresponding allocator.
 unsafe extern "system" {
     fn ConvertStringSecurityDescriptorToSecurityDescriptorW(
         descriptor: *const u16,
@@ -352,6 +370,12 @@ unsafe extern "system" {
 
 #[cfg(windows)]
 #[link(name = "kernel32")]
+#[expect(
+    unsafe_code,
+    reason = "the SDDL converter returns memory owned by Win32 LocalFree"
+)]
+// SAFETY: The declaration matches kernel32 LocalFree and is called only for a
+// non-null pointer returned by the SDDL conversion API.
 unsafe extern "system" {
     fn LocalFree(memory: *mut c_void) -> *mut c_void;
 }
@@ -361,6 +385,12 @@ struct OwnedHandle(isize);
 
 #[cfg(windows)]
 impl Drop for OwnedHandle {
+    #[expect(
+        unsafe_code,
+        reason = "releasing a raw Win32 focus-pipe handle requires CloseHandle"
+    )]
+    // SAFETY: OwnedHandle is the unique owner and rejects null and invalid
+    // sentinel handles before releasing the handle exactly once.
     fn drop(&mut self) {
         if self.0 != 0 && self.0 != INVALID_HANDLE_VALUE {
             let _ = unsafe { CloseHandle(self.0) };
@@ -373,6 +403,12 @@ struct LocalMemory(*mut c_void);
 
 #[cfg(windows)]
 impl Drop for LocalMemory {
+    #[expect(
+        unsafe_code,
+        reason = "releasing the Win32 SDDL allocation requires LocalFree"
+    )]
+    // SAFETY: LocalMemory owns only the allocation returned by the SDDL API and
+    // invokes LocalFree once after checking for null.
     fn drop(&mut self) {
         if !self.0.is_null() {
             let _ = unsafe { LocalFree(self.0) };
@@ -386,6 +422,12 @@ fn wide(value: &str) -> Vec<u16> {
 }
 
 #[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "serving focus leases requires raw Win32 ACL and named-pipe creation APIs"
+)]
+// SAFETY: The SDDL and pipe-name buffers remain live through synchronous calls;
+// the descriptor and pipe handles immediately enter their matching RAII owners.
 pub(crate) fn serve_focus_leases(
     stopped: impl Fn() -> bool + Send + Sync + 'static,
     authorize: impl Fn(isize) -> Result<(u64, isize), String> + Send + Sync + 'static,
@@ -470,6 +512,12 @@ pub(crate) fn serve_focus_leases(
 }
 
 #[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "closing an accepted focus pipe session requires DisconnectNamedPipe"
+)]
+// SAFETY: The OwnedHandle keeps the accepted pipe live throughout the worker;
+// disconnect is issued only for that handle before its final CloseHandle.
 fn handle_focus_connection(
     pipe: OwnedHandle,
     stopped: &dyn Fn() -> bool,
@@ -517,6 +565,12 @@ fn handle_focus_connection(
 }
 
 #[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "focus frame reads require submitting a raw buffer to Win32 ReadFile"
+)]
+// SAFETY: Each closure invocation exposes only the remaining initialized slice
+// capacity and keeps the slice and OVERLAPPED storage live until completion.
 fn read_frame_with_deadline(
     handle: isize,
     bytes: &mut [u8],
@@ -551,6 +605,12 @@ fn read_frame_with_deadline(
 }
 
 #[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "focus frame writes require submitting a raw buffer to Win32 WriteFile"
+)]
+// SAFETY: Each closure invocation exposes only the remaining immutable bytes,
+// whose storage and OVERLAPPED state remain live until completion.
 fn write_all(handle: isize, bytes: &[u8], stopped: &dyn Fn() -> bool) -> Result<(), String> {
     let mut offset = 0;
     while offset < bytes.len() {
@@ -577,6 +637,12 @@ fn write_all(handle: isize, bytes: &[u8], stopped: &dyn Fn() -> bool) -> Result<
 }
 
 #[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "asynchronous named-pipe connection requires Win32 event and OVERLAPPED APIs"
+)]
+// SAFETY: The event is owned for the whole OVERLAPPED lifetime, the structure
+// remains pinned on this stack until completion, and Win32 errors are checked.
 fn connect_overlapped(handle: isize, stopped: &dyn Fn() -> bool) -> Result<(), String> {
     let event =
         unsafe { CreateEventW(None, true, false, None) }.map_err(|error| error.to_string())?;
@@ -610,12 +676,24 @@ struct WinEvent(HANDLE);
 
 #[cfg(windows)]
 impl Drop for WinEvent {
+    #[expect(
+        unsafe_code,
+        reason = "releasing the OVERLAPPED completion event requires Win32 CloseHandle"
+    )]
+    // SAFETY: WinEvent uniquely owns the successfully created event and closes
+    // it exactly once after no pending operation can reference the guard.
     fn drop(&mut self) {
         let _ = unsafe { WinCloseHandle(self.0) };
     }
 }
 
 #[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "focus pipe transfers require Win32 event creation and last-error inspection"
+)]
+// SAFETY: The event, OVERLAPPED structure, byte counter, and submitted buffer
+// all outlive synchronous completion or wait_overlapped cancellation/drain.
 fn overlapped_io(
     handle: isize,
     deadline: Instant,
@@ -642,6 +720,12 @@ fn overlapped_io(
 }
 
 #[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "bounded OVERLAPPED completion requires Win32 wait, cancel, and result APIs"
+)]
+// SAFETY: The caller keeps the handle and OVERLAPPED storage live; cancellation
+// is drained before return, and result buffers are valid u32 out-parameters.
 fn wait_overlapped(
     handle: isize,
     overlapped: &mut OVERLAPPED,

@@ -1284,6 +1284,12 @@ fn run_cancellable_vacuum_into(
 }
 
 #[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "atomic SQLite store replacement with backup requires Win32 ReplaceFileW"
+)]
+// SAFETY: The declaration matches kernel32; source, destination, and optional
+// backup buffers remain NUL-terminated and live for the synchronous call.
 fn atomic_replace_file(
     source: &Path,
     destination: &Path,
@@ -1683,6 +1689,10 @@ fn configure(connection: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+#[expect(
+    unsafe_code,
+    reason = "enabling persistent WAL requires SQLite's raw file-control interface"
+)]
 fn enable_persistent_wal_files(connection: &Connection) -> Result<(), String> {
     let mut enabled = 1_i32;
     // SAFETY: the connection is open for the duration of the call, `main` is a
