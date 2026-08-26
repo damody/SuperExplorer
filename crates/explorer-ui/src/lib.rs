@@ -4941,11 +4941,18 @@ impl ExplorerRoot {
         }
         if action == ExplorerAction::CloseBookmarkContextMenu {
             self.state.close_bookmark_context_menu();
+            self.state.close_remote_context_menu();
             cx.notify();
             return;
         }
         if self.state.bookmark_context_menu().is_some() {
             self.state.close_bookmark_context_menu();
+            cx.notify();
+        }
+        if self.state.remote_context_menu().is_some()
+            && !matches!(action, ExplorerAction::ShowContextMenu { .. })
+        {
+            self.state.close_remote_context_menu();
             cx.notify();
         }
         if let ExplorerAction::OpenBookmarkInNewTab { id } = action {
@@ -6052,10 +6059,12 @@ impl ExplorerRoot {
         {
             self.execute_file_operation(request);
         }
-        if action == ExplorerAction::RecycleDeleteSelected
-            && let Some(request) = self.state.recycle_selected_request()
-        {
-            self.execute_file_operation(request);
+        if action == ExplorerAction::RecycleDeleteSelected {
+            if self.state.selected_items_include_remote() {
+                let _ = self.state.begin_permanent_delete_confirmation();
+            } else if let Some(request) = self.state.recycle_selected_request() {
+                self.execute_file_operation(request);
+            }
         }
         if action == ExplorerAction::CreateShortcutSelected
             && let Some(request) = self.state.create_shortcut_selected_request()

@@ -696,6 +696,15 @@ impl RenderOnce for ExplorerWindow {
                     self.on_action.clone(),
                 ))
             })
+            .when_some(self.state.remote_context_menu(), |element, menu| {
+                element.child(remote_context_menu(
+                    self.tokens,
+                    menu,
+                    f32::from(window.bounds().size.width),
+                    f32::from(window.bounds().size.height),
+                    self.on_action.clone(),
+                ))
+            })
             .when_some(
                 self.state.bookmark_folder_delete_confirmation(),
                 |element, (_, descendant_count)| {
@@ -1494,6 +1503,94 @@ fn bookmark_context_menu(
                     .left(px(left))
                     .top(px(top))
                     .min_w(px(236.0))
+                    .p(px(6.0))
+                    .rounded(px(6.0))
+                    .border(px(1.0))
+                    .border_color(tokens.theme.colors.divider.to_gpui())
+                    .bg(tokens.theme.colors.menu_fill.to_gpui())
+                    .shadow_lg()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .children(rows),
+            )
+            .with_priority(300),
+        )
+}
+
+fn remote_context_menu(
+    tokens: UiTokens,
+    menu: crate::state::RemoteContextMenuState,
+    window_width: f32,
+    window_height: f32,
+    callback: Option<ActionCallback>,
+) -> impl IntoElement {
+    let close = ExplorerAction::CloseBookmarkContextMenu;
+    let close_cb = callback.clone();
+    let close_right = close.clone();
+    let close_right_cb = callback.clone();
+    let commands = if menu.background {
+        vec![
+            ("新增資料夾", ExplorerAction::CreateFolder, false),
+            ("貼上", ExplorerAction::Paste, false),
+        ]
+    } else {
+        vec![
+            ("開啟", ExplorerAction::OpenFocused, false),
+            ("剪下", ExplorerAction::CutSelected, false),
+            ("複製", ExplorerAction::CopySelected, false),
+            ("重新命名", ExplorerAction::BeginRenameFocused, false),
+            ("永久刪除…", ExplorerAction::RecycleDeleteSelected, true),
+        ]
+    };
+    let rows = commands
+        .into_iter()
+        .enumerate()
+        .map(|(index, (label, action, danger))| {
+            let callback = callback.clone();
+            div()
+                .id(format!("remote-context-command-{index}"))
+                .role(Role::MenuItem)
+                .aria_label(label)
+                .cursor_pointer()
+                .px(px(12.0))
+                .py(px(7.0))
+                .rounded(px(4.0))
+                .text_color(if danger {
+                    tokens.theme.colors.danger.to_gpui()
+                } else {
+                    tokens.theme.colors.text_primary.to_gpui()
+                })
+                .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
+                .child(label)
+                .when_some(callback, move |element, cb| {
+                    element.on_click(move |_, window, cx| cb(&action, window, cx))
+                })
+        });
+    let left = menu.x.min((window_width - 220.0).max(0.0));
+    let top = menu.y.min((window_height - 230.0).max(0.0));
+    div()
+        .id("remote-context-overlay")
+        .absolute()
+        .inset_0()
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            if let Some(cb) = close_cb.as_ref() {
+                cb(&close, window, cx);
+            }
+        })
+        .on_mouse_down(MouseButton::Right, move |_, window, cx| {
+            if let Some(cb) = close_right_cb.as_ref() {
+                cb(&close_right, window, cx);
+            }
+        })
+        .child(
+            deferred(
+                div()
+                    .id("remote-context-menu")
+                    .role(Role::Menu)
+                    .aria_label("Remote file context menu")
+                    .absolute()
+                    .left(px(left))
+                    .top(px(top))
+                    .min_w(px(212.0))
                     .p(px(6.0))
                     .rounded(px(6.0))
                     .border(px(1.0))
@@ -11323,6 +11420,10 @@ impl RenderOnce for OperationCenter {
                             explorer_model::OperationItemResult::Succeeded => "Succeeded".to_owned(),
                             explorer_model::OperationItemResult::Skipped => "Skipped".to_owned(),
                             explorer_model::OperationItemResult::Cancelled => "Cancelled".to_owned(),
+                            explorer_model::OperationItemResult::Partial(error) => format!(
+                                "Partially completed: {}",
+                                error.user_message
+                            ),
                             explorer_model::OperationItemResult::Failed(error) => format!(
                                 "Failed (HRESULT {:?}): {}",
                                 error.native_code, error.user_message

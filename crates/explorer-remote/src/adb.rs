@@ -440,6 +440,9 @@ impl<R: AdbCommandRunner> AdbProvider<R> {
             .get(&location.container_identity)
             .cloned()
         {
+            if location.public_authority.as_deref() != Some(serial.as_str()) {
+                bail!("ADB location authority does not match the registered device");
+            }
             return Ok(serial);
         }
         for device in self.client.devices()? {
@@ -449,6 +452,9 @@ impl<R: AdbCommandRunner> AdbProvider<R> {
                     &device.serial,
                 ) == location.container_identity
             {
+                if location.public_authority.as_deref() != Some(device.serial.as_str()) {
+                    bail!("ADB location authority does not match the discovered device");
+                }
                 self.register_device(location.container_identity, device.serial.clone())?;
                 return Ok(device.serial);
             }
@@ -467,6 +473,7 @@ impl<R: AdbCommandRunner> RemoteProvider for AdbProvider<R> {
         location: &VirtualLocationDescriptor,
         cancellation: &CancellationToken,
     ) -> Result<Vec<RemoteEntry>> {
+        crate::provider::validate_remote_location(location, "adb", true)?;
         let serial = self.serial(location)?;
         let parent = remote_path(location);
         self.client
@@ -494,6 +501,7 @@ impl<R: AdbCommandRunner> RemoteProvider for AdbProvider<R> {
         local_destination: &Path,
         cancellation: &CancellationToken,
     ) -> Result<()> {
+        crate::provider::validate_remote_location(source, "adb", false)?;
         self.client.pull(
             &self.serial(source)?,
             &remote_path(source),
@@ -508,6 +516,7 @@ impl<R: AdbCommandRunner> RemoteProvider for AdbProvider<R> {
         destination: &VirtualLocationDescriptor,
         cancellation: &CancellationToken,
     ) -> Result<()> {
+        crate::provider::validate_remote_location(destination, "adb", true)?;
         self.client.push(
             &self.serial(destination)?,
             local_source,
@@ -521,6 +530,7 @@ impl<R: AdbCommandRunner> RemoteProvider for AdbProvider<R> {
         location: &VirtualLocationDescriptor,
         cancellation: &CancellationToken,
     ) -> Result<()> {
+        crate::provider::validate_remote_location(location, "adb", false)?;
         self.client.mkdir(
             &self.serial(location)?,
             &remote_path(location),
@@ -534,6 +544,8 @@ impl<R: AdbCommandRunner> RemoteProvider for AdbProvider<R> {
         destination: &VirtualLocationDescriptor,
         cancellation: &CancellationToken,
     ) -> Result<()> {
+        crate::provider::validate_remote_location(source, "adb", false)?;
+        crate::provider::validate_remote_location(destination, "adb", false)?;
         if source.container_identity != destination.container_identity {
             bail!("ADB rename cannot cross devices");
         }
@@ -551,6 +563,7 @@ impl<R: AdbCommandRunner> RemoteProvider for AdbProvider<R> {
         recursive: bool,
         cancellation: &CancellationToken,
     ) -> Result<()> {
+        crate::provider::validate_remote_location(location, "adb", false)?;
         self.client.delete(
             &self.serial(location)?,
             &remote_path(location),

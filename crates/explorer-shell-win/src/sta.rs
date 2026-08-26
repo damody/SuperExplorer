@@ -1468,26 +1468,37 @@ fn process_command(
                         .clipboard
                         .copy_or_cut(items.clone(), ClipboardMode::Copy)
                         .map(|state| {
-                            let _ = events.try_send(ExplorerEvent::ClipboardChanged { state });
+                            operation_terminals.publish(ExplorerEvent::ClipboardChanged { state });
                             OperationTerminal::Finished
                         }),
                     DataTransferRequest::Cut { items } => runtime
                         .clipboard
                         .copy_or_cut(items.clone(), ClipboardMode::Cut)
                         .map(|state| {
-                            let _ = events.try_send(ExplorerEvent::ClipboardChanged { state });
+                            operation_terminals.publish(ExplorerEvent::ClipboardChanged { state });
                             OperationTerminal::Finished
                         }),
                     DataTransferRequest::BeginDrag {
                         items,
                         allowed_effects,
                         button,
-                    } => crate::drag_drop::begin_native_drag(
-                        items,
-                        *allowed_effects,
-                        *button,
-                        context.cancellation.clone(),
-                    )
+                    } => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        crate::drag_drop::begin_native_drag(
+                            items,
+                            *allowed_effects,
+                            *button,
+                            context.cancellation.clone(),
+                        )
+                    }))
+                    .unwrap_or_else(|_| {
+                        Err(ExplorerError::new(
+                            ExplorerErrorKind::Internal,
+                            "begin OLE drag",
+                            false,
+                            "拖放工作階段失敗。",
+                            "OLE drag callback panicked",
+                        ))
+                    })
                     .map_err(|_| {
                         ExplorerError::new(
                             ExplorerErrorKind::Availability,
@@ -1909,7 +1920,7 @@ fn start_file_operation_worker(
 
 fn finish_background_file_operation(
     completion: FileOperationCompletion,
-    events: &SyncSender<ExplorerEvent>,
+    _events: &SyncSender<ExplorerEvent>,
     terminals: &ReliableTerminalPublisher,
     runtime: &mut StaRuntime,
 ) {
@@ -1927,9 +1938,9 @@ fn finish_background_file_operation(
             .clipboard
             .complete_background_paste(completion.context.request_id, &completion.outcome)
     {
-        // Clipboard updates are optional progress-like state. The required operation terminal
-        // below remains independently reliable when this best-effort notification is full.
-        let _ = events.try_send(ExplorerEvent::ClipboardChanged { state });
+        // Publish clipboard consumption on the same reliable FIFO as its operation terminal so
+        // observers cannot see a completed Cut while the consumed clipboard still looks active.
+        terminals.publish(ExplorerEvent::ClipboardChanged { state });
     }
     terminals.publish(ExplorerEvent::OperationFinished {
         context: completion.context,

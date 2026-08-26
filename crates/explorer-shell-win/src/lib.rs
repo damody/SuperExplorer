@@ -18,7 +18,10 @@
 compile_error!("explorer-shell-win supports Windows targets only");
 
 mod clipboard;
-pub use clipboard::{publish_native_file_clipboard, read_native_file_clipboard};
+pub use clipboard::{
+    publish_native_file_clipboard, publish_native_file_clipboard_with_token,
+    read_native_file_clipboard,
+};
 mod context_menu;
 mod drag_drop;
 mod everything;

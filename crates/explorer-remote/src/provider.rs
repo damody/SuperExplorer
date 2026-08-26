@@ -5,6 +5,91 @@ use std::{collections::HashMap, path::Path, sync::Arc};
 use anyhow::{Result, bail};
 use explorer_model::{CancellationToken, LocationDescriptor, VirtualLocationDescriptor};
 
+pub(crate) fn validate_remote_location(
+    location: &VirtualLocationDescriptor,
+    provider_id: &str,
+    allow_root: bool,
+) -> Result<()> {
+    if location.provider_id != provider_id
+        || location.container_identity == [0; 16]
+        || location.container_generation == 0
+        || location
+            .public_authority
+            .as_deref()
+            .is_none_or(str::is_empty)
+    {
+        bail!("remote location authority is invalid");
+    }
+    if !allow_root && location.components.is_empty() {
+        bail!("remote filesystem root cannot be mutated");
+    }
+    if location.components.iter().any(|component| {
+        component.is_empty()
+            || matches!(component.as_str(), "." | "..")
+            || component.contains(['/', '\\', '\0', '\r', '\n'])
+    }) {
+        bail!("remote path contains an invalid component");
+    }
+    Ok(())
+}
+
+pub const MAX_TRANSFER_DEPTH: usize = 64;
+pub const MAX_TRANSFER_NODES: usize = 100_000;
+pub const MAX_TRANSFER_FILE_BYTES: u64 = 32 * 1024 * 1024 * 1024;
+pub const MAX_OPERATION_STAGING_BYTES: u64 = 64 * 1024 * 1024 * 1024;
+pub const MAX_PROCESS_STAGING_BYTES: u64 = 128 * 1024 * 1024 * 1024;
+pub const MINIMUM_FREE_SPACE_RESERVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+pub(crate) const fn transfer_tree_within_limits(depth: usize, nodes: usize) -> bool {
+    depth <= MAX_TRANSFER_DEPTH && nodes <= MAX_TRANSFER_NODES
+}
+
+pub(crate) const fn transfer_bytes_within_limits(file_bytes: u64, operation_bytes: u64) -> bool {
+    file_bytes <= MAX_TRANSFER_FILE_BYTES && operation_bytes <= MAX_OPERATION_STAGING_BYTES
+}
+
+pub(crate) fn validate_windows_component(component: &str) -> Result<()> {
+    if component.is_empty()
+        || matches!(component, "." | "..")
+        || component.ends_with(['.', ' '])
+        || component.contains(['/', '\\', ':', '\0', '\r', '\n'])
+    {
+        bail!("remote name is not a safe Windows path component");
+    }
+    let stem = component
+        .split_once('.')
+        .map_or(component, |(stem, _)| stem)
+        .trim_end_matches(['.', ' ']);
+    if matches!(
+        stem.to_ascii_uppercase().as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    ) {
+        bail!("remote name is a reserved Windows device name");
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RemoteEntry {
     pub name: String,
@@ -107,7 +192,12 @@ impl RemoteProviderRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::RemoteEntryKind;
+    use super::{
+        MAX_OPERATION_STAGING_BYTES, MAX_TRANSFER_DEPTH, MAX_TRANSFER_FILE_BYTES,
+        MAX_TRANSFER_NODES, RemoteEntryKind, transfer_bytes_within_limits,
+        transfer_tree_within_limits, validate_remote_location, validate_windows_component,
+    };
+    use explorer_model::VirtualLocationDescriptor;
 
     #[test]
     fn remote_entry_kinds_define_container_and_type_semantics() {
@@ -132,5 +222,55 @@ mod tests {
             assert_eq!(kind.is_container(), is_container);
             assert_eq!(kind.type_display(), type_display);
         }
+    }
+
+    #[test]
+    fn mutation_validation_rejects_root_and_hostile_components() {
+        let mut location = VirtualLocationDescriptor {
+            provider_id: "adb".to_owned(),
+            public_authority: Some("device".to_owned()),
+            container_identity: [1; 16],
+            container_generation: 1,
+            entry_id: None,
+            components: Vec::new(),
+        };
+        assert!(validate_remote_location(&location, "adb", false).is_err());
+        assert!(validate_remote_location(&location, "adb", true).is_ok());
+        location.components.push("..".to_owned());
+        assert!(validate_remote_location(&location, "adb", true).is_err());
+    }
+
+    #[test]
+    fn windows_staging_component_rejects_escape_ads_and_devices() {
+        for hostile in [
+            "", ".", "..", "a/b", "a\\b", "a:stream", "name. ", "CON", "lpt1.txt",
+        ] {
+            assert!(validate_windows_component(hostile).is_err(), "{hostile:?}");
+        }
+        assert!(validate_windows_component("正常 file.txt").is_ok());
+    }
+
+    #[test]
+    fn traversal_and_byte_limits_accept_boundary_and_reject_n_plus_one() {
+        assert!(transfer_tree_within_limits(
+            MAX_TRANSFER_DEPTH,
+            MAX_TRANSFER_NODES
+        ));
+        assert!(!transfer_tree_within_limits(
+            MAX_TRANSFER_DEPTH + 1,
+            MAX_TRANSFER_NODES
+        ));
+        assert!(!transfer_tree_within_limits(
+            MAX_TRANSFER_DEPTH,
+            MAX_TRANSFER_NODES + 1
+        ));
+        assert!(transfer_bytes_within_limits(
+            MAX_TRANSFER_FILE_BYTES,
+            MAX_OPERATION_STAGING_BYTES
+        ));
+        assert!(!transfer_bytes_within_limits(
+            MAX_TRANSFER_FILE_BYTES + 1,
+            MAX_OPERATION_STAGING_BYTES
+        ));
     }
 }
