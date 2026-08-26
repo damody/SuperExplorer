@@ -266,6 +266,11 @@ fn prompt_sftp_login(host: &str, suggested_user: &str) -> Result<Option<(String,
     fn wide(value: &str) -> Vec<u16> {
         value.encode_utf16().chain(std::iter::once(0)).collect()
     }
+    fn wide_input_buffer(value: &str, max_chars: usize) -> Vec<u16> {
+        let mut buffer = value.encode_utf16().take(max_chars).collect::<Vec<_>>();
+        buffer.resize(max_chars + 1, 0);
+        buffer
+    }
     let caption = wide("SuperExplorer SFTP Login");
     let message = wide(&format!("Sign in to {host}"));
     let target = wide(&format!("SuperExplorer/SFTP/{host}"));
@@ -275,9 +280,13 @@ fn prompt_sftp_login(host: &str, suggested_user: &str) -> Result<Option<(String,
         pszCaptionText: PCWSTR(caption.as_ptr()),
         ..Default::default()
     };
-    let mut username = wide(suggested_user);
-    username.resize(514, 0);
-    let mut password = vec![0_u16; 514];
+    // wincred.h defines these limits without the terminating NUL:
+    // CREDUI_MAX_USERNAME_LENGTH = 513 and CREDUI_MAX_PASSWORD_LENGTH = 256.
+    // Passing a larger password buffer trips the Universal CRT invalid-parameter
+    // handler and terminates the process with 0xc0000409 instead of returning an
+    // error from CredUIPromptForCredentialsW.
+    let mut username = wide_input_buffer(suggested_user, 513);
+    let mut password = vec![0_u16; 257];
     // SAFETY: The descriptor and target buffers remain live and NUL-terminated,
     // and the mutable username/password buffers retain their full capacity for
     // the duration of this synchronous credential dialog call.
