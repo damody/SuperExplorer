@@ -164,6 +164,12 @@ struct SecurityAttributes {
 }
 
 #[link(name = "kernel32")]
+#[expect(
+    unsafe_code,
+    reason = "MFT query transport uses Win32 named-pipe, buffer, and handle APIs"
+)]
+// SAFETY: These declarations mirror the documented Win32 ABI. Call sites validate
+// handles, buffer lengths, pointer lifetimes, and API-specific return values.
 unsafe extern "system" {
     fn CreateNamedPipeW(
         name: *const u16,
@@ -215,6 +221,12 @@ unsafe extern "system" {
 }
 
 #[link(name = "advapi32")]
+#[expect(
+    unsafe_code,
+    reason = "constructing the MFT query pipe ACL requires the Win32 SDDL converter"
+)]
+// SAFETY: The declaration matches ConvertStringSecurityDescriptorToSecurityDescriptorW;
+// callers provide a terminated SDDL string and release the returned allocation with LocalFree.
 unsafe extern "system" {
     fn ConvertStringSecurityDescriptorToSecurityDescriptorW(
         descriptor: *const u16,
@@ -226,6 +238,11 @@ unsafe extern "system" {
 
 struct Handle(isize);
 impl Drop for Handle {
+    #[expect(
+        unsafe_code,
+        reason = "releasing a raw MFT query pipe handle requires Win32 CloseHandle"
+    )]
+    // SAFETY: Handle owns a non-null Win32 handle exactly once; Drop closes it once.
     fn drop(&mut self) {
         if self.0 != 0 && self.0 != INVALID_HANDLE_VALUE {
             let _ = unsafe { CloseHandle(self.0) };
@@ -235,6 +252,11 @@ impl Drop for Handle {
 
 struct LocalMemory(*mut c_void);
 impl Drop for LocalMemory {
+    #[expect(
+        unsafe_code,
+        reason = "releasing the query-pipe SDDL allocation requires Win32 LocalFree"
+    )]
+    // SAFETY: LocalMemory exclusively owns memory returned by the SDDL converter.
     fn drop(&mut self) {
         if !self.0.is_null() {
             let _ = unsafe { LocalFree(self.0) };
@@ -813,6 +835,12 @@ fn connect(attempts: usize) -> Result<Handle, String> {
     )
 }
 
+#[expect(
+    unsafe_code,
+    reason = "connecting to the MFT query pipe requires Win32 wait, open, and last-error APIs"
+)]
+// SAFETY: The pipe name is NUL-terminated, access flags match CreateFileW, returned handles
+// are checked before ownership, and GetLastError is read immediately after failed calls.
 fn connect_until(deadline: std::time::Instant) -> Result<Handle, String> {
     #[cfg(not(test))]
     let name = wide(PIPE_NAME);
@@ -858,6 +886,12 @@ pub(crate) fn serve_folder_queries(
     );
 }
 
+#[expect(
+    unsafe_code,
+    reason = "serving MFT queries requires raw Win32 ACL and named-pipe lifecycle APIs"
+)]
+// SAFETY: Security-descriptor storage outlives pipe creation; all pipe handles are owned by
+// Handle, buffers use their exact Rust lengths, and every Win32 result is checked.
 pub(crate) fn serve_queries(
     stopped: impl Fn() -> bool,
     query: impl Fn(char, u64, u16, Option<std::path::PathBuf>) -> Result<FolderAggregateQueryV1, String>
@@ -1240,6 +1274,12 @@ fn encode_folder_batch_end(batch_id: u64) -> [u8; FOLDER_BATCH_RESPONSE_BYTES] {
     bytes
 }
 
+#[expect(
+    unsafe_code,
+    reason = "detecting MFT query client closure requires Win32 PeekNamedPipe"
+)]
+// SAFETY: handle remains owned and open for this loop; optional output buffers are null and
+// the byte-count output points to initialized writable storage.
 fn wait_for_client_close(handle: isize, stopped: impl Fn() -> bool) {
     let deadline = std::time::Instant::now() + CONTROL_RESPONSE_TIMEOUT;
     while !stopped() && std::time::Instant::now() < deadline {
@@ -1460,6 +1500,12 @@ fn bounded_error_detail(mut error: String) -> String {
     error
 }
 
+#[expect(
+    unsafe_code,
+    reason = "reading framed MFT query requests requires Win32 ReadFile and last-error inspection"
+)]
+// SAFETY: Each ReadFile call receives a writable slice pointer and its exact remaining length;
+// the handle stays valid, and error state is consumed immediately.
 fn read_exact(
     handle: isize,
     bytes: &mut [u8],
@@ -1498,6 +1544,12 @@ fn read_exact(
         .ok_or_else(|| "MFT query read was interrupted".to_owned())
 }
 
+#[expect(
+    unsafe_code,
+    reason = "writing framed MFT query responses requires Win32 WriteFile"
+)]
+// SAFETY: Each WriteFile call receives a readable slice pointer and exact remaining length;
+// the pipe handle remains valid for the duration of the synchronous call.
 fn write_all(handle: isize, bytes: &[u8]) -> Result<(), String> {
     let mut offset = 0;
     while offset < bytes.len() {
@@ -1521,6 +1573,12 @@ fn write_all(handle: isize, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+#[expect(
+    unsafe_code,
+    reason = "bounded MFT response writes require Win32 WriteFile and last-error inspection"
+)]
+// SAFETY: Buffer and byte-count pointers remain valid during each synchronous WriteFile call;
+// the handle is borrowed for the loop and errors are inspected immediately.
 fn write_all_until(
     handle: isize,
     bytes: &[u8],

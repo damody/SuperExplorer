@@ -1,6 +1,6 @@
 ## Context
 
-The workspace enables `unsafe_code = "warn"` and `unused_qualifications = "warn"` globally. A normal locked workspace check succeeds but currently emits roughly 194–212 `unsafe_code` diagnostics from 113 canonical locations. Most are in `explorer-app` MFT modules that are compiled into the library and repeated binary module graphs; two locations are in `explorer-extension-host`.
+The workspace enables `unsafe_code = "warn"` and `unused_qualifications = "warn"` globally. The implementation baseline succeeds but emits 215 `unsafe_code` diagnostics from 116 canonical locations. Three dirty-tree `remote_service.rs` locations added after the initial inventory are included through `ADJ-B-001`. Most locations are in `explorer-app` MFT modules compiled into repeated target graphs; two are in `explorer-extension-host`.
 
 The current dirty working tree contains unrelated user work. This change must edit only audited unsafe boundaries and their immediately adjacent documentation. The approved source design is `docs/superpowers/specs/2026-08-26-unsafe-code-warning-governance-design.md`. Existing workspace-owned modules outside the baseline already contain broad `allow(unsafe_code)` attributes; they are inventoried as deferred residual risk and do not become remediation scope for this wave.
 
@@ -12,7 +12,7 @@ The affected operations cross Windows FFI, raw pointers, process-owned handles, 
 
 - Produce zero `unsafe_code` diagnostics from normal workspace library and binary compilation.
 - Preserve `unsafe_code = "warn"` as the default workspace policy and add no new broad unsafe suppression.
-- Give every unavoidable unsafe boundary in the governed 113-location default-feature normal-target baseline a narrow `#[expect(unsafe_code, reason = "...")]` and an adjacent soundness invariant.
+- Give every unavoidable unsafe boundary in the governed 116-location default-feature normal-target baseline a narrow `#[expect(unsafe_code, reason = "...")]` and an adjacent soundness invariant.
 - Remove genuinely unnecessary unsafe blocks when the compiler and existing safe APIs permit it without behavior changes.
 - Preserve product behavior, public contracts, ABI, persistence, process topology, and non-unsafe warning counts.
 
@@ -50,7 +50,7 @@ The inventory key is normalized source path, line/span identity, lint code, and 
 
 ### Implement in four risk-oriented batches
 
-1. Small boundaries: application composition, broker, process entry, and extension virtual-container mutation.
+1. Small boundaries: application composition, broker, remote process launch, process entry, and extension virtual-container mutation.
 2. Focus and journal boundaries.
 3. Migration, size-map, and SQLite boundaries.
 4. Query and service boundaries.
@@ -59,7 +59,7 @@ Each batch records changed canonical locations, disposition, expectation reason,
 
 ### Protect shared dirty-tree attribution
 
-Before any source edit, record a SHA-256 hash and scoped pre-change diff for all 11 owned files. Immediately before every file write or patch, compare the current hash and relevant preimage with the expected value; unexpected drift invalidates the affected preservation map and dependent evidence, and the file is rebaselined before editing. Immediately after every write, verify the intended hunk and record the new expected hash. After each batch, attribute every new hunk to a baseline location or documentation invariant. Run formatting only on paths changed by this work, followed by a repository-wide format check that does not write files.
+Before any source edit, record a SHA-256 hash and scoped pre-change diff for all 12 owned files. Immediately before every file write or patch, compare the current hash and relevant preimage with the expected value; unexpected drift invalidates the affected preservation map and dependent evidence, and the file is rebaselined before editing. Immediately after every write, verify the intended hunk and record the new expected hash. After each batch, attribute every new hunk to a baseline location or documentation invariant. Run formatting only on paths changed by this work, followed by a repository-wide format check that does not write files.
 
 ### Keep validation truthful under existing unrelated failures
 
@@ -117,7 +117,7 @@ This is a source-only migration with no deployed data or runtime migration. Land
 - [Line movement can make a baseline appear stale] → Match final success on lint code and canonical source, while preserving the original immutable baseline.
 - [Unrelated dirty-tree changes can be overwritten] → Use minimal patches, review scoped diffs, and never revert unrelated lines.
 - [Concurrent dirty-tree edits can invalidate attribution] → Hash and diff owned files before work, compare before every batch, invalidate stale evidence on drift, and use path-limited formatting.
-- [Existing broad allows mean the workspace policy is not globally complete] → Inventory them explicitly and limit this wave's guarantee to the 113-location default-feature normal-target baseline while forbidding new broad suppression.
+- [Existing broad allows mean the workspace policy is not globally complete] → Inventory them explicitly and limit this wave's guarantee to the 116-location default-feature normal-target baseline while forbidding new broad suppression.
 - [The workspace remains noisy from `dead_code`] → Compare warning codes and explicitly defer that category instead of hiding it.
 
 ## Open Questions

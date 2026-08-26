@@ -437,6 +437,12 @@ fn open_inventory_handle(path: &Path) -> Result<File, String> {
 }
 
 #[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "reading stable file identity requires Win32 handle metadata APIs"
+)]
+// SAFETY: The declaration matches kernel32 and the borrowed File keeps its
+// handle live while writable metadata storage is passed synchronously.
 fn file_identity(file: &File) -> Result<(u64, u64), String> {
     #[repr(C)]
     #[derive(Default)]
@@ -488,6 +494,12 @@ fn open_verified_inventory_handle(
 }
 
 #[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "deleting the file owned by an exclusive handle requires Win32 disposition metadata"
+)]
+// SAFETY: The declaration matches kernel32; the borrowed File remains live and
+// the disposition structure is passed with its exact size.
 fn delete_file_handle(file: &File) -> Result<(), String> {
     #[repr(C)]
     struct FileDispositionInfo {
@@ -519,6 +531,12 @@ fn delete_file_handle(file: &File) -> Result<(), String> {
 }
 
 #[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "renaming the file owned by an exclusive handle requires Win32 rename metadata"
+)]
+// SAFETY: Both rename buffers include their inline UTF-16 storage and exact
+// byte size; the borrowed source handle remains live through each call.
 fn rename_file_handle(file: &File, destination: &Path) -> Result<(), String> {
     #[repr(C)]
     struct FileRenameInfoLayout {
@@ -591,6 +609,12 @@ fn rename_file_handle(file: &File, destination: &Path) -> Result<(), String> {
 }
 
 #[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "creating a recovery hard link requires the Win32 CreateHardLinkW API"
+)]
+// SAFETY: Both paths are live NUL-terminated UTF-16 buffers for the synchronous
+// call and no security-attribute pointer is supplied.
 fn hardlink_and_unlink_exclusive_handle(
     source_handle: &File,
     source: &Path,
@@ -689,6 +713,12 @@ fn write_synced_json(path: &Path, value: &MaintenanceManifestV1) -> Result<(), S
         .map_err(|error| error.to_string())?;
     drop(file);
     #[cfg(windows)]
+    #[expect(
+        unsafe_code,
+        reason = "durable manifest publication requires flushing the owned Win32 file handle"
+    )]
+    // SAFETY: `file` exclusively owns a live handle for this synchronous flush;
+    // the handle is not closed until the call returns.
     {
         let source = temporary
             .as_os_str()

@@ -807,6 +807,10 @@ fn read_stream_u64(reader: &mut impl std::io::Read) -> Result<u64, String> {
 struct HandleGuard(HANDLE);
 
 impl Drop for HandleGuard {
+    #[expect(
+        unsafe_code,
+        reason = "releasing an NTFS volume or file handle requires Win32 CloseHandle"
+    )]
     fn drop(&mut self) {
         // SAFETY: the guard owns the handle returned by CreateFileW.
         let _ = unsafe { CloseHandle(self.0) };
@@ -831,6 +835,10 @@ pub(crate) fn file_link_count(path: &Path) -> Result<u32, String> {
     Ok(file_information(path)?.nNumberOfLinks)
 }
 
+#[expect(
+    unsafe_code,
+    reason = "reading link count and identity requires raw Win32 file metadata APIs"
+)]
 fn file_information(path: &Path) -> Result<BY_HANDLE_FILE_INFORMATION, String> {
     let wide = path
         .as_os_str()
@@ -869,6 +877,13 @@ pub(crate) fn read_volume_index(
     Ok(index)
 }
 
+#[expect(
+    unsafe_code,
+    reason = "bounded NTFS MFT enumeration requires Win32 volume handles and DeviceIoControl"
+)]
+// SAFETY: The owned volume handle, enumeration cursor, output buffer, and byte
+// counter remain live for each synchronous call; returned record lengths are
+// validated before parsing and cancellation is checked between calls.
 pub(crate) fn read_volume_index_bounded(
     path: &Path,
     volume_limit_bytes: usize,
@@ -1020,6 +1035,12 @@ fn is_mft_enumeration_eof(code: HRESULT) -> bool {
     code == HRESULT::from_win32(ERROR_HANDLE_EOF.0)
 }
 
+#[expect(
+    unsafe_code,
+    reason = "elevated MFT helper launch and bounded teardown require Win32 process APIs"
+)]
+// SAFETY: All launch buffers outlive ShellExecuteExW, the returned process
+// handle enters HandleGuard, and timeout termination/wait applies only to it.
 pub(crate) fn read_volume_index_with_helper(
     path: &Path,
     mut cancelled: impl FnMut() -> bool,
@@ -1075,7 +1096,7 @@ pub(crate) fn read_volume_index_with_helper(
             // SAFETY: this is the exact helper process created above; ending it
             // prevents an elevated orphan from continuing after its bounded
             // non-elevated requester has cancelled or timed out.
-            let _ = unsafe { TerminateProcess(process.0, 5) };
+            let _ = unsafe { TerminateProcess(process.0, 5) }; // architecture-check: allow bounded elevated MFT helper cleanup
             let _ = std::fs::remove_file(&output);
             return Err(if cancelled() {
                 "elevated MFT helper was cancelled".to_owned()
@@ -1098,6 +1119,10 @@ pub(crate) fn read_volume_index_with_helper(
     result
 }
 
+#[expect(
+    unsafe_code,
+    reason = "reading an NTFS file record requires DeviceIoControl with raw buffers"
+)]
 fn read_file_sizes(handle: HANDLE, reference: u64) -> Option<(u64, u64)> {
     let input = reference as i64;
     let mut output = vec![0_u8; 64 * 1024];
@@ -1168,6 +1193,10 @@ pub(crate) fn volume_serial_number(path: &Path) -> Result<u64, String> {
     Ok(u64::from(file_information(path)?.dwVolumeSerialNumber))
 }
 
+#[expect(
+    unsafe_code,
+    reason = "refreshing an NTFS entry requires opening the raw volume handle"
+)]
 pub(crate) fn current_entry(
     root: &Path,
     reference: u64,

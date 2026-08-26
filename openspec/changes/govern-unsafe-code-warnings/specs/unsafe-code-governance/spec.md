@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Workspace unsafe lint remains active
-The workspace SHALL retain `unsafe_code` as an active warning-level lint for workspace-owned Rust crates, and the change MUST NOT introduce new crate-wide or module-wide suppression of that lint. Pre-existing broad suppressions outside the 113-location default-feature normal-target baseline MUST be inventoried as deferred residual risk.
+The workspace SHALL retain `unsafe_code` as an active warning-level lint for workspace-owned Rust crates, and the change MUST NOT introduce new crate-wide or module-wide suppression of that lint. Pre-existing broad suppressions outside the 116-location default-feature normal-target baseline MUST be inventoried as deferred residual risk.
 
 #### Scenario: A future unreviewed unsafe operation is added
 - **WHEN** a governed baseline source file adds an unsafe operation outside a reviewed expectation boundary and outside a pre-existing inventoried suppression
@@ -27,7 +27,7 @@ The implementation SHALL normalize repeated target diagnostics to canonical sour
 - **THEN** the block is removed and no lint expectation is added for that location
 
 ### Requirement: Accepted unsafe boundaries are narrowly documented
-Every unavoidable unsafe operation in the governed 113-location default-feature normal-target baseline SHALL have the narrowest practical `#[expect(unsafe_code, reason = "...")]`; its reason MUST identify why unsafe Rust is required, and an adjacent `// SAFETY:` invariant MUST explain why the operation is sound.
+Every unavoidable unsafe operation in the governed 116-location default-feature normal-target baseline SHALL have the narrowest practical `#[expect(unsafe_code, reason = "...")]`; its reason MUST identify why unsafe Rust is required, and an adjacent `// SAFETY:` invariant MUST explain why the operation is sound.
 
 #### Scenario: A Windows FFI call is unavoidable
 - **WHEN** a reviewed operation must pass raw pointers or handles to a Windows ABI

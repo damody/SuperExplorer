@@ -4,13 +4,13 @@
 
 The Rust workspace currently completes `cargo check --workspace --locked`, but emits hundreds of warnings. The first cleanup wave targets only the `unsafe_code` lint. `dead_code` and broader Clippy cleanup are deliberately deferred so warning reduction does not become an uncontrolled deletion or refactoring exercise.
 
-The baseline inventory found 113 canonical unsafe locations across 11 source files. Because the MFT modules are compiled into more than one target, those locations produce roughly 194–212 warning diagnostics in a workspace build. Most locations are Windows FFI calls, raw handle operations, or pointer conversions that cannot be expressed entirely in safe Rust.
+The implementation baseline found 116 canonical unsafe locations across 12 source files. Three locations in the dirty-tree `remote_service.rs` appeared after the initial 113-location planning inventory and are included through adjustment `ADJ-B-001`. Because the MFT modules are compiled into more than one target, those locations produce 215 warning diagnostics in the captured workspace build. Most locations are Windows FFI calls, raw handle operations, or pointer conversions that cannot be expressed entirely in safe Rust.
 
 ## Goals
 
 - Remove all `unsafe_code` diagnostics from normal workspace library and binary compilation.
 - Preserve the workspace-level `unsafe_code = "warn"` policy and do not introduce any new crate-wide or module-wide suppression. Existing broad suppressions outside the 113-location normal-target baseline are inventoried as deferred residual risk rather than treated as remediated.
-- Make every accepted unsafe boundary in the governed 113-location baseline state why unsafe is unavoidable and why the operation is sound.
+- Make every accepted unsafe boundary in the governed 116-location baseline state why unsafe is unavoidable and why the operation is sound.
 - Avoid changing runtime behavior, ABI layout, process boundaries, or MFT persistence behavior.
 - Avoid increasing any non-unsafe warning category.
 
@@ -20,7 +20,7 @@ The baseline inventory found 113 canonical unsafe locations across 11 source fil
 - Making the entire workspace Clippy-clean.
 - Repairing the existing unrelated all-target test compilation failures.
 - Reorganizing all MFT modules into a new crate or replacing the current Windows APIs.
-- Auditing or removing pre-existing broad unsafe suppressions outside the 113-location normal-target baseline.
+- Auditing or removing pre-existing broad unsafe suppressions outside the 116-location normal-target baseline.
 - Applying any new crate-wide, module-wide, or workspace-wide `allow(unsafe_code)` or `expect(unsafe_code)` attribute.
 
 ## Chosen Approach
@@ -40,7 +40,7 @@ Generic reasons such as "FFI call" or "required by Windows" are insufficient.
 
 Work proceeds in risk-oriented batches:
 
-1. Small composition boundaries: `main.rs`, `application.rs`, `brokered_service.rs`, and `explorer-extension-host/src/virtual_container_mutation.rs`.
+1. Small composition boundaries: `main.rs`, `application.rs`, `brokered_service.rs`, `remote_service.rs`, and `explorer-extension-host/src/virtual_container_mutation.rs`.
 2. Focus and journal boundaries: `mft_focus.rs` and `mft_journal.rs`.
 3. Migration, size-map, and SQLite boundaries: `mft_migration.rs`, `mft_size_map.rs`, and `mft_sqlite.rs`.
 4. High-volume query and service boundaries: `mft_query.rs` and `src/bin/mft_service.rs`.
@@ -83,7 +83,7 @@ Run formatting only on changed Rust sources, then validate in increasing scope:
 
 - Zero `unsafe_code` warnings in normal workspace compilation.
 - No new crate-wide or module-wide unsafe suppression, and every pre-existing broad suppression outside the baseline is inventoried as deferred residual risk.
-- Every remaining unsafe boundary in the governed 113-location default-feature normal-target baseline has a specific expectation reason and an adequate safety invariant.
+- Every remaining unsafe boundary in the governed 116-location default-feature normal-target baseline has a specific expectation reason and an adequate safety invariant.
 - No intentional `dead_code` cleanup or unrelated refactor is included.
 - Targeted and workspace library/binary checks pass.
 - Non-unsafe warning totals do not increase from the captured baseline.
