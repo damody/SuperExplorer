@@ -1064,7 +1064,7 @@ pub struct ExplorerRoot {
     broker_retry_observer: Option<BrokerRetryObserver>,
     command_prompt_launcher: Option<CommandPromptLauncher>,
     bookmark_file_launcher: Option<BookmarkFileLauncher>,
-    sftp_address_login_observer: Option<SftpAddressLoginObserver>,
+    sftp_address_login: Option<SftpAddressLoginState>,
     folder_options_window_observer: Option<FolderOptionsWindowObserver>,
     bookmark_editor_window_observer: Option<BookmarkEditorWindowObserver>,
     last_window_title: Option<String>,
@@ -1125,6 +1125,15 @@ pub type BookmarkFileLauncher =
     Arc<dyn Fn(explorer_model::LocationDescriptor) -> Result<(), String> + Send + Sync>;
 pub type SftpAddressLoginObserver =
     Arc<dyn Fn(&str) -> Result<Option<explorer_model::LocationDescriptor>, String> + Send + Sync>;
+type SftpAddressLoginResult = Result<Option<explorer_model::LocationDescriptor>, String>;
+
+struct SftpAddressLoginState {
+    observer: SftpAddressLoginObserver,
+    sender: std::sync::mpsc::Sender<(u64, SftpAddressLoginResult)>,
+    receiver: std::sync::mpsc::Receiver<(u64, SftpAddressLoginResult)>,
+    next_request: u64,
+    active_request: Option<u64>,
+}
 /// Application-owned bridge that creates or activates the singleton Folder
 /// Options native window after the reducer has created a fresh draft.
 pub type FolderOptionsWindowObserver = std::rc::Rc<
@@ -1401,7 +1410,7 @@ impl ExplorerRoot {
             broker_retry_observer: None,
             command_prompt_launcher: None,
             bookmark_file_launcher: None,
-            sftp_address_login_observer: None,
+            sftp_address_login: None,
             folder_options_window_observer: None,
             bookmark_editor_window_observer: None,
             last_window_title: None,
@@ -1439,26 +1448,66 @@ impl ExplorerRoot {
     }
 
     pub fn attach_sftp_address_login_observer(&mut self, observer: SftpAddressLoginObserver) {
-        self.sftp_address_login_observer = Some(observer);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.sftp_address_login = Some(SftpAddressLoginState {
+            observer,
+            sender,
+            receiver,
+            next_request: 0,
+            active_request: None,
+        });
     }
 
     fn begin_address_navigation(&mut self, value: &str) -> Option<explorer_model::ExplorerCommand> {
         if !value.to_ascii_lowercase().starts_with("sftp://") {
             return self.state.begin_address_submission(value);
         }
-        match self
-            .sftp_address_login_observer
-            .as_ref()
-            .map(|observer| observer(value))
-        {
-            Some(Ok(Some(location))) => self.state.begin_active_navigation(location, false),
-            Some(Ok(None)) => None,
-            Some(Err(error)) => {
-                self.state.fail_address_submission(error);
-                None
-            }
-            None => self.state.begin_address_submission(value),
+        let Some(login) = self.sftp_address_login.as_mut() else {
+            return self.state.begin_address_submission(value);
+        };
+        login.next_request = login.next_request.wrapping_add(1);
+        let request = login.next_request;
+        login.active_request = Some(request);
+        let observer = Arc::clone(&login.observer);
+        let sender = login.sender.clone();
+        let input = value.to_owned();
+        // CredUIPromptForCredentialsW runs a modal Windows message loop. Running
+        // it inline from a GPUI action re-enters GPUI while AppContext is already
+        // mutably borrowed, causing a non-unwinding RefCell panic. Keep the whole
+        // blocking login/authentication flow off the UI thread and integrate its
+        // result from the normal service pump.
+        std::thread::spawn(move || {
+            let result = observer(&input);
+            let _ = sender.send((request, result));
+        });
+        None
+    }
+
+    fn pump_sftp_address_login(&mut self) -> bool {
+        let Some(login) = self.sftp_address_login.as_mut() else {
+            return false;
+        };
+        let mut latest = None;
+        while let Ok(result) = login.receiver.try_recv() {
+            latest = Some(result);
         }
+        let Some((request, result)) = latest else {
+            return false;
+        };
+        if login.active_request != Some(request) {
+            return false;
+        }
+        login.active_request = None;
+        match result {
+            Ok(Some(location)) => {
+                if let Some(command) = self.state.begin_active_navigation(location, false) {
+                    self.submit_command(command);
+                }
+            }
+            Ok(None) => {}
+            Err(error) => self.state.fail_address_submission(error),
+        }
+        true
     }
 
     pub fn attach_folder_options_window_observer(&mut self, observer: FolderOptionsWindowObserver) {
@@ -2646,7 +2695,7 @@ impl ExplorerRoot {
             broker_retry_observer: None,
             command_prompt_launcher: None,
             bookmark_file_launcher: None,
-            sftp_address_login_observer: None,
+            sftp_address_login: None,
             folder_options_window_observer: None,
             bookmark_editor_window_observer: None,
             last_window_title: None,
@@ -2744,7 +2793,7 @@ impl ExplorerRoot {
             broker_retry_observer: None,
             command_prompt_launcher: None,
             bookmark_file_launcher: None,
-            sftp_address_login_observer: None,
+            sftp_address_login: None,
             folder_options_window_observer: None,
             bookmark_editor_window_observer: None,
             last_window_title: None,
@@ -2932,10 +2981,12 @@ impl ExplorerRoot {
                         // extension views whenever an earlier pump is busy.
                         let extension_changed =
                             extension_ui_pump_due(this.extension_ui_pump.as_mut(), Instant::now());
+                        let sftp_login_changed = this.pump_sftp_address_login();
                         let visual_column_changed = this.pump_visual_column_runtime();
                         let code_lines_changed = this.pump_code_lines_runtime();
                         let size_map_changed = this.pump_size_map_runtime();
                         if extension_changed
+                            || sftp_login_changed
                             || visual_column_changed
                             || code_lines_changed
                             || size_map_changed
@@ -10390,12 +10441,19 @@ mod tests {
                 .map_err(|error| error.to_string())
         }));
 
-        let command = root
-            .begin_address_navigation("sftp://45.32.49.125@root/")
-            .expect("canonical navigation");
-        let explorer_model::ExplorerCommand::Navigate { location, .. } = command else {
-            panic!("expected navigation");
-        };
+        assert!(
+            root.begin_address_navigation("sftp://45.32.49.125@root/")
+                .is_none(),
+            "SFTP login must not block the GPUI action callback"
+        );
+        let (_, result) = root
+            .sftp_address_login
+            .as_ref()
+            .expect("login state")
+            .receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("background login result");
+        let location = result.expect("login succeeds").expect("canonical location");
         let explorer_model::LocationDescriptor::Virtual(location) = location else {
             panic!("expected virtual SFTP location");
         };
