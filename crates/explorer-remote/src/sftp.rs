@@ -23,6 +23,7 @@ use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     runtime::{Builder, Runtime},
 };
+use unicode_normalization::UnicodeNormalization as _;
 
 use crate::{RemoteEntry, RemoteEntryKind, RemoteProvider};
 
@@ -139,12 +140,17 @@ impl SftpProvider {
     }
 
     fn profile(&self, location: &VirtualLocationDescriptor) -> Result<Arc<RegisteredProfile>> {
-        self.profiles
+        let profile = self
+            .profiles
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&location.container_identity)
             .cloned()
-            .context("SFTP profile is not registered")
+            .context("SFTP profile is not registered")?;
+        if location.public_authority.as_deref() != Some(profile.profile.alias.as_str()) {
+            bail!("SFTP location authority does not match the registered profile");
+        }
+        Ok(profile)
     }
 
     async fn connect(profile: &RegisteredProfile) -> Result<(Handle<PinnedHostKey>, SftpSession)> {
@@ -199,6 +205,7 @@ impl RemoteProvider for SftpProvider {
         location: &VirtualLocationDescriptor,
         cancellation: &CancellationToken,
     ) -> Result<Vec<RemoteEntry>> {
+        crate::provider::validate_remote_location(location, "sftp", true)?;
         let profile = self.profile(location)?;
         let remote = remote_path(location);
         self.runtime.block_on(async {
@@ -250,34 +257,13 @@ impl RemoteProvider for SftpProvider {
         local_destination: &Path,
         cancellation: &CancellationToken,
     ) -> Result<()> {
+        crate::provider::validate_remote_location(source, "sftp", false)?;
         let profile = self.profile(source)?;
         let remote = remote_path(source);
         let local = local_destination.to_path_buf();
         self.runtime.block_on(async {
             let (session, sftp) = Self::connect(&profile).await?;
-            if let Some(parent) = local.parent() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
-            let mut input = sftp.open(&remote).await.context("open SFTP source")?;
-            let mut output = tokio::fs::File::create(&local)
-                .await
-                .context("create local destination")?;
-            let mut buffer = vec![0; 64 * 1024];
-            loop {
-                if cancellation.is_cancelled() {
-                    Self::disconnect(session).await;
-                    bail!("SFTP download cancelled");
-                }
-                let read = input.read(&mut buffer).await.context("read SFTP source")?;
-                if read == 0 {
-                    break;
-                }
-                output
-                    .write_all(&buffer[..read])
-                    .await
-                    .context("write local destination")?;
-            }
-            output.flush().await?;
+            download_tree(&sftp, &remote, &local, cancellation).await?;
             Self::disconnect(session).await;
             Ok(())
         })
@@ -289,6 +275,7 @@ impl RemoteProvider for SftpProvider {
         destination: &VirtualLocationDescriptor,
         cancellation: &CancellationToken,
     ) -> Result<()> {
+        crate::provider::validate_remote_location(destination, "sftp", true)?;
         let profile = self.profile(destination)?;
         let mut remote = remote_path(destination);
         if let Some(name) = local_source.file_name().and_then(|name| name.to_str()) {
@@ -302,32 +289,7 @@ impl RemoteProvider for SftpProvider {
         let local = local_source.to_path_buf();
         self.runtime.block_on(async {
             let (session, sftp) = Self::connect(&profile).await?;
-            let mut input = tokio::fs::File::open(&local)
-                .await
-                .context("open local upload source")?;
-            let mut output = sftp
-                .create(&remote)
-                .await
-                .context("create SFTP destination")?;
-            let mut buffer = vec![0; 64 * 1024];
-            loop {
-                if cancellation.is_cancelled() {
-                    Self::disconnect(session).await;
-                    bail!("SFTP upload cancelled");
-                }
-                let read = input
-                    .read(&mut buffer)
-                    .await
-                    .context("read local upload source")?;
-                if read == 0 {
-                    break;
-                }
-                output
-                    .write_all(&buffer[..read])
-                    .await
-                    .context("write SFTP destination")?;
-            }
-            output.shutdown().await.context("flush SFTP destination")?;
+            upload_tree(&sftp, &local, &remote, cancellation).await?;
             Self::disconnect(session).await;
             Ok(())
         })
@@ -338,6 +300,7 @@ impl RemoteProvider for SftpProvider {
         location: &VirtualLocationDescriptor,
         cancellation: &CancellationToken,
     ) -> Result<()> {
+        crate::provider::validate_remote_location(location, "sftp", false)?;
         let profile = self.profile(location)?;
         let remote = remote_path(location);
         self.runtime.block_on(async {
@@ -359,6 +322,8 @@ impl RemoteProvider for SftpProvider {
         destination: &VirtualLocationDescriptor,
         cancellation: &CancellationToken,
     ) -> Result<()> {
+        crate::provider::validate_remote_location(source, "sftp", false)?;
+        crate::provider::validate_remote_location(destination, "sftp", false)?;
         if source.container_identity != destination.container_identity {
             bail!("SFTP rename cannot cross profiles");
         }
@@ -382,6 +347,7 @@ impl RemoteProvider for SftpProvider {
         recursive: bool,
         cancellation: &CancellationToken,
     ) -> Result<()> {
+        crate::provider::validate_remote_location(location, "sftp", false)?;
         let profile = self.profile(location)?;
         let remote = remote_path(location);
         self.runtime.block_on(async {
@@ -389,7 +355,10 @@ impl RemoteProvider for SftpProvider {
                 bail!("SFTP operation cancelled");
             }
             let (session, sftp) = Self::connect(&profile).await?;
-            let metadata = sftp.metadata(&remote).await.context("inspect SFTP item")?;
+            let metadata = sftp
+                .symlink_metadata(&remote)
+                .await
+                .context("inspect SFTP item")?;
             if metadata.is_dir() {
                 if recursive {
                     remove_tree(&sftp, &remote, cancellation).await?;
@@ -548,6 +517,175 @@ async fn remove_tree(
         sftp.remove_dir(&directory)
             .await
             .context("remove SFTP directory")?;
+    }
+    Ok(())
+}
+
+async fn download_tree(
+    sftp: &SftpSession,
+    remote_root: &str,
+    local_root: &Path,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    let mut pending = vec![(remote_root.to_owned(), local_root.to_path_buf(), 0_usize)];
+    let mut visited = 0_usize;
+    let mut operation_bytes = 0_u64;
+    while let Some((remote, local, depth)) = pending.pop() {
+        ensure_sftp_not_cancelled(cancellation)?;
+        visited = visited.saturating_add(1);
+        if !crate::provider::transfer_tree_within_limits(depth, visited) {
+            bail!("SFTP download tree exceeds safety limits");
+        }
+        let metadata = sftp
+            .symlink_metadata(&remote)
+            .await
+            .context("inspect SFTP download source")?;
+        if metadata.is_symlink() {
+            bail!("SFTP symbolic links are not followed during transfer");
+        }
+        if metadata.is_dir() {
+            tokio::fs::create_dir_all(&local)
+                .await
+                .context("create local download directory")?;
+            let mut windows_names = HashSet::new();
+            for entry in sftp
+                .read_dir(&remote)
+                .await
+                .context("enumerate SFTP download directory")?
+            {
+                let name = entry.file_name();
+                if matches!(name.as_str(), "." | "..") {
+                    continue;
+                }
+                crate::provider::validate_windows_component(&name)?;
+                let normalized_name = name.nfc().flat_map(char::to_lowercase).collect::<String>();
+                if !windows_names.insert(normalized_name) {
+                    bail!("SFTP directory contains a Windows name collision");
+                }
+                pending.push((
+                    format!("{}/{}", remote.trim_end_matches('/'), name),
+                    local.join(name),
+                    depth + 1,
+                ));
+            }
+            continue;
+        }
+        if let Some(parent) = local.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let mut input = sftp.open(&remote).await.context("open SFTP source")?;
+        let mut output = tokio::fs::File::create(&local)
+            .await
+            .context("create local destination")?;
+        let mut buffer = vec![0; 64 * 1024];
+        let mut file_bytes = 0_u64;
+        loop {
+            ensure_sftp_not_cancelled(cancellation)?;
+            let read = input.read(&mut buffer).await.context("read SFTP source")?;
+            if read == 0 {
+                break;
+            }
+            let next_file = file_bytes.saturating_add(read as u64);
+            let next_operation = operation_bytes.saturating_add(read as u64);
+            if !crate::provider::transfer_bytes_within_limits(next_file, next_operation) {
+                bail!("SFTP download exceeds transfer quota");
+            }
+            output
+                .write_all(&buffer[..read])
+                .await
+                .context("write local destination")?;
+            file_bytes = next_file;
+            operation_bytes = next_operation;
+        }
+        output.flush().await?;
+    }
+    Ok(())
+}
+
+async fn upload_tree(
+    sftp: &SftpSession,
+    local_root: &Path,
+    remote_root: &str,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    let mut pending = vec![(local_root.to_path_buf(), remote_root.to_owned(), 0_usize)];
+    let mut visited = 0_usize;
+    let mut operation_bytes = 0_u64;
+    while let Some((local, remote, depth)) = pending.pop() {
+        ensure_sftp_not_cancelled(cancellation)?;
+        visited = visited.saturating_add(1);
+        if !crate::provider::transfer_tree_within_limits(depth, visited) {
+            bail!("SFTP upload tree exceeds safety limits");
+        }
+        let metadata = tokio::fs::symlink_metadata(&local)
+            .await
+            .context("inspect local upload source")?;
+        if metadata.file_type().is_symlink() {
+            bail!("local symbolic links are not followed during SFTP transfer");
+        }
+        if metadata.is_dir() {
+            match sftp.create_dir(&remote).await {
+                Ok(()) => {}
+                Err(error) => {
+                    let existing = sftp
+                        .symlink_metadata(&remote)
+                        .await
+                        .with_context(|| format!("create SFTP directory: {error}"))?;
+                    if !existing.is_dir() || existing.is_symlink() {
+                        return Err(error).context("create SFTP directory");
+                    }
+                }
+            }
+            let mut entries = tokio::fs::read_dir(&local)
+                .await
+                .context("enumerate local upload directory")?;
+            while let Some(entry) = entries.next_entry().await? {
+                let name = entry
+                    .file_name()
+                    .into_string()
+                    .map_err(|_| anyhow::anyhow!("local upload name is not UTF-8"))?;
+                if name.contains(['/', '\\', '\0', '\r', '\n']) {
+                    bail!("local upload name is invalid");
+                }
+                pending.push((
+                    entry.path(),
+                    format!("{}/{}", remote.trim_end_matches('/'), name),
+                    depth + 1,
+                ));
+            }
+            continue;
+        }
+        let mut input = tokio::fs::File::open(&local)
+            .await
+            .context("open local upload source")?;
+        let mut output = sftp
+            .create(&remote)
+            .await
+            .context("create SFTP destination")?;
+        let mut buffer = vec![0; 64 * 1024];
+        let mut file_bytes = 0_u64;
+        loop {
+            ensure_sftp_not_cancelled(cancellation)?;
+            let read = input
+                .read(&mut buffer)
+                .await
+                .context("read local upload source")?;
+            if read == 0 {
+                break;
+            }
+            let next_file = file_bytes.saturating_add(read as u64);
+            let next_operation = operation_bytes.saturating_add(read as u64);
+            if !crate::provider::transfer_bytes_within_limits(next_file, next_operation) {
+                bail!("SFTP upload exceeds transfer quota");
+            }
+            output
+                .write_all(&buffer[..read])
+                .await
+                .context("write SFTP destination")?;
+            file_bytes = next_file;
+            operation_bytes = next_operation;
+        }
+        output.shutdown().await.context("flush SFTP destination")?;
     }
     Ok(())
 }

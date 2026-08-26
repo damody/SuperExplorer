@@ -486,6 +486,7 @@ pub enum OperationItemResult {
     Succeeded,
     Skipped,
     Cancelled,
+    Partial(ExplorerError),
     Failed(ExplorerError),
 }
 

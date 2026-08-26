@@ -482,6 +482,21 @@ pub(crate) struct BookmarkContextMenuState {
     pub(crate) y: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RemoteContextMenuState {
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) background: bool,
+}
+
+#[derive(Clone, Debug)]
+struct PermanentDeleteConfirmation {
+    items: Vec<ItemDescriptor>,
+    tab_id: TabId,
+    generation: explorer_model::Generation,
+    nonce: explorer_common::RequestId,
+}
+
 #[derive(Clone, Debug)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -498,7 +513,7 @@ pub struct AppViewState {
     divider: DividerInteraction,
     operation_center: OperationCenterState,
     rename_editor: Option<explorer_model::RenameEditorState>,
-    permanent_delete_confirmation: Option<Vec<ItemDescriptor>>,
+    permanent_delete_confirmation: Option<PermanentDeleteConfirmation>,
     permanent_delete_confirmation_focus: PermanentDeleteDialogTarget,
     lock_recovery: Option<LockRecoveryUiState>,
     pending_lock_recovery_command: Option<ExplorerCommand>,
@@ -519,6 +534,7 @@ pub struct AppViewState {
     bookmark_overflow_open: bool,
     bookmark_folder_menu: Option<explorer_model::BookmarkFolderId>,
     bookmark_context_menu: Option<BookmarkContextMenuState>,
+    remote_context_menu: Option<RemoteContextMenuState>,
     expanded_bookmark_folders: HashSet<explorer_model::BookmarkFolderId>,
     bookmark_folder_delete_confirmation: Option<(explorer_model::BookmarkFolderId, usize)>,
     bookmark_editor: Option<BookmarkEditorDraft>,
@@ -764,6 +780,7 @@ impl AppViewState {
             bookmark_overflow_open: false,
             bookmark_folder_menu: None,
             bookmark_context_menu: None,
+            remote_context_menu: None,
             expanded_bookmark_folders: HashSet::new(),
             bookmark_folder_delete_confirmation: None,
             bookmark_editor: None,
@@ -1453,7 +1470,9 @@ impl AppViewState {
     }
 
     pub fn permanent_delete_confirmation_count(&self) -> Option<usize> {
-        self.permanent_delete_confirmation.as_ref().map(Vec::len)
+        self.permanent_delete_confirmation
+            .as_ref()
+            .map(|confirmation| confirmation.items.len())
     }
 
     pub(crate) fn permanent_delete_confirmation_focus(
@@ -2965,6 +2984,14 @@ impl AppViewState {
 
     pub(crate) fn close_bookmark_context_menu(&mut self) {
         self.bookmark_context_menu = None;
+    }
+
+    pub(crate) const fn remote_context_menu(&self) -> Option<RemoteContextMenuState> {
+        self.remote_context_menu
+    }
+
+    pub(crate) fn close_remote_context_menu(&mut self) {
+        self.remote_context_menu = None;
     }
 
     pub(crate) fn bookmark_folder_expanded(&self, id: explorer_model::BookmarkFolderId) -> bool {
@@ -4612,6 +4639,25 @@ impl AppViewState {
         } else {
             explorer_model::ShellContextMenuTarget::Background { parent }
         };
+        let supported_remote_parent = match &target {
+            explorer_model::ShellContextMenuTarget::Items { parent, .. }
+            | explorer_model::ShellContextMenuTarget::Background { parent } => {
+                matches!(parent, LocationDescriptor::Virtual(remote) if matches!(remote.provider_id.as_str(), "adb" | "sftp"))
+            }
+        };
+        if supported_remote_parent {
+            self.remote_context_menu = Some(RemoteContextMenuState {
+                x: x.max(0) as f32,
+                y: y.max(0) as f32,
+                background: matches!(
+                    target,
+                    explorer_model::ShellContextMenuTarget::Background { .. }
+                ),
+            });
+            self.pending_context_hit = None;
+            self.pending_context_extended_verbs = false;
+            return None;
+        }
         let request = explorer_model::ContextMenuRequest {
             target,
             owner_window,
@@ -5023,10 +5069,13 @@ impl AppViewState {
         if paths.is_empty() {
             return;
         }
-        let Some(destination_path) = destination.path() else {
-            return;
-        };
-        if !explorer_model::filesystem_drop_destination_is_valid(&paths, destination_path, effect) {
+        if let Some(destination_path) = destination.path()
+            && !explorer_model::filesystem_drop_destination_is_valid(
+                &paths,
+                destination_path,
+                effect,
+            )
+        {
             return;
         }
         if right_button {
@@ -5121,6 +5170,12 @@ impl AppViewState {
         })
     }
 
+    pub(crate) fn selected_items_include_remote(&self) -> bool {
+        self.selected_items()
+            .iter()
+            .any(|item| matches!(item.location, LocationDescriptor::Virtual(_)))
+    }
+
     pub(crate) fn create_shortcut_selected_request(&self) -> Option<FileOperationRequest> {
         let items = self.selected_items();
         (!items.is_empty()).then_some(FileOperationRequest {
@@ -5196,16 +5251,27 @@ impl AppViewState {
         if items.is_empty() {
             return false;
         }
-        self.permanent_delete_confirmation = Some(items);
+        let tab = self.tabs.active_tab();
+        self.permanent_delete_confirmation = Some(PermanentDeleteConfirmation {
+            items,
+            tab_id: tab.id,
+            generation: tab.generation,
+            nonce: explorer_common::RequestId::new(),
+        });
         self.permanent_delete_confirmation_focus = PermanentDeleteDialogTarget::Delete;
         true
     }
 
     pub(crate) fn confirm_permanent_delete(&mut self) -> Option<FileOperationRequest> {
-        let items = self.permanent_delete_confirmation.take()?;
+        let confirmation = self.permanent_delete_confirmation.take()?;
+        let tab = self.tabs.active_tab();
+        if tab.id != confirmation.tab_id || tab.generation != confirmation.generation {
+            return None;
+        }
+        let _consumed_nonce = confirmation.nonce;
         Some(FileOperationRequest {
             kind: FileOperationKind::PermanentDelete {
-                items,
+                items: confirmation.items,
                 confirmed: true,
             },
             flags: explorer_model::FileOperationFlags {

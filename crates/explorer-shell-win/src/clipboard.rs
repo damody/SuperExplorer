@@ -57,18 +57,83 @@ pub fn publish_native_file_clipboard(
     items: Vec<ItemDescriptor>,
     mode: ClipboardMode,
 ) -> Result<(), ExplorerError> {
+    publish_native_file_clipboard_with_token(items, mode, None)
+}
+
+pub fn publish_native_file_clipboard_with_token(
+    items: Vec<ItemDescriptor>,
+    mode: ClipboardMode,
+    token: Option<[u8; 32]>,
+) -> Result<(), ExplorerError> {
     // SAFETY: callers use a dedicated worker thread and initialization is balanced below.
     unsafe { OleInitialize(None) }
         .map_err(|error| native_clipboard_error("initialize OLE clipboard worker", &error))?;
     let result = (|| {
         let mut runtime = ClipboardRuntime::new();
         runtime.copy_or_cut(items, mode)?;
+        if let Some(token) = token
+            && let Some(data) = runtime.owned.as_ref()
+        {
+            set_binary_clipboard_format(
+                data,
+                windows::core::w!("SuperExplorer.RemoteClipboardToken.v1"),
+                &token,
+            )?;
+        }
         runtime.shutdown();
         Ok(())
     })();
     // SAFETY: balances successful OleInitialize on this worker thread.
     unsafe { OleUninitialize() };
     result
+}
+
+fn set_binary_clipboard_format(
+    data: &IDataObject,
+    name: windows::core::PCWSTR,
+    bytes: &[u8],
+) -> Result<(), ExplorerError> {
+    // SAFETY: name is a live NUL-terminated clipboard format name.
+    let format_id = unsafe { RegisterClipboardFormatW(name) };
+    let cf_format = u16::try_from(format_id).map_err(|_| {
+        clipboard_error(
+            ExplorerErrorKind::Availability,
+            "register private clipboard format",
+            "無法註冊 SuperExplorer 檔案剪貼簿格式。",
+            "registered clipboard format exceeded u16",
+        )
+    })?;
+    // SAFETY: allocation is transferred to the data object after SetData succeeds.
+    let memory = unsafe { GlobalAlloc(GMEM_MOVEABLE, bytes.len()) }
+        .map_err(|error| native_clipboard_error("allocate private clipboard token", &error))?;
+    // SAFETY: allocation has exactly bytes.len() writable bytes.
+    let pointer = unsafe { GlobalLock(memory) }.cast::<u8>();
+    if pointer.is_null() {
+        return Err(clipboard_error(
+            ExplorerErrorKind::Availability,
+            "lock private clipboard token",
+            "無法準備 SuperExplorer 檔案剪貼簿。",
+            "GlobalLock returned null",
+        ));
+    }
+    // SAFETY: source and destination are non-overlapping and valid for bytes.len().
+    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer, bytes.len()) };
+    let _ = unsafe { GlobalUnlock(memory) };
+    let format = FORMATETC {
+        cfFormat: cf_format,
+        ptd: std::ptr::null_mut(),
+        dwAspect: DVASPECT_CONTENT.0,
+        lindex: -1,
+        tymed: TYMED_HGLOBAL.0.unsigned_abs(),
+    };
+    let medium = STGMEDIUM {
+        tymed: TYMED_HGLOBAL.0.unsigned_abs(),
+        u: windows::Win32::System::Com::STGMEDIUM_0 { hGlobal: memory },
+        pUnkForRelease: std::mem::ManuallyDrop::new(None),
+    };
+    // SAFETY: frelease=true transfers ownership to IDataObject on success.
+    unsafe { data.SetData(&raw const format, &raw const medium, true) }
+        .map_err(|error| native_clipboard_error("set private clipboard token", &error))
 }
 
 #[cfg(test)]
