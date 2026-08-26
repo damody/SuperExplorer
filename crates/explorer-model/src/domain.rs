@@ -125,6 +125,10 @@ impl SyntheticRoot {
 #[serde(deny_unknown_fields)]
 pub struct VirtualLocationDescriptor {
     pub provider_id: String,
+    /// Non-secret public device serial or saved profile alias used only to reconstruct a URI.
+    /// Older extension/session descriptors omit it and remain valid.
+    #[serde(default)]
+    pub public_authority: Option<String>,
     pub container_identity: [u8; 16],
     pub container_generation: u64,
     pub entry_id: Option<u64>,
@@ -204,6 +208,7 @@ impl LocationDescriptor {
     ) -> Result<Self, LocationDescriptorValidationError> {
         Self::Virtual(VirtualLocationDescriptor {
             provider_id: provider_id.into(),
+            public_authority: None,
             container_identity,
             container_generation,
             entry_id,
@@ -246,6 +251,7 @@ impl LocationDescriptor {
             Self::KnownFolder(bytes) => bytes.len(),
             Self::Virtual(location) => {
                 location.provider_id.len()
+                    + location.public_authority.as_ref().map_or(0, String::len)
                     + location.container_identity.len()
                     + size_of::<u64>() * 2
                     + location.components.iter().map(String::len).sum::<usize>()
@@ -266,6 +272,11 @@ impl LocationDescriptor {
             Self::KnownFolder(_) => false,
             Self::Virtual(location) => {
                 location.provider_id.is_empty()
+                    || location.public_authority.as_ref().is_some_and(|authority| {
+                        authority.is_empty()
+                            || authority.len() > 255
+                            || authority.contains(['/', '\\', '\0', '\r', '\n'])
+                    })
                     || location.container_generation == 0
                     || location.container_identity == [0; 16]
                     || location.components.iter().any(|component| {

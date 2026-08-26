@@ -180,6 +180,10 @@ fn mint_secret(secret_utf16: Option<&[u16]>) -> ROption<explorer_extension_api::
 }
 
 #[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "atomic replacement with backup requires declaring and invoking Win32 ReplaceFileW"
+)]
 fn atomic_replace_with_backup(
     replacement: &Path,
     destination: &Path,
@@ -187,6 +191,8 @@ fn atomic_replace_with_backup(
 ) -> Result<(), String> {
     use std::{iter, os::windows::ffi::OsStrExt as _};
     #[link(name = "kernel32")]
+    // SAFETY: The declaration matches kernel32's documented ReplaceFileW
+    // system ABI, including its optional raw exclusion and reserved pointers.
     unsafe extern "system" {
         fn ReplaceFileW(
             replaced: *const u16,
@@ -206,6 +212,8 @@ fn atomic_replace_with_backup(
     let destination = wide(destination);
     let replacement = wide(replacement);
     let backup = wide(backup);
+    // SAFETY: All three path buffers are live, NUL-terminated UTF-16 for the
+    // duration of the call; the optional exclusion and reserved pointers are null.
     if unsafe {
         ReplaceFileW(
             destination.as_ptr(),

@@ -561,4 +561,26 @@ mod tests {
         assert!(value.begin_reorder(id, 1).changed());
         assert!(value.begin_update(id, "Renamed".into(), target).changed());
     }
+
+    #[test]
+    fn remote_folder_bookmarks_round_trip_public_authority_without_secrets() {
+        let mut value = Bookmarks::default();
+        for address in [
+            "adb://emulator-5554/sdcard/Android",
+            "sftp://production/root/uploads",
+        ] {
+            let location = crate::RemoteAddress::parse(address)
+                .unwrap()
+                .to_deterministic_location(1)
+                .unwrap();
+            value.begin_add(address.to_owned(), BookmarkTarget::Folder { location });
+        }
+        let encoded = serde_json::to_string(&value).unwrap();
+        assert!(encoded.contains("emulator-5554"));
+        assert!(encoded.contains("production"));
+        assert!(!encoded.contains("password"));
+        assert!(!encoded.contains("45.32.49.125"));
+        let decoded: Bookmarks = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.entries().len(), 2);
+    }
 }

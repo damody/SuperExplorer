@@ -14,10 +14,51 @@ use explorer_model::{
     ItemDescriptor, LocationDescriptor, LocationMetadata, NamespaceCapabilities,
     OperationItemOutcome, OperationItemResult, OperationTerminal, TransferEffects,
 };
-use explorer_remote::{RemoteProviderRegistry, TransferEngine, TransferMode, TransferResult};
+use explorer_remote::{
+    RemoteEntry, RemoteProvider, RemoteProviderRegistry, TransferEngine, TransferMode,
+    TransferResult,
+};
 
-pub fn configured_remote_providers() -> Arc<RemoteProviderRegistry> {
+fn remote_file_entry(entry: RemoteEntry) -> Option<FileEntry> {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    entry.location.hash(&mut hasher);
+    Some(FileEntry {
+        id: explorer_model::ShellItemId::from_provider_bytes(hasher.finish().to_le_bytes())?,
+        display_name: entry.name,
+        location: entry.location,
+        is_container: entry.kind.is_container(),
+        metadata: FileEntryMetadata {
+            size_bytes: entry.size,
+            type_display: Some(entry.kind.type_display().to_owned()),
+            namespace_capabilities: NamespaceCapabilities::from_public_bits(
+                NamespaceCapabilities::OPEN
+                    | NamespaceCapabilities::COPY
+                    | NamespaceCapabilities::RENAME
+                    | NamespaceCapabilities::DELETE,
+            ),
+            ..FileEntryMetadata::default()
+        },
+    })
+}
+
+fn remote_child_container(entry: RemoteEntry) -> Option<explorer_model::BreadcrumbMenuItem> {
+    entry
+        .kind
+        .is_container()
+        .then_some(explorer_model::BreadcrumbMenuItem {
+            display_name: entry.name,
+            location: entry.location,
+        })
+}
+
+pub struct ConfiguredRemoteRuntime {
+    pub providers: Arc<RemoteProviderRegistry>,
+    sftp: Option<Arc<explorer_remote::SftpProvider>>,
+}
+
+pub fn configured_remote_runtime() -> Arc<ConfiguredRemoteRuntime> {
     let mut registry = RemoteProviderRegistry::default();
+    let mut sftp_runtime = None;
 
     if let Ok(client) = explorer_remote::AdbClient::discover() {
         let provider = Arc::new(explorer_remote::AdbProvider::new(client));
@@ -45,10 +86,248 @@ pub fn configured_remote_providers() -> Arc<RemoteProviderRegistry> {
                 let _ = provider.register_profile(profile, password);
             }
         }
-        let _ = registry.register(provider);
+        let _ = registry.register(provider.clone());
+        sftp_runtime = Some(provider);
     }
 
-    Arc::new(registry)
+    Arc::new(ConfiguredRemoteRuntime {
+        providers: Arc::new(registry),
+        sftp: sftp_runtime,
+    })
+}
+
+impl ConfiguredRemoteRuntime {
+    pub fn login_address(&self, input: &str) -> Result<Option<LocationDescriptor>, String> {
+        let parsed =
+            explorer_model::SftpAddressInput::parse(input).map_err(|error| error.to_string())?;
+        let host = parsed.address.authority.clone();
+        let saved = load_sftp_profiles()
+            .into_iter()
+            .find(|profile| profile.alias == host);
+        if let Some(profile) = saved.as_ref()
+            && profile.host_key_fingerprint.is_some()
+            && explorer_automation_win::load_windows_credential(&profile.credential_target())
+                .ok()
+                .flatten()
+                .is_some()
+        {
+            return parsed
+                .address
+                .to_location(profile.container_identity, 1)
+                .map(Some)
+                .map_err(|error| error.to_string());
+        }
+        let suggested_user = parsed
+            .username_hint
+            .or_else(|| saved.as_ref().map(|profile| profile.username.clone()))
+            .unwrap_or_default();
+        let Some((username, password)) = prompt_sftp_login(&host, &suggested_user)? else {
+            return Ok(None);
+        };
+        let provider = self
+            .sftp
+            .as_ref()
+            .ok_or_else(|| "SFTP runtime is unavailable.".to_owned())?;
+        let fingerprint = provider
+            .probe_host_key(&host, 22)
+            .map_err(|_| "Unable to read the SFTP server host key.".to_owned())?;
+        if saved
+            .as_ref()
+            .and_then(|profile| profile.host_key_fingerprint.as_ref())
+            .is_some_and(|expected| expected != &fingerprint)
+        {
+            return Err("The SFTP server host key changed; login was blocked.".to_owned());
+        }
+        let identity = saved.as_ref().map_or_else(
+            || {
+                explorer_model::remote_container_identity(
+                    explorer_model::RemoteProviderKind::Sftp,
+                    &host,
+                )
+            },
+            |profile| profile.container_identity,
+        );
+        let mut profile =
+            explorer_model::SftpProfile::new(host.clone(), host.clone(), 22, username, identity)
+                .map_err(|error| error.to_string())?;
+        profile.host_key_fingerprint = Some(fingerprint);
+        provider
+            .register_profile(profile.clone(), password.clone())
+            .map_err(|_| "SFTP login information is invalid.".to_owned())?;
+        let location = parsed
+            .address
+            .to_location(identity, 1)
+            .map_err(|error| error.to_string())?;
+        let LocationDescriptor::Virtual(remote) = &location else {
+            return Err("SFTP address is invalid.".to_owned());
+        };
+        if provider
+            .list(remote, &explorer_model::CancellationToken::new())
+            .is_err()
+        {
+            provider.remove_profile(identity);
+            if let Some(previous) = saved
+                && let Ok(Some(previous_password)) =
+                    explorer_automation_win::load_windows_credential(&previous.credential_target())
+            {
+                let _ = provider.register_profile(previous, previous_password);
+            }
+            return Err("SFTP authentication failed.".to_owned());
+        }
+        explorer_automation_win::store_windows_credential(&profile.credential_target(), password)
+            .map_err(|_| "Unable to save the SFTP credential.".to_owned())?;
+        if let Err(error) = persist_sftp_profile(profile.clone()) {
+            let _ =
+                explorer_automation_win::remove_windows_credential(&profile.credential_target());
+            return Err(error);
+        }
+        explorer_ui::navigation_pane::configure_sftp_navigation_profiles(
+            configured_sftp_navigation_profiles(),
+        );
+        Ok(Some(location))
+    }
+}
+
+fn persist_sftp_profile(profile: explorer_model::SftpProfile) -> Result<(), String> {
+    let local = std::env::var_os("LOCALAPPDATA")
+        .ok_or_else(|| "LOCALAPPDATA is unavailable.".to_owned())?;
+    let directory = std::path::PathBuf::from(local)
+        .join("RustGpuiExplorer")
+        .join("remote");
+    std::fs::create_dir_all(&directory)
+        .map_err(|_| "Unable to create the SFTP profile directory.".to_owned())?;
+    let path = directory.join("sftp-profiles.json");
+    let mut profiles = load_sftp_profiles();
+    if let Some(existing) = profiles.iter_mut().find(|item| item.alias == profile.alias) {
+        *existing = profile;
+    } else {
+        profiles.push(profile);
+    }
+    let bytes = serde_json::to_vec_pretty(&profiles)
+        .map_err(|_| "Unable to encode the SFTP profile.".to_owned())?;
+    let temporary = directory.join("sftp-profiles.json.tmp");
+    std::fs::write(&temporary, bytes)
+        .map_err(|_| "Unable to write the SFTP profile.".to_owned())?;
+    replace_profile_file(&temporary, &path)
+}
+
+#[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "atomic SFTP profile activation requires declaring and invoking Win32 MoveFileExW"
+)]
+fn replace_profile_file(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt as _;
+    // SAFETY: This declaration matches kernel32's documented MoveFileExW
+    // system ABI; callers provide NUL-terminated UTF-16 path buffers.
+    unsafe extern "system" {
+        fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
+    }
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), 0x1 | 0x8) } == 0 {
+        return Err("Unable to activate the SFTP profile.".to_owned());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_profile_file(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) -> Result<(), String> {
+    std::fs::rename(source, destination)
+        .map_err(|_| "Unable to activate the SFTP profile.".to_owned())
+}
+
+#[cfg(windows)]
+fn prompt_sftp_login(host: &str, suggested_user: &str) -> Result<Option<(String, String)>, String> {
+    use windows::{
+        Win32::{
+            Foundation::{ERROR_CANCELLED, ERROR_SUCCESS},
+            Security::Credentials::{
+                CREDUI_FLAGS_ALWAYS_SHOW_UI, CREDUI_FLAGS_DO_NOT_PERSIST,
+                CREDUI_FLAGS_GENERIC_CREDENTIALS, CREDUI_INFOW, CredUIPromptForCredentialsW,
+            },
+        },
+        core::PCWSTR,
+    };
+    fn wide(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+    let caption = wide("SuperExplorer SFTP Login");
+    let message = wide(&format!("Sign in to {host}"));
+    let target = wide(&format!("SuperExplorer/SFTP/{host}"));
+    let info = CREDUI_INFOW {
+        cbSize: std::mem::size_of::<CREDUI_INFOW>() as u32,
+        pszMessageText: PCWSTR(message.as_ptr()),
+        pszCaptionText: PCWSTR(caption.as_ptr()),
+        ..Default::default()
+    };
+    let mut username = wide(suggested_user);
+    username.resize(514, 0);
+    let mut password = vec![0_u16; 514];
+    // SAFETY: The descriptor and target buffers remain live and NUL-terminated,
+    // and the mutable username/password buffers retain their full capacity for
+    // the duration of this synchronous credential dialog call.
+    #[expect(
+        unsafe_code,
+        reason = "the Windows SFTP credential dialog uses raw UTF-16 buffer pointers"
+    )]
+    let result = unsafe {
+        CredUIPromptForCredentialsW(
+            Some(&raw const info),
+            PCWSTR(target.as_ptr()),
+            None,
+            0,
+            &mut username,
+            &mut password,
+            None,
+            CREDUI_FLAGS_ALWAYS_SHOW_UI
+                | CREDUI_FLAGS_DO_NOT_PERSIST
+                | CREDUI_FLAGS_GENERIC_CREDENTIALS,
+        )
+    };
+    if result == ERROR_CANCELLED {
+        password.fill(0);
+        return Ok(None);
+    }
+    if result != ERROR_SUCCESS {
+        password.fill(0);
+        return Err("Unable to open the SFTP login page.".to_owned());
+    }
+    let decode = |value: &[u16]| {
+        String::from_utf16_lossy(
+            &value[..value
+                .iter()
+                .position(|unit| *unit == 0)
+                .unwrap_or(value.len())],
+        )
+    };
+    let username_value = decode(&username);
+    let password_value = decode(&password);
+    password.fill(0);
+    std::hint::black_box(&mut password);
+    if username_value.is_empty() || password_value.is_empty() {
+        return Err("Username and password are required.".to_owned());
+    }
+    Ok(Some((username_value, password_value)))
+}
+
+#[cfg(not(windows))]
+fn prompt_sftp_login(_: &str, _: &str) -> Result<Option<(String, String)>, String> {
+    Err("SFTP login is available only on Windows.".to_owned())
 }
 
 pub fn discover_adb_navigation_devices() -> Vec<explorer_ui::navigation_pane::AdbNavigationDevice> {
@@ -190,6 +469,7 @@ impl RemoteExplorerService {
                     .components
                     .last()
                     .cloned()
+                    .or_else(|| remote.public_authority.clone())
                     .unwrap_or_else(|| remote.provider_id.to_uppercase());
                 sender
                     .send(ExplorerEvent::LocationResolved {
@@ -202,39 +482,7 @@ impl RemoteExplorerService {
                         },
                     })
                     .map_err(|_| anyhow::anyhow!("remote event receiver disconnected"))?;
-                let rows = entries
-                    .into_iter()
-                    .filter_map(|entry| {
-                        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                        entry.location.hash(&mut hasher);
-                        Some(FileEntry {
-                            id: explorer_model::ShellItemId::from_provider_bytes(
-                                hasher.finish().to_le_bytes(),
-                            )?,
-                            display_name: entry.name,
-                            location: entry.location,
-                            is_container: entry.is_directory,
-                            metadata: FileEntryMetadata {
-                                size_bytes: entry.size,
-                                type_display: Some(
-                                    if entry.is_directory {
-                                        "Remote folder"
-                                    } else {
-                                        "Remote file"
-                                    }
-                                    .to_owned(),
-                                ),
-                                namespace_capabilities: NamespaceCapabilities::from_public_bits(
-                                    NamespaceCapabilities::OPEN
-                                        | NamespaceCapabilities::COPY
-                                        | NamespaceCapabilities::RENAME
-                                        | NamespaceCapabilities::DELETE,
-                                ),
-                                ..FileEntryMetadata::default()
-                            },
-                        })
-                    })
-                    .collect();
+                let rows = entries.into_iter().filter_map(remote_file_entry).collect();
                 sender
                     .send(ExplorerEvent::DirectoryBatch {
                         context: context.clone(),
@@ -282,7 +530,10 @@ impl RemoteExplorerService {
                 segments.push(explorer_model::BreadcrumbSegment {
                     id: explorer_model::BreadcrumbSegmentId(hasher.finish()),
                     display_name: if count == 0 {
-                        remote.provider_id.to_uppercase()
+                        remote
+                            .public_authority
+                            .clone()
+                            .unwrap_or_else(|| remote.provider_id.to_uppercase())
                     } else {
                         remote.components[count - 1].clone()
                     },
@@ -331,11 +582,7 @@ impl RemoteExplorerService {
                     .map(|entries| {
                         entries
                             .into_iter()
-                            .filter(|entry| entry.is_directory)
-                            .map(|entry| explorer_model::BreadcrumbMenuItem {
-                                display_name: entry.name,
-                                location: entry.location,
-                            })
+                            .filter_map(remote_child_container)
                             .collect::<Vec<_>>()
                     })
             })();
@@ -756,6 +1003,30 @@ impl ExplorerService for RemoteExplorerService {
             } if items.iter().any(|item| Self::is_remote(&item.location)) => {
                 self.submit_remote_drag(context, items, button)
             }
+            ExplorerCommand::LoadShellIcon { context, key } if Self::is_remote(&key.location) => {
+                self.sender
+                    .try_send(ExplorerEvent::ShellIconFailed {
+                        context,
+                        key,
+                        reason: explorer_model::ShellIconFallbackReason::UnsupportedItem,
+                    })
+                    .map_err(map_send_error)
+            }
+            ExplorerCommand::LoadThumbnail {
+                context,
+                key,
+                location,
+                ..
+            } if Self::is_remote(&location) => self
+                .sender
+                .try_send(ExplorerEvent::ThumbnailFinished {
+                    context,
+                    key,
+                    outcome: explorer_model::ThumbnailTerminal::Fallback(
+                        explorer_model::ThumbnailFallbackReason::Unsupported,
+                    ),
+                })
+                .map_err(map_send_error),
             command => self.inner.submit(command),
         }
     }
@@ -941,6 +1212,18 @@ fn map_send_error<T>(error: TrySendError<T>) -> ExplorerServiceError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use explorer_remote::RemoteEntryKind;
+
+    fn remote_location() -> LocationDescriptor {
+        LocationDescriptor::Virtual(explorer_model::VirtualLocationDescriptor {
+            provider_id: "adb".to_owned(),
+            public_authority: Some("HA245TSY".to_owned()),
+            container_identity: [7; 16],
+            container_generation: 1,
+            entry_id: None,
+            components: vec!["data".to_owned()],
+        })
+    }
 
     struct TelemetryService;
 
@@ -987,5 +1270,85 @@ mod tests {
             explorer_model::CacheTelemetryAvailabilityV1::Available(value)
                 if value.bytes == 41 && value.entry_count == 3
         ));
+    }
+
+    #[test]
+    fn remote_shell_icon_uses_fallback_without_entering_local_shell_service() {
+        let service = RemoteExplorerService::new(
+            Arc::new(TelemetryService),
+            Arc::new(RemoteProviderRegistry::default()),
+        );
+        let context = explorer_model::RequestContext::new(
+            explorer_model::TabId::new(),
+            explorer_model::Generation::new(1),
+        );
+        let key = explorer_model::ShellIconKey {
+            item_id: None,
+            location: remote_location(),
+            size_bucket: 20,
+            dpi: 96,
+            theme: explorer_model::ShellIconTheme::Light,
+            association_generation: 0,
+            overlay_generation: 0,
+        };
+
+        service
+            .submit(ExplorerCommand::LoadShellIcon {
+                context: context.clone(),
+                key: key.clone(),
+            })
+            .unwrap();
+
+        assert!(matches!(
+            service.try_recv().unwrap(),
+            Some(ExplorerEvent::ShellIconFailed {
+                context: event_context,
+                key: event_key,
+                reason: explorer_model::ShellIconFallbackReason::UnsupportedItem,
+            }) if event_context == context && event_key == key
+        ));
+    }
+
+    #[test]
+    fn remote_entry_kinds_drive_rows_and_child_container_filtering() {
+        let kinds = [
+            (RemoteEntryKind::File, false, "Remote file"),
+            (RemoteEntryKind::Directory, true, "Remote folder"),
+            (RemoteEntryKind::FileSymlink, false, "Remote file link"),
+            (
+                RemoteEntryKind::DirectorySymlink,
+                true,
+                "Remote folder link",
+            ),
+            (RemoteEntryKind::BrokenSymlink, false, "Broken remote link"),
+            (
+                RemoteEntryKind::CircularSymlink,
+                false,
+                "Circular remote link",
+            ),
+        ];
+
+        for (index, (kind, is_container, type_display)) in kinds.into_iter().enumerate() {
+            let mut location = remote_location();
+            let LocationDescriptor::Virtual(remote) = &mut location else {
+                unreachable!();
+            };
+            remote.components.push(format!("entry-{index}"));
+            let remote_entry = RemoteEntry {
+                name: format!("entry-{index}"),
+                location: location.clone(),
+                kind,
+                size: Some(12),
+            };
+            let row = remote_file_entry(remote_entry.clone()).expect("row identity");
+            assert_eq!(row.location, location);
+            assert_eq!(row.is_container, is_container);
+            assert_eq!(row.metadata.type_display.as_deref(), Some(type_display));
+            assert_eq!(
+                remote_child_container(remote_entry).is_some(),
+                is_container,
+                "child menus must share the row container decision for {kind:?}",
+            );
+        }
     }
 }

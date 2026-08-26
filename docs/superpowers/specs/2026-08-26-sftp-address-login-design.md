@@ -44,11 +44,11 @@ cancel, or failure teardown.
 
 ## UI behavior
 
-The login surface is a focused modal card over the Explorer window. It shows
-the host read-only, editable port and username, a masked password field, Login
-and Cancel buttons, and one bounded error/status line. Enter submits and Escape
-cancels. While connecting, inputs are disabled and the Login button shows a
-busy state. Failure preserves host/username/port but clears the password.
+The login surface is the Windows native Credential UI owned by SuperExplorer.
+It shows the host, prefilled editable username, masked password, Login and
+Cancel controls, and blocks only the owning Explorer window while active.
+Windows persistence is disabled for this prompt; SuperExplorer stores the
+credential only after SSH authentication and host-key validation succeed.
 
 ## Errors and security
 
@@ -73,4 +73,3 @@ busy state. Failure preserves host/username/port but clears the password.
   registry, and navigates once to the canonical host URI.
 - Authentication and host-key mismatch leave no active profile and do not
   navigate.
-

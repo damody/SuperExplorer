@@ -293,6 +293,10 @@ fn prompt_archive_password(title: &str, incorrect: bool) -> Option<Vec<u16>> {
     }
     // SAFETY: all pointers reference live, NUL-terminated buffers for the
     // duration of this modal OS call; persistence is explicitly disabled.
+    #[expect(
+        unsafe_code,
+        reason = "the Windows credential dialog is exposed through a raw Win32 buffer API"
+    )]
     let result = unsafe {
         CredUIPromptForCredentialsW(
             Some(&raw const info),

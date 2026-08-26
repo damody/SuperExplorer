@@ -1,0 +1,18 @@
+{
+  "gate": "SLINK-UI",
+  "timestamp": "2026-08-26T01:43:50.0967524+08:00",
+  "source_revision": "8cef852ec8514b31575597a140f86ab9a4c3d73e",
+  "commands": [
+    "cargo test -p explorer-app remote_service::tests --lib --locked",
+    "cargo test -p explorer-ui remote_directory_links_navigate_but_invalid_links_remain_selected --lib --locked",
+    "cargo test -p explorer-ui remote_roots_show_devices_profiles_and_select_nested_paths --lib --locked"
+  ],
+  "expected": "Rows and child menus share classification; directory links navigate; broken/circular links remain selected and do not open",
+  "actual": "3 app tests passed; 1 soft-link UI test passed; 1 navigation-pane test passed",
+  "exit_status": 0,
+  "artifact_sha256": {
+    "remote_service.rs": "EC6DBA456EC9D60F3CF361648D1C7030995749BB792C0AF31C533E572D3AC9BD",
+    "state.rs": "771CDF8D25A557832CF5A65BB6DD09AD35E57A2EA8193BC2EC260366832CAA9C"
+  },
+  "task_ids": ["3.1.1", "3.1.2", "3.1.3", "3.1.4"]
+}

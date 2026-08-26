@@ -115,8 +115,8 @@ pub use protocol::{
     TransferEffects, base_icon_key, classify_base_icon,
 };
 pub use remote::{
-    RemoteAddress, RemoteAddressError, RemoteProviderKind, SftpProfile, SftpProfileError,
-    new_remote_container_identity, remote_container_identity,
+    RemoteAddress, RemoteAddressError, RemoteProviderKind, SftpAddressInput, SftpProfile,
+    SftpProfileError, new_remote_container_identity, remote_container_identity,
 };
 pub use session::{
     PersistedColumn, PersistedColumnLayoutEntry, PersistedColumnWidths, PersistedExtensionSort,

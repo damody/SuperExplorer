@@ -28,13 +28,22 @@ use crate::{
 fn bookmark_target_for_current_location(
     location: &LocationDescriptor,
 ) -> Option<explorer_model::BookmarkTarget> {
-    let LocationDescriptor::FileSystem(path) = location else {
-        return None;
-    };
-    path.is_dir()
-        .then(|| explorer_model::BookmarkTarget::Folder {
-            location: location.clone(),
-        })
+    match location {
+        LocationDescriptor::FileSystem(path) if path.is_dir() => {
+            Some(explorer_model::BookmarkTarget::Folder {
+                location: location.clone(),
+            })
+        }
+        LocationDescriptor::Virtual(remote)
+            if matches!(remote.provider_id.as_str(), "adb" | "sftp")
+                && remote.public_authority.is_some() =>
+        {
+            Some(explorer_model::BookmarkTarget::Folder {
+                location: location.clone(),
+            })
+        }
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -5253,6 +5262,12 @@ impl AppViewState {
         new_tab: bool,
     ) -> Option<ExplorerCommand> {
         let entry = self.presentation_entry(row_index)?;
+        if matches!(
+            entry.metadata.type_display.as_deref(),
+            Some("Broken remote link" | "Circular remote link")
+        ) {
+            return None;
+        }
         if entry.is_container {
             if new_tab {
                 self.new_tab();
@@ -5639,14 +5654,14 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
-    fn bookmark_star_targets_only_the_current_file_system_folder() {
+    fn bookmark_star_targets_local_adb_and_sftp_folders() {
         let fixture = std::env::temp_dir().join(format!(
             "superexplorer-bookmark-star-{}",
             std::process::id()
         ));
-        std::fs::create_dir_all(&fixture).expect("create bookmark star fixture");
+        std::fs::create_dir_all(&fixture).expect("create bookmark star fixture"); // architecture-check: allow test fixture
         let file = fixture.join("selected-child.txt");
-        std::fs::write(&file, b"fixture").expect("create selected child fixture");
+        std::fs::write(&file, b"fixture").expect("create selected child fixture"); // architecture-check: allow test fixture
 
         let folder_location = explorer_model::LocationDescriptor::file_system(&fixture);
         assert_eq!(
@@ -5668,8 +5683,22 @@ mod tests {
             .is_none()
         );
 
-        std::fs::remove_file(file).expect("remove selected child fixture");
-        std::fs::remove_dir(fixture).expect("remove bookmark star fixture");
+        for address in [
+            "adb://emulator-5554/sdcard/Android",
+            "sftp://production/root/uploads",
+        ] {
+            let location = explorer_model::RemoteAddress::parse(address)
+                .unwrap()
+                .to_deterministic_location(1)
+                .unwrap();
+            assert_eq!(
+                bookmark_target_for_current_location(&location),
+                Some(explorer_model::BookmarkTarget::Folder { location })
+            );
+        }
+
+        std::fs::remove_file(file).expect("remove selected child fixture"); // architecture-check: allow test fixture
+        std::fs::remove_dir(fixture).expect("remove bookmark star fixture"); // architecture-check: allow test fixture
     }
 
     #[test]
@@ -8246,6 +8275,93 @@ mod tests {
                 disposition: explorer_model::OpenDisposition::DefaultApplication,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn remote_directory_links_navigate_but_invalid_links_remain_selected() {
+        let root_location = explorer_model::RemoteAddress::parse("adb://device-9/data")
+            .unwrap()
+            .to_deterministic_location(1)
+            .unwrap();
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            root_location.clone(),
+            "data",
+        ));
+        let command = state.begin_active_location_load().expect("remote load");
+        let context = command.context().expect("context").clone();
+        let _ = state.apply_service_event(explorer_model::ExplorerEvent::LocationResolved {
+            context: context.clone(),
+            metadata: explorer_model::LocationMetadata {
+                descriptor: root_location,
+                display_title: "data".to_owned(),
+                can_go_up: true,
+                can_write: true,
+            },
+        });
+        let link_location = explorer_model::RemoteAddress::parse("adb://device-9/data/a-folder")
+            .unwrap()
+            .to_deterministic_location(1)
+            .unwrap();
+        let broken_id = explorer_model::ShellItemId::from_provider_bytes([22]).unwrap();
+        let circular_id = explorer_model::ShellItemId::from_provider_bytes([23]).unwrap();
+        let entries = vec![
+            explorer_model::FileEntry {
+                id: explorer_model::ShellItemId::from_provider_bytes([21]).unwrap(),
+                display_name: "a-folder".to_owned(),
+                location: link_location.clone(),
+                is_container: true,
+                metadata: explorer_model::FileEntryMetadata {
+                    type_display: Some("Remote folder link".to_owned()),
+                    ..Default::default()
+                },
+            },
+            explorer_model::FileEntry {
+                id: broken_id.clone(),
+                display_name: "b-broken".to_owned(),
+                location: explorer_model::RemoteAddress::parse("adb://device-9/data/b-broken")
+                    .unwrap()
+                    .to_deterministic_location(1)
+                    .unwrap(),
+                is_container: false,
+                metadata: explorer_model::FileEntryMetadata {
+                    type_display: Some("Broken remote link".to_owned()),
+                    ..Default::default()
+                },
+            },
+            explorer_model::FileEntry {
+                id: circular_id.clone(),
+                display_name: "c-cycle".to_owned(),
+                location: explorer_model::RemoteAddress::parse("adb://device-9/data/c-cycle")
+                    .unwrap()
+                    .to_deterministic_location(1)
+                    .unwrap(),
+                is_container: false,
+                metadata: explorer_model::FileEntryMetadata {
+                    type_display: Some("Circular remote link".to_owned()),
+                    ..Default::default()
+                },
+            },
+        ];
+        let _ = state.apply_service_event(explorer_model::ExplorerEvent::DirectoryBatch {
+            context: context.clone(),
+            entries,
+        });
+        let _ =
+            state.apply_service_event(explorer_model::ExplorerEvent::DirectoryFinished { context });
+
+        assert!(state.select_row(1));
+        assert!(state.open_row_command(1, false).is_none());
+        assert!(state.tabs().active_tab().selection.contains(&broken_id));
+
+        assert!(state.select_row(2));
+        assert!(state.open_row_command(2, false).is_none());
+        assert!(state.tabs().active_tab().selection.contains(&circular_id));
+
+        assert!(matches!(
+            state.open_row_command(0, false),
+            Some(explorer_model::ExplorerCommand::Navigate { location, .. })
+                if location == link_location
         ));
     }
 

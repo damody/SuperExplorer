@@ -1,0 +1,35 @@
+{
+  "gate": "SLINK-REL",
+  "timestamp": "2026-08-26T01:43:50.0967524+08:00",
+  "spec_sha256": "0551780906D607A06F6BD664523D78B935815C67A4A2B2DBEEEEA95C8AE33BED",
+  "records": [
+    {"task_id":"1.1.1","evidence":"contract.json","subcheck":"enum-contract","result":"passed"},
+    {"task_id":"1.1.2","evidence":"contract.json","subcheck":"kind-tests","result":"passed"},
+    {"task_id":"1.1.3","evidence":"contract.json","subcheck":"constructors-compile","result":"passed"},
+    {"task_id":"1.1.4","evidence":"contract.json","subcheck":"record","result":"passed"},
+    {"task_id":"2.1.1","evidence":"adb.json","subcheck":"structured-probe","result":"passed"},
+    {"task_id":"2.1.2","evidence":"adb.json","subcheck":"kind-mapping","result":"passed"},
+    {"task_id":"2.1.3","evidence":"adb.json","subcheck":"fake-and-real-tests","result":"passed"},
+    {"task_id":"2.1.4","evidence":"adb.json","subcheck":"record","result":"passed"},
+    {"task_id":"2.2.1","evidence":"sftp.json","subcheck":"bounded-resolution","result":"passed"},
+    {"task_id":"2.2.2","evidence":"sftp.json","subcheck":"listing-integration","result":"passed"},
+    {"task_id":"2.2.3","evidence":"sftp.json","subcheck":"terminal-tests","result":"passed"},
+    {"task_id":"2.2.4","evidence":"sftp.json","subcheck":"record","result":"passed"},
+    {"task_id":"3.1.1","evidence":"ui.json","subcheck":"row-mapping","result":"passed"},
+    {"task_id":"3.1.2","evidence":"ui.json","subcheck":"child-filter","result":"passed"},
+    {"task_id":"3.1.3","evidence":"ui.json","subcheck":"navigation-tests","result":"passed"},
+    {"task_id":"3.1.4","evidence":"ui.json","subcheck":"record","result":"passed"},
+    {"task_id":"3.2.1","evidence":"final-validation.json","subcheck":"format","result":"passed"},
+    {"task_id":"3.2.2","evidence":"final-validation.json","subcheck":"affected-tests","result":"passed"},
+    {"task_id":"3.2.3","evidence":"final-validation.json","subcheck":"workspace-check","result":"passed"},
+    {"task_id":"3.2.4","evidence":"final-validation.json","subcheck":"openspec-strict","result":"passed"},
+    {"task_id":"3.2.5","evidence":"index.json","subcheck":"unique-task-index","result":"passed"},
+    {"task_id":"3.2.6","evidence":"index.json","subcheck":"traceability-review","result":"passed"}
+  ],
+  "traceability": {
+    "proposal_to_design": "complete",
+    "design_to_requirements": "complete",
+    "requirements_to_tasks": "complete",
+    "blocking_gaps": []
+  }
+}

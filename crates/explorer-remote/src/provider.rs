@@ -9,8 +9,35 @@ use explorer_model::{CancellationToken, LocationDescriptor, VirtualLocationDescr
 pub struct RemoteEntry {
     pub name: String,
     pub location: LocationDescriptor,
-    pub is_directory: bool,
+    pub kind: RemoteEntryKind,
     pub size: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RemoteEntryKind {
+    File,
+    Directory,
+    FileSymlink,
+    DirectorySymlink,
+    BrokenSymlink,
+    CircularSymlink,
+}
+
+impl RemoteEntryKind {
+    pub const fn is_container(self) -> bool {
+        matches!(self, Self::Directory | Self::DirectorySymlink)
+    }
+
+    pub const fn type_display(self) -> &'static str {
+        match self {
+            Self::File => "Remote file",
+            Self::Directory => "Remote folder",
+            Self::FileSymlink => "Remote file link",
+            Self::DirectorySymlink => "Remote folder link",
+            Self::BrokenSymlink => "Broken remote link",
+            Self::CircularSymlink => "Circular remote link",
+        }
+    }
 }
 
 /// Synchronous provider operations run only on the remote worker pool. Implementations must poll
@@ -74,5 +101,35 @@ impl RemoteProviderRegistry {
         self.providers
             .get(location.provider_id.as_str())
             .ok_or_else(|| anyhow::anyhow!("remote provider is unavailable"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RemoteEntryKind;
+
+    #[test]
+    fn remote_entry_kinds_define_container_and_type_semantics() {
+        let cases = [
+            (RemoteEntryKind::File, false, "Remote file"),
+            (RemoteEntryKind::Directory, true, "Remote folder"),
+            (RemoteEntryKind::FileSymlink, false, "Remote file link"),
+            (
+                RemoteEntryKind::DirectorySymlink,
+                true,
+                "Remote folder link",
+            ),
+            (RemoteEntryKind::BrokenSymlink, false, "Broken remote link"),
+            (
+                RemoteEntryKind::CircularSymlink,
+                false,
+                "Circular remote link",
+            ),
+        ];
+
+        for (kind, is_container, type_display) in cases {
+            assert_eq!(kind.is_container(), is_container);
+            assert_eq!(kind.type_display(), type_display);
+        }
     }
 }
