@@ -7913,6 +7913,9 @@ impl RenderOnce for FileViewHost {
         let filter_menu_dismiss = on_action.clone();
         let column_menu_dismiss = on_action.clone();
         let shell_icons = self.shell_icons;
+        let generic_folder_icon = shell_icons.iter().find_map(|(key, texture)| {
+            is_generic_breadcrumb_folder_icon_key(key).then(|| Arc::clone(texture))
+        });
         let thumbnail_icon_keys = self.thumbnail_icon_keys;
         let shell_icon_dpi = self.shell_icon_dpi;
         let shell_icon_theme = match self.tokens.theme.mode {
@@ -8427,7 +8430,11 @@ impl RenderOnce for FileViewHost {
                     crate::navigation_pane::view_icon_logical_size_for_settings(&view_settings),
                 );
                 let file_icon_is_thumbnail = thumbnail_icon_keys.contains(&file_icon_key);
-                let file_icon = shell_icons.get(&file_icon_key).cloned();
+                let file_icon = select_file_row_shell_icon(
+                    shell_icons.get(&file_icon_key).cloned(),
+                    generic_folder_icon.clone(),
+                    entry.is_container,
+                );
                 div()
                     .id(row_id.clone())
                     .debug_selector(move || row_id.clone())
@@ -9378,6 +9385,14 @@ fn file_visual_host_size(
         0.0
     };
     (cell_width, icon_size)
+}
+
+fn select_file_row_shell_icon<T>(
+    specific: Option<T>,
+    generic_folder: Option<T>,
+    is_container: bool,
+) -> Option<T> {
+    specific.or_else(|| is_container.then_some(generic_folder).flatten())
 }
 
 const fn stacked_icon_label_lines(selected: bool) -> usize {
@@ -12623,13 +12638,46 @@ mod tests {
         TAB_STRIP_ID, WINDOW_CHROME_ID, WINDOW_DRAG_REGION_ID, admission_cell_presentation,
         breadcrumb_ancestry_partition, breadcrumb_location_shell_texture, builtin_count_display,
         client_to_screen_point, details_name_column_contains, editable_input_colors,
-        file_view_local_pointer, format_explorer_size, localized_search_placeholder,
-        marquee_content_rect, navigation_item_shell_texture, navigation_shell_texture,
-        new_tab_button_background, tab_background,
+        file_view_local_pointer, format_explorer_size, is_generic_breadcrumb_folder_icon_key,
+        localized_search_placeholder, marquee_content_rect, navigation_item_shell_texture,
+        navigation_shell_texture, new_tab_button_background, select_file_row_shell_icon,
+        tab_background,
     };
     use crate::{UiTokens, theme::ThemeTokens};
     use gpui::WindowControlArea;
     use std::cmp::Ordering;
+
+    #[test]
+    fn file_row_shell_icon_selection_is_specific_first_and_container_safe() {
+        assert_eq!(
+            select_file_row_shell_icon(Some("specific"), Some("generic"), true),
+            Some("specific")
+        );
+        assert_eq!(
+            select_file_row_shell_icon(None, Some("generic"), true),
+            Some("generic")
+        );
+        assert_eq!(
+            select_file_row_shell_icon(None, Some("generic"), false),
+            None
+        );
+        assert_eq!(select_file_row_shell_icon::<&str>(None, None, true), None);
+
+        let generic_key = crate::navigation_pane::generic_breadcrumb_folder_icon_key(
+            explorer_model::ShellIconTheme::Light,
+            96,
+            1,
+        );
+        let restored_snapshot =
+            std::collections::HashMap::from([(generic_key, "restored-generic")]);
+        let restored_generic = restored_snapshot.iter().find_map(|(key, texture)| {
+            is_generic_breadcrumb_folder_icon_key(key).then_some(*texture)
+        });
+        assert_eq!(
+            select_file_row_shell_icon(None, restored_generic, true),
+            Some("restored-generic")
+        );
+    }
 
     #[test]
     fn code_lines_blocked_cells_share_limit_label_but_keep_distinct_reasons() {
