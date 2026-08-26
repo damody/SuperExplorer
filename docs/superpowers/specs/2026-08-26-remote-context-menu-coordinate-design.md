@@ -17,6 +17,8 @@ ADB／SFTP 使用 GPUI 自訂右鍵選單，但目前共用的右鍵事件只保
 
 自訂選單仍以 client 座標為 anchor，右側或底部空間不足時限制在視窗範圍內。座標不得為負值；視窗跨螢幕或位於負螢幕座標時，client 座標不受影響。
 
+選單生命週期採明確關閉事件：點擊 overlay 外部、按 Esc、再次開啟選單或執行選單命令時關閉。滑鼠移動、hover、pointer tracking 與其他無關 action 不得關閉選單。Bookmark 與 Remote overlay 使用各自的關閉 action，避免生命週期互相污染。
+
 ## 相容性
 
 Local 路徑的原生 Windows Shell 選單繼續使用 screen 座標，行為不變。ADB／SFTP 以外的 unsupported virtual provider 繼續 fail closed。選單命令、選取狀態與永久刪除確認流程不變。
@@ -25,5 +27,5 @@ Local 路徑的原生 Windows Shell 選單繼續使用 screen 座標，行為不
 
 - State 測試驗證 remote menu 保存 client 座標，而 Shell request 保存 screen 座標。
 - UI 定位測試覆蓋一般位置、負值 clamp、右下邊界避讓。
+- UI action 測試驗證 pointer move 不關閉遠端選單，而明確關閉與命令 action 會關閉。
 - 僅執行相關 `explorer-ui` focused tests、`cargo fmt --check` 與 `git diff --check`。
-
