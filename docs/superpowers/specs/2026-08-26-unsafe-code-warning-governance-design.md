@@ -9,8 +9,8 @@ The baseline inventory found 113 canonical unsafe locations across 11 source fil
 ## Goals
 
 - Remove all `unsafe_code` diagnostics from normal workspace library and binary compilation.
-- Preserve the workspace-level `unsafe_code = "warn"` policy so new, unreviewed unsafe code remains visible.
-- Make every accepted unsafe boundary state why unsafe is unavoidable and why the operation is sound.
+- Preserve the workspace-level `unsafe_code = "warn"` policy and do not introduce any new crate-wide or module-wide suppression. Existing broad suppressions outside the 113-location normal-target baseline are inventoried as deferred residual risk rather than treated as remediated.
+- Make every accepted unsafe boundary in the governed 113-location baseline state why unsafe is unavoidable and why the operation is sound.
 - Avoid changing runtime behavior, ABI layout, process boundaries, or MFT persistence behavior.
 - Avoid increasing any non-unsafe warning category.
 
@@ -20,11 +20,12 @@ The baseline inventory found 113 canonical unsafe locations across 11 source fil
 - Making the entire workspace Clippy-clean.
 - Repairing the existing unrelated all-target test compilation failures.
 - Reorganizing all MFT modules into a new crate or replacing the current Windows APIs.
-- Applying crate-wide or workspace-wide `allow(unsafe_code)` attributes.
+- Auditing or removing pre-existing broad unsafe suppressions outside the 113-location normal-target baseline.
+- Applying any new crate-wide, module-wide, or workspace-wide `allow(unsafe_code)` or `expect(unsafe_code)` attribute.
 
 ## Chosen Approach
 
-Use narrow `#[expect(unsafe_code, reason = "...")]` attributes at individual unsafe operations, unsafe extern blocks, or unsafe functions. A function-level expectation may cover multiple operations only when they form one inseparable safety boundary with one invariant. Module-level expectations are not permitted because they would silently accept future unrelated unsafe code.
+Use narrow `#[expect(unsafe_code, reason = "...")]` attributes at individual unsafe operations, unsafe extern blocks, or unsafe functions. A function-level expectation may cover multiple operations only when they form one inseparable safety boundary with one invariant. This change may not add module-level expectations because they would silently accept future unrelated unsafe code. Existing broad suppressions elsewhere are recorded for a later cleanup wave.
 
 When an unsafe block is unnecessary, remove the block instead of adding an expectation. Existing behavior must remain unchanged.
 
@@ -44,7 +45,7 @@ Work proceeds in risk-oriented batches:
 3. Migration, size-map, and SQLite boundaries: `mft_migration.rs`, `mft_size_map.rs`, and `mft_sqlite.rs`.
 4. High-volume query and service boundaries: `mft_query.rs` and `src/bin/mft_service.rs`.
 
-The implementation will preserve user changes already present in the working tree and will not rewrite unrelated lines.
+The implementation will preserve user changes already present in the working tree and will not rewrite unrelated lines. Before editing, it records each owned file's SHA-256 hash and scoped pre-change diff. Immediately before every file write or patch, it compares the expected hash and relevant preimage; immediately afterward, it verifies the intended hunk and records the new expected hash. Any drift invalidates or rebaselines dependent evidence before further edits. Formatting is path-limited to files changed by this work.
 
 ## Review Rules
 
@@ -73,14 +74,16 @@ Run formatting only on changed Rust sources, then validate in increasing scope:
 3. `cargo check --workspace --locked` must emit no diagnostic whose lint code is `unsafe_code`.
 4. Compare warning categories against the saved baseline; non-unsafe warnings must not increase.
 5. Run relevant existing unit tests for modified safety-boundary modules when they compile independently.
+6. Validate the disposition and evidence schema fail-closed: every baseline location has exactly one disposition, every mandatory task has one current passed record, hashes match, stale records link to replacements, and duplicate or unknown IDs fail.
+7. Run the final authoritative Cargo checks with `--offline` and record toolchain, target triple, Cargo configuration, features, and relevant build environment.
 
 `cargo check --workspace --all-targets --locked` currently fails on two unrelated missing-field initializers in `explorer-extension-host` tests. This cleanup records that pre-existing blocker but does not broaden scope to repair it. The final report must not claim the all-target gate passes unless that external state changes.
 
 ## Acceptance Criteria
 
 - Zero `unsafe_code` warnings in normal workspace compilation.
-- No crate-wide or module-wide unsafe suppression.
-- Every remaining unsafe boundary has a specific expectation reason and an adequate safety invariant.
+- No new crate-wide or module-wide unsafe suppression, and every pre-existing broad suppression outside the baseline is inventoried as deferred residual risk.
+- Every remaining unsafe boundary in the governed 113-location default-feature normal-target baseline has a specific expectation reason and an adequate safety invariant.
 - No intentional `dead_code` cleanup or unrelated refactor is included.
 - Targeted and workspace library/binary checks pass.
 - Non-unsafe warning totals do not increase from the captured baseline.
