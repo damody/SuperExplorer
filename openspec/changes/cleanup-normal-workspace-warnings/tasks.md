@@ -36,6 +36,6 @@
 
 - [x] 6.1 確認兩個 tokei fixture 的 import 只在測試使用。
 - [x] 6.2 將測試專用 import 移入 `cfg(test)`，不使用 `cargo fix`。
-- [ ] 6.3 分別執行兩個 fixture 的 release build，確認零 warning、零 error。
-- [ ] 6.4 執行兩個 fixture 的測試與格式檢查。
-- [ ] 6.5 再次執行 OpenSpec strict validation。
+- [x] 6.3 分別執行兩個 fixture 的 release build，確認零 warning、零 error。
+- [x] 6.4 執行兩個 fixture 的測試與格式檢查。
+- [x] 6.5 再次執行 OpenSpec strict validation。
