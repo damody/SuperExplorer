@@ -2646,14 +2646,14 @@ mod tests {
             ExplorerAction::MoveMoreMenuFocus { direction: i8::MAX },
             ActionSource::Keyboard,
         );
-        assert_eq!(state.more_menu_index(), 11);
+        assert_eq!(state.more_menu_index(), 9);
         assert!(state.more_menu_open());
         dispatch_action(
             &mut state,
             ExplorerAction::MoveMoreMenuFocus { direction: -1 },
             ActionSource::Keyboard,
         );
-        assert_eq!(state.more_menu_index(), 10);
+        assert_eq!(state.more_menu_index(), 8);
         dispatch_action(
             &mut state,
             ExplorerAction::ToggleTheme,

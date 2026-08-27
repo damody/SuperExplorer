@@ -122,3 +122,67 @@
 - [x] 4.2.1 Run strict OpenSpec validation and the detailed-task validator.
 - [x] 4.2.2 Review proposal-to-spec-to-task traceability and leaf atomicity with no unresolved P0/P1 gap.
 - [x] 4.2.3 Review the final scoped diff against the pre-existing dirty worktree and record preserved unrelated paths.
+
+## 5. Confirmed bookmark action window
+
+### 5.1 Native window and reducer boundary
+
+**目的：** Replace bookmark-item overlay menus with one explicitly confirmed native action window.
+**輸入：** Completed bookmark windows, stable bookmark IDs, and approved follow-up design.
+**產出：** Action-window module, observer wiring, reducer bridge, and lifecycle tests.
+**依賴：** 2.2, 3.1.
+**Owner／Wave：** Primary integrator／wave 5.
+**Gate／Evidence：** G9; `evidence/index.json` task records for `5.1.*`.
+**完成門檻：** Right-click opens/retargets one native window; no command dispatches before confirmation.
+
+- [x] 5.1.1 Define typed applicable commands, selected-command state, delete-confirmation stage, and stale-target checks.
+- [x] 5.1.2 Implement `BookmarkActionWindow` rendering, keyboard/cancel lifecycle, and explicit Confirm dispatch.
+- [x] 5.1.3 Wire an application-owned singleton handle with create, retarget/reset, activate, and stale-handle recovery.
+- [x] 5.1.4 Route edit to `BookmarkEditorWindow` and route delete through a second Confirm Delete stage and durable rollback reducer.
+
+### 5.2 Overlay removal and regression validation
+
+**目的：** Remove the old bookmark-item overlay without changing background/folder creation menus.
+**輸入：** 5.1 native action window and current right-click projections.
+**產出：** Updated chrome/root routing, focused tests, build evidence, and revalidated contracts.
+**依賴：** 5.1.
+**Owner／Wave：** Primary integrator／wave 6.
+**Gate／Evidence：** G10; `evidence/index.json` task records for `5.2.*`.
+**完成門檻：** Every bookmark projection opens the action window; focused tests and app check pass; strict OpenSpec validation passes.
+
+- [x] 5.2.1 Replace `bookmark_context_menu` overlay state/rendering with action-window presentation while retaining all five right-click hooks.
+- [x] 5.2.2 Add command applicability, default/reset selection, cancel zero-mutation, edit handoff, double-confirm delete, and stale-target tests.
+- [x] 5.2.3 Run scoped formatting, bookmark UI tests, and `cargo check -p explorer-app`.
+- [x] 5.2.4 Update evidence lineage, run strict OpenSpec/task validation, and review the dirty-worktree scoped diff.
+
+## 6. Dedicated bookmark-folder editor window
+
+### 6.1 Native editor lifecycle
+
+**目的：** Remove the freezing rename overlay and host folder naming in an interactive native window.
+**輸入：** Existing folder draft/reducer and approved dedicated-window design.
+**產出：** Folder-editor window module, owner observer, and overlay-free host windows.
+**依賴：** 2.2.
+**Owner／Wave：** Primary integrator／wave 7.
+**Gate／Evidence：** G11; focused source contracts and bookmark tests.
+**完成門檻：** Add/rename opens one native window, save/cancel uses the shared reducer, and neither host renders the editor overlay.
+
+- [x] 6.1.1 Implement the focusable normal folder-editor window with selected editable name input and Enter/Escape controls.
+- [x] 6.1.2 Add root snapshot, observer, presentation, and reducer-dispatch boundaries.
+- [x] 6.1.3 Wire an application-owned singleton handle with retarget, activation, and stale-handle recovery.
+- [x] 6.1.4 Remove folder-editor inputs and overlay rendering from the explorer and bookmark-manager windows.
+
+### 6.2 Regression validation
+
+**目的：** Verify input lifecycle, compilation, and specification traceability.
+**輸入：** 6.1 implementation.
+**產出：** Passing focused tests, app check, and strict OpenSpec validation.
+**依賴：** 6.1.
+**Owner／Wave：** Primary integrator／wave 8.
+**Gate／Evidence：** G12; command results and scoped diff review.
+**完成門檻：** All focused commands pass and no unrelated dirty-worktree content is reverted.
+
+- [x] 6.2.1 Add a native-window source-contract regression test.
+- [x] 6.2.2 Run scoped formatting and focused bookmark UI tests.
+- [x] 6.2.3 Run `cargo check -p explorer-app` and strict OpenSpec/task validation.
+- [x] 6.2.4 Review the scoped diff and preserve unrelated changes.

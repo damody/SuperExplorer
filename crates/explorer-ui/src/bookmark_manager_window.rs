@@ -2,17 +2,15 @@
 
 use std::rc::Rc;
 
-use gpui::{
-    App, Bounds, Context, FocusHandle, Focusable, IntoElement, Render, SharedString, Window,
-    WindowBounds, WindowHandle, WindowOptions, div, prelude::*, px, size,
-};
-use gpui_elements::editable_text::{EditableTextState, StringStorage, TextChanged};
-
 use crate::{
     ExplorerRoot, UiTokens,
     actions::{ActionSource, ExplorerAction},
     chrome::{self, ActionCallback},
     state::AppViewState,
+};
+use gpui::{
+    App, Bounds, Context, FocusHandle, Focusable, IntoElement, Render, SharedString, Window,
+    WindowBounds, WindowHandle, WindowOptions, div, prelude::*, px, size,
 };
 
 #[derive(Clone)]
@@ -43,7 +41,6 @@ pub struct BookmarkManagerWindow {
     owner: WindowHandle<ExplorerRoot>,
     snapshot: BookmarkManagerWindowSnapshotV1,
     focus_handle: FocusHandle,
-    folder_name_input: Option<gpui::Entity<EditableTextState>>,
 }
 
 impl BookmarkManagerWindow {
@@ -59,47 +56,11 @@ impl BookmarkManagerWindow {
             let _ = owner_for_close;
             true
         });
-        let folder_name_input = snapshot
-            .state
-            .bookmark_folder_editor()
-            .map(|draft| Self::new_folder_input(owner, draft.name.clone(), cx));
         Self {
             tokens,
             owner,
             snapshot,
             focus_handle: cx.focus_handle(),
-            folder_name_input,
-        }
-    }
-
-    fn new_folder_input(
-        owner: WindowHandle<ExplorerRoot>,
-        name: String,
-        cx: &mut Context<Self>,
-    ) -> gpui::Entity<EditableTextState> {
-        let input = cx.new(|cx| EditableTextState::new(StringStorage::from(name), cx));
-        cx.subscribe(&input, move |_, input, _: &TextChanged, cx| {
-            let value = input.read(cx).as_str().to_owned();
-            let _ = owner.update(cx, |root, _, _| {
-                root.update_bookmark_folder_editor_name_from_window(value);
-            });
-        })
-        .detach();
-        input.update(cx, EditableTextState::select_document);
-        input
-    }
-
-    fn sync_folder_input(&mut self, cx: &mut Context<Self>) {
-        match (
-            self.folder_name_input.is_some(),
-            self.snapshot.state.bookmark_folder_editor(),
-        ) {
-            (false, Some(draft)) => {
-                self.folder_name_input =
-                    Some(Self::new_folder_input(self.owner, draft.name.clone(), cx));
-            }
-            (true, None) => self.folder_name_input = None,
-            _ => {}
         }
     }
 
@@ -110,7 +71,6 @@ impl BookmarkManagerWindow {
         cx: &mut Context<Self>,
     ) {
         self.snapshot = snapshot;
-        self.sync_folder_input(cx);
         cx.notify();
         window.refresh();
     }
@@ -133,7 +93,6 @@ impl BookmarkManagerWindow {
         }) {
             Ok(snapshot) => {
                 self.snapshot = snapshot;
-                self.sync_folder_input(cx);
                 cx.notify();
                 window.refresh();
             }
@@ -162,7 +121,6 @@ impl Render for BookmarkManagerWindow {
             .state
             .bookmark_folder_delete_confirmation()
             .map(|(_, count)| count);
-        let folder_editor_open = self.snapshot.state.bookmark_folder_editor().is_some();
         div()
             .id("bookmark-manager-window")
             .role(gpui::Role::Dialog)
@@ -184,17 +142,6 @@ impl Render for BookmarkManagerWindow {
                 element.child(chrome::bookmark_folder_delete_dialog(
                     self.tokens,
                     count,
-                    Some(Rc::new(cx.listener(
-                        |this, action: &ExplorerAction, window, cx| {
-                            this.dispatch(action.clone(), ActionSource::Mouse, window, cx);
-                        },
-                    ))),
-                ))
-            })
-            .when(folder_editor_open, |element| {
-                element.child(chrome::bookmark_folder_editor(
-                    self.tokens,
-                    self.folder_name_input.as_ref().map(gpui::Entity::downgrade),
                     Some(Rc::new(cx.listener(
                         |this, action: &ExplorerAction, window, cx| {
                             this.dispatch(action.clone(), ActionSource::Mouse, window, cx);

@@ -1353,16 +1353,16 @@ fn transfer_items(
             TransferResult::Succeeded => OperationItemResult::Succeeded,
             TransferResult::Skipped => OperationItemResult::Skipped,
             TransferResult::Cancelled => OperationItemResult::Cancelled,
-            TransferResult::Partial { diagnostic } => OperationItemResult::Partial(remote_error(
-                "remote transfer",
-                "A file was copied but its source could not be removed.",
-                anyhow::anyhow!(diagnostic),
-            )),
-            TransferResult::Failed { diagnostic } => OperationItemResult::Failed(remote_error(
-                "remote transfer",
-                "A file could not be transferred.",
-                anyhow::anyhow!(diagnostic),
-            )),
+            TransferResult::Partial { stage, diagnostic } => {
+                OperationItemResult::Partial(remote_transfer_error(
+                    stage.user_label(),
+                    diagnostic,
+                    "remote transfer partially completed",
+                ))
+            }
+            TransferResult::Failed { stage, diagnostic } => OperationItemResult::Failed(
+                remote_transfer_error(stage.user_label(), diagnostic, "remote transfer failed"),
+            ),
         };
         outcomes.push(OperationItemOutcome {
             item: Some(item),
@@ -1394,6 +1394,20 @@ fn remote_error(
     )
 }
 
+fn remote_transfer_error(
+    stage: &'static str,
+    diagnostic: String,
+    technical_detail: &'static str,
+) -> explorer_common::ExplorerError {
+    explorer_common::ExplorerError::new(
+        explorer_common::ExplorerErrorKind::Availability,
+        stage,
+        true,
+        diagnostic,
+        technical_detail,
+    )
+}
+
 fn remote_failed(
     context: explorer_model::RequestContext,
     user: &'static str,
@@ -1417,6 +1431,146 @@ mod tests {
     use super::*;
     use explorer_remote::RemoteEntryKind;
 
+    struct DownloadProvider;
+
+    #[derive(Clone, Debug)]
+    struct UploadObservation {
+        destination: explorer_model::VirtualLocationDescriptor,
+        staged_path: std::path::PathBuf,
+        bytes: Vec<u8>,
+    }
+
+    struct UploadProvider {
+        provider_id: &'static str,
+        fail_upload: bool,
+        observations: Arc<Mutex<Vec<UploadObservation>>>,
+    }
+
+    impl RemoteProvider for DownloadProvider {
+        fn provider_id(&self) -> &'static str {
+            "adb"
+        }
+
+        fn list(
+            &self,
+            _: &explorer_model::VirtualLocationDescriptor,
+            _: &explorer_model::CancellationToken,
+        ) -> anyhow::Result<Vec<RemoteEntry>> {
+            Ok(Vec::new())
+        }
+
+        fn download(
+            &self,
+            _: &explorer_model::VirtualLocationDescriptor,
+            local_destination: &std::path::Path,
+            _: &explorer_model::CancellationToken,
+        ) -> anyhow::Result<()> {
+            std::fs::write(local_destination, b"remote clipboard fixture")?;
+            Ok(())
+        }
+
+        fn upload(
+            &self,
+            _: &std::path::Path,
+            _: &explorer_model::VirtualLocationDescriptor,
+            _: &explorer_model::CancellationToken,
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("unused upload")
+        }
+
+        fn create_directory(
+            &self,
+            _: &explorer_model::VirtualLocationDescriptor,
+            _: &explorer_model::CancellationToken,
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("unused create directory")
+        }
+
+        fn rename(
+            &self,
+            _: &explorer_model::VirtualLocationDescriptor,
+            _: &explorer_model::VirtualLocationDescriptor,
+            _: &explorer_model::CancellationToken,
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("unused rename")
+        }
+
+        fn delete(
+            &self,
+            _: &explorer_model::VirtualLocationDescriptor,
+            _: bool,
+            _: &explorer_model::CancellationToken,
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("copy must not delete its source")
+        }
+    }
+
+    impl RemoteProvider for UploadProvider {
+        fn provider_id(&self) -> &'static str {
+            self.provider_id
+        }
+
+        fn list(
+            &self,
+            _: &explorer_model::VirtualLocationDescriptor,
+            _: &explorer_model::CancellationToken,
+        ) -> anyhow::Result<Vec<RemoteEntry>> {
+            Ok(Vec::new())
+        }
+
+        fn download(
+            &self,
+            _: &explorer_model::VirtualLocationDescriptor,
+            _: &std::path::Path,
+            _: &explorer_model::CancellationToken,
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("destination provider must not download")
+        }
+
+        fn upload(
+            &self,
+            local_source: &std::path::Path,
+            destination: &explorer_model::VirtualLocationDescriptor,
+            _: &explorer_model::CancellationToken,
+        ) -> anyhow::Result<()> {
+            self.observations.lock().unwrap().push(UploadObservation {
+                destination: destination.clone(),
+                staged_path: local_source.to_path_buf(),
+                bytes: std::fs::read(local_source)?,
+            });
+            if self.fail_upload {
+                anyhow::bail!("fixture upload failure")
+            }
+            Ok(())
+        }
+
+        fn create_directory(
+            &self,
+            _: &explorer_model::VirtualLocationDescriptor,
+            _: &explorer_model::CancellationToken,
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("unused create directory")
+        }
+
+        fn rename(
+            &self,
+            _: &explorer_model::VirtualLocationDescriptor,
+            _: &explorer_model::VirtualLocationDescriptor,
+            _: &explorer_model::CancellationToken,
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("unused rename")
+        }
+
+        fn delete(
+            &self,
+            _: &explorer_model::VirtualLocationDescriptor,
+            _: bool,
+            _: &explorer_model::CancellationToken,
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("copy must not delete its destination")
+        }
+    }
+
     fn remote_location() -> LocationDescriptor {
         LocationDescriptor::Virtual(explorer_model::VirtualLocationDescriptor {
             provider_id: "adb".to_owned(),
@@ -1432,6 +1586,37 @@ mod tests {
         ItemDescriptor {
             id: explorer_model::ShellItemId::from_provider_bytes([3; 8]).unwrap(),
             location: LocationDescriptor::file_system(r"C:\Users\fixture\Downloads\local.txt"),
+        }
+    }
+
+    fn virtual_destination(provider_id: &str) -> LocationDescriptor {
+        LocationDescriptor::Virtual(explorer_model::VirtualLocationDescriptor {
+            provider_id: provider_id.to_owned(),
+            public_authority: Some("destination".to_owned()),
+            container_identity: [8; 16],
+            container_generation: 1,
+            entry_id: None,
+            components: vec!["incoming".to_owned()],
+        })
+    }
+
+    fn wait_for_operation(
+        service: &RemoteExplorerService,
+        expected_context: &explorer_model::RequestContext,
+    ) -> OperationTerminal {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if let Some(ExplorerEvent::OperationFinished { context, outcome }) =
+                service.try_recv().unwrap()
+                && context == *expected_context
+            {
+                return outcome;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "paste terminal timeout"
+            );
+            std::thread::yield_now();
         }
     }
 
@@ -1541,6 +1726,178 @@ mod tests {
             })
             .unwrap();
         assert!(service.clipboard.lock().unwrap().is_some());
+    }
+
+    #[test]
+    fn remote_copy_immediately_pastes_through_internal_clipboard_to_local_folder() {
+        let mut providers = RemoteProviderRegistry::default();
+        providers.register(Arc::new(DownloadProvider)).unwrap();
+        let service = RemoteExplorerService::new(Arc::new(TelemetryService), Arc::new(providers));
+        let item = ItemDescriptor {
+            id: explorer_model::ShellItemId::from_provider_bytes([9; 8]).unwrap(),
+            location: remote_location(),
+        };
+        service
+            .submit(ExplorerCommand::DataTransfer {
+                context: explorer_model::RequestContext::new(
+                    explorer_model::TabId::new(),
+                    explorer_model::Generation::new(1),
+                ),
+                request: DataTransferRequest::Copy { items: vec![item] },
+            })
+            .unwrap();
+
+        let destination = tempfile::tempdir().unwrap();
+        let paste_context = explorer_model::RequestContext::new(
+            explorer_model::TabId::new(),
+            explorer_model::Generation::new(1),
+        );
+        service
+            .submit(ExplorerCommand::DataTransfer {
+                context: paste_context.clone(),
+                request: DataTransferRequest::Paste {
+                    destination: LocationDescriptor::file_system(destination.path()),
+                    conflict: explorer_model::ConflictDecision::Prompt,
+                },
+            })
+            .unwrap();
+
+        let terminal = wait_for_operation(&service, &paste_context);
+        assert_eq!(terminal, OperationTerminal::Finished);
+        assert_eq!(
+            std::fs::read(destination.path().join("data")).unwrap(),
+            b"remote clipboard fixture"
+        );
+        assert!(service.clipboard.lock().unwrap().is_some());
+    }
+
+    #[test]
+    fn adb_clipboard_pastes_to_sftp_and_other_registered_virtual_providers() {
+        for provider_id in ["sftp", "archive"] {
+            let observations = Arc::new(Mutex::new(Vec::new()));
+            let mut providers = RemoteProviderRegistry::default();
+            providers.register(Arc::new(DownloadProvider)).unwrap();
+            providers
+                .register(Arc::new(UploadProvider {
+                    provider_id,
+                    fail_upload: false,
+                    observations: Arc::clone(&observations),
+                }))
+                .unwrap();
+            let service =
+                RemoteExplorerService::new(Arc::new(TelemetryService), Arc::new(providers));
+            service
+                .submit(ExplorerCommand::DataTransfer {
+                    context: explorer_model::RequestContext::new(
+                        explorer_model::TabId::new(),
+                        explorer_model::Generation::new(1),
+                    ),
+                    request: DataTransferRequest::Copy {
+                        items: vec![ItemDescriptor {
+                            id: explorer_model::ShellItemId::from_provider_bytes([9; 8]).unwrap(),
+                            location: remote_location(),
+                        }],
+                    },
+                })
+                .unwrap();
+            let paste_context = explorer_model::RequestContext::new(
+                explorer_model::TabId::new(),
+                explorer_model::Generation::new(1),
+            );
+            let destination = virtual_destination(provider_id);
+            service
+                .submit(ExplorerCommand::DataTransfer {
+                    context: paste_context.clone(),
+                    request: DataTransferRequest::Paste {
+                        destination: destination.clone(),
+                        conflict: explorer_model::ConflictDecision::Prompt,
+                    },
+                })
+                .unwrap();
+
+            assert_eq!(
+                wait_for_operation(&service, &paste_context),
+                OperationTerminal::Finished
+            );
+            let observations = observations.lock().unwrap();
+            assert_eq!(observations.len(), 1);
+            assert_eq!(
+                LocationDescriptor::Virtual(observations[0].destination.clone()),
+                destination
+            );
+            assert_eq!(observations[0].bytes, b"remote clipboard fixture");
+            assert!(!observations[0].staged_path.exists());
+        }
+    }
+
+    #[test]
+    fn failed_virtual_upload_keeps_copy_clipboard_and_cleans_staging() {
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let mut providers = RemoteProviderRegistry::default();
+        providers.register(Arc::new(DownloadProvider)).unwrap();
+        providers
+            .register(Arc::new(UploadProvider {
+                provider_id: "archive",
+                fail_upload: true,
+                observations: Arc::clone(&observations),
+            }))
+            .unwrap();
+        let service = RemoteExplorerService::new(Arc::new(TelemetryService), Arc::new(providers));
+        service
+            .submit(ExplorerCommand::DataTransfer {
+                context: explorer_model::RequestContext::new(
+                    explorer_model::TabId::new(),
+                    explorer_model::Generation::new(1),
+                ),
+                request: DataTransferRequest::Copy {
+                    items: vec![ItemDescriptor {
+                        id: explorer_model::ShellItemId::from_provider_bytes([9; 8]).unwrap(),
+                        location: remote_location(),
+                    }],
+                },
+            })
+            .unwrap();
+        let paste_context = explorer_model::RequestContext::new(
+            explorer_model::TabId::new(),
+            explorer_model::Generation::new(1),
+        );
+        service
+            .submit(ExplorerCommand::DataTransfer {
+                context: paste_context.clone(),
+                request: DataTransferRequest::Paste {
+                    destination: virtual_destination("archive"),
+                    conflict: explorer_model::ConflictDecision::Prompt,
+                },
+            })
+            .unwrap();
+
+        let terminal = wait_for_operation(&service, &paste_context);
+        let OperationTerminal::Partial { outcomes } = terminal else {
+            panic!("failed upload must produce item outcomes")
+        };
+        let [
+            OperationItemOutcome {
+                item: Some(item),
+                destination: Some(destination),
+                result: OperationItemResult::Failed(error),
+            },
+        ] = outcomes.as_slice()
+        else {
+            panic!("failed upload must retain its item and destination")
+        };
+        assert_eq!(item.location, remote_location());
+        assert_eq!(*destination, virtual_destination("archive"));
+        assert_eq!(error.operation, "目的地上傳");
+        assert!(error.user_message.contains("fixture upload failure"));
+        assert!(
+            !error
+                .user_message
+                .contains("A file could not be transferred")
+        );
+        assert!(service.clipboard.lock().unwrap().is_some());
+        let observations = observations.lock().unwrap();
+        assert_eq!(observations.len(), 1);
+        assert!(!observations[0].staged_path.exists());
     }
 
     #[test]
