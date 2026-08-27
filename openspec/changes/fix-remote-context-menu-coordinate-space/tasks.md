@@ -31,3 +31,9 @@
 - [x] 6.1 將 Background secondary-button handler 從 scroll content 移到 full-height file-view viewport owner。
 - [x] 6.2 保持 row handler stop-propagation 與 header／viewport 邊界拒絕行為。
 - [x] 6.3 新增 handler ownership 結構測試並執行 explorer-ui focused check、格式、diff 與 strict validation。
+
+## 7. Scroll capture right-release 修正
+
+- [x] 7.1 將 full-height Background invocation 改由 secondary-button down 觸發，避免 release 被 scroll capture 吞掉。
+- [x] 7.2 證明 row right-down stop-propagation 仍保有 Items target 與 drag candidate 優先權。
+- [x] 7.3 更新 handler ownership 測試並執行 explorer-ui focused check、格式、diff 與 strict validation。

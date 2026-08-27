@@ -1246,6 +1246,7 @@ fn is_passive_pointer_action(action: &ExplorerAction) -> bool {
     matches!(
         action,
         ExplorerAction::UpdateMarquee { .. }
+            | ExplorerAction::EndMarquee
             | ExplorerAction::UpdateFileDrag { .. }
             | ExplorerAction::CancelFileDrag
             | ExplorerAction::UpdateExternalDrag { .. }
@@ -6221,12 +6222,40 @@ impl ExplorerRoot {
         if action == ExplorerAction::CreateFolder
             && let Some(request) = self.state.create_folder_request()
         {
-            self.execute_file_operation(request);
+            if self.state.begin_interactive_create_folder(request)
+                && let Some(editor) = self.state.rename_editor()
+            {
+                self.reset_rename_input(editor.buffer.clone(), cx);
+                if let Some(input) = self.rename_input.clone() {
+                    window.defer(cx, move |window, cx| {
+                        input.read(cx).focus_handle(cx).focus(window, cx);
+                    });
+                }
+            }
         }
         if let ExplorerAction::CreateNewItem { index } = action
             && let Some(request) = self.state.create_new_item_request(index)
         {
-            self.execute_file_operation(request);
+            if matches!(
+                request.kind,
+                explorer_model::FileOperationKind::CreateItem {
+                    recipe: explorer_model::ShellNewItemRecipe::Folder,
+                    ..
+                }
+            ) {
+                if self.state.begin_interactive_create_folder(request)
+                    && let Some(editor) = self.state.rename_editor()
+                {
+                    self.reset_rename_input(editor.buffer.clone(), cx);
+                    if let Some(input) = self.rename_input.clone() {
+                        window.defer(cx, move |window, cx| {
+                            input.read(cx).focus_handle(cx).focus(window, cx);
+                        });
+                    }
+                }
+            } else {
+                self.execute_file_operation(request);
+            }
         }
         if action == ExplorerAction::RecycleDeleteSelected {
             if self.state.selected_items_include_remote() {
@@ -9536,6 +9565,7 @@ mod tests {
                 scroll_y: 0.0,
                 viewport_width: 800.0,
             },
+            ExplorerAction::EndMarquee,
             ExplorerAction::UpdateFileDrag { x: 1.0, y: 2.0 },
             ExplorerAction::UpdateExternalDrag {
                 destination_row: None,
