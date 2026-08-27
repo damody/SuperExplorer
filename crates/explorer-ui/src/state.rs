@@ -7,14 +7,171 @@ use std::{
 };
 
 use explorer_model::{
-    DeleteLockKind, DirectoryState, ExplorerCommand, ExplorerEvent, ExplorerWindowState,
-    FileOperationKind, FileOperationRequest, HistoryEntry, ItemDescriptor, LocationDescriptor,
-    LockOwner, LockOwnerCloseOutcome, LockOwnerCloseRequest, LockOwnerCloseTerminal,
-    LockOwnerDiscoveryRequest, LockOwnerDiscoveryTerminal, OpenDisposition, OperationCenterState,
-    OperationRecord, OperationTerminal, PersistedQuickAccessPin, QuickAccessPins, RecentItems,
-    RequestContext, ShellIdentity, ShellItemId, TabCloseOutcome, TabId, TabPresentationSnapshot,
-    WindowEventOutcome,
+    DeleteLockKind, DirectorySnapshot, DirectoryState, ExplorerCommand, ExplorerEvent,
+    ExplorerWindowState, FileOperationKind, FileOperationRequest, HistoryEntry, ItemDescriptor,
+    LocationDescriptor, LockOwner, LockOwnerCloseOutcome, LockOwnerCloseRequest,
+    LockOwnerCloseTerminal, LockOwnerDiscoveryRequest, LockOwnerDiscoveryTerminal, OpenDisposition,
+    OperationCenterState, OperationRecord, OperationTerminal, PersistedQuickAccessPin,
+    QuickAccessPins, RecentItems, RequestContext, ShellIdentity, ShellItemId, TabCloseOutcome,
+    TabId, TabPresentationSnapshot, WindowEventOutcome,
 };
+
+const DIRECTORY_CACHE_MAX_LOCATIONS: usize = 64;
+const DIRECTORY_CACHE_MAX_ROWS: usize = 100_000;
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum DirectoryCacheKey {
+    Local(String),
+    Virtual {
+        provider: String,
+        authority: String,
+        components: Vec<String>,
+    },
+}
+
+impl DirectoryCacheKey {
+    fn for_location(location: &LocationDescriptor) -> Option<Self> {
+        match location {
+            LocationDescriptor::FileSystem(path) => {
+                let mut normalized = path
+                    .to_string_lossy()
+                    .replace('/', "\\")
+                    .to_ascii_lowercase();
+                while normalized.ends_with('\\')
+                    && !(normalized.len() == 3 && normalized.as_bytes().get(1) == Some(&b':'))
+                {
+                    normalized.pop();
+                }
+                Some(Self::Local(normalized))
+            }
+            LocationDescriptor::Virtual(location)
+                if matches!(location.provider_id.as_str(), "adb" | "sftp") =>
+            {
+                let provider = location.provider_id.to_ascii_lowercase();
+                let authority = location.public_authority.as_ref()?.clone();
+                Some(Self::Virtual {
+                    authority: if provider == "sftp" {
+                        authority.to_ascii_lowercase()
+                    } else {
+                        authority
+                    },
+                    provider,
+                    components: location.components.clone(),
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct DirectoryCacheEntry {
+    snapshot: DirectorySnapshot,
+    last_used: u64,
+}
+
+#[derive(Clone, Debug)]
+struct DirectorySnapshotCache {
+    entries: HashMap<DirectoryCacheKey, DirectoryCacheEntry>,
+    total_rows: usize,
+    access_sequence: u64,
+    max_locations: usize,
+    max_rows: usize,
+}
+
+impl Default for DirectorySnapshotCache {
+    fn default() -> Self {
+        Self {
+            entries: HashMap::new(),
+            total_rows: 0,
+            access_sequence: 0,
+            max_locations: DIRECTORY_CACHE_MAX_LOCATIONS,
+            max_rows: DIRECTORY_CACHE_MAX_ROWS,
+        }
+    }
+}
+
+impl DirectorySnapshotCache {
+    #[cfg(test)]
+    fn with_limits(max_locations: usize, max_rows: usize) -> Self {
+        Self {
+            max_locations,
+            max_rows,
+            ..Self::default()
+        }
+    }
+
+    fn get(&mut self, location: &LocationDescriptor) -> Option<DirectorySnapshot> {
+        let key = DirectoryCacheKey::for_location(location)?;
+        let sequence = self.next_sequence();
+        let entry = self.entries.get_mut(&key)?;
+        entry.last_used = sequence;
+        Some(entry.snapshot.clone())
+    }
+
+    fn insert(&mut self, location: &LocationDescriptor, snapshot: DirectorySnapshot) -> bool {
+        let Some(key) = DirectoryCacheKey::for_location(location) else {
+            return false;
+        };
+        let rows = snapshot.entries().len();
+        if rows > self.max_rows {
+            return false;
+        }
+        if let Some(previous) = self.entries.remove(&key) {
+            self.total_rows = self
+                .total_rows
+                .saturating_sub(previous.snapshot.entries().len());
+        }
+        let last_used = self.next_sequence();
+        self.total_rows = self.total_rows.saturating_add(rows);
+        self.entries.insert(
+            key,
+            DirectoryCacheEntry {
+                snapshot,
+                last_used,
+            },
+        );
+        self.evict_to_limits();
+        true
+    }
+
+    fn next_sequence(&mut self) -> u64 {
+        if self.access_sequence == u64::MAX {
+            let mut order = self
+                .entries
+                .iter()
+                .map(|(key, entry)| (key.clone(), entry.last_used))
+                .collect::<Vec<_>>();
+            order.sort_by_key(|(_, sequence)| *sequence);
+            for (index, (key, _)) in order.into_iter().enumerate() {
+                if let Some(entry) = self.entries.get_mut(&key) {
+                    entry.last_used = index as u64 + 1;
+                }
+            }
+            self.access_sequence = self.entries.len() as u64;
+        }
+        self.access_sequence += 1;
+        self.access_sequence
+    }
+
+    fn evict_to_limits(&mut self) {
+        while self.entries.len() > self.max_locations || self.total_rows > self.max_rows {
+            let Some(oldest) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            if let Some(removed) = self.entries.remove(&oldest) {
+                self.total_rows = self
+                    .total_rows
+                    .saturating_sub(removed.snapshot.entries().len());
+            }
+        }
+    }
+}
 
 use crate::{
     actions::{FolderOptionsPage, NavigationHistoryDirection, PermanentDeleteDialogTarget},
@@ -517,6 +674,7 @@ pub struct AppViewState {
     navigation_pane_width: LogicalPx,
     focus: FocusCoordinator,
     tabs: ExplorerWindowState,
+    directory_cache: DirectorySnapshotCache,
     tab_focus: HashMap<TabId, FocusSurface>,
     navigation_focus: HashMap<TabId, LocationDescriptor>,
     close_requested: bool,
@@ -764,6 +922,7 @@ impl AppViewState {
             navigation_pane_width: LayoutTokens::WINDOWS_11.navigation_pane_default_width,
             focus: FocusCoordinator::default(),
             tabs,
+            directory_cache: DirectorySnapshotCache::default(),
             tab_focus,
             navigation_focus: HashMap::new(),
             close_requested: false,
@@ -1043,6 +1202,14 @@ impl AppViewState {
         destination: usize,
     ) -> explorer_model::BookmarkMutation {
         self.bookmarks.begin_reorder(id, destination)
+    }
+
+    pub(crate) fn move_bookmark_to_folder(
+        &mut self,
+        id: explorer_model::BookmarkId,
+        parent_id: Option<explorer_model::BookmarkFolderId>,
+    ) -> explorer_model::BookmarkMutation {
+        self.bookmarks.begin_move_to_folder(id, parent_id)
     }
 
     pub(crate) fn rollback_bookmark(&mut self, mutation: explorer_model::BookmarkMutation) {
@@ -2649,7 +2816,7 @@ impl AppViewState {
             .active_tab()
             .visible_snapshot()
             .into_iter()
-            .flat_map(explorer_model::DirectorySnapshot::entries)
+            .flat_map(DirectorySnapshot::entries)
             .map(|entry| match column {
                 explorer_model::ColumnId::Name => {
                     estimated_text_width(&entry.display_name) + 20.0 + 20.0
@@ -3299,11 +3466,16 @@ impl AppViewState {
         self.clear_external_drag();
         self.close_navigation_history_menu();
         self.cancel_breadcrumb_requests(self.tabs.active_tab_id());
+        let cached = if refresh {
+            None
+        } else {
+            self.directory_cache.get(&location)
+        };
         let tab = self.tabs.active_tab_mut();
         let context = if refresh {
             tab.begin_refresh_request()?
         } else {
-            tab.begin_navigation_request()?
+            tab.begin_navigation_request_with_snapshot(cached)?
         };
         Some(if refresh {
             ExplorerCommand::Refresh { context, location }
@@ -3331,7 +3503,18 @@ impl AppViewState {
         self.cancel_lock_recovery();
         self.clear_external_drag();
         self.close_navigation_history_menu();
-        let (context, location) = self.tabs.active_tab_mut().begin_back_request()?;
+        let location = self
+            .tabs
+            .active_tab()
+            .history
+            .back_destination_at(1)?
+            .location
+            .clone();
+        let cached = self.directory_cache.get(&location);
+        let (context, location) = self
+            .tabs
+            .active_tab_mut()
+            .begin_back_request_at_with_snapshot(1, cached)?;
         Some(ExplorerCommand::Navigate { context, location })
     }
 
@@ -3340,7 +3523,18 @@ impl AppViewState {
         self.cancel_lock_recovery();
         self.clear_external_drag();
         self.close_navigation_history_menu();
-        let (context, location) = self.tabs.active_tab_mut().begin_forward_request()?;
+        let location = self
+            .tabs
+            .active_tab()
+            .history
+            .forward_destination_at(1)?
+            .location
+            .clone();
+        let cached = self.directory_cache.get(&location);
+        let (context, location) = self
+            .tabs
+            .active_tab_mut()
+            .begin_forward_request_at_with_snapshot(1, cached)?;
         Some(ExplorerCommand::Navigate { context, location })
     }
 
@@ -3353,13 +3547,28 @@ impl AppViewState {
         self.cancel_lock_recovery();
         self.clear_external_drag();
         self.close_navigation_history_menu();
-        let (context, location) = match direction {
+        let destination = match direction {
             NavigationHistoryDirection::Back => {
-                self.tabs.active_tab_mut().begin_back_request_at(steps)?
+                self.tabs.active_tab().history.back_destination_at(steps)?
             }
-            NavigationHistoryDirection::Forward => {
-                self.tabs.active_tab_mut().begin_forward_request_at(steps)?
-            }
+            NavigationHistoryDirection::Forward => self
+                .tabs
+                .active_tab()
+                .history
+                .forward_destination_at(steps)?,
+        }
+        .location
+        .clone();
+        let cached = self.directory_cache.get(&destination);
+        let (context, location) = match direction {
+            NavigationHistoryDirection::Back => self
+                .tabs
+                .active_tab_mut()
+                .begin_back_request_at_with_snapshot(steps, cached)?,
+            NavigationHistoryDirection::Forward => self
+                .tabs
+                .active_tab_mut()
+                .begin_forward_request_at_with_snapshot(steps, cached)?,
         };
         Some(ExplorerCommand::Navigate { context, location })
     }
@@ -4129,8 +4338,34 @@ impl AppViewState {
             ExplorerEvent::LocationResolved { context, .. } => Some(context.tab_id),
             _ => None,
         };
+        let completed_directory = match &event {
+            ExplorerEvent::DirectoryFinished { context } => self
+                .tabs
+                .tabs()
+                .iter()
+                .find(|tab| tab.id == context.tab_id && tab.directory.accepts(context).is_ok())
+                .and_then(|tab| {
+                    tab.history
+                        .current()
+                        .map(|entry| (context.tab_id, entry.location.clone()))
+                }),
+            _ => None,
+        };
         let outcome = self.tabs.apply_event(event);
         if outcome == WindowEventOutcome::Applied {
+            if let Some((tab_id, location)) = completed_directory
+                && let Some(snapshot) = self
+                    .tabs
+                    .tabs()
+                    .iter()
+                    .find(|tab| tab.id == tab_id)
+                    .and_then(|tab| match &tab.directory {
+                        DirectoryState::Ready(snapshot) => Some(snapshot.clone()),
+                        _ => None,
+                    })
+            {
+                self.directory_cache.insert(&location, snapshot);
+            }
             if let Some(tab_id) = resolved_tab {
                 self.details_filters.entry(tab_id).or_default().clear_all();
                 self.details_filter_menu = None;
@@ -6016,11 +6251,118 @@ fn navigation_locations_for_operation(request: &FileOperationRequest) -> Vec<Loc
 #[cfg(test)]
 mod tests {
     use super::{
-        AppViewState, CommandKind, bookmark_target_for_current_location,
-        resolve_details_column_insertion,
+        AppViewState, CommandKind, DirectoryCacheKey, DirectorySnapshotCache,
+        bookmark_target_for_current_location, resolve_details_column_insertion,
     };
     use crate::{focus::FocusSurface, layout::LayoutTokens, theme::ThemeMode};
-    use std::time::{Duration, Instant};
+    use std::{
+        collections::HashSet,
+        time::{Duration, Instant},
+    };
+
+    fn cache_test_location(
+        provider: &str,
+        authority: &str,
+        path: &[&str],
+        generation: u64,
+    ) -> explorer_model::LocationDescriptor {
+        explorer_model::LocationDescriptor::Virtual(explorer_model::VirtualLocationDescriptor {
+            provider_id: provider.to_owned(),
+            public_authority: Some(authority.to_owned()),
+            container_identity: [generation as u8; 16],
+            container_generation: generation,
+            entry_id: Some(generation),
+            components: path
+                .iter()
+                .map(|component| (*component).to_owned())
+                .collect(),
+        })
+    }
+
+    fn cache_test_snapshot(prefix: &str, count: usize) -> explorer_model::DirectorySnapshot {
+        let mut snapshot = explorer_model::DirectorySnapshot::default();
+        for index in 0..count {
+            let mut identity = prefix.as_bytes().to_vec();
+            identity.extend_from_slice(&(index as u64).to_le_bytes());
+            let _ = snapshot.upsert(explorer_model::FileEntry {
+                id: explorer_model::ShellItemId::from_provider_bytes(identity).unwrap(),
+                display_name: format!("{prefix}-{index}"),
+                location: explorer_model::LocationDescriptor::file_system(format!(
+                    r"C:\{prefix}\{index}"
+                )),
+                is_container: false,
+                metadata: explorer_model::FileEntryMetadata::default(),
+            });
+        }
+        snapshot
+    }
+
+    #[test]
+    fn directory_cache_keys_normalize_local_and_ignore_virtual_transient_identity() {
+        assert_eq!(
+            DirectoryCacheKey::for_location(&explorer_model::LocationDescriptor::file_system(
+                r"C:\Users\Fixture\"
+            )),
+            DirectoryCacheKey::for_location(&explorer_model::LocationDescriptor::file_system(
+                r"c:/users/fixture"
+            ))
+        );
+        let adb_old = cache_test_location("adb", "emulator-5554", &["sdcard", "Download"], 1);
+        let adb_new = cache_test_location("adb", "emulator-5554", &["sdcard", "Download"], 99);
+        assert_eq!(
+            DirectoryCacheKey::for_location(&adb_old),
+            DirectoryCacheKey::for_location(&adb_new)
+        );
+        assert_ne!(
+            DirectoryCacheKey::for_location(&adb_old),
+            DirectoryCacheKey::for_location(&cache_test_location(
+                "adb",
+                "HA245TSY",
+                &["sdcard", "Download"],
+                1
+            ))
+        );
+        assert_ne!(
+            DirectoryCacheKey::for_location(&adb_old),
+            DirectoryCacheKey::for_location(&cache_test_location(
+                "adb",
+                "emulator-5554",
+                &["sdcard", "Android"],
+                1
+            ))
+        );
+        let sftp_upper = cache_test_location("sftp", "EXAMPLE.TEST", &["home"], 1);
+        let sftp_lower = cache_test_location("sftp", "example.test", &["home"], 2);
+        assert_eq!(
+            DirectoryCacheKey::for_location(&sftp_upper),
+            DirectoryCacheKey::for_location(&sftp_lower)
+        );
+    }
+
+    #[test]
+    fn directory_snapshot_cache_enforces_lru_and_row_limits_without_destructive_rejection() {
+        let a = explorer_model::LocationDescriptor::file_system(r"C:\a");
+        let b = explorer_model::LocationDescriptor::file_system(r"C:\b");
+        let c = explorer_model::LocationDescriptor::file_system(r"C:\c");
+        let mut cache = DirectorySnapshotCache::with_limits(2, 3);
+        assert!(cache.insert(&a, cache_test_snapshot("a", 1)));
+        assert!(cache.insert(&b, cache_test_snapshot("b", 1)));
+        assert!(cache.get(&a).is_some());
+        assert!(cache.insert(&c, cache_test_snapshot("c", 1)));
+        assert!(cache.get(&a).is_some());
+        assert!(cache.get(&b).is_none());
+        assert!(cache.get(&c).is_some());
+
+        let existing_keys = cache.entries.keys().cloned().collect::<HashSet<_>>();
+        assert!(!cache.insert(&b, cache_test_snapshot("oversized", 4)));
+        assert_eq!(
+            cache.entries.keys().cloned().collect::<HashSet<_>>(),
+            existing_keys
+        );
+        assert!(cache.insert(&b, cache_test_snapshot("b2", 2)));
+        assert!(cache.total_rows <= 3);
+        assert!(cache.entries.len() <= 2);
+    }
 
     #[test]
     fn bookmark_star_targets_local_adb_and_sftp_folders() {
@@ -6291,6 +6633,229 @@ mod tests {
         let _ =
             state.apply_service_event(explorer_model::ExplorerEvent::DirectoryFinished { context });
         state
+    }
+
+    fn complete_cached_directory(
+        state: &mut AppViewState,
+        command: &explorer_model::ExplorerCommand,
+        location: explorer_model::LocationDescriptor,
+        entries: Vec<explorer_model::FileEntry>,
+    ) {
+        let context = command.context().expect("navigation context").clone();
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::LocationResolved {
+                context: context.clone(),
+                metadata: explorer_model::LocationMetadata {
+                    descriptor: location,
+                    display_title: "cache fixture".to_owned(),
+                    can_go_up: true,
+                    can_write: true,
+                },
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::DirectoryBatch {
+                context: context.clone(),
+                entries,
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::DirectoryFinished { context }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+    }
+
+    fn cached_virtual_entry(
+        identity: u8,
+        name: &str,
+        location: explorer_model::LocationDescriptor,
+    ) -> explorer_model::FileEntry {
+        explorer_model::FileEntry {
+            id: explorer_model::ShellItemId::from_provider_bytes([identity]).unwrap(),
+            display_name: name.to_owned(),
+            location,
+            is_container: true,
+            metadata: explorer_model::FileEntryMetadata::default(),
+        }
+    }
+
+    #[test]
+    fn specified_sftp_parent_and_test_revisit_seed_cache_before_background_convergence() {
+        let parent = explorer_model::RemoteAddress::parse("sftp://45.32.49.125/home/linuxuser")
+            .unwrap()
+            .to_deterministic_location(1)
+            .unwrap();
+        let child = explorer_model::RemoteAddress::parse("sftp://45.32.49.125/home/linuxuser/test")
+            .unwrap()
+            .to_deterministic_location(2)
+            .unwrap();
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            parent.clone(),
+            "linuxuser",
+        ));
+
+        let parent_load = state.begin_active_location_load().unwrap();
+        complete_cached_directory(
+            &mut state,
+            &parent_load,
+            parent.clone(),
+            vec![cached_virtual_entry(1, "test", child.clone())],
+        );
+        let child_load = state.begin_active_navigation(child.clone(), false).unwrap();
+        assert!(
+            state
+                .tabs()
+                .active_tab()
+                .directory
+                .snapshot()
+                .unwrap()
+                .entries()
+                .is_empty()
+        );
+        complete_cached_directory(
+            &mut state,
+            &child_load,
+            child.clone(),
+            vec![cached_virtual_entry(
+                2,
+                "inside.txt",
+                explorer_model::LocationDescriptor::file_system(r"C:\virtual\inside.txt"),
+            )],
+        );
+
+        let up = state.begin_up_navigation().expect("Backspace up command");
+        assert_eq!(
+            match &up {
+                explorer_model::ExplorerCommand::Navigate { location, .. } =>
+                    location.editable_text(),
+                _ => panic!("up must navigate"),
+            },
+            "sftp://45.32.49.125/home/linuxuser"
+        );
+        assert_eq!(
+            state
+                .tabs()
+                .active_tab()
+                .directory
+                .snapshot()
+                .unwrap()
+                .entries()[0]
+                .display_name,
+            "test"
+        );
+
+        let up_context = up.context().unwrap().clone();
+        state.apply_service_event(explorer_model::ExplorerEvent::LocationResolved {
+            context: up_context.clone(),
+            metadata: explorer_model::LocationMetadata {
+                descriptor: parent.clone(),
+                display_title: "linuxuser".to_owned(),
+                can_go_up: true,
+                can_write: true,
+            },
+        });
+        state.apply_service_event(explorer_model::ExplorerEvent::DirectoryBatch {
+            context: up_context.clone(),
+            entries: vec![cached_virtual_entry(
+                3,
+                "fresh",
+                cache_test_location("sftp", "45.32.49.125", &["home", "linuxuser", "fresh"], 3),
+            )],
+        });
+        state.apply_service_event(explorer_model::ExplorerEvent::DirectoryFinished {
+            context: up_context,
+        });
+        assert_eq!(
+            state
+                .tabs()
+                .active_tab()
+                .directory
+                .snapshot()
+                .unwrap()
+                .entries()[0]
+                .display_name,
+            "fresh"
+        );
+
+        let child_again = state.begin_active_navigation(child, false).unwrap();
+        assert!(matches!(
+            child_again,
+            explorer_model::ExplorerCommand::Navigate { .. }
+        ));
+        assert_eq!(
+            state
+                .tabs()
+                .active_tab()
+                .directory
+                .snapshot()
+                .unwrap()
+                .entries()[0]
+                .display_name,
+            "inside.txt"
+        );
+    }
+
+    #[test]
+    fn back_and_forward_navigation_seed_their_cached_target_snapshots() {
+        let a = explorer_model::LocationDescriptor::file_system(r"C:\cache-a");
+        let b = explorer_model::LocationDescriptor::file_system(r"C:\cache-b");
+        let mut state =
+            AppViewState::with_initial_location(explorer_model::HistoryEntry::new(a.clone(), "A"));
+        let load_a = state.begin_active_location_load().unwrap();
+        complete_cached_directory(
+            &mut state,
+            &load_a,
+            a.clone(),
+            vec![cached_virtual_entry(11, "a-row", a.clone())],
+        );
+        let load_b = state.begin_active_navigation(b.clone(), false).unwrap();
+        complete_cached_directory(
+            &mut state,
+            &load_b,
+            b.clone(),
+            vec![cached_virtual_entry(12, "b-row", b.clone())],
+        );
+
+        let back = state.begin_back_navigation().unwrap();
+        assert_eq!(
+            state
+                .tabs()
+                .active_tab()
+                .directory
+                .snapshot()
+                .unwrap()
+                .entries()[0]
+                .display_name,
+            "a-row"
+        );
+        complete_cached_directory(
+            &mut state,
+            &back,
+            a,
+            vec![cached_virtual_entry(
+                13,
+                "a-fresh",
+                explorer_model::LocationDescriptor::file_system(r"C:\cache-a\fresh"),
+            )],
+        );
+        let forward = state.begin_forward_navigation().unwrap();
+        assert!(matches!(
+            forward,
+            explorer_model::ExplorerCommand::Navigate { .. }
+        ));
+        assert_eq!(
+            state
+                .tabs()
+                .active_tab()
+                .directory
+                .snapshot()
+                .unwrap()
+                .entries()[0]
+                .display_name,
+            "b-row"
+        );
     }
 
     fn visible_detail_order(state: &AppViewState) -> Vec<explorer_model::ColumnId> {

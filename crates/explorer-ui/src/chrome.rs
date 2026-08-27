@@ -784,6 +784,7 @@ fn bookmark_bar(
         .collect::<Vec<_>>();
     let overflow = overflow_entries.len();
     let toolbar_context_cb = callback.clone();
+    let root_drop_cb = callback.clone();
     div()
         .id("bookmark-toolbar")
         .debug_selector(|| "bookmark-toolbar".to_owned())
@@ -811,6 +812,18 @@ fn bookmark_bar(
                     );
                 })
                 .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+        })
+        .when_some(root_drop_cb, |element, cb| {
+            element.on_drop(move |drag: &BookmarkDrag, window, cx| {
+                cb(
+                    &ExplorerAction::MoveBookmarkToFolder {
+                        id: drag.id,
+                        parent_id: None,
+                    },
+                    window,
+                    cx,
+                );
+            })
         })
         .child({
             let current_folder = state.current_folder_bookmark_target_and_id();
@@ -852,6 +865,7 @@ fn bookmark_bar(
             let action = ExplorerAction::ToggleBookmarkFolderMenu { id: folder.id };
             let callback = callback.clone();
             let context_callback = callback.clone();
+            let drop_callback = callback.clone();
             let folder_id = folder.id;
             div()
                 .id(("bookmark-folder", folder.id.as_u128() as u64))
@@ -880,6 +894,19 @@ fn bookmark_bar(
                         );
                     })
                 })
+                .when_some(drop_callback, move |element, cb| {
+                    element.on_drop(move |drag: &BookmarkDrag, window, cx| {
+                        cb(
+                            &ExplorerAction::MoveBookmarkToFolder {
+                                id: drag.id,
+                                parent_id: Some(folder_id),
+                            },
+                            window,
+                            cx,
+                        );
+                        cx.stop_propagation();
+                    })
+                })
                 .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
         }))
         .children(visible.into_iter().map(|bookmark| {
@@ -898,6 +925,7 @@ fn bookmark_bar(
             let action = ExplorerAction::ActivateBookmark { id };
             let callback = callback.clone();
             let context_callback = callback.clone();
+            let drag_label = bookmark.name.clone();
             div()
                 .id(("bookmark", id.as_u128() as u64))
                 .role(Role::Button)
@@ -907,6 +935,17 @@ fn bookmark_bar(
                 .py(px(4.0))
                 .rounded(px(4.0))
                 .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
+                .on_drag(
+                    BookmarkDrag {
+                        id,
+                        label: drag_label,
+                    },
+                    |drag, _, _, cx| {
+                        cx.new(|_| BookmarkDragPreview {
+                            label: drag.label.clone(),
+                        })
+                    },
+                )
                 .child(format!("{icon} {}（{}）", bookmark.name, parent))
                 .when_some(callback, move |element, callback| {
                     element.on_click(move |_, window, cx| callback(&action, window, cx))
@@ -15143,6 +15182,16 @@ mod tests {
         assert!(manager.contains("element.on_drop(move |drag: &BookmarkDrag"));
         assert!(manager.contains("id: drag.id"));
         assert!(manager.contains("destination: sibling_index"));
+    }
+
+    #[test]
+    fn bookmark_toolbar_supports_native_folder_and_root_drops() {
+        let source = include_str!("chrome.rs");
+        assert!(source.contains("ExplorerAction::MoveBookmarkToFolder"));
+        assert!(source.contains("parent_id: Some(folder_id)"));
+        assert!(source.contains("parent_id: None"));
+        assert!(source.contains(".on_drag("));
+        assert!(source.contains("element.on_drop(move |drag: &BookmarkDrag"));
     }
 
     #[test]

@@ -336,6 +336,10 @@ pub enum ExplorerAction {
         id: explorer_model::BookmarkId,
         destination: usize,
     },
+    MoveBookmarkToFolder {
+        id: explorer_model::BookmarkId,
+        parent_id: Option<explorer_model::BookmarkFolderId>,
+    },
     CopySelectedPaths,
     OpenAboutDialog,
     CloseAboutDialog,
@@ -685,6 +689,7 @@ impl ExplorerAction {
             Self::ToggleBookmarkFolderMenu { .. } => "ToggleBookmarkFolderMenu",
             Self::RemoveBookmark { .. } => "RemoveBookmark",
             Self::MoveBookmark { .. } => "MoveBookmark",
+            Self::MoveBookmarkToFolder { .. } => "MoveBookmarkToFolder",
             Self::CopySelectedPaths => "CopySelectedPaths",
             Self::OpenAboutDialog => "OpenAboutDialog",
             Self::CloseAboutDialog => "CloseAboutDialog",
@@ -1495,7 +1500,8 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::ToggleBookmarkOverflow
         | ExplorerAction::ToggleBookmarkFolderMenu { .. }
         | ExplorerAction::RemoveBookmark { .. }
-        | ExplorerAction::MoveBookmark { .. } => true,
+        | ExplorerAction::MoveBookmark { .. }
+        | ExplorerAction::MoveBookmarkToFolder { .. } => true,
         ExplorerAction::CloseWindow => availability.is_enabled(CommandKind::CloseWindow),
         ExplorerAction::ResizeNavigationPane { .. }
         | ExplorerAction::BeginNavigationPaneResize { .. }
@@ -1967,7 +1973,8 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         | ExplorerAction::ToggleBookmarkOverflow
         | ExplorerAction::ToggleBookmarkFolderMenu { .. }
         | ExplorerAction::RemoveBookmark { .. }
-        | ExplorerAction::MoveBookmark { .. } => FocusSurface::CommandBar,
+        | ExplorerAction::MoveBookmark { .. }
+        | ExplorerAction::MoveBookmarkToFolder { .. } => FocusSurface::CommandBar,
         ExplorerAction::OpenAboutDialog => {
             state.open_about_dialog();
             FocusSurface::CommandBar

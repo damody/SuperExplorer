@@ -700,6 +700,21 @@ impl DirectoryState {
         };
     }
 
+    /// Starts a new generation with a snapshot belonging to the navigation target.
+    pub fn begin_with_snapshot(&mut self, request: RequestContext, snapshot: DirectorySnapshot) {
+        if let Self::Loading {
+            request: previous, ..
+        } = std::mem::replace(self, Self::Idle)
+        {
+            previous.cancellation.cancel();
+        }
+        *self = Self::Loading {
+            request,
+            snapshot,
+            seen: HashSet::new(),
+        };
+    }
+
     /// Merges a bounded batch if it belongs to the current request.
     ///
     /// # Errors
@@ -2536,11 +2551,25 @@ impl TabState {
 
     /// Starts navigation to a different location and discards partial rows from the old location.
     pub fn begin_navigation_request(&mut self) -> Option<RequestContext> {
+        self.begin_navigation_request_with_snapshot(None)
+    }
+
+    /// Starts navigation while optionally presenting a previously completed target snapshot.
+    pub fn begin_navigation_request_with_snapshot(
+        &mut self,
+        snapshot: Option<DirectorySnapshot>,
+    ) -> Option<RequestContext> {
         self.pending_history = None;
         self.cancel_search();
         self.generation = self.generation.checked_next()?;
         let request = RequestContext::new(self.id, self.generation);
-        self.directory.begin(request.clone(), false);
+        if let Some(snapshot) = snapshot {
+            self.directory
+                .begin_with_snapshot(request.clone(), snapshot);
+        } else {
+            self.directory.begin(request.clone(), false);
+        }
+        self.selection.clear();
         self.requests.navigation = Some(request.cancellation.clone());
         Some(request)
     }
@@ -2566,8 +2595,16 @@ impl TabState {
         &mut self,
         steps: usize,
     ) -> Option<(RequestContext, LocationDescriptor)> {
+        self.begin_back_request_at_with_snapshot(steps, None)
+    }
+
+    pub fn begin_back_request_at_with_snapshot(
+        &mut self,
+        steps: usize,
+        snapshot: Option<DirectorySnapshot>,
+    ) -> Option<(RequestContext, LocationDescriptor)> {
         let destination = self.history.back_destination_at(steps)?.location.clone();
-        let request = self.begin_navigation_request()?;
+        let request = self.begin_navigation_request_with_snapshot(snapshot)?;
         self.pending_history = Some(PendingHistoryNavigation {
             request_id: request.request_id,
             direction: HistoryDirection::Back,
@@ -2586,8 +2623,16 @@ impl TabState {
         &mut self,
         steps: usize,
     ) -> Option<(RequestContext, LocationDescriptor)> {
+        self.begin_forward_request_at_with_snapshot(steps, None)
+    }
+
+    pub fn begin_forward_request_at_with_snapshot(
+        &mut self,
+        steps: usize,
+        snapshot: Option<DirectorySnapshot>,
+    ) -> Option<(RequestContext, LocationDescriptor)> {
         let destination = self.history.forward_destination_at(steps)?.location.clone();
-        let request = self.begin_navigation_request()?;
+        let request = self.begin_navigation_request_with_snapshot(snapshot)?;
         self.pending_history = Some(PendingHistoryNavigation {
             request_id: request.request_id,
             direction: HistoryDirection::Forward,
@@ -3183,6 +3228,74 @@ mod tests {
         assert_eq!(
             tab.directory.snapshot().expect("ready snapshot").revision(),
             1
+        );
+    }
+
+    #[test]
+    fn navigation_can_seed_cached_snapshot_then_converge_and_clears_selection() {
+        let mut tab = TabState::new(HistoryEntry::new(
+            LocationDescriptor::file_system(r"C:\fixture"),
+            "fixture",
+        ));
+        let mut cached = DirectorySnapshot::default();
+        cached.upsert(entry(1, "cached.txt"));
+        cached.upsert(entry(2, "removed.txt"));
+        tab.selection.select_only(id(1));
+
+        let request = tab
+            .begin_navigation_request_with_snapshot(Some(cached))
+            .expect("cached navigation request");
+        assert!(tab.selection.is_empty());
+        assert_eq!(
+            tab.directory
+                .snapshot()
+                .expect("cached loading snapshot")
+                .entries()
+                .iter()
+                .map(|entry| entry.display_name.as_str())
+                .collect::<Vec<_>>(),
+            ["cached.txt", "removed.txt"]
+        );
+
+        tab.directory
+            .merge_batch(&request, [entry(1, "fresh.txt"), entry(3, "added.txt")])
+            .expect("fresh batch");
+        tab.directory.finish(&request).expect("fresh finish");
+        assert_eq!(
+            tab.directory
+                .snapshot()
+                .expect("converged snapshot")
+                .entries()
+                .iter()
+                .map(|entry| entry.display_name.as_str())
+                .collect::<Vec<_>>(),
+            ["fresh.txt", "added.txt"]
+        );
+    }
+
+    #[test]
+    fn cached_navigation_failure_retains_seed_and_stale_finish_is_rejected() {
+        let mut tab = TabState::new(HistoryEntry::new(location("A"), "A"));
+        let mut cached = DirectorySnapshot::default();
+        cached.upsert(entry(7, "cached.txt"));
+        let request = tab
+            .begin_navigation_request_with_snapshot(Some(cached))
+            .expect("cached request");
+        let stale = RequestContext::new(request.tab_id, Generation::default());
+        assert!(tab.directory.finish(&stale).is_err());
+        let error = ExplorerError::new(
+            ExplorerErrorKind::Availability,
+            "enumerate",
+            true,
+            "offline",
+            "fixture",
+        );
+        tab.directory
+            .fail(&request, error)
+            .expect("accepted failure");
+        assert_eq!(
+            tab.directory.snapshot().expect("retained cache").entries()[0].display_name,
+            "cached.txt"
         );
     }
 

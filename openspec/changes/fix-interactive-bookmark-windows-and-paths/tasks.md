@@ -186,3 +186,20 @@
 - [x] 6.2.2 Run scoped formatting and focused bookmark UI tests.
 - [x] 6.2.3 Run `cargo check -p explorer-app` and strict OpenSpec/task validation.
 - [x] 6.2.4 Review the scoped diff and preserve unrelated changes.
+
+## 7. Toolbar bookmark folder drag
+
+### 7.1 Model and native drop routing
+
+**目的：** Move toolbar bookmarks into logical folders with left-button drag.
+**輸入：** Typed bookmark tree, GPUI `BookmarkDrag`, and durable reducer path.
+**產出：** Parent-move mutation, toolbar sources/targets, and rollback integration.
+**依賴：** 3.1.
+**Owner／Wave：** Primary integrator／wave 9.
+**Gate／Evidence：** G13; focused model/UI tests and app check.
+**完成門檻：** Folder and root drops persist correctly, while invalid/same-parent drops are no-ops.
+
+- [x] 7.1.1 Add validated bookmark parent-move mutation with destination append ordering and rollback.
+- [x] 7.1.2 Add typed move-to-folder action, state bridge, persistence notice, and rollback handling.
+- [x] 7.1.3 Make toolbar bookmark projections native drag sources and folder/root projections drop targets.
+- [x] 7.1.4 Add model regression coverage and run focused bookmark tests, app check, formatting, and strict OpenSpec validation.
