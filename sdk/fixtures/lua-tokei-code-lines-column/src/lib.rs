@@ -1,17 +1,19 @@
 //! Lua tokei example: package-attested ToolHandle, bounded batches, stable per-item mapping.
+#![allow(
+    linker_messages,
+    reason = "localized MSVC prints normal import-library creation status to stdout for this cdylib"
+)]
+
 use abi_stable::{
     export_root_module,
     prefix_type::PrefixTypeTrait,
     std_types::{ROption, RResult, RString, RVec},
 };
 use explorer_extension_api::*;
-use std::{
-    collections::HashMap,
-    path::Path,
-};
+use std::{collections::HashMap, path::Path};
 #[cfg(test)]
 use std::{
-    env, fs,
+    fs,
     io::Read,
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
@@ -48,24 +50,6 @@ struct CacheRecord {
     modified_nanos: u32,
     source_size: u64,
     row: CodeRow,
-}
-
-#[cfg(test)]
-fn cache_directory() -> Option<PathBuf> {
-    env::var_os("LUA_TOKEI_CODE_LINES_CACHE")
-        .map(PathBuf::from)
-        .or_else(|| {
-            env::var_os("LOCALAPPDATA")
-                .or_else(|| env::var_os("APPDATA"))
-                .map(|root| {
-                    PathBuf::from(root)
-                        .join("RustGpuiExplorer")
-                        .join("cache")
-                        .join("code-lines")
-                        .join("lua-tokei-code-lines-column")
-                        .join("v1")
-                })
-        })
 }
 
 #[cfg(test)]
@@ -175,11 +159,6 @@ fn read_cache_from(directory: &Path, path: &str) -> Option<CodeRow> {
 }
 
 #[cfg(test)]
-fn read_cache(path: &str) -> Option<CodeRow> {
-    read_cache_from(&cache_directory()?, path)
-}
-
-#[cfg(test)]
 fn store_cache_in(directory: &Path, path: &str, row: &CodeRow) {
     if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir()) {
         return;
@@ -221,13 +200,6 @@ fn store_cache_in(directory: &Path, path: &str, row: &CodeRow) {
         if fs::rename(&temporary, &destination).is_err() {
             let _ = fs::remove_file(temporary);
         }
-    }
-}
-
-#[cfg(test)]
-fn store_cache(path: &str, row: &CodeRow) {
-    if let Some(directory) = cache_directory() {
-        store_cache_in(&directory, path, row);
     }
 }
 
@@ -674,11 +646,7 @@ mod tests {
             let row = count_source(name, source.as_bytes())
                 .unwrap_or_else(|| panic!("{name} must remain supported"));
             assert_eq!(row.path, name);
-            assert_eq!(
-                row.total,
-                row.code + row.comments + row.blanks,
-                "{name}"
-            );
+            assert_eq!(row.total, row.code + row.comments + row.blanks, "{name}");
         }
     }
 

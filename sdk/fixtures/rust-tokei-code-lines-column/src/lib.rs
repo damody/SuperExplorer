@@ -3,17 +3,12 @@
 //! The provider receives only host-attested basenames and bounded input
 //! streams. It never opens a path or starts a child process.
 
-use std::{
-    collections::BTreeMap,
-    path::Path,
-};
-#[cfg(test)]
-use std::{
-    env, fs,
-    io::Read,
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
-};
+#![allow(
+    linker_messages,
+    reason = "localized MSVC prints normal import-library creation status to stdout for this cdylib"
+)]
+
+use std::{collections::BTreeMap, path::Path};
 
 use abi_stable::{
     export_root_module,
@@ -44,10 +39,6 @@ const MAX_DIRECTORY_PACK_BYTES: usize = 64 * 1024 * 1024;
 const DIRECTORY_MAGIC_V1: &[u8; 8] = b"SECLDIR1";
 #[cfg(test)]
 const CACHE_SCHEMA_VERSION: u32 = 2;
-#[cfg(test)]
-const CACHE_MAX_RECORD_BYTES: u64 = 8 * 1024;
-#[cfg(test)]
-const CACHE_MAX_FILES: usize = 256;
 
 struct TokeiRegistrar;
 struct TokeiCodeLinesProvider;
@@ -86,158 +77,6 @@ impl CacheRecord {
             && self.modified_seconds == modified_seconds
             && self.modified_nanos == modified_nanos
             && self.source_size == source_size
-    }
-}
-
-#[cfg(test)]
-fn cache_directory() -> Option<PathBuf> {
-    env::var_os("RUST_TOKEI_CODE_LINES_CACHE")
-        .map(PathBuf::from)
-        .or_else(|| {
-            env::var_os("LOCALAPPDATA")
-                .or_else(|| env::var_os("APPDATA"))
-                .map(|root| {
-                    PathBuf::from(root)
-                        .join("RustGpuiExplorer")
-                        .join("cache")
-                        .join("code-lines")
-                        .join("rust-tokei-code-lines-column")
-                        .join("v1")
-                })
-        })
-}
-
-#[cfg(test)]
-fn persistent_hash(input: &str) -> u64 {
-    input
-        .as_bytes()
-        .iter()
-        .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-            (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
-        })
-}
-
-#[cfg(test)]
-fn cache_path(directory: &Path, identity: &str) -> PathBuf {
-    directory.join(format!(
-        "{:016x}.code-lines-cache",
-        persistent_hash(identity)
-    ))
-}
-
-#[cfg(test)]
-fn prune_cache(directory: &Path) {
-    let Ok(entries) = fs::read_dir(directory) else {
-        return;
-    };
-    let mut entries = entries
-        .flatten()
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .ends_with(".code-lines-cache")
-        })
-        .map(|entry| {
-            (
-                entry
-                    .metadata()
-                    .ok()
-                    .and_then(|metadata| metadata.modified().ok())
-                    .unwrap_or(UNIX_EPOCH),
-                entry.path(),
-            )
-        })
-        .collect::<Vec<_>>();
-    entries.sort_by_key(|entry| entry.0);
-    let excess = entries
-        .len()
-        .saturating_sub(CACHE_MAX_FILES.saturating_sub(1));
-    for (_, path) in entries.into_iter().take(excess) {
-        let _ = fs::remove_file(path);
-    }
-}
-
-#[cfg(test)]
-fn cache_facts(item: &explorer_extension_api::BatchColumnItemV1) -> Option<(&str, u64, u32, u64)> {
-    let modified = item.modified_unix_seconds.into_option()?;
-    let size = item.source_size.into_option()?;
-    (!item.cache_identity.is_empty()).then_some((
-        item.cache_identity.as_str(),
-        modified,
-        item.modified_subsec_nanos,
-        size,
-    ))
-}
-
-#[cfg(test)]
-fn read_cache(item: &explorer_extension_api::BatchColumnItemV1) -> Option<CodeLinesPayload> {
-    let (identity, modified_seconds, modified_nanos, source_size) = cache_facts(item)?;
-    let path = cache_path(&cache_directory()?, identity);
-    let metadata = fs::symlink_metadata(&path).ok()?;
-    if !metadata.is_file()
-        || metadata.file_type().is_symlink()
-        || metadata.len() > CACHE_MAX_RECORD_BYTES
-    {
-        return None;
-    }
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    fs::File::open(path)
-        .ok()?
-        .take(CACHE_MAX_RECORD_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    if bytes.len() as u64 > CACHE_MAX_RECORD_BYTES {
-        return None;
-    }
-    let record: CacheRecord = serde_json::from_slice(&bytes).ok()?;
-    record
-        .matches(identity, modified_seconds, modified_nanos, source_size)
-        .then_some(record.value)
-}
-
-#[cfg(test)]
-fn store_cache(item: &explorer_extension_api::BatchColumnItemV1, value: &CodeLinesPayload) {
-    let Some((identity, modified_seconds, modified_nanos, source_size)) = cache_facts(item) else {
-        return;
-    };
-    let Some(directory) = cache_directory() else {
-        return;
-    };
-    if fs::create_dir_all(&directory).is_err() {
-        return;
-    }
-    prune_cache(&directory);
-    let record = CacheRecord {
-        schema: CACHE_SCHEMA_VERSION,
-        identity: identity.to_owned(),
-        modified_seconds,
-        modified_nanos,
-        source_size,
-        value: value.clone(),
-    };
-    let Ok(bytes) = serde_json::to_vec(&record) else {
-        return;
-    };
-    if bytes.len() as u64 > CACHE_MAX_RECORD_BYTES {
-        return;
-    }
-    let destination = cache_path(&directory, identity);
-    let temporary = directory.join(format!(
-        ".{}.{}.tmp",
-        persistent_hash(identity),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos())
-    ));
-    if fs::write(&temporary, bytes).is_ok() {
-        #[cfg(windows)]
-        {
-            let _ = fs::remove_file(&destination);
-        }
-        if fs::rename(&temporary, &destination).is_err() {
-            let _ = fs::remove_file(temporary);
-        }
     }
 }
 
