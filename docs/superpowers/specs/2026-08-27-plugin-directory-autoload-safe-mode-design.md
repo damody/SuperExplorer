@@ -6,7 +6,7 @@ SuperExplorer discovers installed plugin packages from its application-owned `pl
 
 ## Architecture and data flow
 
-The application composition root resolves the `plugins` directory relative to the executable, never from the current directory or an environment variable. Each direct child is a package directory containing `manifest.json`; discovery remains bounded, deterministic, rejects reparse points, and passes every candidate through the existing package validator and sealed-package admission path. Loose DLL scanning is not introduced. The installer therefore packages each bundled plugin as a package directory and launches `SuperExplorer.exe` without a fixed `--plugin-dll` list. `--plugin-dll` remains an explicit development/test override and does not define production discovery.
+The application composition root resolves the `plugins` directory relative to the executable, never from the current directory or an environment variable. It inspects at most 1,024 direct entries, ignores symlinks, directories, and non-DLL files, sorts accepted paths, and sends each DLL through the existing ABI loader. The DLL stem with underscores replaced by hyphens is its settings key. The installer launches `SuperExplorer.exe` without a fixed `--plugin-dll` list; that argument remains an explicit development/test override.
 
 At startup the extension host loads `feature-state-v1.json`. Missing package or feature entries resolve to `Enabled`, preserving the required first-discovery behavior. The Extensions options draft edits only desired state. Apply/OK validates and atomically replaces the store; Cancel does not mutate it. Runtime effective state continues to combine desired state, dependencies, compatibility, quarantine, and restart requirements.
 
@@ -18,7 +18,7 @@ Folder Options > Extensions displays the latched state and a **Re-enable all plu
 
 Missing or malformed package candidates are reported in the catalog/diagnostics and do not prevent built-in file management. A corrupt desired-state file is not silently reset; plugins remain blocked with repair diagnostics. A corrupt or unreadable Safe Mode latch fails closed. Diagnostics use package IDs and typed reason codes, not filesystem paths or arbitrary plugin payloads.
 
-Existing installations migrate from installer-supplied loose DLL arguments to packaged plugin directories. The old shortcuts continue to work during upgrade because explicit DLL arguments remain accepted, but the updated installer rewrites shortcuts without plugin arguments and avoids double-loading a package found through both paths.
+Existing installations migrate from installer-supplied DLL arguments to executable-relative discovery. Old shortcuts continue to work during upgrade because explicit DLL arguments remain accepted, but the updated installer rewrites shortcuts without plugin arguments and identical paths are deduplicated.
 
 ## Testing and release gates
 
@@ -28,4 +28,4 @@ The release gate requires targeted host/app/UI tests, strict OpenSpec validation
 
 ## Decisions and non-goals
 
-Only direct child package directories are auto-discovered; recursive or arbitrary loose-DLL discovery is excluded. File-system watching and hot-loading newly copied Rust plugins are excluded: discovery happens on startup. One plugin fault intentionally disables all plugins on the next launch. Per-plugin automatic quarantine may remain as diagnostic detail but cannot bypass the global latch.
+Only direct child DLL files are auto-discovered; recursive discovery and symlink traversal are excluded. File-system watching and hot-loading newly copied Rust plugins are excluded: discovery happens on startup. One plugin fault intentionally disables all plugins on the next launch. Per-plugin automatic quarantine may remain as diagnostic detail but cannot bypass the global latch.
