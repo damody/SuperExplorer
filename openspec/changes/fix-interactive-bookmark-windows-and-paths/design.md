@@ -50,6 +50,10 @@ Folder creation and rename open a singleton `BookmarkFolderEditorWindow` with it
 
 Alternatives rejected: keeping the overlay retains the input freeze, while unlimited editor windows conflict with the single authoritative folder draft.
 
+### Toolbar bookmark folder drag
+
+Reuse the manager's typed GPUI `BookmarkDrag` for toolbar bookmark entries. Logical folder buttons accept the drag and stop propagation; the toolbar background accepts it as a root destination. A typed reducer action changes `parent_id`, appends at the destination, normalizes sibling order, and uses the existing durable rollback path. Same-parent and invalid destinations are no-ops. Logical folders are not draggable in this scope.
+
 ### Evidence-driven corrections
 
 A-level changes may refine task order, tests, or internal method names. B-level corrections within this approved behavior require synchronized design/spec/task updates and stale-evidence marking. C-level changes—including website URLs, new dependencies, weaker persistence gates, or filesystem mutation—require user approval.

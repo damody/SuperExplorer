@@ -5650,6 +5650,18 @@ impl ExplorerRoot {
                 cx.notify();
             }
         }
+        if let ExplorerAction::MoveBookmarkToFolder { id, parent_id } = action {
+            let mutation = self.state.move_bookmark_to_folder(id, parent_id);
+            if mutation.changed() {
+                self.state.set_bookmark_notice("Bookmark moved.");
+                if !self.notify_durable_state() {
+                    self.state.rollback_bookmark(mutation);
+                    self.state
+                        .set_bookmark_notice("Unable to save the bookmark move.");
+                }
+                cx.notify();
+            }
+        }
         if action == ExplorerAction::AddSelectedToBookmarks {
             let selected = self.state.selected_items_for_extension_command();
             if let Some(item) = selected.into_iter().next() {

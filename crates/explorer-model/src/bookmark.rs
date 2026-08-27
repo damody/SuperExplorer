@@ -392,6 +392,36 @@ impl Bookmarks {
         BookmarkMutation::new(previous, true)
     }
 
+    pub fn begin_move_to_folder(
+        &mut self,
+        id: BookmarkId,
+        parent_id: Option<BookmarkFolderId>,
+    ) -> BookmarkMutation {
+        let previous = self.clone();
+        if !self.valid_parent(parent_id) {
+            return BookmarkMutation::new(previous, false);
+        }
+        let next_order = self.next_order(parent_id);
+        let changed = self
+            .entries
+            .iter_mut()
+            .find(|item| item.id == id)
+            .is_some_and(|item| {
+                if item.parent_id == parent_id {
+                    false
+                } else {
+                    item.parent_id = parent_id;
+                    item.order = next_order;
+                    true
+                }
+            });
+        if changed {
+            self.normalize_orders();
+            self.legacy_encoding = false;
+        }
+        BookmarkMutation::new(previous, changed)
+    }
+
     pub fn rollback(&mut self, mutation: BookmarkMutation) {
         if mutation.changed {
             *self = mutation.previous;
@@ -512,6 +542,31 @@ impl Bookmarks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bookmark_moves_between_root_and_folder_with_rollback() {
+        let mut value = Bookmarks::default();
+        value.begin_add_folder("Folder".into(), None);
+        let folder = value.folders()[0].id;
+        value.begin_add(
+            "Entry".into(),
+            BookmarkTarget::LuaScript {
+                source: "return 1".into(),
+            },
+        );
+        let entry = value.entries()[0].id;
+        let mutation = value.begin_move_to_folder(entry, Some(folder));
+        assert!(mutation.changed());
+        assert_eq!(value.entries()[0].parent_id, Some(folder));
+        assert!(!value.begin_move_to_folder(entry, Some(folder)).changed());
+        value.rollback(mutation);
+        assert_eq!(value.entries()[0].parent_id, None);
+        assert!(
+            !value
+                .begin_move_to_folder(entry, Some(Uuid::new_v4()))
+                .changed()
+        );
+    }
 
     #[test]
     fn tree_crud_and_rollback_are_recursive() {
