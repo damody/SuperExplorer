@@ -411,6 +411,7 @@ fn brokered_real_popup_appears_without_console_and_cancels_cleanly() {
         point: explorer_model::MenuPoint { x: 40, y: 40 },
         keyboard_invoked: false,
         invocation_profile: explorer_model::ContextMenuInvocationProfile::Explorer,
+        paste_available: false,
         requested_verb: None,
         deadline_ms: 5_000,
     };
@@ -867,6 +868,7 @@ fn brokered_context_menu_profiles_are_bounded_across_all_target_shapes() {
                 point_y: 0,
                 keyboard_invoked: false,
                 invocation_profile: u8::from(profile.extended_verbs()),
+                paste_available: false,
                 item_descriptors: locations.iter().map(encode_location).collect(),
                 verb: None,
             }
@@ -989,6 +991,7 @@ fn brokered_and_direct_context_menu_preserve_safe_filesystem_effects() {
             point: explorer_model::MenuPoint { x: 0, y: 0 },
             keyboard_invoked: true,
             invocation_profile: explorer_model::ContextMenuInvocationProfile::Explorer,
+            paste_available: false,
             requested_verb: Some("Windows.CompressToZip".to_owned()),
             deadline_ms: 10_000,
         }

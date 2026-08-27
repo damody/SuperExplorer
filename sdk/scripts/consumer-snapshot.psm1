@@ -1,5 +1,28 @@
 Set-StrictMode -Version Latest
 
+function Get-ConsumerFileSha256 {
+    param([Parameter(Mandatory)][string]$Path)
+    $stream = [IO.File]::OpenRead($Path)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+        $stream.Dispose()
+    }
+}
+
+# Windows PowerShell can run with module auto-loading disabled by the installer
+# process boundary. Provide the narrow Get-FileHash shape used by the SDK
+# wrappers so their integrity checks do not depend on that ambient setting.
+function Get-FileHash {
+    param(
+        [Parameter(Mandatory)][string]$LiteralPath,
+        [ValidateSet('SHA256')][string]$Algorithm = 'SHA256'
+    )
+    [pscustomobject]@{ Hash = (Get-ConsumerFileSha256 $LiteralPath); Algorithm = $Algorithm; Path = $LiteralPath }
+}
+
 function Get-BoundedConsumerFiles {
     param(
         [Parameter(Mandatory)][string]$SourceRoot,
@@ -52,7 +75,7 @@ function Get-BoundedConsumerTreeDigest {
     )
     $files = @(Get-BoundedConsumerFiles @PSBoundParameters)
     $lines = foreach ($file in $files) {
-        $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        $hash = Get-ConsumerFileSha256 $file.FullName
         "$($file.Relative):$($file.Length):$hash"
     }
     $sha = [Security.Cryptography.SHA256]::Create()
@@ -84,11 +107,11 @@ function Copy-BoundedConsumerSnapshot {
         $destination = Join-Path $DestinationRoot $file.Relative.Replace('/', '\')
         New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($destination))) -Force | Out-Null
         Copy-Item -LiteralPath $file.FullName -Destination $destination -ErrorAction Stop
-        $sourceHash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-        $destinationHash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
+        $sourceHash = Get-ConsumerFileSha256 $file.FullName
+        $destinationHash = Get-ConsumerFileSha256 $destination
         if ($sourceHash -ne $destinationHash) { throw 'consumer source changed while creating the bounded snapshot' }
     }
     return $files.Count
 }
 
-Export-ModuleMember -Function Copy-BoundedConsumerSnapshot, Get-BoundedConsumerTreeDigest
+Export-ModuleMember -Function Copy-BoundedConsumerSnapshot, Get-BoundedConsumerTreeDigest, Get-FileHash

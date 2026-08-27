@@ -2,6 +2,7 @@
 param([Parameter(Mandatory)][string]$PluginRoot)
 
 $ErrorActionPreference = 'Stop'
+Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
 $sdk = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $root = (Resolve-Path -LiteralPath $PluginRoot).Path
 $manifestPath = Join-Path $root 'plugin-project.json'
@@ -11,6 +12,10 @@ if (-not (Test-Path -LiteralPath (Join-Path $root 'Cargo.toml')) -or -not (Test-
 
 $sdkLock = Get-Content -LiteralPath (Join-Path $sdk 'sdk-lock.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $standardCargoHome = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) '.cargo'
+$powershellExecutable = (Get-Process -Id $PID -ErrorAction Stop).Path
+if (-not (Test-Path -LiteralPath $powershellExecutable -PathType Leaf)) {
+    throw 'the current PowerShell executable is unavailable'
+}
 Import-Module (Join-Path $PSScriptRoot 'sealed-cargo-authority.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'consumer-snapshot.psm1') -Force
 $targetTriple = 'x86_64-pc-windows-msvc'
@@ -107,6 +112,10 @@ try {
     $rustcDirectory = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($cargoAuthority.RustcPath))
     foreach ($name in $dangerous) { [Environment]::SetEnvironmentVariable($name, $null, 'Process') }
     $env:CARGO_HOME = $standardCargoHome
+    # Cargo 1.97 rejects an inherited CARGO_TARGET_DIR that exists as an empty
+    # string. Bind every tooling invocation to the private target from the
+    # start, instead of waiting until the consumer crate build below.
+    $env:CARGO_TARGET_DIR = $temporaryTarget
     $env:RUSTC = $cargoAuthority.RustcPath
     $env:SUPEREXPLORER_TRUSTED_CARGO = $cargoPath
     $env:SUPEREXPLORER_TRUSTED_CARGO_SHA256 = $cargoHash
@@ -137,7 +146,7 @@ try {
     Pop-Location
     $pushed = $false
     foreach ($name in $dangerous) { [Environment]::SetEnvironmentVariable($name, $null, 'Process') }
-    & (Join-Path $PSHOME 'powershell.exe') -NoProfile -File (Join-Path $PSScriptRoot 'validate-plugin.ps1') -PluginRoot $stagedRoot -TemplateManifestSha256 ([string]$templateMaterialization.template_manifest_sha256) -ExpectedResolvedManifestSha256 ([string]$templateMaterialization.resolved_manifest_sha256)
+    & $powershellExecutable -NoProfile -File (Join-Path $PSScriptRoot 'validate-plugin.ps1') -PluginRoot $stagedRoot -TemplateManifestSha256 ([string]$templateMaterialization.template_manifest_sha256) -ExpectedResolvedManifestSha256 ([string]$templateMaterialization.resolved_manifest_sha256)
     if ($LASTEXITCODE -ne 0) { throw 'plugin validation failed before build' }
     # Only the bounded, no-reparse snapshot reaches PowerShell's JSON parser.
     # The core validator has already accepted the exact schema, so later path
@@ -259,7 +268,13 @@ try {
     Write-Output $publishedBuildReport
 } finally {
     if ($pushed) { Pop-Location }
-    foreach ($name in $dangerous) { [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process') }
+    foreach ($name in $dangerous) {
+        if ([string]::IsNullOrEmpty([string]$saved[$name])) {
+            Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+        } else {
+            [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process')
+        }
+    }
     [Environment]::SetEnvironmentVariable('PATH', $savedPath, 'Process')
     foreach ($path in @($temporaryTarget,$stage,$stagedRoot)) {
         if ($path -and (Test-Path -LiteralPath $path)) { Remove-Item -LiteralPath $path -Recurse -Force }

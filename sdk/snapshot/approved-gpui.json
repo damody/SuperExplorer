@@ -6,12 +6,12 @@
   },
   "source": {
     "repository": "https://github.com/damody/gpui-ce-explorer.git",
-    "update_branch": "main",
-    "resolved_ref": "refs/remotes/origin/main",
-    "revision": "8945e2981b9fd00ca887e042d8adb9acc241b168",
-    "tree": "7d4acfda352c13d35a475da381f9b6f9de7a30c2",
-    "parent": "5604b378294e83ceb78ae846af72cfe3a9c330e5",
-    "commit_time": "2026-08-01T08:37:18+08:00",
+    "update_branch": "codex/integrate-latest-gpui-explorer-fork",
+    "resolved_ref": "refs/remotes/origin/codex/integrate-latest-gpui-explorer-fork",
+    "revision": "54f1339ef1791cf1d1a281ff7fa37d7e0d6b8436",
+    "tree": "5a36e7350dfdcb6b68a32ed3821e637e90e40c94",
+    "parent": "b3d978d34361087fbb6a9fb92565970943831b4d",
+    "commit_time": "2026-08-16T23:29:20+08:00",
     "package": "gpui",
     "package_version": "0.2.2"
   },
