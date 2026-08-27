@@ -505,6 +505,15 @@ struct PermanentDeleteConfirmation {
 }
 
 #[derive(Clone, Debug)]
+struct PendingNewFolderRename {
+    tab_id: TabId,
+    generation: explorer_model::Generation,
+    parent: LocationDescriptor,
+    item_id: ShellItemId,
+    use_create_item: bool,
+}
+
+#[derive(Clone, Debug)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "these are independent Explorer overlay, pane, focus, and command-surface states rather than one disguised enum"
@@ -520,6 +529,7 @@ pub struct AppViewState {
     divider: DividerInteraction,
     operation_center: OperationCenterState,
     rename_editor: Option<explorer_model::RenameEditorState>,
+    pending_new_folder_rename: Option<PendingNewFolderRename>,
     permanent_delete_confirmation: Option<PermanentDeleteConfirmation>,
     permanent_delete_confirmation_focus: PermanentDeleteDialogTarget,
     lock_recovery: Option<LockRecoveryUiState>,
@@ -766,6 +776,7 @@ impl AppViewState {
             divider: DividerInteraction::default(),
             operation_center: OperationCenterState::default(),
             rename_editor: None,
+            pending_new_folder_rename: None,
             permanent_delete_confirmation: None,
             permanent_delete_confirmation_focus: PermanentDeleteDialogTarget::Delete,
             lock_recovery: None,
@@ -1466,6 +1477,24 @@ impl AppViewState {
 
     pub const fn rename_editor(&self) -> Option<&explorer_model::RenameEditorState> {
         self.rename_editor.as_ref()
+    }
+
+    pub(crate) fn provisional_new_folder_entry(&self) -> Option<explorer_model::FileEntry> {
+        let pending = self.pending_new_folder_rename.as_ref()?;
+        let editor = self.rename_editor.as_ref()?;
+        if editor.item.id != pending.item_id {
+            return None;
+        }
+        Some(explorer_model::FileEntry {
+            id: pending.item_id.clone(),
+            display_name: editor.buffer.clone(),
+            location: pending.parent.clone(),
+            is_container: true,
+            metadata: explorer_model::FileEntryMetadata {
+                type_display: Some("檔案資料夾".to_owned()),
+                ..explorer_model::FileEntryMetadata::default()
+            },
+        })
     }
 
     pub fn permanent_delete_confirmation_count(&self) -> Option<usize> {
@@ -3370,7 +3399,15 @@ impl AppViewState {
 
     pub(crate) fn begin_refresh_navigation(&mut self) -> Option<ExplorerCommand> {
         let location = self.tabs.active_tab().history.current()?.location.clone();
-        self.begin_active_navigation(location, true)
+        let command = self.begin_active_navigation(location.clone(), true)?;
+        if let Some(context) = command.context()
+            && let Some(pending) = self.pending_new_folder_rename.as_mut()
+            && pending.tab_id == context.tab_id
+            && pending.parent == location
+        {
+            pending.generation = context.generation;
+        }
+        Some(command)
     }
 
     pub(crate) fn begin_active_search(&mut self, input: String) -> Option<ExplorerCommand> {
@@ -4073,6 +4110,24 @@ impl AppViewState {
             if let Some(tab_id) = resolved_tab {
                 self.details_filters.entry(tab_id).or_default().clear_all();
                 self.details_filter_menu = None;
+                if self
+                    .pending_new_folder_rename
+                    .as_ref()
+                    .is_some_and(|pending| {
+                        pending.tab_id == tab_id
+                            && self
+                                .tabs
+                                .active_tab()
+                                .history
+                                .current()
+                                .is_none_or(|entry| {
+                                    entry.location != pending.parent
+                                        || self.tabs.active_tab().generation != pending.generation
+                                })
+                    })
+                {
+                    self.pending_new_folder_rename = None;
+                }
             }
         }
         outcome
@@ -4084,6 +4139,45 @@ impl AppViewState {
     ) -> ExplorerCommand {
         self.cancel_lock_recovery();
         self.queue_file_operation(request)
+    }
+
+    pub(crate) fn begin_interactive_create_folder(
+        &mut self,
+        request: FileOperationRequest,
+    ) -> bool {
+        let (parent, name, use_create_item) = match &request.kind {
+            FileOperationKind::CreateFolder { parent, name } => {
+                (parent.clone(), name.clone(), false)
+            }
+            FileOperationKind::CreateItem {
+                parent,
+                name,
+                recipe: explorer_model::ShellNewItemRecipe::Folder,
+            } => (parent.clone(), name.clone(), true),
+            _ => return false,
+        };
+        let tab = self.tabs.active_tab();
+        let mut identity = b"super-explorer:new-folder-draft:".to_vec();
+        identity.extend_from_slice(format!("{:?}", tab.id).as_bytes());
+        let item_id = ShellItemId::from_provider_bytes(identity)
+            .expect("new-folder draft identity is non-empty");
+        self.pending_new_folder_rename = Some(PendingNewFolderRename {
+            tab_id: tab.id,
+            generation: tab.generation,
+            parent: parent.clone(),
+            item_id: item_id.clone(),
+            use_create_item,
+        });
+        self.focus(FocusSurface::FileView);
+        self.rename_editor = Some(explorer_model::RenameEditorState::begin(
+            ItemDescriptor {
+                id: item_id,
+                location: parent,
+            },
+            name,
+            true,
+        ));
+        true
     }
 
     fn queue_file_operation(&mut self, request: FileOperationRequest) -> ExplorerCommand {
@@ -4242,11 +4336,27 @@ impl AppViewState {
             return None;
         }
         let parent = self.tabs.active_tab().history.current()?.location.clone();
+        let existing = self
+            .tabs
+            .active_tab()
+            .visible_snapshot()
+            .map(|snapshot| {
+                snapshot
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.display_name.to_lowercase())
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        let mut name = "New folder".to_owned();
+        for ordinal in 2..=10_000_u32 {
+            if !existing.contains(&name.to_lowercase()) {
+                break;
+            }
+            name = format!("New folder ({ordinal})");
+        }
         Some(FileOperationRequest {
-            kind: FileOperationKind::CreateFolder {
-                parent,
-                name: "New folder".to_owned(),
-            },
+            kind: FileOperationKind::CreateFolder { parent, name },
             flags: explorer_model::FileOperationFlags {
                 conflict: explorer_model::ConflictDecision::KeepBoth,
                 ..explorer_model::FileOperationFlags::default()
@@ -5344,7 +5454,11 @@ impl AppViewState {
     }
 
     pub(crate) fn cancel_inline_rename(&mut self) -> bool {
-        self.rename_editor.take().is_some()
+        let cancelled = self.rename_editor.take().is_some();
+        if cancelled {
+            self.pending_new_folder_rename = None;
+        }
+        cancelled
     }
 
     pub(crate) fn commit_inline_rename(
@@ -5354,6 +5468,11 @@ impl AppViewState {
         let Some(editor) = self.rename_editor.as_ref() else {
             return Ok(None);
         };
+        let pending_create = self
+            .pending_new_folder_rename
+            .as_ref()
+            .filter(|pending| pending.item_id == editor.item.id)
+            .cloned();
         let edited_id = editor.item.id.clone();
         let edited_name = editor.buffer.clone();
         let collision = self
@@ -5368,6 +5487,51 @@ impl AppViewState {
         let Some(editor) = self.rename_editor.as_mut() else {
             return Ok(None);
         };
+        if let Some(pending) = pending_create {
+            if let Err(reason) = explorer_model::validate_windows_file_name(&edited_name) {
+                let error = explorer_common::ExplorerError::new(
+                    explorer_common::ExplorerErrorKind::Input,
+                    "validate new folder name",
+                    true,
+                    "資料夾名稱無效，請修正後再試一次。",
+                    format!("Windows file-name validation failed: {reason:?}"),
+                );
+                editor.error = Some(error.clone());
+                return Err(error);
+            }
+            if collision {
+                let error = explorer_common::ExplorerError::new(
+                    explorer_common::ExplorerErrorKind::Conflict,
+                    "validate new folder collision",
+                    true,
+                    "此位置已有同名項目。",
+                    "new-folder destination collision detected before submission",
+                );
+                editor.error = Some(error.clone());
+                return Err(error);
+            }
+            let kind = if pending.use_create_item {
+                FileOperationKind::CreateItem {
+                    parent: pending.parent,
+                    name: edited_name,
+                    recipe: explorer_model::ShellNewItemRecipe::Folder,
+                }
+            } else {
+                FileOperationKind::CreateFolder {
+                    parent: pending.parent,
+                    name: edited_name,
+                }
+            };
+            self.rename_editor = None;
+            self.pending_new_folder_rename = None;
+            return Ok(Some(FileOperationRequest {
+                kind,
+                flags: explorer_model::FileOperationFlags {
+                    conflict: explorer_model::ConflictDecision::KeepBoth,
+                    ..explorer_model::FileOperationFlags::default()
+                },
+            }));
+        }
         let result = editor.commit(trigger, collision)?;
         if result.is_some()
             || self
@@ -6886,6 +7050,85 @@ mod tests {
             !state.service_event_requires_active_refresh(&event),
             "the old operation generation cannot schedule a duplicate refresh"
         );
+    }
+
+    #[test]
+    fn interactive_new_folder_uses_first_case_insensitive_available_name() {
+        let mut state = state_with_rows();
+        let mut entries = state
+            .tabs()
+            .active_tab()
+            .visible_snapshot()
+            .expect("fixture snapshot")
+            .entries()
+            .to_vec();
+        for (id, name) in [(31_u8, "new FOLDER"), (32, "New folder (2)")] {
+            entries.push(explorer_model::FileEntry {
+                id: explorer_model::ShellItemId::from_provider_bytes([id]).expect("folder id"),
+                display_name: name.to_owned(),
+                location: explorer_model::LocationDescriptor::file_system(format!(
+                    r"C:\fixture\{name}"
+                )),
+                is_container: true,
+                metadata: explorer_model::FileEntryMetadata::default(),
+            });
+        }
+        let refresh = state.begin_refresh_navigation().expect("refresh command");
+        let context = refresh.context().expect("refresh context").clone();
+        let _ = state.apply_service_event(explorer_model::ExplorerEvent::DirectoryBatch {
+            context: context.clone(),
+            entries,
+        });
+        let _ =
+            state.apply_service_event(explorer_model::ExplorerEvent::DirectoryFinished { context });
+        let request = state.create_folder_request().expect("writable fixture");
+        assert!(matches!(
+            request.kind,
+            explorer_model::FileOperationKind::CreateFolder { ref name, .. }
+                if name == "New folder (3)"
+        ));
+    }
+
+    #[test]
+    fn interactive_new_folder_is_provisional_until_rename_commit() {
+        let mut state = state_with_rows();
+        let request = state.create_folder_request().expect("writable fixture");
+        assert!(state.begin_interactive_create_folder(request));
+        let editor = state
+            .rename_editor()
+            .expect("draft enters rename immediately");
+        assert_eq!(editor.buffer, "New folder");
+        assert_eq!(
+            state
+                .provisional_new_folder_entry()
+                .expect("visible draft")
+                .display_name,
+            "New folder"
+        );
+        assert_eq!(state.focused_surface(), FocusSurface::FileView);
+        assert!(state.update_inline_rename("Renamed before create".to_owned()));
+        let request = state
+            .commit_inline_rename(explorer_model::RenameCommitTrigger::Enter)
+            .expect("valid name")
+            .expect("commit creates folder");
+        assert!(matches!(
+            request.kind,
+            explorer_model::FileOperationKind::CreateFolder { ref name, .. }
+                if name == "Renamed before create"
+        ));
+        assert!(state.rename_editor().is_none());
+        assert!(state.provisional_new_folder_entry().is_none());
+    }
+
+    #[test]
+    fn cancelling_interactive_new_folder_discards_draft_without_operation() {
+        let mut state = state_with_rows();
+        let request = state.create_folder_request().expect("writable fixture");
+        assert!(state.begin_interactive_create_folder(request));
+        assert!(state.cancel_inline_rename());
+        assert!(state.rename_editor().is_none());
+        assert!(state.pending_new_folder_rename.is_none());
+        assert!(state.provisional_new_folder_entry().is_none());
     }
 
     #[test]

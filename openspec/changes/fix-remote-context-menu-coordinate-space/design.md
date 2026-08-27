@@ -25,6 +25,7 @@
 5. Remote overlay 使用獨立且明確的 close action；dispatcher 不再把任意非 `ShowContextMenu` action 視為關閉訊號。只有 overlay 點擊、Esc、再次開啟或已知 remote menu command 關閉它。
 6. Background context hit 以完整 file-view viewport 與 `file_origin` 判定，不以 scroll-content bounds 判定。row handler 繼續停止傳播，維持 Items target 優先權。
 7. Background secondary-button handler 必須由外層 full-height viewport owner 註冊；content-only scroll element 不得成為唯一事件 owner，否則短清單下方不會產生事件。
+8. Full-height viewport 在 secondary-button down 階段建立 Background invocation，避免 scroll gesture capture 吞掉 release。Row 的 right-down handler 先停止傳播，維持 Items target 與 right-drag gesture 優先。
 
 替代方案是將 screen point 轉回 client point，改動較少但會把視窗幾何耦合到 state；另一方案是全面改用 client point，會破壞 Windows Shell API 契約，因此不採用。
 

@@ -569,6 +569,7 @@ impl RenderOnce for ExplorerWindow {
                                 self.file_performance,
                                 self.state.tabs().active_tab().selection.clone(),
                                 self.state.rename_editor().cloned(),
+                                self.state.provisional_new_folder_entry(),
                                 self.rename_input,
                                 self.state.clipboard().clone(),
                                 self.state.drag_session().state().clone(),
@@ -7316,6 +7317,7 @@ pub struct FileViewHost {
     tokens: UiTokens,
     model: FileViewModel,
     rename_editor: Option<explorer_model::RenameEditorState>,
+    provisional_new_folder: Option<explorer_model::FileEntry>,
     rename_input: Option<gpui::WeakEntity<EditableTextState>>,
     clipboard: explorer_model::ClipboardState,
     drag_state: explorer_model::DragSessionState,
@@ -7362,6 +7364,7 @@ impl FileViewHost {
         performance: Option<Arc<crate::performance::FileViewPerformanceCounters>>,
         selection: explorer_model::SelectionModel,
         rename_editor: Option<explorer_model::RenameEditorState>,
+        provisional_new_folder: Option<explorer_model::FileEntry>,
         rename_input: Option<gpui::WeakEntity<EditableTextState>>,
         clipboard: explorer_model::ClipboardState,
         drag_state: explorer_model::DragSessionState,
@@ -7406,6 +7409,7 @@ impl FileViewHost {
                 selection,
             },
             rename_editor,
+            provisional_new_folder,
             rename_input,
             clipboard,
             drag_state,
@@ -7795,6 +7799,7 @@ impl RenderOnce for FileViewHost {
         let background_menu_action = on_action.clone();
         let zoom_action = on_action.clone();
         let rename_editor = self.rename_editor;
+        let provisional_new_folder = self.provisional_new_folder;
         let rename_input = self.rename_input;
         let rename_input_focus = rename_input
             .as_ref()
@@ -7829,13 +7834,11 @@ impl RenderOnce for FileViewHost {
         } else {
             spatial_metrics
         };
-        let spatial_layout = spatial_grid_layout(
-            spatial_metrics,
-            viewport_width,
-            presentation
-                .as_ref()
-                .map_or(0, crate::file_view::DirectoryPresentation::len),
-        );
+        let presentation_len = presentation
+            .as_ref()
+            .map_or(0, crate::file_view::DirectoryPresentation::len);
+        let item_count = presentation_len + usize::from(provisional_new_folder.is_some());
+        let spatial_layout = spatial_grid_layout(spatial_metrics, viewport_width, item_count);
         let spatial_metrics = spatial_layout.metrics;
         let wrapped_view = spatial_metrics.wrapped;
         let render_item_width =
@@ -7930,63 +7933,64 @@ impl RenderOnce for FileViewHost {
             None
         };
         let has_size_map_plan = size_map_plan.is_some();
-        let (realized_range, leading_space, trailing_space) =
-            presentation.as_ref().map_or((0..0, 0, 0), |presentation| {
-                if wrapped_view {
-                    let grid = crate::file_view::fixed_grid_virtual_range(
-                        presentation.len(),
-                        spatial_metrics.cell_width,
-                        spatial_metrics.cell_height,
-                        viewport_width.max(spatial_metrics.cell_width),
-                        viewport_height,
-                        scroll_offset,
-                        2,
-                    );
-                    (
-                        grid.items,
-                        grid.leading_logical_pixels,
-                        grid.trailing_logical_pixels,
-                    )
+        let (realized_range, leading_space, trailing_space) = if item_count == 0 {
+            (0..0, 0, 0)
+        } else {
+            if wrapped_view {
+                let grid = crate::file_view::fixed_grid_virtual_range(
+                    item_count,
+                    spatial_metrics.cell_width,
+                    spatial_metrics.cell_height,
+                    viewport_width.max(spatial_metrics.cell_width),
+                    viewport_height,
+                    scroll_offset,
+                    2,
+                );
+                (
+                    grid.items,
+                    grid.leading_logical_pixels,
+                    grid.trailing_logical_pixels,
+                )
+            } else {
+                let header_height = if view_settings.mode == explorer_model::ViewMode::Details {
+                    layout.details_header_height.value()
                 } else {
-                    let header_height = if view_settings.mode == explorer_model::ViewMode::Details {
-                        layout.details_header_height.value()
-                    } else {
-                        0.0
-                    };
-                    let range = crate::file_view::fixed_virtual_range(
-                        presentation.len(),
-                        spatial_metrics.cell_height,
-                        (viewport_height - header_height).max(spatial_metrics.cell_height),
-                        (scroll_offset - header_height).max(0.0),
-                        2,
-                    );
-                    (
-                        range.items,
-                        range.leading_logical_pixels,
-                        range.trailing_logical_pixels,
-                    )
-                }
-            });
-        let presentation_empty = presentation
-            .as_ref()
-            .is_none_or(crate::file_view::DirectoryPresentation::is_empty);
-        let accessibility_set_size = presentation
-            .as_ref()
-            .map_or(0, crate::file_view::DirectoryPresentation::len);
-        let entries = presentation
-            .as_ref()
-            .map(|presentation| {
-                realized_range
-                    .filter_map(|visible_index| {
+                    0.0
+                };
+                let range = crate::file_view::fixed_virtual_range(
+                    item_count,
+                    spatial_metrics.cell_height,
+                    (viewport_height - header_height).max(spatial_metrics.cell_height),
+                    (scroll_offset - header_height).max(0.0),
+                    2,
+                );
+                (
+                    range.items,
+                    range.leading_logical_pixels,
+                    range.trailing_logical_pixels,
+                )
+            }
+        };
+        let presentation_empty = item_count == 0;
+        let accessibility_set_size = item_count;
+        let entries = realized_range
+            .filter_map(|visible_index| {
+                if visible_index == presentation_len {
+                    provisional_new_folder
+                        .as_ref()
+                        .cloned()
+                        .map(|entry| (visible_index, usize::MAX, entry))
+                } else {
+                    presentation.as_ref().and_then(|presentation| {
                         presentation
                             .entry(visible_index)
                             .map(|(snapshot_index, entry)| {
                                 (visible_index, snapshot_index, entry.clone())
                             })
                     })
-                    .collect::<Vec<_>>()
+                }
             })
-            .unwrap_or_default();
+            .collect::<Vec<_>>();
         if let Some(performance) = performance.as_ref() {
             performance.record_realized_items(entries.len());
         }
@@ -8281,7 +8285,7 @@ impl RenderOnce for FileViewHost {
                 );
                 let row_id = format!("shell-row-{:02x?}", entry.id.provider_bytes());
                 let display_name = file_display_name(&entry, &view_settings);
-                let selected = selection.contains(&entry.id);
+                let selected = selection.contains(&entry.id) || editor.is_some();
                 let context_item_id = entry.id.clone();
                 let kind = if entry.is_container { "Folder" } else { "File" };
                 let modified = entry.metadata.modified_display.clone().unwrap_or_default();
@@ -9265,7 +9269,7 @@ impl RenderOnce for FileViewHost {
             .flex_col()
             .overflow_hidden()
             .when_some(background_menu_action, |element, menu_callback| {
-                element.on_mouse_up(MouseButton::Right, move |event, window, cx| {
+                element.on_mouse_down(MouseButton::Right, move |event, window, cx| {
                     if !file_view_background_context_hit(
                         f32::from(event.position.x),
                         f32::from(event.position.y),
@@ -9277,9 +9281,9 @@ impl RenderOnce for FileViewHost {
                     ) {
                         return;
                     }
-                    // Row handlers stop propagation first. Reaching this viewport owner therefore
-                    // means the invocation belongs to the directory background, including blank
-                    // space below a short scroll-content element.
+                    // Row right-down handlers stop propagation first. Reaching this viewport owner
+                    // therefore means the press belongs to the directory background. Dispatch on
+                    // down because the scroll gesture can capture and consume the matching release.
                     cx.stop_propagation();
                     let (owner_window, x, y) = context_menu_coordinates(event.position, window);
                     menu_callback(
@@ -12801,6 +12805,8 @@ mod tests {
             .map(|offset| handler + offset)
             .expect("viewport owns scroll content");
         assert!(viewport < handler && handler < content);
+        assert!(source[handler..content].contains("on_mouse_down(MouseButton::Right"));
+        assert!(!source[handler..content].contains("on_mouse_up(MouseButton::Right"));
     }
 
     #[test]

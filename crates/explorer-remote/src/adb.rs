@@ -323,7 +323,7 @@ impl<R: AdbCommandRunner> AdbClient<R> {
                 OsString::from("mkdir"),
                 OsString::from("-p"),
                 OsString::from("--"),
-                OsString::from(remote),
+                OsString::from(shell_quote(remote)),
             ],
             cancellation,
             DEFAULT_COMMAND_TIMEOUT,
@@ -346,8 +346,8 @@ impl<R: AdbCommandRunner> AdbClient<R> {
                 OsString::from("shell"),
                 OsString::from("mv"),
                 OsString::from("--"),
-                OsString::from(old),
-                OsString::from(new),
+                OsString::from(shell_quote(old)),
+                OsString::from(shell_quote(new)),
             ],
             cancellation,
             DEFAULT_COMMAND_TIMEOUT,
@@ -369,7 +369,7 @@ impl<R: AdbCommandRunner> AdbClient<R> {
         } else {
             arguments.push(OsString::from("-f"));
         }
-        arguments.extend([OsString::from("--"), OsString::from(remote)]);
+        arguments.extend([OsString::from("--"), OsString::from(shell_quote(remote))]);
         self.device_command(
             serial,
             arguments,
@@ -378,6 +378,10 @@ impl<R: AdbCommandRunner> AdbClient<R> {
             "delete item",
         )
     }
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn encode_base64(bytes: &[u8]) -> String {
@@ -761,6 +765,27 @@ mod tests {
     fn rejects_command_injection_in_path_or_serial() {
         assert!(validate_serial("serial\nother").is_err());
         assert!(validate_remote_path("sdcard/Download").is_err());
+    }
+
+    #[test]
+    fn adb_shell_mutations_quote_paths_with_spaces_and_apostrophes() {
+        assert_eq!(shell_quote("/sdcard/New folder"), "'/sdcard/New folder'");
+        assert_eq!(
+            shell_quote("/sdcard/owner's folder"),
+            "'/sdcard/owner'\\''s folder'"
+        );
+
+        let runner = FakeRunner::with_stdout(Vec::new());
+        let client = AdbClient::new(PathBuf::from("fixture-adb.exe"), runner.clone());
+        client
+            .mkdir(
+                "emulator-5554",
+                "/sdcard/New folder",
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let arguments = runner.arguments.lock().unwrap();
+        assert_eq!(arguments.last().unwrap(), "'/sdcard/New folder'");
     }
 
     #[test]
