@@ -476,13 +476,6 @@ pub(crate) struct BookmarkFolderEditorDraft {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct BookmarkContextMenuState {
-    pub(crate) id: explorer_model::BookmarkId,
-    pub(crate) x: f32,
-    pub(crate) y: f32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct BookmarkToolbarContextMenuState {
     pub(crate) parent_id: Option<explorer_model::BookmarkFolderId>,
     pub(crate) x: f32,
@@ -494,6 +487,7 @@ pub(crate) struct RemoteContextMenuState {
     pub(crate) x: f32,
     pub(crate) y: f32,
     pub(crate) background: bool,
+    pub(crate) paste_available: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -528,6 +522,7 @@ pub struct AppViewState {
     close_requested: bool,
     divider: DividerInteraction,
     operation_center: OperationCenterState,
+    operation_terminal_notice: Option<(explorer_common::RequestId, Instant)>,
     rename_editor: Option<explorer_model::RenameEditorState>,
     pending_new_folder_rename: Option<PendingNewFolderRename>,
     permanent_delete_confirmation: Option<PermanentDeleteConfirmation>,
@@ -549,7 +544,6 @@ pub struct AppViewState {
     bookmark_notice: Option<String>,
     bookmark_overflow_open: bool,
     bookmark_folder_menu: Option<explorer_model::BookmarkFolderId>,
-    bookmark_context_menu: Option<BookmarkContextMenuState>,
     bookmark_toolbar_context_menu: Option<BookmarkToolbarContextMenuState>,
     remote_context_menu: Option<RemoteContextMenuState>,
     expanded_bookmark_folders: HashSet<explorer_model::BookmarkFolderId>,
@@ -775,6 +769,7 @@ impl AppViewState {
             close_requested: false,
             divider: DividerInteraction::default(),
             operation_center: OperationCenterState::default(),
+            operation_terminal_notice: None,
             rename_editor: None,
             pending_new_folder_rename: None,
             permanent_delete_confirmation: None,
@@ -796,7 +791,6 @@ impl AppViewState {
             bookmark_notice: None,
             bookmark_overflow_open: false,
             bookmark_folder_menu: None,
-            bookmark_context_menu: None,
             bookmark_toolbar_context_menu: None,
             remote_context_menu: None,
             expanded_bookmark_folders: HashSet::new(),
@@ -1469,6 +1463,21 @@ impl AppViewState {
         &self.operation_center
     }
 
+    pub(crate) fn latest_operation_terminal_elapsed(&self, now: Instant) -> Option<Duration> {
+        let (request_id, terminal_at) = self.operation_terminal_notice?;
+        self.operation_center
+            .latest()
+            .is_some_and(|record| record.id == request_id && record.phase.is_terminal())
+            .then(|| now.saturating_duration_since(terminal_at))
+    }
+
+    pub(crate) fn operation_notice_needs_repaint(&self, now: Instant) -> bool {
+        self.latest_operation_terminal_elapsed(now)
+            .is_some_and(|elapsed| {
+                elapsed >= Duration::from_secs(7) && elapsed <= Duration::from_millis(8_050)
+            })
+    }
+
     pub(crate) fn accepts_ancestry_context(&self, context: &RequestContext) -> bool {
         self.ancestry_requests
             .get(&context.tab_id)
@@ -1513,6 +1522,14 @@ impl AppViewState {
 
     pub const fn clipboard(&self) -> &explorer_model::ClipboardState {
         &self.clipboard
+    }
+
+    pub(crate) fn paste_available(&self) -> bool {
+        !matches!(
+            self.clipboard,
+            explorer_model::ClipboardState::None { .. }
+                | explorer_model::ClipboardState::Unsupported { .. }
+        ) && self.active_presentation().can_write
     }
 
     pub const fn view_menu_open(&self) -> bool {
@@ -1910,14 +1927,14 @@ impl AppViewState {
         self.more_menu_index = match direction {
             i8::MIN..=-2 => 0,
             -1 => self.more_menu_index.saturating_sub(1),
-            1 => self.more_menu_index.saturating_add(1).min(11),
-            2..=i8::MAX => 11,
+            1 => self.more_menu_index.saturating_add(1).min(9),
+            2..=i8::MAX => 9,
             _ => self.more_menu_index,
         };
     }
 
     pub(crate) fn set_more_menu_focus(&mut self, index: usize) -> bool {
-        if !self.more_menu_open || index > 11 || self.more_menu_index == index {
+        if !self.more_menu_open || index > 9 || self.more_menu_index == index {
             return false;
         }
         self.more_menu_index = index;
@@ -1975,6 +1992,32 @@ impl AppViewState {
 
     pub fn extensions(&self) -> &[ExtensionOptionV1] {
         &self.extensions
+    }
+
+    pub fn configure_extension_desired_states(&mut self, states: &[(String, bool)]) {
+        for (package_id, enabled) in states {
+            if let Some(extension) = self
+                .extensions
+                .iter_mut()
+                .find(|extension| extension.package_id == package_id)
+            {
+                extension.enabled = *enabled;
+            } else {
+                let package_id = Box::leak(package_id.clone().into_boxed_str());
+                self.extensions.push(ExtensionOptionV1 {
+                    package_id,
+                    display_name: package_id,
+                    author_name: "Unknown",
+                    author_bio: "Locally installed Plugin",
+                    author_website: "",
+                    purpose: "Loaded automatically from the SuperExplorer plugins directory.",
+                    community_website: "",
+                    release_date: "Unknown",
+                    command_contribution: None,
+                    enabled: *enabled,
+                });
+            }
+        }
     }
 
     pub fn extension_enabled(&self, package_id: &str) -> bool {
@@ -2981,31 +3024,6 @@ impl AppViewState {
         }
     }
 
-    pub(crate) const fn bookmark_context_menu(&self) -> Option<BookmarkContextMenuState> {
-        self.bookmark_context_menu
-    }
-
-    pub(crate) fn open_bookmark_context_menu(
-        &mut self,
-        id: explorer_model::BookmarkId,
-        x: f32,
-        y: f32,
-    ) {
-        if self.bookmarks.entries().iter().any(|entry| entry.id == id) {
-            self.bookmark_context_menu = Some(BookmarkContextMenuState {
-                id,
-                x: x.max(0.0),
-                y: y.max(0.0),
-            });
-            self.bookmark_overflow_open = false;
-            self.bookmark_folder_menu = None;
-        }
-    }
-
-    pub(crate) fn close_bookmark_context_menu(&mut self) {
-        self.bookmark_context_menu = None;
-    }
-
     pub(crate) const fn bookmark_toolbar_context_menu(
         &self,
     ) -> Option<BookmarkToolbarContextMenuState> {
@@ -3024,7 +3042,6 @@ impl AppViewState {
                 x: x.max(0.0),
                 y: y.max(0.0),
             });
-            self.bookmark_context_menu = None;
             self.bookmark_overflow_open = false;
             self.bookmark_folder_menu = None;
         }
@@ -4092,10 +4109,17 @@ impl AppViewState {
                 } else {
                     false
                 };
-            return if self.operation_center.apply_event(&event)
-                || cleared_drag
-                || recovery_transition
+            let operation_applied = self.operation_center.apply_event(&event);
+            if operation_applied
+                && let ExplorerEvent::OperationFinished { context, .. } = &event
+                && self
+                    .operation_center
+                    .latest()
+                    .is_some_and(|record| record.id == context.request_id)
             {
+                self.operation_terminal_notice = Some((context.request_id, Instant::now()));
+            }
+            return if operation_applied || cleared_drag || recovery_transition {
                 WindowEventOutcome::Applied
             } else {
                 WindowEventOutcome::IgnoredStale
@@ -4189,6 +4213,7 @@ impl AppViewState {
         debug_assert!(started, "new operation record starts exactly once");
         let inserted = self.operation_center.insert(record);
         debug_assert!(inserted, "request identifiers are unique");
+        self.operation_terminal_notice = None;
         ExplorerCommand::ExecuteFileOperation { context, request }
     }
 
@@ -4774,13 +4799,13 @@ impl AppViewState {
         } else {
             explorer_model::ShellContextMenuTarget::Background { parent }
         };
-        let supported_remote_parent = match &target {
+        let custom_virtual_parent = match &target {
             explorer_model::ShellContextMenuTarget::Items { parent, .. }
             | explorer_model::ShellContextMenuTarget::Background { parent } => {
-                matches!(parent, LocationDescriptor::Virtual(remote) if matches!(remote.provider_id.as_str(), "adb" | "sftp"))
+                matches!(parent, LocationDescriptor::Virtual(_))
             }
         };
-        if supported_remote_parent {
+        if custom_virtual_parent {
             self.remote_context_menu = Some(RemoteContextMenuState {
                 x: client_x.max(0.0),
                 y: client_y.max(0.0),
@@ -4788,6 +4813,7 @@ impl AppViewState {
                     target,
                     explorer_model::ShellContextMenuTarget::Background { .. }
                 ),
+                paste_available: self.paste_available(),
             });
             self.pending_context_hit = None;
             self.pending_context_extended_verbs = false;
@@ -4803,6 +4829,7 @@ impl AppViewState {
             } else {
                 explorer_model::ContextMenuInvocationProfile::Explorer
             },
+            paste_available: self.paste_available(),
             requested_verb: None,
             deadline_ms: 2_000,
         };
@@ -4890,6 +4917,7 @@ impl AppViewState {
             point: explorer_model::MenuPoint { x: 0, y: 0 },
             keyboard_invoked: true,
             invocation_profile: explorer_model::ContextMenuInvocationProfile::Explorer,
+            paste_available: false,
             requested_verb: Some("undo".to_owned()),
             deadline_ms: 2_000,
         };
@@ -4929,6 +4957,7 @@ impl AppViewState {
             point: explorer_model::MenuPoint { x: 0, y: 0 },
             keyboard_invoked: true,
             invocation_profile: explorer_model::ContextMenuInvocationProfile::Explorer,
+            paste_available: false,
             requested_verb: Some("properties".to_owned()),
             deadline_ms: 2_000,
         };
@@ -4972,6 +5001,7 @@ impl AppViewState {
                 point: explorer_model::MenuPoint { x: 0, y: 0 },
                 keyboard_invoked: true,
                 invocation_profile: explorer_model::ContextMenuInvocationProfile::Explorer,
+                paste_available: false,
                 requested_verb: Some("empty".to_owned()),
                 deadline_ms: 10_000,
             },
@@ -4998,6 +5028,7 @@ impl AppViewState {
             point: explorer_model::MenuPoint { x: 0, y: 0 },
             keyboard_invoked: true,
             invocation_profile: explorer_model::ContextMenuInvocationProfile::Explorer,
+            paste_available: false,
             requested_verb: Some(canonical_verb.to_owned()),
             deadline_ms: 2_000,
         };
@@ -5369,6 +5400,7 @@ impl AppViewState {
         let started = record.start().is_ok();
         debug_assert!(started, "new paste record starts exactly once");
         let _ = self.operation_center.insert(record);
+        self.operation_terminal_notice = None;
         Some(ExplorerCommand::DataTransfer {
             context,
             request: explorer_model::DataTransferRequest::Paste {
@@ -6100,30 +6132,6 @@ mod tests {
         let mut restarted = AppViewState::default();
         restarted.configure_bookmarks(restored);
         assert_eq!(restarted.bookmarks(), state.bookmarks());
-    }
-
-    #[test]
-    fn bookmark_context_menu_tracks_pointer_and_closes_without_mutating_bookmarks() {
-        let mut state = AppViewState::default();
-        state.bookmarks.begin_add(
-            "Folder".into(),
-            explorer_model::BookmarkTarget::Folder {
-                location: explorer_model::LocationDescriptor::file_system(r"C:\folder"),
-            },
-        );
-        let id = state.bookmarks().entries()[0].id;
-        state.open_bookmark_context_menu(id, 321.0, 123.0);
-        assert_eq!(
-            state.bookmark_context_menu(),
-            Some(super::BookmarkContextMenuState {
-                id,
-                x: 321.0,
-                y: 123.0,
-            })
-        );
-        state.close_bookmark_context_menu();
-        assert_eq!(state.bookmark_context_menu(), None);
-        assert_eq!(state.bookmarks().entries().len(), 1);
     }
 
     #[test]
@@ -7090,6 +7098,54 @@ mod tests {
     }
 
     #[test]
+    fn operation_terminal_notice_tracks_latest_request_and_rejects_stale_completion() {
+        let mut state = state_with_rows();
+        let first = state
+            .create_folder_request()
+            .expect("first operation request");
+        let first_command = state.begin_file_operation(first);
+        let first_context = first_command.context().expect("first context").clone();
+        let first_terminal = explorer_model::ExplorerEvent::OperationFinished {
+            context: first_context.clone(),
+            outcome: explorer_model::OperationTerminal::Finished,
+        };
+        assert_eq!(
+            state.apply_service_event(first_terminal),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert!(
+            state
+                .latest_operation_terminal_elapsed(Instant::now())
+                .is_some()
+        );
+
+        let second = state
+            .create_folder_request()
+            .expect("second operation request");
+        let _second_command = state.begin_file_operation(second);
+        assert!(
+            state
+                .latest_operation_terminal_elapsed(Instant::now())
+                .is_none(),
+            "a new latest operation replaces the old terminal lifecycle"
+        );
+        let duplicate_old_terminal = explorer_model::ExplorerEvent::OperationFinished {
+            context: first_context,
+            outcome: explorer_model::OperationTerminal::Finished,
+        };
+        assert_eq!(
+            state.apply_service_event(duplicate_old_terminal),
+            explorer_model::WindowEventOutcome::IgnoredStale
+        );
+        assert!(
+            state
+                .latest_operation_terminal_elapsed(Instant::now())
+                .is_none(),
+            "a stale completion cannot restart the latest notice"
+        );
+    }
+
+    #[test]
     fn interactive_new_folder_is_provisional_until_rename_commit() {
         let mut state = state_with_rows();
         let request = state.create_folder_request().expect("writable fixture");
@@ -7649,6 +7705,7 @@ mod tests {
                 x: 120.0,
                 y: 80.0,
                 background: true,
+                paste_available: false,
             })
         );
     }
@@ -9222,6 +9279,175 @@ mod tests {
     }
 
     #[test]
+    fn context_paste_uses_current_folder_for_background_file_and_folder_hits() {
+        let remote_item = explorer_model::ItemDescriptor {
+            id: explorer_model::ShellItemId::from_provider_bytes([9]).unwrap(),
+            location: explorer_model::LocationDescriptor::try_virtual(
+                "sftp",
+                [7; 16],
+                1,
+                None,
+                vec![
+                    "home".to_owned(),
+                    "linuxuser".to_owned(),
+                    "report.txt".to_owned(),
+                ],
+            )
+            .unwrap(),
+        };
+        for hit in [
+            None,
+            Some(explorer_model::ShellItemId::from_provider_bytes([1]).unwrap()),
+            Some(explorer_model::ShellItemId::from_provider_bytes([2]).unwrap()),
+        ] {
+            let mut state = state_with_rows();
+            let _ = state.apply_service_event(explorer_model::ExplorerEvent::ClipboardChanged {
+                state: explorer_model::ClipboardState::Owned {
+                    mode: explorer_model::ClipboardMode::Copy,
+                    items: vec![remote_item.clone()],
+                    effects: explorer_model::TransferEffects::COPY,
+                    generation: 1,
+                },
+            });
+            if let Some(item_id) = hit.as_ref() {
+                state.prepare_context_selection(Some(item_id));
+            }
+            let explorer_model::ExplorerCommand::ShowContextMenu { request, .. } = state
+                .begin_context_menu_request(hit, 42, 100, 200, 10.0, 20.0, true, false)
+                .expect("local context menu")
+            else {
+                panic!("expected local context command");
+            };
+            assert!(request.paste_available);
+            let explorer_model::ExplorerCommand::DataTransfer {
+                request: explorer_model::DataTransferRequest::Paste { destination, .. },
+                ..
+            } = state
+                .begin_paste_request(explorer_model::ConflictDecision::Prompt)
+                .expect("paste request")
+            else {
+                panic!("expected paste command");
+            };
+            assert_eq!(
+                destination,
+                explorer_model::LocationDescriptor::file_system(r"C:\fixture")
+            );
+        }
+    }
+
+    #[test]
+    fn context_menu_paste_availability_rejects_empty_and_read_only_state() {
+        let mut empty = state_with_rows();
+        let explorer_model::ExplorerCommand::ShowContextMenu { request, .. } = empty
+            .begin_context_menu_request(None, 42, 0, 0, 0.0, 0.0, true, false)
+            .expect("empty clipboard context menu")
+        else {
+            panic!("expected context command");
+        };
+        assert!(!request.paste_available);
+
+        let mut read_only = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            explorer_model::LocationDescriptor::file_system(r"C:\read-only"),
+            "read-only",
+        ));
+        let command = read_only.begin_active_location_load().unwrap();
+        let context = command.context().unwrap().clone();
+        let _ = read_only.apply_service_event(explorer_model::ExplorerEvent::LocationResolved {
+            context,
+            metadata: explorer_model::LocationMetadata {
+                descriptor: explorer_model::LocationDescriptor::file_system(r"C:\read-only"),
+                display_title: "read-only".to_owned(),
+                can_go_up: true,
+                can_write: false,
+            },
+        });
+        let _ = read_only.apply_service_event(explorer_model::ExplorerEvent::ClipboardChanged {
+            state: explorer_model::ClipboardState::External {
+                effects: explorer_model::TransferEffects::COPY,
+                item_count: Some(1),
+                generation: 1,
+            },
+        });
+        let explorer_model::ExplorerCommand::ShowContextMenu { request, .. } = read_only
+            .begin_context_menu_request(None, 42, 0, 0, 0.0, 0.0, true, false)
+            .expect("read-only context menu")
+        else {
+            panic!("expected context command");
+        };
+        assert!(!request.paste_available);
+    }
+
+    #[test]
+    fn registered_virtual_destination_uses_custom_paste_without_provider_allowlist() {
+        let destination = explorer_model::LocationDescriptor::try_virtual(
+            "archive",
+            [8; 16],
+            1,
+            None,
+            vec!["current".to_owned()],
+        )
+        .unwrap();
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            destination.clone(),
+            "archive",
+        ));
+        let context = state
+            .begin_active_location_load()
+            .unwrap()
+            .context()
+            .unwrap()
+            .clone();
+        let _ = state.apply_service_event(explorer_model::ExplorerEvent::LocationResolved {
+            context,
+            metadata: explorer_model::LocationMetadata {
+                descriptor: destination.clone(),
+                display_title: "archive".to_owned(),
+                can_go_up: true,
+                can_write: true,
+            },
+        });
+        let _ = state.apply_service_event(explorer_model::ExplorerEvent::ClipboardChanged {
+            state: explorer_model::ClipboardState::Owned {
+                mode: explorer_model::ClipboardMode::Copy,
+                items: vec![explorer_model::ItemDescriptor {
+                    id: explorer_model::ShellItemId::from_provider_bytes([9]).unwrap(),
+                    location: explorer_model::LocationDescriptor::try_virtual(
+                        "adb",
+                        [7; 16],
+                        1,
+                        None,
+                        vec!["data".to_owned(), "report.txt".to_owned()],
+                    )
+                    .unwrap(),
+                }],
+                effects: explorer_model::TransferEffects::COPY,
+                generation: 1,
+            },
+        });
+
+        assert!(
+            state
+                .begin_context_menu_request(None, 42, 100, 200, 10.0, 20.0, false, false)
+                .is_none()
+        );
+        assert!(state.remote_context_menu().unwrap().paste_available);
+        let explorer_model::ExplorerCommand::DataTransfer {
+            request:
+                explorer_model::DataTransferRequest::Paste {
+                    destination: actual,
+                    ..
+                },
+            ..
+        } = state
+            .begin_paste_request(explorer_model::ConflictDecision::Prompt)
+            .unwrap()
+        else {
+            panic!("expected paste request");
+        };
+        assert_eq!(actual, destination);
+    }
+
+    #[test]
     fn clipboard_cut_survives_source_tab_close_and_stale_state_disables_paste() {
         let mut state = state_with_rows();
         assert!(state.select_row(1));
@@ -9626,13 +9852,13 @@ mod tests {
     }
 
     #[test]
-    fn more_menu_keyboard_focus_covers_all_twelve_commands() {
+    fn more_menu_keyboard_focus_covers_all_ten_commands() {
         let mut state = AppViewState::default();
         state.toggle_more_menu();
         state.move_more_menu_focus(i8::MAX);
-        assert_eq!(state.more_menu_index(), 11);
+        assert_eq!(state.more_menu_index(), 9);
         state.move_more_menu_focus(-1);
-        assert_eq!(state.more_menu_index(), 10);
+        assert_eq!(state.more_menu_index(), 8);
         state.move_more_menu_focus(i8::MIN);
         assert_eq!(state.more_menu_index(), 0);
     }
@@ -9653,11 +9879,11 @@ mod tests {
         assert!(!state.set_view_menu_focus(12));
 
         state.toggle_more_menu();
-        assert!(state.set_more_menu_focus(11));
-        assert_eq!(state.more_menu_index(), 11);
+        assert!(state.set_more_menu_focus(9));
+        assert_eq!(state.more_menu_index(), 9);
         assert!(state.set_more_menu_focus(2));
         assert_eq!(state.more_menu_index(), 2);
-        assert!(!state.set_more_menu_focus(12));
+        assert!(!state.set_more_menu_focus(10));
     }
 
     #[test]

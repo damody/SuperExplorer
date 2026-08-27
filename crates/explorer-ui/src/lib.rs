@@ -16,7 +16,9 @@
 
 pub mod actions;
 pub mod automation;
+pub mod bookmark_action_window;
 pub mod bookmark_editor_window;
+pub mod bookmark_folder_editor_window;
 pub mod bookmark_manager_window;
 pub mod chrome;
 pub mod code_lines_column;
@@ -355,6 +357,7 @@ fn action_for_host_context_command(
         explorer_model::ContextMenuHostCommand::Open => ExplorerAction::OpenFocused,
         explorer_model::ContextMenuHostCommand::Cut => ExplorerAction::CutSelected,
         explorer_model::ContextMenuHostCommand::Copy => ExplorerAction::CopySelected,
+        explorer_model::ContextMenuHostCommand::Paste => ExplorerAction::Paste,
         explorer_model::ContextMenuHostCommand::CopyPath => ExplorerAction::CopySelectedPaths,
         explorer_model::ContextMenuHostCommand::CreateShortcut => {
             ExplorerAction::CreateShortcutSelected
@@ -1082,10 +1085,10 @@ pub struct ExplorerRoot {
     address_input: Option<gpui::Entity<EditableTextState>>,
     search_input: Option<gpui::Entity<EditableTextState>>,
     rename_input: Option<gpui::Entity<EditableTextState>>,
-    bookmark_folder_name_input: Option<gpui::Entity<EditableTextState>>,
     pointer_capture_factory: Option<PointerCaptureFactory>,
     pointer_capture: Option<Box<dyn PointerCaptureSession>>,
     durable_state_observer: Option<DurableStateObserver>,
+    extension_settings_observer: Option<ExtensionSettingsObserver>,
     durable_window_placement: explorer_model::PersistedWindowPlacement,
     session_reset_observer: Option<SessionResetObserver>,
     broker_retry_observer: Option<BrokerRetryObserver>,
@@ -1095,6 +1098,8 @@ pub struct ExplorerRoot {
     folder_options_window_observer: Option<FolderOptionsWindowObserver>,
     bookmark_editor_window_observer: Option<BookmarkEditorWindowObserver>,
     bookmark_manager_window_observer: Option<BookmarkManagerWindowObserver>,
+    bookmark_action_window_observer: Option<BookmarkActionWindowObserver>,
+    bookmark_folder_editor_window_observer: Option<BookmarkFolderEditorWindowObserver>,
     last_window_title: Option<String>,
     navigation_history_release_deadline: Option<Instant>,
     safe_mode_offers: Vec<SafeModeOfferV1>,
@@ -1143,6 +1148,9 @@ pub type DurableStateObserver = Arc<
         + Send
         + Sync,
 >;
+/// Persists the package desired-state portion of Folder Options before Apply/OK commits.
+pub type ExtensionSettingsObserver =
+    Arc<dyn Fn(Vec<(String, bool)>) -> Result<(), String> + Send + Sync>;
 /// Sends explicit reset commands to the app-owned background session store.
 pub type SessionResetObserver =
     Arc<dyn Fn(explorer_model::SessionResetScope) -> bool + Send + Sync>;
@@ -1180,6 +1188,18 @@ pub type BookmarkEditorWindowObserver = std::rc::Rc<
 pub type BookmarkManagerWindowObserver = std::rc::Rc<
     dyn Fn(
         bookmark_manager_window::BookmarkManagerWindowSnapshotV1,
+        &mut gpui::Context<ExplorerRoot>,
+    ) -> bool,
+>;
+pub type BookmarkActionWindowObserver = std::rc::Rc<
+    dyn Fn(
+        bookmark_action_window::BookmarkActionWindowSnapshotV1,
+        &mut gpui::Context<ExplorerRoot>,
+    ) -> bool,
+>;
+pub type BookmarkFolderEditorWindowObserver = std::rc::Rc<
+    dyn Fn(
+        bookmark_folder_editor_window::BookmarkFolderEditorWindowSnapshotV1,
         &mut gpui::Context<ExplorerRoot>,
     ) -> bool,
 >;
@@ -1436,10 +1456,10 @@ impl ExplorerRoot {
             address_input: None,
             search_input: None,
             rename_input: None,
-            bookmark_folder_name_input: None,
             pointer_capture_factory: None,
             pointer_capture: None,
             durable_state_observer: None,
+            extension_settings_observer: None,
             durable_window_placement: default_durable_window_placement(),
             session_reset_observer: None,
             broker_retry_observer: None,
@@ -1449,6 +1469,8 @@ impl ExplorerRoot {
             folder_options_window_observer: None,
             bookmark_editor_window_observer: None,
             bookmark_manager_window_observer: None,
+            bookmark_action_window_observer: None,
+            bookmark_folder_editor_window_observer: None,
             last_window_title: None,
             navigation_history_release_deadline: None,
             safe_mode_offers: Vec::new(),
@@ -1562,6 +1584,59 @@ impl ExplorerRoot {
         observer: BookmarkManagerWindowObserver,
     ) {
         self.bookmark_manager_window_observer = Some(observer);
+    }
+
+    pub fn attach_bookmark_action_window_observer(
+        &mut self,
+        observer: BookmarkActionWindowObserver,
+    ) {
+        self.bookmark_action_window_observer = Some(observer);
+    }
+
+    pub fn attach_bookmark_folder_editor_window_observer(
+        &mut self,
+        observer: BookmarkFolderEditorWindowObserver,
+    ) {
+        self.bookmark_folder_editor_window_observer = Some(observer);
+    }
+
+    pub fn bookmark_folder_editor_window_snapshot(
+        &self,
+    ) -> Option<bookmark_folder_editor_window::BookmarkFolderEditorWindowSnapshotV1> {
+        self.state.bookmark_folder_editor()?;
+        Some(
+            bookmark_folder_editor_window::BookmarkFolderEditorWindowSnapshotV1 {
+                state: self.state.clone(),
+            },
+        )
+    }
+
+    pub fn dispatch_bookmark_folder_editor_action(
+        &mut self,
+        action: ExplorerAction,
+        source: ActionSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.handle_action(action, source, window, cx);
+    }
+
+    pub fn bookmark_exists(&self, id: explorer_model::BookmarkId) -> bool {
+        self.state
+            .bookmarks()
+            .entries()
+            .iter()
+            .any(|bookmark| bookmark.id == id)
+    }
+
+    pub fn dispatch_bookmark_action_window_action(
+        &mut self,
+        action: ExplorerAction,
+        source: ActionSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.handle_action(action, source, window, cx);
     }
 
     pub fn bookmark_manager_window_snapshot(
@@ -2751,10 +2826,10 @@ impl ExplorerRoot {
             address_input: None,
             search_input: None,
             rename_input: None,
-            bookmark_folder_name_input: None,
             pointer_capture_factory: None,
             pointer_capture: None,
             durable_state_observer: None,
+            extension_settings_observer: None,
             durable_window_placement: default_durable_window_placement(),
             session_reset_observer: None,
             broker_retry_observer: None,
@@ -2764,6 +2839,8 @@ impl ExplorerRoot {
             folder_options_window_observer: None,
             bookmark_editor_window_observer: None,
             bookmark_manager_window_observer: None,
+            bookmark_action_window_observer: None,
+            bookmark_folder_editor_window_observer: None,
             last_window_title: None,
             navigation_history_release_deadline: None,
             safe_mode_offers: Vec::new(),
@@ -2850,10 +2927,10 @@ impl ExplorerRoot {
             address_input: None,
             search_input: None,
             rename_input: None,
-            bookmark_folder_name_input: None,
             pointer_capture_factory: None,
             pointer_capture: None,
             durable_state_observer: None,
+            extension_settings_observer: None,
             durable_window_placement: default_durable_window_placement(),
             session_reset_observer: None,
             broker_retry_observer: None,
@@ -2863,6 +2940,8 @@ impl ExplorerRoot {
             folder_options_window_observer: None,
             bookmark_editor_window_observer: None,
             bookmark_manager_window_observer: None,
+            bookmark_action_window_observer: None,
+            bookmark_folder_editor_window_observer: None,
             last_window_title: None,
             navigation_history_release_deadline: None,
             safe_mode_offers: Vec::new(),
@@ -2904,6 +2983,14 @@ impl ExplorerRoot {
         self.durable_state_observer = Some(observer);
         self.capture_durable_window_placement(window, cx);
         self.notify_durable_state();
+    }
+
+    pub fn attach_extension_settings_observer(&mut self, observer: ExtensionSettingsObserver) {
+        self.extension_settings_observer = Some(observer);
+    }
+
+    pub fn configure_extension_desired_states(&mut self, states: &[(String, bool)]) {
+        self.state.configure_extension_desired_states(states);
     }
 
     /// Attaches the background reset command bridge.
@@ -2995,6 +3082,19 @@ impl ExplorerRoot {
         let Some(draft) = self.state.folder_options() else {
             return false;
         };
+        if let Some(extension_observer) = &self.extension_settings_observer {
+            let desired = self
+                .state
+                .extensions()
+                .iter()
+                .zip(draft.extension_enabled.iter().copied())
+                .map(|(extension, enabled)| (extension.package_id.to_owned(), enabled))
+                .collect();
+            if let Err(error) = extension_observer(desired) {
+                tracing::warn!(%error, "could not persist extension desired state");
+                return false;
+            }
+        }
         let mut tabs = self.state.tabs().clone();
         tabs.active_tab_mut().view.settings = draft.settings.clone();
         observer(
@@ -3052,11 +3152,14 @@ impl ExplorerRoot {
                         let visual_column_changed = this.pump_visual_column_runtime();
                         let code_lines_changed = this.pump_code_lines_runtime();
                         let size_map_changed = this.pump_size_map_runtime();
+                        let operation_notice_changed =
+                            this.state.operation_notice_needs_repaint(Instant::now());
                         if extension_changed
                             || sftp_login_changed
                             || visual_column_changed
                             || code_lines_changed
                             || size_map_changed
+                            || operation_notice_changed
                         {
                             cx.notify();
                         }
@@ -3655,19 +3758,47 @@ impl ExplorerRoot {
         }
     }
 
-    fn reset_bookmark_folder_editor_input(&mut self, cx: &mut Context<Self>) {
-        let Some(editor) = self.state.bookmark_folder_editor().cloned() else {
+    fn present_bookmark_folder_editor_window(&mut self, cx: &mut Context<Self>) {
+        let Some(snapshot) = self.bookmark_folder_editor_window_snapshot() else {
             return;
         };
-        let input = cx.new(|cx| EditableTextState::new(StringStorage::from(editor.name), cx));
-        cx.subscribe(&input, |this, input, _: &TextChanged, cx| {
-            this.state
-                .update_bookmark_folder_editor_name(input.read(cx).as_str().to_owned());
-            cx.notify();
-        })
-        .detach();
-        input.update(cx, EditableTextState::select_document);
-        self.bookmark_folder_name_input = Some(input);
+        let opened = self
+            .bookmark_folder_editor_window_observer
+            .clone()
+            .is_some_and(|observer| observer(snapshot, cx));
+        if !opened {
+            self.state.cancel_bookmark_folder_editor();
+            self.state
+                .set_bookmark_notice("Unable to open the bookmark folder editor window.");
+        }
+    }
+
+    fn present_bookmark_action_window(
+        &mut self,
+        id: explorer_model::BookmarkId,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(bookmark) = self
+            .state
+            .bookmarks()
+            .entries()
+            .iter()
+            .find(|bookmark| bookmark.id == id)
+            .cloned()
+        else {
+            self.state
+                .set_bookmark_notice("Bookmark is no longer available.");
+            return;
+        };
+        let snapshot = bookmark_action_window::BookmarkActionWindowSnapshotV1 { bookmark };
+        let opened = self
+            .bookmark_action_window_observer
+            .clone()
+            .is_some_and(|observer| observer(snapshot, cx));
+        if !opened {
+            self.state
+                .set_bookmark_notice("Unable to open the bookmark action window.");
+        }
     }
 
     fn submit_active_location_load(&mut self) {
@@ -5013,13 +5144,8 @@ impl ExplorerRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let ExplorerAction::OpenBookmarkContextMenu { id, x, y } = action {
-            self.state.open_bookmark_context_menu(id, x, y);
-            cx.notify();
-            return;
-        }
-        if action == ExplorerAction::CloseBookmarkContextMenu {
-            self.state.close_bookmark_context_menu();
+        if let ExplorerAction::OpenBookmarkContextMenu { id, .. } = action {
+            self.present_bookmark_action_window(id, cx);
             cx.notify();
             return;
         }
@@ -5038,10 +5164,6 @@ impl ExplorerRoot {
             self.state.close_remote_context_menu();
             cx.notify();
             return;
-        }
-        if self.state.bookmark_context_menu().is_some() {
-            self.state.close_bookmark_context_menu();
-            cx.notify();
         }
         if self.state.bookmark_toolbar_context_menu().is_some() {
             self.state.close_bookmark_toolbar_context_menu();
@@ -5419,12 +5541,7 @@ impl ExplorerRoot {
                         .map(|folder| folder.id)
                     {
                         self.state.begin_bookmark_folder_editor(id);
-                        self.reset_bookmark_folder_editor_input(cx);
-                        if let Some(input) = self.bookmark_folder_name_input.clone() {
-                            window.defer(cx, move |window, cx| {
-                                input.read(cx).focus_handle(cx).focus(window, cx);
-                            });
-                        }
+                        self.present_bookmark_folder_editor_window(cx);
                     }
                 }
                 cx.notify();
@@ -5432,17 +5549,11 @@ impl ExplorerRoot {
         }
         if let ExplorerAction::EditBookmarkFolder { id } = action {
             self.state.begin_bookmark_folder_editor(id);
-            self.reset_bookmark_folder_editor_input(cx);
-            if let Some(input) = self.bookmark_folder_name_input.clone() {
-                window.defer(cx, move |window, cx| {
-                    input.read(cx).focus_handle(cx).focus(window, cx);
-                });
-            }
+            self.present_bookmark_folder_editor_window(cx);
             cx.notify();
         }
         if action == ExplorerAction::CancelBookmarkFolderEditor {
             self.state.cancel_bookmark_folder_editor();
-            self.bookmark_folder_name_input = None;
             cx.notify();
         }
         if action == ExplorerAction::SaveBookmarkFolderEditor {
@@ -5456,7 +5567,6 @@ impl ExplorerRoot {
                     self.state
                         .set_bookmark_notice("Unable to rename the bookmark folder.");
                 } else {
-                    self.bookmark_folder_name_input = None;
                     self.state.set_bookmark_notice("Bookmark folder renamed.");
                 }
             } else {
@@ -6639,14 +6749,12 @@ impl ExplorerRoot {
                 0 => ExplorerAction::UndoCurrentFolder,
                 1 => ExplorerAction::CompressSelectedToZip,
                 2 => ExplorerAction::AddSelectedToFavorites,
-                3 => ExplorerAction::CopySelectedPaths,
-                4 => ExplorerAction::SelectAllItems,
-                5 => ExplorerAction::ClearSelection,
-                6 => ExplorerAction::InvertSelection,
-                7 => ExplorerAction::ShowPropertiesSelected,
-                8 => ExplorerAction::RestoreSelected,
-                9 => ExplorerAction::EmptyRecycleBin,
-                10 => ExplorerAction::OpenFolderOptions,
+                3 => ExplorerAction::AddSelectedToBookmarks,
+                4 => ExplorerAction::CopySelectedPaths,
+                5 => ExplorerAction::SelectAllItems,
+                6 => ExplorerAction::ClearSelection,
+                7 => ExplorerAction::InvertSelection,
+                8 => ExplorerAction::OpenFolderOptions,
                 _ => ExplorerAction::OpenAboutDialog,
             }),
             _ => None,
@@ -7245,7 +7353,6 @@ impl Render for ExplorerRoot {
             self.state.close_extensions_menu();
             self.state.close_new_menu();
             self.state.cancel_permanent_delete_confirmation();
-            self.state.close_bookmark_context_menu();
         }
         if self.state.scrollbar_drag_session().is_some() && !window.is_window_active() {
             self.terminate_scrollbar_drag(
@@ -7399,11 +7506,6 @@ impl Render for ExplorerRoot {
                 self.search_input.as_ref().map(gpui::Entity::downgrade),
                 self.rename_input.as_ref().map(gpui::Entity::downgrade),
             )
-            .with_bookmark_folder_editor_input(
-                self.bookmark_folder_name_input
-                    .as_ref()
-                    .map(gpui::Entity::downgrade),
-            )
             .with_breadcrumb_menu_focus(self.breadcrumb_menu_focus.clone())
             .with_command_menu_focus(self.command_menu_focus.clone())
             .with_preview_thumbnail(self.preview_texture.clone(), self.preview_thumbnail_failed)
@@ -7473,31 +7575,10 @@ impl Render for ExplorerRoot {
                     );
                     return;
                 }
-                if this.state.bookmark_context_menu().is_some() && event.keystroke.key == "escape" {
-                    cx.stop_propagation();
-                    this.handle_action(
-                        ExplorerAction::CloseBookmarkContextMenu,
-                        ActionSource::Keyboard,
-                        window,
-                        cx,
-                    );
-                    return;
-                }
                 if this.state.bookmark_editor().is_some() && event.keystroke.key == "escape" {
                     cx.stop_propagation();
                     this.handle_action(
                         ExplorerAction::CancelBookmarkEditor,
-                        ActionSource::Keyboard,
-                        window,
-                        cx,
-                    );
-                    return;
-                }
-                if this.state.bookmark_folder_editor().is_some() && event.keystroke.key == "escape"
-                {
-                    cx.stop_propagation();
-                    this.handle_action(
-                        ExplorerAction::CancelBookmarkFolderEditor,
                         ActionSource::Keyboard,
                         window,
                         cx,
@@ -8647,6 +8728,10 @@ mod tests {
         assert_eq!(
             action_for_host_context_command(Command::Copy),
             ExplorerAction::CopySelected
+        );
+        assert_eq!(
+            action_for_host_context_command(Command::Paste),
+            ExplorerAction::Paste
         );
         assert_eq!(
             action_for_host_context_command(Command::CopyPath),

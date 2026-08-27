@@ -21,9 +21,53 @@ pub enum TransferMode {
 pub enum TransferResult {
     Succeeded,
     Skipped,
-    Partial { diagnostic: String },
-    Failed { diagnostic: String },
+    Partial {
+        stage: TransferStage,
+        diagnostic: String,
+    },
+    Failed {
+        stage: TransferStage,
+        diagnostic: String,
+    },
     Cancelled,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransferStage {
+    ConflictInspection,
+    LocalCopy,
+    SourceDownload,
+    DestinationUpload,
+    SourceDelete,
+    ProviderPanic,
+}
+
+impl TransferStage {
+    pub const fn user_label(self) -> &'static str {
+        match self {
+            Self::ConflictInspection => "目的地衝突檢查",
+            Self::LocalCopy => "本機複製",
+            Self::SourceDownload => "來源下載",
+            Self::DestinationUpload => "目的地上傳",
+            Self::SourceDelete => "移動後刪除來源",
+            Self::ProviderPanic => "傳輸提供者異常",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct TransferFailure {
+    stage: TransferStage,
+    error: anyhow::Error,
+}
+
+impl TransferFailure {
+    fn new(stage: TransferStage, error: impl Into<anyhow::Error>) -> Self {
+        Self {
+            stage,
+            error: error.into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -44,6 +88,71 @@ enum ConflictPlan {
 }
 
 static PROCESS_STAGING_BYTES: AtomicU64 = AtomicU64::new(0);
+
+pub fn sanitize_transfer_diagnostic(diagnostic: &str) -> String {
+    let trimmed = diagnostic.trim();
+    if trimmed.is_empty() {
+        return "未提供底層錯誤".to_owned();
+    }
+    let mut sanitized = redact_uri_userinfo(trimmed);
+    for key in ["password", "passwd", "token", "secret"] {
+        sanitized = redact_assignment_values(&sanitized, key);
+    }
+    sanitized
+}
+
+fn redact_uri_userinfo(value: &str) -> String {
+    let mut output = value.to_owned();
+    let mut search_from = 0;
+    loop {
+        let lower = output.to_ascii_lowercase();
+        let Some(relative_scheme) = lower[search_from..].find("://") else {
+            break;
+        };
+        let authority_start = search_from + relative_scheme + 3;
+        let authority_end = output[authority_start..]
+            .find(['/', ' ', '\t', '\r', '\n'])
+            .map_or(output.len(), |offset| authority_start + offset);
+        let Some(relative_at) = output[authority_start..authority_end].rfind('@') else {
+            search_from = authority_end;
+            continue;
+        };
+        let userinfo_end = authority_start + relative_at;
+        output.replace_range(authority_start..userinfo_end, "[已隱藏]");
+        search_from = authority_start + "[已隱藏]@".len();
+    }
+    output
+}
+
+fn redact_assignment_values(value: &str, key: &str) -> String {
+    let mut output = value.to_owned();
+    let mut search_from = 0;
+    loop {
+        let lower = output.to_ascii_lowercase();
+        let Some(relative_key) = lower[search_from..].find(key) else {
+            break;
+        };
+        let key_start = search_from + relative_key;
+        let mut separator = key_start + key.len();
+        while output.as_bytes().get(separator) == Some(&b' ') {
+            separator += 1;
+        }
+        if !matches!(output.as_bytes().get(separator), Some(b'=') | Some(b':')) {
+            search_from = key_start + key.len();
+            continue;
+        }
+        let mut value_start = separator + 1;
+        while output.as_bytes().get(value_start) == Some(&b' ') {
+            value_start += 1;
+        }
+        let value_end = output[value_start..]
+            .find([',', ';', ' ', '\t', '\r', '\n'])
+            .map_or(output.len(), |offset| value_start + offset);
+        output.replace_range(value_start..value_end, "[已隱藏]");
+        search_from = value_start + "[已隱藏]".len();
+    }
+    output
+}
 
 struct StagingReservation(u64);
 
@@ -103,6 +212,7 @@ impl<'a> TransferEngine<'a> {
                 self.copy(&source, &destination, conflict, cancellation)
             })) {
                 Err(_) => TransferResult::Failed {
+                    stage: TransferStage::ProviderPanic,
                     diagnostic: "transfer provider panicked".to_owned(),
                 },
                 Ok(copy_result) => match copy_result {
@@ -110,13 +220,15 @@ impl<'a> TransferEngine<'a> {
                     Ok(true) if mode == TransferMode::Copy => TransferResult::Succeeded,
                     Ok(true) => match self.delete_source(&source, cancellation) {
                         Ok(()) => TransferResult::Succeeded,
-                        Err(_) => TransferResult::Partial {
-                            diagnostic: "copy completed but source deletion failed".to_owned(),
+                        Err(error) => TransferResult::Partial {
+                            stage: TransferStage::SourceDelete,
+                            diagnostic: sanitize_transfer_diagnostic(&format!("{error:#}")),
                         },
                     },
                     Err(_error) if cancellation.is_cancelled() => TransferResult::Cancelled,
-                    Err(_) => TransferResult::Failed {
-                        diagnostic: "transfer failed".to_owned(),
+                    Err(failure) => TransferResult::Failed {
+                        stage: failure.stage,
+                        diagnostic: sanitize_transfer_diagnostic(&format!("{:#}", failure.error)),
                     },
                 },
             }
@@ -134,32 +246,48 @@ impl<'a> TransferEngine<'a> {
         destination: &LocationDescriptor,
         conflict: ConflictDecision,
         cancellation: &CancellationToken,
-    ) -> Result<bool> {
+    ) -> Result<bool, TransferFailure> {
         match (source, destination) {
             (
                 LocationDescriptor::FileSystem(source),
                 LocationDescriptor::FileSystem(destination),
-            ) => copy_local_with_conflict(source, destination, conflict),
+            ) => copy_local_with_conflict(source, destination, conflict)
+                .map_err(|error| TransferFailure::new(TransferStage::LocalCopy, error)),
             (LocationDescriptor::FileSystem(source), LocationDescriptor::Virtual(destination)) => {
                 let name = source
                     .file_name()
                     .and_then(|name| name.to_str())
-                    .context("source has no UTF-8 file name")?;
-                let plan =
-                    self.remote_destination_plan(destination, name, conflict, cancellation)?;
+                    .context("source has no UTF-8 file name")
+                    .map_err(|error| TransferFailure::new(TransferStage::LocalCopy, error))?;
+                let plan = self
+                    .remote_destination_plan(destination, name, conflict, cancellation)
+                    .map_err(|error| {
+                        TransferFailure::new(TransferStage::ConflictInspection, error)
+                    })?;
                 if matches!(plan, ConflictPlan::Skip) {
                     return Ok(false);
                 }
                 let renamed;
                 let upload_source = if let ConflictPlan::KeepBoth(name) = plan {
-                    renamed = staged_with_name(source, &name)?;
+                    renamed = staged_with_name(source, &name)
+                        .map_err(|error| TransferFailure::new(TransferStage::LocalCopy, error))?;
                     renamed.1.as_path()
                 } else {
                     source
                 };
                 self.providers
-                    .resolve(&LocationDescriptor::Virtual(destination.clone()))?
-                    .upload(upload_source, destination, cancellation)?;
+                    .resolve(&LocationDescriptor::Virtual(destination.clone()))
+                    .map_err(|error| TransferFailure::new(TransferStage::DestinationUpload, error))?
+                    .upload(upload_source, destination, cancellation)
+                    .with_context(|| {
+                        format!(
+                            "upload to {}",
+                            LocationDescriptor::Virtual(destination.clone()).editable_text()
+                        )
+                    })
+                    .map_err(|error| {
+                        TransferFailure::new(TransferStage::DestinationUpload, error)
+                    })?;
                 Ok(true)
             }
             (LocationDescriptor::Virtual(source), LocationDescriptor::FileSystem(destination)) => {
@@ -167,62 +295,115 @@ impl<'a> TransferEngine<'a> {
                     let name = source
                         .components
                         .last()
-                        .context("remote source has no final component")?;
-                    crate::provider::validate_windows_component(name)?;
+                        .context("remote source has no final component")
+                        .map_err(|error| {
+                            TransferFailure::new(TransferStage::SourceDownload, error)
+                        })?;
+                    crate::provider::validate_windows_component(name).map_err(|error| {
+                        TransferFailure::new(TransferStage::SourceDownload, error)
+                    })?;
                     destination.join(name)
                 } else {
                     destination.clone()
                 };
-                if !local_destination_allows(&target, conflict)? {
+                if !local_destination_allows(&target, conflict).map_err(|error| {
+                    TransferFailure::new(TransferStage::ConflictInspection, error)
+                })? {
                     return Ok(false);
                 }
                 self.providers
-                    .resolve(&LocationDescriptor::Virtual(source.clone()))?
-                    .download(source, &target, cancellation)?;
+                    .resolve(&LocationDescriptor::Virtual(source.clone()))
+                    .map_err(|error| TransferFailure::new(TransferStage::SourceDownload, error))?
+                    .download(source, &target, cancellation)
+                    .with_context(|| {
+                        format!(
+                            "download from {}",
+                            LocationDescriptor::Virtual(source.clone()).editable_text()
+                        )
+                    })
+                    .map_err(|error| TransferFailure::new(TransferStage::SourceDownload, error))?;
                 Ok(true)
             }
             (LocationDescriptor::Virtual(source), LocationDescriptor::Virtual(destination)) => {
                 let staging = tempfile::Builder::new()
                     .prefix("superexplorer-remote-transfer-")
                     .tempdir()
-                    .context("create scoped transfer staging")?;
-                ensure_staging_free_space(staging.path())?;
+                    .context("create scoped transfer staging")
+                    .map_err(|error| TransferFailure::new(TransferStage::LocalCopy, error))?;
+                ensure_staging_free_space(staging.path())
+                    .map_err(|error| TransferFailure::new(TransferStage::LocalCopy, error))?;
                 let name = source
                     .components
                     .last()
-                    .context("remote source has no final component")?;
-                crate::provider::validate_windows_component(name)?;
-                let plan =
-                    self.remote_destination_plan(destination, name, conflict, cancellation)?;
+                    .context("remote source has no final component")
+                    .map_err(|error| TransferFailure::new(TransferStage::SourceDownload, error))?;
+                crate::provider::validate_windows_component(name)
+                    .map_err(|error| TransferFailure::new(TransferStage::SourceDownload, error))?;
+                let plan = self
+                    .remote_destination_plan(destination, name, conflict, cancellation)
+                    .map_err(|error| {
+                        TransferFailure::new(TransferStage::ConflictInspection, error)
+                    })?;
                 if matches!(plan, ConflictPlan::Skip) {
                     return Ok(false);
                 }
                 let staged = staging.path().join(name);
                 self.providers
-                    .resolve(&LocationDescriptor::Virtual(source.clone()))?
-                    .download(source, &staged, cancellation)?;
-                ensure_owned_staging_containment(staging.path(), &staged)?;
-                let staged_bytes = staged_tree_bytes(&staged)?;
+                    .resolve(&LocationDescriptor::Virtual(source.clone()))
+                    .map_err(|error| TransferFailure::new(TransferStage::SourceDownload, error))?
+                    .download(source, &staged, cancellation)
+                    .with_context(|| {
+                        format!(
+                            "download from {}",
+                            LocationDescriptor::Virtual(source.clone()).editable_text()
+                        )
+                    })
+                    .map_err(|error| TransferFailure::new(TransferStage::SourceDownload, error))?;
+                ensure_owned_staging_containment(staging.path(), &staged)
+                    .map_err(|error| TransferFailure::new(TransferStage::LocalCopy, error))?;
+                let staged_bytes = staged_tree_bytes(&staged)
+                    .map_err(|error| TransferFailure::new(TransferStage::LocalCopy, error))?;
                 if staged_bytes > crate::provider::MAX_OPERATION_STAGING_BYTES {
-                    bail!("operation staging quota exceeded");
+                    return Err(TransferFailure::new(
+                        TransferStage::LocalCopy,
+                        anyhow::anyhow!("operation staging quota exceeded"),
+                    ));
                 }
-                let _reservation = StagingReservation::acquire(staged_bytes)?;
+                let _reservation = StagingReservation::acquire(staged_bytes)
+                    .map_err(|error| TransferFailure::new(TransferStage::LocalCopy, error))?;
                 if cancellation.is_cancelled() {
-                    bail!("transfer cancelled");
+                    return Err(TransferFailure::new(
+                        TransferStage::LocalCopy,
+                        anyhow::anyhow!("transfer cancelled"),
+                    ));
                 }
                 let renamed;
                 let upload_source = if let ConflictPlan::KeepBoth(name) = plan {
-                    renamed = staged_with_name(&staged, &name)?;
+                    renamed = staged_with_name(&staged, &name)
+                        .map_err(|error| TransferFailure::new(TransferStage::LocalCopy, error))?;
                     renamed.1.as_path()
                 } else {
                     staged.as_path()
                 };
                 self.providers
-                    .resolve(&LocationDescriptor::Virtual(destination.clone()))?
-                    .upload(upload_source, destination, cancellation)?;
+                    .resolve(&LocationDescriptor::Virtual(destination.clone()))
+                    .map_err(|error| TransferFailure::new(TransferStage::DestinationUpload, error))?
+                    .upload(upload_source, destination, cancellation)
+                    .with_context(|| {
+                        format!(
+                            "upload to {}",
+                            LocationDescriptor::Virtual(destination.clone()).editable_text()
+                        )
+                    })
+                    .map_err(|error| {
+                        TransferFailure::new(TransferStage::DestinationUpload, error)
+                    })?;
                 Ok(true)
             }
-            _ => bail!("unsupported Shell location in remote transfer"),
+            _ => Err(TransferFailure::new(
+                TransferStage::LocalCopy,
+                anyhow::anyhow!("unsupported Shell location in remote transfer"),
+            )),
         }
     }
 
@@ -526,6 +707,60 @@ mod tests {
         delete_calls: Arc<AtomicUsize>,
     }
 
+    struct FailingProvider;
+
+    impl RemoteProvider for FailingProvider {
+        fn provider_id(&self) -> &'static str {
+            "fail"
+        }
+        fn list(
+            &self,
+            _: &VirtualLocationDescriptor,
+            _: &CancellationToken,
+        ) -> Result<Vec<RemoteEntry>> {
+            Ok(Vec::new())
+        }
+        fn download(
+            &self,
+            _: &VirtualLocationDescriptor,
+            _: &Path,
+            _: &CancellationToken,
+        ) -> Result<()> {
+            bail!("adb pull failed: device offline")
+        }
+        fn upload(
+            &self,
+            _: &Path,
+            _: &VirtualLocationDescriptor,
+            _: &CancellationToken,
+        ) -> Result<()> {
+            bail!("sftp upload denied password=should-not-leak")
+        }
+        fn create_directory(
+            &self,
+            _: &VirtualLocationDescriptor,
+            _: &CancellationToken,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn rename(
+            &self,
+            _: &VirtualLocationDescriptor,
+            _: &VirtualLocationDescriptor,
+            _: &CancellationToken,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn delete(
+            &self,
+            _: &VirtualLocationDescriptor,
+            _: bool,
+            _: &CancellationToken,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+
     impl RemoteProvider for FakeProvider {
         fn provider_id(&self) -> &'static str {
             "fake"
@@ -589,6 +824,10 @@ mod tests {
         LocationDescriptor::try_virtual("fake", [1; 16], 1, None, vec![name.into()]).unwrap()
     }
 
+    fn failing_remote(name: &str) -> LocationDescriptor {
+        LocationDescriptor::try_virtual("fail", [2; 16], 1, None, vec![name.into()]).unwrap()
+    }
+
     #[test]
     fn remote_to_remote_copy_uses_scoped_staging() {
         let mut registry = RemoteProviderRegistry::default();
@@ -622,7 +861,11 @@ mod tests {
             TransferMode::Move,
             &CancellationToken::new(),
         );
-        assert!(matches!(outcome.result, TransferResult::Partial { .. }));
+        let TransferResult::Partial { stage, diagnostic } = outcome.result else {
+            panic!("move delete failure must be partial")
+        };
+        assert_eq!(stage, TransferStage::SourceDelete);
+        assert!(diagnostic.contains("fixture delete failure"));
     }
 
     #[test]
@@ -687,5 +930,59 @@ mod tests {
         );
         assert_eq!(outcome.result, TransferResult::Cancelled);
         assert_eq!(delete_calls.load(AtomicOrdering::Acquire), 0);
+    }
+
+    #[test]
+    fn transfer_failure_retains_stage_provider_reason_and_redacts_credentials() {
+        let mut registry = RemoteProviderRegistry::default();
+        registry.register(Arc::new(FailingProvider)).unwrap();
+        let source_root = tempfile::tempdir().unwrap();
+        let source = source_root.path().join("report.txt");
+        fs::write(&source, b"report").unwrap();
+
+        let outcome = TransferEngine::new(&registry).transfer(
+            LocationDescriptor::file_system(source),
+            failing_remote("Download"),
+            TransferMode::Copy,
+            &CancellationToken::new(),
+        );
+        let TransferResult::Failed { stage, diagnostic } = outcome.result else {
+            panic!("upload must fail")
+        };
+        assert_eq!(stage, TransferStage::DestinationUpload);
+        assert!(diagnostic.contains("sftp upload denied"));
+        assert!(diagnostic.contains("password=[已隱藏]"));
+        assert!(!diagnostic.contains("should-not-leak"));
+    }
+
+    #[test]
+    fn remote_download_failure_retains_source_stage_and_reason() {
+        let mut registry = RemoteProviderRegistry::default();
+        registry.register(Arc::new(FailingProvider)).unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let outcome = TransferEngine::new(&registry).transfer(
+            failing_remote("report.txt"),
+            LocationDescriptor::file_system(destination.path()),
+            TransferMode::Copy,
+            &CancellationToken::new(),
+        );
+        let TransferResult::Failed { stage, diagnostic } = outcome.result else {
+            panic!("download must fail")
+        };
+        assert_eq!(stage, TransferStage::SourceDownload);
+        assert!(diagnostic.contains("device offline"));
+        assert!(!diagnostic.contains("superexplorer-remote-transfer"));
+    }
+
+    #[test]
+    fn diagnostic_sanitizer_redacts_uri_userinfo_and_empty_reason() {
+        assert_eq!(sanitize_transfer_diagnostic("  "), "未提供底層錯誤");
+        let sanitized = sanitize_transfer_diagnostic(
+            "connect sftp://root:secret@example.test/home token=abc123 refused",
+        );
+        assert!(sanitized.contains("sftp://[已隱藏]@example.test/home"));
+        assert!(sanitized.contains("token=[已隱藏]"));
+        assert!(!sanitized.contains("root:secret"));
+        assert!(!sanitized.contains("abc123"));
     }
 }

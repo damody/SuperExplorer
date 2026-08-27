@@ -3916,6 +3916,7 @@ impl ApplicationLifecycle {
         let shell_sta = Arc::new(ShellStaHandle::start()?);
         diagnostics.record_event("shell_sta_ready", &[])?;
         let _uitest_state_root = uitest_extension_state_root_v1()?;
+        let installed_sepacks = discover_installed_sepacks()?;
         #[cfg(feature = "uitest-support")]
         let extension_config = _uitest_state_root.as_ref().map_or_else(
             explorer_extension_host::ExtensionHostConfigV1::default,
@@ -3926,18 +3927,37 @@ impl ApplicationLifecycle {
         );
         #[cfg(not(feature = "uitest-support"))]
         let extension_config = explorer_extension_host::ExtensionHostConfigV1::default();
+        let extension_config = if installed_sepacks.is_empty() {
+            extension_config
+        } else {
+            extension_config
+                .with_local_developer_mode(explorer_extension_host::LocalDeveloperModeV1::Enabled)
+                .with_local_developer_archives(installed_sepacks)
+        };
         let mut extension_host =
             explorer_extension_host::ExtensionHost::with_config(extension_config);
         extension_host.start()?;
+        let mut startup_plugin_dlls = plugin_dlls.to_vec();
+        startup_plugin_dlls.sort();
+        startup_plugin_dlls.dedup();
         let mut direct_loaded = Vec::new();
-        for path in plugin_dlls {
+        for path in &startup_plugin_dlls {
             match extension_host.load_single_plugin_visual_column_runtime(path) {
                 Ok(loaded) => Some((path, loaded)),
                 Err(explorer_extension_host::SinglePluginLoadErrorV1::BlockedBySafeMode) => {
                     diagnostics.record_event("development_plugin_blocked_by_safe_mode", &[])?;
                     None
                 }
-                Err(error) => return Err(error.into()),
+                Err(error) => {
+                    // A plugin load/registration failure is treated as a global
+                    // extension fault. Persist the fail-closed choice before
+                    // returning so the next launch runs core-only until the
+                    // user explicitly re-enables extensions in Folder Options.
+                    let _ = extension_host.set_global_feature_desired(
+                        explorer_extension_host::DesiredStateV1::Disabled,
+                    );
+                    return Err(error.into());
+                }
             }
             .map(|loaded| direct_loaded.push(loaded));
         }
@@ -4200,6 +4220,50 @@ impl ApplicationLifecycle {
                 Arc::clone(&remote_runtime.providers),
             ));
         let shutdown_resources = Arc::clone(&self.resources);
+        let mut installed_package_ids = {
+            let resources = self
+                .resources
+                .lock()
+                .map_err(|_| anyhow::anyhow!("application lifecycle mutex was poisoned"))?;
+            resources
+                .extension_host
+                .as_ref()
+                .map(|host| {
+                    host.discovered_package_ids()
+                        .iter()
+                        .cloned()
+                        .collect::<std::collections::BTreeSet<_>>()
+                })
+                .unwrap_or_default()
+        };
+        installed_package_ids.extend(
+            OFFICIAL_PLUGIN_PACKAGE_IDS
+                .iter()
+                .map(|package_id| (*package_id).to_owned()),
+        );
+        let extension_desired_states = {
+            let resources = self
+                .resources
+                .lock()
+                .map_err(|_| anyhow::anyhow!("application lifecycle mutex was poisoned"))?;
+            resources
+                .extension_host
+                .as_ref()
+                .and_then(explorer_extension_host::ExtensionHost::feature_state)
+                .map(|state| {
+                    installed_package_ids
+                        .iter()
+                        .map(|package_id| {
+                            (
+                                package_id.clone(),
+                                state.package_desired(package_id)
+                                    == explorer_extension_host::DesiredStateV1::Enabled,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
         let safe_mode_offers = self.safe_mode_ui_offers()?;
         let loaded_extension_summary = self.loaded_extension_summary()?;
         let visual_column_runtime = self.visual_column_runtime()?;
@@ -4251,6 +4315,34 @@ impl ApplicationLifecycle {
                 explorer_model::Bookmarks::default(),
             )
         };
+        let extension_settings_resources = Arc::clone(&self.resources);
+        let extension_settings_observer: explorer_ui::ExtensionSettingsObserver =
+            Arc::new(move |updates| {
+                let mut resources = extension_settings_resources
+                    .lock()
+                    .map_err(|_| "application lifecycle mutex was poisoned".to_owned())?;
+                let host = resources
+                    .extension_host
+                    .as_mut()
+                    .ok_or_else(|| "extension host is not available".to_owned())?;
+                for incident in host.safe_mode_incidents() {
+                    host.confirm_safe_mode_incident(incident.incident_id())
+                        .map_err(|error| error.to_string())?;
+                }
+                host.set_package_feature_desired_batch(updates.into_iter().map(
+                    |(package_id, enabled)| {
+                        (
+                            package_id,
+                            if enabled {
+                                explorer_extension_host::DesiredStateV1::Enabled
+                            } else {
+                                explorer_extension_host::DesiredStateV1::Disabled
+                            },
+                        )
+                    },
+                ))
+                .map_err(|error| error.to_string())
+            });
 
         let platform = gpui_windows::WindowsPlatform::new(false)
             .context("failed to initialize GPUI-CE Windows platform")?;
@@ -4329,10 +4421,13 @@ impl ApplicationLifecycle {
                 let initial_location_for_window = initial_location.clone();
                 let restored_tabs_for_window = restored_tabs.clone();
                 let durable_observer_for_window = durable_observer.clone();
+                let extension_settings_observer_for_window =
+                    extension_settings_observer.clone();
                 let reset_observer_for_window = reset_observer.clone();
                 let restore_preference_for_window = restore_preference;
                 let quick_access_for_window = quick_access.clone();
                 let bookmarks_for_window = bookmarks.clone();
+                let extension_desired_states_for_window = extension_desired_states.clone();
                 let loaded_extension_summary_for_window = loaded_extension_summary.clone();
                 let visual_column_runtime_for_window = visual_column_runtime.clone();
                 let visual_column_extension_loaded_for_window = visual_column_extension_loaded;
@@ -4368,10 +4463,12 @@ impl ApplicationLifecycle {
                             initial_location_for_window,
                             restored_tabs_for_window,
                             durable_observer_for_window,
+                            Some(extension_settings_observer_for_window),
                             reset_observer_for_window,
                             restore_preference_for_window,
                             quick_access_for_window,
                             bookmarks_for_window,
+                            extension_desired_states_for_window,
                             broker_health,
                             broker_retry,
                             safe_mode_offers,
@@ -4393,6 +4490,16 @@ impl ApplicationLifecycle {
                     let bookmark_manager_handle = Rc::new(RefCell::new(None::<
                         gpui::WindowHandle<
                             explorer_ui::bookmark_manager_window::BookmarkManagerWindow,
+                        >,
+                    >));
+                    let bookmark_action_handle = Rc::new(RefCell::new(None::<
+                        gpui::WindowHandle<
+                            explorer_ui::bookmark_action_window::BookmarkActionWindow,
+                        >,
+                    >));
+                    let bookmark_folder_editor_handle = Rc::new(RefCell::new(None::<
+                        gpui::WindowHandle<
+                            explorer_ui::bookmark_folder_editor_window::BookmarkFolderEditorWindow,
                         >,
                     >));
                     root.update(cx, |root, _| {
@@ -4487,6 +4594,44 @@ impl ApplicationLifecycle {
                                 }
                             }
                         }));
+                        root.attach_bookmark_folder_editor_window_observer(Rc::new(
+                            move |snapshot, cx| {
+                                if let Some(existing) = *bookmark_folder_editor_handle.borrow() {
+                                    if existing
+                                        .update(cx, |editor, window, cx| {
+                                            editor.replace_snapshot(snapshot.clone(), window, cx);
+                                            window.activate_window();
+                                        })
+                                        .is_ok()
+                                    {
+                                        return true;
+                                    }
+                                    *bookmark_folder_editor_handle.borrow_mut() = None;
+                                }
+                                let options = explorer_ui::bookmark_folder_editor_window::bookmark_folder_editor_window_options(cx);
+                                let opened = cx.open_window(options, move |window, cx| {
+                                    cx.new(|cx| {
+                                        explorer_ui::bookmark_folder_editor_window::BookmarkFolderEditorWindow::new(
+                                            tokens,
+                                            owner_window,
+                                            snapshot,
+                                            window,
+                                            cx,
+                                        )
+                                    })
+                                });
+                                match opened {
+                                    Ok(handle) => {
+                                        *bookmark_folder_editor_handle.borrow_mut() = Some(handle);
+                                        true
+                                    }
+                                    Err(error) => {
+                                        tracing::warn!(%error, "Bookmark folder editor window creation failed");
+                                        false
+                                    }
+                                }
+                            },
+                        ));
                         root.attach_bookmark_manager_window_observer(Rc::new(move |snapshot, cx| {
                             if let Some(existing) = *bookmark_manager_handle.borrow() {
                                 if existing
@@ -4519,6 +4664,42 @@ impl ApplicationLifecycle {
                                 }
                                 Err(error) => {
                                     tracing::warn!(%error, "Bookmark manager window creation failed");
+                                    false
+                                }
+                            }
+                        }));
+                        root.attach_bookmark_action_window_observer(Rc::new(move |snapshot, cx| {
+                            if let Some(existing) = *bookmark_action_handle.borrow() {
+                                if existing
+                                    .update(cx, |action_window, window, cx| {
+                                        action_window.replace_snapshot(snapshot.clone(), window, cx);
+                                        window.activate_window();
+                                    })
+                                    .is_ok()
+                                {
+                                    return true;
+                                }
+                                *bookmark_action_handle.borrow_mut() = None;
+                            }
+                            let options = explorer_ui::bookmark_action_window::bookmark_action_window_options(cx);
+                            let opened = cx.open_window(options, move |window, cx| {
+                                cx.new(|cx| {
+                                    explorer_ui::bookmark_action_window::BookmarkActionWindow::new(
+                                        tokens,
+                                        owner_window,
+                                        snapshot,
+                                        window,
+                                        cx,
+                                    )
+                                })
+                            });
+                            match opened {
+                                Ok(handle) => {
+                                    *bookmark_action_handle.borrow_mut() = Some(handle);
+                                    true
+                                }
+                                Err(error) => {
+                                    tracing::warn!(%error, "Bookmark action window creation failed");
                                     false
                                 }
                             }
@@ -4780,6 +4961,51 @@ impl ApplicationLifecycle {
     }
 }
 
+fn discover_installed_sepacks() -> Result<Vec<PathBuf>, Error> {
+    let executable =
+        std::env::current_exe().context("could not resolve SuperExplorer executable")?;
+    let Some(parent) = executable.parent() else {
+        return Ok(Vec::new());
+    };
+    let root = parent.join("plugins");
+    let entries = match fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut archives = Vec::new();
+    for entry in entries.take(1_024) {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            continue;
+        }
+        if is_sepack_path(&path) {
+            archives.push(path);
+        }
+    }
+    archives.sort();
+    Ok(archives)
+}
+
+fn is_sepack_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("sepack"))
+}
+
+const OFFICIAL_PLUGIN_PACKAGE_IDS: &[&str] = &[
+    "rust-folder-size-visual-column",
+    "rust-folder-size-map-view",
+    "rust-tokei-code-lines-column",
+    "lua-tokei-code-lines-column",
+    "rust-lock-owner-column",
+    "rust-exif-rename-command",
+    "rust-7z-virtual-folder",
+    "lua-bulk-folder-generator",
+];
+
 #[allow(
     clippy::too_many_arguments,
     reason = "the GPUI composition root wires explicit lifecycle-owned services and restore inputs"
@@ -4792,10 +5018,12 @@ fn create_explorer_root(
     initial_location: Option<explorer_model::HistoryEntry>,
     restored_tabs: Option<explorer_model::ExplorerWindowState>,
     durable_observer: Option<explorer_ui::DurableStateObserver>,
+    extension_settings_observer: Option<explorer_ui::ExtensionSettingsObserver>,
     reset_observer: Option<explorer_ui::SessionResetObserver>,
     restore_preference: bool,
     quick_access: Vec<explorer_model::PersistedQuickAccessPin>,
     bookmarks: explorer_model::Bookmarks,
+    extension_desired_states: Vec<(String, bool)>,
     broker_health: explorer_ui::state::BrokerUiHealth,
     broker_retry: explorer_ui::BrokerRetryObserver,
     visual_column_runtime: Option<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1>,
@@ -4823,6 +5051,7 @@ fn create_explorer_root(
     root.configure_restore_previous_session(restore_preference);
     root.configure_quick_access(quick_access);
     root.configure_bookmarks(bookmarks);
+    root.configure_extension_desired_states(&extension_desired_states);
     root.configure_broker_health(broker_health, broker_retry);
     root.attach_command_prompt_launcher(Arc::new(|working_directory| {
         explorer_shell_win::launch_command_prompt(working_directory.as_deref())
@@ -4847,6 +5076,9 @@ fn create_explorer_root(
     if let Some(observer) = durable_observer {
         root.attach_durable_state_observer(observer, window, cx);
     }
+    if let Some(observer) = extension_settings_observer {
+        root.attach_extension_settings_observer(observer);
+    }
     if let Some(observer) = reset_observer {
         root.attach_session_reset_observer(observer);
     }
@@ -4869,10 +5101,12 @@ fn create_focused_explorer_root(
     initial_location: Option<explorer_model::HistoryEntry>,
     restored_tabs: Option<explorer_model::ExplorerWindowState>,
     durable_observer: Option<explorer_ui::DurableStateObserver>,
+    extension_settings_observer: Option<explorer_ui::ExtensionSettingsObserver>,
     reset_observer: Option<explorer_ui::SessionResetObserver>,
     restore_preference: bool,
     quick_access: Vec<explorer_model::PersistedQuickAccessPin>,
     bookmarks: explorer_model::Bookmarks,
+    extension_desired_states: Vec<(String, bool)>,
     broker_health: explorer_ui::state::BrokerUiHealth,
     broker_retry: explorer_ui::BrokerRetryObserver,
     safe_mode_offers: Vec<explorer_ui::SafeModeOfferV1>,
@@ -4896,10 +5130,12 @@ fn create_focused_explorer_root(
         initial_location,
         restored_tabs,
         durable_observer,
+        extension_settings_observer,
         reset_observer,
         restore_preference,
         quick_access,
         bookmarks,
+        extension_desired_states,
         broker_health,
         broker_retry,
         visual_column_runtime,
@@ -5605,6 +5841,13 @@ mod tests {
             lifecycle.begin_open(),
             super::FolderOptionsOpenIntentV1::Create { generation: 3 }
         );
+    }
+
+    #[test]
+    fn production_plugin_discovery_accepts_only_sepack_archives() {
+        assert!(super::is_sepack_path(Path::new("plugin.sepack")));
+        assert!(super::is_sepack_path(Path::new("plugin.SePack")));
+        assert!(!super::is_sepack_path(Path::new("plugin.dll")));
     }
     use explorer_extension_host::{
         ExtensionJobAuthorityV1, ExtensionJobRuntimeRequestV1, ExtensionJobRuntimeV1,

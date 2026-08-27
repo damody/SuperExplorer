@@ -584,17 +584,38 @@ fn show_with_deferred_replay(
         matches!(request.target, ShellContextMenuTarget::Items { .. }),
         profile,
     )?;
-    if matches!(request.target, ShellContextMenuTarget::Items { .. }) {
-        let custom_id = COMMAND_FIRST
+    let item_menu = matches!(request.target, ShellContextMenuTarget::Items { .. });
+    if item_menu || request.paste_available {
+        let first_custom_id = COMMAND_FIRST
             .saturating_add(u32::try_from(command_count).unwrap_or(COMMAND_LAST - COMMAND_FIRST));
         unsafe { AppendMenuW(popup.get(), MF_SEPARATOR, 0, PCWSTR::null()) }.map_err(|error| {
             menu_error(
-                "append bookmark separator",
-                "無法建立加入書籤命令",
+                "append host command separator",
+                "無法建立應用程式命令",
                 &error.to_string(),
             )
         })?;
-        unsafe { AppendMenuW(popup.get(), MF_STRING, custom_id as usize, w!("加入書籤")) }
+        let mut next_custom_id = first_custom_id;
+        if request.paste_available {
+            unsafe { AppendMenuW(popup.get(), MF_STRING, next_custom_id as usize, w!("貼上")) }
+                .map_err(|error| {
+                    menu_error(
+                        "append paste command",
+                        "無法建立貼上命令",
+                        &error.to_string(),
+                    )
+                })?;
+            next_custom_id = next_custom_id.saturating_add(1);
+        }
+        if item_menu {
+            unsafe {
+                AppendMenuW(
+                    popup.get(),
+                    MF_STRING,
+                    next_custom_id as usize,
+                    w!("加入書籤"),
+                )
+            }
             .map_err(|error| {
                 menu_error(
                     "append bookmark command",
@@ -602,6 +623,7 @@ fn show_with_deferred_replay(
                     &error.to_string(),
                 )
             })?;
+        }
     }
     if started.elapsed() > Duration::from_millis(u64::from(request.deadline_ms.max(1))) {
         return Err(menu_error(
@@ -741,6 +763,9 @@ fn host_command_at_offset(
         }
     }
     let selected_id = COMMAND_FIRST.checked_add(command_offset)?;
+    if command_label(popup, selected_id).is_some_and(|label| label == "貼上") {
+        return Some(ContextMenuHostCommand::Paste);
+    }
     if item_menu && command_label(popup, selected_id).is_some_and(|label| label == "加入書籤") {
         return Some(ContextMenuHostCommand::AddBookmark);
     }
@@ -866,6 +891,7 @@ fn host_command_from_verb(verb: &str) -> Option<ContextMenuHostCommand> {
         "open" => Some(ContextMenuHostCommand::Open),
         "cut" => Some(ContextMenuHostCommand::Cut),
         "copy" => Some(ContextMenuHostCommand::Copy),
+        "paste" => Some(ContextMenuHostCommand::Paste),
         "copyaspath" => Some(ContextMenuHostCommand::CopyPath),
         "link" => Some(ContextMenuHostCommand::CreateShortcut),
         "delete" => Some(ContextMenuHostCommand::Delete),
@@ -2320,6 +2346,7 @@ mod tests {
             ("open", ContextMenuHostCommand::Open),
             ("cut", ContextMenuHostCommand::Cut),
             ("COPY", ContextMenuHostCommand::Copy),
+            ("paste", ContextMenuHostCommand::Paste),
             ("copyaspath", ContextMenuHostCommand::CopyPath),
             ("link", ContextMenuHostCommand::CreateShortcut),
             ("delete", ContextMenuHostCommand::Delete),
@@ -3196,6 +3223,7 @@ mod tests {
             point: explorer_model::MenuPoint { x: 20, y: 20 },
             keyboard_invoked: false,
             invocation_profile: ContextMenuInvocationProfile::Explorer,
+            paste_available: false,
             requested_verb: None,
             deadline_ms: 2_000,
         };

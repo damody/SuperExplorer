@@ -5,7 +5,7 @@ use std::{
     hash::{Hash, Hasher},
     rc::Rc,
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 fn extension_render_item_id(
@@ -244,7 +244,6 @@ pub struct ExplorerWindow {
     address_input: Option<gpui::WeakEntity<EditableTextState>>,
     search_input: Option<gpui::WeakEntity<EditableTextState>>,
     rename_input: Option<gpui::WeakEntity<EditableTextState>>,
-    bookmark_folder_name_input: Option<gpui::WeakEntity<EditableTextState>>,
     breadcrumb_menu_focus: Option<gpui::FocusHandle>,
     command_menu_focus: Option<gpui::FocusHandle>,
     shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
@@ -275,7 +274,6 @@ impl ExplorerWindow {
             address_input: None,
             search_input: None,
             rename_input: None,
-            bookmark_folder_name_input: None,
             breadcrumb_menu_focus: None,
             command_menu_focus: None,
             shell_icons: HashMap::new(),
@@ -324,15 +322,6 @@ impl ExplorerWindow {
         self.address_input = address;
         self.search_input = search;
         self.rename_input = rename;
-        self
-    }
-
-    #[must_use]
-    pub fn with_bookmark_folder_editor_input(
-        mut self,
-        folder_name: Option<gpui::WeakEntity<EditableTextState>>,
-    ) -> Self {
-        self.bookmark_folder_name_input = folder_name;
         self
     }
 
@@ -680,16 +669,6 @@ impl RenderOnce for ExplorerWindow {
                 folder_size_backend_status,
                 self.on_action.clone(),
             ))
-            .when_some(self.state.bookmark_context_menu(), |element, menu| {
-                element.child(bookmark_context_menu(
-                    self.tokens,
-                    &self.state,
-                    menu,
-                    f32::from(window.bounds().size.width),
-                    f32::from(window.bounds().size.height),
-                    self.on_action.clone(),
-                ))
-            })
             .when_some(
                 self.state.bookmark_toolbar_context_menu(),
                 |element, menu| {
@@ -721,13 +700,6 @@ impl RenderOnce for ExplorerWindow {
                     ))
                 },
             )
-            .when(self.state.bookmark_folder_editor().is_some(), |element| {
-                element.child(bookmark_folder_editor(
-                    self.tokens,
-                    self.bookmark_folder_name_input,
-                    self.on_action.clone(),
-                ))
-            })
             .when_some(about_dialog_info, |element, info| {
                 element.child(about_dialog(self.tokens, info, self.on_action.clone()))
             })
@@ -1476,119 +1448,6 @@ pub(crate) fn bookmark_manager(
         )
 }
 
-fn bookmark_context_menu(
-    tokens: UiTokens,
-    state: &AppViewState,
-    menu: crate::state::BookmarkContextMenuState,
-    window_width: f32,
-    window_height: f32,
-    callback: Option<ActionCallback>,
-) -> impl IntoElement {
-    let bookmark = state
-        .bookmarks()
-        .entries()
-        .iter()
-        .find(|bookmark| bookmark.id == menu.id)
-        .cloned();
-    let close = ExplorerAction::CloseBookmarkContextMenu;
-    let close_cb = callback.clone();
-    let close_right = close.clone();
-    let close_right_cb = callback.clone();
-    let rows = bookmark.into_iter().flat_map(|bookmark| {
-        let id = bookmark.id;
-        let primary_label = match bookmark.target {
-            explorer_model::BookmarkTarget::Folder { .. }
-            | explorer_model::BookmarkTarget::FolderPath { .. } => "在目前分頁開啟",
-            explorer_model::BookmarkTarget::File { .. }
-            | explorer_model::BookmarkTarget::FilePath { .. } => "開啟檔案",
-            explorer_model::BookmarkTarget::LuaScript { .. } => "執行 Lua 指令",
-        };
-        let mut commands = vec![(
-            primary_label,
-            ExplorerAction::ActivateBookmark { id },
-            false,
-        )];
-        if matches!(
-            bookmark.target,
-            explorer_model::BookmarkTarget::Folder { .. }
-                | explorer_model::BookmarkTarget::FolderPath { .. }
-        ) {
-            commands.push((
-                "在新分頁開啟",
-                ExplorerAction::OpenBookmarkInNewTab { id },
-                false,
-            ));
-        }
-        commands.extend([
-            ("編輯書籤…", ExplorerAction::EditBookmark { id }, false),
-            ("移動到資料夾…", ExplorerAction::EditBookmark { id }, false),
-            ("刪除書籤", ExplorerAction::RemoveBookmark { id }, true),
-        ]);
-        let command_callback = callback.clone();
-        commands
-            .into_iter()
-            .enumerate()
-            .map(move |(index, (label, action, danger))| {
-                let callback = command_callback.clone();
-                div()
-                    .id(format!("bookmark-context-command-{index}"))
-                    .role(Role::MenuItem)
-                    .aria_label(label)
-                    .cursor_pointer()
-                    .px(px(12.0))
-                    .py(px(7.0))
-                    .rounded(px(4.0))
-                    .text_color(if danger {
-                        tokens.theme.colors.danger.to_gpui()
-                    } else {
-                        tokens.theme.colors.text_primary.to_gpui()
-                    })
-                    .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
-                    .child(label)
-                    .when_some(callback, move |element, cb| {
-                        element.on_click(move |_, window, cx| cb(&action, window, cx))
-                    })
-            })
-    });
-    let left = menu.x.min((window_width - 244.0).max(0.0));
-    let top = menu.y.min((window_height - 250.0).max(0.0));
-    div()
-        .id("bookmark-context-overlay")
-        .absolute()
-        .inset_0()
-        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-            if let Some(cb) = close_cb.as_ref() {
-                cb(&close, window, cx);
-            }
-        })
-        .on_mouse_down(MouseButton::Right, move |_, window, cx| {
-            if let Some(cb) = close_right_cb.as_ref() {
-                cb(&close_right, window, cx);
-            }
-        })
-        .child(
-            deferred(
-                div()
-                    .id("bookmark-context-menu")
-                    .role(Role::Menu)
-                    .aria_label("Bookmark context menu")
-                    .absolute()
-                    .left(px(left))
-                    .top(px(top))
-                    .min_w(px(236.0))
-                    .p(px(6.0))
-                    .rounded(px(6.0))
-                    .border(px(1.0))
-                    .border_color(tokens.theme.colors.divider.to_gpui())
-                    .bg(tokens.theme.colors.menu_fill.to_gpui())
-                    .shadow_lg()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .children(rows),
-            )
-            .with_priority(300),
-        )
-}
-
 fn bookmark_toolbar_context_menu(
     tokens: UiTokens,
     menu: crate::state::BookmarkToolbarContextMenuState,
@@ -1714,11 +1573,8 @@ fn remote_context_menu(
     let close_cb = callback.clone();
     let close_right = close.clone();
     let close_right_cb = callback.clone();
-    let commands = if menu.background {
-        vec![
-            ("新增資料夾", ExplorerAction::CreateFolder, false),
-            ("貼上", ExplorerAction::Paste, false),
-        ]
+    let mut commands = if menu.background {
+        vec![("新增資料夾", ExplorerAction::CreateFolder, false)]
     } else {
         vec![
             ("開啟", ExplorerAction::OpenFocused, false),
@@ -1728,6 +1584,12 @@ fn remote_context_menu(
             ("永久刪除…", ExplorerAction::RecycleDeleteSelected, true),
         ]
     };
+    if menu.paste_available {
+        commands.insert(
+            usize::from(!menu.background),
+            ("貼上", ExplorerAction::Paste, false),
+        );
+    }
     let rows = commands
         .into_iter()
         .enumerate()
@@ -2073,7 +1935,7 @@ pub(crate) fn bookmark_folder_editor(
     let cancel = ExplorerAction::CancelBookmarkFolderEditor;
     let save_cb = callback.clone();
     div()
-        .id("bookmark-folder-editor-overlay")
+        .id("bookmark-folder-editor-window-content")
         .absolute()
         .inset_0()
         .flex()
@@ -2763,6 +2625,19 @@ fn folder_options_extensions_page(
         .flex()
         .flex_col()
         .gap(px(tokens.layout.maximum_visible_glyph.value()))
+        .when(!enabled.is_empty() && enabled.iter().all(|enabled| !enabled), |page| {
+            page.child(
+                div()
+                    .id("folder-options-extension-safe-mode")
+                    .role(Role::Status)
+                    .aria_label("Plugin Safe Mode")
+                    .p(px(tokens.layout.control_padding_horizontal.value()))
+                    .border(px(1.0))
+                    .border_color(tokens.theme.colors.divider.to_gpui())
+                    .rounded(px(tokens.layout.corner_radius.value()))
+                    .child("Plugin Safe Mode 已啟用。勾選要重新啟用的 Plugin，按 Apply 或 OK，然後重新啟動 SuperExplorer。"),
+            )
+        })
         .children(extensions.iter().enumerate().map(|(index, extension)| {
             let website_action = ExplorerAction::OpenExtensionAuthorWebsite { index };
             let community_action = ExplorerAction::OpenExtensionCommunityWebsite { index };
@@ -3931,10 +3806,6 @@ impl RenderOnce for CommandBar {
         let compact = f32::from(window.bounds().size.width) < layout.compact_window_width.value();
         let selection_count = self.state.tabs().active_tab().selection.len();
         let has_selection = selection_count > 0;
-        let can_restore = self
-            .state
-            .selected_namespace_command_enabled(explorer_model::NamespaceCommand::Restore);
-        let can_empty = self.state.active_is_recycle_bin();
         let can_write = self.state.active_presentation().can_write;
         let can_paste = !matches!(
             self.state.clipboard(),
@@ -4128,8 +3999,6 @@ impl RenderOnce for CommandBar {
                     command_more_menu_v2(
                         self.tokens,
                         has_selection,
-                        can_restore,
-                        can_empty,
                         more_index,
                         self.on_action.clone(),
                     )
@@ -4333,8 +4202,6 @@ fn command_extensions_menu_legacy(
 fn command_more_menu_v2(
     tokens: UiTokens,
     has_selection: bool,
-    can_restore: bool,
-    can_empty: bool,
     focused_index: usize,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
@@ -4412,7 +4279,7 @@ fn command_more_menu_v2(
             "複製路徑",
             ExplorerAction::CopySelectedPaths,
             has_selection,
-            3,
+            4,
             on_action.clone(),
         ))
         .child(separator())
@@ -4421,7 +4288,7 @@ fn command_more_menu_v2(
             "全選",
             ExplorerAction::SelectAllItems,
             true,
-            4,
+            5,
             on_action.clone(),
         ))
         .child(item(
@@ -4429,7 +4296,7 @@ fn command_more_menu_v2(
             "全部不選",
             ExplorerAction::ClearSelection,
             has_selection,
-            5,
+            6,
             on_action.clone(),
         ))
         .child(item(
@@ -4437,40 +4304,16 @@ fn command_more_menu_v2(
             "反向選擇",
             ExplorerAction::InvertSelection,
             true,
-            6,
-            on_action.clone(),
-        ))
-        .child(separator())
-        .child(item(
-            "more-properties",
-            "內容",
-            ExplorerAction::ShowPropertiesSelected,
-            has_selection,
             7,
             on_action.clone(),
         ))
-        .child(item(
-            "more-restore",
-            "Restore",
-            ExplorerAction::RestoreSelected,
-            can_restore,
-            8,
-            on_action.clone(),
-        ))
-        .child(item(
-            "more-empty-recycle-bin",
-            "Empty Recycle Bin",
-            ExplorerAction::EmptyRecycleBin,
-            can_empty,
-            9,
-            on_action.clone(),
-        ))
+        .child(separator())
         .child(item(
             "more-options",
             "選項",
             ExplorerAction::OpenFolderOptions,
             true,
-            10,
+            8,
             on_action.clone(),
         ))
         .child(item(
@@ -4478,7 +4321,7 @@ fn command_more_menu_v2(
             "關於",
             ExplorerAction::OpenAboutDialog,
             true,
-            11,
+            9,
             on_action,
         ));
     deferred(
@@ -11323,6 +11166,242 @@ pub struct OperationCenter {
     on_action: Option<ActionCallback>,
 }
 
+fn operation_location_text(location: &explorer_model::LocationDescriptor) -> String {
+    let editable = location.editable_text();
+    if !editable.is_empty() {
+        return editable;
+    }
+    match location {
+        explorer_model::LocationDescriptor::ShellNamespace(_) => "Shell namespace".to_owned(),
+        explorer_model::LocationDescriptor::KnownFolder(_) => "Windows known folder".to_owned(),
+        explorer_model::LocationDescriptor::FileSystem(_)
+        | explorer_model::LocationDescriptor::ParsingName(_)
+        | explorer_model::LocationDescriptor::Virtual(_) => "Unknown location".to_owned(),
+    }
+}
+
+fn operation_child_location_text(
+    parent: &explorer_model::LocationDescriptor,
+    name: &str,
+) -> String {
+    match parent {
+        explorer_model::LocationDescriptor::FileSystem(path) => {
+            path.join(name).to_string_lossy().into_owned()
+        }
+        explorer_model::LocationDescriptor::Virtual(location) => {
+            let mut child = location.clone();
+            child.entry_id = None;
+            child.components.push(name.to_owned());
+            explorer_model::LocationDescriptor::Virtual(child).editable_text()
+        }
+        _ => format!("{} → {name}", operation_location_text(parent)),
+    }
+}
+
+fn renamed_location_text(item: &explorer_model::ItemDescriptor, new_name: &str) -> String {
+    match &item.location {
+        explorer_model::LocationDescriptor::FileSystem(path) => path
+            .parent()
+            .map(|parent| parent.join(new_name).to_string_lossy().into_owned())
+            .unwrap_or_else(|| new_name.to_owned()),
+        explorer_model::LocationDescriptor::Virtual(location) => {
+            let mut renamed = location.clone();
+            if let Some(last) = renamed.components.last_mut() {
+                new_name.clone_into(last);
+                renamed.entry_id = None;
+                explorer_model::LocationDescriptor::Virtual(renamed).editable_text()
+            } else {
+                format!("{} → {new_name}", operation_location_text(&item.location))
+            }
+        }
+        _ => format!("{} → {new_name}", operation_location_text(&item.location)),
+    }
+}
+
+fn operation_sources_text(items: &[explorer_model::ItemDescriptor]) -> String {
+    let Some(first) = items.first() else {
+        return "來源由系統剪貼簿提供".to_owned();
+    };
+    let first = operation_location_text(&first.location);
+    if items.len() == 1 {
+        first
+    } else {
+        format!("{first}（另有 {} 個項目）", items.len() - 1)
+    }
+}
+
+fn operation_request_summary(record: &explorer_model::OperationRecord) -> String {
+    use explorer_model::FileOperationKind as Kind;
+    match &record.request.kind {
+        Kind::CreateFolder { parent, name } => {
+            format!(
+                "新增資料夾｜{}",
+                operation_child_location_text(parent, name)
+            )
+        }
+        Kind::CreateItem {
+            parent,
+            name,
+            recipe,
+        } => {
+            let label = if matches!(recipe, explorer_model::ShellNewItemRecipe::Folder) {
+                "新增資料夾"
+            } else {
+                "新增檔案"
+            };
+            format!("{label}｜{}", operation_child_location_text(parent, name))
+        }
+        Kind::Rename { item, new_name } => format!(
+            "重新命名｜{} → {}",
+            operation_location_text(&item.location),
+            renamed_location_text(item, new_name)
+        ),
+        Kind::Copy { items, destination } => format!(
+            "複製 {} 個項目｜{} → {}",
+            record.progress.total_items,
+            operation_sources_text(items),
+            operation_location_text(destination)
+        ),
+        Kind::Move { items, destination } => format!(
+            "移動 {} 個項目｜{} → {}",
+            record.progress.total_items,
+            operation_sources_text(items),
+            operation_location_text(destination)
+        ),
+        Kind::RecycleDelete { items } => format!(
+            "移至資源回收筒 {} 個項目｜{}",
+            record.progress.total_items,
+            operation_sources_text(items)
+        ),
+        Kind::PermanentDelete { items, .. } => format!(
+            "永久刪除 {} 個項目｜{}",
+            record.progress.total_items,
+            operation_sources_text(items)
+        ),
+        Kind::CreateShortcut { items } => format!(
+            "建立捷徑 {} 個項目｜{}",
+            record.progress.total_items,
+            operation_sources_text(items)
+        ),
+    }
+}
+
+fn operation_message(record: &explorer_model::OperationRecord) -> String {
+    let summary = operation_request_summary(record);
+    match &record.terminal {
+        None => format!(
+            "{summary}｜進度 {}/{}",
+            record.progress.completed_items, record.progress.total_items
+        ),
+        Some(explorer_model::OperationTerminal::Finished) => format!("{summary}｜完成"),
+        Some(explorer_model::OperationTerminal::Cancelled) => format!("{summary}｜已取消"),
+        Some(explorer_model::OperationTerminal::Failed(error)) => {
+            format!("{summary}｜失敗：{}", error.user_message)
+        }
+        Some(explorer_model::OperationTerminal::Partial { outcomes }) => {
+            let succeeded = outcomes
+                .iter()
+                .filter(|outcome| {
+                    matches!(
+                        outcome.result,
+                        explorer_model::OperationItemResult::Succeeded
+                    )
+                })
+                .count();
+            format!("{summary}｜部分完成：{succeeded}/{} 成功", outcomes.len())
+        }
+    }
+}
+
+fn operation_item_name(item: &explorer_model::ItemDescriptor) -> Option<String> {
+    match &item.location {
+        explorer_model::LocationDescriptor::FileSystem(path) => path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned()),
+        explorer_model::LocationDescriptor::Virtual(location) => {
+            location.components.last().cloned()
+        }
+        _ => None,
+    }
+}
+
+fn operation_outcome_destination_text(
+    outcome: &explorer_model::OperationItemOutcome,
+    append_item_name: bool,
+) -> String {
+    let Some(destination) = &outcome.destination else {
+        return "未提供目的地".to_owned();
+    };
+    if !append_item_name {
+        return operation_location_text(destination);
+    }
+    let Some(item) = &outcome.item else {
+        return operation_location_text(destination);
+    };
+    let Some(name) = operation_item_name(item) else {
+        return operation_location_text(destination);
+    };
+    operation_child_location_text(destination, &name)
+}
+
+fn operation_outcome_route_text(
+    outcome: &explorer_model::OperationItemOutcome,
+    append_item_name: bool,
+) -> String {
+    let source = outcome.item.as_ref().map_or_else(
+        || "未提供來源".to_owned(),
+        |item| operation_location_text(&item.location),
+    );
+    format!(
+        "{source} → {}",
+        operation_outcome_destination_text(outcome, append_item_name)
+    )
+}
+
+fn operation_outcome_message(
+    outcome: &explorer_model::OperationItemOutcome,
+    append_item_name: bool,
+) -> String {
+    let route = operation_outcome_route_text(outcome, append_item_name);
+    match &outcome.result {
+        explorer_model::OperationItemResult::Succeeded => format!("成功｜{route}"),
+        explorer_model::OperationItemResult::Skipped => format!("略過｜{route}"),
+        explorer_model::OperationItemResult::Cancelled => format!("已取消｜{route}"),
+        explorer_model::OperationItemResult::Partial(error)
+        | explorer_model::OperationItemResult::Failed(error) => {
+            let status = if matches!(
+                &outcome.result,
+                explorer_model::OperationItemResult::Partial(_)
+            ) {
+                "部分完成"
+            } else {
+                "失敗"
+            };
+            let native = error
+                .native_code
+                .map_or_else(String::new, |code| format!("｜錯誤碼 {code}"));
+            format!(
+                "{status}｜{route}｜{}｜{}{native}",
+                error.operation, error.user_message
+            )
+        }
+    }
+}
+
+fn operation_message_opacity(terminal: bool, terminal_elapsed: Option<Duration>) -> Option<f32> {
+    if !terminal {
+        return Some(1.0);
+    }
+    let elapsed = terminal_elapsed?;
+    if elapsed < Duration::from_secs(7) {
+        Some(1.0)
+    } else if elapsed < Duration::from_secs(8) {
+        Some(1.0 - (elapsed - Duration::from_secs(7)).as_secs_f32())
+    } else {
+        None
+    }
+}
+
 impl OperationCenter {
     pub const fn new(
         tokens: UiTokens,
@@ -11340,7 +11419,16 @@ impl OperationCenter {
 impl RenderOnce for OperationCenter {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let colors = self.tokens.theme.colors;
-        let latest = self.state.operation_center().latest().cloned();
+        let terminal_elapsed = self.state.latest_operation_terminal_elapsed(Instant::now());
+        let latest = self
+            .state
+            .operation_center()
+            .latest()
+            .cloned()
+            .and_then(|record| {
+                operation_message_opacity(record.phase.is_terminal(), terminal_elapsed)
+                    .map(|opacity| (record, opacity))
+            });
         div()
             .id(OPERATION_CENTER_ID)
             .debug_selector(|| OPERATION_CENTER_ID.to_owned())
@@ -11351,39 +11439,13 @@ impl RenderOnce for OperationCenter {
                 Some(EXPLORER_WINDOW_ID),
                 "normal",
             ))
-            .when_some(latest, |element, record| {
-                let summary = match &record.terminal {
-                    None => format!(
-                        "File operation: {}/{} items",
-                        record.progress.completed_items, record.progress.total_items
-                    ),
-                    Some(explorer_model::OperationTerminal::Finished) => {
-                        "File operation completed".to_owned()
-                    }
-                    Some(explorer_model::OperationTerminal::Cancelled) => {
-                        "File operation cancelled".to_owned()
-                    }
-                    Some(explorer_model::OperationTerminal::Failed(error)) => {
-                        if error.kind == explorer_common::ExplorerErrorKind::Conflict {
-                            format!(
-                                "{} Choose Skip, Replace, or Keep both, then retry.",
-                                error.user_message
-                            )
-                        } else {
-                            format!("{} Retry after correcting the reported problem.", error.user_message)
-                        }
-                    }
-                    Some(explorer_model::OperationTerminal::Partial { outcomes }) => {
-                        let succeeded = outcomes
-                            .iter()
-                            .filter(|outcome| matches!(outcome.result, explorer_model::OperationItemResult::Succeeded))
-                            .count();
-                        format!(
-                            "File operation partially completed: {succeeded}/{} succeeded. Review failed items and retry them.",
-                            outcomes.len()
-                        )
-                    }
-                };
+            .when_some(latest, |element, (record, opacity)| {
+                let summary = operation_message(&record);
+                let append_item_name = matches!(
+                    record.request.kind,
+                    explorer_model::FileOperationKind::Copy { .. }
+                        | explorer_model::FileOperationKind::Move { .. }
+                );
                 let cancel = (!record.phase.is_terminal()).then_some(semantic_button(
                     "operation-cancel",
                     "Cancel file operation",
@@ -11407,22 +11469,14 @@ impl RenderOnce for OperationCenter {
                     .flatten()
                     .take(5)
                     .map(|outcome| {
-                        let result = match &outcome.result {
-                            explorer_model::OperationItemResult::Succeeded => "Succeeded".to_owned(),
-                            explorer_model::OperationItemResult::Skipped => "Skipped".to_owned(),
-                            explorer_model::OperationItemResult::Cancelled => "Cancelled".to_owned(),
-                            explorer_model::OperationItemResult::Partial(error) => format!(
-                                "Partially completed: {}",
-                                error.user_message
-                            ),
-                            explorer_model::OperationItemResult::Failed(error) => format!(
-                                "Failed (HRESULT {:?}): {}",
-                                error.native_code, error.user_message
-                            ),
-                        };
-                        div().text_color(colors.text_secondary.to_gpui()).child(result)
+                        let result = operation_outcome_message(outcome, append_item_name);
+                        div()
+                            .text_color(colors.text_secondary.to_gpui())
+                            .child(result)
                     });
                 element
+                    .aria_label(summary.clone())
+                    .opacity(opacity)
                     .p(px(self.tokens.layout.control_padding_horizontal.value()))
                     .border_b(px(self.tokens.layout.focus_stroke.value()))
                     .border_color(colors.divider.to_gpui())
@@ -12745,11 +12799,208 @@ mod tests {
         file_view_background_context_hit, file_view_local_pointer, format_explorer_size,
         is_generic_breadcrumb_folder_icon_key, localized_search_placeholder, marquee_content_rect,
         navigation_item_shell_texture, navigation_shell_texture, new_tab_button_background,
-        remote_context_menu_position, select_file_row_shell_icon, tab_background,
+        operation_location_text, operation_message, operation_message_opacity,
+        operation_outcome_message, operation_request_summary, remote_context_menu_position,
+        select_file_row_shell_icon, tab_background,
     };
     use crate::{UiTokens, theme::ThemeTokens};
     use gpui::WindowControlArea;
-    use std::cmp::Ordering;
+    use std::{cmp::Ordering, time::Duration};
+
+    fn virtual_location(
+        provider: &str,
+        authority: &str,
+        components: &[&str],
+    ) -> explorer_model::LocationDescriptor {
+        explorer_model::LocationDescriptor::Virtual(explorer_model::VirtualLocationDescriptor {
+            provider_id: provider.to_owned(),
+            public_authority: Some(authority.to_owned()),
+            container_identity: [1; 16],
+            container_generation: 1,
+            entry_id: Some(1),
+            components: components.iter().map(|value| (*value).to_owned()).collect(),
+        })
+    }
+
+    fn operation_item(
+        id: u8,
+        location: explorer_model::LocationDescriptor,
+    ) -> explorer_model::ItemDescriptor {
+        explorer_model::ItemDescriptor {
+            id: explorer_model::ShellItemId::from_provider_bytes([id]).expect("item id"),
+            location,
+        }
+    }
+
+    #[test]
+    fn operation_message_formats_local_adb_sftp_and_multiple_sources() {
+        let adb = virtual_location("adb", "emulator-5554", &["sdcard", "Download", "a.txt"]);
+        let sftp = virtual_location("sftp", "45.32.49.125", &["home", "linuxuser"]);
+        assert_eq!(
+            operation_location_text(&adb),
+            "adb://emulator-5554/sdcard/Download/a.txt"
+        );
+        assert_eq!(
+            operation_location_text(&sftp),
+            "sftp://45.32.49.125/home/linuxuser"
+        );
+        let request = explorer_model::FileOperationRequest {
+            kind: explorer_model::FileOperationKind::Copy {
+                items: vec![
+                    operation_item(
+                        1,
+                        explorer_model::LocationDescriptor::file_system(r"C:\Downloads\one.txt"),
+                    ),
+                    operation_item(2, adb),
+                ],
+                destination: sftp,
+            },
+            flags: explorer_model::FileOperationFlags::default(),
+        };
+        let mut record =
+            explorer_model::OperationRecord::queued(explorer_common::RequestId::new(), request, 2);
+        record.start().expect("operation starts");
+        let summary = operation_request_summary(&record);
+        assert!(summary.contains("複製 2 個項目"));
+        assert!(summary.contains(r"C:\Downloads\one.txt"));
+        assert!(summary.contains("另有 1 個項目"));
+        assert!(summary.contains("sftp://45.32.49.125/home/linuxuser"));
+        assert!(!summary.contains("password"));
+    }
+
+    #[test]
+    fn operation_message_distinguishes_create_rename_delete_and_terminal_results() {
+        let create = explorer_model::FileOperationRequest {
+            kind: explorer_model::FileOperationKind::CreateFolder {
+                parent: virtual_location("adb", "emulator-5554", &["sdcard", "Download"]),
+                name: "New folder".to_owned(),
+            },
+            flags: explorer_model::FileOperationFlags::default(),
+        };
+        let mut record =
+            explorer_model::OperationRecord::queued(explorer_common::RequestId::new(), create, 1);
+        record.start().expect("operation starts");
+        assert!(operation_message(&record).contains("進度 0/1"));
+        record
+            .finish(explorer_model::OperationTerminal::Finished)
+            .expect("operation finishes");
+        assert_eq!(
+            operation_message(&record),
+            "新增資料夾｜adb://emulator-5554/sdcard/Download/New folder｜完成"
+        );
+
+        for kind in [
+            explorer_model::FileOperationKind::Rename {
+                item: operation_item(
+                    3,
+                    explorer_model::LocationDescriptor::file_system(r"C:\old.txt"),
+                ),
+                new_name: "new.txt".to_owned(),
+            },
+            explorer_model::FileOperationKind::PermanentDelete {
+                items: vec![operation_item(
+                    4,
+                    virtual_location("sftp", "host", &["tmp", "gone"]),
+                )],
+                confirmed: true,
+            },
+            explorer_model::FileOperationKind::CreateShortcut {
+                items: vec![operation_item(
+                    5,
+                    explorer_model::LocationDescriptor::file_system(r"C:\target.txt"),
+                )],
+            },
+        ] {
+            let request = explorer_model::FileOperationRequest {
+                kind,
+                flags: explorer_model::FileOperationFlags::default(),
+            };
+            let record = explorer_model::OperationRecord::queued(
+                explorer_common::RequestId::new(),
+                request,
+                1,
+            );
+            assert!(!operation_request_summary(&record).is_empty());
+        }
+    }
+
+    #[test]
+    fn operation_message_opacity_follows_seven_to_eight_second_contract() {
+        assert_eq!(operation_message_opacity(false, None), Some(1.0));
+        assert_eq!(
+            operation_message_opacity(true, Some(Duration::from_millis(6_999))),
+            Some(1.0)
+        );
+        assert_eq!(
+            operation_message_opacity(true, Some(Duration::from_millis(7_500))),
+            Some(0.5)
+        );
+        assert_eq!(
+            operation_message_opacity(true, Some(Duration::from_secs(8))),
+            None
+        );
+        assert_eq!(operation_message_opacity(true, None), None);
+    }
+
+    #[test]
+    fn operation_failure_row_includes_source_target_stage_code_and_reason() {
+        let error = explorer_common::ExplorerError::new(
+            explorer_common::ExplorerErrorKind::Availability,
+            "目的地上傳",
+            true,
+            "adb push failed: device offline",
+            "remote transfer failed",
+        )
+        .with_native_code(17);
+        let outcome = explorer_model::OperationItemOutcome {
+            item: Some(operation_item(
+                91,
+                explorer_model::LocationDescriptor::file_system(r"C:\Downloads\report.zip"),
+            )),
+            destination: Some(virtual_location(
+                "adb",
+                "emulator-5554",
+                &["sdcard", "Download"],
+            )),
+            result: explorer_model::OperationItemResult::Failed(error),
+        };
+        assert_eq!(
+            operation_outcome_message(&outcome, true),
+            r"失敗｜C:\Downloads\report.zip → adb://emulator-5554/sdcard/Download/report.zip｜目的地上傳｜adb push failed: device offline｜錯誤碼 17"
+        );
+    }
+
+    #[test]
+    fn operation_failure_rows_keep_distinct_sftp_reasons_and_fallback() {
+        let make_outcome = |id, name: &str, reason: &str| explorer_model::OperationItemOutcome {
+            item: Some(operation_item(
+                id,
+                virtual_location("sftp", "45.32.49.125", &["home", "linuxuser", name]),
+            )),
+            destination: Some(explorer_model::LocationDescriptor::file_system(
+                r"C:\Downloads",
+            )),
+            result: explorer_model::OperationItemResult::Failed(
+                explorer_common::ExplorerError::new(
+                    explorer_common::ExplorerErrorKind::Availability,
+                    "來源下載",
+                    true,
+                    reason,
+                    "remote transfer failed",
+                ),
+            ),
+        };
+        let denied =
+            operation_outcome_message(&make_outcome(92, "a.txt", "permission denied"), true);
+        let missing = operation_outcome_message(&make_outcome(93, "b.txt", "未提供底層錯誤"), true);
+        assert!(denied.contains("sftp://45.32.49.125/home/linuxuser/a.txt"));
+        assert!(denied.contains(r"C:\Downloads\a.txt"));
+        assert!(denied.contains("permission denied"));
+        assert!(missing.contains("b.txt"));
+        assert!(missing.contains("未提供底層錯誤"));
+        assert_ne!(denied, missing);
+        assert!(include_str!("chrome.rs").contains(".take(5)"));
+    }
 
     #[test]
     fn remote_context_menu_position_uses_client_anchor_and_clamps_to_window() {
@@ -14615,6 +14866,26 @@ mod tests {
     }
 
     #[test]
+    fn more_menu_omits_properties_and_recycle_bin_commands() {
+        let source = include_str!("chrome.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source precedes tests");
+        let menu = production
+            .split("fn command_more_menu_v2(")
+            .nth(1)
+            .expect("more menu builder")
+            .split("\nfn ")
+            .next()
+            .expect("more menu builder boundary");
+
+        for removed_id in ["more-properties", "more-restore", "more-empty-recycle-bin"] {
+            assert!(!menu.contains(removed_id), "unexpected item: {removed_id}");
+        }
+    }
+
+    #[test]
     fn every_command_popup_occludes_rows_and_owns_pointer_and_hover_hit_testing() {
         let source = include_str!("chrome.rs");
         let production = source
@@ -14924,24 +15195,14 @@ mod tests {
     }
 
     #[test]
-    fn bookmark_context_menu_exposes_typed_commands_and_all_projection_hooks() {
+    fn bookmark_items_keep_all_right_click_hooks_without_an_overlay_menu() {
         let production = include_str!("chrome.rs")
             .split("#[cfg(test)]")
             .next()
             .expect("production source");
-        for required in [
-            "Bookmark context menu",
-            "在目前分頁開啟",
-            "在新分頁開啟",
-            "開啟檔案",
-            "執行 Lua 指令",
-            "編輯書籤…",
-            "移動到資料夾…",
-            "刪除書籤",
-        ] {
-            assert!(production.contains(required), "missing {required}");
-        }
         assert_eq!(production.matches("OpenBookmarkContextMenu").count(), 5);
+        assert!(!production.contains("bookmark-context-overlay"));
+        assert!(!production.contains("fn bookmark_context_menu("));
     }
 
     #[test]
