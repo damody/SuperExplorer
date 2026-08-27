@@ -43,26 +43,27 @@ const SQLITE_LENGTH_LIMIT_BYTES: i32 = (MAX_ENTRY_NAME_BYTES + 4096) as i32;
 const MAX_INDEX_DECODED_BYTES: usize = 8 * 1024 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct StoreIdentityV1 {
-    pub(crate) volume: VolumeIdentityV2,
-    pub(crate) cursor: JournalCursorV1,
-    pub(crate) complete: bool,
+pub struct StoreIdentityV1 {
+    pub volume: VolumeIdentityV2,
+    pub cursor: JournalCursorV1,
+    pub complete: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct StoreTelemetryV1 {
+pub struct StoreTelemetryV1 {
     pub(crate) main_bytes: u64,
     pub(crate) wal_bytes: u64,
-    pub(crate) transaction_attempts: u64,
-    pub(crate) transaction_failures: u64,
-    pub(crate) checkpoint_attempts: u64,
-    pub(crate) checkpoint_failures: u64,
-    pub(crate) transaction_last_outcome: u8,
-    pub(crate) checkpoint_last_outcome: u8,
+    pub transaction_attempts: u64,
+    pub transaction_failures: u64,
+    pub checkpoint_attempts: u64,
+    pub checkpoint_failures: u64,
+    pub transaction_last_outcome: u8,
+    pub checkpoint_last_outcome: u8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CommitFailurePointV1 {
+#[cfg(test)]
+pub enum CommitFailurePointV1 {
     None,
     BeforeMutation,
     BeforeCursor,
@@ -82,7 +83,7 @@ enum MigrationFailurePointV1 {
 }
 
 #[derive(Debug)]
-pub(crate) struct MftSqliteStoreV1 {
+pub struct MftSqliteStoreV1 {
     connection: Connection,
     path: PathBuf,
     identity: StoreIdentityV1,
@@ -90,17 +91,18 @@ pub(crate) struct MftSqliteStoreV1 {
 }
 
 impl MftSqliteStoreV1 {
-    pub(crate) const fn schema_version() -> u8 {
+    pub const fn schema_version() -> u8 {
         SCHEMA_VERSION as u8
     }
 
-    pub(crate) fn file_bytes_for_path(path: &Path) -> (u64, u64) {
+    pub fn file_bytes_for_path(path: &Path) -> (u64, u64) {
         let main = std::fs::metadata(path).map_or(0, |metadata| metadata.len());
         let wal = std::fs::metadata(PathBuf::from(format!("{}-wal", path.display())))
             .map_or(0, |metadata| metadata.len());
         (main, wal)
     }
 
+    #[cfg(test)]
     pub(crate) fn migrate_snapshot(
         temporary: &Path,
         canonical: &Path,
@@ -121,99 +123,7 @@ impl MftSqliteStoreV1 {
             || true,
         )
     }
-
-    pub(crate) fn migrate_snapshot_guarded(
-        temporary: &Path,
-        canonical: &Path,
-        fixed_root: &Path,
-        identity: StoreIdentityV1,
-        index: &MftIndexV1,
-        lifecycle_open: impl Fn() -> bool + Sync,
-    ) -> Result<Self, String> {
-        Self::migrate_snapshot_injected(
-            temporary,
-            canonical,
-            fixed_root,
-            identity,
-            index,
-            MigrationFailurePointV1::None,
-            false,
-            None,
-            None,
-            lifecycle_open,
-        )
-    }
-
-    pub(crate) fn rebuild_snapshot_guarded(
-        temporary: &Path,
-        canonical: &Path,
-        fixed_root: &Path,
-        identity: StoreIdentityV1,
-        index: &MftIndexV1,
-        lifecycle_open: impl Fn() -> bool + Sync,
-    ) -> Result<Self, String> {
-        Self::migrate_snapshot_injected(
-            temporary,
-            canonical,
-            fixed_root,
-            identity,
-            index,
-            MigrationFailurePointV1::None,
-            true,
-            None,
-            None,
-            lifecycle_open,
-        )
-    }
-
-    pub(crate) fn snapshot_linearized(
-        temporary: &Path,
-        canonical: &Path,
-        fixed_root: &Path,
-        identity: StoreIdentityV1,
-        index: &MftIndexV1,
-        replace_existing: bool,
-        barrier: &LifecycleBarrierV1,
-    ) -> Result<Self, String> {
-        Self::migrate_snapshot_injected(
-            temporary,
-            canonical,
-            fixed_root,
-            identity,
-            index,
-            MigrationFailurePointV1::None,
-            replace_existing,
-            None,
-            Some(barrier),
-            || barrier.is_open(),
-        )
-    }
-
-    pub(crate) fn snapshot_focused_linearized(
-        temporary: &Path,
-        canonical: &Path,
-        fixed_root: &Path,
-        identity: StoreIdentityV1,
-        index: &MftIndexV1,
-        replace_existing: bool,
-        barrier: &LifecycleBarrierV1,
-        focused_now: impl Fn() -> bool + Sync,
-    ) -> Result<Self, String> {
-        Self::migrate_snapshot_injected(
-            temporary,
-            canonical,
-            fixed_root,
-            identity,
-            index,
-            MigrationFailurePointV1::None,
-            replace_existing,
-            None,
-            Some(barrier),
-            || barrier.is_open() && focused_now(),
-        )
-    }
-
-    pub(crate) fn snapshot_focused_bounded_linearized(
+    pub fn snapshot_focused_bounded_linearized(
         temporary: &Path,
         canonical: &Path,
         fixed_root: &Path,
@@ -547,6 +457,7 @@ impl MftSqliteStoreV1 {
     }
     /// Admits and loads a canonical store without enabling WAL persistence or
     /// changing connection pragmas. This is the unfocused startup path.
+    #[cfg(test)]
     pub(crate) fn load_read_only(
         path: &Path,
         fixed_root: &Path,
@@ -562,7 +473,7 @@ impl MftSqliteStoreV1 {
     /// `expected_cursor` still equals the NTFS journal before and after this
     /// read, so a budget-partial memory topology can never make stale SQLite
     /// data look exact.
-    pub(crate) fn query_folder_aggregate_read_only(
+    pub fn query_folder_aggregate_read_only(
         path: &Path,
         fixed_root: &Path,
         expected_volume: VolumeIdentityV2,
@@ -650,7 +561,7 @@ impl MftSqliteStoreV1 {
     /// Read-only startup admission with service live-memory ceilings. The SQL
     /// aggregate preflight avoids materializing an otherwise valid multi-GB
     /// canonical index merely to trim it after allocation.
-    pub(crate) fn load_read_only_bounded(
+    pub fn load_read_only_bounded(
         path: &Path,
         fixed_root: &Path,
         expected_volume: VolumeIdentityV2,
@@ -668,7 +579,7 @@ impl MftSqliteStoreV1 {
         )
     }
 
-    pub(crate) fn load_read_only_bounded_cancelled(
+    pub fn load_read_only_bounded_cancelled(
         path: &Path,
         fixed_root: &Path,
         expected_volume: VolumeIdentityV2,
@@ -688,7 +599,7 @@ impl MftSqliteStoreV1 {
         )
     }
 
-    pub(crate) fn replacement_backup_path(canonical: &Path) -> PathBuf {
+    pub fn replacement_backup_path(canonical: &Path) -> PathBuf {
         PathBuf::from(format!("{}.replacement-backup", canonical.display()))
     }
 
@@ -703,7 +614,7 @@ impl MftSqliteStoreV1 {
         Self::load_read_only_unvalidated(backup, expected_volume, expected_journal_id)
     }
 
-    pub(crate) fn load_replacement_backup_read_only_bounded(
+    pub fn load_replacement_backup_read_only_bounded(
         backup: &Path,
         canonical: &Path,
         fixed_root: &Path,
@@ -722,7 +633,7 @@ impl MftSqliteStoreV1 {
         )
     }
 
-    pub(crate) fn restore_replacement_backup_focused_linearized(
+    pub fn restore_replacement_backup_focused_linearized(
         backup: &Path,
         canonical: &Path,
         fixed_root: &Path,
@@ -767,7 +678,7 @@ impl MftSqliteStoreV1 {
         Ok(store)
     }
 
-    pub(crate) fn cleanup_replacement_backup_focused_linearized(
+    pub fn cleanup_replacement_backup_focused_linearized(
         backup: &Path,
         canonical: &Path,
         fixed_root: &Path,
@@ -871,6 +782,7 @@ impl MftSqliteStoreV1 {
         )?;
         Ok((identity, index, complete))
     }
+    #[cfg(test)]
     pub(crate) fn create(
         path: &Path,
         fixed_root: &Path,
@@ -893,7 +805,7 @@ impl MftSqliteStoreV1 {
         Ok(store)
     }
 
-    pub(crate) fn open(
+    pub fn open(
         path: &Path,
         fixed_root: &Path,
         expected_volume: VolumeIdentityV2,
@@ -958,20 +870,16 @@ impl MftSqliteStoreV1 {
         Ok(store)
     }
 
-    pub(crate) const fn identity(&self) -> StoreIdentityV1 {
+    pub const fn identity(&self) -> StoreIdentityV1 {
         self.identity
     }
 
-    pub(crate) fn telemetry(&mut self) -> StoreTelemetryV1 {
+    pub fn telemetry(&mut self) -> StoreTelemetryV1 {
         self.refresh_file_bytes();
         self.telemetry
     }
-
-    pub(crate) const fn telemetry_cached(&self) -> StoreTelemetryV1 {
-        self.telemetry
-    }
-
-    pub(crate) fn commit_changes(
+    #[cfg(test)]
+    pub fn commit_changes(
         &mut self,
         changes: &[MftChangeV2],
         next: JournalCursorV1,
@@ -980,7 +888,8 @@ impl MftSqliteStoreV1 {
         self.commit_changes_guarded(changes, next, failure, || true)
     }
 
-    pub(crate) fn commit_changes_guarded(
+    #[cfg(test)]
+    pub fn commit_changes_guarded(
         &mut self,
         changes: &[MftChangeV2],
         next: JournalCursorV1,
@@ -1016,17 +925,7 @@ impl MftSqliteStoreV1 {
         self.refresh_file_bytes();
         result
     }
-
-    pub(crate) fn commit_changes_linearized(
-        &mut self,
-        changes: &[MftChangeV2],
-        next: JournalCursorV1,
-        barrier: &LifecycleBarrierV1,
-    ) -> Result<(), String> {
-        self.commit_changes_focused_linearized(changes, next, barrier, || true)
-    }
-
-    pub(crate) fn commit_changes_focused_linearized(
+    pub fn commit_changes_focused_linearized(
         &mut self,
         changes: &[MftChangeV2],
         next: JournalCursorV1,
@@ -1084,11 +983,11 @@ impl MftSqliteStoreV1 {
             .map_err(|error| error.to_string())
     }
 
-    pub(crate) fn load_index(&self) -> Result<MftIndexV1, String> {
+    pub fn load_index(&self) -> Result<MftIndexV1, String> {
         load_index_from_connection(&self.connection)
     }
 
-    pub(crate) fn canonical_members(path: &Path) -> [PathBuf; 3] {
+    pub fn canonical_members(path: &Path) -> [PathBuf; 3] {
         [
             path.to_path_buf(),
             wal_path(path),
@@ -1096,7 +995,7 @@ impl MftSqliteStoreV1 {
         ]
     }
 
-    pub(crate) fn prune_persisted_store_focused_linearized(
+    pub fn prune_persisted_store_focused_linearized(
         canonical: &Path,
         fixed_root: &Path,
         incomplete_marker: &Path,
@@ -1475,6 +1374,7 @@ impl MftSqliteStoreV1 {
     /// Installs a complete in-memory snapshot as the durable base.  The
     /// completeness bit and cursor are promoted in the same transaction as
     /// the rows, so an interrupted initial build is never admitted on restart.
+    #[cfg(test)]
     pub(crate) fn install_snapshot(
         &mut self,
         index: &MftIndexV1,
@@ -1504,23 +1404,17 @@ impl MftSqliteStoreV1 {
         result
     }
 
-    pub(crate) fn wal_checkpoint_eligible(
-        &mut self,
-        focused: bool,
-        conflicting_work: bool,
-    ) -> bool {
+    pub fn wal_checkpoint_eligible(&mut self, focused: bool, conflicting_work: bool) -> bool {
         self.refresh_file_bytes();
         checkpoint_eligible(self.telemetry.wal_bytes, focused, conflicting_work)
     }
 
-    pub(crate) fn truncate_wal(
-        &mut self,
-        focused: bool,
-        conflicting_work: bool,
-    ) -> Result<bool, String> {
+    #[cfg(test)]
+    pub fn truncate_wal(&mut self, focused: bool, conflicting_work: bool) -> Result<bool, String> {
         self.truncate_wal_guarded(focused, conflicting_work, || true)
     }
 
+    #[cfg(test)]
     pub(crate) fn truncate_wal_guarded(
         &mut self,
         focused: bool,
@@ -1545,26 +1439,7 @@ impl MftSqliteStoreV1 {
         self.refresh_file_bytes();
         result.map(|()| true)
     }
-
-    pub(crate) fn truncate_wal_linearized(
-        &mut self,
-        focused: bool,
-        conflicting_work: bool,
-        barrier: &LifecycleBarrierV1,
-    ) -> Result<bool, String> {
-        self.truncate_wal_focused_linearized(conflicting_work, barrier, || focused)
-    }
-
-    pub(crate) fn truncate_wal_focused_linearized(
-        &mut self,
-        conflicting_work: bool,
-        barrier: &LifecycleBarrierV1,
-        focused_now: impl Fn() -> bool,
-    ) -> Result<bool, String> {
-        self.truncate_wal_ready_linearized(barrier, focused_now, || conflicting_work)
-    }
-
-    pub(crate) fn truncate_wal_ready_linearized(
+    pub fn truncate_wal_ready_linearized(
         &mut self,
         barrier: &LifecycleBarrierV1,
         focused_now: impl Fn() -> bool,
@@ -1618,6 +1493,7 @@ fn run_truncate_checkpoint(connection: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
 fn install_snapshot_transaction(
     connection: &mut Connection,
     index: &MftIndexV1,
@@ -1726,7 +1602,7 @@ const fn wal_admission(current_wal_bytes: u64, incoming_encoded_bytes: u64) -> b
     current_wal_bytes.saturating_add(worst_case_growth) <= hard_bound
 }
 
-pub(crate) const fn maximum_wal_batch_growth_bytes(incoming_encoded_bytes: u64) -> u64 {
+pub const fn maximum_wal_batch_growth_bytes(incoming_encoded_bytes: u64) -> u64 {
     let bounded_incoming = if incoming_encoded_bytes > MAX_PENDING_BATCH_BYTES {
         MAX_PENDING_BATCH_BYTES
     } else {
@@ -1786,6 +1662,7 @@ fn initialize_schema(connection: &Connection, identity: StoreIdentityV1) -> Resu
     Ok(())
 }
 
+#[cfg(test)]
 fn commit_transaction(
     connection: &mut Connection,
     changes: &[MftChangeV2],

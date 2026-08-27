@@ -74,7 +74,7 @@ fn is_dedicated_raster_preview(
         && key.physical_size > 128
         && location
             .path()
-            .and_then(std::path::Path::extension)
+            .and_then(Path::extension)
             .and_then(std::ffi::OsStr::to_str)
             .is_some_and(|extension| {
                 matches!(
@@ -277,7 +277,7 @@ fn prompt_archive_password(title: &str, incorrect: bool) -> Option<Vec<u16>> {
         .collect::<Vec<_>>();
     target.push(0);
     let info = CREDUI_INFOW {
-        cbSize: std::mem::size_of::<CREDUI_INFOW>() as u32,
+        cbSize: size_of::<CREDUI_INFOW>() as u32,
         pszMessageText: PCWSTR(message.as_ptr()),
         pszCaptionText: PCWSTR(caption.as_ptr()),
         ..Default::default()

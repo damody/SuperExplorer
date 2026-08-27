@@ -13,6 +13,7 @@ members = [
     "crates/explorer-extension-host",
     "crates/explorer-jobs",
     "crates/explorer-model",
+    "crates/explorer-mft",
     "crates/explorer-remote",
     "crates/explorer-search",
     "crates/explorer-shell-win",

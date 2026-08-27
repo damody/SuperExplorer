@@ -1761,6 +1761,7 @@ dependencies = [
  "explorer-extension-host",
  "explorer-extension-ui-api",
  "explorer-jobs",
+ "explorer-mft",
  "explorer-model",
  "explorer-remote",
  "explorer-search",
@@ -1897,6 +1898,19 @@ dependencies = [
  "crossbeam-channel",
  "explorer-common",
  "explorer-model",
+]
+
+[[package]]
+name = "explorer-mft"
+version = "0.1.0"
+dependencies = [
+ "explorer-model",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "windows 0.61.3",
 ]
 
 [[package]]
