@@ -7,17 +7,17 @@ use crate::mft_persistence::{JournalCursorV1, PendingBatchV1, capture_coalesced_
 use crate::mft_size_map::MftIndexV1;
 
 #[derive(Debug)]
-pub(crate) struct VolumeMemoryRuntimeV1 {
-    pub(crate) index: Arc<MftIndexV1>,
-    pub(crate) durable: JournalCursorV1,
-    pub(crate) observed: JournalCursorV1,
+pub struct VolumeMemoryRuntimeV1 {
+    pub index: Arc<MftIndexV1>,
+    pub durable: JournalCursorV1,
+    pub observed: JournalCursorV1,
     pending: HashMap<u64, MftChangeV2>,
     pending_bytes: usize,
     exact: bool,
 }
 
 impl VolumeMemoryRuntimeV1 {
-    pub(crate) fn new(index: MftIndexV1, durable: JournalCursorV1) -> Self {
+    pub fn new(index: MftIndexV1, durable: JournalCursorV1) -> Self {
         Self {
             index: Arc::new(index),
             durable,
@@ -28,13 +28,13 @@ impl VolumeMemoryRuntimeV1 {
         }
     }
 
-    pub(crate) fn rebuild_required(index: MftIndexV1, cursor: JournalCursorV1) -> Self {
+    pub fn rebuild_required(index: MftIndexV1, cursor: JournalCursorV1) -> Self {
         let mut runtime = Self::new(index, cursor);
         runtime.mark_inexact();
         runtime
     }
 
-    pub(crate) fn replace_with_exact(&mut self, index: MftIndexV1, cursor: JournalCursorV1) {
+    pub fn replace_with_exact(&mut self, index: MftIndexV1, cursor: JournalCursorV1) {
         self.index = Arc::new(index);
         self.durable = cursor;
         self.observed = cursor;
@@ -43,7 +43,7 @@ impl VolumeMemoryRuntimeV1 {
         self.exact = true;
     }
 
-    pub(crate) fn replace_with_partial(&mut self, index: MftIndexV1, cursor: JournalCursorV1) {
+    pub fn replace_with_partial(&mut self, index: MftIndexV1, cursor: JournalCursorV1) {
         self.index = Arc::new(index);
         self.durable = cursor;
         self.observed = cursor;
@@ -52,7 +52,7 @@ impl VolumeMemoryRuntimeV1 {
         self.exact = false;
     }
 
-    pub(crate) fn replace_with_caught_up(
+    pub fn replace_with_caught_up(
         &mut self,
         index: MftIndexV1,
         durable: JournalCursorV1,
@@ -75,7 +75,7 @@ impl VolumeMemoryRuntimeV1 {
         Ok(())
     }
 
-    pub(crate) fn observe(&mut self, change: MftChangeV2, next_usn: i64) -> Result<(), String> {
+    pub fn observe(&mut self, change: MftChangeV2, next_usn: i64) -> Result<(), String> {
         if !self.exact {
             return Err("MFT memory state requires rebuild".to_owned());
         }
@@ -91,23 +91,23 @@ impl VolumeMemoryRuntimeV1 {
         Ok(())
     }
 
-    pub(crate) const fn is_exact(&self) -> bool {
+    pub const fn is_exact(&self) -> bool {
         self.exact
     }
 
-    pub(crate) fn has_pending(&self) -> bool {
+    pub fn has_pending(&self) -> bool {
         !self.pending.is_empty()
     }
 
-    pub(crate) const fn pending_bytes(&self) -> usize {
+    pub const fn pending_bytes(&self) -> usize {
         self.pending_bytes
     }
 
-    pub(crate) fn pending_count(&self) -> usize {
+    pub fn pending_count(&self) -> usize {
         self.pending.len()
     }
 
-    pub(crate) fn mark_inexact(&mut self) {
+    pub fn mark_inexact(&mut self) {
         self.exact = false;
         self.pending.clear();
         self.pending_bytes = 0;
@@ -115,7 +115,7 @@ impl VolumeMemoryRuntimeV1 {
 
     /// Releases only the in-memory working set while preserving the durable
     /// and observed cursors needed to reload/catch up the persisted index.
-    pub(crate) fn evict_index_for_active_volume_paging(&mut self) {
+    pub fn evict_index_for_active_volume_paging(&mut self) {
         self.index = Arc::new(MftIndexV1::from_entries(std::collections::BTreeMap::new()));
         self.mark_inexact();
     }
@@ -123,7 +123,7 @@ impl VolumeMemoryRuntimeV1 {
     /// Advances diagnostic/query freshness while a memory-budget-limited
     /// topology remains intentionally partial. No entry mutation is retained,
     /// so the state stays inexact and can never be persisted from this cursor.
-    pub(crate) fn advance_inexact_observed(&mut self, next_usn: i64) -> Result<(), String> {
+    pub fn advance_inexact_observed(&mut self, next_usn: i64) -> Result<(), String> {
         if self.exact {
             return Err("exact MFT state must observe entry mutations".to_owned());
         }
@@ -137,7 +137,7 @@ impl VolumeMemoryRuntimeV1 {
         Ok(())
     }
 
-    pub(crate) fn capture(&mut self) -> Result<PendingBatchV1<MftChangeV2>, String> {
+    pub fn capture(&mut self) -> Result<PendingBatchV1<MftChangeV2>, String> {
         let batch = capture_coalesced_batch(
             &mut self.pending,
             self.durable,
@@ -149,11 +149,11 @@ impl VolumeMemoryRuntimeV1 {
         Ok(batch)
     }
 
-    pub(crate) fn commit_succeeded(&mut self, batch: &PendingBatchV1<MftChangeV2>) {
+    pub fn commit_succeeded(&mut self, batch: &PendingBatchV1<MftChangeV2>) {
         self.durable = batch.observed;
     }
 
-    pub(crate) fn commit_failed(&mut self, batch: PendingBatchV1<MftChangeV2>) {
+    pub fn commit_failed(&mut self, batch: PendingBatchV1<MftChangeV2>) {
         // Later observations win when they target the same file reference.
         for change in batch.changes {
             self.pending.entry(change.reference).or_insert(change);

@@ -216,5 +216,6 @@
 - [x] 6.1.1 Reconcile proposal, design, specs, implementation, installer behavior, diagnostics, scripts, and both related OpenSpec task states against actual evidence.
 - [x] 6.1.2 Produce the final requirement-to-scenario-to-gate-to-task-to-evidence matrix and identify any evidence made stale or superseded by adjustments.
 - [ ] 6.1.3 Obtain an independent architecture/security/concurrency/migration/test-completeness review and resolve every P0/P1 finding.
+  - `govern-dead-code-warnings` retains `RecoveryReasonV1` and `MigrationStateV1` as this task's typed diagnostics contract; remove its narrow expectations when this review completes the wiring.
 - [x] 6.1.4 Run the detailed-task validator, placeholder/contradiction scan, `openspec validate --strict`, and final status checks; save all raw outputs.
 - [x] 6.1.5 Write the final release/rollback report with exact installed identities, measured cadence, Defender evidence limitations, known residual risks, and approval disposition.

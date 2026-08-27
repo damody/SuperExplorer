@@ -18,12 +18,12 @@ use windows::{
 const MANIFEST_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub(crate) struct InventoryEntryV1 {
-    pub(crate) name: String,
+pub struct InventoryEntryV1 {
+    pub name: String,
     pub(crate) bytes: u64,
     pub(crate) sha256: String,
     #[serde(default)]
-    pub(crate) volume_serial: u64,
+    pub volume_serial: u64,
     #[serde(default)]
     pub(crate) file_id: u64,
 }
@@ -38,7 +38,7 @@ struct MaintenanceManifestV1 {
     complete: bool,
 }
 
-pub(crate) fn inventory_legacy(root: &Path, letter: char) -> Result<Vec<InventoryEntryV1>, String> {
+pub fn inventory_legacy(root: &Path, letter: char) -> Result<Vec<InventoryEntryV1>, String> {
     let root = resolved_directory(root)?;
     let mut entries = Vec::new();
     for entry in fs::read_dir(&root).map_err(|error| error.to_string())? {
@@ -53,6 +53,7 @@ pub(crate) fn inventory_legacy(root: &Path, letter: char) -> Result<Vec<Inventor
     Ok(entries)
 }
 
+#[cfg(test)]
 pub(crate) fn cleanup_legacy_after_promotion(
     cache_root: &Path,
     audit_root: &Path,
@@ -61,6 +62,7 @@ pub(crate) fn cleanup_legacy_after_promotion(
     cleanup_legacy_after_promotion_guarded(cache_root, audit_root, letter, || true)
 }
 
+#[cfg(test)]
 pub(crate) fn cleanup_legacy_after_promotion_guarded(
     cache_root: &Path,
     audit_root: &Path,
@@ -70,7 +72,7 @@ pub(crate) fn cleanup_legacy_after_promotion_guarded(
     cleanup_legacy_after_promotion_impl(cache_root, audit_root, letter, None, lifecycle_open)
 }
 
-pub(crate) fn cleanup_legacy_after_promotion_linearized(
+pub fn cleanup_legacy_after_promotion_linearized(
     cache_root: &Path,
     audit_root: &Path,
     letter: char,
@@ -148,6 +150,7 @@ fn cleanup_legacy_after_promotion_impl(
     Ok(entries)
 }
 
+#[cfg(test)]
 pub(crate) fn quarantine_canonical(
     cache_root: &Path,
     quarantine_parent: &Path,
@@ -157,6 +160,7 @@ pub(crate) fn quarantine_canonical(
     quarantine_canonical_guarded(cache_root, quarantine_parent, letter, nonce, || true)
 }
 
+#[cfg(test)]
 pub(crate) fn quarantine_canonical_guarded(
     cache_root: &Path,
     quarantine_parent: &Path,
@@ -174,7 +178,7 @@ pub(crate) fn quarantine_canonical_guarded(
     )
 }
 
-pub(crate) fn quarantine_canonical_linearized(
+pub fn quarantine_canonical_linearized(
     cache_root: &Path,
     quarantine_parent: &Path,
     letter: char,
@@ -520,7 +524,7 @@ fn delete_file_handle(file: &File) -> Result<(), String> {
             file.as_raw_handle(),
             4,
             (&raw const disposition).cast(),
-            std::mem::size_of::<FileDispositionInfo>() as u32,
+            size_of::<FileDispositionInfo>() as u32,
         )
     } == 0
     {
@@ -568,7 +572,7 @@ fn rename_file_handle(file: &File, destination: &Path) -> Result<(), String> {
         .collect::<Vec<_>>();
     let name_bytes = name
         .len()
-        .checked_mul(std::mem::size_of::<u16>())
+        .checked_mul(size_of::<u16>())
         .ok_or_else(|| "quarantine destination is too long".to_owned())?;
     let prefix = std::mem::offset_of!(FileRenameInfoLayout, file_name);
     let mut buffer = vec![0_u8; prefix.saturating_add(name_bytes)];
@@ -744,6 +748,7 @@ fn write_synced_json(path: &Path, value: &MaintenanceManifestV1) -> Result<(), S
     Ok(())
 }
 
+#[cfg(test)]
 fn sha256_file(path: &Path) -> Result<String, String> {
     let mut file = File::open(path).map_err(|error| error.to_string())?;
     sha256_open_file(&mut file)

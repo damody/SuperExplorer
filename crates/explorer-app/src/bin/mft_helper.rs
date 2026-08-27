@@ -1,9 +1,6 @@
 #![cfg(windows)]
 
-#[path = "../mft_journal.rs"]
-mod mft_journal;
-#[path = "../mft_size_map.rs"]
-mod mft_size_map;
+use explorer_mft::mft_size_map;
 
 use std::path::Path;
 

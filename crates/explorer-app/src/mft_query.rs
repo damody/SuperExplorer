@@ -55,7 +55,7 @@ const AGGREGATE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTROL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct FolderAggregateQueryV1 {
+pub struct FolderAggregateQueryV1 {
     pub generation: u64,
     pub logical_bytes: u64,
     pub allocated_bytes: u64,
@@ -67,13 +67,13 @@ pub(crate) struct FolderAggregateQueryV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct FolderBatchRequestV1 {
+pub struct FolderBatchRequestV1 {
     pub request_id: u64,
     pub path: std::path::PathBuf,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct FolderBatchResultV1 {
+pub struct FolderBatchResultV1 {
     pub request_id: u64,
     pub result: Result<FolderAggregateQueryV1, String>,
 }
@@ -88,7 +88,7 @@ struct PreparedFolderBatchItemV1 {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct MftCacheDiagnosticsV1 {
+pub struct MftCacheDiagnosticsV1 {
     pub generation: u64,
     pub lru_bytes: u64,
     pub limit_bytes: u64,
@@ -106,7 +106,7 @@ pub(crate) struct MftCacheDiagnosticsV1 {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct MftVolumeDiagnosticsV1 {
+pub struct MftVolumeDiagnosticsV1 {
     pub volume: u8,
     pub mode: u8,
     pub schema: u8,
@@ -135,7 +135,7 @@ pub(crate) struct MftVolumeDiagnosticsV1 {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct MftCacheBudgetLimitsV1 {
+pub struct MftCacheBudgetLimitsV1 {
     pub persisted_index_mb: u16,
     pub volume_index_mb: u16,
     pub file_data_mb: u16,
@@ -144,7 +144,7 @@ pub(crate) struct MftCacheBudgetLimitsV1 {
 }
 
 impl MftCacheBudgetLimitsV1 {
-    pub(crate) fn normalized(self) -> Self {
+    pub fn normalized(self) -> Self {
         let normalize = |value: u16| value.clamp(128, 16_384);
         Self {
             persisted_index_mb: self.persisted_index_mb.clamp(256, 16_384),
@@ -264,10 +264,7 @@ impl Drop for LocalMemory {
     }
 }
 
-pub(crate) fn query_folder(
-    path: &Path,
-    cache_memory_mb: u16,
-) -> Result<FolderAggregateQueryV1, String> {
+pub fn query_folder(path: &Path, cache_memory_mb: u16) -> Result<FolderAggregateQueryV1, String> {
     let canonical = path
         .canonicalize()
         .map_err(|_| "MFT query path is unavailable".to_owned())?;
@@ -321,7 +318,7 @@ pub(crate) fn query_folder(
 
 /// Sends one visible-first folder batch and publishes each terminal result as
 /// soon as the service completes it. Numeric results are exact-only.
-pub(crate) fn query_folders_batch(
+pub fn query_folders_batch(
     requests: &[FolderBatchRequestV1],
     cache_memory_mb: u16,
     cancelled: impl Fn() -> bool,
@@ -567,7 +564,7 @@ fn decode_folder_response(
     }
 }
 
-pub(crate) fn query_hierarchy(
+pub fn query_hierarchy(
     path: &Path,
     cache_memory_mb: u16,
 ) -> Result<Vec<crate::mft_size_map::MftProjectedNodeV1>, String> {
@@ -665,7 +662,7 @@ fn decode_hierarchy_payload(
     Ok(nodes)
 }
 
-pub(crate) fn query_diagnostics() -> Result<MftCacheDiagnosticsV1, String> {
+pub fn query_diagnostics() -> Result<MftCacheDiagnosticsV1, String> {
     let mut request = [0_u8; REQUEST_BYTES];
     request[0..4].copy_from_slice(&MAGIC.to_le_bytes());
     request[4..6].copy_from_slice(&SCHEMA.to_le_bytes());
@@ -708,7 +705,7 @@ pub(crate) fn query_diagnostics() -> Result<MftCacheDiagnosticsV1, String> {
     Ok(diagnostics)
 }
 
-pub(crate) fn query_durability_diagnostics() -> Result<Vec<MftVolumeDiagnosticsV1>, String> {
+pub fn query_durability_diagnostics() -> Result<Vec<MftVolumeDiagnosticsV1>, String> {
     let mut request = [0_u8; REQUEST_BYTES];
     request[0..4].copy_from_slice(&MAGIC.to_le_bytes());
     request[4..6].copy_from_slice(&SCHEMA.to_le_bytes());
@@ -767,9 +764,7 @@ pub(crate) fn query_durability_diagnostics() -> Result<Vec<MftVolumeDiagnosticsV
     Ok(volumes)
 }
 
-pub(crate) fn set_cache_budgets(
-    limits: MftCacheBudgetLimitsV1,
-) -> Result<MftCacheBudgetLimitsV1, String> {
+pub fn set_cache_budgets(limits: MftCacheBudgetLimitsV1) -> Result<MftCacheBudgetLimitsV1, String> {
     let limits = limits.normalized();
     let mut request = [0_u8; REQUEST_BYTES];
     request[0..4].copy_from_slice(&MAGIC.to_le_bytes());
@@ -871,28 +866,13 @@ fn connect_until(deadline: std::time::Instant) -> Result<Handle, String> {
     };
     Ok(Handle(pipe))
 }
-
-pub(crate) fn serve_folder_queries(
-    stopped: impl Fn() -> bool,
-    query: impl Fn(char, u64, u16) -> Result<FolderAggregateQueryV1, String> + Sync,
-) {
-    serve_queries(
-        stopped,
-        move |letter, reference, cache, _| query(letter, reference, cache),
-        |_, _, _| Err("MFT hierarchy operation is unavailable".to_owned()),
-        || Ok(MftCacheDiagnosticsV1::default()),
-        || Ok(Vec::new()),
-        |value| Ok(value),
-    );
-}
-
 #[expect(
     unsafe_code,
     reason = "serving MFT queries requires raw Win32 ACL and named-pipe lifecycle APIs"
 )]
 // SAFETY: Security-descriptor storage outlives pipe creation; all pipe handles are owned by
 // Handle, buffers use their exact Rust lengths, and every Win32 result is checked.
-pub(crate) fn serve_queries(
+pub fn serve_queries(
     stopped: impl Fn() -> bool,
     query: impl Fn(char, u64, u16, Option<std::path::PathBuf>) -> Result<FolderAggregateQueryV1, String>
     + Sync,
@@ -924,7 +904,7 @@ pub(crate) fn serve_queries(
     }
     let descriptor = LocalMemory(descriptor);
     let attributes = SecurityAttributes {
-        length: std::mem::size_of::<SecurityAttributes>() as u32,
+        length: size_of::<SecurityAttributes>() as u32,
         descriptor: descriptor.0,
         inherit_handle: 0,
     };

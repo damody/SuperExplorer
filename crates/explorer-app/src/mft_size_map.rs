@@ -30,66 +30,67 @@ use windows::{
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct MftEntryV1 {
-    pub(crate) reference: u64,
-    pub(crate) parent_reference: u64,
-    pub(crate) name: String,
-    pub(crate) logical_bytes: u64,
-    pub(crate) allocated_bytes: u64,
-    pub(crate) is_directory: bool,
+pub struct MftEntryV1 {
+    pub reference: u64,
+    pub parent_reference: u64,
+    pub name: String,
+    pub logical_bytes: u64,
+    pub allocated_bytes: u64,
+    pub is_directory: bool,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct MftIndexV1 {
-    pub(crate) entries: BTreeMap<u64, MftEntryV1>,
+pub struct MftIndexV1 {
+    pub entries: BTreeMap<u64, MftEntryV1>,
     children: BTreeMap<u64, Vec<u64>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct MftProjectedNodeV1 {
-    pub(crate) reference: u64,
-    pub(crate) parent_reference: Option<u64>,
-    pub(crate) name: String,
-    pub(crate) logical_bytes: u64,
-    pub(crate) allocated_bytes: u64,
-    pub(crate) is_directory: bool,
+pub struct MftProjectedNodeV1 {
+    pub reference: u64,
+    pub parent_reference: Option<u64>,
+    pub name: String,
+    pub logical_bytes: u64,
+    pub allocated_bytes: u64,
+    pub is_directory: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct MftAggregateV1 {
-    pub(crate) logical_bytes: u64,
-    pub(crate) allocated_bytes: u64,
-    pub(crate) file_count: u64,
-    pub(crate) directory_count: u64,
+pub struct MftAggregateV1 {
+    pub logical_bytes: u64,
+    pub allocated_bytes: u64,
+    pub file_count: u64,
+    pub directory_count: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct MftIndexMemoryBreakdownV1 {
-    pub(crate) volume_index_bytes: usize,
-    pub(crate) file_data_bytes: usize,
+pub struct MftIndexMemoryBreakdownV1 {
+    pub volume_index_bytes: usize,
+    pub file_data_bytes: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct MftBoundedReadDiagnosticsV1 {
-    pub(crate) scanned_entries: usize,
-    pub(crate) observed_file_data_bytes: usize,
-    pub(crate) volume_limit_hit: bool,
-    pub(crate) file_limit_hit: bool,
+pub struct MftBoundedReadDiagnosticsV1 {
+    pub scanned_entries: usize,
+    pub observed_file_data_bytes: usize,
+    pub volume_limit_hit: bool,
+    pub file_limit_hit: bool,
 }
 
 #[derive(Debug)]
-pub(crate) struct MftAggregateIndexV1 {
+pub struct MftAggregateIndexV1 {
     totals: BTreeMap<u64, MftAggregateV1>,
+    #[cfg(test)]
     worker_count: usize,
 }
 
 impl MftAggregateIndexV1 {
-    pub(crate) fn build(index: &MftIndexV1, max_workers: usize) -> Result<Self, String> {
+    pub fn build(index: &MftIndexV1, max_workers: usize) -> Result<Self, String> {
         let cancelled = std::sync::atomic::AtomicBool::new(false);
         Self::build_cancelled(index, max_workers, &cancelled)
     }
 
-    pub(crate) fn build_cancelled(
+    pub fn build_cancelled(
         index: &MftIndexV1,
         max_workers: usize,
         cancelled: &std::sync::atomic::AtomicBool,
@@ -154,21 +155,22 @@ impl MftAggregateIndexV1 {
         }
         Ok(Self {
             totals,
+            #[cfg(test)]
             worker_count,
         })
     }
 
-    pub(crate) fn get(&self, reference: u64) -> Option<MftAggregateV1> {
+    pub fn get(&self, reference: u64) -> Option<MftAggregateV1> {
         self.totals.get(&reference).copied()
     }
 
-    pub(crate) fn estimated_resident_bytes(&self) -> usize {
+    pub fn estimated_resident_bytes(&self) -> usize {
         estimate_btree_bytes::<u64, MftAggregateV1>(self.totals.len())
     }
 
     /// Removes deterministic oldest-key records until the aggregate store is
     /// within its independent hard budget. Returns whether data was removed.
-    pub(crate) fn trim_to_bytes(&mut self, limit: usize) -> bool {
+    pub fn trim_to_bytes(&mut self, limit: usize) -> bool {
         let mut trimmed = false;
         while self.estimated_resident_bytes() > limit && self.totals.len() > 1 {
             let Some(reference) = self.totals.keys().next().copied() else {
@@ -246,7 +248,7 @@ fn add_aggregate(target: &mut MftAggregateV1, source: MftAggregateV1) {
 }
 
 impl MftIndexV1 {
-    pub(crate) fn from_entries(entries: BTreeMap<u64, MftEntryV1>) -> Self {
+    pub fn from_entries(entries: BTreeMap<u64, MftEntryV1>) -> Self {
         Self::from_entries_cancelled(entries, || false)
             .expect("non-cancelled in-memory MFT construction cannot fail")
     }
@@ -270,13 +272,13 @@ impl MftIndexV1 {
         Ok(Self { entries, children })
     }
 
-    pub(crate) fn try_from_entries(entries: BTreeMap<u64, MftEntryV1>) -> Result<Self, String> {
+    pub fn try_from_entries(entries: BTreeMap<u64, MftEntryV1>) -> Result<Self, String> {
         let index = Self::from_entries(entries);
         index.validate_topology()?;
         Ok(index)
     }
 
-    pub(crate) fn try_from_entries_cancelled(
+    pub fn try_from_entries_cancelled(
         entries: BTreeMap<u64, MftEntryV1>,
         mut cancelled: impl FnMut() -> bool,
     ) -> Result<Self, String> {
@@ -285,7 +287,7 @@ impl MftIndexV1 {
         Ok(index)
     }
 
-    pub(crate) fn validate_topology(&self) -> Result<(), String> {
+    pub fn validate_topology(&self) -> Result<(), String> {
         self.validate_topology_cancelled(|| false)
     }
 
@@ -334,13 +336,13 @@ impl MftIndexV1 {
         )
     }
 
-    pub(crate) fn projected_aggregate_bytes(&self) -> usize {
+    pub fn projected_aggregate_bytes(&self) -> usize {
         estimate_btree_bytes::<u64, MftAggregateV1>(self.entries.len())
     }
 
     /// Persisted records are individually removable acceleration data. Keep
     /// one indivisible record even when it alone exceeds the configured cap.
-    pub(crate) fn trim_persisted_to_bytes(&mut self, limit: usize) -> bool {
+    pub fn trim_persisted_to_bytes(&mut self, limit: usize) -> bool {
         let mut trimmed = false;
         while self.serialized_bytes() > limit && self.entries.len() > 1 {
             let Some(reference) = self.entries.keys().next_back().copied() else {
@@ -356,7 +358,7 @@ impl MftIndexV1 {
         trimmed
     }
 
-    pub(crate) fn trim_file_data_to_bytes(&mut self, limit: usize) -> bool {
+    pub fn trim_file_data_to_bytes(&mut self, limit: usize) -> bool {
         let mut trimmed = false;
         let mut used = self
             .entries
@@ -377,7 +379,7 @@ impl MftIndexV1 {
         trimmed
     }
 
-    pub(crate) fn trim_volume_index_to_bytes(&mut self, limit: usize) -> bool {
+    pub fn trim_volume_index_to_bytes(&mut self, limit: usize) -> bool {
         let mut trimmed = false;
         while self.memory_breakdown().volume_index_bytes > limit && self.entries.len() > 1 {
             let Some(reference) = self.entries.keys().next_back().copied() else {
@@ -392,14 +394,14 @@ impl MftIndexV1 {
         }
         trimmed
     }
-    pub(crate) fn estimated_resident_bytes(&self) -> usize {
+    pub fn estimated_resident_bytes(&self) -> usize {
         let breakdown = self.memory_breakdown();
         breakdown
             .volume_index_bytes
             .saturating_add(breakdown.file_data_bytes)
     }
 
-    pub(crate) fn memory_breakdown(&self) -> MftIndexMemoryBreakdownV1 {
+    pub fn memory_breakdown(&self) -> MftIndexMemoryBreakdownV1 {
         let entries = estimate_btree_bytes::<u64, MftEntryV1>(self.entries.len());
         let names = self
             .entries
@@ -417,7 +419,7 @@ impl MftIndexV1 {
             file_data_bytes: names,
         }
     }
-    pub(crate) fn apply_change(
+    pub fn apply_change(
         &mut self,
         change: &crate::mft_journal::MftChangeV2,
     ) -> Result<Vec<u64>, String> {
@@ -463,7 +465,7 @@ impl MftIndexV1 {
         Ok(affected)
     }
 
-    pub(crate) fn ancestor_references(&self, reference: u64) -> Vec<u64> {
+    pub fn ancestor_references(&self, reference: u64) -> Vec<u64> {
         let mut ancestors = Vec::new();
         let mut current = reference;
         for _ in 0..1024 {
@@ -479,29 +481,7 @@ impl MftIndexV1 {
         ancestors
     }
 
-    pub(crate) fn path_for_reference(
-        &self,
-        volume_root: &Path,
-        reference: u64,
-    ) -> Option<std::path::PathBuf> {
-        let mut names = Vec::new();
-        let mut current = reference;
-        for _ in 0..1024 {
-            let entry = self.entries.get(&current)?;
-            if entry.parent_reference == current {
-                break;
-            }
-            names.push(entry.name.clone());
-            current = entry.parent_reference;
-        }
-        let mut path = volume_root.to_path_buf();
-        for name in names.into_iter().rev() {
-            path.push(name);
-        }
-        Some(path)
-    }
-
-    pub(crate) fn aggregate_subtree_bounded(
+    pub fn aggregate_subtree_bounded(
         &self,
         root_reference: u64,
         entry_limit: usize,
@@ -532,7 +512,7 @@ impl MftIndexV1 {
         Ok(aggregate)
     }
 
-    pub(crate) fn project_subtree(
+    pub fn project_subtree(
         &self,
         root_reference: u64,
         visible_limit: usize,
@@ -587,7 +567,7 @@ impl MftIndexV1 {
             allocated_totals.insert(reference, allocated);
         }
         let mut projected = Vec::with_capacity(visible_limit.min(traversal.len()));
-        let mut breadth = std::collections::VecDeque::from([(root_reference, None)]);
+        let mut breadth = VecDeque::from([(root_reference, None)]);
         while let Some((reference, parent_reference)) = breadth.pop_front() {
             let Some(entry) = self.entries.get(&reference) else {
                 continue;
@@ -629,7 +609,7 @@ const fn estimate_btree_bytes<K, V>(entries: usize) -> usize {
 /// slot, and one child reference per MFT entry. The completed index is still
 /// checked with `memory_breakdown`, so this is an admission ceiling rather than
 /// a substitute for post-load accounting.
-pub(crate) const fn maximum_entries_for_volume_budget(bytes: usize) -> usize {
+pub const fn maximum_entries_for_volume_budget(bytes: usize) -> usize {
     let entry_bytes =
         std::mem::size_of::<(u64, MftEntryV1)>().saturating_add(std::mem::size_of::<usize>());
     let child_map_bytes =
@@ -640,12 +620,12 @@ pub(crate) const fn maximum_entries_for_volume_budget(bytes: usize) -> usize {
     bytes / worst_case_bytes
 }
 
-pub(crate) fn write_index(path: &Path, index: &MftIndexV1) -> Result<(), String> {
+pub fn write_index(path: &Path, index: &MftIndexV1) -> Result<(), String> {
     validate_helper_output_path(path)?;
     write_index_record(path, index)
 }
 
-pub(crate) fn write_service_index(path: &Path, index: &MftIndexV1) -> Result<(), String> {
+pub fn write_service_index(path: &Path, index: &MftIndexV1) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| "MFT service cache path has no parent".to_owned())?;
@@ -717,11 +697,11 @@ fn validate_helper_output_path(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn read_index(path: &Path) -> Result<MftIndexV1, String> {
+pub fn read_index(path: &Path) -> Result<MftIndexV1, String> {
     read_index_bounded(path, usize::MAX, usize::MAX).map(|(index, _)| index)
 }
 
-pub(crate) fn read_index_bounded(
+pub fn read_index_bounded(
     path: &Path,
     volume_limit_bytes: usize,
     file_limit_bytes: usize,
@@ -817,7 +797,7 @@ impl Drop for HandleGuard {
     }
 }
 
-pub(crate) fn file_reference_number(path: &Path) -> Result<u64, String> {
+pub fn file_reference_number(path: &Path) -> Result<u64, String> {
     let info = file_information(path)?;
     // NTFS file IDs encode a 48-bit MFT record number plus a 16-bit sequence.
     // FSCTL_ENUM_USN_DATA indexes records by the record-number component, so
@@ -829,10 +809,6 @@ pub(crate) fn file_reference_number(path: &Path) -> Result<u64, String> {
 
 const fn normalize_ntfs_reference(reference: u64) -> u64 {
     reference & 0x0000_FFFF_FFFF_FFFF
-}
-
-pub(crate) fn file_link_count(path: &Path) -> Result<u32, String> {
-    Ok(file_information(path)?.nNumberOfLinks)
 }
 
 #[expect(
@@ -866,7 +842,7 @@ fn file_information(path: &Path) -> Result<BY_HANDLE_FILE_INFORMATION, String> {
     Ok(info)
 }
 
-pub(crate) fn read_volume_index(
+pub fn read_volume_index(
     path: &Path,
     cancelled: impl FnMut() -> bool,
 ) -> Result<MftIndexV1, String> {
@@ -884,7 +860,7 @@ pub(crate) fn read_volume_index(
 // SAFETY: The owned volume handle, enumeration cursor, output buffer, and byte
 // counter remain live for each synchronous call; returned record lengths are
 // validated before parsing and cancellation is checked between calls.
-pub(crate) fn read_volume_index_bounded(
+pub fn read_volume_index_bounded(
     path: &Path,
     volume_limit_bytes: usize,
     file_limit_bytes: usize,
@@ -1041,7 +1017,7 @@ fn is_mft_enumeration_eof(code: HRESULT) -> bool {
 )]
 // SAFETY: All launch buffers outlive ShellExecuteExW, the returned process
 // handle enters HandleGuard, and timeout termination/wait applies only to it.
-pub(crate) fn read_volume_index_with_helper(
+pub fn read_volume_index_with_helper(
     path: &Path,
     mut cancelled: impl FnMut() -> bool,
 ) -> Result<MftIndexV1, String> {
@@ -1180,7 +1156,7 @@ fn parse_unnamed_data_sizes(record: &[u8]) -> Option<(u64, u64)> {
     Some((0, 0))
 }
 
-pub(crate) fn volume_device_path(path: &Path) -> Result<String, String> {
+pub fn volume_device_path(path: &Path) -> Result<String, String> {
     let text = path.to_string_lossy();
     let bytes = text.as_bytes();
     if bytes.len() < 2 || bytes[1] != b':' || !bytes[0].is_ascii_alphabetic() {
@@ -1189,7 +1165,7 @@ pub(crate) fn volume_device_path(path: &Path) -> Result<String, String> {
     Ok(format!(r"\\.\{}:", (bytes[0] as char).to_ascii_uppercase()))
 }
 
-pub(crate) fn volume_serial_number(path: &Path) -> Result<u64, String> {
+pub fn volume_serial_number(path: &Path) -> Result<u64, String> {
     Ok(u64::from(file_information(path)?.dwVolumeSerialNumber))
 }
 
@@ -1197,7 +1173,7 @@ pub(crate) fn volume_serial_number(path: &Path) -> Result<u64, String> {
     unsafe_code,
     reason = "refreshing an NTFS entry requires opening the raw volume handle"
 )]
-pub(crate) fn current_entry(
+pub fn current_entry(
     root: &Path,
     reference: u64,
     parent_reference: u64,

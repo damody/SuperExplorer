@@ -4,7 +4,6 @@
 #![cfg(windows)]
 
 use std::{
-    collections::HashMap,
     ffi::c_void,
     fs::{self, File},
     io::{Read as _, Write as _},
@@ -47,8 +46,8 @@ const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CHANGES: usize = 100_000;
 const MAX_NAME_BYTES: usize = 64 * 1024;
 pub(crate) const JOURNAL_BUFFER_BYTES: usize = 1024 * 1024;
-pub(crate) const PENDING_CHANGE_LIMIT: usize = 100_000;
-pub(crate) const PENDING_BYTE_LIMIT: usize = 16 * 1024 * 1024;
+pub const PENDING_CHANGE_LIMIT: usize = 100_000;
+pub const PENDING_BYTE_LIMIT: usize = 16 * 1024 * 1024;
 
 pub(crate) const RELEVANT_REASON_MASK: u32 = USN_REASON_DATA_OVERWRITE
     | USN_REASON_DATA_EXTEND
@@ -64,34 +63,29 @@ pub(crate) const RELEVANT_REASON_MASK: u32 = USN_REASON_DATA_OVERWRITE
     | USN_REASON_REPARSE_POINT_CHANGE;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct VolumeIdentityV2 {
-    pub(crate) serial: u64,
+pub struct VolumeIdentityV2 {
+    pub serial: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct JournalMetadataV2 {
-    pub(crate) journal_id: u64,
-    pub(crate) first_usn: i64,
-    pub(crate) next_usn: i64,
-    pub(crate) lowest_valid_usn: i64,
+pub struct JournalMetadataV2 {
+    pub journal_id: u64,
+    pub first_usn: i64,
+    pub next_usn: i64,
+    pub lowest_valid_usn: i64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct MftCheckpointV2 {
+pub struct MftCheckpointV2 {
     pub(crate) schema: u32,
-    pub(crate) volume: VolumeIdentityV2,
-    pub(crate) journal_id: u64,
-    pub(crate) next_usn: i64,
-    pub(crate) generation: u64,
+    pub volume: VolumeIdentityV2,
+    pub journal_id: u64,
+    pub next_usn: i64,
+    pub generation: u64,
 }
 
 impl MftCheckpointV2 {
-    pub(crate) fn new(
-        volume: VolumeIdentityV2,
-        journal_id: u64,
-        next_usn: i64,
-        generation: u64,
-    ) -> Self {
+    pub fn new(volume: VolumeIdentityV2, journal_id: u64, next_usn: i64, generation: u64) -> Self {
         Self {
             schema: SCHEMA_V2,
             volume,
@@ -101,11 +95,7 @@ impl MftCheckpointV2 {
         }
     }
 
-    pub(crate) fn compatible_with(
-        self,
-        volume: VolumeIdentityV2,
-        journal: JournalMetadataV2,
-    ) -> bool {
+    pub fn compatible_with(self, volume: VolumeIdentityV2, journal: JournalMetadataV2) -> bool {
         self.schema == SCHEMA_V2
             && self.volume == volume
             && self.journal_id == journal.journal_id
@@ -116,38 +106,38 @@ impl MftCheckpointV2 {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
-pub(crate) enum MftChangeKindV2 {
+pub enum MftChangeKindV2 {
     Upsert = 1,
     Delete = 2,
     Invalidate = 3,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct MftChangeV2 {
-    pub(crate) kind: MftChangeKindV2,
-    pub(crate) reference: u64,
-    pub(crate) parent_reference: u64,
-    pub(crate) name: String,
-    pub(crate) logical_bytes: u64,
-    pub(crate) allocated_bytes: u64,
-    pub(crate) is_directory: bool,
-    pub(crate) reason: u32,
+pub struct MftChangeV2 {
+    pub kind: MftChangeKindV2,
+    pub reference: u64,
+    pub parent_reference: u64,
+    pub name: String,
+    pub logical_bytes: u64,
+    pub allocated_bytes: u64,
+    pub is_directory: bool,
+    pub reason: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct MftDeltaV2 {
+pub struct MftDeltaV2 {
     pub(crate) schema: u32,
-    pub(crate) volume: VolumeIdentityV2,
-    pub(crate) journal_id: u64,
-    pub(crate) generation: u64,
-    pub(crate) start_usn: i64,
-    pub(crate) next_usn: i64,
-    pub(crate) changes: Vec<MftChangeV2>,
+    pub volume: VolumeIdentityV2,
+    pub journal_id: u64,
+    pub generation: u64,
+    pub start_usn: i64,
+    pub next_usn: i64,
+    pub changes: Vec<MftChangeV2>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
-pub(crate) enum MftServiceModeV2 {
+pub enum MftServiceModeV2 {
     Initializing = 1,
     Journal = 2,
     Recovering = 3,
@@ -155,26 +145,26 @@ pub(crate) enum MftServiceModeV2 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct MftServiceStatusV2 {
-    pub(crate) mode: MftServiceModeV2,
-    pub(crate) generation: u64,
-    pub(crate) journal_id: u64,
-    pub(crate) committed_usn: i64,
-    pub(crate) pending_count: u64,
-    pub(crate) pending_bytes: u64,
-    pub(crate) queue_high_water: u64,
-    pub(crate) published_unix_ms: u64,
-    pub(crate) reason: String,
+pub struct MftServiceStatusV2 {
+    pub mode: MftServiceModeV2,
+    pub generation: u64,
+    pub journal_id: u64,
+    pub committed_usn: i64,
+    pub pending_count: u64,
+    pub pending_bytes: u64,
+    pub queue_high_water: u64,
+    pub published_unix_ms: u64,
+    pub reason: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct UsnEventV2 {
-    pub(crate) reference: u64,
-    pub(crate) parent_reference: u64,
-    pub(crate) usn: i64,
-    pub(crate) reason: u32,
-    pub(crate) attributes: u32,
-    pub(crate) name: String,
+pub struct UsnEventV2 {
+    pub reference: u64,
+    pub parent_reference: u64,
+    pub usn: i64,
+    pub reason: u32,
+    pub attributes: u32,
+    pub name: String,
 }
 
 struct HandleGuard(HANDLE);
@@ -224,7 +214,7 @@ fn open_volume(root: &Path, overlapped: bool) -> Result<HandleGuard, String> {
     unsafe_code,
     reason = "querying USN journal metadata requires Win32 DeviceIoControl with raw storage"
 )]
-pub(crate) fn query_journal(root: &Path) -> Result<JournalMetadataV2, String> {
+pub fn query_journal(root: &Path) -> Result<JournalMetadataV2, String> {
     let handle = open_volume(root, false)?;
     let mut data = USN_JOURNAL_DATA_V0::default();
     let mut returned = 0_u32;
@@ -260,7 +250,7 @@ pub(crate) fn query_journal(root: &Path) -> Result<JournalMetadataV2, String> {
 // SAFETY: The owned volume and event handles, input structure, output buffer,
 // byte counter, and OVERLAPPED storage remain live through completion or the
 // cancellation drain; returned byte lengths are checked before record parsing.
-pub(crate) fn read_journal_once(
+pub fn read_journal_once(
     root: &Path,
     checkpoint: MftCheckpointV2,
 ) -> Result<(i64, Vec<UsnEventV2>), String> {
@@ -360,7 +350,7 @@ pub(crate) fn read_journal_once(
     Ok((next_usn, events))
 }
 
-pub(crate) fn normalize_event(event: &UsnEventV2) -> MftChangeKindV2 {
+pub fn normalize_event(event: &UsnEventV2) -> MftChangeKindV2 {
     if event.reason & USN_REASON_FILE_DELETE != 0 {
         MftChangeKindV2::Delete
     } else if event.reason
@@ -389,50 +379,11 @@ pub(crate) fn normalize_event(event: &UsnEventV2) -> MftChangeKindV2 {
         MftChangeKindV2::Invalidate
     }
 }
-
-pub(crate) fn coalesce_events(
-    events: impl IntoIterator<Item = UsnEventV2>,
-) -> HashMap<u64, UsnEventV2> {
-    let mut pending = HashMap::new();
-    for event in events {
-        pending
-            .entry(event.reference)
-            .and_modify(|current: &mut UsnEventV2| {
-                current.reason |= event.reason;
-                current.parent_reference = event.parent_reference;
-                current.usn = current.usn.max(event.usn);
-                current.attributes = event.attributes;
-                if !event.name.is_empty() {
-                    current.name.clone_from(&event.name);
-                }
-            })
-            .or_insert(event);
-    }
-    pending
-}
-
-pub(crate) fn coalesced_bytes(pending: &HashMap<u64, UsnEventV2>) -> usize {
-    pending
-        .values()
-        .map(|event| event.name.len().saturating_add(64))
-        .sum()
-}
-
-pub(crate) fn publication_due(
-    first_age: std::time::Duration,
-    quiet_age: std::time::Duration,
-) -> bool {
-    quiet_age >= std::time::Duration::from_secs(5)
-        // Leave one second of headroom for the overlapped journal-read cadence so
-        // the externally observed mutation-to-checkpoint latency stays <= 10 s.
-        || first_age >= std::time::Duration::from_secs(9)
-}
-
-pub(crate) fn checkpoint_path(cache: &Path, letter: char, generation: u64) -> PathBuf {
+pub fn checkpoint_path(cache: &Path, letter: char, generation: u64) -> PathBuf {
     cache.join(format!("{letter}.{generation:020}.semftcp"))
 }
 
-pub(crate) fn delta_path(cache: &Path, letter: char, generation: u64) -> PathBuf {
+pub fn delta_path(cache: &Path, letter: char, generation: u64) -> PathBuf {
     cache.join(format!("{letter}.{generation:020}.semftdelta"))
 }
 
@@ -440,10 +391,7 @@ pub(crate) fn status_path(cache: &Path, letter: char) -> PathBuf {
     cache.join(format!("{letter}.semftstatus"))
 }
 
-pub(crate) fn latest_checkpoint(
-    cache: &Path,
-    letter: char,
-) -> Result<Option<MftCheckpointV2>, String> {
+pub fn latest_checkpoint(cache: &Path, letter: char) -> Result<Option<MftCheckpointV2>, String> {
     let prefix = format!("{letter}.");
     let mut candidates = fs::read_dir(cache)
         .map_err(|error| error.to_string())?
@@ -461,27 +409,7 @@ pub(crate) fn latest_checkpoint(
     }
     Ok(None)
 }
-
-pub(crate) fn publish_delta_and_checkpoint(
-    cache: &Path,
-    letter: char,
-    delta: &MftDeltaV2,
-    checkpoint: &MftCheckpointV2,
-) -> Result<(), String> {
-    if delta.generation != checkpoint.generation || delta.next_usn != checkpoint.next_usn {
-        return Err("delta/checkpoint commit boundary mismatch".to_owned());
-    }
-    atomic_create(
-        &delta_path(cache, letter, delta.generation),
-        &encode_delta(delta)?,
-    )?;
-    atomic_create(
-        &checkpoint_path(cache, letter, checkpoint.generation),
-        &encode_checkpoint(checkpoint),
-    )
-}
-
-pub(crate) fn publish_initial_checkpoint(
+pub fn publish_initial_checkpoint(
     cache: &Path,
     letter: char,
     checkpoint: &MftCheckpointV2,
@@ -492,30 +420,26 @@ pub(crate) fn publish_initial_checkpoint(
     )
 }
 
-pub(crate) fn write_status(
-    cache: &Path,
-    letter: char,
-    status: &MftServiceStatusV2,
-) -> Result<(), String> {
+pub fn write_status(cache: &Path, letter: char, status: &MftServiceStatusV2) -> Result<(), String> {
     atomic_replace(&status_path(cache, letter), &encode_status(status)?)
 }
 
-pub(crate) fn read_checkpoint(path: &Path) -> Result<MftCheckpointV2, String> {
+pub fn read_checkpoint(path: &Path) -> Result<MftCheckpointV2, String> {
     let bytes = read_bounded(path)?;
     decode_checkpoint(&bytes)
 }
 
-pub(crate) fn read_delta(path: &Path) -> Result<MftDeltaV2, String> {
+pub fn read_delta(path: &Path) -> Result<MftDeltaV2, String> {
     let bytes = read_bounded(path)?;
     decode_delta(&bytes)
 }
 
-pub(crate) fn read_status(path: &Path) -> Result<MftServiceStatusV2, String> {
+pub fn read_status(path: &Path) -> Result<MftServiceStatusV2, String> {
     let bytes = read_bounded(path)?;
     decode_status(&bytes)
 }
 
-pub(crate) fn deltas_after(
+pub fn deltas_after(
     cache: &Path,
     letter: char,
     generation: u64,
@@ -531,7 +455,7 @@ pub(crate) fn deltas_after(
 /// Validate one immutable delta against the last committed cursor and return
 /// the cursor that becomes visible only after the caller has applied the whole
 /// batch successfully.
-pub(crate) fn validate_delta_after(
+pub fn validate_delta_after(
     cursor: MftCheckpointV2,
     delta: &MftDeltaV2,
 ) -> Result<MftCheckpointV2, String> {
@@ -551,7 +475,7 @@ pub(crate) fn validate_delta_after(
     ))
 }
 
-pub(crate) fn remove_volume_sidecars(cache: &Path, letter: char) -> Result<(), String> {
+pub fn remove_volume_sidecars(cache: &Path, letter: char) -> Result<(), String> {
     let prefix = format!("{letter}.");
     for entry in fs::read_dir(cache)
         .map_err(|error| error.to_string())?
@@ -650,42 +574,6 @@ fn decode_checkpoint(bytes: &[u8]) -> Result<MftCheckpointV2, String> {
     }
     Ok(checkpoint)
 }
-
-fn encode_delta(delta: &MftDeltaV2) -> Result<Vec<u8>, String> {
-    if delta.changes.len() > MAX_CHANGES {
-        return Err("MFT delta exceeds the change-count limit".to_owned());
-    }
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(DELTA_MAGIC);
-    push_u32(&mut bytes, delta.schema);
-    push_u64(&mut bytes, delta.volume.serial);
-    push_u64(&mut bytes, delta.journal_id);
-    push_u64(&mut bytes, delta.generation);
-    push_i64(&mut bytes, delta.start_usn);
-    push_i64(&mut bytes, delta.next_usn);
-    push_u32(&mut bytes, delta.changes.len() as u32);
-    for change in &delta.changes {
-        let name = change.name.as_bytes();
-        if name.len() > MAX_NAME_BYTES {
-            return Err("MFT delta name exceeds the safety limit".to_owned());
-        }
-        bytes.push(change.kind as u8);
-        bytes.push(u8::from(change.is_directory));
-        bytes.extend_from_slice(&[0, 0]);
-        push_u32(&mut bytes, change.reason);
-        push_u64(&mut bytes, change.reference);
-        push_u64(&mut bytes, change.parent_reference);
-        push_u64(&mut bytes, change.logical_bytes);
-        push_u64(&mut bytes, change.allocated_bytes);
-        push_u32(&mut bytes, name.len() as u32);
-        bytes.extend_from_slice(name);
-    }
-    if bytes.len() > MAX_RECORD_BYTES.saturating_sub(16) {
-        return Err("MFT delta exceeds the byte limit".to_owned());
-    }
-    Ok(finish_record(bytes))
-}
-
 fn decode_delta(bytes: &[u8]) -> Result<MftDeltaV2, String> {
     let payload = verify_record(bytes, DELTA_MAGIC)?;
     let mut cursor = Cursor::new(payload, DELTA_MAGIC.len());
@@ -845,7 +733,7 @@ fn checksum(bytes: &[u8]) -> u64 {
     })
 }
 
-pub(crate) fn normalize_reference(reference: u64) -> u64 {
+pub fn normalize_reference(reference: u64) -> u64 {
     reference & 0x0000_FFFF_FFFF_FFFF
 }
 
@@ -948,81 +836,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn checkpoint_and_delta_round_trip_and_reject_corruption() {
-        let checkpoint = MftCheckpointV2::new(VolumeIdentityV2 { serial: 7 }, 11, 101, 3);
-        let bytes = encode_checkpoint(&checkpoint);
-        assert_eq!(decode_checkpoint(&bytes).unwrap(), checkpoint);
-        let mut corrupt = bytes;
-        corrupt[12] ^= 1;
-        assert!(decode_checkpoint(&corrupt).is_err());
-
-        let delta = MftDeltaV2 {
-            schema: SCHEMA_V2,
-            volume: checkpoint.volume,
-            journal_id: checkpoint.journal_id,
-            generation: checkpoint.generation,
-            start_usn: 90,
-            next_usn: checkpoint.next_usn,
-            changes: vec![MftChangeV2 {
-                kind: MftChangeKindV2::Upsert,
-                reference: 2,
-                parent_reference: 1,
-                name: "file.txt".to_owned(),
-                logical_bytes: 12,
-                allocated_bytes: 4096,
-                is_directory: false,
-                reason: USN_REASON_DATA_EXTEND,
-            }],
-        };
-        assert_eq!(decode_delta(&encode_delta(&delta).unwrap()).unwrap(), delta);
-
-        let status = MftServiceStatusV2 {
-            mode: MftServiceModeV2::Journal,
-            generation: 3,
-            journal_id: 11,
-            committed_usn: 101,
-            pending_count: 2,
-            pending_bytes: 80,
-            queue_high_water: 9,
-            published_unix_ms: 12,
-            reason: String::new(),
-        };
-        assert_eq!(
-            decode_status(&encode_status(&status).unwrap()).unwrap(),
-            status
-        );
-    }
-
-    #[test]
-    fn immutable_delta_is_visible_before_its_checkpoint() {
-        let temporary = tempfile::tempdir().unwrap();
-        let volume = VolumeIdentityV2 { serial: 7 };
-        let delta = MftDeltaV2 {
-            schema: SCHEMA_V2,
-            volume,
-            journal_id: 11,
-            generation: 1,
-            start_usn: 20,
-            next_usn: 30,
-            changes: Vec::new(),
-        };
-        let checkpoint = MftCheckpointV2::new(volume, 11, 30, 1);
-        publish_delta_and_checkpoint(temporary.path(), 'C', &delta, &checkpoint).unwrap();
-        assert_eq!(
-            read_delta(&delta_path(temporary.path(), 'C', 1)).unwrap(),
-            delta
-        );
-        assert_eq!(
-            latest_checkpoint(temporary.path(), 'C').unwrap(),
-            Some(checkpoint)
-        );
-
-        let mismatch = MftCheckpointV2::new(volume, 11, 31, 1);
-        assert!(publish_delta_and_checkpoint(temporary.path(), 'D', &delta, &mismatch).is_err());
-        assert!(!checkpoint_path(temporary.path(), 'D', 1).exists());
-    }
-
-    #[test]
     fn delta_chain_accepts_only_the_exact_next_commit_boundary() {
         let volume = VolumeIdentityV2 { serial: 7 };
         let cursor = MftCheckpointV2::new(volume, 11, 30, 4);
@@ -1084,87 +897,5 @@ mod tests {
         assert!(MftCheckpointV2::new(volume, 11, 25, 0).compatible_with(volume, metadata));
         assert!(!MftCheckpointV2::new(volume, 12, 25, 0).compatible_with(volume, metadata));
         assert!(!MftCheckpointV2::new(volume, 11, 24, 0).compatible_with(volume, metadata));
-    }
-
-    #[test]
-    fn coalescing_retains_final_topology_and_combines_reasons() {
-        let first = UsnEventV2 {
-            reference: 2,
-            parent_reference: 1,
-            usn: 10,
-            reason: USN_REASON_RENAME_OLD_NAME,
-            attributes: 0,
-            name: "old".to_owned(),
-        };
-        let second = UsnEventV2 {
-            reference: 2,
-            parent_reference: 3,
-            usn: 11,
-            reason: USN_REASON_RENAME_NEW_NAME,
-            attributes: 0,
-            name: "new".to_owned(),
-        };
-        let pending = coalesce_events([first, second]);
-        let event = &pending[&2];
-        assert_eq!(event.parent_reference, 3);
-        assert_eq!(event.name, "new");
-        assert_eq!(
-            event.reason & (USN_REASON_RENAME_OLD_NAME | USN_REASON_RENAME_NEW_NAME),
-            USN_REASON_RENAME_OLD_NAME | USN_REASON_RENAME_NEW_NAME
-        );
-    }
-
-    #[test]
-    fn decisive_change_reason_wins_over_ambiguous_companion_flags() {
-        let event = UsnEventV2 {
-            reference: 7,
-            parent_reference: 5,
-            usn: 11,
-            reason: USN_REASON_FILE_CREATE | USN_REASON_DATA_EXTEND | USN_REASON_HARD_LINK_CHANGE,
-            attributes: 0,
-            name: "created.bin".to_owned(),
-        };
-        assert_eq!(normalize_event(&event), MftChangeKindV2::Upsert);
-
-        let hard_link = UsnEventV2 {
-            reason: USN_REASON_HARD_LINK_CHANGE,
-            ..event
-        };
-        assert_eq!(normalize_event(&hard_link), MftChangeKindV2::Upsert);
-
-        let unknown = UsnEventV2 {
-            reason: 0,
-            ..hard_link
-        };
-        assert_eq!(normalize_event(&unknown), MftChangeKindV2::Invalidate);
-    }
-
-    #[test]
-    fn coalesced_queue_accounting_is_bounded_by_unique_references() {
-        let event = UsnEventV2 {
-            reference: 7,
-            parent_reference: 5,
-            usn: 1,
-            reason: USN_REASON_DATA_EXTEND,
-            attributes: 0,
-            name: "hot.bin".to_owned(),
-        };
-        let pending = coalesce_events(std::iter::repeat_n(event, 100_000));
-        assert_eq!(pending.len(), 1);
-        assert_eq!(coalesced_bytes(&pending), 71);
-    }
-
-    #[test]
-    fn publication_uses_quiet_debounce_with_a_maximum_deadline() {
-        use std::time::Duration;
-        assert!(!publication_due(
-            Duration::from_secs(4),
-            Duration::from_secs(4)
-        ));
-        assert!(publication_due(
-            Duration::from_secs(6),
-            Duration::from_secs(5)
-        ));
-        assert!(publication_due(Duration::from_secs(9), Duration::ZERO));
     }
 }

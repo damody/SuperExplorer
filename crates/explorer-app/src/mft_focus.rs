@@ -93,16 +93,16 @@ impl FocusFrameV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct FocusClientIdentityV1 {
-    pub(crate) process_id: u32,
-    pub(crate) process_creation_100ns: u64,
-    pub(crate) session_id: u32,
-    pub(crate) user_sid: Vec<u8>,
-    pub(crate) image_path: PathBuf,
-    pub(crate) image_file_identity: u128,
+pub struct FocusClientIdentityV1 {
+    pub process_id: u32,
+    pub process_creation_100ns: u64,
+    pub session_id: u32,
+    pub user_sid: Vec<u8>,
+    pub image_path: PathBuf,
+    pub image_file_identity: u128,
 }
 
-pub(crate) fn authorize_focus_client(
+pub fn authorize_focus_client(
     client: &FocusClientIdentityV1,
     active_session_id: u32,
     active_user_sid: &[u8],
@@ -127,10 +127,6 @@ pub(crate) fn authorize_focus_client(
 const INVALID_HANDLE_VALUE: isize = -1;
 #[cfg(windows)]
 const ERROR_PIPE_CONNECTED: u32 = 535;
-#[cfg(windows)]
-const ERROR_PIPE_LISTENING: u32 = 536;
-#[cfg(windows)]
-const ERROR_NO_DATA: u32 = 232;
 #[cfg(windows)]
 const ERROR_MORE_DATA: u32 = 234;
 #[cfg(windows)]
@@ -204,14 +200,14 @@ static REPORTER: OnceLock<mpsc::Sender<ReporterCommandV1>> = OnceLock::new();
 static NEXT_LEASE: AtomicU64 = AtomicU64::new(1);
 
 #[cfg(windows)]
-pub(crate) struct FocusWindowReporterV1 {
+pub struct FocusWindowReporterV1 {
     lease_id: u128,
     sender: mpsc::Sender<ReporterCommandV1>,
 }
 
 #[cfg(windows)]
 impl FocusWindowReporterV1 {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         let sender = REPORTER
             .get_or_init(|| {
                 let (sender, receiver) = mpsc::channel();
@@ -224,7 +220,7 @@ impl FocusWindowReporterV1 {
         Self { lease_id, sender }
     }
 
-    pub(crate) fn set_focused(&self, focused: bool) {
+    pub fn set_focused(&self, focused: bool) {
         let _ = self
             .sender
             .send(ReporterCommandV1::Focus(self.lease_id, focused));
@@ -428,7 +424,7 @@ fn wide(value: &str) -> Vec<u16> {
 )]
 // SAFETY: The SDDL and pipe-name buffers remain live through synchronous calls;
 // the descriptor and pipe handles immediately enter their matching RAII owners.
-pub(crate) fn serve_focus_leases(
+pub fn serve_focus_leases(
     stopped: impl Fn() -> bool + Send + Sync + 'static,
     authorize: impl Fn(isize) -> Result<(u64, isize), String> + Send + Sync + 'static,
     leases: Arc<Mutex<FocusLeaseRegistryV1>>,
@@ -454,7 +450,7 @@ pub(crate) fn serve_focus_leases(
     }
     let descriptor = LocalMemory(descriptor);
     let attributes = SecurityAttributes {
-        length: std::mem::size_of::<SecurityAttributes>() as u32,
+        length: size_of::<SecurityAttributes>() as u32,
         descriptor: descriptor.0,
         inherit_handle: 0,
     };
@@ -646,7 +642,7 @@ fn write_all(handle: isize, bytes: &[u8], stopped: &dyn Fn() -> bool) -> Result<
 fn connect_overlapped(handle: isize, stopped: &dyn Fn() -> bool) -> Result<(), String> {
     let event =
         unsafe { CreateEventW(None, true, false, None) }.map_err(|error| error.to_string())?;
-    let event_guard = WinEvent(event);
+    let _event_guard = WinEvent(event);
     let mut overlapped = OVERLAPPED {
         hEvent: event,
         ..Default::default()
@@ -702,7 +698,7 @@ fn overlapped_io(
 ) -> Result<u32, String> {
     let event =
         unsafe { CreateEventW(None, true, false, None) }.map_err(|error| error.to_string())?;
-    let event_guard = WinEvent(event);
+    let _event_guard = WinEvent(event);
     let mut overlapped = OVERLAPPED {
         hEvent: event,
         ..Default::default()

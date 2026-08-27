@@ -1,0 +1,25 @@
+[package]
+name = "explorer-mft"
+version = "0.1.0"
+description = "Internal MFT protocol, persistence, migration, and storage core."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+explorer-model = { path = "../explorer-model" }
+rusqlite = { workspace = true, features = ["hooks", "limits"] }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
+[lints]
+workspace = true

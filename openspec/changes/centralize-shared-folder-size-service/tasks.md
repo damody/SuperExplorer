@@ -99,6 +99,7 @@
 - [x] 3.1.2 Route Size Map progressive nodes and terminal state through tree snapshot subscriptions.
 - [x] 3.1.3 Remove official Folder Size recursion/cache implementation and keep its renderer data-only.
 - [x] 3.1.4 Remove the independent official Size Map scan coordinator after shared-service parity.
+  - `govern-dead-code-warnings` retains `FolderSnapshotDeltaV1::Remove` as this change's bounded delta contract; remove its narrow expectation after emitter and application wiring exists.
 - [x] 3.1.5 Test enable/disable order, tab switching, F5, navigation, simultaneous consumers, and final-consumer cancellation.
 - [x] 3.1.6 Run consumer tests and retain G6 evidence.
 

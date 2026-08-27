@@ -1,0 +1,152 @@
+{
+  "schema_version": 1,
+  "producer_revision": "26f145d76a4e916e760aeb5630dd3ab2d0472433",
+  "producer": "tests::generate_dead_code_legacy_golden_fixtures",
+  "format_versions": {
+    "index": "SEMFTIDX v1",
+    "checkpoint": "SEMFTCP2 schema 2",
+    "delta": "SEMFTDL2 schema 2",
+    "status": "SEMFTST2 schema 2"
+  },
+  "immutable": true,
+  "files": [
+    {
+      "path": "corrupt-checkpoint.semftcp",
+      "purpose": "checksum corruption rejection",
+      "size": 60,
+      "sha256": "4f1e6772f0fc36e827541be8b706c922385363aaede36393769250df08274610"
+    },
+    {
+      "path": "cursor-noncontiguous/C.00000000000000000001.semftcp",
+      "purpose": "cursor contiguity rejection",
+      "size": 60,
+      "sha256": "265bff75ddfec2fc4b2694ba76b0d123a5fef2f0b7fb5fb512bbb741529c1c35"
+    },
+    {
+      "path": "cursor-noncontiguous/C.00000000000000000001.semftdelta",
+      "purpose": "cursor contiguity rejection",
+      "size": 125,
+      "sha256": "24b3529ba3bf27657b9d3577aab224dada5dde6ff6bfcaa011c37722d12d789f"
+    },
+    {
+      "path": "failed-promotion-retry/C.00000000000000000000.semftcp",
+      "purpose": "failed promotion remains retryable and preserves canonical bytes",
+      "size": 60,
+      "sha256": "c94b11dca4787c8477c7a5e6221bdbeba7a9e1f7b770b3ceff4398f76c16aa4c"
+    },
+    {
+      "path": "failed-promotion-retry/C.00000000000000000001.semftcp",
+      "purpose": "failed promotion remains retryable and preserves canonical bytes",
+      "size": 60,
+      "sha256": "4f1e6772f0fc36e827541be8b706c922385363aaede36393769250df08274610"
+    },
+    {
+      "path": "failed-promotion-retry/C.00000000000000000001.semftdelta",
+      "purpose": "failed promotion remains retryable and preserves canonical bytes",
+      "size": 125,
+      "sha256": "f4f502e611f36a64ed101e983ee6cbf4895a806ace65ab96b4aaeff343dd83c6"
+    },
+    {
+      "path": "failed-promotion-retry/C.semftidx",
+      "purpose": "failed promotion remains retryable and preserves canonical bytes",
+      "size": 105,
+      "sha256": "a923eed3464ce58ce979bdbd60abe3cccc8c280540132fef0d8c19204bddc08b"
+    },
+    {
+      "path": "failed-promotion-retry/C.semftstatus",
+      "purpose": "failed promotion remains retryable and preserves canonical bytes",
+      "size": 92,
+      "sha256": "5ea7db4a5a3ff7129aad5d4d94cc134ed90856eccb758f0f300ae1ae3842d68d"
+    },
+    {
+      "path": "failed-promotion-retry/promotion-retry.keep",
+      "purpose": "failed promotion remains retryable and preserves canonical bytes",
+      "size": 25,
+      "sha256": "270949103cc3395df5281ccb91bf9fe9a95b62a402dc80d704a1ce8f13e73f1d"
+    },
+    {
+      "path": "oversize.semftdelta",
+      "purpose": "bounded record-size rejection",
+      "size": 67108865,
+      "sha256": "91990977345985aaf03af1358f4f989d7eaf985b58529efb72f613c588f6599a"
+    },
+    {
+      "path": "unfocused-no-delete/C.00000000000000000000.semftcp",
+      "purpose": "unfocused failure preserves every byte",
+      "size": 60,
+      "sha256": "c94b11dca4787c8477c7a5e6221bdbeba7a9e1f7b770b3ceff4398f76c16aa4c"
+    },
+    {
+      "path": "unfocused-no-delete/C.00000000000000000001.semftcp",
+      "purpose": "unfocused failure preserves every byte",
+      "size": 60,
+      "sha256": "265bff75ddfec2fc4b2694ba76b0d123a5fef2f0b7fb5fb512bbb741529c1c35"
+    },
+    {
+      "path": "unfocused-no-delete/C.00000000000000000001.semftdelta",
+      "purpose": "unfocused failure preserves every byte",
+      "size": 125,
+      "sha256": "24b3529ba3bf27657b9d3577aab224dada5dde6ff6bfcaa011c37722d12d789f"
+    },
+    {
+      "path": "unfocused-no-delete/C.semftidx",
+      "purpose": "unfocused failure preserves every byte",
+      "size": 105,
+      "sha256": "a923eed3464ce58ce979bdbd60abe3cccc8c280540132fef0d8c19204bddc08b"
+    },
+    {
+      "path": "unfocused-no-delete/C.semftstatus",
+      "purpose": "unfocused failure preserves every byte",
+      "size": 92,
+      "sha256": "5ea7db4a5a3ff7129aad5d4d94cc134ed90856eccb758f0f300ae1ae3842d68d"
+    },
+    {
+      "path": "unfocused-no-delete/sentinel.keep",
+      "purpose": "unfocused failure preserves every byte",
+      "size": 15,
+      "sha256": "40e5fefc57239e4bc557b002386d8083216abb67de6fac66df3d86d90e0de6af"
+    },
+    {
+      "path": "valid/C.00000000000000000000.semftcp",
+      "purpose": "valid base/checkpoint/delta/status reader chain",
+      "size": 60,
+      "sha256": "c94b11dca4787c8477c7a5e6221bdbeba7a9e1f7b770b3ceff4398f76c16aa4c"
+    },
+    {
+      "path": "valid/C.00000000000000000001.semftcp",
+      "purpose": "valid base/checkpoint/delta/status reader chain",
+      "size": 60,
+      "sha256": "265bff75ddfec2fc4b2694ba76b0d123a5fef2f0b7fb5fb512bbb741529c1c35"
+    },
+    {
+      "path": "valid/C.00000000000000000001.semftdelta",
+      "purpose": "valid base/checkpoint/delta/status reader chain",
+      "size": 125,
+      "sha256": "f4f502e611f36a64ed101e983ee6cbf4895a806ace65ab96b4aaeff343dd83c6"
+    },
+    {
+      "path": "valid/C.semftidx",
+      "purpose": "valid base/checkpoint/delta/status reader chain",
+      "size": 105,
+      "sha256": "a923eed3464ce58ce979bdbd60abe3cccc8c280540132fef0d8c19204bddc08b"
+    },
+    {
+      "path": "valid/C.semftstatus",
+      "purpose": "valid base/checkpoint/delta/status reader chain",
+      "size": 92,
+      "sha256": "5ea7db4a5a3ff7129aad5d4d94cc134ed90856eccb758f0f300ae1ae3842d68d"
+    },
+    {
+      "path": "wrong-identity/C.00000000000000000001.semftcp",
+      "purpose": "volume identity mismatch rejection",
+      "size": 60,
+      "sha256": "e829ff65eedf2292df40ce2b7c7207c3548b431ea4ade7f50a1c00cc3101e208"
+    },
+    {
+      "path": "wrong-identity/C.00000000000000000001.semftdelta",
+      "purpose": "volume identity mismatch rejection",
+      "size": 125,
+      "sha256": "32fce222503d51bfbcd4e2539c7f450743cf4edff05b0e028a381102043fe3d6"
+    }
+  ]
+}

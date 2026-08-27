@@ -19,19 +19,13 @@ pub mod bookmark_store;
 pub mod branding;
 mod brokered_service;
 mod folder_size_service;
-mod mft_focus;
+pub(crate) use explorer_mft::mft_focus;
 #[cfg(windows)]
-mod mft_journal;
-mod mft_migration;
+pub(crate) use explorer_mft::mft_journal;
 #[cfg(windows)]
-mod mft_persistence;
+pub(crate) use explorer_mft::mft_query;
 #[cfg(windows)]
-mod mft_query;
-mod mft_runtime;
-#[cfg(windows)]
-mod mft_size_map;
-#[cfg(windows)]
-mod mft_sqlite;
+pub(crate) use explorer_mft::mft_size_map;
 mod pointer_capture;
 mod remote_service;
 pub mod session_lifecycle;

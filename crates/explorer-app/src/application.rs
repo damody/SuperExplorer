@@ -2,7 +2,7 @@
 
 use std::{
     cell::RefCell,
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     fs,
     hash::{Hash, Hasher},
     io::Read as _,
@@ -45,9 +45,6 @@ const LOCK_OWNER_CONTRIBUTION_ID_V1: &str = "rust-lock-owner:owners";
 const LOCK_OWNER_RENDERER_CONTRIBUTION_ID_V1: &str = "rust-lock-owner:owners-renderer";
 const CODE_LINES_BATCH_ITEMS_V1: usize = 128;
 const SIZE_MAP_VISIBLE_NODE_LIMIT_V1: u32 = 10_000;
-const CODE_LINES_DIRECTORY_CACHE_SCHEMA_V1: u32 = 2;
-const CODE_LINES_DIRECTORY_CACHE_MAX_RECORD_BYTES_V1: u64 = 8 * 1024;
-const CODE_LINES_DIRECTORY_CACHE_MAX_FILES_V1: usize = 1_024;
 const DIRECT_RENDER_QUEUE_CAP_V1: usize = 256;
 const DIRECT_RENDER_CACHE_CAP_V1: usize = 512;
 const SIZE_MAP_RENDER_QUEUE_CAP_V1: usize = 8;
@@ -858,7 +855,6 @@ struct HostExtensionColumnCacheV1<T> {
     /// When `Some`, a lookup whose mtime no longer matches may still reuse an
     /// in-memory entry whose mtime is newer than the current one (or older,
     /// see `get`) as long as it was written within this many seconds.
-    ttl_seconds: Option<u64>,
     telemetry: Arc<HostExtensionCacheTrackerV1>,
 }
 
@@ -970,7 +966,6 @@ impl<T> Default for HostExtensionColumnCacheV1<T> {
             persistent_namespace: None,
             active_root: None,
             active_depth: 3,
-            ttl_seconds: None,
             telemetry: register_host_extension_cache_tracker_v1(),
         }
     }
@@ -1040,15 +1035,6 @@ impl<T: HostExtensionColumnCacheValueV1> HostExtensionColumnCacheV1<T> {
             persistent_namespace: Some(namespace),
             ..Self::default()
         }
-    }
-
-    fn with_ttl(mut self, seconds: u64) -> Self {
-        self.ttl_seconds = Some(seconds);
-        self
-    }
-
-    fn set_ttl_seconds(&mut self, ttl: Option<u64>) {
-        self.ttl_seconds = ttl;
     }
 
     fn admission(&self, path: &Path) -> Option<HostExtensionColumnCacheAdmissionV1> {
@@ -1125,23 +1111,6 @@ impl<T: HostExtensionColumnCacheValueV1> HostExtensionColumnCacheV1<T> {
         {
             return Some(value.clone());
         }
-        // TTL window: the mtime moved (an actively-written volume like C:), but
-        // the measurement is recent enough to reuse instead of rescanning the
-        // whole tree. Pick the newest entry for the canonical path so a stale
-        // duplicate can never shadow a fresher one.
-        if let Some(ttl) = self.ttl_seconds
-            && let Some((directory, epoch, cached_at, value)) = self
-                .values
-                .iter()
-                .filter(|(key, _)| key.canonical_path == admission.key.canonical_path)
-                .max_by_key(|(_, (_, _, cached_at, _))| *cached_at)
-                .map(|(_, entry)| entry)
-            && directory == &admission.directory
-            && *epoch == admission.directory_epoch
-            && unix_seconds_now().saturating_sub(*cached_at) <= ttl
-        {
-            return Some(value.clone());
-        }
         self.read_persistent(admission)
     }
 
@@ -1159,13 +1128,6 @@ impl<T: HostExtensionColumnCacheValueV1> HostExtensionColumnCacheV1<T> {
             && !self.values.contains_key(&admission.key)
         {
             self.values.clear();
-        }
-        // With a TTL, the mtime is a soft freshness hint: keep only the newest
-        // entry per canonical path so lookups stay O(1) in the common case and
-        // a superseded mtime variant cannot accumulate.
-        if self.ttl_seconds.is_some() {
-            self.values
-                .retain(|key, _| key.canonical_path != admission.key.canonical_path);
         }
         self.values.insert(
             admission.key.clone(),
@@ -1318,23 +1280,6 @@ fn request_cache_root<'a>(paths: impl Iterator<Item = &'a Path>) -> Option<PathB
     paths.filter_map(Path::parent).next().map(Path::to_path_buf)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct FolderSizeCachedValueV1 {
-    exact_bytes: u64,
-}
-
-impl HostExtensionColumnCacheValueV1 for FolderSizeCachedValueV1 {
-    fn encode_cache_value(&self) -> serde_json::Value {
-        serde_json::json!({ "exact_bytes": self.exact_bytes })
-    }
-
-    fn decode_cache_value(value: &serde_json::Value) -> Option<Self> {
-        Some(Self {
-            exact_bytes: value.get("exact_bytes")?.as_u64()?,
-        })
-    }
-}
-
 impl HostExtensionColumnCacheValueV1 for u64 {
     fn encode_cache_value(&self) -> serde_json::Value {
         (*self).into()
@@ -1345,108 +1290,12 @@ impl HostExtensionColumnCacheValueV1 for u64 {
     }
 }
 
-fn partition_folder_size_cache_hits(
-    cache: &Mutex<HostExtensionColumnCacheV1<FolderSizeCachedValueV1>>,
-    requests: Vec<explorer_ui::folder_size_column::FolderSizeRequestV1>,
-) -> (
-    Vec<explorer_ui::folder_size_column::FolderSizeResultV1>,
-    Vec<explorer_ui::folder_size_column::FolderSizeRequestV1>,
-) {
-    if let Some(root) = request_cache_root(requests.iter().map(|request| request.path.as_path()))
-        && let Ok(mut cache) = cache.lock()
-    {
-        cache.retain_window(&root, 3);
-    }
-    let mut hits = Vec::new();
-    let mut misses = Vec::new();
-    for request in requests {
-        if request.require_directory_facts {
-            misses.push(request);
-            continue;
-        }
-        let cached = cache.lock().ok().and_then(|cache| {
-            let admission = cache.admission(&request.path)?;
-            cache.get(&admission)
-        });
-        if let Some(cached) = cached {
-            hits.push(explorer_ui::folder_size_column::FolderSizeResultV1 {
-                context: request.context,
-                item_id: request.item_id,
-                exact_bytes: Some(cached.exact_bytes),
-                directory_facts: None,
-                partial: false,
-                error: None,
-            });
-        } else {
-            misses.push(request);
-        }
-    }
-    (hits, misses)
-}
-
-fn exact_directory_facts(
-    status: crate::folder_size_service::SnapshotStatusV1,
-    mft_generation: Option<u64>,
-    file_count: u64,
-    root_inclusive_directory_count: u64,
-) -> Option<explorer_ui::folder_size_column::DirectoryFactsV1> {
-    (status == crate::folder_size_service::SnapshotStatusV1::Complete)
-        .then(|| {
-            mft_generation.map(
-                |mft_generation| explorer_ui::folder_size_column::DirectoryFactsV1 {
-                    mft_generation,
-                    file_count,
-                    folder_count: root_inclusive_directory_count.saturating_sub(1),
-                },
-            )
-        })
-        .flatten()
-}
-
 #[derive(Default)]
 struct PendingFolderSizeWorkV1 {
     requests: Option<Vec<explorer_ui::folder_size_column::FolderSizeRequestV1>>,
     in_flight: HashMap<FolderSizeWorkIdentityV1, explorer_model::RequestId>,
     cancelled: HashSet<explorer_model::RequestId>,
     stopped: bool,
-}
-
-const FOLDER_SIZE_QUERY_DEADLINE_V1: Duration = Duration::from_secs(10);
-
-fn query_folder_size_with_deadline_v1(
-    path: &Path,
-    cache_memory_mb: u16,
-) -> Result<crate::mft_query::FolderAggregateQueryV1, String> {
-    let path = path.to_path_buf();
-    let diagnostic_path = path.clone();
-    let (sender, receiver) = mpsc::sync_channel(1);
-    std::thread::Builder::new()
-        .name("mft-folder-query-deadline".to_owned())
-        .spawn(move || {
-            let _ = sender.send(crate::mft_query::query_folder(&path, cache_memory_mb));
-        })
-        .map_err(|error| format!("failed to start MFT query thread: {error}"))?;
-    receive_folder_size_query_v1(receiver, &diagnostic_path, FOLDER_SIZE_QUERY_DEADLINE_V1)
-}
-
-fn receive_folder_size_query_v1(
-    receiver: mpsc::Receiver<Result<crate::mft_query::FolderAggregateQueryV1, String>>,
-    diagnostic_path: &Path,
-    deadline: Duration,
-) -> Result<crate::mft_query::FolderAggregateQueryV1, String> {
-    receiver
-        .recv_timeout(deadline)
-        .map_err(|error| match error {
-            mpsc::RecvTimeoutError::Timeout => format!(
-                "MFT Service exact folder aggregate deadline exceeded: path={} deadline_ms={}",
-                diagnostic_path.display(),
-                deadline.as_millis(),
-            ),
-            mpsc::RecvTimeoutError::Disconnected => format!(
-                "MFT Service exact folder aggregate worker disconnected: path={}",
-                diagnostic_path.display(),
-            ),
-        })?
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -1483,35 +1332,6 @@ fn enqueue_folder_size_requests(
             pending.push(request);
         }
     }
-}
-
-fn take_folder_size_requests(
-    state: &mut PendingFolderSizeWorkV1,
-) -> Vec<explorer_ui::folder_size_column::FolderSizeRequestV1> {
-    let requests = state.requests.take().unwrap_or_default();
-    state.in_flight.extend(requests.iter().map(|request| {
-        (
-            FolderSizeWorkIdentityV1::from(request),
-            request.context.request_id,
-        )
-    }));
-    requests
-}
-
-fn take_folder_size_request(
-    state: &mut PendingFolderSizeWorkV1,
-) -> Option<explorer_ui::folder_size_column::FolderSizeRequestV1> {
-    let pending = state.requests.as_mut()?;
-    let request = pending.first().cloned()?;
-    pending.remove(0);
-    if pending.is_empty() {
-        state.requests = None;
-    }
-    state.in_flight.insert(
-        FolderSizeWorkIdentityV1::from(&request),
-        request.context.request_id,
-    );
-    Some(request)
 }
 
 fn take_folder_size_batch(
@@ -2534,6 +2354,7 @@ fn current_code_lines_epoch(current_epoch: &AtomicU64, epoch: u64) -> bool {
     current_epoch.load(Ordering::Acquire) == epoch
 }
 
+#[cfg(test)]
 fn is_code_lines_directory_row(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_dir())
 }
@@ -2564,294 +2385,6 @@ fn read_code_lines_file_bounded(path: &Path) -> Result<Option<Vec<u8>>, String> 
 }
 
 const CODE_LINES_DIRECTORY_MAGIC_V1: &[u8; 8] = b"SECLDIR1";
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct CodeLinesDirectoryCacheKeyV1 {
-    canonical_path: String,
-    modified_seconds: u64,
-    modified_nanos: u32,
-}
-
-fn code_lines_directory_cache_directory() -> Option<PathBuf> {
-    std::env::var_os("SUPEREXPLORER_CODE_LINES_CACHE")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("LOCALAPPDATA")
-                .or_else(|| std::env::var_os("APPDATA"))
-                .map(|root| {
-                    PathBuf::from(root)
-                        .join("RustGpuiExplorer")
-                        .join("cache")
-                        .join("code-lines")
-                        .join("directories")
-                        .join("v1")
-                })
-        })
-}
-
-fn code_lines_directory_cache_key(path: &Path) -> Option<CodeLinesDirectoryCacheKeyV1> {
-    let canonical = fs::canonicalize(path).ok()?;
-    let metadata = fs::metadata(&canonical).ok()?;
-    if !metadata.is_dir() {
-        return None;
-    }
-    let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
-    let mut canonical_path = canonical.to_string_lossy().into_owned();
-    #[cfg(windows)]
-    canonical_path.make_ascii_lowercase();
-    Some(CodeLinesDirectoryCacheKeyV1 {
-        canonical_path,
-        modified_seconds: modified.as_secs(),
-        modified_nanos: modified.subsec_nanos(),
-    })
-}
-
-fn persistent_code_lines_hash_v1(input: &str) -> u64 {
-    input
-        .as_bytes()
-        .iter()
-        .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-            (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
-        })
-}
-
-fn code_lines_directory_cache_path(
-    directory: &Path,
-    key: &CodeLinesDirectoryCacheKeyV1,
-) -> PathBuf {
-    directory.join(format!(
-        "{:016x}.code-lines-directory-cache",
-        persistent_code_lines_hash_v1(&key.canonical_path)
-    ))
-}
-
-fn read_code_lines_directory_cache(
-    directory: Option<&Path>,
-    key: &CodeLinesDirectoryCacheKeyV1,
-) -> Option<explorer_ui::code_lines_column::CodeLinesValueV1> {
-    let path = code_lines_directory_cache_path(directory?, key);
-    let metadata = fs::symlink_metadata(&path).ok()?;
-    if !metadata.is_file()
-        || metadata.file_type().is_symlink()
-        || metadata.len() > CODE_LINES_DIRECTORY_CACHE_MAX_RECORD_BYTES_V1
-    {
-        return None;
-    }
-    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).ok()?);
-    fs::File::open(path)
-        .ok()?
-        .take(CODE_LINES_DIRECTORY_CACHE_MAX_RECORD_BYTES_V1 + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    if bytes.len() as u64 > CODE_LINES_DIRECTORY_CACHE_MAX_RECORD_BYTES_V1 {
-        return None;
-    }
-    let record: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    if record.get("schema")?.as_u64()? != u64::from(CODE_LINES_DIRECTORY_CACHE_SCHEMA_V1)
-        || record.get("canonical_path")?.as_str()? != key.canonical_path
-        || record.get("modified_seconds")?.as_u64()? != key.modified_seconds
-        || record.get("modified_nanos")?.as_u64()? != u64::from(key.modified_nanos)
-    {
-        return None;
-    }
-    Some(explorer_ui::code_lines_column::CodeLinesValueV1 {
-        language: record.get("language")?.as_str()?.to_owned(),
-        code: record.get("code")?.as_u64()?,
-        comments: record.get("comments")?.as_u64()?,
-        blanks: record.get("blanks")?.as_u64()?,
-        total: record.get("total")?.as_u64()?,
-    })
-}
-
-fn prune_code_lines_directory_cache(directory: &Path) {
-    let Ok(entries) = fs::read_dir(directory) else {
-        return;
-    };
-    let mut entries = entries
-        .flatten()
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .ends_with(".code-lines-directory-cache")
-        })
-        .map(|entry| {
-            (
-                entry
-                    .metadata()
-                    .ok()
-                    .and_then(|value| value.modified().ok())
-                    .unwrap_or(UNIX_EPOCH),
-                entry.path(),
-            )
-        })
-        .collect::<Vec<_>>();
-    entries.sort_by_key(|entry| entry.0);
-    let excess = entries
-        .len()
-        .saturating_sub(CODE_LINES_DIRECTORY_CACHE_MAX_FILES_V1.saturating_sub(1));
-    for (_, path) in entries.into_iter().take(excess) {
-        let _ = fs::remove_file(path);
-    }
-}
-
-fn store_code_lines_directory_cache(
-    directory: Option<&Path>,
-    key: &CodeLinesDirectoryCacheKeyV1,
-    value: &explorer_ui::code_lines_column::CodeLinesValueV1,
-) {
-    let Some(directory) = directory else { return };
-    if fs::create_dir_all(directory).is_err() {
-        return;
-    }
-    prune_code_lines_directory_cache(directory);
-    let Ok(bytes) = serde_json::to_vec(&serde_json::json!({
-        "schema": CODE_LINES_DIRECTORY_CACHE_SCHEMA_V1,
-        "canonical_path": key.canonical_path,
-        "modified_seconds": key.modified_seconds,
-        "modified_nanos": key.modified_nanos,
-        "language": value.language,
-        "code": value.code,
-        "comments": value.comments,
-        "blanks": value.blanks,
-        "total": value.total,
-    })) else {
-        return;
-    };
-    if bytes.len() as u64 > CODE_LINES_DIRECTORY_CACHE_MAX_RECORD_BYTES_V1 {
-        return;
-    }
-    let destination = code_lines_directory_cache_path(directory, key);
-    let temporary = directory.join(format!(
-        ".{:016x}.{}-{}.tmp",
-        persistent_code_lines_hash_v1(&key.canonical_path),
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |value| value.as_nanos())
-    ));
-    if fs::write(&temporary, bytes).is_ok()
-        && replace_code_lines_cache_file(&temporary, &destination).is_err()
-    {
-        let _ = fs::remove_file(temporary);
-    }
-}
-
-#[cfg(windows)]
-#[expect(
-    unsafe_code,
-    reason = "atomic cache activation requires declaring and invoking Win32 MoveFileExW"
-)]
-fn replace_code_lines_cache_file(temporary: &Path, destination: &Path) -> std::io::Result<()> {
-    use std::{iter, os::windows::ffi::OsStrExt as _};
-    #[link(name = "kernel32")]
-    // SAFETY: This declaration matches the documented kernel32 MoveFileExW
-    // system ABI; both pointer arguments are supplied as NUL-terminated UTF-16.
-    unsafe extern "system" {
-        fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
-    }
-    let temporary = temporary
-        .as_os_str()
-        .encode_wide()
-        .chain(iter::once(0))
-        .collect::<Vec<_>>();
-    let destination = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(iter::once(0))
-        .collect::<Vec<_>>();
-    if unsafe { MoveFileExW(temporary.as_ptr(), destination.as_ptr(), 0x1 | 0x8) } == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(not(windows))]
-fn replace_code_lines_cache_file(temporary: &Path, destination: &Path) -> std::io::Result<()> {
-    fs::rename(temporary, destination)
-}
-
-/// Uses the same locked tokei library as the Code Lines plugin for directories.
-/// Directory contents are intentionally not copied into the bounded plugin input
-/// stream: large source trees such as `D:\SuperExplorer\vendor` can exceed that
-/// transport limit even though their aggregate result is only five integers.
-fn measure_code_lines_directory(
-    path: &Path,
-) -> Result<Option<explorer_ui::code_lines_column::CodeLinesValueV1>, String> {
-    measure_code_lines_directory_with_cache(path, code_lines_directory_cache_directory().as_deref())
-}
-
-fn measure_all_code_lines_directory(
-    path: &Path,
-) -> Result<Option<explorer_ui::code_lines_column::CodeLinesValueV1>, String> {
-    let metadata = fs::symlink_metadata(path).map_err(|_| "Source unavailable".to_owned())?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Ok(None);
-    }
-    let mut languages = tokei::Languages::new();
-    languages.get_statistics(&[path], &[], &tokei::Config::default());
-    if languages.is_empty() {
-        return Ok(None);
-    }
-    let (code, comments, blanks) = languages.iter().fold(
-        (0_u64, 0_u64, 0_u64),
-        |(code, comments, blanks), (_, statistics)| {
-            (
-                code.saturating_add(statistics.code as u64),
-                comments.saturating_add(statistics.comments as u64),
-                blanks.saturating_add(statistics.blanks as u64),
-            )
-        },
-    );
-    Ok(Some(explorer_ui::code_lines_column::CodeLinesValueV1 {
-        language: "All".to_owned(),
-        code,
-        comments,
-        blanks,
-        total: code.saturating_add(comments).saturating_add(blanks),
-    }))
-}
-
-fn measure_code_lines_directory_with_cache(
-    path: &Path,
-    cache_directory: Option<&Path>,
-) -> Result<Option<explorer_ui::code_lines_column::CodeLinesValueV1>, String> {
-    let metadata = fs::symlink_metadata(path).map_err(|_| "Source unavailable".to_owned())?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Ok(None);
-    }
-
-    let key =
-        code_lines_directory_cache_key(path).ok_or_else(|| "Source unavailable".to_owned())?;
-    if let Some(value) = read_code_lines_directory_cache(cache_directory, &key) {
-        return Ok(Some(value));
-    }
-    let mut languages = tokei::Languages::new();
-    languages.get_statistics(&[path], &[], &tokei::Config::default());
-    let Some((language, statistics)) =
-        languages
-            .iter()
-            .max_by(|(left_language, left), (right_language, right)| {
-                left.code
-                    .cmp(&right.code)
-                    .then_with(|| right_language.name().cmp(left_language.name()))
-            })
-    else {
-        return Ok(None);
-    };
-    let value = explorer_ui::code_lines_column::CodeLinesValueV1 {
-        language: language.name().to_owned(),
-        code: statistics.code as u64,
-        comments: statistics.comments as u64,
-        blanks: statistics.blanks as u64,
-        total: statistics.lines() as u64,
-    };
-    if code_lines_directory_cache_key(path).as_ref() == Some(&key) {
-        store_code_lines_directory_cache(cache_directory, &key, &value);
-    }
-    Ok(Some(value))
-}
 
 fn read_code_lines_path_bounded(path: &Path) -> Result<Option<Vec<u8>>, String> {
     let metadata = fs::symlink_metadata(path).map_err(|_| "Source unavailable".to_owned())?;
@@ -2949,11 +2482,7 @@ static LOCK_OWNER_CACHE_V1: OnceLock<Mutex<HashMap<LockOwnerCacheKeyV1, LockOwne
 fn lock_owner_cache_key(path: &Path) -> Option<LockOwnerCacheKeyV1> {
     let canonical_path = fs::canonicalize(path).ok()?;
     let metadata = fs::metadata(&canonical_path).ok()?;
-    let modified = metadata
-        .modified()
-        .ok()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?;
+    let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
     Some(LockOwnerCacheKeyV1 {
         canonical_path,
         source_size: metadata.len(),
@@ -3089,7 +2618,7 @@ fn lock_owner_query_service(
                 );
             }
             let current = current_directory_item_terminal(&current_batch, miss_index);
-            let restart_manager = if !std::fs::metadata(&resources[resource_index].path)
+            let restart_manager = if !fs::metadata(&resources[resource_index].path)
                 .is_ok_and(|metadata| metadata.is_dir())
             {
                 let request = explorer_model::LockOwnerDiscoveryRequest {
@@ -3685,715 +3214,6 @@ impl ApplicationSizeMapRuntimeV1 {
                 .fetch_add(1, Ordering::AcqRel)
                 .max(1),
         }))
-    }
-}
-
-fn size_map_scanning_result(
-    request: explorer_ui::size_map_view::SizeMapMeasureRequestV1,
-    method: &str,
-) -> explorer_ui::size_map_view::SizeMapMeasureResultV1 {
-    explorer_ui::size_map_view::SizeMapMeasureResultV1 {
-        context: request.context,
-        item_id: request.item_id,
-        exact_bytes: None,
-        partial: true,
-        error: Some(method.to_owned()),
-        tree_nodes: Vec::new(),
-    }
-}
-
-fn preferred_size_map_scan_method(path: &Path) -> &'static str {
-    #[cfg(windows)]
-    {
-        let text = path.as_os_str().to_string_lossy();
-        let bytes = text.as_bytes();
-        if bytes.len() >= 3
-            && bytes[0].is_ascii_alphabetic()
-            && bytes[1] == b':'
-            && matches!(bytes[2], b'\\' | b'/')
-        {
-            return "NTFS MFT";
-        }
-    }
-    let _ = path;
-    "Breadth-first fallback"
-}
-
-fn size_map_terminal_result(
-    request: explorer_ui::size_map_view::SizeMapMeasureRequestV1,
-    message: impl Into<String>,
-) -> explorer_ui::size_map_view::SizeMapMeasureResultV1 {
-    explorer_ui::size_map_view::SizeMapMeasureResultV1 {
-        context: request.context,
-        item_id: request.item_id,
-        exact_bytes: None,
-        partial: true,
-        error: Some(message.into()),
-        tree_nodes: Vec::new(),
-    }
-}
-
-fn enqueue_size_map_requests(
-    state: &mut PendingSizeMapWorkV1,
-    request_epoch: &AtomicU64,
-    requests: Vec<explorer_ui::size_map_view::SizeMapMeasureRequestV1>,
-) -> Vec<explorer_ui::size_map_view::SizeMapMeasureResultV1> {
-    let Some(context) = requests.first().map(|request| request.context.clone()) else {
-        return Vec::new();
-    };
-    let mut rejected = Vec::new();
-    let mut accepted = Vec::new();
-    for request in requests {
-        if request.context != context {
-            rejected.push(size_map_terminal_result(
-                request,
-                "Size Map request batch mixed contexts; refresh to retry",
-            ));
-        } else {
-            accepted.push(request);
-        }
-    }
-    if state.context.as_ref() != Some(&context) {
-        state.context = Some(context);
-        state.epoch = request_epoch
-            .fetch_add(1, Ordering::AcqRel)
-            .saturating_add(1);
-        state.requests.clear();
-    }
-    for request in accepted {
-        if state
-            .requests
-            .iter()
-            .any(|queued| queued.item_id == request.item_id)
-        {
-            continue;
-        }
-        if state.requests.len() >= SIZE_MAP_REQUEST_QUEUE_CAP_V1 {
-            rejected.push(size_map_terminal_result(
-                request,
-                "Size Map request queue limit reached; refresh to retry",
-            ));
-        } else {
-            state.requests.push(request);
-        }
-    }
-    rejected
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SizeMapScanTerminalV1 {
-    Complete,
-    Partial,
-    Cancelled,
-    Unavailable,
-    ResourceLimited,
-    Failed,
-}
-
-impl SizeMapScanTerminalV1 {
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Complete => "complete",
-            Self::Partial => "partial",
-            Self::Cancelled => "cancelled",
-            Self::Unavailable => "unavailable",
-            Self::ResourceLimited => "resource-limited",
-            Self::Failed => "failed",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SizeMapHardLinkPolicyV1 {
-    PerEntry,
-    IdentityOnce,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct SizeMapScanOutcomeV1 {
-    bytes: u64,
-    terminal: SizeMapScanTerminalV1,
-    diagnostic: Option<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct SizeMapTreeScanV1 {
-    outcome: SizeMapScanOutcomeV1,
-    nodes: Vec<explorer_ui::size_map_view::SizeMapTreeNodeV1>,
-}
-
-#[derive(Clone, Debug)]
-struct PendingSizeMapTreeNodeV1 {
-    path: PathBuf,
-    parent: Option<usize>,
-    is_container: bool,
-    bytes: u64,
-    partial: bool,
-    error: Option<String>,
-}
-
-fn project_shared_snapshot_to_size_map(
-    snapshot: &crate::folder_size_service::FolderSnapshotV1,
-    root: &Path,
-    root_item_id: &explorer_model::ShellItemId,
-) -> SizeMapTreeScanV1 {
-    use crate::folder_size_service::{SnapshotNodeKindV1, SnapshotStatusV1};
-
-    let mut identities =
-        HashMap::from([(snapshot.root_id, (root_item_id.clone(), root.to_path_buf()))]);
-    let mut nodes = Vec::new();
-    let visible_limit = usize::try_from(SIZE_MAP_VISIBLE_NODE_LIMIT_V1).unwrap_or(usize::MAX);
-    for node in snapshot
-        .nodes
-        .iter()
-        .filter(|node| node.id != snapshot.root_id)
-    {
-        let Some(parent) = node
-            .parent
-            .and_then(|parent| identities.get(&parent).cloned())
-        else {
-            continue;
-        };
-        let path = parent.1.join(&node.name);
-        let item_id = size_map_tree_item_id(
-            root_item_id,
-            path.strip_prefix(root).unwrap_or(&path),
-            node.id.0,
-        );
-        identities.insert(node.id, (item_id.clone(), path.clone()));
-        if nodes.len() >= visible_limit {
-            continue;
-        }
-        let is_container = node.kind == SnapshotNodeKindV1::Directory;
-        nodes.push(explorer_ui::size_map_view::SizeMapTreeNodeV1 {
-            item_id,
-            root_item_id: root_item_id.clone(),
-            parent_item_id: parent.0,
-            location: explorer_model::LocationDescriptor::file_system(&path),
-            display_name: node.name.clone(),
-            type_name: if is_container { "Folder" } else { "File" }.to_owned(),
-            is_container,
-            exact_bytes: Some(node.recursive_bytes),
-            partial: node.status != SnapshotStatusV1::Complete,
-            error: (node.status != SnapshotStatusV1::Complete)
-                .then(|| "Folder snapshot is partial".to_owned()),
-        });
-    }
-    let terminal = match snapshot.status {
-        SnapshotStatusV1::Complete => SizeMapScanTerminalV1::Complete,
-        SnapshotStatusV1::Partial => SizeMapScanTerminalV1::Partial,
-        SnapshotStatusV1::Cancelled => SizeMapScanTerminalV1::Cancelled,
-        SnapshotStatusV1::Unavailable => SizeMapScanTerminalV1::Unavailable,
-        SnapshotStatusV1::ResourceLimited => SizeMapScanTerminalV1::ResourceLimited,
-        SnapshotStatusV1::Failed => SizeMapScanTerminalV1::Failed,
-    };
-    SizeMapTreeScanV1 {
-        outcome: SizeMapScanOutcomeV1 {
-            bytes: snapshot.aggregate.recursive_bytes,
-            terminal,
-            diagnostic: snapshot.diagnostic.clone(),
-        },
-        nodes,
-    }
-}
-
-fn size_map_tree_item_id(
-    root_item_id: &explorer_model::ShellItemId,
-    relative: &Path,
-    salt: u64,
-) -> explorer_model::ShellItemId {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    b"superexplorer:size-map-tree-node:v1".hash(&mut hasher);
-    root_item_id.provider_bytes().hash(&mut hasher);
-    relative.to_string_lossy().to_lowercase().hash(&mut hasher);
-    salt.hash(&mut hasher);
-    explorer_model::ShellItemId::from_provider_bytes(hasher.finish().to_le_bytes())
-        .unwrap_or_else(|| root_item_id.clone())
-}
-
-#[cfg(windows)]
-fn filesystem_file_identity_v1(path: &Path) -> Option<Vec<u8>> {
-    use std::{mem::size_of, os::windows::io::AsRawHandle};
-    use windows::Win32::{
-        Foundation::HANDLE,
-        Storage::FileSystem::{FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx},
-    };
-
-    let file = fs::File::open(path).ok()?;
-    let handle = HANDLE(file.as_raw_handle());
-    let mut info = FILE_ID_INFO::default();
-    let size = u32::try_from(size_of::<FILE_ID_INFO>()).ok()?;
-    // SAFETY: `file` owns a live handle for the duration of this call and
-    // `info` is writable storage of exactly the advertised FILE_ID_INFO size.
-    #[expect(
-        unsafe_code,
-        reason = "reading FILE_ID_INFO requires the raw-handle Win32 API"
-    )]
-    unsafe {
-        GetFileInformationByHandleEx(handle, FileIdInfo, (&raw mut info).cast(), size).ok()?;
-    }
-    let mut identity = Vec::with_capacity(24);
-    identity.extend_from_slice(&info.VolumeSerialNumber.to_le_bytes());
-    identity.extend_from_slice(&info.FileId.Identifier);
-    Some(identity)
-}
-
-#[cfg(not(windows))]
-fn filesystem_file_identity_v1(_path: &Path) -> Option<Vec<u8>> {
-    None
-}
-
-#[cfg(windows)]
-#[cfg(test)]
-fn measure_size_map_tree_from_mft(
-    index: &crate::mft_size_map::MftIndexV1,
-    root: &Path,
-    root_item_id: &explorer_model::ShellItemId,
-    visible_limit: u32,
-    mut cancelled: impl FnMut() -> bool,
-) -> Result<SizeMapTreeScanV1, String> {
-    let root_reference = crate::mft_size_map::file_reference_number(root)?;
-    let projected = index.project_subtree(
-        root_reference,
-        usize::try_from(visible_limit)
-            .unwrap_or(usize::MAX)
-            .saturating_add(1),
-        &mut cancelled,
-    )?;
-    let root_bytes = projected.first().map_or(0, |node| node.allocated_bytes);
-    let mut ids = HashMap::with_capacity(projected.len());
-    let mut paths = HashMap::with_capacity(projected.len());
-    ids.insert(root_reference, root_item_id.clone());
-    paths.insert(root_reference, root.to_path_buf());
-    let mut nodes = Vec::with_capacity(projected.len().saturating_sub(1));
-    for node in projected.into_iter().skip(1) {
-        if cancelled() {
-            return Err("MFT projection cancelled".to_owned());
-        }
-        let Some(parent_reference) = node.parent_reference else {
-            continue;
-        };
-        let Some(parent_item_id) = ids.get(&parent_reference).cloned() else {
-            continue;
-        };
-        let Some(parent_path) = paths.get(&parent_reference) else {
-            continue;
-        };
-        let path = parent_path.join(&node.name);
-        let item_id = size_map_tree_item_id(
-            root_item_id,
-            Path::new(&format!("mft-{}", node.reference)),
-            0,
-        );
-        ids.insert(node.reference, item_id.clone());
-        paths.insert(node.reference, path.clone());
-        nodes.push(explorer_ui::size_map_view::SizeMapTreeNodeV1 {
-            item_id,
-            root_item_id: root_item_id.clone(),
-            parent_item_id,
-            location: explorer_model::LocationDescriptor::file_system(&path),
-            display_name: node.name,
-            type_name: if node.is_directory { "Folder" } else { "File" }.to_owned(),
-            is_container: node.is_directory,
-            exact_bytes: Some(node.allocated_bytes),
-            partial: false,
-            error: None,
-        });
-    }
-    Ok(SizeMapTreeScanV1 {
-        outcome: SizeMapScanOutcomeV1 {
-            bytes: root_bytes,
-            terminal: SizeMapScanTerminalV1::Complete,
-            diagnostic: Some("NTFS MFT fast path".to_owned()),
-        },
-        nodes,
-    })
-}
-
-#[cfg(test)]
-fn measure_size_map_tree(
-    root: &Path,
-    root_item_id: &explorer_model::ShellItemId,
-    max_entries: u32,
-    max_depth: u16,
-    hard_link_policy: SizeMapHardLinkPolicyV1,
-    mut cancelled: impl FnMut() -> bool,
-    mut progress: impl FnMut(&SizeMapTreeScanV1),
-) -> SizeMapTreeScanV1 {
-    // Breadth-first traversal guarantees that large, shallow folders remain
-    // available to a bounded TreeSize-style projection before deep file trees
-    // can consume the node budget.
-    let mut pending: VecDeque<(PathBuf, Option<usize>, u16)> =
-        VecDeque::from([(root.to_path_buf(), None, 0_u16)]);
-    let mut nodes = Vec::<PendingSizeMapTreeNodeV1>::new();
-    let mut terminal = SizeMapScanTerminalV1::Complete;
-    let mut diagnostic = None;
-    let mut counted_file_identities = HashSet::<Vec<u8>>::new();
-    let mut published_depth = 0_u16;
-    while let Some((path, parent, depth)) = pending.pop_front() {
-        if depth > published_depth && nodes.len() > 1 {
-            let snapshot = project_size_map_tree(
-                root,
-                root_item_id,
-                &nodes,
-                SizeMapScanTerminalV1::Partial,
-                Some(format!("Scanning depth {depth}")),
-                true,
-            );
-            progress(&snapshot);
-            published_depth = depth;
-        }
-        if cancelled() {
-            terminal = SizeMapScanTerminalV1::Cancelled;
-            diagnostic = Some("Size Map scan cancelled".to_owned());
-            break;
-        }
-        let metadata = match fs::symlink_metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(cause) => {
-                if parent.is_none() {
-                    terminal = SizeMapScanTerminalV1::Unavailable;
-                    diagnostic = Some(cause.to_string());
-                    break;
-                }
-                if let Some(parent) = parent.and_then(|index| nodes.get_mut(index)) {
-                    parent.partial = true;
-                    parent.error.get_or_insert_with(|| cause.to_string());
-                }
-                continue;
-            }
-        };
-        // Default policy is no-follow for symlinks, junctions and reparse-like
-        // entries. They do not receive a child node and cannot form a cycle.
-        if metadata.file_type().is_symlink() {
-            if parent.is_none() {
-                terminal = SizeMapScanTerminalV1::Unavailable;
-                diagnostic = Some("Size Map root is a symbolic link or reparse point".to_owned());
-                break;
-            }
-            continue;
-        }
-        if !metadata.is_file() && !metadata.is_dir() {
-            if parent.is_none() {
-                terminal = SizeMapScanTerminalV1::Failed;
-                diagnostic = Some("Size Map root is not a file or directory".to_owned());
-                break;
-            }
-            continue;
-        }
-        let is_container = metadata.is_dir();
-        let file_bytes =
-            if metadata.is_file() && hard_link_policy == SizeMapHardLinkPolicyV1::IdentityOnce {
-                filesystem_file_identity_v1(&path).map_or(metadata.len(), |identity| {
-                    if counted_file_identities.insert(identity) {
-                        metadata.len()
-                    } else {
-                        0
-                    }
-                })
-            } else {
-                metadata
-                    .is_file()
-                    .then_some(metadata.len())
-                    .unwrap_or_default()
-            };
-        let retain_node =
-            parent.is_none() || nodes.len() < usize::try_from(max_entries).unwrap_or(usize::MAX);
-        if !retain_node {
-            let Some(parent_index) = parent else {
-                continue;
-            };
-            if !is_container {
-                nodes[parent_index].bytes = nodes[parent_index].bytes.saturating_add(file_bytes);
-                continue;
-            }
-            if depth >= max_depth {
-                nodes[parent_index].partial = true;
-                nodes[parent_index]
-                    .error
-                    .get_or_insert_with(|| "Size Map scan depth limit reached".to_owned());
-                terminal = SizeMapScanTerminalV1::ResourceLimited;
-                diagnostic.get_or_insert_with(|| "Size Map scan depth limit reached".to_owned());
-                continue;
-            }
-            match fs::read_dir(&path) {
-                Ok(entries) => {
-                    for entry in entries {
-                        if cancelled() {
-                            terminal = SizeMapScanTerminalV1::Cancelled;
-                            diagnostic = Some("Size Map scan cancelled".to_owned());
-                            break;
-                        }
-                        match entry {
-                            Ok(entry) => {
-                                pending.push_back((entry.path(), Some(parent_index), depth + 1));
-                            }
-                            Err(cause) => {
-                                nodes[parent_index].partial = true;
-                                nodes[parent_index]
-                                    .error
-                                    .get_or_insert_with(|| cause.to_string());
-                            }
-                        }
-                    }
-                }
-                Err(cause) => {
-                    nodes[parent_index].partial = true;
-                    nodes[parent_index].error = Some(cause.to_string());
-                }
-            }
-            if terminal == SizeMapScanTerminalV1::Cancelled {
-                break;
-            }
-            continue;
-        }
-        let index = nodes.len();
-        nodes.push(PendingSizeMapTreeNodeV1 {
-            path: path.clone(),
-            parent,
-            is_container,
-            bytes: file_bytes,
-            partial: false,
-            error: None,
-        });
-        if !is_container {
-            continue;
-        }
-        if depth >= max_depth {
-            nodes[index].partial = true;
-            nodes[index].error = Some("Size Map scan depth limit reached".to_owned());
-            terminal = SizeMapScanTerminalV1::ResourceLimited;
-            diagnostic.get_or_insert_with(|| "Size Map scan depth limit reached".to_owned());
-            continue;
-        }
-        match fs::read_dir(&path) {
-            Ok(entries) => {
-                for entry in entries {
-                    if cancelled() {
-                        terminal = SizeMapScanTerminalV1::Cancelled;
-                        diagnostic = Some("Size Map scan cancelled".to_owned());
-                        break;
-                    }
-                    match entry {
-                        Ok(entry) => pending.push_back((entry.path(), Some(index), depth + 1)),
-                        Err(cause) => {
-                            nodes[index].partial = true;
-                            nodes[index].error.get_or_insert_with(|| cause.to_string());
-                        }
-                    }
-                }
-            }
-            Err(cause) => {
-                nodes[index].partial = true;
-                nodes[index].error = Some(cause.to_string());
-            }
-        }
-        if terminal == SizeMapScanTerminalV1::Cancelled {
-            break;
-        }
-    }
-
-    project_size_map_tree(root, root_item_id, &nodes, terminal, diagnostic, false)
-}
-
-#[cfg(test)]
-fn project_size_map_tree(
-    root: &Path,
-    root_item_id: &explorer_model::ShellItemId,
-    source_nodes: &[PendingSizeMapTreeNodeV1],
-    mut terminal: SizeMapScanTerminalV1,
-    mut diagnostic: Option<String>,
-    force_partial: bool,
-) -> SizeMapTreeScanV1 {
-    let mut nodes = source_nodes.to_vec();
-    if force_partial {
-        for node in &mut nodes {
-            if node.is_container {
-                node.partial = true;
-            }
-        }
-    }
-    for index in (0..nodes.len()).rev() {
-        let Some(parent_index) = nodes[index].parent else {
-            continue;
-        };
-        let child_bytes = nodes[index].bytes;
-        let child_partial = nodes[index].partial;
-        let child_error = nodes[index].error.clone();
-        nodes[parent_index].bytes = nodes[parent_index].bytes.saturating_add(child_bytes);
-        if child_partial {
-            nodes[parent_index].partial = true;
-            if nodes[parent_index].error.is_none() {
-                nodes[parent_index].error = child_error;
-            }
-        }
-    }
-
-    if terminal == SizeMapScanTerminalV1::Complete && nodes.first().is_some_and(|node| node.partial)
-    {
-        terminal = SizeMapScanTerminalV1::Partial;
-        diagnostic = nodes.first().and_then(|node| node.error.clone());
-    }
-    let outcome = SizeMapScanOutcomeV1 {
-        bytes: nodes.first().map_or(0, |node| node.bytes),
-        terminal,
-        diagnostic,
-    };
-    let mut ids = Vec::with_capacity(nodes.len());
-    let mut used = HashSet::new();
-    for node in &nodes {
-        if node.parent.is_none() {
-            ids.push(root_item_id.clone());
-            used.insert(root_item_id.clone());
-            continue;
-        }
-        let relative = node.path.strip_prefix(root).unwrap_or(&node.path);
-        let mut salt = 0_u64;
-        let id = loop {
-            let candidate = size_map_tree_item_id(root_item_id, relative, salt);
-            if used.insert(candidate.clone()) {
-                break candidate;
-            }
-            salt = salt.saturating_add(1);
-        };
-        ids.push(id);
-    }
-    let public_nodes = nodes
-        .iter()
-        .enumerate()
-        .skip(1)
-        .filter_map(|(index, node)| {
-            let parent_item_id = ids.get(node.parent?)?.clone();
-            let item_id = ids[index].clone();
-            let display_name = node.path.file_name().map_or_else(
-                || node.path.display().to_string(),
-                |name| name.to_string_lossy().into_owned(),
-            );
-            Some(explorer_ui::size_map_view::SizeMapTreeNodeV1 {
-                item_id,
-                root_item_id: root_item_id.clone(),
-                parent_item_id,
-                location: explorer_model::LocationDescriptor::file_system(&node.path),
-                display_name,
-                type_name: if node.is_container { "Folder" } else { "File" }.to_owned(),
-                is_container: node.is_container,
-                // Progressive breadth snapshots expose the bytes discovered so
-                // far while retaining `partial`, so the treemap can grow in
-                // place instead of showing equal-sized placeholders.
-                exact_bytes: (force_partial || !node.partial).then_some(node.bytes),
-                partial: node.partial,
-                error: node.error.clone(),
-            })
-        })
-        .collect();
-    SizeMapTreeScanV1 {
-        outcome,
-        nodes: public_nodes,
-    }
-}
-
-#[cfg(test)]
-fn measure_size_map_path(
-    root: &Path,
-    max_entries: u32,
-    max_depth: u16,
-    mut cancelled: impl FnMut() -> bool,
-) -> SizeMapScanOutcomeV1 {
-    let mut pending = vec![(root.to_path_buf(), 0_u16)];
-    let mut visited = 0_u32;
-    let mut bytes = 0_u64;
-    let mut error = None;
-    while let Some((path, depth)) = pending.pop() {
-        if cancelled() {
-            return SizeMapScanOutcomeV1 {
-                bytes,
-                terminal: SizeMapScanTerminalV1::Cancelled,
-                diagnostic: Some("Size Map scan cancelled".to_owned()),
-            };
-        }
-        if visited >= max_entries {
-            error.get_or_insert_with(|| "Size Map scan resource limit reached".to_owned());
-            return SizeMapScanOutcomeV1 {
-                bytes,
-                terminal: SizeMapScanTerminalV1::ResourceLimited,
-                diagnostic: error,
-            };
-        }
-        visited = visited.saturating_add(1);
-        let metadata = match fs::symlink_metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(cause) => {
-                if visited == 1 {
-                    return SizeMapScanOutcomeV1 {
-                        bytes,
-                        terminal: SizeMapScanTerminalV1::Unavailable,
-                        diagnostic: Some(cause.to_string()),
-                    };
-                }
-                error.get_or_insert_with(|| cause.to_string());
-                continue;
-            }
-        };
-        if metadata.file_type().is_symlink() {
-            continue;
-        }
-        if metadata.is_file() {
-            bytes = bytes.saturating_add(metadata.len());
-            continue;
-        }
-        if !metadata.is_dir() {
-            if visited == 1 {
-                return SizeMapScanOutcomeV1 {
-                    bytes,
-                    terminal: SizeMapScanTerminalV1::Failed,
-                    diagnostic: Some("Size Map root is not a file or directory".to_owned()),
-                };
-            }
-            continue;
-        }
-        if depth >= max_depth {
-            error.get_or_insert_with(|| "Size Map scan depth limit reached".to_owned());
-            continue;
-        }
-        match fs::read_dir(path) {
-            Ok(entries) => {
-                for entry in entries {
-                    if cancelled() {
-                        return SizeMapScanOutcomeV1 {
-                            bytes,
-                            terminal: SizeMapScanTerminalV1::Cancelled,
-                            diagnostic: Some("Size Map scan cancelled".to_owned()),
-                        };
-                    }
-                    let queued = u32::try_from(pending.len()).unwrap_or(u32::MAX);
-                    if visited.saturating_add(queued) >= max_entries {
-                        return SizeMapScanOutcomeV1 {
-                            bytes,
-                            terminal: SizeMapScanTerminalV1::ResourceLimited,
-                            diagnostic: Some("Size Map scan resource limit reached".to_owned()),
-                        };
-                    }
-                    match entry {
-                        Ok(entry) => pending.push((entry.path(), depth.saturating_add(1))),
-                        Err(cause) => {
-                            error.get_or_insert_with(|| cause.to_string());
-                        }
-                    }
-                }
-            }
-            Err(cause) => {
-                error.get_or_insert_with(|| cause.to_string());
-            }
-        }
-    }
-    SizeMapScanOutcomeV1 {
-        bytes,
-        terminal: if error.is_some() {
-            SizeMapScanTerminalV1::Partial
-        } else {
-            SizeMapScanTerminalV1::Complete
-        },
-        diagnostic: error,
     }
 }
 
@@ -5570,6 +4390,11 @@ impl ApplicationLifecycle {
                     });
                     let controller = Rc::clone(&folder_options_controller_for_window);
                     let observer_diagnostics = folder_options_diagnostics.clone();
+                    let bookmark_manager_handle = Rc::new(RefCell::new(None::<
+                        gpui::WindowHandle<
+                            explorer_ui::bookmark_manager_window::BookmarkManagerWindow,
+                        >,
+                    >));
                     root.update(cx, |root, _| {
                         let runtime = Arc::clone(&sftp_login_runtime);
                         root.attach_sftp_address_login_observer(Arc::new(move |input| {
@@ -5658,6 +4483,42 @@ impl ApplicationLifecycle {
                                 Ok(_) => true,
                                 Err(error) => {
                                     tracing::warn!(%error, "Bookmark editor window creation failed");
+                                    false
+                                }
+                            }
+                        }));
+                        root.attach_bookmark_manager_window_observer(Rc::new(move |snapshot, cx| {
+                            if let Some(existing) = *bookmark_manager_handle.borrow() {
+                                if existing
+                                    .update(cx, |manager, window, cx| {
+                                        manager.replace_snapshot(snapshot.clone(), window, cx);
+                                        window.activate_window();
+                                    })
+                                    .is_ok()
+                                {
+                                    return true;
+                                }
+                                *bookmark_manager_handle.borrow_mut() = None;
+                            }
+                            let options = explorer_ui::bookmark_manager_window::bookmark_manager_window_options(cx);
+                            let opened = cx.open_window(options, move |window, cx| {
+                                cx.new(|cx| {
+                                    explorer_ui::bookmark_manager_window::BookmarkManagerWindow::new(
+                                        tokens,
+                                        owner_window,
+                                        snapshot,
+                                        window,
+                                        cx,
+                                    )
+                                })
+                            });
+                            match opened {
+                                Ok(handle) => {
+                                    *bookmark_manager_handle.borrow_mut() = Some(handle);
+                                    true
+                                }
+                                Err(error) => {
+                                    tracing::warn!(%error, "Bookmark manager window creation failed");
                                     false
                                 }
                             }
@@ -6488,6 +5349,213 @@ impl Drop for ApplicationLifecycle {
     }
 }
 
+fn size_map_scanning_result(
+    request: explorer_ui::size_map_view::SizeMapMeasureRequestV1,
+    method: &str,
+) -> explorer_ui::size_map_view::SizeMapMeasureResultV1 {
+    explorer_ui::size_map_view::SizeMapMeasureResultV1 {
+        context: request.context,
+        item_id: request.item_id,
+        exact_bytes: None,
+        partial: true,
+        error: Some(method.to_owned()),
+        tree_nodes: Vec::new(),
+    }
+}
+
+fn preferred_size_map_scan_method(path: &Path) -> &'static str {
+    #[cfg(windows)]
+    {
+        let text = path.as_os_str().to_string_lossy();
+        let bytes = text.as_bytes();
+        if bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'\\' | b'/')
+        {
+            return "NTFS MFT";
+        }
+    }
+    let _ = path;
+    "Breadth-first fallback"
+}
+
+fn size_map_terminal_result(
+    request: explorer_ui::size_map_view::SizeMapMeasureRequestV1,
+    message: impl Into<String>,
+) -> explorer_ui::size_map_view::SizeMapMeasureResultV1 {
+    explorer_ui::size_map_view::SizeMapMeasureResultV1 {
+        context: request.context,
+        item_id: request.item_id,
+        exact_bytes: None,
+        partial: true,
+        error: Some(message.into()),
+        tree_nodes: Vec::new(),
+    }
+}
+
+fn enqueue_size_map_requests(
+    state: &mut PendingSizeMapWorkV1,
+    request_epoch: &AtomicU64,
+    requests: Vec<explorer_ui::size_map_view::SizeMapMeasureRequestV1>,
+) -> Vec<explorer_ui::size_map_view::SizeMapMeasureResultV1> {
+    let Some(context) = requests.first().map(|request| request.context.clone()) else {
+        return Vec::new();
+    };
+    let mut rejected = Vec::new();
+    let mut accepted = Vec::new();
+    for request in requests {
+        if request.context != context {
+            rejected.push(size_map_terminal_result(
+                request,
+                "Size Map request batch mixed contexts; refresh to retry",
+            ));
+        } else {
+            accepted.push(request);
+        }
+    }
+    if state.context.as_ref() != Some(&context) {
+        state.context = Some(context);
+        state.epoch = request_epoch
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        state.requests.clear();
+    }
+    for request in accepted {
+        if state
+            .requests
+            .iter()
+            .any(|queued| queued.item_id == request.item_id)
+        {
+            continue;
+        }
+        if state.requests.len() >= SIZE_MAP_REQUEST_QUEUE_CAP_V1 {
+            rejected.push(size_map_terminal_result(
+                request,
+                "Size Map request queue limit reached; refresh to retry",
+            ));
+        } else {
+            state.requests.push(request);
+        }
+    }
+    rejected
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SizeMapScanTerminalV1 {
+    Complete,
+    Partial,
+    Cancelled,
+    Unavailable,
+    ResourceLimited,
+    Failed,
+}
+
+impl SizeMapScanTerminalV1 {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Partial => "partial",
+            Self::Cancelled => "cancelled",
+            Self::Unavailable => "unavailable",
+            Self::ResourceLimited => "resource-limited",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SizeMapScanOutcomeV1 {
+    bytes: u64,
+    terminal: SizeMapScanTerminalV1,
+    diagnostic: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SizeMapTreeScanV1 {
+    outcome: SizeMapScanOutcomeV1,
+    nodes: Vec<explorer_ui::size_map_view::SizeMapTreeNodeV1>,
+}
+
+fn project_shared_snapshot_to_size_map(
+    snapshot: &crate::folder_size_service::FolderSnapshotV1,
+    root: &Path,
+    root_item_id: &explorer_model::ShellItemId,
+) -> SizeMapTreeScanV1 {
+    use crate::folder_size_service::{SnapshotNodeKindV1, SnapshotStatusV1};
+
+    let mut identities =
+        HashMap::from([(snapshot.root_id, (root_item_id.clone(), root.to_path_buf()))]);
+    let mut nodes = Vec::new();
+    let visible_limit = usize::try_from(SIZE_MAP_VISIBLE_NODE_LIMIT_V1).unwrap_or(usize::MAX);
+    for node in snapshot
+        .nodes
+        .iter()
+        .filter(|node| node.id != snapshot.root_id)
+    {
+        let Some(parent) = node
+            .parent
+            .and_then(|parent| identities.get(&parent).cloned())
+        else {
+            continue;
+        };
+        let path = parent.1.join(&node.name);
+        let item_id = size_map_tree_item_id(
+            root_item_id,
+            path.strip_prefix(root).unwrap_or(&path),
+            node.id.0,
+        );
+        identities.insert(node.id, (item_id.clone(), path.clone()));
+        if nodes.len() >= visible_limit {
+            continue;
+        }
+        let is_container = node.kind == SnapshotNodeKindV1::Directory;
+        nodes.push(explorer_ui::size_map_view::SizeMapTreeNodeV1 {
+            item_id,
+            root_item_id: root_item_id.clone(),
+            parent_item_id: parent.0,
+            location: explorer_model::LocationDescriptor::file_system(&path),
+            display_name: node.name.clone(),
+            type_name: if is_container { "Folder" } else { "File" }.to_owned(),
+            is_container,
+            exact_bytes: Some(node.recursive_bytes),
+            partial: node.status != SnapshotStatusV1::Complete,
+            error: (node.status != SnapshotStatusV1::Complete)
+                .then(|| "Folder snapshot is partial".to_owned()),
+        });
+    }
+    let terminal = match snapshot.status {
+        SnapshotStatusV1::Complete => SizeMapScanTerminalV1::Complete,
+        SnapshotStatusV1::Partial => SizeMapScanTerminalV1::Partial,
+        SnapshotStatusV1::Cancelled => SizeMapScanTerminalV1::Cancelled,
+        SnapshotStatusV1::Unavailable => SizeMapScanTerminalV1::Unavailable,
+        SnapshotStatusV1::ResourceLimited => SizeMapScanTerminalV1::ResourceLimited,
+        SnapshotStatusV1::Failed => SizeMapScanTerminalV1::Failed,
+    };
+    SizeMapTreeScanV1 {
+        outcome: SizeMapScanOutcomeV1 {
+            bytes: snapshot.aggregate.recursive_bytes,
+            terminal,
+            diagnostic: snapshot.diagnostic.clone(),
+        },
+        nodes,
+    }
+}
+
+fn size_map_tree_item_id(
+    root_item_id: &explorer_model::ShellItemId,
+    relative: &Path,
+    salt: u64,
+) -> explorer_model::ShellItemId {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    b"superexplorer:size-map-tree-node:v1".hash(&mut hasher);
+    root_item_id.provider_bytes().hash(&mut hasher);
+    relative.to_string_lossy().to_lowercase().hash(&mut hasher);
+    salt.hash(&mut hasher);
+    explorer_model::ShellItemId::from_provider_bytes(hasher.finish().to_le_bytes())
+        .unwrap_or_else(|| root_item_id.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -6495,7 +5563,7 @@ mod tests {
         fs,
         path::{Path, PathBuf},
         sync::atomic::{AtomicU64, AtomicUsize, Ordering},
-        sync::{Arc, Mutex, mpsc},
+        sync::{Arc, Mutex},
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
@@ -6579,49 +5647,23 @@ mod tests {
 
     use super::{
         ApplicationExtensionReadyProjectorV1, ApplicationExtensionUiPumpV1,
-        BatchDetailsColumnModeV1, CodeLinesCachedValueV1, FolderSizeCachedValueV1,
-        HostExtensionColumnCacheV1, LockOwnerCacheKeyV1, PendingFolderSizeWorkV1,
-        PendingSizeMapWorkV1, SIZE_MAP_REQUEST_QUEUE_CAP_V1, SafeModeIncidentOfferV1,
-        SafeModeIncidentPortV1, SizeMapHardLinkPolicyV1, SizeMapProjectionV1, SizeMapScanOutcomeV1,
-        SizeMapScanTerminalV1, aggregate_lock_owner_batch, aggregate_size_map_items,
-        batch_details_cache_admission, cancel_folder_size_context, cell_render_key,
-        code_lines_directory_cache_key, compose_lock_owner_terminals,
+        BatchDetailsColumnModeV1, CodeLinesCachedValueV1, HostExtensionColumnCacheV1,
+        LockOwnerCacheKeyV1, PendingFolderSizeWorkV1, PendingSizeMapWorkV1,
+        SIZE_MAP_REQUEST_QUEUE_CAP_V1, SafeModeIncidentOfferV1, SafeModeIncidentPortV1,
+        SizeMapProjectionV1, aggregate_lock_owner_batch, batch_details_cache_admission,
+        cancel_folder_size_context, cell_render_key, compose_lock_owner_terminals,
         confirm_offered_safe_mode_incident_v1, confirm_presented_safe_mode_incident_v1,
         emit_post_commit_safe_mode_telemetry_v1, enqueue_folder_size_requests,
-        enqueue_size_map_requests, exact_directory_facts, is_code_lines_directory_row,
-        lock_owner_cache_lookup, lock_owner_cache_store, measure_all_code_lines_directory,
-        measure_code_lines_directory, measure_code_lines_directory_with_cache,
-        measure_size_map_path, measure_size_map_tree, partition_batch_details_cache_hits,
-        partition_code_lines_cache_hits, partition_folder_size_cache_hits,
-        partition_size_map_projection, prepare_code_lines_batch_inputs, project_size_map_plan,
-        read_code_lines_directory_cache, read_code_lines_file_bounded,
-        read_code_lines_path_bounded, receive_folder_size_query_v1, should_restore_saved_tabs,
-        size_map_node_id, size_map_render_key, take_folder_size_batch, take_folder_size_request,
-        take_folder_size_requests, unix_seconds_now,
+        enqueue_size_map_requests, is_code_lines_directory_row, lock_owner_cache_lookup,
+        lock_owner_cache_store, partition_batch_details_cache_hits,
+        partition_code_lines_cache_hits, prepare_code_lines_batch_inputs, project_size_map_plan,
+        read_code_lines_file_bounded, read_code_lines_path_bounded, should_restore_saved_tabs,
+        size_map_node_id, size_map_render_key, take_folder_size_batch,
     };
 
     struct FakeSafeModePortV1 {
         denied: bool,
         confirmed: Mutex<Vec<u8>>,
-    }
-
-    #[test]
-    fn mft_directory_facts_exclude_the_root_and_fail_closed() {
-        use crate::folder_size_service::SnapshotStatusV1;
-
-        let facts = exact_directory_facts(SnapshotStatusV1::Complete, Some(17), 999, 4)
-            .expect("complete MFT result");
-        assert_eq!(facts.mft_generation, 17);
-        assert_eq!(facts.file_count, 999);
-        assert_eq!(facts.folder_count, 3);
-        assert_eq!(
-            exact_directory_facts(SnapshotStatusV1::Complete, Some(17), 0, 0)
-                .unwrap()
-                .folder_count,
-            0
-        );
-        assert!(exact_directory_facts(SnapshotStatusV1::Partial, Some(17), 1, 2).is_none());
-        assert!(exact_directory_facts(SnapshotStatusV1::Complete, None, 1, 2).is_none());
     }
 
     fn test_lock_owner(process_id: u32, creation_time_100ns: u64, name: &str) -> LockOwner {
@@ -6889,7 +5931,7 @@ mod tests {
             .values
             .keys()
             .map(|key| key.canonical_path.clone())
-            .collect::<std::collections::HashSet<_>>();
+            .collect::<HashSet<_>>();
         for expected in [&a, &b1, &b2, &c1, &c2] {
             assert!(retained.contains(&expected.canonicalize().unwrap()));
         }
@@ -6921,26 +5963,6 @@ mod tests {
         assert_eq!(cache.get(&original), Some(41));
         assert_eq!(cache.telemetry.entries.load(Ordering::Acquire), 1);
         assert!(cache.telemetry.bytes.load(Ordering::Acquire) > 0);
-
-        let folder_cache = Mutex::new(HostExtensionColumnCacheV1::default());
-        let folder_admission = folder_cache.lock().unwrap().admission(&source).unwrap();
-        folder_cache.lock().unwrap().insert(
-            folder_admission,
-            FolderSizeCachedValueV1 { exact_bytes: 41 },
-        );
-        let request = explorer_ui::folder_size_column::FolderSizeRequestV1 {
-            context: RequestContext::new(TabId::new(), Generation::new(1)),
-            item_id: ShellItemId::from_provider_bytes(b"cached-folder".to_vec()).unwrap(),
-            path: source.clone(),
-            mft_cache_memory_mb: 512,
-            require_directory_facts: false,
-        };
-        let (hits, misses) = partition_folder_size_cache_hits(&folder_cache, vec![request.clone()]);
-        assert_eq!(hits.len(), 1, "a host hit is rebound without provider work");
-        assert!(
-            misses.is_empty(),
-            "a host hit must not reach provider dispatch"
-        );
 
         let code_cache = Mutex::new(HostExtensionColumnCacheV1::default());
         let code_value = explorer_ui::code_lines_column::CodeLinesValueV1 {
@@ -6981,9 +6003,6 @@ mod tests {
             .expect("changed metadata admission");
         assert_ne!(changed.key, original.key);
         assert_eq!(cache.get(&changed), None);
-        let (hits, misses) = partition_folder_size_cache_hits(&folder_cache, vec![request]);
-        assert!(hits.is_empty());
-        assert_eq!(misses.len(), 1, "changed mtime must invoke the provider");
         let (hits, misses) = partition_code_lines_cache_hits(&code_cache, vec![code_request]);
         assert!(hits.is_empty());
         assert_eq!(
@@ -7024,128 +6043,6 @@ mod tests {
     }
 
     #[test]
-    fn folder_size_cache_with_ttl_reuses_changed_mtime_within_window() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("superexplorer-folder-size-ttl-{nonce}"));
-        fs::create_dir_all(&root).unwrap();
-        let source = root.join("value.rs");
-        fs::write(&source, "fn main() {}\n").unwrap();
-        let file = fs::OpenOptions::new().write(true).open(&source).unwrap();
-        file.set_times(fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(10)))
-            .unwrap();
-
-        let folder_cache = Mutex::new(
-            HostExtensionColumnCacheV1::<FolderSizeCachedValueV1>::default().with_ttl(u64::from(
-                explorer_model::DEFAULT_FOLDER_SIZE_CACHE_TTL_SECONDS,
-            )),
-        );
-        let original = folder_cache.lock().unwrap().admission(&source).unwrap();
-        assert!(folder_cache.lock().unwrap().insert(
-            original.clone(),
-            FolderSizeCachedValueV1 { exact_bytes: 41 },
-        ));
-        let request = explorer_ui::folder_size_column::FolderSizeRequestV1 {
-            context: RequestContext::new(TabId::new(), Generation::new(1)),
-            item_id: ShellItemId::from_provider_bytes(b"ttl-cached-folder".to_vec()).unwrap(),
-            path: source.clone(),
-            mft_cache_memory_mb: 512,
-            require_directory_facts: false,
-        };
-        let (hits, misses) = partition_folder_size_cache_hits(&folder_cache, vec![request.clone()]);
-        assert_eq!(hits.len(), 1, "same mtime hits as before");
-
-        // The volume keeps being written: the mtime moves, but the measurement
-        // is still inside the 60s TTL so the same bytes are reused instead of
-        // rescanning the tree (the A-tab/B-tab same-drive scenario).
-        file.set_times(fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(20)))
-            .unwrap();
-        let changed = folder_cache.lock().unwrap().admission(&source).unwrap();
-        assert_ne!(changed.key, original.key);
-        let (hits, misses) = partition_folder_size_cache_hits(&folder_cache, vec![request.clone()]);
-        assert_eq!(
-            hits.len(),
-            1,
-            "changed mtime inside TTL reuses the cached bytes"
-        );
-        assert!(
-            misses.is_empty(),
-            "a TTL hit must not reach provider dispatch"
-        );
-
-        // Past the TTL window the entry is stale and the provider must run.
-        {
-            let mut cache = folder_cache.lock().unwrap();
-            let entry = cache
-                .values
-                .iter_mut()
-                .find(|(key, _)| key.canonical_path == changed.key.canonical_path)
-                .expect("ttl entry present");
-            entry.1.2 = unix_seconds_now().saturating_sub(u64::from(
-                explorer_model::DEFAULT_FOLDER_SIZE_CACHE_TTL_SECONDS + 1,
-            ));
-        }
-        let (hits, misses) = partition_folder_size_cache_hits(&folder_cache, vec![request]);
-        assert!(hits.is_empty());
-        assert_eq!(misses.len(), 1, "expired ttl must invoke the provider");
-
-        drop(file);
-        fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn folder_size_cache_ttl_toggle_reconfigures_reuse_window() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("superexplorer-folder-size-ttl-off-{nonce}"));
-        fs::create_dir_all(&root).unwrap();
-        let source = root.join("value.rs");
-        fs::write(&source, "fn main() {}\n").unwrap();
-        let file = fs::OpenOptions::new().write(true).open(&source).unwrap();
-        file.set_times(fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(10)))
-            .unwrap();
-
-        let folder_cache =
-            Mutex::new(HostExtensionColumnCacheV1::<FolderSizeCachedValueV1>::default());
-        let original = folder_cache.lock().unwrap().admission(&source).unwrap();
-        assert!(folder_cache.lock().unwrap().insert(
-            original.clone(),
-            FolderSizeCachedValueV1 { exact_bytes: 41 },
-        ));
-
-        file.set_times(fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(20)))
-            .unwrap();
-        let changed = folder_cache.lock().unwrap().admission(&source).unwrap();
-        assert_ne!(changed.key, original.key);
-        assert_eq!(
-            folder_cache.lock().unwrap().get(&changed),
-            None,
-            "without a TTL a moved mtime must rescan immediately"
-        );
-
-        folder_cache.lock().unwrap().set_ttl_seconds(Some(60));
-        assert_eq!(
-            folder_cache.lock().unwrap().get(&changed),
-            Some(FolderSizeCachedValueV1 { exact_bytes: 41 }),
-            "enabling a TTL reuses the recent measurement"
-        );
-
-        folder_cache.lock().unwrap().set_ttl_seconds(None);
-        assert_eq!(
-            folder_cache.lock().unwrap().get(&changed),
-            None,
-            "disabling the TTL (0 in Folder Options) restores strict mtime checks"
-        );
-
-        drop(file);
-        fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
     fn lock_owner_cache_is_generation_metadata_and_ttl_scoped() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -7161,13 +6058,13 @@ mod tests {
         lock_owner_cache_store(
             key.clone(),
             17,
-            explorer_extension_api::LockOwnerQueryStatusV1::EMPTY,
+            LockOwnerQueryStatusV1::EMPTY,
             Vec::new(),
             now,
         );
         assert_eq!(
             lock_owner_cache_lookup(&key, 17, now).map(|value| value.0),
-            Some(explorer_extension_api::LockOwnerQueryStatusV1::EMPTY)
+            Some(LockOwnerQueryStatusV1::EMPTY)
         );
         assert!(lock_owner_cache_lookup(&key, 18, now).is_none());
         assert!(lock_owner_cache_lookup(&key, 17, now + Duration::from_secs(3)).is_none());
@@ -7179,7 +6076,7 @@ mod tests {
         lock_owner_cache_store(
             unavailable.clone(),
             17,
-            explorer_extension_api::LockOwnerQueryStatusV1::UNAVAILABLE,
+            LockOwnerQueryStatusV1::UNAVAILABLE,
             Vec::new(),
             now,
         );
@@ -7595,85 +6492,6 @@ mod tests {
                 Err(error) => eprintln!("unavailable: {} ({error})", directory.display()),
             }
         }
-    }
-
-    #[test]
-    fn code_lines_directory_uses_tokei_code_total_without_blank_lines() {
-        let root = std::env::temp_dir().join(format!(
-            "superexplorer-tokei-directory-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(root.join("src")).unwrap();
-        fs::write(
-            root.join("src/main.rs"),
-            b"fn main() {\n    println!(\"ok\");\n}\n\n// comment\n",
-        )
-        .unwrap();
-        fs::write(root.join("script.py"), b"print('ok')\n\n").unwrap();
-
-        let value = measure_code_lines_directory(&root)
-            .unwrap()
-            .expect("directory value");
-        assert_eq!(value.language, "Rust");
-        assert_eq!(value.code, 3);
-        assert_eq!(value.comments, 1);
-        assert_eq!(value.blanks, 1);
-        assert_eq!(value.total, 5);
-        assert_ne!(value.code, value.total);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn all_code_lines_directory_sums_languages_while_main_selects_one() {
-        let root = std::env::temp_dir().join(format!(
-            "superexplorer-all-code-lines-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("main.rs"), "fn main() {}\n".repeat(1_250)).unwrap();
-        fs::write(root.join("script.js"), "const value = 1;\n".repeat(75)).unwrap();
-        let main = measure_code_lines_directory_with_cache(&root, None)
-            .unwrap()
-            .expect("main language");
-        let all = measure_all_code_lines_directory(&root)
-            .unwrap()
-            .expect("all languages");
-        assert_eq!((main.language.as_str(), main.code), ("Rust", 1_250));
-        assert_eq!(all.code, 1_325);
-        assert_ne!(main.code, all.code);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn code_lines_directory_persists_a_same_modified_date_global_cache_result() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("superexplorer-code-lines-root-{nonce}"));
-        let cache = std::env::temp_dir().join(format!("superexplorer-code-lines-cache-{nonce}"));
-        fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("main.rs"), b"fn main() {}\n").unwrap();
-
-        let measured = measure_code_lines_directory_with_cache(&root, Some(&cache))
-            .unwrap()
-            .expect("directory code-lines value");
-        let key = code_lines_directory_cache_key(&root).expect("stable directory key");
-        assert_eq!(
-            read_code_lines_directory_cache(Some(&cache), &key),
-            Some(measured)
-        );
-
-        fs::remove_dir_all(root).unwrap();
-        fs::remove_dir_all(cache).unwrap();
     }
 
     #[test]
@@ -8194,7 +7012,7 @@ mod tests {
         enqueue_folder_size_requests(&mut pending, (1..=4).map(request).collect());
 
         let claimed = (0..4)
-            .map(|_| take_folder_size_request(&mut pending).unwrap().item_id)
+            .map(|_| take_folder_size_batch(&mut pending, 1).remove(0).item_id)
             .collect::<HashSet<_>>();
 
         assert_eq!(claimed.len(), 4);
@@ -8248,21 +7066,6 @@ mod tests {
     }
 
     #[test]
-    fn folder_size_query_deadline_is_terminal_and_diagnostic() {
-        let (_sender, receiver) = mpsc::channel();
-        let error = receive_folder_size_query_v1(
-            receiver,
-            Path::new(r"D:\fixture"),
-            Duration::from_millis(1),
-        )
-        .unwrap_err();
-
-        assert!(error.contains("deadline exceeded"));
-        assert!(error.contains(r"D:\fixture"));
-        assert!(error.contains("deadline_ms=1"));
-    }
-
-    #[test]
     fn active_folder_size_request_is_not_queued_again_by_repeated_ui_submissions() {
         let context = RequestContext::new(TabId::new(), Generation::new(1));
         let request = explorer_ui::folder_size_column::FolderSizeRequestV1 {
@@ -8276,7 +7079,7 @@ mod tests {
 
         enqueue_folder_size_requests(&mut pending, vec![request.clone()]);
         assert_eq!(
-            take_folder_size_requests(&mut pending),
+            take_folder_size_batch(&mut pending, usize::MAX),
             vec![request.clone()]
         );
         assert!(pending.requests.is_none());
@@ -8310,7 +7113,7 @@ mod tests {
         let mut pending = PendingFolderSizeWorkV1::default();
 
         enqueue_folder_size_requests(&mut pending, vec![request(first_context)]);
-        let active = take_folder_size_requests(&mut pending);
+        let active = take_folder_size_batch(&mut pending, usize::MAX);
         enqueue_folder_size_requests(&mut pending, vec![request(next_frame_context)]);
 
         assert_eq!(active.len(), 1);
@@ -8339,7 +7142,7 @@ mod tests {
 
         enqueue_folder_size_requests(&mut pending, vec![old_request.clone()]);
         assert_eq!(
-            take_folder_size_requests(&mut pending),
+            take_folder_size_batch(&mut pending, usize::MAX),
             vec![old_request.clone()]
         );
         cancel_folder_size_context(&mut pending, &old_request.context);
@@ -8418,132 +7221,6 @@ mod tests {
     }
 
     #[test]
-    fn size_map_scan_publishes_complete_recursive_total_after_initial_progress() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root: PathBuf = std::env::temp_dir().join(format!(
-            "superexplorer-size-map-{}-{unique}",
-            std::process::id()
-        ));
-        fs::create_dir_all(root.join("nested")).unwrap();
-        fs::write(root.join("root.bin"), [0_u8; 7]).unwrap();
-        fs::write(root.join("nested").join("child.bin"), [0_u8; 11]).unwrap();
-
-        let result = measure_size_map_path(&root, 100, 16, || false);
-        fs::remove_dir_all(&root).unwrap();
-
-        assert_eq!(
-            result,
-            SizeMapScanOutcomeV1 {
-                bytes: 18,
-                terminal: SizeMapScanTerminalV1::Complete,
-                diagnostic: None,
-            }
-        );
-    }
-
-    #[test]
-    fn size_map_tree_scan_preserves_owned_parent_hierarchy_and_exact_totals() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "superexplorer-size-map-tree-{}-{unique}",
-            std::process::id()
-        ));
-        fs::create_dir_all(root.join("nested")).unwrap();
-        fs::write(root.join("nested/child.bin"), [0_u8; 11]).unwrap();
-        fs::write(root.join("root.bin"), [0_u8; 7]).unwrap();
-        let root_id = ShellItemId::from_provider_bytes(b"root-tree".to_vec()).unwrap();
-
-        let scan = measure_size_map_tree(
-            &root,
-            &root_id,
-            100,
-            16,
-            SizeMapHardLinkPolicyV1::PerEntry,
-            || false,
-            |_| {},
-        );
-        fs::remove_dir_all(&root).unwrap();
-
-        assert_eq!(scan.outcome.terminal, SizeMapScanTerminalV1::Complete);
-        assert_eq!(scan.outcome.bytes, 18);
-        assert_eq!(scan.nodes.len(), 3);
-        let nested = scan
-            .nodes
-            .iter()
-            .find(|node| node.display_name == "nested")
-            .unwrap();
-        assert_eq!(nested.parent_item_id, root_id);
-        assert_eq!(nested.exact_bytes, Some(11));
-        let child = scan
-            .nodes
-            .iter()
-            .find(|node| node.display_name == "child.bin")
-            .unwrap();
-        assert_eq!(child.parent_item_id, nested.item_id);
-        assert_eq!(child.exact_bytes, Some(11));
-    }
-
-    #[test]
-    fn size_map_tree_budget_preserves_shallow_nodes_and_continues_exact_totals() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "superexplorer-size-map-breadth-{}-{unique}",
-            std::process::id()
-        ));
-        fs::create_dir_all(root.join("a-deep/child/grandchild")).unwrap();
-        fs::create_dir_all(root.join("z-large-sibling")).unwrap();
-        fs::write(root.join("a-deep/child/grandchild/deep.bin"), [0_u8; 13]).unwrap();
-        fs::write(root.join("z-large-sibling/shallow.bin"), [0_u8; 7]).unwrap();
-        let root_id = ShellItemId::from_provider_bytes(b"breadth-root".to_vec()).unwrap();
-
-        let mut progress_snapshots = Vec::new();
-        let scan = measure_size_map_tree(
-            &root,
-            &root_id,
-            3,
-            16,
-            SizeMapHardLinkPolicyV1::PerEntry,
-            || false,
-            |snapshot| progress_snapshots.push(snapshot.clone()),
-        );
-        fs::remove_dir_all(&root).unwrap();
-
-        assert_eq!(scan.outcome.terminal, SizeMapScanTerminalV1::Complete);
-        assert_eq!(scan.outcome.bytes, 20);
-        assert!(
-            progress_snapshots.iter().any(|snapshot| {
-                snapshot.outcome.terminal == SizeMapScanTerminalV1::Partial
-                    && snapshot
-                        .nodes
-                        .iter()
-                        .any(|node| node.display_name == "a-deep")
-                    && snapshot
-                        .nodes
-                        .iter()
-                        .any(|node| node.display_name == "z-large-sibling")
-            }),
-            "breadth levels must be published before the recursive scan completes"
-        );
-        assert!(scan.nodes.iter().any(|node| node.display_name == "a-deep"));
-        assert!(
-            scan.nodes
-                .iter()
-                .any(|node| node.display_name == "z-large-sibling"),
-            "a deep subtree must not consume the budget before a root sibling"
-        );
-        assert!(!scan.nodes.iter().any(|node| node.display_name == "child"));
-    }
-
-    #[test]
     fn local_drive_size_map_announces_mft_before_index_construction() {
         #[cfg(windows)]
         assert_eq!(
@@ -8553,187 +7230,6 @@ mod tests {
         assert_eq!(
             preferred_size_map_scan_method(Path::new(r"\\server\share")),
             "Breadth-first fallback"
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn size_map_hard_links_default_to_per_entry_and_support_identity_once() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "superexplorer-size-map-hardlink-{}-{unique}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root).unwrap();
-        let first = root.join("first.bin");
-        fs::write(&first, [0_u8; 5]).unwrap();
-        fs::hard_link(&first, root.join("second.bin")).unwrap();
-        let root_id = ShellItemId::from_provider_bytes(b"hardlink-root".to_vec()).unwrap();
-
-        let per_entry = measure_size_map_tree(
-            &root,
-            &root_id,
-            100,
-            16,
-            SizeMapHardLinkPolicyV1::PerEntry,
-            || false,
-            |_| {},
-        );
-        let identity_once = measure_size_map_tree(
-            &root,
-            &root_id,
-            100,
-            16,
-            SizeMapHardLinkPolicyV1::IdentityOnce,
-            || false,
-            |_| {},
-        );
-        fs::remove_dir_all(&root).unwrap();
-
-        assert_eq!(per_entry.outcome.bytes, 10);
-        assert_eq!(identity_once.outcome.bytes, 5);
-    }
-
-    #[test]
-    fn size_map_scan_distinguishes_unavailable_resource_limited_and_cancelled() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "superexplorer-size-map-terminal-{}-{unique}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("child.bin"), [1_u8]).unwrap();
-
-        assert_eq!(
-            measure_size_map_path(&root, 1, 16, || false).terminal,
-            SizeMapScanTerminalV1::ResourceLimited
-        );
-        assert_eq!(
-            measure_size_map_path(&root, 100, 16, || true).terminal,
-            SizeMapScanTerminalV1::Cancelled
-        );
-        fs::remove_dir_all(&root).unwrap();
-        assert_eq!(
-            measure_size_map_path(&root, 100, 16, || false).terminal,
-            SizeMapScanTerminalV1::Unavailable
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn size_map_scan_does_not_follow_directory_symlinks_by_default() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "superexplorer-size-map-link-{}-{unique}",
-            std::process::id()
-        ));
-        let outside = root.with_extension("outside");
-        fs::create_dir_all(&root).unwrap();
-        fs::create_dir_all(&outside).unwrap();
-        fs::write(outside.join("outside.bin"), [0_u8; 17]).unwrap();
-        let link = root.join("cycle");
-        if std::os::windows::fs::symlink_dir(&outside, &link).is_ok() {
-            let scan = measure_size_map_path(&root, 100, 16, || false);
-            assert_eq!(scan.terminal, SizeMapScanTerminalV1::Complete);
-            assert_eq!(scan.bytes, 0, "the linked subtree must not be counted");
-        }
-        fs::remove_dir_all(&root).unwrap();
-        fs::remove_dir_all(&outside).unwrap();
-    }
-
-    #[test]
-    #[ignore = "explicit release-only 100,000-node Size Map production-path benchmark"]
-    fn size_map_100k_memory_projection_scan_and_cancel_gate() {
-        use std::mem::{MaybeUninit, size_of};
-        use windows::Win32::System::{
-            ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
-            Threading::GetCurrentProcess,
-        };
-
-        fn working_set_bytes() -> usize {
-            let mut counters = MaybeUninit::<PROCESS_MEMORY_COUNTERS>::zeroed();
-            // SAFETY: the current process pseudo-handle is valid and counters
-            // points to writable storage of the exact advertised size.
-            let read = unsafe {
-                GetProcessMemoryInfo(
-                    GetCurrentProcess(),
-                    counters.as_mut_ptr(),
-                    u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS>()).unwrap(),
-                )
-            };
-            assert!(read.is_ok());
-            // SAFETY: GetProcessMemoryInfo succeeded and initialized counters.
-            unsafe { counters.assume_init().WorkingSetSize }
-        }
-
-        const NODE_COUNT: usize = 100_000;
-        const MAX_MEMORY_DELTA_BYTES: usize = 256 * 1024 * 1024;
-        const MAX_PROJECTION_MILLIS: u128 = 2_000;
-        const MAX_SCAN_MILLIS: u128 = 30_000;
-        const MAX_CANCEL_MILLIS: u128 = 250;
-
-        let memory_before = working_set_bytes();
-        let entries = explorer_test_support::synthetic_directory_entries(NODE_COUNT);
-        let nodes = entries
-            .iter()
-            .map(|entry| explorer_ui::size_map_view::SizeMapNodeV1 {
-                item_id: entry.id.clone(),
-                selection_item_id: entry.id.clone(),
-                parent_item_id: None,
-                location: entry.location.clone(),
-                display_name: entry.display_name.clone(),
-                type_name: entry.metadata.type_display.clone().unwrap_or_default(),
-                is_container: entry.is_container,
-                exact_bytes: Some(entry.metadata.size_bytes.unwrap_or_default()),
-                partial: false,
-                error: None,
-            })
-            .collect::<Vec<_>>();
-        let projection_started = Instant::now();
-        let (projected, omitted) = partition_size_map_projection(&nodes);
-        let aggregate = aggregate_size_map_items(&nodes, &omitted);
-        let projection_millis = projection_started.elapsed().as_millis();
-        let memory_after_projection = working_set_bytes();
-        let memory_delta = memory_after_projection.saturating_sub(memory_before);
-
-        assert_eq!(projected.len(), 255);
-        assert_eq!(aggregate.len(), NODE_COUNT - 255);
-        assert!(projection_millis <= MAX_PROJECTION_MILLIS);
-        assert!(memory_delta <= MAX_MEMORY_DELTA_BYTES);
-
-        let fixture = explorer_test_support::OwnedTempFixture::new().unwrap();
-        // The production scanner counts the root as one node, so 99,999 flat
-        // children exercise exactly the configured 100,000-node ceiling.
-        let corpus = fixture.generate_large_dataset(NODE_COUNT - 1).unwrap();
-        let scan_started = Instant::now();
-        let scan = measure_size_map_path(&corpus.root, NODE_COUNT as u32, 128, || false);
-        let scan_millis = scan_started.elapsed().as_millis();
-        assert_eq!(scan.terminal, SizeMapScanTerminalV1::Complete);
-        assert_eq!(scan.bytes, 0);
-        assert!(scan_millis <= MAX_SCAN_MILLIS);
-
-        let cancel_polls = AtomicUsize::new(0);
-        let cancel_started = Instant::now();
-        let cancelled = measure_size_map_path(&corpus.root, NODE_COUNT as u32, 128, || {
-            cancel_polls.fetch_add(1, Ordering::Relaxed) >= 4_096
-        });
-        let cancel_millis = cancel_started.elapsed().as_millis();
-        assert_eq!(cancelled.terminal, SizeMapScanTerminalV1::Cancelled);
-        assert!(cancel_millis <= MAX_CANCEL_MILLIS);
-
-        eprintln!(
-            "size-map-100k nodes={NODE_COUNT} memory_delta_bytes={memory_delta} projection_ms={projection_millis} projected_rectangles={} redraw_upper_bound=1 scan_ms={scan_millis} cancel_ms={cancel_millis} cancel_polls={}",
-            projected.len() + 1,
-            cancel_polls.load(Ordering::Relaxed),
         );
     }
 }

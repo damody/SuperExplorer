@@ -16,29 +16,26 @@ const LIFECYCLE_CLOSED: u8 = 2;
 /// cancellation; only the actual BEGIN/COMMIT/checkpoint/rename/delete call
 /// owns `INVOKING`.
 #[derive(Debug)]
-pub(crate) struct LifecycleBarrierV1 {
+pub struct LifecycleBarrierV1 {
     state: AtomicU8,
 }
 
 impl LifecycleBarrierV1 {
-    pub(crate) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             state: AtomicU8::new(LIFECYCLE_OPEN),
         }
     }
 
-    pub(crate) fn is_open(&self) -> bool {
+    pub fn is_open(&self) -> bool {
         self.state.load(Ordering::Acquire) != LIFECYCLE_CLOSED
     }
 
-    pub(crate) fn close(&self) {
+    pub fn close(&self) {
         self.state.store(LIFECYCLE_CLOSED, Ordering::Release);
     }
 
-    pub(crate) fn invoke<T>(
-        &self,
-        operation: impl FnOnce() -> Result<T, String>,
-    ) -> Result<T, String> {
+    pub fn invoke<T>(&self, operation: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
         self.state
             .compare_exchange(
                 LIFECYCLE_OPEN,
@@ -66,7 +63,7 @@ impl LifecycleBarrierV1 {
 
 /// Monotonic time supplied by the service runtime or a deterministic test.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) struct MonotonicMillis(pub(crate) u64);
+pub struct MonotonicMillis(pub u64);
 
 impl MonotonicMillis {
     const fn elapsed_since(self, earlier: Self) -> Duration {
@@ -82,13 +79,17 @@ impl MonotonicMillis {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct JournalCursorV1 {
-    pub(crate) journal_id: u64,
-    pub(crate) next_usn: i64,
-    pub(crate) generation: u64,
+pub struct JournalCursorV1 {
+    pub journal_id: u64,
+    pub next_usn: i64,
+    pub generation: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(
+    dead_code,
+    reason = "contract owned by openspec mft-sqlite-foreground-persistence task 6.1.3; remove after recovery diagnostics wiring is reviewed"
+)]
 pub(crate) enum RecoveryReasonV1 {
     PendingOverflow,
     AmbiguousTopology,
@@ -99,6 +100,10 @@ pub(crate) enum RecoveryReasonV1 {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(
+    dead_code,
+    reason = "contract owned by openspec mft-sqlite-foreground-persistence task 6.1.3; remove after migration diagnostics wiring is reviewed"
+)]
 pub(crate) enum MigrationStateV1 {
     None,
     LegacyPending,
@@ -107,15 +112,15 @@ pub(crate) enum MigrationStateV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PendingBatchV1<T> {
-    pub(crate) start: JournalCursorV1,
-    pub(crate) observed: JournalCursorV1,
-    pub(crate) changes: Vec<T>,
+pub struct PendingBatchV1<T> {
+    pub start: JournalCursorV1,
+    pub observed: JournalCursorV1,
+    pub changes: Vec<T>,
     pub(crate) encoded_bytes: usize,
 }
 
 impl<T> PendingBatchV1<T> {
-    pub(crate) fn capture(
+    pub fn capture(
         start: JournalCursorV1,
         observed: JournalCursorV1,
         changes: Vec<T>,
@@ -138,7 +143,7 @@ impl<T> PendingBatchV1<T> {
 
 /// Atomically separates the currently observed coalesced set from later
 /// arrivals. The captured cursor consequently covers only captured values.
-pub(crate) fn capture_coalesced_batch<K, V>(
+pub fn capture_coalesced_batch<K, V>(
     pending: &mut HashMap<K, V>,
     start: JournalCursorV1,
     observed: JournalCursorV1,
@@ -152,7 +157,7 @@ where
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PersistenceDecisionV1 {
+pub enum PersistenceDecisionV1 {
     Idle,
     WaitForInterval,
     WaitForFocus,
@@ -163,7 +168,7 @@ pub(crate) enum PersistenceDecisionV1 {
 /// Two-clock scheduler: failures do not advance durable success, but every
 /// disk-write attempt is throttled for the full ten-minute interval.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct PersistenceScheduleV1 {
+pub struct PersistenceScheduleV1 {
     startup: MonotonicMillis,
     last_success: Option<MonotonicMillis>,
     last_attempt: Option<MonotonicMillis>,
@@ -172,7 +177,7 @@ pub(crate) struct PersistenceScheduleV1 {
 }
 
 impl PersistenceScheduleV1 {
-    pub(crate) const fn new(startup: MonotonicMillis) -> Self {
+    pub const fn new(startup: MonotonicMillis) -> Self {
         Self {
             startup,
             last_success: None,
@@ -185,13 +190,13 @@ impl PersistenceScheduleV1 {
     /// Makes the first recovery attempt immediately eligible when an explicit
     /// metadata query is waiting for an exact index. Once an attempt has been
     /// recorded, the normal ten-minute failure throttle remains authoritative.
-    pub(crate) fn expedite_initial_recovery(&mut self, _now: MonotonicMillis) {
+    pub fn expedite_initial_recovery(&mut self, _now: MonotonicMillis) {
         if self.last_attempt.is_none() && self.last_success.is_none() {
             self.initial_recovery_expedited = true;
         }
     }
 
-    pub(crate) fn decision(
+    pub fn decision(
         &self,
         now: MonotonicMillis,
         has_pending: bool,
@@ -219,7 +224,7 @@ impl PersistenceScheduleV1 {
     }
 
     /// Must be called immediately before the SQLite `BEGIN` boundary.
-    pub(crate) fn record_attempt(&mut self, now: MonotonicMillis) -> Result<(), &'static str> {
+    pub fn record_attempt(&mut self, now: MonotonicMillis) -> Result<(), &'static str> {
         if self.stopping {
             return Err("MFT persistence is stopping");
         }
@@ -228,15 +233,15 @@ impl PersistenceScheduleV1 {
         Ok(())
     }
 
-    pub(crate) fn record_success(&mut self, now: MonotonicMillis) {
+    pub fn record_success(&mut self, now: MonotonicMillis) {
         self.last_success = Some(now);
     }
 
-    pub(crate) fn inhibit_for_stop(&mut self) {
+    pub fn inhibit_for_stop(&mut self) {
         self.stopping = true;
     }
 
-    pub(crate) const fn last_success(&self) -> Option<MonotonicMillis> {
+    pub const fn last_success(&self) -> Option<MonotonicMillis> {
         self.last_success
     }
 
@@ -256,12 +261,12 @@ struct FocusLeaseV1 {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct FocusLeaseRegistryV1 {
+pub struct FocusLeaseRegistryV1 {
     leases: HashMap<LeaseIdV1, FocusLeaseV1>,
 }
 
 impl FocusLeaseRegistryV1 {
-    pub(crate) fn acquire_or_renew(
+    pub fn acquire_or_renew(
         &mut self,
         id: LeaseIdV1,
         owner: LeaseOwnerV1,
@@ -305,30 +310,30 @@ impl FocusLeaseRegistryV1 {
         self.leases.retain(|_, lease| lease.owner != owner);
     }
 
-    pub(crate) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.leases.clear();
     }
 
-    pub(crate) fn expire(&mut self, now: MonotonicMillis) {
+    pub fn expire(&mut self, now: MonotonicMillis) {
         self.leases.retain(|_, lease| lease.expires_at > now);
     }
 
-    pub(crate) fn any_focused(&mut self, now: MonotonicMillis) -> bool {
+    pub fn any_focused(&mut self, now: MonotonicMillis) -> bool {
         self.expire(now);
         !self.leases.is_empty()
     }
 
-    pub(crate) fn contains_active(&mut self, id: LeaseIdV1, now: MonotonicMillis) -> bool {
+    pub fn contains_active(&mut self, id: LeaseIdV1, now: MonotonicMillis) -> bool {
         self.expire(now);
         self.leases.contains_key(&id)
     }
 
-    pub(crate) fn active_count(&mut self, now: MonotonicMillis) -> usize {
+    pub fn active_count(&mut self, now: MonotonicMillis) -> usize {
         self.expire(now);
         self.leases.len()
     }
 
-    pub(crate) fn expiry_remaining(&mut self, now: MonotonicMillis) -> Duration {
+    pub fn expiry_remaining(&mut self, now: MonotonicMillis) -> Duration {
         self.expire(now);
         self.leases
             .values()

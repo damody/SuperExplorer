@@ -37,6 +37,7 @@ explorer-automation = { path = "../explorer-automation" }
 explorer-automation-win = { path = "../explorer-automation-win" }
 explorer-jobs = { path = "../explorer-jobs" }
 explorer-model = { path = "../explorer-model" }
+explorer-mft = { path = "../explorer-mft" }
 explorer-remote = { path = "../explorer-remote" }
 explorer-search = { path = "../explorer-search" }
 explorer-shell-win = { path = "../explorer-shell-win" }

@@ -2,22 +2,10 @@
 
 #![cfg(windows)]
 
-#[path = "../mft_focus.rs"]
-mod mft_focus;
-#[path = "../mft_journal.rs"]
-mod mft_journal;
-#[path = "../mft_migration.rs"]
-mod mft_migration;
-#[path = "../mft_persistence.rs"]
-mod mft_persistence;
-#[path = "../mft_query.rs"]
-mod mft_query;
-#[path = "../mft_runtime.rs"]
-mod mft_runtime;
-#[path = "../mft_size_map.rs"]
-mod mft_size_map;
-#[path = "../mft_sqlite.rs"]
-mod mft_sqlite;
+use explorer_mft::{
+    mft_focus, mft_journal, mft_migration, mft_persistence, mft_query, mft_runtime, mft_size_map,
+    mft_sqlite,
+};
 
 use std::os::windows::ffi::OsStrExt as _;
 use std::{
@@ -89,10 +77,6 @@ const QUERY_FALLBACK_MAX_ENTRIES: usize = 100_000;
 static STOPPED: AtomicBool = AtomicBool::new(false);
 static LIFECYCLE_BARRIER: mft_persistence::LifecycleBarrierV1 =
     mft_persistence::LifecycleBarrierV1::new();
-
-fn with_lifecycle_permit<T>(operation: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-    LIFECYCLE_BARRIER.invoke(operation)
-}
 static RECOVERY_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static PERSISTED_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static MONOTONIC_EPOCH: OnceLock<Instant> = OnceLock::new();
@@ -238,7 +222,7 @@ fn initialize_protected_focus_image() -> Result<(), String> {
 fn token_user_buffer(token: HANDLE) -> Result<Vec<u8>, String> {
     let mut needed = 0_u32;
     let _ = unsafe { GetTokenInformation(token, TokenUser, None, 0, &raw mut needed) };
-    if needed < std::mem::size_of::<TOKEN_USER>() as u32 {
+    if needed < size_of::<TOKEN_USER>() as u32 {
         return Err("focus token user is unavailable".to_owned());
     }
     let mut bytes = vec![0_u8; needed as usize];
@@ -1603,7 +1587,6 @@ fn run_event_driven_service() {
 struct CachedFolderAggregateVolumeV1 {
     index: mft_size_map::MftIndexV1,
     aggregates: mft_size_map::MftAggregateIndexV1,
-    checkpoint: mft_journal::MftCheckpointV2,
     estimated_bytes: usize,
     volume_index_bytes: usize,
     file_data_bytes: usize,
@@ -1991,13 +1974,6 @@ impl Default for ServiceFolderAggregateCacheV1 {
         }
     }
 }
-
-fn query_fallback_scan_exhausted(deadline: Instant, visited_entries: usize) -> bool {
-    STOPPED.load(Ordering::Acquire)
-        || visited_entries > QUERY_FALLBACK_MAX_ENTRIES
-        || Instant::now() >= deadline
-}
-
 fn durable_snapshot_matches_current_journal(
     volume_root: &std::path::Path,
     durable: mft_persistence::JournalCursorV1,
@@ -2023,194 +1999,6 @@ impl ServiceFolderAggregateCacheV1 {
             self.recount_result_bytes();
         }
     }
-
-    fn query_live(
-        &mut self,
-        live_volumes: &Arc<Mutex<HashMap<char, mft_runtime::VolumeMemoryRuntimeV1>>>,
-        live_budgets: &Arc<Mutex<LiveBudgetStateV1>>,
-        _cache_root: &std::path::Path,
-        _volume_root: &std::path::Path,
-        requested_path: Option<&std::path::Path>,
-        letter: char,
-        reference: u64,
-        cache_memory_mb: u16,
-    ) -> Result<mft_query::FolderAggregateQueryV1, String> {
-        if !self.limits_configured {
-            self.set_limit(cache_memory_mb);
-        }
-        prefer_live_volume(live_budgets, live_volumes, letter)?;
-        self.clock = self.clock.wrapping_add(1).max(1);
-        let (observed, durable, exact) = {
-            let live = live_volumes
-                .lock()
-                .map_err(|_| "MFT live volume state is unavailable".to_owned())?;
-            let volume = live
-                .get(&letter)
-                .ok_or_else(|| "MFT live volume is unavailable".to_owned())?;
-            (volume.observed, volume.durable, volume.is_exact())
-        };
-        // Prefer the durable recursive aggregate whenever it describes the
-        // exact current journal. This keeps large folders exact without
-        // forcing an interactive pipe request to walk millions of live MFT
-        // nodes (or returning a misleading `Partial: 0 KB` after that walk
-        // reaches its latency bound).
-        let durable_read_candidate = requested_path.is_some() && observed == durable;
-        let durable_read_available = durable_read_candidate
-            && durable_snapshot_matches_current_journal(_volume_root, durable);
-        if let Some((cached, last_use)) = self.results.get_mut(&(letter, reference))
-            && cached.generation == observed.generation
-            && !cached.partial
-            && (exact || durable_read_available)
-        {
-            *last_use = self.clock;
-            self.hits = self.hits.saturating_add(1);
-            return Ok(*cached);
-        }
-        self.misses = self.misses.saturating_add(1);
-        // A live topology can be intentionally trimmed to obey the memory
-        // budget, and even a complete topology may be too large for the
-        // interactive subtree-walk bound. When no journal change exists after
-        // the durable cursor, answer Folder Size exactly from SQLite metadata.
-        // This reads only the MFT index, never user-file contents, and the
-        // result cache makes it a one-time cost per folder/generation.
-        if durable_read_available {
-            let sqlite_path = _cache_root.join(format!("{letter}.mft.sqlite3"));
-            let expected_volume = mft_journal::VolumeIdentityV2 {
-                serial: mft_size_map::volume_serial_number(_volume_root)?,
-            };
-            if let Ok(aggregate) = mft_sqlite::MftSqliteStoreV1::query_folder_aggregate_read_only(
-                &sqlite_path,
-                _cache_root,
-                expected_volume,
-                durable,
-                reference,
-                &HashSet::new(),
-            ) && durable_snapshot_matches_current_journal(_volume_root, durable)
-            {
-                let result = mft_query::FolderAggregateQueryV1 {
-                    generation: observed.generation,
-                    logical_bytes: aggregate.logical_bytes,
-                    allocated_bytes: aggregate.allocated_bytes,
-                    file_count: aggregate.file_count,
-                    directory_count: aggregate.directory_count,
-                    partial: false,
-                };
-                self.results
-                    .insert((letter, reference), (result, self.clock));
-                self.recount_result_bytes();
-                self.evict_for(0);
-                return Ok(result);
-            }
-        }
-        if exact {
-            let index = {
-                let live = live_volumes
-                    .lock()
-                    .map_err(|_| "MFT live volume state is unavailable".to_owned())?;
-                let volume = live
-                    .get(&letter)
-                    .ok_or_else(|| "MFT live volume is unavailable".to_owned())?;
-                Arc::clone(&volume.index)
-            };
-            if let Some((generation, aggregates, _, last_use)) =
-                self.live_aggregates.get_mut(&letter)
-                && *generation == observed.generation
-                && let Some(aggregate) = aggregates.get(reference)
-            {
-                *last_use = self.clock;
-                let result = mft_query::FolderAggregateQueryV1 {
-                    generation: observed.generation,
-                    logical_bytes: aggregate.logical_bytes,
-                    allocated_bytes: aggregate.allocated_bytes,
-                    file_count: aggregate.file_count,
-                    directory_count: aggregate.directory_count,
-                    partial: false,
-                };
-                self.results
-                    .insert((letter, reference), (result, self.clock));
-                self.recount_result_bytes();
-                self.evict_for(0);
-                return Ok(result);
-            }
-            let deadline = Instant::now() + QUERY_FALLBACK_SCAN_BUDGET;
-            match index.aggregate_subtree_bounded(reference, QUERY_FALLBACK_MAX_ENTRIES, || {
-                STOPPED.load(Ordering::Acquire) || Instant::now() >= deadline
-            }) {
-                Ok(aggregate) => {
-                    let result = mft_query::FolderAggregateQueryV1 {
-                        generation: observed.generation,
-                        logical_bytes: aggregate.logical_bytes,
-                        allocated_bytes: aggregate.allocated_bytes,
-                        file_count: aggregate.file_count,
-                        directory_count: aggregate.directory_count,
-                        partial: false,
-                    };
-                    self.results
-                        .insert((letter, reference), (result, self.clock));
-                    self.recount_result_bytes();
-                    self.evict_for(0);
-                    return Ok(result);
-                }
-                Err(error) if error.contains("interactive bound") => {
-                    // Large requested subtrees should not become `Partial: 0
-                    // KB` merely because the low-latency walk reached its
-                    // bound. Build the volume aggregate once in memory, then
-                    // cache O(1) answers for every visible folder. No user-file
-                    // contents are opened, so this cannot wake Defender's
-                    // recursive file-content scanner.
-                    let aggregate_limit = usize::from(self.limits.aggregate_mb) * 1024 * 1024;
-                    if index.projected_aggregate_bytes() > aggregate_limit {
-                        return Err(format!(
-                            "exact folder aggregate is unavailable: projected aggregate bytes {} exceed configured limit {}",
-                            index.projected_aggregate_bytes(),
-                            aggregate_limit,
-                        ));
-                    }
-                    // Do not retain an old volume aggregate while allocating
-                    // its replacement; the configured aggregate budget is a
-                    // hard peak limit, not just an eviction target.
-                    self.live_aggregates.clear();
-                    let aggregates = Arc::new(mft_size_map::MftAggregateIndexV1::build_cancelled(
-                        &index, 8, &STOPPED,
-                    )?);
-                    let aggregate = aggregates
-                        .get(reference)
-                        .ok_or_else(|| "folder aggregate is unavailable".to_owned())?;
-                    let aggregate_bytes = aggregates.estimated_resident_bytes();
-                    if aggregate_bytes <= aggregate_limit {
-                        self.live_aggregates.insert(
-                            letter,
-                            (
-                                observed.generation,
-                                Arc::clone(&aggregates),
-                                aggregate_bytes,
-                                self.clock,
-                            ),
-                        );
-                    }
-                    let result = mft_query::FolderAggregateQueryV1 {
-                        generation: observed.generation,
-                        logical_bytes: aggregate.logical_bytes,
-                        allocated_bytes: aggregate.allocated_bytes,
-                        file_count: aggregate.file_count,
-                        directory_count: aggregate.directory_count,
-                        partial: false,
-                    };
-                    self.results
-                        .insert((letter, reference), (result, self.clock));
-                    self.recount_result_bytes();
-                    self.evict_for(0);
-                    return Ok(result);
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        Err(format!(
-            "exact folder aggregate is unavailable: volume index is incomplete; observed_generation={} durable_generation={}",
-            observed.generation, durable.generation,
-        ))
-    }
-
     fn set_limits(
         &mut self,
         cache_root: &std::path::Path,
@@ -2311,75 +2099,6 @@ impl ServiceFolderAggregateCacheV1 {
         self.evict_for(0);
         effective
     }
-
-    fn query(
-        &mut self,
-        cache: &std::path::Path,
-        letter: char,
-        reference: u64,
-        cache_memory_mb: u16,
-    ) -> Result<mft_query::FolderAggregateQueryV1, String> {
-        let result = self.query_inner(cache, letter, reference, cache_memory_mb);
-        if result.is_ok() {
-            self.hits = self.hits.saturating_add(1);
-        } else {
-            self.misses = self.misses.saturating_add(1);
-        }
-        result
-    }
-
-    fn query_inner(
-        &mut self,
-        cache: &std::path::Path,
-        letter: char,
-        reference: u64,
-        cache_memory_mb: u16,
-    ) -> Result<mft_query::FolderAggregateQueryV1, String> {
-        let _ = cache_memory_mb;
-        self.clock = self.clock.wrapping_add(1).max(1);
-        let latest = mft_journal::latest_checkpoint(cache, letter)?
-            .ok_or_else(|| "MFT Service checkpoint is unavailable".to_owned())?;
-        if let Some((cached, last_use)) = self.results.get_mut(&(letter, reference))
-            && cached.generation == latest.generation
-        {
-            *last_use = self.clock;
-            return Ok(*cached);
-        }
-        let needs_refresh = self
-            .volumes
-            .get(&letter)
-            .is_none_or(|volume| volume.checkpoint != latest);
-        if needs_refresh {
-            self.refresh_volume(cache, letter, latest)?;
-        }
-        let volume = self
-            .volumes
-            .get_mut(&letter)
-            .ok_or_else(|| "MFT Service aggregate cache is unavailable".to_owned())?;
-        volume.last_use = self.clock;
-        let aggregate = match volume.aggregates.get(reference) {
-            Some(aggregate) => aggregate,
-            None if volume.aggregate_incomplete => mft_size_map::MftAggregateV1::default(),
-            None => return Err("folder aggregate is unavailable".to_owned()),
-        };
-        self.generation = self.generation.max(volume.checkpoint.generation);
-        let result = mft_query::FolderAggregateQueryV1 {
-            generation: volume.checkpoint.generation,
-            logical_bytes: aggregate.logical_bytes,
-            allocated_bytes: aggregate.allocated_bytes,
-            file_count: aggregate.file_count,
-            directory_count: aggregate.directory_count,
-            partial: volume.volume_index_incomplete
-                || volume.file_data_incomplete
-                || volume.aggregate_incomplete,
-        };
-        self.results
-            .insert((letter, reference), (result, self.clock));
-        self.recount_result_bytes();
-        self.evict_for(0);
-        Ok(result)
-    }
-
     fn diagnostics(
         &self,
         persisted_index_bytes: u64,
@@ -2437,90 +2156,6 @@ impl ServiceFolderAggregateCacheV1 {
             aggregate_limit_bytes: Some(u64::from(self.limits.aggregate_mb) * 1024 * 1024),
         })
     }
-
-    fn refresh_volume(
-        &mut self,
-        cache: &std::path::Path,
-        letter: char,
-        latest: mft_journal::MftCheckpointV2,
-    ) -> Result<(), String> {
-        let previous = self.volumes.remove(&letter);
-        self.results.retain(|(volume, _), _| *volume != letter);
-        self.recount_result_bytes();
-        let (mut index, mut cursor) = if let Some(previous) = previous
-            && previous.checkpoint.volume == latest.volume
-            && previous.checkpoint.journal_id == latest.journal_id
-        {
-            (previous.index, previous.checkpoint)
-        } else {
-            let base = cache.join(format!("{letter}.semftidx"));
-            let index = mft_size_map::read_index(&base)?;
-            let checkpoint =
-                mft_journal::read_checkpoint(&mft_journal::checkpoint_path(cache, letter, 0))?;
-            (index, checkpoint)
-        };
-        if cursor.generation < latest.generation {
-            for delta in
-                mft_journal::deltas_after(cache, letter, cursor.generation, latest.generation)?
-            {
-                if delta.volume != cursor.volume
-                    || delta.journal_id != cursor.journal_id
-                    || delta.generation != cursor.generation.saturating_add(1)
-                    || delta.start_usn != cursor.next_usn
-                {
-                    return Err("MFT Service aggregate delta chain is not contiguous".to_owned());
-                }
-                for change in &delta.changes {
-                    index.apply_change(change)?;
-                }
-                cursor = mft_journal::MftCheckpointV2::new(
-                    cursor.volume,
-                    cursor.journal_id,
-                    delta.next_usn,
-                    delta.generation,
-                );
-            }
-        }
-        if cursor != latest {
-            return Err("MFT Service aggregate generation is stale".to_owned());
-        }
-        let mut aggregates = mft_size_map::MftAggregateIndexV1::build(&index, 8)?;
-        let volume_limit = usize::from(self.limits.volume_index_mb) * 1024 * 1024;
-        let file_limit = usize::from(self.limits.file_data_mb) * 1024 * 1024;
-        let aggregate_limit = usize::from(self.limits.aggregate_mb) * 1024 * 1024;
-        let persisted_incomplete = persisted_incomplete_path(cache, letter).is_file();
-        let aggregate_incomplete =
-            aggregates.trim_to_bytes(aggregate_limit) || persisted_incomplete;
-        let file_data_incomplete =
-            index.trim_file_data_to_bytes(file_limit) || persisted_incomplete;
-        let volume_index_incomplete =
-            index.trim_volume_index_to_bytes(volume_limit) || persisted_incomplete;
-        let index_memory = index.memory_breakdown();
-        let aggregate_bytes = aggregates.estimated_resident_bytes();
-        let estimated_bytes = index_memory
-            .volume_index_bytes
-            .saturating_add(index_memory.file_data_bytes)
-            .saturating_add(aggregate_bytes);
-        self.volumes.insert(
-            letter,
-            CachedFolderAggregateVolumeV1 {
-                index,
-                aggregates,
-                checkpoint: latest,
-                estimated_bytes,
-                volume_index_bytes: index_memory.volume_index_bytes,
-                file_data_bytes: index_memory.file_data_bytes,
-                aggregate_bytes,
-                last_use: self.clock,
-                volume_index_incomplete,
-                file_data_incomplete,
-                aggregate_incomplete,
-            },
-        );
-        self.enforce_structure_limits();
-        Ok(())
-    }
-
     fn enforce_structure_limits(&mut self) {
         let volume_limit = usize::from(self.limits.volume_index_mb) * 1024 * 1024;
         let file_limit = usize::from(self.limits.file_data_mb) * 1024 * 1024;
@@ -2630,80 +2265,6 @@ impl ServiceFolderAggregateCacheV1 {
 fn persisted_incomplete_path(root: &std::path::Path, letter: char) -> PathBuf {
     root.join(format!("{letter}.persisted-partial"))
 }
-
-fn enforce_persisted_limit(root: &std::path::Path, limit: usize) -> Result<(), String> {
-    let mut indices = std::fs::read_dir(root)
-        .map_err(|error| error.to_string())?
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.path();
-            (path.extension().and_then(|value| value.to_str()) == Some("semftidx")).then_some(path)
-        })
-        .collect::<Vec<_>>();
-    indices.sort_by_key(|path| {
-        std::fs::metadata(path)
-            .and_then(|metadata| metadata.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH)
-    });
-    let mut total = indices
-        .iter()
-        .filter_map(|path| std::fs::metadata(path).ok())
-        .map(|metadata| metadata.len() as usize)
-        .sum::<usize>();
-    for path in indices {
-        if total <= limit {
-            break;
-        }
-        let old_bytes = std::fs::metadata(&path)
-            .map_err(|error| error.to_string())?
-            .len() as usize;
-        let allowance = limit.saturating_sub(total.saturating_sub(old_bytes));
-        let mut index = mft_size_map::read_index(&path)?;
-        if !index.trim_persisted_to_bytes(allowance) {
-            continue;
-        }
-        let letter = path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .and_then(|value| value.chars().next())
-            .filter(char::is_ascii_alphabetic)
-            .ok_or_else(|| "invalid persisted MFT index name".to_owned())?
-            .to_ascii_uppercase();
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let temporary = root.join(format!("{letter}.prune-{stamp}.tmp"));
-        mft_size_map::write_service_index(&temporary, &index)?;
-        publish_base_index(&temporary, &path)?;
-        // Marker publication follows the atomic replacement. A crash before
-        // this point leaves the previous complete index; a crash afterward
-        // leaves an explicitly partial generation.
-        std::fs::write(persisted_incomplete_path(root, letter), b"SEMFTPARTIAL1")
-            .map_err(|error| error.to_string())?;
-        let new_bytes = std::fs::metadata(&path)
-            .map_err(|error| error.to_string())?
-            .len() as usize;
-        total = total.saturating_sub(old_bytes).saturating_add(new_bytes);
-    }
-    // Unique prune temporaries are never query inputs. Remove interrupted
-    // replacements after resolving their fixed root and suffix.
-    for entry in std::fs::read_dir(root)
-        .map_err(|error| error.to_string())?
-        .flatten()
-    {
-        let path = entry.path();
-        let name = path
-            .file_name()
-            .and_then(|v| v.to_str())
-            .unwrap_or_default();
-        if name.contains(".prune-") && name.ends_with(".tmp") {
-            let _ = std::fs::remove_file(path);
-        }
-    }
-    Ok(())
-}
-
 fn persisted_cache_bytes(root: &std::path::Path) -> u64 {
     let Ok(metadata) = std::fs::symlink_metadata(root) else {
         return 0;
@@ -4535,251 +4096,6 @@ fn watch_volume_memory(
     }
     schedule.inhibit_for_stop();
 }
-
-fn watch_volume(
-    cache: PathBuf,
-    letter: char,
-    root: PathBuf,
-    mut checkpoint: mft_journal::MftCheckpointV2,
-) {
-    let ignored_cache_parent = if root == std::path::Path::new(r"C:\") {
-        mft_size_map::file_reference_number(&cache).ok()
-    } else {
-        None
-    };
-    let mut pending = HashMap::<u64, mft_journal::UsnEventV2>::new();
-    let mut pending_bytes = 0_usize;
-    let mut first_pending = None::<Instant>;
-    let mut last_pending = None::<Instant>;
-    let mut next_usn = checkpoint.next_usn;
-    let mut high_water = 0_usize;
-    while !STOPPED.load(Ordering::Acquire) {
-        let mut read_checkpoint = checkpoint;
-        read_checkpoint.next_usn = next_usn;
-        let read = mft_journal::read_journal_once(&root, read_checkpoint);
-        let (read_next_usn, events) = match read {
-            Ok(result) => result,
-            Err(error) => {
-                let recover = mft_journal::query_journal(&root)
-                    .map(|journal| !checkpoint.compatible_with(checkpoint.volume, journal))
-                    .unwrap_or(true);
-                if recover {
-                    match prepare_volume(&cache, letter, &root, true) {
-                        Ok(rebuilt) => {
-                            checkpoint = rebuilt;
-                            next_usn = rebuilt.next_usn;
-                            pending.clear();
-                            pending_bytes = 0;
-                            first_pending = None;
-                            last_pending = None;
-                            continue;
-                        }
-                        Err(rebuild_error) => {
-                            let _ = write_status(
-                                &cache,
-                                letter,
-                                mft_journal::MftServiceModeV2::Error,
-                                checkpoint,
-                                pending.len(),
-                                pending_bytes,
-                                &format!("journal-recovery-failed:{rebuild_error}"),
-                            );
-                        }
-                    }
-                } else {
-                    let _ = write_status(
-                        &cache,
-                        letter,
-                        mft_journal::MftServiceModeV2::Error,
-                        checkpoint,
-                        pending.len(),
-                        pending_bytes,
-                        &format!("journal-read:{error}"),
-                    );
-                }
-                std::thread::sleep(Duration::from_millis(250));
-                continue;
-            }
-        };
-        next_usn = next_usn.max(read_next_usn);
-        for event in events {
-            if ignored_cache_parent.is_some_and(|reference| {
-                event.reference == reference || event.parent_reference == reference
-            }) {
-                continue;
-            }
-            let observed = Instant::now();
-            if first_pending.is_none() {
-                first_pending = Some(observed);
-            }
-            last_pending = Some(observed);
-            pending
-                .entry(event.reference)
-                .and_modify(|current| {
-                    current.reason |= event.reason;
-                    current.parent_reference = event.parent_reference;
-                    current.usn = current.usn.max(event.usn);
-                    current.attributes = event.attributes;
-                    if !event.name.is_empty() {
-                        current.name.clone_from(&event.name);
-                    }
-                })
-                .or_insert(event);
-        }
-        // Bound the coalesced queue's resident representation, not the cumulative
-        // number of journal observations for the same hot file reference.
-        pending_bytes = mft_journal::coalesced_bytes(&pending);
-        high_water = high_water.max(pending.len());
-        if pending.len() > mft_journal::PENDING_CHANGE_LIMIT
-            || pending_bytes > mft_journal::PENDING_BYTE_LIMIT
-        {
-            let _ = write_status(
-                &cache,
-                letter,
-                mft_journal::MftServiceModeV2::Recovering,
-                checkpoint,
-                pending.len(),
-                pending_bytes,
-                "pending-overflow",
-            );
-            match prepare_volume(&cache, letter, &root, true) {
-                Ok(rebuilt) => checkpoint = rebuilt,
-                Err(_) => break,
-            }
-            next_usn = checkpoint.next_usn;
-            pending.clear();
-            pending_bytes = 0;
-            first_pending = None;
-            last_pending = None;
-            continue;
-        }
-        let publication_due = first_pending
-            .zip(last_pending)
-            .is_some_and(|(first, last)| {
-                mft_journal::publication_due(first.elapsed(), last.elapsed())
-            });
-        if publication_due {
-            let ambiguous = pending.values().any(|event| {
-                mft_journal::normalize_event(event) == mft_journal::MftChangeKindV2::Invalidate
-            });
-            let published = if ambiguous {
-                Err("ambiguous-link-or-reparse-change".to_owned())
-            } else {
-                publish_pending(&cache, letter, &root, &mut checkpoint, next_usn, &pending)
-            };
-            match published {
-                Ok(()) => {
-                    pending.clear();
-                    pending_bytes = 0;
-                    first_pending = None;
-                    last_pending = None;
-                    let _ = write_status_with_high_water(
-                        &cache,
-                        letter,
-                        mft_journal::MftServiceModeV2::Journal,
-                        checkpoint,
-                        0,
-                        0,
-                        high_water,
-                        "",
-                    );
-                }
-                Err(error) => {
-                    let _ = write_status(
-                        &cache,
-                        letter,
-                        mft_journal::MftServiceModeV2::Recovering,
-                        checkpoint,
-                        pending.len(),
-                        pending_bytes,
-                        &error,
-                    );
-                    match prepare_volume(&cache, letter, &root, true) {
-                        Ok(rebuilt) => checkpoint = rebuilt,
-                        Err(rebuild_error) => {
-                            let _ = write_status(
-                                &cache,
-                                letter,
-                                mft_journal::MftServiceModeV2::Error,
-                                checkpoint,
-                                pending.len(),
-                                pending_bytes,
-                                &format!("delta-recovery-failed:{rebuild_error}"),
-                            );
-                            break;
-                        }
-                    }
-                    next_usn = checkpoint.next_usn;
-                    pending.clear();
-                    pending_bytes = 0;
-                    first_pending = None;
-                    last_pending = None;
-                }
-            }
-        }
-    }
-}
-
-fn publish_pending(
-    cache: &std::path::Path,
-    letter: char,
-    root: &std::path::Path,
-    checkpoint: &mut mft_journal::MftCheckpointV2,
-    next_usn: i64,
-    pending: &HashMap<u64, mft_journal::UsnEventV2>,
-) -> Result<(), String> {
-    use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY;
-    let mut changes = Vec::with_capacity(pending.len());
-    for event in pending.values() {
-        let kind = mft_journal::normalize_event(event);
-        let mut change = mft_journal::MftChangeV2 {
-            kind,
-            reference: event.reference,
-            parent_reference: event.parent_reference,
-            name: event.name.clone(),
-            logical_bytes: 0,
-            allocated_bytes: 0,
-            is_directory: event.attributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0,
-            reason: event.reason,
-        };
-        if kind == mft_journal::MftChangeKindV2::Upsert {
-            match mft_size_map::current_entry(
-                root,
-                event.reference,
-                event.parent_reference,
-                event.name.clone(),
-                change.is_directory,
-            ) {
-                Ok(entry) => {
-                    change.logical_bytes = entry.logical_bytes;
-                    change.allocated_bytes = entry.allocated_bytes;
-                }
-                Err(_) => change.kind = mft_journal::MftChangeKindV2::Delete,
-            }
-        }
-        changes.push(change);
-    }
-    let generation = checkpoint.generation.saturating_add(1);
-    let delta = mft_journal::MftDeltaV2 {
-        schema: 2,
-        volume: checkpoint.volume,
-        journal_id: checkpoint.journal_id,
-        generation,
-        start_usn: checkpoint.next_usn,
-        next_usn,
-        changes,
-    };
-    let next = mft_journal::MftCheckpointV2::new(
-        checkpoint.volume,
-        checkpoint.journal_id,
-        next_usn,
-        generation,
-    );
-    mft_journal::publish_delta_and_checkpoint(cache, letter, &delta, &next)?;
-    *checkpoint = next;
-    Ok(())
-}
-
 fn write_status(
     cache: &std::path::Path,
     letter: char,
@@ -4837,7 +4153,95 @@ fn write_status_with_high_water(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, fs, path::Path};
+
+    fn copy_legacy_fixture_directory(source: &Path, destination: &Path) {
+        fs::create_dir_all(destination).unwrap();
+        for entry in fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_file() {
+                fs::copy(entry.path(), destination.join(entry.file_name())).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn checked_in_legacy_golden_readers_do_not_call_writers() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("mft-legacy");
+        let valid = fixtures.join("valid");
+        let temporary = tempfile::tempdir().unwrap();
+        copy_legacy_fixture_directory(&valid, temporary.path());
+        let checkpoint =
+            mft_journal::read_checkpoint(&mft_journal::checkpoint_path(temporary.path(), 'C', 1))
+                .unwrap();
+        let (index, complete) =
+            load_legacy_memory_index(temporary.path(), 'C', checkpoint, usize::MAX, usize::MAX)
+                .unwrap();
+        assert!(complete);
+        let entry = index.entries.get(&2).unwrap();
+        assert_eq!(entry.name, "after.txt");
+        assert_eq!(entry.logical_bytes, 24);
+        assert!(mft_journal::read_status(&valid.join("C.semftstatus")).is_ok());
+
+        assert!(
+            mft_journal::read_checkpoint(&fixtures.join("corrupt-checkpoint.semftcp")).is_err()
+        );
+        let initial =
+            mft_journal::read_checkpoint(&mft_journal::checkpoint_path(&valid, 'C', 0)).unwrap();
+        let wrong_identity = mft_journal::read_delta(&mft_journal::delta_path(
+            &fixtures.join("wrong-identity"),
+            'C',
+            1,
+        ))
+        .unwrap();
+        assert!(mft_journal::validate_delta_after(initial, &wrong_identity).is_err());
+        let noncontiguous = mft_journal::read_delta(&mft_journal::delta_path(
+            &fixtures.join("cursor-noncontiguous"),
+            'C',
+            1,
+        ))
+        .unwrap();
+        assert!(mft_journal::validate_delta_after(initial, &noncontiguous).is_err());
+        assert!(mft_journal::read_delta(&fixtures.join("oversize.semftdelta")).is_err());
+
+        for scenario in ["unfocused-no-delete", "failed-promotion-retry"] {
+            let source = fixtures.join(scenario);
+            let temporary = tempfile::tempdir().unwrap();
+            copy_legacy_fixture_directory(&source, temporary.path());
+            let before = fs::read_dir(temporary.path())
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    (entry.file_name(), fs::read(entry.path()).unwrap())
+                })
+                .collect::<BTreeMap<_, _>>();
+            let final_checkpoint = mft_journal::read_checkpoint(&mft_journal::checkpoint_path(
+                temporary.path(),
+                'C',
+                1,
+            ));
+            if let Ok(final_checkpoint) = final_checkpoint {
+                let _ = load_legacy_memory_index(
+                    temporary.path(),
+                    'C',
+                    final_checkpoint,
+                    usize::MAX,
+                    usize::MAX,
+                );
+            }
+            let after = fs::read_dir(temporary.path())
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    (entry.file_name(), fs::read(entry.path()).unwrap())
+                })
+                .collect::<BTreeMap<_, _>>();
+            assert_eq!(after, before, "{scenario} must not mutate fixture bytes");
+        }
+    }
 
     #[test]
     fn metadata_query_renews_short_service_local_demand_lease() {
@@ -4882,7 +4286,7 @@ mod tests {
 
     fn set_limits_eventually(
         cache: &mut ServiceFolderAggregateCacheV1,
-        root: &std::path::Path,
+        root: &Path,
         live: &Arc<Mutex<HashMap<char, mft_runtime::VolumeMemoryRuntimeV1>>>,
         budgets: &Arc<Mutex<LiveBudgetStateV1>>,
         limits: mft_query::MftCacheBudgetLimitsV1,
@@ -4905,25 +4309,8 @@ mod tests {
             .unwrap_or_default()
             .as_nanos();
         let root = std::env::temp_dir().join(format!("superexplorer-{name}-{unique}"));
-        std::fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&root).unwrap();
         root
-    }
-
-    #[test]
-    fn interactive_memory_subtree_has_time_and_entry_bounds() {
-        STOPPED.store(false, Ordering::Release);
-        assert!(query_fallback_scan_exhausted(
-            Instant::now(),
-            QUERY_FALLBACK_MAX_ENTRIES
-        ));
-        assert!(query_fallback_scan_exhausted(
-            Instant::now() + Duration::from_secs(30),
-            QUERY_FALLBACK_MAX_ENTRIES + 1
-        ));
-        assert!(!query_fallback_scan_exhausted(
-            Instant::now() + Duration::from_secs(30),
-            QUERY_FALLBACK_MAX_ENTRIES
-        ));
     }
 
     fn fixture(entries: u64) -> mft_size_map::MftIndexV1 {
@@ -5073,7 +4460,7 @@ mod tests {
     fn active_volume_swap_preserves_cursors_and_persisted_store() {
         let root = temporary_root("active-volume-sqlite-retention");
         let sqlite = root.join("D.mft.sqlite3");
-        std::fs::write(&sqlite, b"durable-fixture").unwrap();
+        fs::write(&sqlite, b"durable-fixture").unwrap();
         let cursor = mft_persistence::JournalCursorV1 {
             journal_id: 2,
             next_usn: 3,
@@ -5116,8 +4503,8 @@ mod tests {
             assert!(used.volume_index_bytes <= usize::from(limits.volume_index_mb) * 1024 * 1024);
             assert!(used.file_data_bytes <= usize::from(limits.file_data_mb) * 1024 * 1024);
         }
-        assert_eq!(std::fs::read(&sqlite).unwrap(), b"durable-fixture");
-        let _ = std::fs::remove_dir_all(root);
+        assert_eq!(fs::read(&sqlite).unwrap(), b"durable-fixture");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -5249,8 +4636,8 @@ mod tests {
         let live = live.lock().unwrap();
         let runtime = &live[&'D'];
         let result = compute_folder_aggregate_uncached(
-            std::path::Path::new("."),
-            std::path::Path::new(r"D:\"),
+            Path::new("."),
+            Path::new(r"D:\"),
             None,
             1,
             runtime.observed,
@@ -5347,13 +4734,13 @@ mod tests {
         .unwrap();
         assert!(exact, "a raised budget permits exact repopulation");
         assert!(live.lock().unwrap()[&'C'].is_exact());
-        let _ = std::fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn persisted_limit_is_acknowledged_without_dynamic_floor_and_raise_releases_retry() {
         let root = temporary_root("persisted-hard-limit");
-        let file = std::fs::File::create(root.join("C.mft.sqlite3")).unwrap();
+        let file = fs::File::create(root.join("C.mft.sqlite3")).unwrap();
         file.set_len(300 * 1024 * 1024).unwrap();
         drop(file);
         let live = Arc::new(Mutex::new(HashMap::new()));
@@ -5388,7 +4775,7 @@ mod tests {
         assert!(!state.persisted_prune_pending);
         assert!(!state.blocked_volumes.contains(&'C'));
         drop(state);
-        let _ = std::fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -5413,22 +4800,19 @@ mod tests {
             default_cache_budget_limits()
         );
         drop(mutation);
-        let _ = std::fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn replacement_recovery_preflight_accounts_for_consumed_paths_and_companions() {
         let root = temporary_root("replacement-recovery-budget");
         let canonical = root.join("C.mft.sqlite3");
-        std::fs::File::create(root.join("other.mft.sqlite3"))
+        fs::File::create(root.join("other.mft.sqlite3"))
             .unwrap()
             .set_len(252 * 1024 * 1024)
             .unwrap();
-        std::fs::File::create(&canonical)
-            .unwrap()
-            .set_len(1024)
-            .unwrap();
-        std::fs::File::create(mft_sqlite::MftSqliteStoreV1::replacement_backup_path(
+        fs::File::create(&canonical).unwrap().set_len(1024).unwrap();
+        fs::File::create(mft_sqlite::MftSqliteStoreV1::replacement_backup_path(
             &canonical,
         ))
         .unwrap()
@@ -5436,7 +4820,7 @@ mod tests {
         .unwrap();
         assert!(persisted_cache_bytes(&root) <= 256 * 1024 * 1024);
         assert!(replacement_recovery_projected_bytes(&root, &canonical) > 256 * 1024 * 1024);
-        let _ = std::fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -5460,48 +4844,7 @@ mod tests {
         assert_eq!(state.reserved_persisted_bytes, 0);
         assert!(!state.persisted_prune_pending);
         drop(state);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn persisted_pruning_atomically_replaces_index_and_preserves_unrelated_files() {
-        let root = temporary_root("persisted-prune");
-        let destination = root.join("C.semftidx");
-        let initial = root.join("C.initial.tmp");
-        mft_size_map::write_service_index(&initial, &fixture(4_096)).unwrap();
-        std::fs::rename(&initial, &destination).unwrap();
-        let unrelated = root.join("keep.txt");
-        std::fs::write(&unrelated, b"keep").unwrap();
-        std::fs::write(root.join("C.prune-interrupted.tmp"), b"incomplete").unwrap();
-
-        enforce_persisted_limit(&root, 32 * 1024).unwrap();
-
-        let metadata = std::fs::metadata(&destination).unwrap();
-        assert!(metadata.len() <= 32 * 1024);
-        assert!(persisted_incomplete_path(&root, 'C').is_file());
-        assert_eq!(std::fs::read(&unrelated).unwrap(), b"keep");
-        assert!(!root.join("C.prune-interrupted.tmp").exists());
-        assert!(
-            !mft_size_map::read_index(&destination)
-                .unwrap()
-                .entries
-                .is_empty()
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn one_oversized_persisted_record_is_retained_and_marked_partial() {
-        let root = temporary_root("persisted-oversized");
-        let destination = root.join("D.semftidx");
-        let initial = root.join("D.initial.tmp");
-        mft_size_map::write_service_index(&initial, &fixture(2)).unwrap();
-        std::fs::rename(&initial, &destination).unwrap();
-        enforce_persisted_limit(&root, 1).unwrap();
-        let recovered = mft_size_map::read_index(&destination).unwrap();
-        assert_eq!(recovered.entries.len(), 1);
-        assert!(persisted_incomplete_path(&root, 'D').is_file());
-        let _ = std::fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -5517,12 +4860,6 @@ mod tests {
             CachedFolderAggregateVolumeV1 {
                 index,
                 aggregates,
-                checkpoint: mft_journal::MftCheckpointV2::new(
-                    mft_journal::VolumeIdentityV2 { serial: 1 },
-                    2,
-                    3,
-                    4,
-                ),
                 estimated_bytes: memory
                     .volume_index_bytes
                     .saturating_add(memory.file_data_bytes)
@@ -5573,7 +4910,7 @@ mod tests {
             cache.results.is_empty(),
             "stale partial results must be discarded"
         );
-        let _ = std::fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -5650,68 +4987,6 @@ mod tests {
     }
 
     #[test]
-    fn live_query_uses_observed_generation_and_rejects_inexact_rebuild() {
-        let cursor = mft_persistence::JournalCursorV1 {
-            journal_id: 2,
-            next_usn: 3,
-            generation: 4,
-        };
-        let live = Arc::new(Mutex::new(HashMap::from([(
-            'C',
-            mft_runtime::VolumeMemoryRuntimeV1::new(fixture(4), cursor),
-        )])));
-        let budgets = Arc::new(Mutex::new(LiveBudgetStateV1::default()));
-        let mut cache = ServiceFolderAggregateCacheV1::default();
-        let exact = cache
-            .query_live(
-                &live,
-                &budgets,
-                std::path::Path::new("."),
-                std::path::Path::new("Z:\\"),
-                None,
-                'C',
-                1,
-                128,
-            )
-            .unwrap();
-        assert_eq!(exact.generation, 4);
-        assert!(!exact.partial);
-        assert!(cache.live_aggregates.is_empty());
-        let second = cache
-            .query_live(
-                &live,
-                &budgets,
-                std::path::Path::new("."),
-                std::path::Path::new("Z:\\"),
-                None,
-                'C',
-                2,
-                128,
-            )
-            .unwrap();
-        assert!(!second.partial);
-        assert!(cache.live_aggregates.is_empty());
-        assert_eq!(cache.results.len(), 2);
-        live.lock().unwrap().get_mut(&'C').unwrap().mark_inexact();
-        let unavailable = cache
-            .query_live(
-                &live,
-                &budgets,
-                std::path::Path::new("."),
-                std::path::Path::new("Z:\\"),
-                None,
-                'C',
-                1,
-                128,
-            )
-            .unwrap_err();
-        assert!(unavailable.contains("volume index is incomplete"));
-        assert!(cache.live_aggregates.is_empty());
-        assert!(cache.results.values().all(|(value, _)| !value.partial));
-        assert_eq!(cache.limit_bytes, 128 * 1024 * 1024);
-    }
-
-    #[test]
     fn shared_service_rejects_partial_values_with_cursor_diagnostics() {
         let observed = mft_persistence::JournalCursorV1 {
             journal_id: 11,
@@ -5745,61 +5020,9 @@ mod tests {
     }
 
     #[test]
-    fn exact_large_folder_builds_one_memory_aggregate_instead_of_partial_zero() {
-        STOPPED.store(false, Ordering::Release);
-        let cursor = mft_persistence::JournalCursorV1 {
-            journal_id: 2,
-            next_usn: 3,
-            generation: 4,
-        };
-        let entries = QUERY_FALLBACK_MAX_ENTRIES as u64 + 2;
-        let live = Arc::new(Mutex::new(HashMap::from([(
-            'C',
-            mft_runtime::VolumeMemoryRuntimeV1::new(fixture(entries), cursor),
-        )])));
-        let budgets = Arc::new(Mutex::new(LiveBudgetStateV1::default()));
-        let mut cache = ServiceFolderAggregateCacheV1::default();
-
-        let root = cache
-            .query_live(
-                &live,
-                &budgets,
-                std::path::Path::new("."),
-                std::path::Path::new("Z:\\"),
-                None,
-                'C',
-                1,
-                128,
-            )
-            .unwrap();
-
-        assert!(!root.partial);
-        assert_eq!(root.logical_bytes, entries * (entries + 1) / 2 - 1);
-        assert_eq!(root.file_count, entries - 1);
-        assert_eq!(root.directory_count, 1);
-        assert!(cache.live_aggregates.contains_key(&'C'));
-
-        let child = cache
-            .query_live(
-                &live,
-                &budgets,
-                std::path::Path::new("."),
-                std::path::Path::new("Z:\\"),
-                None,
-                'C',
-                entries,
-                128,
-            )
-            .unwrap();
-        assert!(!child.partial);
-        assert_eq!(child.logical_bytes, entries);
-        assert_eq!(child.file_count, 1);
-    }
-
-    #[test]
     #[ignore = "requires an elevated real NTFS volume and installed canonical cache"]
     fn real_canonical_store_fits_live_budgets_and_catches_up() {
-        let root = std::path::PathBuf::from(
+        let root = PathBuf::from(
             std::env::var_os("SUPEREXPLORER_REAL_MFT_VOLUME")
                 .unwrap_or_else(|| std::ffi::OsString::from(r"D:\")),
         );
@@ -5809,7 +5032,7 @@ mod tests {
             .next()
             .unwrap()
             .to_ascii_uppercase();
-        let cache = std::path::PathBuf::from(
+        let cache = PathBuf::from(
             std::env::var_os("ProgramData").unwrap_or_else(|| r"C:\ProgramData".into()),
         )
         .join("SuperExplorer")
