@@ -44,7 +44,6 @@ pub struct BookmarkEditorWindow {
     snapshot: BookmarkEditorWindowSnapshotV1,
     name_input: gpui::Entity<EditableTextState>,
     payload_input: gpui::Entity<EditableTextState>,
-    payload_editable: bool,
     focus_handle: FocusHandle,
     was_active: bool,
 }
@@ -67,17 +66,7 @@ impl BookmarkEditorWindow {
             .bookmark_editor()
             .cloned()
             .expect("bookmark editor snapshot requires a draft");
-        let payload_editable = matches!(
-            editor.target,
-            explorer_model::BookmarkTarget::LuaScript { .. }
-        );
-        let payload = match editor.target {
-            explorer_model::BookmarkTarget::Folder { location }
-            | explorer_model::BookmarkTarget::File { location } => location
-                .path()
-                .map_or_else(String::new, |path| path.to_string_lossy().into_owned()),
-            explorer_model::BookmarkTarget::LuaScript { source } => source,
-        };
+        let payload = editor.target.editable_payload();
         let name_input = cx.new(|cx| EditableTextState::new(StringStorage::from(editor.name), cx));
         let payload_input = cx.new(|cx| EditableTextState::new(StringStorage::from(payload), cx));
         let close_owner = owner;
@@ -100,7 +89,6 @@ impl BookmarkEditorWindow {
             snapshot,
             name_input,
             payload_input,
-            payload_editable,
             focus_handle,
             was_active: false,
         }
@@ -117,8 +105,7 @@ impl BookmarkEditorWindow {
         let input_values = (action == ExplorerAction::SaveBookmarkEditor).then(|| {
             (
                 self.name_input.read(cx).as_str().to_owned(),
-                self.payload_editable
-                    .then(|| self.payload_input.read(cx).as_str().to_owned()),
+                Some(self.payload_input.read(cx).as_str().to_owned()),
             )
         });
         match owner.update(cx, |root, owner_window, cx| {
@@ -189,8 +176,7 @@ impl Render for BookmarkEditorWindow {
                 self.tokens,
                 &self.snapshot.state,
                 Some(gpui::Entity::downgrade(&self.name_input)),
-                self.payload_editable
-                    .then(|| gpui::Entity::downgrade(&self.payload_input)),
+                Some(gpui::Entity::downgrade(&self.payload_input)),
                 Some(on_action),
             ))
     }
@@ -215,5 +201,6 @@ mod tests {
         assert!(source.contains("chrome::bookmark_editor("));
         assert!(source.contains("CancelBookmarkEditor"));
         assert!(source.contains("window.remove_window()"));
+        assert!(source.contains("editor.target.editable_payload()"));
     }
 }

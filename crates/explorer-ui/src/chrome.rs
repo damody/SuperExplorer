@@ -39,7 +39,7 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::{
     UiTokens,
-    actions::{ExplorerAction, NavigationHistoryDirection},
+    actions::{BookmarkPathKind, ExplorerAction, NavigationHistoryDirection},
     diagnostics::{TypographyObservation, region_probe, typography_probe},
     extension_commands::{ExifRenamePreset, ExtensionCommandPanel},
     focus::FocusSurface,
@@ -679,13 +679,6 @@ impl RenderOnce for ExplorerWindow {
                 folder_size_backend_status,
                 self.on_action.clone(),
             ))
-            .when(self.state.bookmark_manager_open(), |element| {
-                element.child(bookmark_manager(
-                    self.tokens,
-                    &self.state,
-                    self.on_action.clone(),
-                ))
-            })
             .when_some(self.state.bookmark_context_menu(), |element, menu| {
                 element.child(bookmark_context_menu(
                     self.tokens,
@@ -696,6 +689,18 @@ impl RenderOnce for ExplorerWindow {
                     self.on_action.clone(),
                 ))
             })
+            .when_some(
+                self.state.bookmark_toolbar_context_menu(),
+                |element, menu| {
+                    element.child(bookmark_toolbar_context_menu(
+                        self.tokens,
+                        menu,
+                        f32::from(window.bounds().size.width),
+                        f32::from(window.bounds().size.height),
+                        self.on_action.clone(),
+                    ))
+                },
+            )
             .when_some(self.state.remote_context_menu(), |element, menu| {
                 element.child(remote_context_menu(
                     self.tokens,
@@ -805,6 +810,7 @@ fn bookmark_bar(
         .cloned()
         .collect::<Vec<_>>();
     let overflow = overflow_entries.len();
+    let toolbar_context_cb = callback.clone();
     div()
         .id("bookmark-toolbar")
         .debug_selector(|| "bookmark-toolbar".to_owned())
@@ -818,6 +824,21 @@ fn bookmark_bar(
         .border_b(px(tokens.layout.focus_stroke.value()))
         .border_color(tokens.theme.colors.divider.to_gpui())
         .bg(tokens.theme.colors.surface.to_gpui())
+        .when_some(toolbar_context_cb, |element, cb| {
+            element
+                .on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                    cb(
+                        &ExplorerAction::OpenBookmarkToolbarContextMenu {
+                            parent_id: None,
+                            x: f32::from(event.position.x),
+                            y: f32::from(event.position.y),
+                        },
+                        window,
+                        cx,
+                    );
+                })
+                .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+        })
         .child({
             let current_folder = state.current_folder_bookmark_target_and_id();
             let enabled = current_folder.is_some();
@@ -857,6 +878,8 @@ fn bookmark_bar(
         .children(root_folders.into_iter().map(|folder| {
             let action = ExplorerAction::ToggleBookmarkFolderMenu { id: folder.id };
             let callback = callback.clone();
+            let context_callback = callback.clone();
+            let folder_id = folder.id;
             div()
                 .id(("bookmark-folder", folder.id.as_u128() as u64))
                 .role(Role::Button)
@@ -870,12 +893,29 @@ fn bookmark_bar(
                 .when_some(callback, move |element, callback| {
                     element.on_click(move |_, window, cx| callback(&action, window, cx))
                 })
+                .when_some(context_callback, move |element, cb| {
+                    element.on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                        cx.stop_propagation();
+                        cb(
+                            &ExplorerAction::OpenBookmarkToolbarContextMenu {
+                                parent_id: Some(folder_id),
+                                x: f32::from(event.position.x),
+                                y: f32::from(event.position.y),
+                            },
+                            window,
+                            cx,
+                        );
+                    })
+                })
+                .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
         }))
         .children(visible.into_iter().map(|bookmark| {
             let id = bookmark.id;
             let icon = match bookmark.target {
-                explorer_model::BookmarkTarget::Folder { .. } => "📁",
-                explorer_model::BookmarkTarget::File { .. } => "📄",
+                explorer_model::BookmarkTarget::Folder { .. }
+                | explorer_model::BookmarkTarget::FolderPath { .. } => "📁",
+                explorer_model::BookmarkTarget::File { .. }
+                | explorer_model::BookmarkTarget::FilePath { .. } => "📄",
                 explorer_model::BookmarkTarget::LuaScript { .. } => "⚡",
             };
             let parent = bookmark
@@ -977,8 +1017,10 @@ fn bookmark_bar(
                         .children(overflow_entries.into_iter().map(|bookmark| {
                             let id = bookmark.id;
                             let icon = match bookmark.target {
-                                explorer_model::BookmarkTarget::Folder { .. } => "📁",
-                                explorer_model::BookmarkTarget::File { .. } => "📄",
+                                explorer_model::BookmarkTarget::Folder { .. }
+                                | explorer_model::BookmarkTarget::FolderPath { .. } => "📁",
+                                explorer_model::BookmarkTarget::File { .. }
+                                | explorer_model::BookmarkTarget::FilePath { .. } => "📄",
                                 explorer_model::BookmarkTarget::LuaScript { .. } => "⚡",
                             };
                             let action = ExplorerAction::ActivateBookmark { id };
@@ -1161,7 +1203,7 @@ fn bookmark_visible_count(entry_count: usize, width: f32) -> usize {
     entry_count.min(((width - 120.0) / 150.0).floor().max(1.0) as usize)
 }
 
-fn bookmark_manager(
+pub(crate) fn bookmark_manager(
     tokens: UiTokens,
     state: &AppViewState,
     callback: Option<ActionCallback>,
@@ -1175,9 +1217,14 @@ fn bookmark_manager(
             let add_child = ExplorerAction::AddBookmarkFolder {
                 parent_id: Some(folder.id),
             };
+            let add_path = ExplorerAction::AddPathBookmark {
+                parent_id: Some(folder.id),
+                kind: BookmarkPathKind::Folder,
+            };
             let edit = ExplorerAction::EditBookmarkFolder { id: folder.id };
             let remove = ExplorerAction::RemoveBookmarkFolder { id: folder.id };
             let add_cb = callback.clone();
+            let add_path_cb = callback.clone();
             let edit_cb = callback.clone();
             let remove_cb = callback.clone();
             let parent = folder
@@ -1201,6 +1248,16 @@ fn bookmark_manager(
                         .child("重新命名")
                         .when_some(edit_cb, move |element, cb| {
                             element.on_click(move |_, window, cx| cb(&edit, window, cx))
+                        }),
+                )
+                .child(
+                    div()
+                        .id(("bookmark-folder-add-path", folder.id.as_u128() as u64))
+                        .role(Role::Button)
+                        .cursor_pointer()
+                        .child("新增路徑書籤")
+                        .when_some(add_path_cb, move |element, cb| {
+                            element.on_click(move |_, window, cx| cb(&add_path, window, cx))
                         }),
                 )
                 .child(
@@ -1239,8 +1296,10 @@ fn bookmark_manager(
                 .unwrap_or(0);
             let sibling_count = state.bookmarks().child_entries(bookmark.parent_id).count();
             let icon = match bookmark.target {
-                explorer_model::BookmarkTarget::Folder { .. } => "📁",
-                explorer_model::BookmarkTarget::File { .. } => "📄",
+                explorer_model::BookmarkTarget::Folder { .. }
+                | explorer_model::BookmarkTarget::FolderPath { .. } => "📁",
+                explorer_model::BookmarkTarget::File { .. }
+                | explorer_model::BookmarkTarget::FilePath { .. } => "📄",
                 explorer_model::BookmarkTarget::LuaScript { .. } => "⚡",
             };
             let id = bookmark.id;
@@ -1356,22 +1415,21 @@ fn bookmark_manager(
     let close = ExplorerAction::ToggleBookmarkManager;
     let add_root = ExplorerAction::AddBookmarkFolder { parent_id: None };
     let add_root_cb = callback.clone();
+    let add_path_root = ExplorerAction::AddPathBookmark {
+        parent_id: None,
+        kind: BookmarkPathKind::Folder,
+    };
+    let add_path_root_cb = callback.clone();
     div()
-        .id("bookmark-manager-overlay")
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(tokens.theme.colors.subtle_surface.to_gpui())
+        .id("bookmark-manager-content")
+        .size_full()
+        .overflow_y_scroll()
+        .p(px(18.0))
+        .bg(tokens.theme.colors.surface.to_gpui())
         .child(
             div()
                 .id("bookmark-manager")
-                .w(px(520.0))
-                .max_h(px(520.0))
-                .overflow_y_scroll()
-                .p(px(18.0))
-                .rounded(px(8.0))
+                .w_full()
                 .bg(tokens.theme.colors.surface.to_gpui())
                 .child(
                     div()
@@ -1387,6 +1445,17 @@ fn bookmark_manager(
                                 .child("新增資料夾")
                                 .when_some(add_root_cb, move |e, cb| {
                                     e.on_click(move |_, w, cx| cb(&add_root, w, cx))
+                                }),
+                        )
+                        .child(
+                            div()
+                                .id("bookmark-path-add-root")
+                                .role(Role::Button)
+                                .aria_label("Add path bookmark")
+                                .cursor_pointer()
+                                .child("新增路徑書籤")
+                                .when_some(add_path_root_cb, move |e, cb| {
+                                    e.on_click(move |_, w, cx| cb(&add_path_root, w, cx))
                                 }),
                         )
                         .child(
@@ -1427,8 +1496,10 @@ fn bookmark_context_menu(
     let rows = bookmark.into_iter().flat_map(|bookmark| {
         let id = bookmark.id;
         let primary_label = match bookmark.target {
-            explorer_model::BookmarkTarget::Folder { .. } => "在目前分頁開啟",
-            explorer_model::BookmarkTarget::File { .. } => "開啟檔案",
+            explorer_model::BookmarkTarget::Folder { .. }
+            | explorer_model::BookmarkTarget::FolderPath { .. } => "在目前分頁開啟",
+            explorer_model::BookmarkTarget::File { .. }
+            | explorer_model::BookmarkTarget::FilePath { .. } => "開啟檔案",
             explorer_model::BookmarkTarget::LuaScript { .. } => "執行 Lua 指令",
         };
         let mut commands = vec![(
@@ -1439,6 +1510,7 @@ fn bookmark_context_menu(
         if matches!(
             bookmark.target,
             explorer_model::BookmarkTarget::Folder { .. }
+                | explorer_model::BookmarkTarget::FolderPath { .. }
         ) {
             commands.push((
                 "在新分頁開啟",
@@ -1516,6 +1588,120 @@ fn bookmark_context_menu(
         )
 }
 
+fn bookmark_toolbar_context_menu(
+    tokens: UiTokens,
+    menu: crate::state::BookmarkToolbarContextMenuState,
+    window_width: f32,
+    window_height: f32,
+    callback: Option<ActionCallback>,
+) -> impl IntoElement {
+    let close = ExplorerAction::CloseBookmarkToolbarContextMenu;
+    let close_cb = callback.clone();
+    let close_right = close.clone();
+    let close_right_cb = callback.clone();
+    let mut commands = vec![
+        (
+            "新增資料夾",
+            ExplorerAction::AddBookmarkFolder {
+                parent_id: menu.parent_id,
+            },
+            false,
+        ),
+        (
+            "新增資料夾路徑書籤…",
+            ExplorerAction::AddPathBookmark {
+                parent_id: menu.parent_id,
+                kind: BookmarkPathKind::Folder,
+            },
+            false,
+        ),
+        (
+            "新增檔案路徑書籤…",
+            ExplorerAction::AddPathBookmark {
+                parent_id: menu.parent_id,
+                kind: BookmarkPathKind::File,
+            },
+            false,
+        ),
+        ("書籤管理員…", ExplorerAction::ToggleBookmarkManager, false),
+    ];
+    if let Some(id) = menu.parent_id {
+        commands.extend([
+            (
+                "重新命名資料夾…",
+                ExplorerAction::EditBookmarkFolder { id },
+                false,
+            ),
+            (
+                "刪除資料夾",
+                ExplorerAction::RemoveBookmarkFolder { id },
+                true,
+            ),
+        ]);
+    }
+    let rows = commands
+        .into_iter()
+        .enumerate()
+        .map(|(index, (label, action, danger))| {
+            let callback = callback.clone();
+            div()
+                .id(format!("bookmark-toolbar-context-command-{index}"))
+                .role(Role::MenuItem)
+                .aria_label(label)
+                .cursor_pointer()
+                .px(px(12.0))
+                .py(px(7.0))
+                .rounded(px(4.0))
+                .text_color(if danger {
+                    tokens.theme.colors.danger.to_gpui()
+                } else {
+                    tokens.theme.colors.text_primary.to_gpui()
+                })
+                .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
+                .child(label)
+                .when_some(callback, move |element, cb| {
+                    element.on_click(move |_, window, cx| cb(&action, window, cx))
+                })
+        });
+    let left = menu.x.min((window_width - 260.0).max(0.0));
+    let top = menu.y.min((window_height - 300.0).max(0.0));
+    div()
+        .id("bookmark-toolbar-context-overlay")
+        .absolute()
+        .inset_0()
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            if let Some(cb) = close_cb.as_ref() {
+                cb(&close, window, cx);
+            }
+        })
+        .on_mouse_down(MouseButton::Right, move |_, window, cx| {
+            if let Some(cb) = close_right_cb.as_ref() {
+                cb(&close_right, window, cx);
+            }
+        })
+        .child(
+            deferred(
+                div()
+                    .id("bookmark-toolbar-context-menu")
+                    .role(Role::Menu)
+                    .aria_label("Bookmark toolbar context menu")
+                    .absolute()
+                    .left(px(left))
+                    .top(px(top))
+                    .min_w(px(252.0))
+                    .p(px(6.0))
+                    .rounded(px(6.0))
+                    .border(px(1.0))
+                    .border_color(tokens.theme.colors.divider.to_gpui())
+                    .bg(tokens.theme.colors.menu_fill.to_gpui())
+                    .shadow_lg()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .children(rows),
+            )
+            .with_priority(310),
+        )
+}
+
 fn remote_context_menu(
     tokens: UiTokens,
     menu: crate::state::RemoteContextMenuState,
@@ -1523,7 +1709,7 @@ fn remote_context_menu(
     window_height: f32,
     callback: Option<ActionCallback>,
 ) -> impl IntoElement {
-    let close = ExplorerAction::CloseBookmarkContextMenu;
+    let close = ExplorerAction::CloseRemoteContextMenu;
     let close_cb = callback.clone();
     let close_right = close.clone();
     let close_right_cb = callback.clone();
@@ -1565,8 +1751,7 @@ fn remote_context_menu(
                     element.on_click(move |_, window, cx| cb(&action, window, cx))
                 })
         });
-    let left = menu.x.min((window_width - 220.0).max(0.0));
-    let top = menu.y.min((window_height - 230.0).max(0.0));
+    let (left, top) = remote_context_menu_position(menu.x, menu.y, window_width, window_height);
     div()
         .id("remote-context-overlay")
         .absolute()
@@ -1604,6 +1789,22 @@ fn remote_context_menu(
         )
 }
 
+fn remote_context_menu_position(
+    client_x: f32,
+    client_y: f32,
+    window_width: f32,
+    window_height: f32,
+) -> (f32, f32) {
+    const MENU_WIDTH: f32 = 226.0;
+    const MENU_MAX_HEIGHT: f32 = 230.0;
+    (
+        client_x.max(0.0).min((window_width - MENU_WIDTH).max(0.0)),
+        client_y
+            .max(0.0)
+            .min((window_height - MENU_MAX_HEIGHT).max(0.0)),
+    )
+}
+
 pub(crate) fn bookmark_editor(
     tokens: UiTokens,
     state: &AppViewState,
@@ -1615,24 +1816,14 @@ pub(crate) fn bookmark_editor(
     let colors = tokens.theme.colors;
     let (input_text, input_selection, input_selection_text, input_caret) =
         editable_input_colors(tokens);
-    let (payload_label, read_only_payload) = match &editor.target {
+    let payload_label = match &editor.target {
         explorer_model::BookmarkTarget::LuaScript { .. } => {
-            ("Lua 原始碼（僅可使用唯讀 current_folder）", None)
+            "Lua 原始碼（僅可使用唯讀 current_folder）"
         }
-        explorer_model::BookmarkTarget::Folder { location } => (
-            "資料夾路徑（唯讀）",
-            Some(location.path().map_or_else(
-                || location.to_string(),
-                |path| path.to_string_lossy().into_owned(),
-            )),
-        ),
-        explorer_model::BookmarkTarget::File { location } => (
-            "檔案路徑（唯讀）",
-            Some(location.path().map_or_else(
-                || location.to_string(),
-                |path| path.to_string_lossy().into_owned(),
-            )),
-        ),
+        explorer_model::BookmarkTarget::Folder { .. }
+        | explorer_model::BookmarkTarget::FolderPath { .. } => "資料夾路徑（可編輯）",
+        explorer_model::BookmarkTarget::File { .. }
+        | explorer_model::BookmarkTarget::FilePath { .. } => "檔案路徑（可編輯）",
     };
     let save = ExplorerAction::SaveBookmarkEditor;
     let cancel = ExplorerAction::CancelBookmarkEditor;
@@ -1721,25 +1912,6 @@ pub(crate) fn bookmark_editor(
                     )
                 })
                 .child(payload_label)
-                .when_some(read_only_payload, |e, path| {
-                    e.child(
-                        div()
-                            .id("bookmark-read-only-target")
-                            .role(Role::Label)
-                            .aria_label(format!("Read-only bookmark target: {path}"))
-                            .w_full()
-                            .min_h(px(34.0))
-                            .px(px(8.0))
-                            .py(px(7.0))
-                            .rounded(px(4.0))
-                            .border(px(1.0))
-                            .border_color(colors.divider.to_gpui())
-                            .bg(colors.control_fill.to_gpui())
-                            .text_color(colors.text_secondary.to_gpui())
-                            .overflow_hidden()
-                            .child(path),
-                    )
-                })
                 .when_some(payload_input, |e, input| {
                     e.child(
                         text_input("bookmark-payload-input")
@@ -1823,7 +1995,7 @@ pub(crate) fn bookmark_editor(
         )
 }
 
-fn bookmark_folder_delete_dialog(
+pub(crate) fn bookmark_folder_delete_dialog(
     tokens: UiTokens,
     descendant_count: usize,
     callback: Option<ActionCallback>,
@@ -1889,7 +2061,7 @@ fn bookmark_folder_delete_dialog(
         )
 }
 
-fn bookmark_folder_editor(
+pub(crate) fn bookmark_folder_editor(
     tokens: UiTokens,
     input: Option<gpui::WeakEntity<EditableTextState>>,
     callback: Option<ActionCallback>,
@@ -3211,203 +3383,6 @@ fn cache_budget_usage_text(
         ),
         _ => format!("\u{2014} / {formatted_limit}"),
     }
-}
-
-fn cache_usage_section(
-    tokens: UiTokens,
-    usage: crate::folder_options_window::CacheUsageSnapshotV1,
-) -> impl IntoElement {
-    let subtotal = |values: &[Option<u64>]| {
-        let partial = values.iter().any(Option::is_none);
-        let bytes = values
-            .iter()
-            .flatten()
-            .copied()
-            .fold(0_u64, u64::saturating_add);
-        (bytes, partial)
-    };
-    let bounded = |label: &'static str, used: u64, limit: u64| {
-        div().flex().justify_between().child(label).child(format!(
-            "{} / {}",
-            crate::formatting::format_file_size(used),
-            crate::formatting::format_file_size(limit)
-        ))
-    };
-    let disk = |label: &'static str, bytes: Option<u64>| {
-        div()
-            .flex()
-            .justify_between()
-            .child(label)
-            .child(bytes.map_or_else(
-                || "Unavailable".to_owned(),
-                crate::formatting::format_file_size,
-            ))
-    };
-    let (memory_total, memory_partial) = subtotal(&[
-        Some(usage.icon_memory_bytes),
-        Some(usage.base_icon_memory_bytes),
-        Some(usage.thumbnail_memory_bytes),
-        usage.extension_memory_bytes,
-    ]);
-    let (disk_total, disk_partial) = subtotal(&[
-        usage.icon_disk_bytes,
-        usage.thumbnail_disk_bytes,
-        usage.extension_disk_bytes,
-    ]);
-    let (gpu_total, gpu_partial) =
-        subtotal(&[Some(usage.icon_gpu_bytes), Some(usage.thumbnail_gpu_bytes)]);
-    div()
-        .id("folder-options-cache-usage")
-        .role(Role::Group)
-        .aria_label("Cache usage")
-        .flex()
-        .flex_col()
-        .gap(px(tokens.layout.content_spacing.value()))
-        .child("Cache usage (updates every second)")
-        .child("Memory")
-        .child(bounded(
-            "Icon",
-            usage.icon_memory_bytes,
-            usage.icon_memory_limit,
-        ))
-        .child(bounded(
-            "Shared/base icon",
-            usage.base_icon_memory_bytes,
-            usage.base_icon_memory_limit,
-        ))
-        .child(bounded(
-            "Thumbnail",
-            usage.thumbnail_memory_bytes,
-            usage.thumbnail_memory_limit,
-        ))
-        .child(disk(
-            "Extension data-column memory",
-            usage.extension_memory_bytes,
-        ))
-        .child(disk(
-            if memory_partial {
-                "Memory subtotal (partial)"
-            } else {
-                "Memory subtotal"
-            },
-            Some(memory_total),
-        ))
-        .child(format!(
-            "GPU (BC7): {}",
-            match usage.bc7_gpu_supported {
-                Some(true) => "Available",
-                Some(false) => "Unavailable",
-                None => "Detecting",
-            }
-        ))
-        .child(format!(
-            "Icon BC7 rollout: {}",
-            if usage.icon_bc7_enabled {
-                "Enabled"
-            } else {
-                "Disabled"
-            }
-        ))
-        .child(format!(
-            "Thumbnail BC7 rollout: {}",
-            if usage.thumbnail_bc7_enabled {
-                "Enabled"
-            } else {
-                "Disabled"
-            }
-        ))
-        .child(format!(
-            "BC7 pipeline: {} active, {} / {} staging, {} encodes, {} errors",
-            usage.bc7_active_encoders.unwrap_or(0),
-            crate::formatting::format_file_size(usage.bc7_active_staging_bytes.unwrap_or(0)),
-            crate::formatting::format_file_size(usage.bc7_staging_limit_bytes.unwrap_or(0)),
-            usage.bc7_encode_count.unwrap_or(0),
-            usage.bc7_encode_errors.unwrap_or(0),
-        ))
-        .child(format!(
-            "BC7 jobs: {} / {} queued, {} / {} active, {} reserved; {} completed, {} duplicate, {} cancelled, {} stale, {} fallback, {} persistence errors",
-            usage.bc7_queued_jobs.unwrap_or(0),
-            usage.bc7_queue_limit.unwrap_or(0),
-            usage.bc7_active_jobs.unwrap_or(0),
-            usage.bc7_concurrency_limit.unwrap_or(0),
-            crate::formatting::format_file_size(usage.bc7_reserved_staging_bytes.unwrap_or(0)),
-            usage.bc7_completed_jobs.unwrap_or(0),
-            usage.bc7_duplicate_jobs.unwrap_or(0),
-            usage.bc7_cancelled_jobs.unwrap_or(0),
-            usage.bc7_stale_jobs.unwrap_or(0),
-            usage.bc7_fallbacks.unwrap_or(0),
-            usage.bc7_persist_errors.unwrap_or(0),
-        ))
-        .child(format!(
-            "BC7 GPU: icon {} uploads / {} evictions; thumbnail {} uploads / {} evictions",
-            usage.icon_gpu_uploads.unwrap_or(0),
-            usage.icon_gpu_evictions.unwrap_or(0),
-            usage.thumbnail_gpu_uploads.unwrap_or(0),
-            usage.thumbnail_gpu_evictions.unwrap_or(0),
-        ))
-        .child(bounded(
-            "Icon GPU",
-            usage.icon_gpu_bytes,
-            usage.icon_gpu_limit,
-        ))
-        .child(bounded(
-            "Thumbnail GPU",
-            usage.thumbnail_gpu_bytes,
-            usage.thumbnail_gpu_limit,
-        ))
-        .child(disk(
-            if gpu_partial {
-                "GPU subtotal (partial)"
-            } else {
-                "GPU subtotal"
-            },
-            Some(gpu_total),
-        ))
-        .child("Disk")
-        .child(disk("Icon BC7", usage.icon_disk_bytes))
-        .child(disk("Thumbnail BC7", usage.thumbnail_disk_bytes))
-        .child(disk("Extension data-column", usage.extension_disk_bytes))
-        .child(disk(
-            if disk_partial {
-                "Disk subtotal (partial)"
-            } else {
-                "Disk subtotal"
-            },
-            Some(disk_total),
-        ))
-        .child("MFT Service")
-        .child(disk("Persisted index", usage.mft_disk_bytes))
-        .child(disk(
-            "Volume index memory",
-            usage.mft_volume_index_memory_bytes,
-        ))
-        .child(disk("File data memory", usage.mft_file_data_memory_bytes))
-        .child(disk(
-            "Folder aggregates memory",
-            usage.mft_aggregate_memory_bytes,
-        ))
-        .child(match (usage.mft_service_bytes, usage.mft_service_limit) {
-            (Some(used), Some(limit)) => bounded("Service LRU", used, limit).into_any_element(),
-            _ => disk("Service LRU", None).into_any_element(),
-        })
-        .child(
-            div()
-                .flex()
-                .justify_between()
-                .child("Service entries / hits / misses")
-                .child(
-                    match (
-                        usage.mft_service_entries,
-                        usage.mft_service_hits,
-                        usage.mft_service_misses,
-                    ) {
-                        (Some(entries), Some(hits), Some(misses)) => {
-                            format!("{entries} / {hits} / {misses}")
-                        }
-                        _ => "Unavailable".to_owned(),
-                    },
-                ),
-        )
 }
 
 fn folder_option_checkbox(
@@ -7817,6 +7792,7 @@ impl RenderOnce for FileViewHost {
         let row_visual_column_runtime = visual_column_runtime.clone();
         let row_code_lines_columns = code_lines_columns;
         let background_drop = on_action.clone();
+        let background_menu_action = on_action.clone();
         let zoom_action = on_action.clone();
         let rename_editor = self.rename_editor;
         let rename_input = self.rename_input;
@@ -7871,7 +7847,6 @@ impl RenderOnce for FileViewHost {
         let scroll_handle = self.scroll_handle;
         let marquee_scroll = scroll_handle.clone();
         let background_scroll = scroll_handle.clone();
-        let background_menu_scroll = scroll_handle.clone();
         let row_pointer_scroll = scroll_handle.clone();
         if view_settings.mode == explorer_model::ViewMode::Details
             && let Some(handle) = scroll_handle.as_ref()
@@ -7900,6 +7875,12 @@ impl RenderOnce for FileViewHost {
             .unwrap_or_else(|| {
                 explorer_file_viewport_height(window, self.tokens).max(spatial_metrics.cell_height)
             });
+        let background_menu_viewport_height = explorer_file_viewport_height(window, self.tokens);
+        let background_menu_header_height = if details_mode {
+            layout.details_header_height.value()
+        } else {
+            0.0
+        };
         let size_map_plan = if size_map_active {
             match (
                 size_map_runtime.as_ref(),
@@ -8106,7 +8087,6 @@ impl RenderOnce for FileViewHost {
             })
             .when_some(background_drop, |element, callback| {
                 let move_callback = callback.clone();
-                let menu_callback = callback.clone();
                 let marquee_begin = callback.clone();
                 let marquee_move = callback.clone();
                 let marquee_end = callback.clone();
@@ -8157,42 +8137,6 @@ impl RenderOnce for FileViewHost {
                                 top: f32::from(event.bounds.top()),
                                 bottom: f32::from(event.bounds.bottom()),
                                 effect,
-                            },
-                            window,
-                            cx,
-                        );
-                    })
-                    .on_mouse_up(MouseButton::Right, move |event, window, cx| {
-                        if background_menu_scroll
-                            .as_ref()
-                            .is_some_and(|handle| !handle.bounds().contains(&event.position))
-                        {
-                            cx.stop_propagation();
-                            return;
-                        }
-                        if f32::from(event.position.x) < file_origin_x
-                            || f32::from(event.position.y) < file_origin_y
-                        {
-                            // The file-view host can remain in the GPUI bubble path for chrome
-                            // gestures. Never turn a toolbar/navigation release into a folder
-                            // background context menu.
-                            cx.stop_propagation();
-                            return;
-                        }
-                        // Nested scroll/file-view hosts can both participate in GPUI bubbling.
-                        // Exactly one host owns a background secondary-button release, just as a
-                        // file row owns its item release, otherwise one physical gesture submits
-                        // duplicate background menu requests and cancels the first queued replay.
-                        cx.stop_propagation();
-                        let (owner_window, x, y) = context_menu_coordinates(event.position, window);
-                        menu_callback(
-                            &ExplorerAction::ShowContextMenu {
-                                item_id: None,
-                                owner_window,
-                                x,
-                                y,
-                                keyboard_invoked: false,
-                                extended_verbs: event.modifiers.shift,
                             },
                             window,
                             cx,
@@ -8792,6 +8736,8 @@ impl RenderOnce for FileViewHost {
                                         owner_window,
                                         x,
                                         y,
+                                        client_x: f32::from(event.position.x),
+                                        client_y: f32::from(event.position.y),
                                         keyboard_invoked: false,
                                         extended_verbs: event.modifiers.shift,
                                     },
@@ -8815,6 +8761,8 @@ impl RenderOnce for FileViewHost {
                                         owner_window,
                                         x,
                                         y,
+                                        client_x: f32::from(event.position.x),
+                                        client_y: f32::from(event.position.y),
                                         keyboard_invoked: false,
                                         extended_verbs: event.modifiers.shift,
                                     },
@@ -9316,6 +9264,40 @@ impl RenderOnce for FileViewHost {
             .flex()
             .flex_col()
             .overflow_hidden()
+            .when_some(background_menu_action, |element, menu_callback| {
+                element.on_mouse_up(MouseButton::Right, move |event, window, cx| {
+                    if !file_view_background_context_hit(
+                        f32::from(event.position.x),
+                        f32::from(event.position.y),
+                        file_origin_x,
+                        file_origin_y,
+                        viewport_width,
+                        background_menu_viewport_height,
+                        background_menu_header_height,
+                    ) {
+                        return;
+                    }
+                    // Row handlers stop propagation first. Reaching this viewport owner therefore
+                    // means the invocation belongs to the directory background, including blank
+                    // space below a short scroll-content element.
+                    cx.stop_propagation();
+                    let (owner_window, x, y) = context_menu_coordinates(event.position, window);
+                    menu_callback(
+                        &ExplorerAction::ShowContextMenu {
+                            item_id: None,
+                            owner_window,
+                            x,
+                            y,
+                            client_x: f32::from(event.position.x),
+                            client_y: f32::from(event.position.y),
+                            keyboard_invoked: false,
+                            extended_verbs: event.modifiers.shift,
+                        },
+                        window,
+                        cx,
+                    );
+                })
+            })
             .child(scroll_content)
             .when_some(size_map_plan, |element, (plan, indexes, selected)| {
                 element.child(size_map_surface(
@@ -9410,6 +9392,22 @@ impl RenderOnce for FileViewHost {
         }
         rendered
     }
+}
+
+fn file_view_background_context_hit(
+    x: f32,
+    y: f32,
+    origin_x: f32,
+    origin_y: f32,
+    viewport_width: f32,
+    viewport_height: f32,
+    header_height: f32,
+) -> bool {
+    let content_top = origin_y + header_height.max(0.0);
+    x >= origin_x
+        && x <= origin_x + viewport_width.max(0.0)
+        && y >= content_top
+        && y <= origin_y + viewport_height.max(0.0)
 }
 
 fn format_explorer_size(bytes: u64) -> String {
@@ -9739,10 +9737,6 @@ fn view_icon_size(
     }
 }
 
-pub(crate) fn view_item_width(settings: &explorer_model::ViewSettings) -> f32 {
-    view_item_width_with_registry(settings, &explorer_model::ColumnRegistry::built_ins())
-}
-
 pub(crate) fn view_item_width_with_registry(
     settings: &explorer_model::ViewSettings,
     registry: &explorer_model::ColumnRegistry,
@@ -9764,13 +9758,6 @@ pub(crate) fn view_item_width_with_registry(
             .sum(),
         explorer_model::ViewMode::Tiles => 280.0,
     }
-}
-
-pub(crate) fn details_horizontal_maximum(
-    settings: &explorer_model::ViewSettings,
-    viewport_width: f32,
-) -> f32 {
-    (view_item_width(settings) - viewport_width.max(0.0)).max(0.0)
 }
 
 pub(crate) fn details_horizontal_maximum_with_registry(
@@ -11492,7 +11479,7 @@ impl RenderOnce for StatusBar {
                 DirectoryState::Idle | DirectoryState::Ready(_) => "",
             },
         };
-        let mut status = if presentation.selected_count > 0 {
+        let status = if presentation.selected_count > 0 {
             format!(
                 "{} items — {} selected",
                 presentation.item_count, presentation.selected_count
@@ -12751,14 +12738,70 @@ mod tests {
         TAB_STRIP_ID, WINDOW_CHROME_ID, WINDOW_DRAG_REGION_ID, admission_cell_presentation,
         breadcrumb_ancestry_partition, breadcrumb_location_shell_texture, builtin_count_display,
         client_to_screen_point, details_name_column_contains, editable_input_colors,
-        file_view_local_pointer, format_explorer_size, is_generic_breadcrumb_folder_icon_key,
-        localized_search_placeholder, marquee_content_rect, navigation_item_shell_texture,
-        navigation_shell_texture, new_tab_button_background, select_file_row_shell_icon,
-        tab_background,
+        file_view_background_context_hit, file_view_local_pointer, format_explorer_size,
+        is_generic_breadcrumb_folder_icon_key, localized_search_placeholder, marquee_content_rect,
+        navigation_item_shell_texture, navigation_shell_texture, new_tab_button_background,
+        remote_context_menu_position, select_file_row_shell_icon, tab_background,
     };
     use crate::{UiTokens, theme::ThemeTokens};
     use gpui::WindowControlArea;
     use std::cmp::Ordering;
+
+    #[test]
+    fn remote_context_menu_position_uses_client_anchor_and_clamps_to_window() {
+        assert_eq!(
+            remote_context_menu_position(120.0, 80.0, 1_200.0, 800.0),
+            (120.0, 80.0)
+        );
+        assert_eq!(
+            remote_context_menu_position(-10.0, -20.0, 1_200.0, 800.0),
+            (0.0, 0.0)
+        );
+        assert_eq!(
+            remote_context_menu_position(1_190.0, 790.0, 1_200.0, 800.0),
+            (974.0, 570.0)
+        );
+    }
+
+    #[test]
+    fn file_view_background_context_hit_includes_short_listing_empty_space() {
+        let origin_x = 240.0;
+        let origin_y = 120.0;
+        let width = 1_000.0;
+        let height = 700.0;
+        let header = 32.0;
+        assert!(file_view_background_context_hit(
+            600.0, 700.0, origin_x, origin_y, width, height, header
+        ));
+        assert!(!file_view_background_context_hit(
+            600.0, 140.0, origin_x, origin_y, width, height, header
+        ));
+        assert!(!file_view_background_context_hit(
+            200.0, 700.0, origin_x, origin_y, width, height, header
+        ));
+        assert!(!file_view_background_context_hit(
+            1_300.0, 700.0, origin_x, origin_y, width, height, header
+        ));
+        assert!(!file_view_background_context_hit(
+            600.0, 900.0, origin_x, origin_y, width, height, header
+        ));
+    }
+
+    #[test]
+    fn background_context_handler_is_owned_by_full_height_viewport() {
+        let source = include_str!("chrome.rs");
+        let viewport = source
+            .find("let rendered = div()")
+            .expect("full-height viewport render root");
+        let handler = source
+            .find(".when_some(background_menu_action")
+            .expect("background menu handler");
+        let content = source[handler..]
+            .find(".child(scroll_content)")
+            .map(|offset| handler + offset)
+            .expect("viewport owns scroll content");
+        assert!(viewport < handler && handler < content);
+    }
 
     #[test]
     fn file_row_shell_icon_selection_is_specific_first_and_container_safe() {
@@ -13557,6 +13600,7 @@ mod tests {
 
     #[test]
     fn details_horizontal_overflow_uses_the_sum_of_owned_column_widths() {
+        let registry = explorer_model::ColumnRegistry::built_ins();
         let mut settings = explorer_model::ViewSettings {
             mode: explorer_model::ViewMode::Details,
             ..explorer_model::ViewSettings::default()
@@ -13573,11 +13617,20 @@ mod tests {
         let _ = settings
             .details_layout
             .set_width(&explorer_model::ColumnId::Size, 300);
-        assert!((super::view_item_width(&settings) - 1_900.0).abs() < f32::EPSILON);
         assert!(
-            (super::details_horizontal_maximum(&settings, 1_200.0) - 700.0).abs() < f32::EPSILON
+            (super::view_item_width_with_registry(&settings, &registry) - 1_900.0).abs()
+                < f32::EPSILON
         );
-        assert!(super::details_horizontal_maximum(&settings, 2_000.0).abs() < f32::EPSILON);
+        assert!(
+            (super::details_horizontal_maximum_with_registry(&settings, &registry, 1_200.0)
+                - 700.0)
+                .abs()
+                < f32::EPSILON
+        );
+        assert!(
+            super::details_horizontal_maximum_with_registry(&settings, &registry, 2_000.0).abs()
+                < f32::EPSILON
+        );
     }
 
     #[test]
@@ -13605,7 +13658,8 @@ mod tests {
             .replace_package("org.example.extent", [descriptor.clone()])
             .unwrap();
         assert!(settings.details_layout.ensure_descriptor(&descriptor, true));
-        let built_in_width = super::view_item_width(&settings);
+        let built_ins = explorer_model::ColumnRegistry::built_ins();
+        let built_in_width = super::view_item_width_with_registry(&settings, &built_ins);
         assert_eq!(
             super::view_item_width_with_registry(&settings, &registry),
             built_in_width + 240.0
@@ -14850,8 +14904,7 @@ mod tests {
         for required in [
             "bookmark-name-input",
             "bookmark-payload-input",
-            "bookmark-read-only-target",
-            "資料夾路徑（唯讀）",
+            "資料夾路徑（可編輯）",
             ".bg(colors.control_fill.to_gpui())",
             ".text_color(input_text)",
             ".caret_color(input_caret.into())",
@@ -14883,6 +14936,25 @@ mod tests {
             assert!(production.contains(required), "missing {required}");
         }
         assert_eq!(production.matches("OpenBookmarkContextMenu").count(), 5);
+    }
+
+    #[test]
+    fn bookmark_toolbar_context_exposes_root_folder_and_path_crud() {
+        let production = include_str!("chrome.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source");
+        for required in [
+            "OpenBookmarkToolbarContextMenu",
+            "Bookmark toolbar context menu",
+            "新增資料夾路徑書籤…",
+            "新增檔案路徑書籤…",
+            "重新命名資料夾…",
+            "刪除資料夾",
+            "ToggleBookmarkManager",
+        ] {
+            assert!(production.contains(required), "missing {required}");
+        }
     }
 
     #[test]

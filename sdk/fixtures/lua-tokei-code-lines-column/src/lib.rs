@@ -7,9 +7,13 @@ use abi_stable::{
 use explorer_extension_api::*;
 use std::{
     collections::HashMap,
+    path::Path,
+};
+#[cfg(test)]
+use std::{
     env, fs,
     io::Read,
-    path::{Path, PathBuf},
+    path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
 

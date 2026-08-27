@@ -108,27 +108,6 @@ impl RuntimeAuthorityV1 {
         Ok(AuthorityEnvelopeV1 { claims, tag })
     }
 
-    pub(crate) fn revoke(
-        &self,
-        package: &str,
-        feature: &str,
-        interface: &str,
-    ) -> Result<(), AuthorityErrorV1> {
-        let mut current = self.current.lock().map_err(|_| AuthorityErrorV1::Revoked)?;
-        let mut found = false;
-        for ((entry_package, entry_feature, entry_interface, _), entry) in current.iter_mut() {
-            if entry_package == package && entry_feature == feature && entry_interface == interface
-            {
-                entry.revoked = true;
-                found = true;
-            }
-        }
-        if !found {
-            return Err(AuthorityErrorV1::Revoked);
-        }
-        Ok(())
-    }
-
     pub(crate) fn revoke_feature(
         &self,
         package: &str,
@@ -164,24 +143,6 @@ impl RuntimeAuthorityV1 {
             }
         }
         Ok(revoked)
-    }
-
-    pub(crate) fn replace_current(
-        &self,
-        claims: AuthorityClaimsV1,
-    ) -> Result<(), AuthorityErrorV1> {
-        validate_claims(&claims)?;
-        self.current
-            .lock()
-            .map_err(|_| AuthorityErrorV1::Revoked)?
-            .insert(
-                identity(&claims),
-                CurrentAuthorityV1 {
-                    claims,
-                    revoked: false,
-                },
-            );
-        Ok(())
     }
 
     pub(crate) fn revalidate<'a>(
@@ -321,14 +282,14 @@ mod tests {
     fn disable_and_package_update_revoke_or_stale_existing_grants() {
         let authority = RuntimeAuthorityV1::new().unwrap();
         let envelope = authority.issue(claims("filesystem.read")).unwrap();
-        authority.revoke("package", "feature", "interface").unwrap();
+        assert_eq!(authority.revoke_feature("package", "feature"), Ok(1));
         assert_eq!(
             authority.revalidate(&envelope, AuthorityAdapterV1::Stream),
             Err(AuthorityErrorV1::Revoked)
         );
         let mut next = claims("filesystem.read");
         next.incarnation = 2;
-        authority.replace_current(next).unwrap();
+        authority.issue(next).unwrap();
         assert_eq!(
             authority.revalidate(&envelope, AuthorityAdapterV1::Stream),
             Err(AuthorityErrorV1::Stale)
@@ -388,7 +349,7 @@ mod tests {
         }
         let mut replaced = claims("filesystem.read");
         replaced.item_generation += 1;
-        authority.replace_current(replaced).unwrap();
+        authority.issue(replaced).unwrap();
         assert_eq!(
             authority.revalidate(&original, AuthorityAdapterV1::Stream),
             Err(AuthorityErrorV1::Stale)

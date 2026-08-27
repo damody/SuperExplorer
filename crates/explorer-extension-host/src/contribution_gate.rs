@@ -180,6 +180,7 @@ pub mod integration_test_support {
                     contribution_id: "column".to_owned(),
                     kind: ContributionKindV1::Column,
                     required_capabilities: Vec::new(),
+                    folder_admission: None,
                     job_contract: Some(ContributionJobContractV1 {
                         interface_id: StableIdV1::new(
                             explorer_extension_api::IdNamespaceV1::new(7, 1),
@@ -198,6 +199,7 @@ pub mod integration_test_support {
                     contribution_id: "renderer".to_owned(),
                     kind: ContributionKindV1::GpuiRenderer,
                     required_capabilities: vec!["gpui.render".to_owned()],
+                    folder_admission: None,
                     job_contract: Some(ContributionJobContractV1 {
                         interface_id: StableIdV1::new(
                             explorer_extension_api::IdNamespaceV1::new(7, 1),

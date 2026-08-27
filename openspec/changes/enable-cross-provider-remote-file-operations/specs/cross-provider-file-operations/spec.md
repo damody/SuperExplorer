@@ -73,6 +73,10 @@ The system SHALL use typed Local or Virtual locations and Copy or Cut intent for
 - **WHEN** the file view owns focus and Ctrl+V targets a writable Local, ADB, or SFTP directory
 - **THEN** Paste SHALL dispatch the same cross-provider transfer request used by the context menu
 
+#### Scenario: Local copy supersedes stale remote clipboard ownership
+- **WHEN** an internal remote clipboard record exists and the user subsequently copies or cuts only Local filesystem items
+- **THEN** the stale remote record and staging SHALL be invalidated before Windows Shell owns the new clipboard, and Paste to ADB or SFTP SHALL transfer the current Local `CF_HDROP` sources
+
 #### Scenario: Editable text owns keyboard clipboard
 - **WHEN** an editable address, search, rename, login, or other text input owns focus
 - **THEN** Ctrl+C, Ctrl+X, and Ctrl+V SHALL remain text editing operations and SHALL NOT dispatch file transfer

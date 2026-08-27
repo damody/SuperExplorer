@@ -483,6 +483,13 @@ pub(crate) struct BookmarkContextMenuState {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct BookmarkToolbarContextMenuState {
+    pub(crate) parent_id: Option<explorer_model::BookmarkFolderId>,
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RemoteContextMenuState {
     pub(crate) x: f32,
     pub(crate) y: f32,
@@ -530,10 +537,10 @@ pub struct AppViewState {
     recent_items: RecentItems,
     quick_access_notice: Option<String>,
     bookmark_notice: Option<String>,
-    bookmark_manager_open: bool,
     bookmark_overflow_open: bool,
     bookmark_folder_menu: Option<explorer_model::BookmarkFolderId>,
     bookmark_context_menu: Option<BookmarkContextMenuState>,
+    bookmark_toolbar_context_menu: Option<BookmarkToolbarContextMenuState>,
     remote_context_menu: Option<RemoteContextMenuState>,
     expanded_bookmark_folders: HashSet<explorer_model::BookmarkFolderId>,
     bookmark_folder_delete_confirmation: Option<(explorer_model::BookmarkFolderId, usize)>,
@@ -776,10 +783,10 @@ impl AppViewState {
             recent_items: RecentItems::new(64, 30 * 24 * 60 * 60, Vec::new()),
             quick_access_notice: None,
             bookmark_notice: None,
-            bookmark_manager_open: false,
             bookmark_overflow_open: false,
             bookmark_folder_menu: None,
             bookmark_context_menu: None,
+            bookmark_toolbar_context_menu: None,
             remote_context_menu: None,
             expanded_bookmark_folders: HashSet::new(),
             bookmark_folder_delete_confirmation: None,
@@ -1000,14 +1007,6 @@ impl AppViewState {
 
     pub(crate) const fn bookmarks(&self) -> &explorer_model::Bookmarks {
         &self.bookmarks
-    }
-
-    pub(crate) fn add_bookmark(
-        &mut self,
-        name: String,
-        target: explorer_model::BookmarkTarget,
-    ) -> explorer_model::BookmarkMutation {
-        self.bookmarks.begin_add(name, target)
     }
 
     pub(crate) fn add_bookmark_folder(
@@ -2934,14 +2933,6 @@ impl AppViewState {
         self.bookmark_notice = Some(notice.into());
     }
 
-    pub(crate) const fn bookmark_manager_open(&self) -> bool {
-        self.bookmark_manager_open
-    }
-
-    pub(crate) fn toggle_bookmark_manager(&mut self) {
-        self.bookmark_manager_open = !self.bookmark_manager_open;
-    }
-
     pub(crate) const fn bookmark_overflow_open(&self) -> bool {
         self.bookmark_overflow_open
     }
@@ -2984,6 +2975,34 @@ impl AppViewState {
 
     pub(crate) fn close_bookmark_context_menu(&mut self) {
         self.bookmark_context_menu = None;
+    }
+
+    pub(crate) const fn bookmark_toolbar_context_menu(
+        &self,
+    ) -> Option<BookmarkToolbarContextMenuState> {
+        self.bookmark_toolbar_context_menu
+    }
+
+    pub(crate) fn open_bookmark_toolbar_context_menu(
+        &mut self,
+        parent_id: Option<explorer_model::BookmarkFolderId>,
+        x: f32,
+        y: f32,
+    ) {
+        if parent_id.is_none_or(|id| self.bookmarks.folder(id).is_some()) {
+            self.bookmark_toolbar_context_menu = Some(BookmarkToolbarContextMenuState {
+                parent_id,
+                x: x.max(0.0),
+                y: y.max(0.0),
+            });
+            self.bookmark_context_menu = None;
+            self.bookmark_overflow_open = false;
+            self.bookmark_folder_menu = None;
+        }
+    }
+
+    pub(crate) fn close_bookmark_toolbar_context_menu(&mut self) {
+        self.bookmark_toolbar_context_menu = None;
     }
 
     pub(crate) const fn remote_context_menu(&self) -> Option<RemoteContextMenuState> {
@@ -3053,11 +3072,20 @@ impl AppViewState {
         name: String,
         target: explorer_model::BookmarkTarget,
     ) {
+        self.begin_new_bookmark_editor_in(name, target, None);
+    }
+
+    pub(crate) fn begin_new_bookmark_editor_in(
+        &mut self,
+        name: String,
+        target: explorer_model::BookmarkTarget,
+        parent_id: Option<explorer_model::BookmarkFolderId>,
+    ) {
         self.bookmark_editor = Some(BookmarkEditorDraft {
             id: None,
             name,
             target,
-            parent_id: None,
+            parent_id,
         });
     }
 
@@ -3127,18 +3155,13 @@ impl AppViewState {
 
     pub(crate) fn update_bookmark_editor_payload(&mut self, payload: String) {
         if let Some(editor) = &mut self.bookmark_editor {
-            if matches!(
-                editor.target,
-                explorer_model::BookmarkTarget::LuaScript { .. }
-            ) {
-                editor.target = explorer_model::BookmarkTarget::LuaScript { source: payload };
-            }
+            editor.target = editor.target.with_editable_payload(payload);
         }
     }
 
     pub(crate) fn commit_bookmark_editor(&mut self) -> Option<explorer_model::BookmarkMutation> {
         let editor = self.bookmark_editor.take()?;
-        if editor.name.trim().is_empty() {
+        if editor.name.trim().is_empty() || editor.target.editable_payload().trim().is_empty() {
             self.bookmark_editor = Some(editor);
             return None;
         }
@@ -4602,6 +4625,8 @@ impl AppViewState {
         owner_window: u64,
         x: i32,
         y: i32,
+        client_x: f32,
+        client_y: f32,
         keyboard_invoked: bool,
         extended_verbs: bool,
     ) -> Option<ExplorerCommand> {
@@ -4647,8 +4672,8 @@ impl AppViewState {
         };
         if supported_remote_parent {
             self.remote_context_menu = Some(RemoteContextMenuState {
-                x: x.max(0) as f32,
-                y: y.max(0) as f32,
+                x: client_x.max(0.0),
+                y: client_y.max(0.0),
                 background: matches!(
                     target,
                     explorer_model::ShellContextMenuTarget::Background { .. }
@@ -5852,19 +5877,19 @@ mod tests {
     #[test]
     fn bookmark_manager_edits_reorders_deletes_and_restores_typed_entries() {
         let mut state = AppViewState::default();
-        state.add_bookmark(
+        state.bookmarks.begin_add(
             "Folder".into(),
             explorer_model::BookmarkTarget::Folder {
                 location: explorer_model::LocationDescriptor::file_system(r"C:\folder"),
             },
         );
-        state.add_bookmark(
+        state.bookmarks.begin_add(
             "File".into(),
             explorer_model::BookmarkTarget::File {
                 location: explorer_model::LocationDescriptor::file_system(r"C:\folder\file.txt"),
             },
         );
-        state.add_bookmark(
+        state.bookmarks.begin_add(
             "Command".into(),
             explorer_model::BookmarkTarget::LuaScript {
                 source: "assert(current_folder)".into(),
@@ -5883,8 +5908,8 @@ mod tests {
         );
         assert!(matches!(
             &state.bookmarks().entries()[1].target,
-            explorer_model::BookmarkTarget::File { location }
-                if location.path() == Some(std::path::Path::new(r"C:\folder\file.txt"))
+            explorer_model::BookmarkTarget::FilePath { path }
+                if path == r"C:\other\renamed.txt"
         ));
 
         let command_id = state.bookmarks().entries()[2].id;
@@ -5916,7 +5941,7 @@ mod tests {
     #[test]
     fn bookmark_context_menu_tracks_pointer_and_closes_without_mutating_bookmarks() {
         let mut state = AppViewState::default();
-        state.add_bookmark(
+        state.bookmarks.begin_add(
             "Folder".into(),
             explorer_model::BookmarkTarget::Folder {
                 location: explorer_model::LocationDescriptor::file_system(r"C:\folder"),
@@ -5935,6 +5960,51 @@ mod tests {
         state.close_bookmark_context_menu();
         assert_eq!(state.bookmark_context_menu(), None);
         assert_eq!(state.bookmarks().entries().len(), 1);
+    }
+
+    #[test]
+    fn bookmark_toolbar_context_tracks_root_and_folder_without_filesystem_mutation() {
+        let mut state = AppViewState::default();
+        assert!(state.add_bookmark_folder("Work".into(), None).changed());
+        let folder = state.bookmarks().folders()[0].id;
+        state.open_bookmark_toolbar_context_menu(Some(folder), 90.0, 40.0);
+        assert_eq!(
+            state.bookmark_toolbar_context_menu(),
+            Some(super::BookmarkToolbarContextMenuState {
+                parent_id: Some(folder),
+                x: 90.0,
+                y: 40.0,
+            })
+        );
+        state.close_bookmark_toolbar_context_menu();
+        assert_eq!(state.bookmark_toolbar_context_menu(), None);
+        assert_eq!(state.bookmarks().folders()[0].name, "Work");
+    }
+
+    #[test]
+    fn arbitrary_path_editor_preserves_exact_text_and_rejects_empty_target() {
+        let mut state = AppViewState::default();
+        state.begin_new_bookmark_editor_in(
+            "Future".into(),
+            explorer_model::BookmarkTarget::FolderPath {
+                path: String::new(),
+            },
+            None,
+        );
+        assert!(state.commit_bookmark_editor().is_none());
+        assert!(state.bookmark_editor().is_some());
+        let exact = r#"?:\\offline\future<>"#.to_owned();
+        state.update_bookmark_editor_payload(exact.clone());
+        assert!(
+            state
+                .commit_bookmark_editor()
+                .expect("raw path add")
+                .changed()
+        );
+        assert_eq!(
+            state.bookmarks().entries()[0].target.editable_payload(),
+            exact
+        );
     }
 
     #[test]
@@ -7195,7 +7265,7 @@ mod tests {
         );
         assert!(state.begin_drag_candidate(0.0, 0.0, explorer_model::DragButton::Right));
         let command = state
-            .begin_context_menu_request(Some(first_id), 42, 100, 200, false, false)
+            .begin_context_menu_request(Some(first_id), 42, 100, 200, 10.0, 20.0, false, false)
             .expect("context menu request");
         assert!(matches!(
             command,
@@ -7228,7 +7298,7 @@ mod tests {
         let command = state
             // A GPUI re-render may deliver mouse-up-out through a stale row closure. The
             // mouse-down stable identity remains authoritative and must override it.
-            .begin_context_menu_request(Some(first), 42, 10, 20, false, false)
+            .begin_context_menu_request(Some(first), 42, 10, 20, 1.0, 2.0, false, false)
             .expect("clicked item menu");
         assert!(!state.pending_context_extended_verbs());
         let explorer_model::ExplorerCommand::ShowContextMenu { request, .. } = command else {
@@ -7248,7 +7318,7 @@ mod tests {
         stale_state.prepare_context_selection(Some(&missing_id));
         assert!(
             stale_state
-                .begin_context_menu_request(Some(missing_id), 42, 10, 20, false, false)
+                .begin_context_menu_request(Some(missing_id), 42, 10, 20, 1.0, 2.0, false, false)
                 .is_none()
         );
     }
@@ -7257,7 +7327,7 @@ mod tests {
     fn context_menu_failure_is_recoverable_and_rejects_stale_correlation() {
         let mut state = state_with_rows();
         let first = state
-            .begin_context_menu_request(None, 42, 100, 200, false, false)
+            .begin_context_menu_request(None, 42, 100, 200, 10.0, 20.0, false, false)
             .expect("first context menu");
         let explorer_model::ExplorerCommand::ShowContextMenu { context, .. } = first else {
             panic!("expected context-menu command");
@@ -7289,7 +7359,7 @@ mod tests {
         assert_eq!(state.context_menu_error(), Some(&error));
 
         let second = state
-            .begin_context_menu_request(None, 42, 100, 200, false, false)
+            .begin_context_menu_request(None, 42, 100, 200, 10.0, 20.0, false, false)
             .expect("UI remains available for a second menu");
         let explorer_model::ExplorerCommand::ShowContextMenu {
             context: second_context,
@@ -7309,6 +7379,38 @@ mod tests {
     }
 
     #[test]
+    fn remote_context_menu_uses_client_coordinates_not_screen_coordinates() {
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            explorer_model::LocationDescriptor::Virtual(
+                explorer_model::VirtualLocationDescriptor {
+                    provider_id: "adb".to_owned(),
+                    public_authority: Some("device".to_owned()),
+                    container_identity: [7; 16],
+                    container_generation: 1,
+                    entry_id: None,
+                    components: vec!["sdcard".to_owned()],
+                },
+            ),
+            "device",
+        ));
+
+        assert!(
+            state
+                .begin_context_menu_request(None, 42, 1_200, 900, 120.0, 80.0, false, false)
+                .is_none(),
+            "remote custom menus do not submit a Windows Shell command"
+        );
+        assert_eq!(
+            state.remote_context_menu(),
+            Some(super::RemoteContextMenuState {
+                x: 120.0,
+                y: 80.0,
+                background: true,
+            })
+        );
+    }
+
+    #[test]
     fn host_context_command_terminal_clears_pending_without_false_failure() {
         let mut state = state_with_rows();
         assert!(state.select_row(0));
@@ -7316,7 +7418,16 @@ mod tests {
         state.prepare_context_selection(Some(&selected));
         assert!(state.begin_drag_candidate(3.0, 4.0, explorer_model::DragButton::Right));
         let command = state
-            .begin_context_menu_request(Some(selected.clone()), 42, 100, 200, false, false)
+            .begin_context_menu_request(
+                Some(selected.clone()),
+                42,
+                100,
+                200,
+                10.0,
+                20.0,
+                false,
+                false,
+            )
             .expect("context menu");
         let explorer_model::ExplorerCommand::ShowContextMenu { context, request } = command else {
             panic!("expected context-menu command");
@@ -7354,7 +7465,16 @@ mod tests {
         state.prepare_context_selection(Some(&selected));
         assert!(state.begin_drag_candidate(3.0, 4.0, explorer_model::DragButton::Right));
         let explorer_model::ExplorerCommand::ShowContextMenu { request, .. } = state
-            .begin_context_menu_request(Some(selected.clone()), 42, 100, 200, false, false)
+            .begin_context_menu_request(
+                Some(selected.clone()),
+                42,
+                100,
+                200,
+                10.0,
+                20.0,
+                false,
+                false,
+            )
             .expect("context menu")
         else {
             panic!("expected context-menu command");
@@ -7391,7 +7511,7 @@ mod tests {
     fn pending_context_menu_cancels_then_promotes_the_latest_replacement_once() {
         let mut state = state_with_rows();
         let first = state
-            .begin_context_menu_request(None, 42, 100, 200, false, false)
+            .begin_context_menu_request(None, 42, 100, 200, 10.0, 20.0, false, false)
             .expect("first context menu");
         let explorer_model::ExplorerCommand::ShowContextMenu { context, .. } = first else {
             panic!("expected context-menu command");
@@ -7399,7 +7519,7 @@ mod tests {
         assert!(state.context_menu_pending());
         let first_request_id = context.request_id;
         let cancel = state
-            .begin_context_menu_request(None, 42, 300, 400, true, true)
+            .begin_context_menu_request(None, 42, 300, 400, 30.0, 40.0, true, true)
             .expect("second right-click cancels the visible popup");
         assert!(context.cancellation.is_cancelled());
         assert!(matches!(
@@ -7438,7 +7558,7 @@ mod tests {
     fn rapid_context_menu_replacement_keeps_latest_target_and_ignores_stale_terminals() {
         let mut state = state_with_rows();
         let first = state
-            .begin_context_menu_request(None, 42, 100, 200, false, false)
+            .begin_context_menu_request(None, 42, 100, 200, 10.0, 20.0, false, false)
             .expect("first context menu");
         let explorer_model::ExplorerCommand::ShowContextMenu {
             context: first_context,
@@ -7449,7 +7569,7 @@ mod tests {
         };
 
         let second = state
-            .begin_context_menu_request(None, 42, 300, 400, false, false)
+            .begin_context_menu_request(None, 42, 300, 400, 30.0, 40.0, false, false)
             .expect("first mouse replacement");
         assert!(matches!(
             second,
@@ -7457,7 +7577,7 @@ mod tests {
                 if request.point == explorer_model::MenuPoint { x: 300, y: 400 }
         ));
         let latest = state
-            .begin_context_menu_request(None, 42, 500, 600, false, true)
+            .begin_context_menu_request(None, 42, 500, 600, 50.0, 60.0, false, true)
             .expect("latest mouse replacement");
         let explorer_model::ExplorerCommand::ShowContextMenu {
             context: latest_context,

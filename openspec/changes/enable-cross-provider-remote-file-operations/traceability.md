@@ -20,6 +20,7 @@ Scenario heading 是本變更的穩定 scenario key；改名屬 B 級修正，�
 | Native remote clipboard token is authentic | 2.3.1 | 4.1.22 | CLIPBOARD-ISOLATION |
 | Forged or replayed remote clipboard token | 2.3.2 | 4.1.22 | CLIPBOARD-ISOLATION |
 | Paste typed mixed-provider sources | 2.3.3 | 4.1.20 | CLIPBOARD-ISOLATION |
+| Local copy supersedes stale remote clipboard ownership | 5.1, 5.2 | 5.3 | CLIPBOARD-ISOLATION |
 | Editable text owns keyboard clipboard | 2.3.4 | 4.1.20 | CLIPBOARD-ISOLATION |
 | Text or image clipboard is ignored by file paste | 2.3.4 | 4.1.21 | CLIPBOARD-ISOLATION |
 | Local and remote transfer matrix | 2.1.1, 2.1.6, 2.2.2 | 4.1.11 | TRANSFER-MATRIX |

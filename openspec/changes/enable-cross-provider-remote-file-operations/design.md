@@ -44,6 +44,8 @@ Local → Local 保留 Windows Shell；Local → Remote 呼叫 upload；Remote �
 
 內部 Copy／Cut 保存 typed locations。原生 clipboard 只在可辨識的檔案格式（既有 `CF_HDROP` 或版本化 SuperExplorer remote descriptor format）存在時啟動檔案 Paste；文字、HTML、PNG、bitmap 與未知格式維持原內容且回傳 file-paste unsupported。編輯器擁有焦點時仍由 text input 處理 `Ctrl+C/X/V`。
 
+Clipboard ownership 以最新 Copy／Cut 為準。當全 Local Copy／Cut 交給 Windows Shell 時，host 必須先失效先前的 internal remote clipboard record 與 staging；其後貼到 ADB／SFTP 必須讀取目前 `CF_HDROP`，不得因舊 remote token／record 攔截或取代 Local sources。
+
 ### 永久刪除與確認
 
 Remote Delete 一律使用不可復原確認並 dispatch provider recursive delete；Local Delete 保留 recycle semantics。確認內容只顯示安全的項目數與既有顯示名稱，不揭露密碼或暫存內容。

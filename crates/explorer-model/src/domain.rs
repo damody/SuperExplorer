@@ -157,6 +157,30 @@ pub enum FileSystemKind {
 }
 
 impl LocationDescriptor {
+    /// Returns complete user-editable text without resolving or touching the target.
+    pub fn editable_text(&self) -> String {
+        match self {
+            Self::FileSystem(path) => path.to_string_lossy().into_owned(),
+            Self::ParsingName(name) => name.clone(),
+            Self::ShellNamespace(_) | Self::KnownFolder(_) => String::new(),
+            Self::Virtual(location) => {
+                let authority = location.public_authority.as_deref().unwrap_or_default();
+                let suffix = location.components.join("/");
+                if authority.is_empty() {
+                    if suffix.is_empty() {
+                        format!("{}://", location.provider_id)
+                    } else {
+                        format!("{}:///{suffix}", location.provider_id)
+                    }
+                } else if suffix.is_empty() {
+                    format!("{}://{authority}", location.provider_id)
+                } else {
+                    format!("{}://{authority}/{suffix}", location.provider_id)
+                }
+            }
+        }
+    }
+
     pub fn file_system_kind(&self) -> Option<FileSystemKind> {
         match self {
             Self::FileSystem(_) => Some(FileSystemKind::Local),

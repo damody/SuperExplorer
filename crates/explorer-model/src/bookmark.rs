@@ -15,7 +15,31 @@ pub type BookmarkFolderId = Uuid;
 pub enum BookmarkTarget {
     Folder { location: LocationDescriptor },
     File { location: LocationDescriptor },
+    FolderPath { path: String },
+    FilePath { path: String },
     LuaScript { source: String },
+}
+
+impl BookmarkTarget {
+    pub fn editable_payload(&self) -> String {
+        match self {
+            Self::Folder { location } | Self::File { location } => location.editable_text(),
+            Self::FolderPath { path } | Self::FilePath { path } => path.clone(),
+            Self::LuaScript { source } => source.clone(),
+        }
+    }
+
+    pub fn with_editable_payload(&self, payload: String) -> Self {
+        match self {
+            Self::Folder { .. } | Self::FolderPath { .. } => Self::FolderPath { path: payload },
+            Self::File { .. } | Self::FilePath { .. } => Self::FilePath { path: payload },
+            Self::LuaScript { .. } => Self::LuaScript { source: payload },
+        }
+    }
+
+    pub const fn is_folder(&self) -> bool {
+        matches!(self, Self::Folder { .. } | Self::FolderPath { .. })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -582,5 +606,57 @@ mod tests {
         assert!(!encoded.contains("45.32.49.125"));
         let decoded: Bookmarks = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.entries().len(), 2);
+    }
+
+    #[test]
+    fn raw_path_targets_round_trip_exact_text_without_validation() {
+        let mut value = Bookmarks::default();
+        for (name, target) in [
+            (
+                "Malformed",
+                BookmarkTarget::FolderPath {
+                    path: r#"?:\\not\a\valid\path<>"#.to_owned(),
+                },
+            ),
+            (
+                "Offline",
+                BookmarkTarget::FilePath {
+                    path: r#"sftp://offline host/future/file.txt"#.to_owned(),
+                },
+            ),
+            (
+                "Virtual",
+                BookmarkTarget::FolderPath {
+                    path: "virtual-provider://missing/container".to_owned(),
+                },
+            ),
+        ] {
+            value.begin_add(name.to_owned(), target);
+        }
+        let encoded = serde_json::to_string(&value).expect("encode raw targets");
+        let decoded: Bookmarks = serde_json::from_str(&encoded).expect("decode raw targets");
+        assert_eq!(decoded, value);
+        assert_eq!(
+            decoded.entries()[0].target.editable_payload(),
+            r#"?:\\not\a\valid\path<>"#
+        );
+        assert_eq!(
+            decoded.entries()[1].target.editable_payload(),
+            "sftp://offline host/future/file.txt"
+        );
+    }
+
+    #[test]
+    fn structured_targets_remain_editable_without_changing_legacy_encoding() {
+        let target = BookmarkTarget::Folder {
+            location: LocationDescriptor::file_system(r"C:\legacy\missing"),
+        };
+        assert_eq!(target.editable_payload(), r"C:\legacy\missing");
+        assert_eq!(
+            target.with_editable_payload("shell:FutureFolder".to_owned()),
+            BookmarkTarget::FolderPath {
+                path: "shell:FutureFolder".to_owned()
+            }
+        );
     }
 }

@@ -858,6 +858,10 @@ impl PersistedSessionEnvelope {
                 | crate::BookmarkTarget::File { location } => {
                     validate_location(location, &format!("bookmarks[{index}].location"), limits)?;
                 }
+                crate::BookmarkTarget::FolderPath { path }
+                | crate::BookmarkTarget::FilePath { path } => {
+                    validate_text(path, &format!("bookmarks[{index}].path"), 256 * 1024)?;
+                }
                 crate::BookmarkTarget::LuaScript { source } => {
                     validate_text(source, &format!("bookmarks[{index}].source"), 256 * 1024)?;
                 }

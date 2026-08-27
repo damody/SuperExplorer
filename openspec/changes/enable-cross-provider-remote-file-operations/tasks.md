@@ -210,3 +210,9 @@
 - [x] 4.2.3 驗證並更新既有 `traceability.md` 的 requirement／scenario key → implementation task → validation task → gate／evidence subcheck 映射；scenario heading 不得靜默改名。
 - [x] 4.2.4 審查最終差異的 staging target、recursive delete、clipboard authenticity／isolation、credential／diagnostic redaction、Local Shell 相容性及無關 dirty-worktree 覆寫。
 - [x] 4.2.5 完成 `evidence/index.jsonl`，為每個 L3 納入唯一 task ID／subcheck、命令或程序、預期／實際、exit status／reviewer、gate、hash、timestamp 與 adjustment lineage，並解決所有 P0／P1。
+
+## 5. Local clipboard ownership 修正
+
+- [x] 5.1 在全 Local Copy／Cut 交給 Windows Shell 前，原子失效 stale remote clipboard record 與 staging。
+- [x] 5.2 驗證後續 Remote Paste 使用目前 Local `CF_HDROP` 並維持 Remote Copy／Cut token 與 Cut terminal 行為。
+- [x] 5.3 新增 stale-remote → Local Copy／Cut → ADB／SFTP Paste focused tests，執行相關 app／remote check、格式、diff 與 strict validation。
