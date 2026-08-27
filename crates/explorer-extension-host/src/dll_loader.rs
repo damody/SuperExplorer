@@ -1951,7 +1951,7 @@ mod tests {
         let mutation = virtual_folders
             .mutate(
                 "rust-7z:resource",
-                explorer_extension_api::VirtualMutationRequestV1 {
+                VirtualMutationRequestV1 {
                     container: crate::open_virtual_container_input_v1(&mutation_archive, 1)
                         .expect("open mutation input"),
                     staging: staging_output,
@@ -2382,7 +2382,7 @@ mod tests {
             CALLBACK_CALLED.store(true, Ordering::SeqCst);
             RResult::ROk(RegistrarOutputV1 {
                 outcome: RegistrationOutcomeV1::accepted(0),
-                contributions: abi_stable::std_types::RVec::new(),
+                contributions: RVec::new(),
             })
         }
     }

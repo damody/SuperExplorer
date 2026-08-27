@@ -104,6 +104,12 @@ pub enum NavigationHistoryDirection {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BookmarkPathKind {
+    Folder,
+    File,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PermanentDeleteDialogTarget {
     Cancel,
     Delete,
@@ -284,6 +290,17 @@ pub enum ExplorerAction {
         y: f32,
     },
     CloseBookmarkContextMenu,
+    OpenBookmarkToolbarContextMenu {
+        parent_id: Option<explorer_model::BookmarkFolderId>,
+        x: f32,
+        y: f32,
+    },
+    CloseBookmarkToolbarContextMenu,
+    AddPathBookmark {
+        parent_id: Option<explorer_model::BookmarkFolderId>,
+        kind: BookmarkPathKind,
+    },
+    CloseRemoteContextMenu,
     AddLuaBookmark,
     EditBookmark {
         id: explorer_model::BookmarkId,
@@ -407,6 +424,8 @@ pub enum ExplorerAction {
         owner_window: u64,
         x: i32,
         y: i32,
+        client_x: f32,
+        client_y: f32,
         keyboard_invoked: bool,
         extended_verbs: bool,
     },
@@ -644,6 +663,10 @@ impl ExplorerAction {
             Self::OpenBookmarkInNewTab { .. } => "OpenBookmarkInNewTab",
             Self::OpenBookmarkContextMenu { .. } => "OpenBookmarkContextMenu",
             Self::CloseBookmarkContextMenu => "CloseBookmarkContextMenu",
+            Self::OpenBookmarkToolbarContextMenu { .. } => "OpenBookmarkToolbarContextMenu",
+            Self::CloseBookmarkToolbarContextMenu => "CloseBookmarkToolbarContextMenu",
+            Self::AddPathBookmark { .. } => "AddPathBookmark",
+            Self::CloseRemoteContextMenu => "CloseRemoteContextMenu",
             Self::AddLuaBookmark => "AddLuaBookmark",
             Self::EditBookmark { .. } => "EditBookmark",
             Self::SaveBookmarkEditor => "SaveBookmarkEditor",
@@ -1451,6 +1474,10 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::OpenBookmarkInNewTab { .. }
         | ExplorerAction::OpenBookmarkContextMenu { .. }
         | ExplorerAction::CloseBookmarkContextMenu
+        | ExplorerAction::OpenBookmarkToolbarContextMenu { .. }
+        | ExplorerAction::CloseBookmarkToolbarContextMenu
+        | ExplorerAction::AddPathBookmark { .. }
+        | ExplorerAction::CloseRemoteContextMenu
         | ExplorerAction::AddLuaBookmark
         | ExplorerAction::EditBookmark { .. }
         | ExplorerAction::SaveBookmarkEditor
@@ -1919,6 +1946,10 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         | ExplorerAction::OpenBookmarkInNewTab { .. }
         | ExplorerAction::OpenBookmarkContextMenu { .. }
         | ExplorerAction::CloseBookmarkContextMenu
+        | ExplorerAction::OpenBookmarkToolbarContextMenu { .. }
+        | ExplorerAction::CloseBookmarkToolbarContextMenu
+        | ExplorerAction::AddPathBookmark { .. }
+        | ExplorerAction::CloseRemoteContextMenu
         | ExplorerAction::AddLuaBookmark
         | ExplorerAction::EditBookmark { .. }
         | ExplorerAction::SaveBookmarkEditor

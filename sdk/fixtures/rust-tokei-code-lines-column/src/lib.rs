@@ -5,9 +5,13 @@
 
 use std::{
     collections::BTreeMap,
+    path::Path,
+};
+#[cfg(test)]
+use std::{
     env, fs,
     io::Read,
-    path::{Path, PathBuf},
+    path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
 

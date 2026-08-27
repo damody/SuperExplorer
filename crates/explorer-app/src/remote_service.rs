@@ -291,7 +291,7 @@ fn prompt_sftp_login(host: &str, suggested_user: &str) -> Result<Option<(String,
     let message = wide(&format!("Sign in to {host}"));
     let target = wide(&format!("SuperExplorer/SFTP/{host}"));
     let info = CREDUI_INFOW {
-        cbSize: std::mem::size_of::<CREDUI_INFOW>() as u32,
+        cbSize: size_of::<CREDUI_INFOW>() as u32,
         pszMessageText: PCWSTR(message.as_ptr()),
         pszCaptionText: PCWSTR(caption.as_ptr()),
         ..Default::default()
@@ -488,6 +488,22 @@ impl RemoteExplorerService {
         matches!(location, LocationDescriptor::Virtual(location) if matches!(location.provider_id.as_str(), "adb" | "sftp"))
     }
 
+    fn invalidate_remote_clipboard_for_local_replacement(
+        &self,
+    ) -> Result<(), ExplorerServiceError> {
+        let mut clipboard = self
+            .clipboard
+            .lock()
+            .map_err(|_| ExplorerServiceError::Internal)?;
+        let mut staging = self
+            .clipboard_staging
+            .lock()
+            .map_err(|_| ExplorerServiceError::Internal)?;
+        *clipboard = None;
+        *staging = None;
+        Ok(())
+    }
+
     fn submit_navigation(
         &self,
         context: explorer_model::RequestContext,
@@ -670,7 +686,7 @@ impl RemoteExplorerService {
             let result = execute_operation(&providers, &kind, &context.cancellation);
             let outcome = match result {
                 Ok(outcome) => outcome,
-                Err(error) if context.cancellation.is_cancelled() => OperationTerminal::Cancelled,
+                Err(_) if context.cancellation.is_cancelled() => OperationTerminal::Cancelled,
                 Err(error) => OperationTerminal::Failed(remote_error(
                     "remote file operation",
                     "The remote file operation failed.",
@@ -997,6 +1013,19 @@ impl ExplorerService for RemoteExplorerService {
     }
 
     fn submit(&self, command: ExplorerCommand) -> Result<(), ExplorerServiceError> {
+        let local_clipboard_replacement = matches!(
+            &command,
+            ExplorerCommand::DataTransfer {
+                request: DataTransferRequest::Copy { items }
+                    | DataTransferRequest::Cut { items },
+                ..
+            } if !items.is_empty() && items.iter().all(|item| !Self::is_remote(&item.location))
+        );
+        if local_clipboard_replacement {
+            // The next Shell clipboard object is authoritative. Invalidate the previous remote
+            // token/intent before delegating so a fast paste cannot observe stale remote sources.
+            self.invalidate_remote_clipboard_for_local_replacement()?;
+        }
         match command {
             ExplorerCommand::Navigate { context, location }
             | ExplorerCommand::Refresh { context, location }
@@ -1399,6 +1428,13 @@ mod tests {
         })
     }
 
+    fn local_item() -> ItemDescriptor {
+        ItemDescriptor {
+            id: explorer_model::ShellItemId::from_provider_bytes([3; 8]).unwrap(),
+            location: LocationDescriptor::file_system(r"C:\Users\fixture\Downloads\local.txt"),
+        }
+    }
+
     struct TelemetryService;
 
     impl ExplorerService for TelemetryService {
@@ -1444,6 +1480,67 @@ mod tests {
             explorer_model::CacheTelemetryAvailabilityV1::Available(value)
                 if value.bytes == 41 && value.entry_count == 3
         ));
+    }
+
+    #[test]
+    fn local_copy_or_cut_invalidates_stale_remote_clipboard_and_staging() {
+        for request in [
+            DataTransferRequest::Copy {
+                items: vec![local_item()],
+            },
+            DataTransferRequest::Cut {
+                items: vec![local_item()],
+            },
+        ] {
+            let service = RemoteExplorerService::new(
+                Arc::new(TelemetryService),
+                Arc::new(RemoteProviderRegistry::default()),
+            );
+            *service.clipboard.lock().unwrap() = Some(RemoteClipboard {
+                mode: ClipboardMode::Cut,
+                items: vec![ItemDescriptor {
+                    id: explorer_model::ShellItemId::from_provider_bytes([9; 8]).unwrap(),
+                    location: remote_location(),
+                }],
+                token: [5; 32],
+            });
+            *service.clipboard_staging.lock().unwrap() = Some(tempfile::tempdir().unwrap());
+            let context = explorer_model::RequestContext::new(
+                explorer_model::TabId::new(),
+                explorer_model::Generation::new(1),
+            );
+
+            service
+                .submit(ExplorerCommand::DataTransfer { context, request })
+                .unwrap();
+
+            assert!(service.clipboard.lock().unwrap().is_none());
+            assert!(service.clipboard_staging.lock().unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn remote_copy_keeps_internal_token_authority() {
+        let service = RemoteExplorerService::new(
+            Arc::new(TelemetryService),
+            Arc::new(RemoteProviderRegistry::default()),
+        );
+        let context = explorer_model::RequestContext::new(
+            explorer_model::TabId::new(),
+            explorer_model::Generation::new(1),
+        );
+        service
+            .submit(ExplorerCommand::DataTransfer {
+                context,
+                request: DataTransferRequest::Copy {
+                    items: vec![ItemDescriptor {
+                        id: explorer_model::ShellItemId::from_provider_bytes([9; 8]).unwrap(),
+                        location: remote_location(),
+                    }],
+                },
+            })
+            .unwrap();
+        assert!(service.clipboard.lock().unwrap().is_some());
     }
 
     #[test]

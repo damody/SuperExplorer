@@ -17,6 +17,7 @@
 pub mod actions;
 pub mod automation;
 pub mod bookmark_editor_window;
+pub mod bookmark_manager_window;
 pub mod chrome;
 pub mod code_lines_column;
 pub mod diagnostics;
@@ -75,6 +76,19 @@ fn lua_bookmark_request(
             timeout_ms: explorer_automation::BOOKMARK_LUA_TIMEOUT_MS,
         })
         .ok_or("Lua bookmarks require a filesystem folder.")
+}
+
+fn resolve_bookmark_path(path: &str) -> explorer_model::LocationDescriptor {
+    explorer_model::RemoteAddress::parse(path)
+        .ok()
+        .and_then(|address| address.to_deterministic_location(1).ok())
+        .unwrap_or_else(|| {
+            if path.starts_with("shell:") {
+                explorer_model::LocationDescriptor::ParsingName(path.to_owned())
+            } else {
+                explorer_model::LocationDescriptor::file_system(path)
+            }
+        })
 }
 
 fn lua_bookmark_notice(result: explorer_automation::LuaBookmarkResult) -> String {
@@ -359,6 +373,19 @@ fn action_for_host_context_command(
             ExplorerAction::ShowPropertiesSelected
         }
     }
+}
+
+fn remote_context_menu_command_dismisses(action: &ExplorerAction) -> bool {
+    matches!(
+        action,
+        ExplorerAction::CreateFolder
+            | ExplorerAction::Paste
+            | ExplorerAction::OpenFocused
+            | ExplorerAction::CutSelected
+            | ExplorerAction::CopySelected
+            | ExplorerAction::BeginRenameFocused
+            | ExplorerAction::RecycleDeleteSelected
+    )
 }
 
 fn captured_scrollbar_axis_to_logical(
@@ -1067,6 +1094,7 @@ pub struct ExplorerRoot {
     sftp_address_login: Option<SftpAddressLoginState>,
     folder_options_window_observer: Option<FolderOptionsWindowObserver>,
     bookmark_editor_window_observer: Option<BookmarkEditorWindowObserver>,
+    bookmark_manager_window_observer: Option<BookmarkManagerWindowObserver>,
     last_window_title: Option<String>,
     navigation_history_release_deadline: Option<Instant>,
     safe_mode_offers: Vec<SafeModeOfferV1>,
@@ -1146,6 +1174,12 @@ pub type FolderOptionsWindowObserver = std::rc::Rc<
 pub type BookmarkEditorWindowObserver = std::rc::Rc<
     dyn Fn(
         bookmark_editor_window::BookmarkEditorWindowSnapshotV1,
+        &mut gpui::Context<ExplorerRoot>,
+    ) -> bool,
+>;
+pub type BookmarkManagerWindowObserver = std::rc::Rc<
+    dyn Fn(
+        bookmark_manager_window::BookmarkManagerWindowSnapshotV1,
         &mut gpui::Context<ExplorerRoot>,
     ) -> bool,
 >;
@@ -1413,6 +1447,7 @@ impl ExplorerRoot {
             sftp_address_login: None,
             folder_options_window_observer: None,
             bookmark_editor_window_observer: None,
+            bookmark_manager_window_observer: None,
             last_window_title: None,
             navigation_history_release_deadline: None,
             safe_mode_offers: Vec::new(),
@@ -1521,6 +1556,31 @@ impl ExplorerRoot {
         self.bookmark_editor_window_observer = Some(observer);
     }
 
+    pub fn attach_bookmark_manager_window_observer(
+        &mut self,
+        observer: BookmarkManagerWindowObserver,
+    ) {
+        self.bookmark_manager_window_observer = Some(observer);
+    }
+
+    pub fn bookmark_manager_window_snapshot(
+        &self,
+    ) -> bookmark_manager_window::BookmarkManagerWindowSnapshotV1 {
+        bookmark_manager_window::BookmarkManagerWindowSnapshotV1 {
+            state: self.state.clone(),
+        }
+    }
+
+    pub fn dispatch_bookmark_manager_action(
+        &mut self,
+        action: ExplorerAction,
+        source: ActionSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.handle_action(action, source, window, cx);
+    }
+
     pub fn bookmark_editor_window_snapshot(
         &self,
     ) -> Option<bookmark_editor_window::BookmarkEditorWindowSnapshotV1> {
@@ -1536,6 +1596,10 @@ impl ExplorerRoot {
 
     pub fn update_bookmark_editor_payload_from_window(&mut self, value: String) {
         self.state.update_bookmark_editor_payload(value);
+    }
+
+    pub fn update_bookmark_folder_editor_name_from_window(&mut self, value: String) {
+        self.state.update_bookmark_folder_editor_name(value);
     }
 
     pub fn dispatch_bookmark_editor_action(
@@ -2698,6 +2762,7 @@ impl ExplorerRoot {
             sftp_address_login: None,
             folder_options_window_observer: None,
             bookmark_editor_window_observer: None,
+            bookmark_manager_window_observer: None,
             last_window_title: None,
             navigation_history_release_deadline: None,
             safe_mode_offers: Vec::new(),
@@ -2796,6 +2861,7 @@ impl ExplorerRoot {
             sftp_address_login: None,
             folder_options_window_observer: None,
             bookmark_editor_window_observer: None,
+            bookmark_manager_window_observer: None,
             last_window_title: None,
             navigation_history_release_deadline: None,
             safe_mode_offers: Vec::new(),
@@ -3573,6 +3639,18 @@ impl ExplorerRoot {
             self.state.cancel_bookmark_editor();
             self.state
                 .set_bookmark_notice("Unable to open the bookmark editor window.");
+        }
+    }
+
+    fn present_bookmark_manager_window(&mut self, cx: &mut Context<Self>) {
+        let snapshot = self.bookmark_manager_window_snapshot();
+        let opened = self
+            .bookmark_manager_window_observer
+            .clone()
+            .is_some_and(|observer| observer(snapshot, cx));
+        if !opened {
+            self.state
+                .set_bookmark_notice("Unable to open the bookmark manager window.");
         }
     }
 
@@ -4941,6 +5019,21 @@ impl ExplorerRoot {
         }
         if action == ExplorerAction::CloseBookmarkContextMenu {
             self.state.close_bookmark_context_menu();
+            cx.notify();
+            return;
+        }
+        if let ExplorerAction::OpenBookmarkToolbarContextMenu { parent_id, x, y } = action {
+            self.state
+                .open_bookmark_toolbar_context_menu(parent_id, x, y);
+            cx.notify();
+            return;
+        }
+        if action == ExplorerAction::CloseBookmarkToolbarContextMenu {
+            self.state.close_bookmark_toolbar_context_menu();
+            cx.notify();
+            return;
+        }
+        if action == ExplorerAction::CloseRemoteContextMenu {
             self.state.close_remote_context_menu();
             cx.notify();
             return;
@@ -4949,8 +5042,12 @@ impl ExplorerRoot {
             self.state.close_bookmark_context_menu();
             cx.notify();
         }
+        if self.state.bookmark_toolbar_context_menu().is_some() {
+            self.state.close_bookmark_toolbar_context_menu();
+            cx.notify();
+        }
         if self.state.remote_context_menu().is_some()
-            && !matches!(action, ExplorerAction::ShowContextMenu { .. })
+            && remote_context_menu_command_dismisses(&action)
         {
             self.state.close_remote_context_menu();
             cx.notify();
@@ -4962,12 +5059,7 @@ impl ExplorerRoot {
                 .entries()
                 .iter()
                 .find(|bookmark| bookmark.id == id)
-                .is_some_and(|bookmark| {
-                    matches!(
-                        bookmark.target,
-                        explorer_model::BookmarkTarget::Folder { .. }
-                    )
-                });
+                .is_some_and(|bookmark| bookmark.target.is_folder());
             if is_folder {
                 self.handle_action(ExplorerAction::NewTab, source, window, cx);
                 self.handle_action(ExplorerAction::ActivateBookmark { id }, source, window, cx);
@@ -5237,6 +5329,42 @@ impl ExplorerRoot {
             });
             cx.notify();
         }
+        if let ExplorerAction::AddPathBookmark { parent_id, kind } = action {
+            let selected_location = self
+                .state
+                .selected_items_for_extension_command()
+                .into_iter()
+                .next()
+                .map(|item| item.location);
+            let location =
+                selected_location.or_else(|| self.state.active_location_for_extension_command());
+            let payload = location.as_ref().map_or_else(
+                String::new,
+                explorer_model::LocationDescriptor::editable_text,
+            );
+            let name = location
+                .as_ref()
+                .and_then(explorer_model::LocationDescriptor::path)
+                .and_then(std::path::Path::file_name)
+                .map_or_else(
+                    || "新書籤".to_owned(),
+                    |name| name.to_string_lossy().into_owned(),
+                );
+            let target = match kind {
+                actions::BookmarkPathKind::Folder => {
+                    explorer_model::BookmarkTarget::FolderPath { path: payload }
+                }
+                actions::BookmarkPathKind::File => {
+                    explorer_model::BookmarkTarget::FilePath { path: payload }
+                }
+            };
+            self.state
+                .begin_new_bookmark_editor_in(name, target, parent_id);
+            cx.on_next_frame(window, |this, _, cx| {
+                this.present_bookmark_editor_window(cx);
+            });
+            cx.notify();
+        }
         if let ExplorerAction::EditBookmark { id } = action {
             self.state.begin_bookmark_editor(Some(id));
             cx.on_next_frame(window, |this, _, cx| {
@@ -5262,7 +5390,8 @@ impl ExplorerRoot {
                 } else {
                 }
             } else {
-                self.state.set_bookmark_notice("Bookmark name is required.");
+                self.state
+                    .set_bookmark_notice("Bookmark name and target are required.");
             }
             cx.notify();
         }
@@ -5375,7 +5504,7 @@ impl ExplorerRoot {
             }
         }
         if action == ExplorerAction::ToggleBookmarkManager {
-            self.state.toggle_bookmark_manager();
+            self.present_bookmark_manager_window(cx);
             cx.notify();
         }
         if action == ExplorerAction::ToggleBookmarkOverflow {
@@ -5458,6 +5587,13 @@ impl ExplorerRoot {
                                 _ => None,
                             })
                             .unwrap_or_else(|| "Bookmark".to_owned()),
+                        explorer_model::BookmarkTarget::FolderPath { path }
+                        | explorer_model::BookmarkTarget::FilePath { path } => {
+                            std::path::Path::new(path).file_name().map_or_else(
+                                || "Bookmark".to_owned(),
+                                |name| name.to_string_lossy().into_owned(),
+                            )
+                        }
                         explorer_model::BookmarkTarget::LuaScript { .. } => unreachable!(),
                     };
                     self.state.begin_new_bookmark_editor(name, target);
@@ -5495,7 +5631,38 @@ impl ExplorerRoot {
                             cx,
                         );
                     }
+                    explorer_model::BookmarkTarget::FolderPath { path } => {
+                        let location = resolve_bookmark_path(&path);
+                        if matches!(location, explorer_model::LocationDescriptor::FileSystem(_))
+                            && !location.path().is_some_and(std::path::Path::is_dir)
+                        {
+                            self.state.set_bookmark_notice(
+                                "Unable to open bookmark: the folder path is unavailable or invalid.",
+                            );
+                            cx.notify();
+                            return;
+                        }
+                        self.handle_action(
+                            ExplorerAction::ActivateNavigationItem { location },
+                            ActionSource::Mouse,
+                            window,
+                            cx,
+                        );
+                    }
                     explorer_model::BookmarkTarget::File { location } => {
+                        let result = self
+                            .bookmark_file_launcher
+                            .as_ref()
+                            .ok_or_else(|| "File launcher is unavailable".to_owned())
+                            .and_then(|launcher| launcher(location));
+                        self.state.set_bookmark_notice(match result {
+                            Ok(()) => "Bookmark opened.".to_owned(),
+                            Err(error) => format!("Unable to open bookmark: {error}"),
+                        });
+                        cx.notify();
+                    }
+                    explorer_model::BookmarkTarget::FilePath { path } => {
+                        let location = resolve_bookmark_path(&path);
                         let result = self
                             .bookmark_file_launcher
                             .as_ref()
@@ -5736,6 +5903,8 @@ impl ExplorerRoot {
                     owner_window,
                     menu_x,
                     menu_y,
+                    x,
+                    y,
                     false,
                     extended_verbs,
                 ) {
@@ -6173,6 +6342,8 @@ impl ExplorerRoot {
             owner_window,
             x,
             y,
+            client_x,
+            client_y,
             keyboard_invoked,
             extended_verbs,
         } = &action
@@ -6181,6 +6352,8 @@ impl ExplorerRoot {
                 *owner_window,
                 *x,
                 *y,
+                *client_x,
+                *client_y,
                 *keyboard_invoked,
                 *extended_verbs,
             )
@@ -6374,6 +6547,8 @@ impl ExplorerRoot {
                     owner_window,
                     x,
                     y,
+                    client_x: f32::from(position.x),
+                    client_y: f32::from(position.y),
                     keyboard_invoked: true,
                     extended_verbs: false,
                 });
@@ -6914,7 +7089,7 @@ fn shell_icon_texture(payload: &explorer_model::ShellIconPayload) -> Option<Arc<
 
 fn bc7_texture(raster: &explorer_model::Bc7RasterPayload) -> Option<Arc<RenderImage>> {
     raster.validate(64 * 1024 * 1024).then(|| {
-        gpui::RenderImage::new_bc7_srgb(gpui::CompressedRaster {
+        RenderImage::new_bc7_srgb(gpui::CompressedRaster {
             kind: match raster.kind {
                 explorer_model::CompressedRasterKind::Icon => gpui::CompressedRasterKind::Icon,
                 explorer_model::CompressedRasterKind::Thumbnail => {
@@ -7259,6 +7434,16 @@ impl Render for ExplorerRoot {
                 }),
             )
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if this.state.remote_context_menu().is_some() && event.keystroke.key == "escape" {
+                    cx.stop_propagation();
+                    this.handle_action(
+                        ExplorerAction::CloseRemoteContextMenu,
+                        ActionSource::Keyboard,
+                        window,
+                        cx,
+                    );
+                    return;
+                }
                 if this.state.bookmark_context_menu().is_some() && event.keystroke.key == "escape" {
                     cx.stop_propagation();
                     this.handle_action(
@@ -7818,8 +8003,9 @@ mod tests {
         file_view_navigation_target, folder_admission_for_entry, folder_size_result_is_current,
         is_command_prompt_address, is_passive_pointer_action, lua_bookmark_notice,
         lua_bookmark_request, physical_client_to_logical, prepare_shell_texture_pixels,
-        seed_active_visual_tab, should_end_address_edit, should_end_inline_rename,
-        synchronize_theme, thumbnail_texture, window_title_for_history_entry,
+        remote_context_menu_command_dismisses, seed_active_visual_tab, should_end_address_edit,
+        should_end_inline_rename, synchronize_theme, thumbnail_texture,
+        window_title_for_history_entry,
     };
 
     #[test]
@@ -8468,6 +8654,27 @@ mod tests {
     }
 
     #[test]
+    fn remote_context_menu_ignores_pointer_updates_and_dismisses_for_commands() {
+        assert!(!remote_context_menu_command_dismisses(
+            &ExplorerAction::UpdateFileDrag { x: 12.0, y: 24.0 }
+        ));
+        assert!(!remote_context_menu_command_dismisses(
+            &ExplorerAction::ClearExternalDrag
+        ));
+        for action in [
+            ExplorerAction::OpenFocused,
+            ExplorerAction::CutSelected,
+            ExplorerAction::CopySelected,
+            ExplorerAction::BeginRenameFocused,
+            ExplorerAction::RecycleDeleteSelected,
+            ExplorerAction::CreateFolder,
+            ExplorerAction::Paste,
+        ] {
+            assert!(remote_context_menu_command_dismisses(&action));
+        }
+    }
+
+    #[test]
     fn qos_presentation_boundary_accepts_current_generation_and_rejects_superseded_results() {
         let mut root = ExplorerRoot::new(UiTokens::default());
         let command = root
@@ -8639,7 +8846,7 @@ mod tests {
             super::thumbnail_pixel_cache_byte_budget(&settings),
             256 * 1024 * 1024
         );
-        let mut cache = super::VisibleItemIconCache::default();
+        let mut cache = VisibleItemIconCache::default();
         cache.set_byte_budget(budget);
         for id in 0_u8..16 {
             let item_id = explorer_model::ShellItemId::from_provider_bytes([id + 1])
@@ -9051,7 +9258,7 @@ mod tests {
         };
         let menu = root
             .state
-            .begin_context_menu_request(None, 1, 0, 0, true, false)
+            .begin_context_menu_request(None, 1, 0, 0, 0.0, 0.0, true, false)
             .expect("background context menu request");
         assert!(root.state.context_menu_pending());
         assert!(!root.submit_command(menu));
