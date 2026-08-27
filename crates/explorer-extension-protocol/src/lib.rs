@@ -114,6 +114,7 @@ pub struct ContextMenuPayload {
     pub keyboard_invoked: bool,
     /// 0 = Explorer, 1 = Explorer plus Shift-extended verbs.
     pub invocation_profile: u8,
+    pub paste_available: bool,
     pub item_descriptors: Vec<Vec<u8>>,
     pub verb: Option<String>,
 }
@@ -246,7 +247,7 @@ pub enum PreviewMessage {
 }
 
 impl ContextMenuPayload {
-    pub const VERSION: u8 = 2;
+    pub const VERSION: u8 = 3;
     /// Encodes the complete context request with explicit lengths. Numeric HWND values are
     /// treated only as a cross-process owner contract; no pointer is dereferenced here.
     ///
@@ -262,6 +263,7 @@ impl ContextMenuPayload {
         bytes.extend_from_slice(&self.point_y.to_le_bytes());
         bytes.push(u8::from(self.keyboard_invoked));
         bytes.push(self.invocation_profile);
+        bytes.push(u8::from(self.paste_available));
         let count = u16::try_from(self.item_descriptors.len())
             .map_err(|_| ProtocolError::Oversized(self.item_descriptors.len()))?;
         bytes.extend_from_slice(&count.to_le_bytes());
@@ -309,6 +311,11 @@ impl ContextMenuPayload {
             _ => return Err(ProtocolError::Malformed),
         };
         let invocation_profile = cursor.u8()?;
+        let paste_available = match cursor.u8()? {
+            0 => false,
+            1 => true,
+            _ => return Err(ProtocolError::Malformed),
+        };
         let count = usize::from(cursor.u16()?);
         let mut item_descriptors = Vec::with_capacity(count.min(256));
         for _ in 0..count {
@@ -338,6 +345,7 @@ impl ContextMenuPayload {
             point_y,
             keyboard_invoked,
             invocation_profile,
+            paste_available,
             item_descriptors,
             verb,
         };
@@ -1133,6 +1141,7 @@ mod tests {
             point_y: 45,
             keyboard_invoked: true,
             invocation_profile: 1,
+            paste_available: true,
             item_descriptors: vec![b"C:\\one.txt".to_vec(), b"C:\\two.txt".to_vec()],
             verb: Some("open".to_owned()),
         };
@@ -1314,6 +1323,7 @@ mod tests {
                 point_y: 0,
                 keyboard_invoked: false,
                 invocation_profile: 0,
+                paste_available: false,
                 item_descriptors: Vec::new(),
                 verb: None
             }

@@ -77,11 +77,10 @@ VIAddVersionKey /LANG=1033 "FileVersion" "${APP_VERSION}"
 VIAddVersionKey /LANG=1033 "ProductVersion" "${APP_VERSION}"
 
 !define MUI_ABORTWARNING
-!define PLUGIN_ARGS "--plugin-dll $\"$INSTDIR\plugins\rust_folder_size_visual_column.dll$\" --plugin-dll $\"$INSTDIR\plugins\rust_folder_size_map_view.dll$\" --plugin-dll $\"$INSTDIR\plugins\rust_tokei_code_lines_column.dll$\" --plugin-dll $\"$INSTDIR\plugins\lua_tokei_code_lines_column.dll$\" --plugin-dll $\"$INSTDIR\plugins\rust_lock_owner_column.dll$\" --plugin-dll $\"$INSTDIR\plugins\rust_exif_rename_command.dll$\" --plugin-dll $\"$INSTDIR\plugins\rust_7z_virtual_folder.dll$\" --plugin-dll $\"$INSTDIR\plugins\lua_bulk_folder_generator.dll$\""
 !ifdef TEST_INSTALL
-    !define APP_ARGS "--diagnostics-console ${PLUGIN_ARGS}"
+    !define APP_ARGS "--diagnostics-console"
 !else
-    !define APP_ARGS "${PLUGIN_ARGS}"
+    !define APP_ARGS ""
 !endif
 !ifdef INCLUDE_SUPERDESKTOP
     !define MUI_FINISHPAGE_RUN "$INSTDIR\superdesktop-app.exe"
@@ -190,14 +189,14 @@ service_ready_for_files:
     File /oname=Everything64.dll "${EVERYTHING_DLL}"
 
     SetOutPath "$INSTDIR\plugins"
-    File /oname=rust_folder_size_visual_column.dll "${PLUGIN_FOLDER_SIZE}"
-    File /oname=rust_folder_size_map_view.dll "${PLUGIN_SIZE_MAP}"
-    File /oname=rust_tokei_code_lines_column.dll "${PLUGIN_RUST_TOKEI}"
-    File /oname=lua_tokei_code_lines_column.dll "${PLUGIN_LUA_TOKEI}"
-    File /oname=rust_lock_owner_column.dll "${PLUGIN_LOCK_OWNER}"
-    File /oname=rust_exif_rename_command.dll "${PLUGIN_EXIF_RENAME}"
-    File /oname=rust_7z_virtual_folder.dll "${PLUGIN_7Z}"
-    File /oname=lua_bulk_folder_generator.dll "${PLUGIN_BULK_FOLDER}"
+    File /oname=rust-folder-size-visual-column.sepack "${PLUGIN_FOLDER_SIZE}"
+    File /oname=rust-folder-size-map-view.sepack "${PLUGIN_SIZE_MAP}"
+    File /oname=rust-tokei-code-lines-column.sepack "${PLUGIN_RUST_TOKEI}"
+    File /oname=lua-tokei-code-lines-column.sepack "${PLUGIN_LUA_TOKEI}"
+    File /oname=rust-lock-owner-column.sepack "${PLUGIN_LOCK_OWNER}"
+    File /oname=rust-exif-rename-command.sepack "${PLUGIN_EXIF_RENAME}"
+    File /oname=rust-7z-virtual-folder.sepack "${PLUGIN_7Z}"
+    File /oname=lua-bulk-folder-generator.sepack "${PLUGIN_BULK_FOLDER}"
 
     !ifdef INCLUDE_SUPERDESKTOP
         !insertmacro InstallSuperDesktopFiles "$INSTDIR"
@@ -350,6 +349,7 @@ un.service_ready_for_delete:
     Delete "$INSTDIR\superexplorer-mft-service.exe"
     Delete "$INSTDIR\explorer-extension-worker.exe"
     Delete "$INSTDIR\Everything64.dll"
+    Delete "$INSTDIR\plugins\*.sepack"
     Delete "$INSTDIR\plugins\rust_folder_size_visual_column.dll"
     Delete "$INSTDIR\plugins\rust_folder_size_map_view.dll"
     Delete "$INSTDIR\plugins\rust_tokei_code_lines_column.dll"

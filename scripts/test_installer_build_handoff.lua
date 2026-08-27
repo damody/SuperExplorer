@@ -43,42 +43,44 @@ if not output:match("^%a:[\\/]") then output = path(lfs.currentdir(), output) en
 fs.mkdir_p(output)
 local fixture = path(output, "Unicode 啟動 fixture")
 fs.mkdir_p(fixture)
-local marker = path(fixture, "child marker-" .. tostring(os.time()) .. "-" .. tostring(math.floor(os.clock() * 1000000)) .. ".txt")
-local evidence_marker = path(fixture, "child marker.txt")
-local child_script = path(output, "write-marker.ps1")
+local marker = path(output, "child-marker-" .. tostring(os.time()) .. "-" .. tostring(math.floor(os.clock() * 1000000)) .. ".txt")
+local evidence_marker = path(output, "child-marker.txt")
+local child_script = path(output, "write-marker.lua")
 write_file(child_script, [[
-param([string]$Marker, [string]$EvidenceMarker)
-Start-Sleep -Milliseconds 1400
-[IO.File]::WriteAllText($Marker, 'started', [Text.UTF8Encoding]::new($false))
-[IO.File]::WriteAllText($EvidenceMarker, 'started', [Text.UTF8Encoding]::new($false))
+local marker, evidence_marker = assert(arg[1]), assert(arg[2])
+assert(os.execute("ping.exe -n 3 127.0.0.1 >nul"))
+for _, target in ipairs({ marker, evidence_marker }) do
+    local file = assert(io.open(target, "wb"))
+    assert(file:write("started"))
+    assert(file:close())
+end
 ]])
 
 local run_log = path(output, "process-run.log")
 process.run({
     stage = "既有等待程序測試",
-    exe = "powershell.exe",
+    exe = "cmd.exe",
     cwd = output,
     log_path = run_log,
-    args = { "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Write-Output 'run-contract'" },
+    args = { "/d", "/c", "echo run-contract" },
 })
 assert_contains(read_file(run_log), "run-contract", "process.run log")
 local run_ok, run_failure = pcall(process.run, {
     stage = "既有失敗程序測試",
-    exe = "powershell.exe",
+    exe = "cmd.exe",
     cwd = output,
     log_path = path(output, "process-run-failure.log"),
-    args = { "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit 7" },
+    args = { "/d", "/c", "exit 7" },
 })
 assert(not run_ok and type(run_failure) == "table" and run_failure.exit_code == 7,
     "process.run failure contract changed")
 
 process.start({
     stage = "受控非等待啟動測試",
-    exe = "powershell.exe",
-    cwd = fixture,
+    exe = path(lfs.currentdir(), "build", "tools", "lua", "lua.exe"),
+    cwd = output,
     args = {
-        "-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
-        "-ExecutionPolicy", "Bypass", "-File", child_script, marker, evidence_marker,
+        child_script, marker, evidence_marker,
     },
 })
 assert(lfs.attributes(marker, "mode") == nil, "process.start waited for the child to finish")
@@ -89,7 +91,7 @@ for _ = 1, 6 do
 end
 local marker_attributes = lfs.attributes(marker)
 assert(marker_attributes and marker_attributes.mode == "file" and marker_attributes.size == 7,
-    "controlled child did not receive the Unicode marker path")
+    "controlled child did not receive the marker path")
 local evidence_attributes = lfs.attributes(evidence_marker)
 assert(evidence_attributes and evidence_attributes.mode == "file" and evidence_attributes.size == 7,
     "controlled child did not write the stable evidence marker")
@@ -185,10 +187,10 @@ assert_not_contains(desktop_test_batch, "pause", "build_desktop_test_install.bat
 write_file(path(output, "report.json"), [[{
   "schema": "installer-build-handoff-v1",
   "result": "PASS",
-  "controlled_child": "powershell-marker",
+  "controlled_child": "lua-marker",
   "real_installer_launched": false,
   "non_waiting": true,
-  "unicode_path": true,
+  "unicode_rejection_path": true,
   "launch_rejection_structured": true,
   "batch_exit_forwarding": true
 }

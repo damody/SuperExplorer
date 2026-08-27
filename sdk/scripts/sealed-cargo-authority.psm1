@@ -2,6 +2,17 @@ Set-StrictMode -Version Latest
 
 $script:PinnedToolchainName = '1.97.1-x86_64-pc-windows-msvc'
 
+function Get-SealedFileSha256([string]$Path) {
+    $stream = [IO.File]::OpenRead($Path)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Assert-NoCargoReparsePath([string]$Path) {
     $cursor = [IO.Path]::GetFullPath($Path)
     while ($true) {
@@ -63,8 +74,8 @@ function New-SealedCargoAuthority($Toolchain, [scriptblock] $AfterRustcLock) {
         # The same handle remains live for the complete Cargo invocation.
         $rustcHandle = [IO.File]::Open($rustc, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
         if ($AfterRustcLock) { & $AfterRustcLock $rustc }
-        $cargoHash = (Get-FileHash -LiteralPath $cargo -Algorithm SHA256).Hash.ToLowerInvariant()
-        $rustcHash = (Get-FileHash -LiteralPath $rustc -Algorithm SHA256).Hash.ToLowerInvariant()
+        $cargoHash = Get-SealedFileSha256 $cargo
+        $rustcHash = Get-SealedFileSha256 $rustc
         if ($cargoHash -cne $Toolchain.cargo_sha256 -or $rustcHash -cne $Toolchain.rustc_sha256) {
             throw 'actual pinned cargo.exe or rustc.exe SHA-256 differs from sdk-lock'
         }
@@ -79,7 +90,7 @@ function New-SealedCargoAuthority($Toolchain, [scriptblock] $AfterRustcLock) {
             $destination = [IO.File]::Open($sealed, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
             try { $source.CopyTo($destination) } finally { $destination.Dispose() }
         } finally { $source.Dispose() }
-        $sealedHash = (Get-FileHash -LiteralPath $sealed -Algorithm SHA256).Hash.ToLowerInvariant()
+        $sealedHash = Get-SealedFileSha256 $sealed
         if ($sealedHash -cne $cargoHash) { throw 'sealed Cargo copy hash differs from the verified actual cargo.exe' }
         Assert-ToolVersion $sealed 'sealed Cargo' $Toolchain.cargo_release $Toolchain.cargo_commit_hash $Toolchain.target
         return [pscustomobject]@{

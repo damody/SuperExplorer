@@ -195,6 +195,16 @@ impl PreparedNativeJobV1 {
         let Some(permit) = self.permit.take() else {
             return Err(ExtensionJobRuntimeErrorV1::TerminalPublicationDenied);
         };
+        if terminal.into_raw() == JobTerminalV1::PANICKED.into_raw() {
+            let finish = self.ticket.publish_terminal_after_marker_clear(terminal)?;
+            self.markers
+                .record_timing(&self.marker, elapsed, NativeCallTerminalV1::Panicked);
+            // Intentionally retain the durable marker. The next startup
+            // converts it into global Safe Mode and denies every plugin until
+            // explicit user confirmation.
+            drop(permit);
+            return Ok(finish);
+        }
         if permit.clear().is_err() {
             self.ticket.fail_marker_clear();
             self.markers
@@ -662,6 +672,11 @@ impl NativeActivationExecutor for GuardedNativeActivationExecutorV1 {
             Err(NativeActivationFailureV1::Faulted) => NativeCallTerminalV1::Panicked,
             Err(NativeActivationFailureV1::Rejected) => NativeCallTerminalV1::PluginError,
         };
+        if terminal == NativeCallTerminalV1::Panicked {
+            self.markers.record_timing(&marker, elapsed, terminal);
+            drop(permit);
+            return claim;
+        }
         if permit.clear().is_err() {
             self.markers
                 .record_timing(&marker, elapsed, NativeCallTerminalV1::MarkerFailure);

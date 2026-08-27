@@ -488,6 +488,7 @@ impl BrokerClient {
             point_y: request.point.y,
             keyboard_invoked: request.keyboard_invoked,
             invocation_profile: u8::from(request.invocation_profile.extended_verbs()),
+            paste_available: request.paste_available,
             item_descriptors: descriptors,
             verb: request.requested_verb.clone(),
         }
@@ -1336,6 +1337,7 @@ mod tests {
             explorer_model::ContextMenuHostCommand::Open,
             explorer_model::ContextMenuHostCommand::Cut,
             explorer_model::ContextMenuHostCommand::Copy,
+            explorer_model::ContextMenuHostCommand::Paste,
             explorer_model::ContextMenuHostCommand::CopyPath,
             explorer_model::ContextMenuHostCommand::CreateShortcut,
             explorer_model::ContextMenuHostCommand::Delete,

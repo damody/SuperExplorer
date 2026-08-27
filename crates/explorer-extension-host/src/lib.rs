@@ -683,6 +683,7 @@ struct ExtensionHostRuntimeV1 {
     feature_state: FeatureStateRuntimeV1,
     native_lifecycle: Option<NativeExtensionLifecycleV1>,
     startup_admissions: Vec<NativeStartupAdmissionV1>,
+    discovered_package_ids: Vec<String>,
     startup_diagnostics: Vec<ExtensionStartupDiagnosticV1>,
     job_runtime: Arc<ExtensionJobRuntimeV1>,
     job_ui_ingress: ExtensionJobUiIngressV1,
@@ -954,6 +955,12 @@ impl ExtensionHost {
         };
 
         let resolution = PackageResolverV1::resolve(&validated);
+        let mut discovered_package_ids = validated
+            .iter()
+            .map(|package| package.manifest().package.id.clone())
+            .collect::<Vec<_>>();
+        discovered_package_ids.sort();
+        discovered_package_ids.dedup();
         for blocked in resolution.blocked_packages() {
             push_startup_diagnostic(
                 &mut startup_diagnostics,
@@ -1031,6 +1038,7 @@ impl ExtensionHost {
             },
             native_lifecycle: Some(lifecycle),
             startup_admissions: admissions,
+            discovered_package_ids,
             startup_diagnostics,
             job_runtime,
             job_ui_ingress,
@@ -1056,6 +1064,15 @@ impl ExtensionHost {
         self.runtime
             .as_ref()
             .map_or(&[], |runtime| runtime.startup_admissions.as_slice())
+    }
+
+    /// Returns validated package IDs discovered from configured package inputs,
+    /// including packages disabled by desired state.
+    #[must_use]
+    pub fn discovered_package_ids(&self) -> &[String] {
+        self.runtime
+            .as_ref()
+            .map_or(&[], |runtime| runtime.discovered_package_ids.as_slice())
     }
 
     /// Returns bounded path-free package failures observed during this startup.
@@ -1108,6 +1125,25 @@ impl ExtensionHost {
             state
                 .set_package_desired(package_id, desired)
                 .map_err(|_| FeatureStateMutationErrorV1::InvalidIdentifier)
+        })
+    }
+
+    /// Atomically persists a complete set of package desired-state updates.
+    pub fn set_package_feature_desired_batch(
+        &mut self,
+        updates: impl IntoIterator<Item = (String, DesiredStateV1)>,
+    ) -> Result<(), FeatureStateMutationErrorV1> {
+        self.update_feature_state_v1(|state| {
+            // Reaching this mutation requires an explicit Folder Options
+            // Apply/OK action, which is also the user's Safe Mode recovery
+            // confirmation. Individual package choices remain authoritative.
+            state.set_global_desired(DesiredStateV1::Enabled);
+            for (package_id, desired) in updates {
+                state
+                    .set_package_desired(package_id, desired)
+                    .map_err(|_| FeatureStateMutationErrorV1::InvalidIdentifier)?;
+            }
+            Ok(())
         })
     }
 

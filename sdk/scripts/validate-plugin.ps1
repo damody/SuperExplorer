@@ -6,6 +6,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
 $sdk = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $root = (Resolve-Path -LiteralPath $PluginRoot).Path
 $core = Join-Path $sdk 'tools\plugin-tooling'

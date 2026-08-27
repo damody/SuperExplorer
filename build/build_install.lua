@@ -13,6 +13,7 @@ local process = require("process")
 local publish = require("publish")
 local sdk_version = require("sdk_version")
 local installer_components = require("installer_components")
+local finalize_superexplorer = require("finalize_superexplorer")
 
 if script_dir == "build" then
     script_dir = path_util.join(lfs.currentdir(), "build")
@@ -47,8 +48,18 @@ local function write_file(file_path, contents)
     assert(file:close())
 end
 
-local function powershell_literal(value)
-    return "'" .. tostring(value):gsub("'", "''") .. "'"
+local function newest_sepack(directory, bundle_id)
+    local selected, selected_time
+    for name in lfs.dir(directory) do
+        if name:match("%-" .. bundle_id:gsub("([^%w])", "%%%1") .. "%.sepack$") then
+            local candidate = path(directory, name)
+            local modified = lfs.attributes(candidate, "modification")
+            if modified and (not selected_time or modified > selected_time or (modified == selected_time and candidate < selected)) then
+                selected, selected_time = candidate, modified
+            end
+        end
+    end
+    return selected
 end
 
 local function commit_version()
@@ -215,11 +226,12 @@ local function main()
         )
     end
 
-    local finalizer
     local plugin_specs = {}
     local superexplorer_inputs = {}
     if options.include_superexplorer then
-        finalizer = require_file(path(root, "scripts", "finalize_windows_artifact.ps1"), "發行版最終處理腳本")
+        local sdk_lock = read_file(require_file(path(root, "sdk", "sdk-lock.json"), "SDK lock"))
+        local plugin_bundle_id = sdk_lock:match('"bundle_id"%s*:%s*"([%w%-]+)"')
+        if not plugin_bundle_id then error("sdk-lock.json 缺少有效 bundle_id", 0) end
         plugin_specs = {
             { define = "PLUGIN_FOLDER_SIZE", root = "rust-folder-size-visual-column", dll = "rust_folder_size_visual_column.dll" },
             { define = "PLUGIN_SIZE_MAP", root = "rust-folder-size-map-view", dll = "rust_folder_size_map_view.dll" },
@@ -231,8 +243,12 @@ local function main()
             { define = "PLUGIN_BULK_FOLDER", root = "lua-bulk-folder-generator", dll = "lua_bulk_folder_generator.dll" },
         }
         for _, plugin in ipairs(plugin_specs) do
-            plugin.manifest = require_file(path(root, "sdk", "fixtures", plugin.root, "Cargo.toml"), plugin.root .. " manifest")
-            plugin.path = path(root, "sdk", "fixtures", plugin.root, "target", "x86_64-pc-windows-msvc", "release", plugin.dll)
+            plugin.root_path = path(root, "sdk", "fixtures", plugin.root)
+            plugin.manifest = require_file(path(plugin.root_path, "plugin-project.json"), plugin.root .. " project manifest")
+            plugin.path = newest_sepack(path(plugin.root_path, "dist"), plugin_bundle_id)
+            if not plugin.path then
+                error(plugin.root .. " 缺少目前 SDK bundle " .. plugin_bundle_id .. " 的 .sepack 套件", 0)
+            end
         end
         superexplorer_inputs = {
             APP_EXE = path(root, "target", "release", "SuperExplorer.exe"),
@@ -284,26 +300,7 @@ local function main()
 
     if not options.skip_build then
         if options.include_superexplorer then
-            process.run({
-                stage = "建置並驗證 SuperExplorer 發行版執行檔",
-                exe = "powershell.exe",
-                args = { "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", finalizer, "-Profile", "release" },
-                cwd = root,
-                log_path = path(logs, "installer-superexplorer-release.log"),
-            })
-            for _, plugin in ipairs(plugin_specs) do
-                process.run({
-                    stage = "建置內附 " .. plugin.root .. " Plugin",
-                    exe = "powershell.exe",
-                    args = {
-                        "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
-                        "$ErrorActionPreference='Stop'; & cargo.exe build --manifest-path " .. powershell_literal(plugin.manifest)
-                            .. " --release --target x86_64-pc-windows-msvc --locked --offline; exit $LASTEXITCODE",
-                    },
-                    cwd = root,
-                    log_path = path(logs, "installer-plugin-" .. plugin.root .. "-release.log"),
-                })
-            end
+            finalize_superexplorer.run(root, "release", logs)
         end
         if options.include_superdesktop then
             process.run({
@@ -334,7 +331,8 @@ local function main()
         selected_size = selected_size + validate_executable(file_path, "SuperExplorer " .. define)
     end
     for _, plugin in ipairs(plugin_specs) do
-        selected_size = selected_size + validate_executable(plugin.path, plugin.root .. " Plugin DLL")
+        require_file(plugin.path, plugin.root .. " Plugin .sepack")
+        selected_size = selected_size + assert(lfs.attributes(plugin.path, "size"))
     end
     for define, file_path in pairs(superdesktop_inputs) do
         selected_size = selected_size + validate_executable(file_path, "SuperDesktop " .. define)
