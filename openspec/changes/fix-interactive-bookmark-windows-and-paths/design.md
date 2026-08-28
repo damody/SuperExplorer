@@ -72,6 +72,12 @@ The `ActivateBookmark` reducer synchronously clears both browse-only popups—th
 
 Bookmark right-click stores a validated bookmark ID and pointer coordinates in root view state and renders a compact inline menu using the same geometry, surface, border, radius, spacing, hover, shadow, and danger colors as the logical-folder context menu. Open, optional Open in New Tab, and Edit dispatch directly after dismissal. Delete dismisses the menu and presents the existing dedicated confirmation window. The former native action window is no longer part of the right-click route.
 
+### Bookmarked-location star editor
+
+The toolbar continues to derive current-location state from the exact typed target lookup. An existing match renders a solid star in the theme focus blue; a bookmarkable unmatched location renders an outline star. Both states use the existing toggle action, but an existing ID starts an update draft and presents the singleton `BookmarkEditorWindow` rather than removing immediately. The editor remains a normal independent window whose initial width is 80% of the primary display with a 640px minimum; it is resizable and retains editable name and arbitrary path fields, destination selection, Remove, Cancel, and Save. Browser-only controls without a SuperExplorer behavior are intentionally omitted.
+
+The editor suppresses the native titlebar so Windows does not add minimize, maximize, and close controls. Its in-content action row always exposes Remove Bookmark, Cancel, and Save. Remove uses the durable deletion path for an existing draft ID; for a not-yet-persisted add draft it cancels creation, producing the same visible result without a fake deletion.
+
 ### Evidence-driven corrections
 
 A-level changes may refine task order, tests, or internal method names. B-level corrections within this approved behavior require synchronized design/spec/task updates and stale-evidence marking. C-level changes—including website URLs, new dependencies, weaker persistence gates, or filesystem mutation—require user approval.

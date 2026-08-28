@@ -271,3 +271,53 @@
 - [x] 11.1.3 Route normal commands after dismissal and Delete through the existing confirmation window.
 - [x] 11.1.4 Remove native action-window presentation from right-click and add regression coverage.
 - [x] 11.1.5 Run focused UI tests, app check, formatting, strict OpenSpec validation, and scoped diff review.
+
+## 12. Bookmarked-location star editor
+
+### 12.1 Stateful star and compact editor
+
+**目的：** Make the current-location bookmark state visible and provide Firefox-inspired editing in a dedicated window.
+**輸入：** Current typed-target lookup, existing toggle action, and shared bookmark editor content.
+**產出：** Focus-blue solid state, compact fixed window, and regression coverage.
+**依賴：** 1.1, 3.1.
+**Owner／Wave：** Primary integrator／wave 14.
+**Gate／Evidence：** G18; focused UI tests, application check, and strict OpenSpec validation.
+**完成門檻：** An exact existing bookmark shows a blue solid star and clicking it opens the compact editor with edit/save/remove controls.
+
+- [x] 12.1.1 Render an exact current-location bookmark as a solid theme-focus-blue star while retaining the outline and disabled states.
+- [x] 12.1.2 Restyle the existing normal bookmark editor as a compact fixed-size window without changing its authoritative edit flow.
+- [x] 12.1.3 Add regression coverage for star state, editor dispatch, window contract, and retained controls.
+- [x] 12.1.4 Run focused UI tests, application check, formatting, strict OpenSpec validation, and scoped diff review.
+
+## 13. Responsive bookmark editor width correction
+
+### 13.1 Restore display-relative sizing
+
+**目的：** Preserve the requested wide editor presentation across display sizes.
+**輸入：** Primary-display bounds and existing dedicated editor options.
+**產出：** 80%-wide resizable editor with a safe minimum and regression tests.
+**依賴：** 12.1.
+**Owner／Wave：** Primary integrator／wave 15.
+**Gate／Evidence：** G19; width unit tests, focused window test, app check, and strict validation.
+**完成門檻：** The editor initially uses 80% of display width, never less than 640px, and remains resizable.
+
+- [x] 13.1.1 Restore display-relative 80% width, 640px minimum, 560px height, and resizable window options.
+- [x] 13.1.2 Add width calculation and window-contract regression coverage.
+- [x] 13.1.3 Run focused tests, application check, formatting, strict OpenSpec validation, and scoped diff review.
+
+## 14. Frameless editor action correction
+
+### 14.1 Complete action row and remove native controls
+
+**目的：** Match the requested bookmark editor controls without Windows chrome.
+**輸入：** Existing editor draft identity, remove reducer, and window options.
+**產出：** Always-visible Remove action, unsaved-draft cancellation, and frameless window.
+**依賴：** 13.1.
+**Owner／Wave：** Primary integrator／wave 16.
+**Gate／Evidence：** G20; focused UI/window tests, app check, and strict validation.
+**完成門檻：** Remove is always visible and meaningful, while no native caption buttons appear.
+
+- [x] 14.1.1 Render Remove Bookmark for both persisted and unsaved editor drafts.
+- [x] 14.1.2 Cancel an unsaved add draft through Remove while retaining durable deletion for existing IDs.
+- [x] 14.1.3 Suppress the native titlebar and add action/window contract regression tests.
+- [x] 14.1.4 Run focused tests, application check, formatting, strict OpenSpec validation, and scoped diff review.
