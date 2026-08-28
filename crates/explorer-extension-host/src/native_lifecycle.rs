@@ -2490,7 +2490,21 @@ impl StartupSession<'_> {
                 });
             }
         };
-        let admission = self.lifecycle.admit_loaded(permit, resolved, &loaded)?;
+        let admission = match self.lifecycle.admit_loaded(permit, resolved, &loaded) {
+            Ok(admission) => admission,
+            Err(error) => {
+                // Loading completed and the guarded registrar returned a typed
+                // rejection. This is not an interrupted LoadLibrary call and
+                // must not leave a crash marker that disables every plugin on
+                // the next launch.
+                if let Some(marker) = load_marker {
+                    marker
+                        .clear()
+                        .map_err(|_| NativeLifecycleErrorV1::MarkerStateUnavailable)?;
+                }
+                return Err(error);
+            }
+        };
         if let Some(marker) = load_marker {
             marker
                 .clear()

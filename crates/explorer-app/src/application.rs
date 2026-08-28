@@ -3979,6 +3979,7 @@ impl ApplicationLifecycle {
             explorer_extension_host::ExtensionHost::with_config(extension_config);
         extension_host.start()?;
         let mut startup_plugin_dlls = plugin_dlls.to_vec();
+        startup_plugin_dlls.extend(extension_host.startup_plugin_dlls().iter().cloned());
         startup_plugin_dlls.sort();
         startup_plugin_dlls.dedup();
         let mut direct_loaded = Vec::new();

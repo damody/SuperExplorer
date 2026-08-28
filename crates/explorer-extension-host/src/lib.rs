@@ -685,6 +685,8 @@ struct ExtensionHostRuntimeV1 {
     startup_admissions: Vec<NativeStartupAdmissionV1>,
     discovered_package_ids: Vec<String>,
     startup_diagnostics: Vec<ExtensionStartupDiagnosticV1>,
+    startup_plugin_dlls: Vec<PathBuf>,
+    _startup_plugin_guards: Vec<SealedPackageActivationGuardV1>,
     job_runtime: Arc<ExtensionJobRuntimeV1>,
     job_ui_ingress: ExtensionJobUiIngressV1,
     job_ui_inbox: Option<ExtensionJobUiInboxV1>,
@@ -1016,8 +1018,8 @@ impl ExtensionHost {
                 Ok(admitted)
             },
         )?;
-        for (resolved, state) in resolution.resolved_packages().iter().zip(admission_states) {
-            if state == DependencyAdmissionStateV1::BlockedByFailedDependency {
+        for (resolved, state) in resolution.resolved_packages().iter().zip(&admission_states) {
+            if *state == DependencyAdmissionStateV1::BlockedByFailedDependency {
                 push_startup_diagnostic(
                     &mut startup_diagnostics,
                     ExtensionStartupDiagnosticCodeV1::RequiredDependencyAdmissionFailed,
@@ -1026,6 +1028,32 @@ impl ExtensionHost {
             }
         }
         session.seal()?;
+
+        // Native admission validates and maps package roots for the host
+        // lifecycle.  The application also needs the same immutable DLLs to
+        // obtain the UI contribution objects (columns, views and virtual
+        // folders). Retain a second read-only activation lease so those paths
+        // cannot be replaced between admission and application composition.
+        let mut startup_plugin_dlls = Vec::new();
+        let mut startup_plugin_guards = Vec::new();
+        for (resolved, state) in resolution.resolved_packages().iter().zip(&admission_states) {
+            if *state == DependencyAdmissionStateV1::BlockedByFailedDependency
+                || resolved.manifest().rust.is_empty()
+                || package_may_reach_native_authority_v1(&feature_state, resolved.manifest())
+                    != Ok(true)
+            {
+                continue;
+            }
+            let guard = resolved.validation_result().activation_guard()?;
+            for entrypoint in &resolved.manifest().rust {
+                if let Some(path) = guard.runtime_payload_path(&entrypoint.entrypoint) {
+                    startup_plugin_dlls.push(path);
+                }
+            }
+            startup_plugin_guards.push(guard);
+        }
+        startup_plugin_dlls.sort();
+        startup_plugin_dlls.dedup();
 
         let (job_ui_ingress, job_ui_inbox) =
             ExtensionJobUiIngressV1::new_pair(Arc::clone(&job_runtime));
@@ -1040,6 +1068,8 @@ impl ExtensionHost {
             startup_admissions: admissions,
             discovered_package_ids,
             startup_diagnostics,
+            startup_plugin_dlls,
+            _startup_plugin_guards: startup_plugin_guards,
             job_runtime,
             job_ui_ingress,
             job_ui_inbox: Some(job_ui_inbox),
@@ -1073,6 +1103,15 @@ impl ExtensionHost {
         self.runtime
             .as_ref()
             .map_or(&[], |runtime| runtime.discovered_package_ids.as_slice())
+    }
+
+    /// Returns immutable native payloads admitted from validated packages for
+    /// application-level UI contribution composition during this startup.
+    #[must_use]
+    pub fn startup_plugin_dlls(&self) -> &[PathBuf] {
+        self.runtime
+            .as_ref()
+            .map_or(&[], |runtime| runtime.startup_plugin_dlls.as_slice())
     }
 
     /// Returns bounded path-free package failures observed during this startup.

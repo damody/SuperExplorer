@@ -661,6 +661,15 @@ impl fmt::Debug for SealedPackageActivationGuardV1 {
 }
 
 impl SealedPackageActivationGuardV1 {
+    /// Resolves a manifest-declared payload beneath the immutable sealed root.
+    /// The caller must retain this guard for as long as the path is used.
+    #[must_use]
+    pub(crate) fn runtime_payload_path(&self, normalized_path: &str) -> Option<PathBuf> {
+        self.payload_files
+            .contains_key(normalized_path)
+            .then(|| self.root.join(normalized_path))
+    }
+
     #[must_use]
     #[allow(dead_code)] // Consumed by the host's future DLL loader.
     pub(crate) fn payload_file(&self, normalized_path: &str) -> Option<&File> {
