@@ -1,0 +1,30 @@
+# Bookmarked Location Star and Editor Design
+
+## Goal
+
+Make the current-location bookmark control communicate its state immediately and open a compact, Firefox-inspired editor for an existing bookmark.
+
+## Interaction
+
+- A bookmarkable location that is not yet stored shows an outline star.
+- A location whose exact typed bookmark target is already stored shows a solid star in the theme focus blue.
+- Clicking the solid star edits that existing bookmark; it does not remove it immediately.
+- The editor is a normal, independent window. It remains the single route for editing the name, arbitrary path text, and bookmark-folder destination, and for saving or removing the bookmark.
+
+## Presentation
+
+The editor uses a compact fixed-size window centered by GPUI. Its content has a clear title, labeled name and path fields, a bounded destination list, and a right-aligned action row. Existing theme tokens provide surface, focus, accent, and danger colors. The design intentionally does not reproduce browser-only controls that have no SuperExplorer behavior.
+
+## Data Flow and Errors
+
+The toolbar derives the filled state from `current_folder_bookmark_target_and_id`. Clicking dispatches the existing `ToggleCurrentFolderBookmark` action, which starts an update draft when an ID exists and presents the dedicated editor window. Save continues through the existing typed reducer and persistence notice. Arbitrary non-empty path text is retained without filesystem validation; an empty target keeps the editor open.
+
+## Alternatives
+
+1. Reuse the existing editor window and restyle it (selected): preserves one state and persistence path.
+2. Add a second star-specific editor: rejected because save, remove, validation, and rollback behavior would be duplicated.
+3. Show an in-window overlay: rejected because the requested interaction is an independent window and overlays previously caused blocked interaction.
+
+## Verification
+
+Add source-contract coverage for the focus-blue solid star, existing-bookmark editor dispatch, compact normal-window bounds, and retained editor controls. Run focused `explorer-ui` tests, `cargo check -p explorer-app`, formatting checks, and strict OpenSpec validation.
