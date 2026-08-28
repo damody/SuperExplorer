@@ -3,8 +3,8 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, Bounds, Context, FocusHandle, Focusable, IntoElement, Render, SharedString, Window,
-    WindowBounds, WindowHandle, WindowOptions, div, prelude::*, px, size,
+    App, Bounds, Context, FocusHandle, Focusable, IntoElement, Render, Window, WindowBounds,
+    WindowHandle, WindowOptions, div, prelude::*, px, size,
 };
 use gpui_elements::editable_text::{EditableTextState, StringStorage};
 
@@ -34,10 +34,7 @@ pub fn bookmark_editor_window_options(cx: &App) -> WindowOptions {
             size(px(width), px(560.0)),
             cx,
         ))),
-        titlebar: Some(gpui::TitlebarOptions {
-            title: Some(SharedString::from("編輯書籤")),
-            ..Default::default()
-        }),
+        titlebar: None,
         kind: gpui::WindowKind::Normal,
         is_resizable: true,
         window_min_size: Some(size(px(640.0), px(460.0))),
@@ -210,6 +207,8 @@ mod tests {
         assert!(source.contains("window.remove_window()"));
         assert!(source.contains("editor.target.editable_payload()"));
         assert!(source.contains("bookmark_editor_width"));
+        assert!(source.contains("is_resizable: true"));
+        assert!(source.contains("titlebar: None"));
         assert_eq!(bookmark_editor_width(1920.0), 1536.0);
         assert_eq!(bookmark_editor_width(800.0), 640.0);
     }
