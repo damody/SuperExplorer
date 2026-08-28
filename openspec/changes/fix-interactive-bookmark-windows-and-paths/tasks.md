@@ -203,3 +203,71 @@
 - [x] 7.1.2 Add typed move-to-folder action, state bridge, persistence notice, and rollback handling.
 - [x] 7.1.3 Make toolbar bookmark projections native drag sources and folder/root projections drop targets.
 - [x] 7.1.4 Add model regression coverage and run focused bookmark tests, app check, formatting, and strict OpenSpec validation.
+
+## 8. Firefox-style folder content menu
+
+### 8.1 Pointer-button behavior separation
+
+**目的：** Keep left-click folder menus browse-only and right-click menus management-only.
+**輸入：** Existing folder panel, nested bookmark tree, and toolbar context menu.
+**產出：** Ordered immediate content rows, child-folder navigation, and regression tests.
+**依賴：** 3.1, 7.1.
+**Owner／Wave：** Primary integrator／wave 10.
+**Gate／Evidence：** G14; focused UI tests and application check.
+**完成門檻：** Left-click contains no mutation commands; root and nested right-click retain management commands.
+
+- [x] 8.1.1 Replace recursive flattened entries with ordered immediate folder/bookmark menu items.
+- [x] 8.1.2 Add child-folder disclosure navigation and nested right-click context routing.
+- [x] 8.1.3 Remove rename, create-child, and delete controls from the left-click panel.
+- [x] 8.1.4 Add pointer-button separation tests and run focused UI, app, formatting, and OpenSpec validation.
+
+## 9. Provider-aware bookmark icons
+
+### 9.1 Shared icon projection
+
+**目的：** Distinguish Local, ADB, SFTP, and Lua bookmarks consistently.
+**輸入：** Structured and raw bookmark target variants.
+**產出：** Central icon classifier and updated bookmark projections.
+**依賴：** 1.1, 8.1.
+**Owner／Wave：** Primary integrator／wave 11.
+**Gate／Evidence：** G15; classifier and focused UI tests plus app check.
+**完成門檻：** Every bookmark surface uses the same classification without validating raw paths.
+
+- [x] 9.1.1 Add structured/raw Local, ADB, SFTP, and Lua icon classification.
+- [x] 9.1.2 Apply the shared icon to toolbar, overflow, folder content, manager, and navigation projections.
+- [x] 9.1.3 Embed and attribute Lua.org's unchanged official logo with an offline asset integrity test.
+- [x] 9.1.4 Add classification regression tests and run focused UI, app, formatting, and OpenSpec validation.
+
+## 10. Bookmark browse-menu dismissal
+
+### 10.1 Close before activation
+
+**目的：** Prevent folder and overflow menus from remaining visible after bookmark selection.
+**輸入：** Existing activation reducer and browse-menu state.
+**產出：** Synchronous dismissal helper, reducer ordering, and regression test.
+**依賴：** 8.1.
+**Owner／Wave：** Primary integrator／wave 12.
+**Gate／Evidence：** G16; focused reducer/UI tests and application check.
+**完成門檻：** Every bookmark activation attempt closes browse menus before target lookup; child-folder drill-in remains open.
+
+- [x] 10.1.1 Add one state helper that clears folder and overflow browse menus.
+- [x] 10.1.2 Invoke dismissal before bookmark lookup and provider-specific activation.
+- [x] 10.1.3 Add ordering regression coverage and run focused UI, app, formatting, and OpenSpec validation.
+
+## 11. Inline bookmark context menu
+
+### 11.1 Folder-style right-click commands
+
+**目的：** Replace the large bookmark action window route with the logical-folder context-menu style.
+**輸入：** Bookmark right-click actions, folder context styling, and delete confirmation window.
+**產出：** Validated popup state, compact renderer, reducer routing, and regression tests.
+**依賴：** 3.1, 10.1.
+**Owner／Wave：** Primary integrator／wave 13.
+**Gate／Evidence：** G17; focused state/render tests and application check.
+**完成門檻：** Right-click opens only the compact menu; commands dismiss correctly; delete remains confirmed.
+
+- [x] 11.1.1 Add validated bookmark context state with popup exclusivity and close behavior.
+- [x] 11.1.2 Render applicable commands using the folder context menu visual contract.
+- [x] 11.1.3 Route normal commands after dismissal and Delete through the existing confirmation window.
+- [x] 11.1.4 Remove native action-window presentation from right-click and add regression coverage.
+- [x] 11.1.5 Run focused UI tests, app check, formatting, strict OpenSpec validation, and scoped diff review.

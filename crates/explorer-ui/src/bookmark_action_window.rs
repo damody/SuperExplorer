@@ -75,7 +75,6 @@ pub struct BookmarkActionWindow {
     owner: WindowHandle<ExplorerRoot>,
     snapshot: BookmarkActionWindowSnapshotV1,
     selected: BookmarkActionCommand,
-    confirming_delete: bool,
     focus_handle: FocusHandle,
 }
 
@@ -92,7 +91,6 @@ impl BookmarkActionWindow {
             owner,
             snapshot,
             selected: BookmarkActionCommand::Open,
-            confirming_delete: false,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -105,22 +103,21 @@ impl BookmarkActionWindow {
     ) {
         self.snapshot = snapshot;
         self.selected = BookmarkActionCommand::Open;
-        self.confirming_delete = false;
         cx.notify();
         window.refresh();
     }
 
     fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let id = self.snapshot.bookmark.id;
-        if self.selected == BookmarkActionCommand::Delete && !self.confirming_delete {
-            self.confirming_delete = true;
-            cx.notify();
-            window.refresh();
+        if self.selected == BookmarkActionCommand::Delete {
+            let owner = self.owner;
+            let _ = owner.update(cx, |root, _, cx| {
+                root.present_bookmark_delete_window(id, cx);
+            });
+            window.remove_window();
             return;
         }
-        let action = if self.confirming_delete {
-            ExplorerAction::RemoveBookmark { id }
-        } else if let Some(action) = self.selected.action(id) {
+        let action = if let Some(action) = self.selected.action(id) {
             action
         } else {
             return;
@@ -183,14 +180,12 @@ impl Render for BookmarkActionWindow {
                         MouseButton::Left,
                         cx.listener(move |this, _, window, cx| {
                             this.selected = command;
-                            this.confirming_delete = false;
                             cx.notify();
                             window.refresh();
                         }),
                     )
             })
             .collect::<Vec<_>>();
-        let confirming_delete = self.confirming_delete;
         div()
             .id("bookmark-action-window")
             .role(gpui::Role::Dialog)
@@ -217,10 +212,7 @@ impl Render for BookmarkActionWindow {
             .bg(colors.surface.to_gpui())
             .child("書籤操作")
             .child(format!("{}", self.snapshot.bookmark.name))
-            .when(confirming_delete, |element| {
-                element.child("確定要刪除此書籤嗎？不會刪除磁碟上的檔案。")
-            })
-            .when(!confirming_delete, |element| element.children(commands))
+            .children(commands)
             .child(
                 div()
                     .flex()
@@ -231,6 +223,9 @@ impl Render for BookmarkActionWindow {
                             .id("bookmark-action-cancel")
                             .role(gpui::Role::Button)
                             .cursor_pointer()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(colors.divider.to_gpui())
                             .px(px(12.0))
                             .py(px(7.0))
                             .child("取消")
@@ -241,18 +236,13 @@ impl Render for BookmarkActionWindow {
                             .id("bookmark-action-confirm")
                             .role(gpui::Role::Button)
                             .cursor_pointer()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(colors.accent.to_gpui())
                             .px(px(12.0))
                             .py(px(7.0))
-                            .text_color(if confirming_delete {
-                                colors.danger.to_gpui()
-                            } else {
-                                colors.text_primary.to_gpui()
-                            })
-                            .child(if confirming_delete {
-                                "確認刪除"
-                            } else {
-                                "確認"
-                            })
+                            .text_color(colors.text_primary.to_gpui())
+                            .child("確認")
                             .on_click(cx.listener(|this, _, window, cx| this.confirm(window, cx))),
                     ),
             )
@@ -287,12 +277,12 @@ mod tests {
     }
 
     #[test]
-    fn action_window_contract_requires_confirm_and_double_confirms_delete() {
+    fn action_window_routes_delete_to_a_dedicated_confirmation_window() {
         let source = include_str!("bookmark_action_window.rs");
         assert!(source.contains("BookmarkActionWindow"));
-        assert!(source.contains("confirming_delete"));
-        assert!(source.contains("確認刪除"));
-        assert!(source.contains("bookmark_exists"));
+        assert!(source.contains("present_bookmark_delete_window"));
+        assert!(source.contains("window.remove_window()"));
         assert!(source.contains("replace_snapshot"));
+        assert!(source.contains(".border_1()"));
     }
 }

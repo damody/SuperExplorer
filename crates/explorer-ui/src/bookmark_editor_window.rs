@@ -20,11 +20,18 @@ pub struct BookmarkEditorWindowSnapshotV1 {
     pub state: AppViewState,
 }
 
+fn bookmark_editor_width(display_width: f32) -> f32 {
+    (display_width * 0.8).max(640.0)
+}
+
 pub fn bookmark_editor_window_options(cx: &App) -> WindowOptions {
+    let width = cx.primary_display().map_or(760.0, |display| {
+        bookmark_editor_width(f32::from(display.bounds().size.width))
+    });
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
-            size(px(620.0), px(560.0)),
+            size(px(width), px(560.0)),
             cx,
         ))),
         titlebar: Some(gpui::TitlebarOptions {
@@ -33,7 +40,7 @@ pub fn bookmark_editor_window_options(cx: &App) -> WindowOptions {
         }),
         kind: gpui::WindowKind::Normal,
         is_resizable: true,
-        window_min_size: Some(size(px(520.0), px(460.0))),
+        window_min_size: Some(size(px(640.0), px(460.0))),
         ..Default::default()
     }
 }
@@ -202,5 +209,8 @@ mod tests {
         assert!(source.contains("CancelBookmarkEditor"));
         assert!(source.contains("window.remove_window()"));
         assert!(source.contains("editor.target.editable_payload()"));
+        assert!(source.contains("bookmark_editor_width"));
+        assert_eq!(bookmark_editor_width(1920.0), 1536.0);
+        assert_eq!(bookmark_editor_width(800.0), 640.0);
     }
 }

@@ -640,6 +640,13 @@ pub(crate) struct BookmarkToolbarContextMenuState {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct BookmarkContextMenuState {
+    pub(crate) id: explorer_model::BookmarkId,
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RemoteContextMenuState {
     pub(crate) x: f32,
     pub(crate) y: f32,
@@ -703,6 +710,7 @@ pub struct AppViewState {
     bookmark_overflow_open: bool,
     bookmark_folder_menu: Option<explorer_model::BookmarkFolderId>,
     bookmark_toolbar_context_menu: Option<BookmarkToolbarContextMenuState>,
+    bookmark_context_menu: Option<BookmarkContextMenuState>,
     remote_context_menu: Option<RemoteContextMenuState>,
     expanded_bookmark_folders: HashSet<explorer_model::BookmarkFolderId>,
     bookmark_folder_delete_confirmation: Option<(explorer_model::BookmarkFolderId, usize)>,
@@ -951,6 +959,7 @@ impl AppViewState {
             bookmark_overflow_open: false,
             bookmark_folder_menu: None,
             bookmark_toolbar_context_menu: None,
+            bookmark_context_menu: None,
             remote_context_menu: None,
             expanded_bookmark_folders: HashSet::new(),
             bookmark_folder_delete_confirmation: None,
@@ -3191,6 +3200,11 @@ impl AppViewState {
         }
     }
 
+    pub(crate) fn dismiss_bookmark_browse_menus(&mut self) {
+        self.bookmark_overflow_open = false;
+        self.bookmark_folder_menu = None;
+    }
+
     pub(crate) const fn bookmark_toolbar_context_menu(
         &self,
     ) -> Option<BookmarkToolbarContextMenuState> {
@@ -3216,6 +3230,37 @@ impl AppViewState {
 
     pub(crate) fn close_bookmark_toolbar_context_menu(&mut self) {
         self.bookmark_toolbar_context_menu = None;
+    }
+
+    pub(crate) const fn bookmark_context_menu(&self) -> Option<BookmarkContextMenuState> {
+        self.bookmark_context_menu
+    }
+
+    pub(crate) fn open_bookmark_context_menu(
+        &mut self,
+        id: explorer_model::BookmarkId,
+        x: f32,
+        y: f32,
+    ) {
+        if self
+            .bookmarks
+            .entries()
+            .iter()
+            .any(|bookmark| bookmark.id == id)
+        {
+            self.bookmark_context_menu = Some(BookmarkContextMenuState {
+                id,
+                x: x.max(0.0),
+                y: y.max(0.0),
+            });
+            self.bookmark_toolbar_context_menu = None;
+            self.bookmark_overflow_open = false;
+            self.bookmark_folder_menu = None;
+        }
+    }
+
+    pub(crate) fn close_bookmark_context_menu(&mut self) {
+        self.bookmark_context_menu = None;
     }
 
     pub(crate) const fn remote_context_menu(&self) -> Option<RemoteContextMenuState> {
@@ -5662,6 +5707,21 @@ impl AppViewState {
         });
         self.permanent_delete_confirmation_focus = PermanentDeleteDialogTarget::Delete;
         true
+    }
+
+    pub(crate) fn permanent_delete_selected_request(&self) -> Option<FileOperationRequest> {
+        let items = self.selected_items();
+        (!items.is_empty()).then_some(FileOperationRequest {
+            kind: FileOperationKind::PermanentDelete {
+                items,
+                confirmed: true,
+            },
+            flags: explorer_model::FileOperationFlags {
+                require_confirmation: true,
+                allow_undo: false,
+                ..explorer_model::FileOperationFlags::default()
+            },
+        })
     }
 
     pub(crate) fn confirm_permanent_delete(&mut self) -> Option<FileOperationRequest> {
@@ -9722,6 +9782,27 @@ mod tests {
                 confirmed: true,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn shift_delete_request_uses_only_the_windows_shell_confirmation() {
+        let mut state = state_with_rows();
+        assert!(state.select_row(1));
+
+        let request = state
+            .permanent_delete_selected_request()
+            .expect("selected item permanent delete request");
+
+        assert_eq!(state.permanent_delete_confirmation_count(), None);
+        assert!(request.flags.require_confirmation);
+        assert!(!request.flags.allow_undo);
+        assert!(matches!(
+            request.kind,
+            explorer_model::FileOperationKind::PermanentDelete {
+                confirmed: true,
+                ref items,
+            } if items.len() == 1
         ));
     }
 
