@@ -5,9 +5,12 @@ The bookmark manager is currently rendered as a non-interactive overlay inside t
 ## What Changes
 
 - Replace the in-surface bookmark manager overlay with a dedicated, focusable GPUI native window.
-- Replace bookmark-item overlay context menus with a singleton native action window that requires explicit selection and confirmation.
+- Present bookmark-item right-click commands in the same compact inline menu style as logical bookmark folders, with dedicated delete confirmation.
 - Replace the bookmark-folder rename overlay with a dedicated native editor window.
 - Allow left-button toolbar bookmark dragging into logical folders and back to the root.
+- Make left-click folder menus content-only and reserve folder mutation commands for right-click.
+- Give Local, ADB, SFTP, and Lua bookmarks consistent source-specific icons.
+- Dismiss bookmark folder and overflow menus immediately when a bookmark is selected.
 - Add bookmark-toolbar background and item context menus for creating, renaming/editing, and deleting logical folders and path bookmarks.
 - Make file and folder bookmark target text editable in the dedicated bookmark editor window.
 - Persist non-empty path text without existence or parse validation, preserving the exact user-authored value; report errors only when activation fails.
@@ -21,9 +24,13 @@ The bookmark manager is currently rendered as a non-interactive overlay inside t
 - `bookmark-manager-window`: Dedicated native-window lifecycle and interactive bookmark-tree management.
 - `bookmark-toolbar-context-management`: Background, logical-folder, and bookmark context-menu CRUD from the toolbar.
 - `editable-bookmark-paths`: Exact, editable, persistable filesystem/remote/virtual path text, including unavailable or invalid targets.
-- `bookmark-action-window`: Confirmed bookmark-item right-click commands in a dedicated singleton native window.
+- `bookmark-action-window`: Superseded by the inline bookmark context-menu behavior in this change.
+- `bookmark-inline-context-menu`: Folder-style compact right-click commands for bookmark entries.
 - `bookmark-folder-editor-window`: Interactive bookmark-folder naming in a dedicated singleton native window.
 - `bookmark-toolbar-folder-drag`: Firefox-style bookmark organization by native drag and drop.
+- `bookmark-folder-content-menu`: Firefox-style left-click browsing with right-click management separation.
+- `bookmark-provider-icons`: Shared provider-aware bookmark icon projection.
+- `bookmark-menu-dismissal`: Deterministic browse-menu dismissal before bookmark activation.
 
 ### Modified Capabilities
 

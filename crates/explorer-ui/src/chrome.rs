@@ -121,6 +121,77 @@ struct BookmarkDragPreview {
     label: String,
 }
 
+fn bookmark_icon(target: &explorer_model::BookmarkTarget) -> &'static str {
+    use explorer_model::{BookmarkTarget, FileSystemKind};
+    match target {
+        BookmarkTarget::LuaScript { .. } => "⚡",
+        BookmarkTarget::Folder { location } | BookmarkTarget::File { location } => {
+            match location.file_system_kind() {
+                Some(FileSystemKind::Adb) => "📱",
+                Some(FileSystemKind::Sftp) => "🖥",
+                Some(FileSystemKind::Local) | None => "🔖",
+            }
+        }
+        BookmarkTarget::FolderPath { path } | BookmarkTarget::FilePath { path } => {
+            let path = path.trim_start();
+            if path
+                .get(..6)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("adb://"))
+            {
+                "📱"
+            } else if path
+                .get(..7)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("sftp://"))
+            {
+                "🖥"
+            } else {
+                "🔖"
+            }
+        }
+    }
+}
+
+fn bookmark_icon_element(target: &explorer_model::BookmarkTarget) -> gpui::AnyElement {
+    if matches!(target, explorer_model::BookmarkTarget::LuaScript { .. }) {
+        div()
+            .w(px(18.0))
+            .h(px(18.0))
+            .flex_none()
+            .child(
+                img("lua/logo.gif")
+                    .size_full()
+                    .object_fit(ObjectFit::Contain),
+            )
+            .into_any_element()
+    } else {
+        div()
+            .w(px(18.0))
+            .flex_none()
+            .child(bookmark_icon(target))
+            .into_any_element()
+    }
+}
+
+fn bookmark_label(
+    target: &explorer_model::BookmarkTarget,
+    label: impl Into<SharedString>,
+) -> gpui::AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .child(bookmark_icon_element(target))
+        .child(label.into())
+        .into_any_element()
+}
+
+fn bookmark_toolbar_display_name(name: &str, parent_name: Option<&str>) -> String {
+    parent_name.map_or_else(
+        || name.to_owned(),
+        |parent_name| format!("{name}（{parent_name}）"),
+    )
+}
+
 impl Render for BookmarkDragPreview {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -669,6 +740,16 @@ impl RenderOnce for ExplorerWindow {
                 folder_size_backend_status,
                 self.on_action.clone(),
             ))
+            .when_some(self.state.bookmark_context_menu(), |element, menu| {
+                element.child(bookmark_context_menu(
+                    self.tokens,
+                    &self.state,
+                    menu,
+                    f32::from(window.bounds().size.width),
+                    f32::from(window.bounds().size.height),
+                    self.on_action.clone(),
+                ))
+            })
             .when_some(
                 self.state.bookmark_toolbar_context_menu(),
                 |element, menu| {
@@ -690,16 +771,6 @@ impl RenderOnce for ExplorerWindow {
                     self.on_action.clone(),
                 ))
             })
-            .when_some(
-                self.state.bookmark_folder_delete_confirmation(),
-                |element, (_, descendant_count)| {
-                    element.child(bookmark_folder_delete_dialog(
-                        self.tokens,
-                        descendant_count,
-                        self.on_action.clone(),
-                    ))
-                },
-            )
             .when_some(about_dialog_info, |element, info| {
                 element.child(about_dialog(self.tokens, info, self.on_action.clone()))
             })
@@ -769,7 +840,7 @@ fn bookmark_bar(
             .bookmarks()
             .folder(id)
             .cloned()
-            .map(|folder| (folder, bookmark_folder_entries(state.bookmarks(), id)))
+            .map(|folder| (folder, bookmark_folder_menu_items(state.bookmarks(), id)))
     });
     let visible_limit = bookmark_visible_count(entries.len(), width);
     let visible = entries
@@ -911,17 +982,14 @@ fn bookmark_bar(
         }))
         .children(visible.into_iter().map(|bookmark| {
             let id = bookmark.id;
-            let icon = match bookmark.target {
-                explorer_model::BookmarkTarget::Folder { .. }
-                | explorer_model::BookmarkTarget::FolderPath { .. } => "📁",
-                explorer_model::BookmarkTarget::File { .. }
-                | explorer_model::BookmarkTarget::FilePath { .. } => "📄",
-                explorer_model::BookmarkTarget::LuaScript { .. } => "⚡",
-            };
-            let parent = bookmark
-                .parent_id
-                .and_then(|id| state.bookmarks().folder(id))
-                .map_or_else(|| "根目錄".to_owned(), |folder| folder.name.clone());
+            let icon = bookmark_icon(&bookmark.target);
+            let display_name = bookmark_toolbar_display_name(
+                &bookmark.name,
+                bookmark
+                    .parent_id
+                    .and_then(|id| state.bookmarks().folder(id))
+                    .map(|folder| folder.name.as_str()),
+            );
             let action = ExplorerAction::ActivateBookmark { id };
             let callback = callback.clone();
             let context_callback = callback.clone();
@@ -946,7 +1014,7 @@ fn bookmark_bar(
                         })
                     },
                 )
-                .child(format!("{icon} {}（{}）", bookmark.name, parent))
+                .child(bookmark_label(&bookmark.target, display_name))
                 .when_some(callback, move |element, callback| {
                     element.on_click(move |_, window, cx| callback(&action, window, cx))
                 })
@@ -1028,13 +1096,7 @@ fn bookmark_bar(
                         .bg(tokens.theme.colors.menu_fill.to_gpui())
                         .children(overflow_entries.into_iter().map(|bookmark| {
                             let id = bookmark.id;
-                            let icon = match bookmark.target {
-                                explorer_model::BookmarkTarget::Folder { .. }
-                                | explorer_model::BookmarkTarget::FolderPath { .. } => "📁",
-                                explorer_model::BookmarkTarget::File { .. }
-                                | explorer_model::BookmarkTarget::FilePath { .. } => "📄",
-                                explorer_model::BookmarkTarget::LuaScript { .. } => "⚡",
-                            };
+                            let icon = bookmark_icon(&bookmark.target);
                             let action = ExplorerAction::ActivateBookmark { id };
                             let callback = callback.clone();
                             let context_callback = callback.clone();
@@ -1049,7 +1111,7 @@ fn bookmark_bar(
                                 .hover(|style| {
                                     style.bg(tokens.theme.colors.control_hover.to_gpui())
                                 })
-                                .child(format!("{icon} {}", bookmark.name))
+                                .child(bookmark_label(&bookmark.target, bookmark.name.clone()))
                                 .when_some(callback, move |element, callback| {
                                     element.on_click(move |_, window, cx| {
                                         callback(&action, window, cx)
@@ -1078,15 +1140,7 @@ fn bookmark_bar(
                 .with_priority(150),
             )
         })
-        .when_some(active_folder_menu, |element, (folder, entries)| {
-            let add_child = ExplorerAction::AddBookmarkFolder {
-                parent_id: Some(folder.id),
-            };
-            let edit_folder = ExplorerAction::EditBookmarkFolder { id: folder.id };
-            let remove_folder = ExplorerAction::RemoveBookmarkFolder { id: folder.id };
-            let add_cb = callback.clone();
-            let edit_cb = callback.clone();
-            let remove_cb = callback.clone();
+        .when_some(active_folder_menu, |element, (_folder, entries)| {
             element.child(
                 deferred(
                     div()
@@ -1104,110 +1158,113 @@ fn bookmark_bar(
                         .border(px(1.0))
                         .border_color(tokens.theme.colors.divider.to_gpui())
                         .bg(tokens.theme.colors.menu_fill.to_gpui())
-                        .child(format!("📁 {}", folder.name))
-                        .children(entries.into_iter().map(|(depth, bookmark)| {
-                            let id = bookmark.id;
-                            let action = ExplorerAction::ActivateBookmark { id };
-                            let callback = callback.clone();
-                            let context_callback = callback.clone();
-                            div()
-                                .id(("bookmark-folder-entry", id.as_u128() as u64))
-                                .role(Role::MenuItem)
-                                .aria_label(format!("Bookmark {}", bookmark.name))
-                                .cursor_pointer()
-                                .pl(px(8.0 + f32::from(depth) * 14.0))
-                                .pr(px(8.0))
-                                .py(px(5.0))
-                                .child(bookmark.name)
-                                .when_some(callback, move |item, cb| {
-                                    item.on_click(move |_, window, cx| cb(&action, window, cx))
-                                })
-                                .when_some(context_callback, move |item, cb| {
-                                    item.on_mouse_down(
-                                        MouseButton::Right,
-                                        move |event, window, cx| {
-                                            cx.stop_propagation();
-                                            cb(
-                                                &ExplorerAction::OpenBookmarkContextMenu {
-                                                    id,
-                                                    x: f32::from(event.position.x),
-                                                    y: f32::from(event.position.y),
-                                                },
-                                                window,
-                                                cx,
-                                            );
-                                        },
-                                    )
-                                })
-                                .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                        }))
-                        .child(
-                            div()
-                                .id("bookmark-folder-menu-rename")
-                                .role(Role::MenuItem)
-                                .cursor_pointer()
-                                .px(px(8.0))
-                                .py(px(5.0))
-                                .child("重新命名")
-                                .when_some(edit_cb, move |item, cb| {
-                                    item.on_click(move |_, window, cx| cb(&edit_folder, window, cx))
-                                }),
-                        )
-                        .child(
-                            div()
-                                .id("bookmark-folder-menu-add")
-                                .role(Role::MenuItem)
-                                .cursor_pointer()
-                                .px(px(8.0))
-                                .py(px(5.0))
-                                .child("新增子資料夾")
-                                .when_some(add_cb, move |item, cb| {
-                                    item.on_click(move |_, window, cx| cb(&add_child, window, cx))
-                                }),
-                        )
-                        .child(
-                            div()
-                                .id("bookmark-folder-menu-remove")
-                                .role(Role::MenuItem)
-                                .cursor_pointer()
-                                .px(px(8.0))
-                                .py(px(5.0))
-                                .text_color(tokens.theme.colors.danger.to_gpui())
-                                .child("刪除資料夾")
-                                .when_some(remove_cb, move |item, cb| {
-                                    item.on_click(move |_, window, cx| {
-                                        cb(&remove_folder, window, cx)
+                        .children(entries.into_iter().map(|entry| match entry {
+                            BookmarkFolderMenuItem::Folder(folder) => {
+                                let folder_id = folder.id;
+                                let action =
+                                    ExplorerAction::ToggleBookmarkFolderMenu { id: folder_id };
+                                let callback = callback.clone();
+                                let context_callback = callback.clone();
+                                div()
+                                    .id(("bookmark-folder-child", folder_id.as_u128() as u64))
+                                    .role(Role::MenuItem)
+                                    .cursor_pointer()
+                                    .px(px(8.0))
+                                    .py(px(5.0))
+                                    .flex()
+                                    .justify_between()
+                                    .child(format!("📁 {}", folder.name))
+                                    .child("›")
+                                    .when_some(callback, move |item, cb| {
+                                        item.on_click(move |_, window, cx| cb(&action, window, cx))
                                     })
-                                }),
-                        ),
+                                    .when_some(context_callback, move |item, cb| {
+                                        item.on_mouse_down(
+                                            MouseButton::Right,
+                                            move |event, window, cx| {
+                                                cx.stop_propagation();
+                                                cb(&ExplorerAction::OpenBookmarkToolbarContextMenu {
+                                                parent_id: Some(folder_id),
+                                                x: f32::from(event.position.x),
+                                                y: f32::from(event.position.y),
+                                            }, window, cx);
+                                            },
+                                        )
+                                    })
+                                    .on_mouse_up(MouseButton::Right, |_, _, cx| {
+                                        cx.stop_propagation()
+                                    })
+                                    .into_any_element()
+                            }
+                            BookmarkFolderMenuItem::Bookmark(bookmark) => {
+                                let id = bookmark.id;
+                                let action = ExplorerAction::ActivateBookmark { id };
+                                let callback = callback.clone();
+                                let context_callback = callback.clone();
+                                div()
+                                    .id(("bookmark-folder-entry", id.as_u128() as u64))
+                                    .role(Role::MenuItem)
+                                    .aria_label(format!("Bookmark {}", bookmark.name))
+                                    .cursor_pointer()
+                                    .px(px(8.0))
+                                    .py(px(5.0))
+                                    .child(bookmark_label(&bookmark.target, bookmark.name.clone()))
+                                    .when_some(callback, move |item, cb| {
+                                        item.on_click(move |_, window, cx| cb(&action, window, cx))
+                                    })
+                                    .when_some(context_callback, move |item, cb| {
+                                        item.on_mouse_down(
+                                            MouseButton::Right,
+                                            move |event, window, cx| {
+                                                cx.stop_propagation();
+                                                cb(
+                                                    &ExplorerAction::OpenBookmarkContextMenu {
+                                                        id,
+                                                        x: f32::from(event.position.x),
+                                                        y: f32::from(event.position.y),
+                                                    },
+                                                    window,
+                                                    cx,
+                                                );
+                                            },
+                                        )
+                                    })
+                                    .on_mouse_up(MouseButton::Right, |_, _, cx| {
+                                        cx.stop_propagation()
+                                    })
+                                    .into_any_element()
+                            }
+                        })),
                 )
                 .with_priority(160),
             )
         })
 }
 
-fn bookmark_folder_entries(
+enum BookmarkFolderMenuItem {
+    Folder(explorer_model::BookmarkFolder),
+    Bookmark(explorer_model::Bookmark),
+}
+
+fn bookmark_folder_menu_items(
     bookmarks: &explorer_model::Bookmarks,
     root: explorer_model::BookmarkFolderId,
-) -> Vec<(u8, explorer_model::Bookmark)> {
-    fn visit(
-        bookmarks: &explorer_model::Bookmarks,
-        parent: explorer_model::BookmarkFolderId,
-        depth: u8,
-        output: &mut Vec<(u8, explorer_model::Bookmark)>,
-    ) {
-        output.extend(
+) -> Vec<BookmarkFolderMenuItem> {
+    let mut output = bookmarks
+        .child_folders(Some(root))
+        .cloned()
+        .map(BookmarkFolderMenuItem::Folder)
+        .chain(
             bookmarks
-                .child_entries(Some(parent))
+                .child_entries(Some(root))
                 .cloned()
-                .map(|bookmark| (depth, bookmark)),
-        );
-        for child in bookmarks.child_folders(Some(parent)) {
-            visit(bookmarks, child.id, depth.saturating_add(1), output);
-        }
-    }
-    let mut output = Vec::new();
-    visit(bookmarks, root, 0, &mut output);
+                .map(BookmarkFolderMenuItem::Bookmark),
+        )
+        .collect::<Vec<_>>();
+    output.sort_by_key(|item| match item {
+        BookmarkFolderMenuItem::Folder(folder) => folder.order,
+        BookmarkFolderMenuItem::Bookmark(bookmark) => bookmark.order,
+    });
     output
 }
 
@@ -1307,13 +1364,6 @@ pub(crate) fn bookmark_manager(
                 .position(|entry| entry.id == bookmark.id)
                 .unwrap_or(0);
             let sibling_count = state.bookmarks().child_entries(bookmark.parent_id).count();
-            let icon = match bookmark.target {
-                explorer_model::BookmarkTarget::Folder { .. }
-                | explorer_model::BookmarkTarget::FolderPath { .. } => "📁",
-                explorer_model::BookmarkTarget::File { .. }
-                | explorer_model::BookmarkTarget::FilePath { .. } => "📄",
-                explorer_model::BookmarkTarget::LuaScript { .. } => "⚡",
-            };
             let id = bookmark.id;
             let up = ExplorerAction::MoveBookmark {
                 id,
@@ -1382,7 +1432,7 @@ pub(crate) fn bookmark_manager(
                     })
                 })
                 .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                .child(format!("{icon} {}", bookmark.name))
+                .child(bookmark_label(&bookmark.target, bookmark.name.clone()))
                 .child(
                     div()
                         .id(("bookmark-edit", id.as_u128() as u64))
@@ -1601,6 +1651,111 @@ fn bookmark_toolbar_context_menu(
         )
 }
 
+fn bookmark_context_menu(
+    tokens: UiTokens,
+    state: &AppViewState,
+    menu: crate::state::BookmarkContextMenuState,
+    window_width: f32,
+    window_height: f32,
+    callback: Option<ActionCallback>,
+) -> impl IntoElement {
+    let close = ExplorerAction::CloseBookmarkContextMenu;
+    let close_cb = callback.clone();
+    let close_right = close.clone();
+    let close_right_cb = callback.clone();
+    let is_folder = state
+        .bookmarks()
+        .entries()
+        .iter()
+        .find(|bookmark| bookmark.id == menu.id)
+        .is_some_and(|bookmark| bookmark.target.is_folder());
+    let mut commands = vec![(
+        "開啟",
+        ExplorerAction::ActivateBookmark { id: menu.id },
+        false,
+    )];
+    if is_folder {
+        commands.push((
+            "在新分頁開啟",
+            ExplorerAction::OpenBookmarkInNewTab { id: menu.id },
+            false,
+        ));
+    }
+    commands.extend([
+        (
+            "編輯名稱與路徑…",
+            ExplorerAction::EditBookmark { id: menu.id },
+            false,
+        ),
+        (
+            "刪除書籤",
+            ExplorerAction::RequestRemoveBookmark { id: menu.id },
+            true,
+        ),
+    ]);
+    let rows = commands
+        .into_iter()
+        .enumerate()
+        .map(|(index, (label, action, danger))| {
+            let callback = callback.clone();
+            div()
+                .id(format!("bookmark-context-command-{index}"))
+                .role(Role::MenuItem)
+                .aria_label(label)
+                .cursor_pointer()
+                .px(px(12.0))
+                .py(px(7.0))
+                .rounded(px(4.0))
+                .text_color(if danger {
+                    tokens.theme.colors.danger.to_gpui()
+                } else {
+                    tokens.theme.colors.text_primary.to_gpui()
+                })
+                .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
+                .child(label)
+                .when_some(callback, move |element, cb| {
+                    element.on_click(move |_, window, cx| cb(&action, window, cx))
+                })
+        });
+    let left = menu.x.min((window_width - 260.0).max(0.0));
+    let top = menu.y.min((window_height - 260.0).max(0.0));
+    div()
+        .id("bookmark-context-overlay")
+        .absolute()
+        .inset_0()
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            if let Some(cb) = close_cb.as_ref() {
+                cb(&close, window, cx);
+            }
+        })
+        .on_mouse_down(MouseButton::Right, move |_, window, cx| {
+            if let Some(cb) = close_right_cb.as_ref() {
+                cb(&close_right, window, cx);
+            }
+        })
+        .child(
+            deferred(
+                div()
+                    .id("bookmark-context-menu")
+                    .role(Role::Menu)
+                    .aria_label("Bookmark context menu")
+                    .absolute()
+                    .left(px(left))
+                    .top(px(top))
+                    .min_w(px(252.0))
+                    .p(px(6.0))
+                    .rounded(px(6.0))
+                    .border(px(1.0))
+                    .border_color(tokens.theme.colors.divider.to_gpui())
+                    .bg(tokens.theme.colors.menu_fill.to_gpui())
+                    .shadow_lg()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .children(rows),
+            )
+            .with_priority(311),
+        )
+}
+
 fn remote_context_menu(
     tokens: UiTokens,
     menu: crate::state::RemoteContextMenuState,
@@ -1727,6 +1882,11 @@ pub(crate) fn bookmark_editor(
         explorer_model::BookmarkTarget::File { .. }
         | explorer_model::BookmarkTarget::FilePath { .. } => "檔案路徑（可編輯）",
     };
+    let payload_is_multiline = matches!(
+        &editor.target,
+        explorer_model::BookmarkTarget::LuaScript { .. }
+    );
+    let payload_height = if payload_is_multiline { 220.0 } else { 36.0 };
     let save = ExplorerAction::SaveBookmarkEditor;
     let cancel = ExplorerAction::CancelBookmarkEditor;
     let save_cb = callback.clone();
@@ -1785,7 +1945,7 @@ pub(crate) fn bookmark_editor(
                 .id("bookmark-editor")
                 .role(Role::Dialog)
                 .aria_label("Bookmark editor")
-                .w(px(620.0))
+                .w_full()
                 .p(px(18.0))
                 .flex()
                 .flex_col()
@@ -1818,11 +1978,11 @@ pub(crate) fn bookmark_editor(
                     e.child(
                         text_input("bookmark-payload-input")
                             .state(input)
-                            .multiline(true)
+                            .multiline(payload_is_multiline)
                             .caret_blink_interval_500ms()
                             .w_full()
-                            .h(px(220.0))
-                            .p(px(8.0))
+                            .h(px(payload_height))
+                            .px(px(8.0))
                             .bg(colors.control_fill.to_gpui())
                             .text_color(input_text)
                             .selection_color(input_selection.into())
@@ -1891,72 +2051,6 @@ pub(crate) fn bookmark_editor(
                                 .child("儲存")
                                 .when_some(save_cb, move |e, cb| {
                                     e.on_click(move |_, w, cx| cb(&save, w, cx))
-                                }),
-                        ),
-                ),
-        )
-}
-
-pub(crate) fn bookmark_folder_delete_dialog(
-    tokens: UiTokens,
-    descendant_count: usize,
-    callback: Option<ActionCallback>,
-) -> impl IntoElement {
-    let confirm = ExplorerAction::ConfirmRemoveBookmarkFolder;
-    let cancel = ExplorerAction::CancelRemoveBookmarkFolder;
-    let confirm_cb = callback.clone();
-    div()
-        .id("bookmark-folder-delete-overlay")
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(tokens.theme.colors.subtle_surface.to_gpui())
-        .child(
-            div()
-                .id("bookmark-folder-delete-dialog")
-                .role(Role::Dialog)
-                .aria_label("Delete bookmark folder")
-                .w(px(440.0))
-                .p(px(18.0))
-                .flex()
-                .flex_col()
-                .gap(px(12.0))
-                .rounded(px(8.0))
-                .bg(tokens.theme.colors.surface.to_gpui())
-                .child("刪除書籤資料夾？")
-                .child(format!(
-                    "這會移除資料夾以及其中 {descendant_count} 個項目，不會刪除磁碟上的檔案。"
-                ))
-                .child(
-                    div()
-                        .flex()
-                        .justify_end()
-                        .gap(px(8.0))
-                        .child(
-                            div()
-                                .id("bookmark-folder-delete-cancel")
-                                .role(Role::Button)
-                                .cursor_pointer()
-                                .px(px(12.0))
-                                .py(px(6.0))
-                                .child("取消")
-                                .when_some(callback, move |element, cb| {
-                                    element.on_click(move |_, window, cx| cb(&cancel, window, cx))
-                                }),
-                        )
-                        .child(
-                            div()
-                                .id("bookmark-folder-delete-confirm")
-                                .role(Role::Button)
-                                .cursor_pointer()
-                                .px(px(12.0))
-                                .py(px(6.0))
-                                .text_color(tokens.theme.colors.danger.to_gpui())
-                                .child("刪除")
-                                .when_some(confirm_cb, move |element, cb| {
-                                    element.on_click(move |_, window, cx| cb(&confirm, window, cx))
                                 }),
                         ),
                 ),
@@ -6780,7 +6874,7 @@ fn bookmark_navigation_rows(
                     .py(px(5.0))
                     .rounded(px(4.0))
                     .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
-                    .child(bookmark.name.clone())
+                    .child(bookmark_label(&bookmark.target, bookmark.name.clone()))
                     .when_some(callback, move |element, cb| {
                         element.on_click(move |_, window, cx| cb(&action, window, cx))
                     })
@@ -12833,18 +12927,38 @@ mod tests {
         CAPTION_MINIMIZE_ID, COMMAND_BAR_ID, EXPLORER_WINDOW_ID, FILE_VIEW_HOST_ID, FileViewState,
         NAVIGATION_BAR_ID, NAVIGATION_PANE_ID, NEW_TAB_BUTTON_ID, SEARCH_BOX_ID, STATUS_BAR_ID,
         TAB_STRIP_ID, WINDOW_CHROME_ID, WINDOW_DRAG_REGION_ID, admission_cell_presentation,
-        breadcrumb_ancestry_partition, breadcrumb_location_shell_texture, builtin_count_display,
-        client_to_screen_point, details_name_column_contains, editable_input_colors,
-        file_view_background_context_hit, file_view_local_pointer, format_explorer_size,
-        is_generic_breadcrumb_folder_icon_key, localized_search_placeholder, marquee_content_rect,
-        navigation_item_shell_texture, navigation_shell_texture, new_tab_button_background,
-        operation_location_text, operation_message, operation_message_opacity,
-        operation_outcome_message, operation_request_summary, remote_context_menu_position,
-        select_file_row_shell_icon, tab_background,
+        bookmark_icon, breadcrumb_ancestry_partition, breadcrumb_location_shell_texture,
+        builtin_count_display, client_to_screen_point, details_name_column_contains,
+        editable_input_colors, file_view_background_context_hit, file_view_local_pointer,
+        format_explorer_size, is_generic_breadcrumb_folder_icon_key, localized_search_placeholder,
+        marquee_content_rect, navigation_item_shell_texture, navigation_shell_texture,
+        new_tab_button_background, operation_location_text, operation_message,
+        operation_message_opacity, operation_outcome_message, operation_request_summary,
+        remote_context_menu_position, select_file_row_shell_icon, tab_background,
     };
     use crate::{UiTokens, theme::ThemeTokens};
     use gpui::WindowControlArea;
     use std::{cmp::Ordering, time::Duration};
+
+    #[test]
+    fn bookmark_icons_distinguish_local_adb_sftp_and_lua() {
+        let local = explorer_model::BookmarkTarget::FolderPath {
+            path: "C:\\Work".into(),
+        };
+        let adb = explorer_model::BookmarkTarget::FolderPath {
+            path: "ADB://device/missing".into(),
+        };
+        let sftp = explorer_model::BookmarkTarget::FilePath {
+            path: "sftp://host/missing".into(),
+        };
+        let lua = explorer_model::BookmarkTarget::LuaScript {
+            source: "return 1".into(),
+        };
+        assert_eq!(bookmark_icon(&local), "🔖");
+        assert_eq!(bookmark_icon(&adb), "📱");
+        assert_eq!(bookmark_icon(&sftp), "🖥");
+        assert_eq!(bookmark_icon(&lua), "⚡");
+    }
 
     fn virtual_location(
         provider: &str,
@@ -15195,6 +15309,71 @@ mod tests {
     }
 
     #[test]
+    fn root_bookmark_toolbar_label_omits_root_directory_suffix() {
+        assert_eq!(
+            super::bookmark_toolbar_display_name("portable", None),
+            "portable"
+        );
+        assert_eq!(
+            super::bookmark_toolbar_display_name("portable", Some("工具")),
+            "portable（工具）"
+        );
+    }
+
+    #[test]
+    fn left_click_folder_menu_is_content_only_and_management_stays_on_right_click() {
+        let source = include_str!("chrome.rs");
+        let start = source
+            .find(".when_some(active_folder_menu")
+            .expect("folder menu");
+        let end = source[start..]
+            .find("enum BookmarkFolderMenuItem")
+            .expect("folder menu end")
+            + start;
+        let menu = &source[start..end];
+        assert!(menu.contains("bookmark-folder-child"));
+        assert!(menu.contains("OpenBookmarkToolbarContextMenu"));
+        assert!(!menu.contains("bookmark-folder-menu-rename"));
+        assert!(!menu.contains("bookmark-folder-menu-add"));
+        assert!(!menu.contains("bookmark-folder-menu-remove"));
+    }
+
+    #[test]
+    fn bookmark_right_click_uses_the_folder_context_menu_visual_contract() {
+        let source = include_str!("chrome.rs");
+        let item = source
+            .split("fn bookmark_context_menu(")
+            .nth(1)
+            .and_then(|source| source.split("fn remote_context_menu(").next())
+            .expect("bookmark context menu");
+        assert!(item.contains("bookmark-context-overlay"));
+        assert!(item.contains("RequestRemoveBookmark"));
+        assert!(item.contains("OpenBookmarkInNewTab"));
+        for style in [
+            ".min_w(px(252.0))",
+            ".p(px(6.0))",
+            ".rounded(px(6.0))",
+            ".shadow_lg()",
+        ] {
+            assert!(
+                item.contains(style),
+                "missing shared folder-menu style: {style}"
+            );
+        }
+        let root = include_str!("lib.rs");
+        let open = root
+            .split("if let ExplorerAction::OpenBookmarkContextMenu")
+            .nth(1)
+            .expect("open reducer");
+        assert!(open.starts_with(" { id, x, y } = action {"));
+        assert!(open.contains("open_bookmark_context_menu"));
+        assert!(
+            !open[..open.find("return;").expect("open branch return")]
+                .contains("present_bookmark_action_window")
+        );
+    }
+
+    #[test]
     fn bookmark_star_is_anchored_to_the_toolbar_left_edge() {
         let source = include_str!("chrome.rs");
         let toolbar = source
@@ -15235,6 +15414,9 @@ mod tests {
             ".text_color(input_text)",
             ".caret_color(input_caret.into())",
             ".border_color(colors.focus.to_gpui())",
+            "payload_is_multiline",
+            "if payload_is_multiline { 220.0 } else { 36.0 }",
+            ".w_full()",
         ] {
             assert!(
                 editor.contains(required),
@@ -15244,14 +15426,14 @@ mod tests {
     }
 
     #[test]
-    fn bookmark_items_keep_all_right_click_hooks_without_an_overlay_menu() {
+    fn bookmark_items_keep_all_right_click_hooks_with_the_shared_inline_menu() {
         let production = include_str!("chrome.rs")
             .split("#[cfg(test)]")
             .next()
             .expect("production source");
         assert_eq!(production.matches("OpenBookmarkContextMenu").count(), 5);
-        assert!(!production.contains("bookmark-context-overlay"));
-        assert!(!production.contains("fn bookmark_context_menu("));
+        assert!(production.contains("bookmark-context-overlay"));
+        assert!(production.contains("fn bookmark_context_menu("));
     }
 
     #[test]

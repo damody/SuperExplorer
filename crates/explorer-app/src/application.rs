@@ -4539,6 +4539,16 @@ impl ApplicationLifecycle {
                             explorer_ui::bookmark_action_window::BookmarkActionWindow,
                         >,
                     >));
+                    let bookmark_delete_handle = Rc::new(RefCell::new(None::<
+                        gpui::WindowHandle<
+                            explorer_ui::bookmark_delete_window::BookmarkDeleteWindow,
+                        >,
+                    >));
+                    let bookmark_folder_delete_handle = Rc::new(RefCell::new(None::<
+                        gpui::WindowHandle<
+                            explorer_ui::bookmark_folder_delete_window::BookmarkFolderDeleteWindow,
+                        >,
+                    >));
                     let bookmark_folder_editor_handle = Rc::new(RefCell::new(None::<
                         gpui::WindowHandle<
                             explorer_ui::bookmark_folder_editor_window::BookmarkFolderEditorWindow,
@@ -4746,6 +4756,88 @@ impl ApplicationLifecycle {
                                 }
                             }
                         }));
+                        root.attach_bookmark_delete_window_observer(Rc::new(move |snapshot, cx| {
+                            if let Some(existing) = *bookmark_delete_handle.borrow() {
+                                if existing
+                                    .update(cx, |delete_window, window, cx| {
+                                        delete_window.replace_snapshot(
+                                            snapshot.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                        window.activate_window();
+                                    })
+                                    .is_ok()
+                                {
+                                    return true;
+                                }
+                                *bookmark_delete_handle.borrow_mut() = None;
+                            }
+                            let options = explorer_ui::bookmark_delete_window::bookmark_delete_window_options(cx);
+                            let opened = cx.open_window(options, move |window, cx| {
+                                cx.new(|cx| {
+                                    explorer_ui::bookmark_delete_window::BookmarkDeleteWindow::new(
+                                        tokens,
+                                        owner_window,
+                                        snapshot,
+                                        window,
+                                        cx,
+                                    )
+                                })
+                            });
+                            match opened {
+                                Ok(handle) => {
+                                    *bookmark_delete_handle.borrow_mut() = Some(handle);
+                                    true
+                                }
+                                Err(error) => {
+                                    tracing::warn!(%error, "Bookmark delete window creation failed");
+                                    false
+                                }
+                            }
+                        }));
+                        root.attach_bookmark_folder_delete_window_observer(Rc::new(
+                            move |snapshot, cx| {
+                                if let Some(existing) = *bookmark_folder_delete_handle.borrow() {
+                                    if existing
+                                        .update(cx, |delete_window, window, cx| {
+                                            delete_window.replace_snapshot(
+                                                snapshot.clone(),
+                                                window,
+                                                cx,
+                                            );
+                                            window.activate_window();
+                                        })
+                                        .is_ok()
+                                    {
+                                        return true;
+                                    }
+                                    *bookmark_folder_delete_handle.borrow_mut() = None;
+                                }
+                                let options = explorer_ui::bookmark_folder_delete_window::bookmark_folder_delete_window_options(cx);
+                                let opened = cx.open_window(options, move |window, cx| {
+                                    cx.new(|cx| {
+                                        explorer_ui::bookmark_folder_delete_window::BookmarkFolderDeleteWindow::new(
+                                            tokens,
+                                            owner_window,
+                                            snapshot,
+                                            window,
+                                            cx,
+                                        )
+                                    })
+                                });
+                                match opened {
+                                    Ok(handle) => {
+                                        *bookmark_folder_delete_handle.borrow_mut() = Some(handle);
+                                        true
+                                    }
+                                    Err(error) => {
+                                        tracing::warn!(%error, "Bookmark folder delete window creation failed");
+                                        false
+                                    }
+                                }
+                            },
+                        ));
                     });
                     root
                 }) {

@@ -17,7 +17,9 @@
 pub mod actions;
 pub mod automation;
 pub mod bookmark_action_window;
+pub mod bookmark_delete_window;
 pub mod bookmark_editor_window;
+pub mod bookmark_folder_delete_window;
 pub mod bookmark_folder_editor_window;
 pub mod bookmark_manager_window;
 pub mod chrome;
@@ -1099,6 +1101,8 @@ pub struct ExplorerRoot {
     bookmark_editor_window_observer: Option<BookmarkEditorWindowObserver>,
     bookmark_manager_window_observer: Option<BookmarkManagerWindowObserver>,
     bookmark_action_window_observer: Option<BookmarkActionWindowObserver>,
+    bookmark_delete_window_observer: Option<BookmarkDeleteWindowObserver>,
+    bookmark_folder_delete_window_observer: Option<BookmarkFolderDeleteWindowObserver>,
     bookmark_folder_editor_window_observer: Option<BookmarkFolderEditorWindowObserver>,
     last_window_title: Option<String>,
     navigation_history_release_deadline: Option<Instant>,
@@ -1195,6 +1199,18 @@ pub type BookmarkActionWindowObserver = std::rc::Rc<
     dyn Fn(
         bookmark_action_window::BookmarkActionWindowSnapshotV1,
         &mut gpui::Context<ExplorerRoot>,
+    ) -> bool,
+>;
+pub type BookmarkDeleteWindowObserver = std::rc::Rc<
+    dyn Fn(
+        bookmark_delete_window::BookmarkDeleteWindowSnapshotV1,
+        &mut Context<ExplorerRoot>,
+    ) -> bool,
+>;
+pub type BookmarkFolderDeleteWindowObserver = std::rc::Rc<
+    dyn Fn(
+        bookmark_folder_delete_window::BookmarkFolderDeleteWindowSnapshotV1,
+        &mut Context<ExplorerRoot>,
     ) -> bool,
 >;
 pub type BookmarkFolderEditorWindowObserver = std::rc::Rc<
@@ -1470,6 +1486,8 @@ impl ExplorerRoot {
             bookmark_editor_window_observer: None,
             bookmark_manager_window_observer: None,
             bookmark_action_window_observer: None,
+            bookmark_delete_window_observer: None,
+            bookmark_folder_delete_window_observer: None,
             bookmark_folder_editor_window_observer: None,
             last_window_title: None,
             navigation_history_release_deadline: None,
@@ -1593,6 +1611,30 @@ impl ExplorerRoot {
         self.bookmark_action_window_observer = Some(observer);
     }
 
+    pub fn attach_bookmark_delete_window_observer(
+        &mut self,
+        observer: BookmarkDeleteWindowObserver,
+    ) {
+        self.bookmark_delete_window_observer = Some(observer);
+    }
+
+    pub fn attach_bookmark_folder_delete_window_observer(
+        &mut self,
+        observer: BookmarkFolderDeleteWindowObserver,
+    ) {
+        self.bookmark_folder_delete_window_observer = Some(observer);
+    }
+
+    pub fn dispatch_bookmark_folder_delete_window_action(
+        &mut self,
+        action: ExplorerAction,
+        source: ActionSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.handle_action(action, source, window, cx);
+    }
+
     pub fn attach_bookmark_folder_editor_window_observer(
         &mut self,
         observer: BookmarkFolderEditorWindowObserver,
@@ -1627,6 +1669,39 @@ impl ExplorerRoot {
             .entries()
             .iter()
             .any(|bookmark| bookmark.id == id)
+    }
+
+    pub fn present_bookmark_delete_window(
+        &mut self,
+        id: explorer_model::BookmarkId,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(bookmark) = self
+            .state
+            .bookmarks()
+            .entries()
+            .iter()
+            .find(|bookmark| bookmark.id == id)
+            .cloned()
+        else {
+            self.state
+                .set_bookmark_notice("Bookmark is no longer available.");
+            return false;
+        };
+        let opened = self
+            .bookmark_delete_window_observer
+            .clone()
+            .is_some_and(|observer| {
+                observer(
+                    bookmark_delete_window::BookmarkDeleteWindowSnapshotV1 { bookmark },
+                    cx,
+                )
+            });
+        if !opened {
+            self.state
+                .set_bookmark_notice("Unable to open the bookmark delete confirmation window.");
+        }
+        opened
     }
 
     pub fn dispatch_bookmark_action_window_action(
@@ -2840,6 +2915,8 @@ impl ExplorerRoot {
             bookmark_editor_window_observer: None,
             bookmark_manager_window_observer: None,
             bookmark_action_window_observer: None,
+            bookmark_delete_window_observer: None,
+            bookmark_folder_delete_window_observer: None,
             bookmark_folder_editor_window_observer: None,
             last_window_title: None,
             navigation_history_release_deadline: None,
@@ -2941,6 +3018,8 @@ impl ExplorerRoot {
             bookmark_editor_window_observer: None,
             bookmark_manager_window_observer: None,
             bookmark_action_window_observer: None,
+            bookmark_delete_window_observer: None,
+            bookmark_folder_delete_window_observer: None,
             bookmark_folder_editor_window_observer: None,
             last_window_title: None,
             navigation_history_release_deadline: None,
@@ -3770,34 +3849,6 @@ impl ExplorerRoot {
             self.state.cancel_bookmark_folder_editor();
             self.state
                 .set_bookmark_notice("Unable to open the bookmark folder editor window.");
-        }
-    }
-
-    fn present_bookmark_action_window(
-        &mut self,
-        id: explorer_model::BookmarkId,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(bookmark) = self
-            .state
-            .bookmarks()
-            .entries()
-            .iter()
-            .find(|bookmark| bookmark.id == id)
-            .cloned()
-        else {
-            self.state
-                .set_bookmark_notice("Bookmark is no longer available.");
-            return;
-        };
-        let snapshot = bookmark_action_window::BookmarkActionWindowSnapshotV1 { bookmark };
-        let opened = self
-            .bookmark_action_window_observer
-            .clone()
-            .is_some_and(|observer| observer(snapshot, cx));
-        if !opened {
-            self.state
-                .set_bookmark_notice("Unable to open the bookmark action window.");
         }
     }
 
@@ -5144,8 +5195,13 @@ impl ExplorerRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let ExplorerAction::OpenBookmarkContextMenu { id, .. } = action {
-            self.present_bookmark_action_window(id, cx);
+        if let ExplorerAction::OpenBookmarkContextMenu { id, x, y } = action {
+            self.state.open_bookmark_context_menu(id, x, y);
+            cx.notify();
+            return;
+        }
+        if action == ExplorerAction::CloseBookmarkContextMenu {
+            self.state.close_bookmark_context_menu();
             cx.notify();
             return;
         }
@@ -5168,6 +5224,14 @@ impl ExplorerRoot {
         if self.state.bookmark_toolbar_context_menu().is_some() {
             self.state.close_bookmark_toolbar_context_menu();
             cx.notify();
+        }
+        if self.state.bookmark_context_menu().is_some() {
+            self.state.close_bookmark_context_menu();
+            cx.notify();
+        }
+        if let ExplorerAction::RequestRemoveBookmark { id } = action {
+            self.present_bookmark_delete_window(id, cx);
+            return;
         }
         if self.state.remote_context_menu().is_some()
             && remote_context_menu_command_dismisses(&action)
@@ -5577,6 +5641,28 @@ impl ExplorerRoot {
         }
         if let ExplorerAction::RemoveBookmarkFolder { id } = action {
             self.state.request_bookmark_folder_delete(id);
+            let snapshot = self.state.bookmark_folder_delete_confirmation().and_then(
+                |(pending_id, descendant_count)| {
+                    self.state.bookmarks().folder(pending_id).map(|folder| {
+                        bookmark_folder_delete_window::BookmarkFolderDeleteWindowSnapshotV1 {
+                            id: pending_id,
+                            name: folder.name.clone(),
+                            descendant_count,
+                        }
+                    })
+                },
+            );
+            let opened = snapshot.is_some_and(|snapshot| {
+                self.bookmark_folder_delete_window_observer
+                    .clone()
+                    .is_some_and(|observer| observer(snapshot, cx))
+            });
+            if !opened {
+                self.state.cancel_bookmark_folder_delete();
+                self.state.set_bookmark_notice(
+                    "Unable to open the bookmark folder delete confirmation window.",
+                );
+            }
             cx.notify();
         }
         if action == ExplorerAction::CancelRemoveBookmarkFolder {
@@ -5728,6 +5814,8 @@ impl ExplorerRoot {
             }
         }
         if let ExplorerAction::ActivateBookmark { id } = action {
+            self.state.dismiss_bookmark_browse_menus();
+            cx.notify();
             let bookmark = self
                 .state
                 .bookmarks()
@@ -6385,6 +6473,11 @@ impl ExplorerRoot {
             } else if let Some(request) = self.state.recycle_selected_request() {
                 self.execute_file_operation(request);
             }
+        }
+        if action == ExplorerAction::RequestPermanentDelete
+            && let Some(request) = self.state.permanent_delete_selected_request()
+        {
+            self.execute_file_operation(request);
         }
         if action == ExplorerAction::CreateShortcutSelected
             && let Some(request) = self.state.create_shortcut_selected_request()
@@ -7577,6 +7670,16 @@ impl Render for ExplorerRoot {
                 }),
             )
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if this.state.bookmark_context_menu().is_some() && event.keystroke.key == "escape" {
+                    cx.stop_propagation();
+                    this.handle_action(
+                        ExplorerAction::CloseBookmarkContextMenu,
+                        ActionSource::Keyboard,
+                        window,
+                        cx,
+                    );
+                    return;
+                }
                 if this.state.remote_context_menu().is_some() && event.keystroke.key == "escape" {
                     cx.stop_propagation();
                     this.handle_action(
@@ -11279,5 +11382,21 @@ mod tests {
             tab.visible_snapshot().map(|value| value.entries().len()),
             Some(1)
         );
+    }
+
+    #[test]
+    fn bookmark_activation_dismisses_browse_menus_before_target_lookup() {
+        let source = include_str!("lib.rs");
+        let branch = source
+            .split("if let ExplorerAction::ActivateBookmark { id } = action")
+            .nth(1)
+            .expect("bookmark activation branch");
+        let dismiss = branch
+            .find("dismiss_bookmark_browse_menus")
+            .expect("browse menus are dismissed");
+        let lookup = branch
+            .find(".bookmarks()")
+            .expect("bookmark lookup follows dismissal");
+        assert!(dismiss < lookup);
     }
 }

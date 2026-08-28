@@ -40,6 +40,8 @@ Add explicit actions for opening the manager, creating a logical folder under an
 
 ### Confirmed bookmark action window
 
+> Superseded by the later inline bookmark context-menu decision below. The native action window is no longer opened by bookmark right-click.
+
 Bookmark-item right-click uses a singleton `BookmarkActionWindow`, not an in-surface overlay or an immediate native popup menu. Its snapshot identifies the bookmark; local window state owns the selected applicable command and delete-confirmation stage. Confirm dispatches through the owner `ExplorerRoot`; cancel, Escape, or close has no reducer mutation. Reopening for another bookmark replaces the snapshot, resets selection to Open, and activates the existing window. Edit hands off to `BookmarkEditorWindow`; Delete requires a second explicit confirmation.
 
 Alternatives rejected: the existing overlay repeats the event-routing failure; an ordinary popup executes on click and does not meet the explicit-confirmation requirement.
@@ -53,6 +55,22 @@ Alternatives rejected: keeping the overlay retains the input freeze, while unlim
 ### Toolbar bookmark folder drag
 
 Reuse the manager's typed GPUI `BookmarkDrag` for toolbar bookmark entries. Logical folder buttons accept the drag and stop propagation; the toolbar background accepts it as a root destination. A typed reducer action changes `parent_id`, appends at the destination, normalizes sibling order, and uses the existing durable rollback path. Same-parent and invalid destinations are no-ops. Logical folders are not draggable in this scope.
+
+### Firefox-style folder content menu
+
+Left-click folder panels render only immediate child folders and bookmarks in stored order. Child folders show a folder icon and disclosure arrow and switch the panel to that folder. Mutation commands are absent from this panel and remain in the existing right-click context menu, including for nested folder rows. A single drill-in panel is used instead of a multi-column hover cascade to preserve the current stable popup lifecycle.
+
+### Provider-aware bookmark icons
+
+One chrome helper classifies bookmark targets and supplies icons to every bookmark projection. Local/unknown targets use `🔖`, ADB uses the phone icon `📱`, SFTP uses the remote-computer icon `🖥`, and Lua uses Lua.org's unchanged official logo; logical folders retain `📁`. Structured targets use `file_system_kind`, while arbitrary raw paths use only case-insensitive scheme prefixes and remain unvalidated. The official GIF is embedded offline, scaled with preserved proportions, and attributed in source under Lua.org's published logo permission.
+
+### Bookmark browse-menu dismissal
+
+The `ActivateBookmark` reducer synchronously clears both browse-only popups—the active folder menu and overflow menu—before bookmark lookup or provider activation. Consequently stale IDs, invalid paths, unavailable providers, file-launch errors, and Lua failures cannot leave a menu visible. Child-folder drill-in remains open because it uses the separate folder-toggle action.
+
+### Inline bookmark context menu
+
+Bookmark right-click stores a validated bookmark ID and pointer coordinates in root view state and renders a compact inline menu using the same geometry, surface, border, radius, spacing, hover, shadow, and danger colors as the logical-folder context menu. Open, optional Open in New Tab, and Edit dispatch directly after dismissal. Delete dismisses the menu and presents the existing dedicated confirmation window. The former native action window is no longer part of the right-click route.
 
 ### Evidence-driven corrections
 

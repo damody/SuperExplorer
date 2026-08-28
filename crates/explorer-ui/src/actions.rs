@@ -290,6 +290,9 @@ pub enum ExplorerAction {
         y: f32,
     },
     CloseBookmarkContextMenu,
+    RequestRemoveBookmark {
+        id: explorer_model::BookmarkId,
+    },
     OpenBookmarkToolbarContextMenu {
         parent_id: Option<explorer_model::BookmarkFolderId>,
         x: f32,
@@ -667,6 +670,7 @@ impl ExplorerAction {
             Self::OpenBookmarkInNewTab { .. } => "OpenBookmarkInNewTab",
             Self::OpenBookmarkContextMenu { .. } => "OpenBookmarkContextMenu",
             Self::CloseBookmarkContextMenu => "CloseBookmarkContextMenu",
+            Self::RequestRemoveBookmark { .. } => "RequestRemoveBookmark",
             Self::OpenBookmarkToolbarContextMenu { .. } => "OpenBookmarkToolbarContextMenu",
             Self::CloseBookmarkToolbarContextMenu => "CloseBookmarkToolbarContextMenu",
             Self::AddPathBookmark { .. } => "AddPathBookmark",
@@ -1479,6 +1483,7 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::OpenBookmarkInNewTab { .. }
         | ExplorerAction::OpenBookmarkContextMenu { .. }
         | ExplorerAction::CloseBookmarkContextMenu
+        | ExplorerAction::RequestRemoveBookmark { .. }
         | ExplorerAction::OpenBookmarkToolbarContextMenu { .. }
         | ExplorerAction::CloseBookmarkToolbarContextMenu
         | ExplorerAction::AddPathBookmark { .. }
@@ -1842,10 +1847,7 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             state.cancel_inline_rename();
             FocusSurface::FileView
         }
-        ExplorerAction::RequestPermanentDelete => {
-            let _ = state.begin_permanent_delete_confirmation();
-            FocusSurface::FileView
-        }
+        ExplorerAction::RequestPermanentDelete => FocusSurface::FileView,
         ExplorerAction::ConfirmPermanentDelete => FocusSurface::FileView,
         ExplorerAction::CancelPermanentDelete => {
             let _ = state.cancel_permanent_delete_confirmation();
@@ -1952,6 +1954,7 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         | ExplorerAction::OpenBookmarkInNewTab { .. }
         | ExplorerAction::OpenBookmarkContextMenu { .. }
         | ExplorerAction::CloseBookmarkContextMenu
+        | ExplorerAction::RequestRemoveBookmark { .. }
         | ExplorerAction::OpenBookmarkToolbarContextMenu { .. }
         | ExplorerAction::CloseBookmarkToolbarContextMenu
         | ExplorerAction::AddPathBookmark { .. }

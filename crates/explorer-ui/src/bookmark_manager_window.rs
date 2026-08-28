@@ -116,11 +116,6 @@ impl Render for BookmarkManagerWindow {
             Rc::new(cx.listener(|this, action: &ExplorerAction, window, cx| {
                 this.dispatch(action.clone(), ActionSource::Mouse, window, cx);
             }));
-        let delete_confirmation = self
-            .snapshot
-            .state
-            .bookmark_folder_delete_confirmation()
-            .map(|(_, count)| count);
         div()
             .id("bookmark-manager-window")
             .role(gpui::Role::Dialog)
@@ -138,17 +133,6 @@ impl Render for BookmarkManagerWindow {
                 &self.snapshot.state,
                 Some(on_action),
             ))
-            .when_some(delete_confirmation, |element, count| {
-                element.child(chrome::bookmark_folder_delete_dialog(
-                    self.tokens,
-                    count,
-                    Some(Rc::new(cx.listener(
-                        |this, action: &ExplorerAction, window, cx| {
-                            this.dispatch(action.clone(), ActionSource::Mouse, window, cx);
-                        },
-                    ))),
-                ))
-            })
     }
 }
 
