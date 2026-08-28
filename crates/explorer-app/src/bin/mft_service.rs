@@ -14,7 +14,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Condvar, Mutex, OnceLock, RwLock,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -75,6 +75,7 @@ const QUERY_FALLBACK_SCAN_BUDGET: Duration = Duration::from_secs(2);
 const QUERY_FALLBACK_MAX_ENTRIES: usize = 100_000;
 
 static STOPPED: AtomicBool = AtomicBool::new(false);
+static SERVICE_STATUS_HANDLE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static LIFECYCLE_BARRIER: mft_persistence::LifecycleBarrierV1 =
     mft_persistence::LifecycleBarrierV1::new();
 static RECOVERY_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -368,6 +369,10 @@ unsafe extern "system" fn control_handler(control: u32) {
     if matches!(control, SERVICE_CONTROL_STOP | SERVICE_CONTROL_SHUTDOWN) {
         LIFECYCLE_BARRIER.close();
         STOPPED.store(true, Ordering::Release);
+        let handle = SERVICE_STATUS_HANDLE.load(Ordering::Acquire);
+        if !handle.is_null() {
+            report(handle, SERVICE_STOP_PENDING, 0);
+        }
     }
 }
 
@@ -384,6 +389,7 @@ unsafe extern "system" fn service_main(_: u32, _: *mut *mut u16) {
     if handle.is_null() {
         return;
     }
+    SERVICE_STATUS_HANDLE.store(handle, Ordering::Release);
     report(
         handle,
         SERVICE_RUNNING,
@@ -400,17 +406,25 @@ unsafe extern "system" fn service_main(_: u32, _: *mut *mut u16) {
 )]
 // SAFETY: handle is the live value returned by SCM and status is fully initialized for the call.
 fn report(handle: *mut c_void, state: u32, controls: u32) {
-    let status = ServiceStatus {
+    let status = service_status(state, controls);
+    // SAFETY: handle came from SCM and status points to initialized storage.
+    let _ = unsafe { SetServiceStatus(handle, &raw const status) };
+}
+
+fn service_status(state: u32, controls: u32) -> ServiceStatus {
+    ServiceStatus {
         service_type: SERVICE_WIN32_OWN_PROCESS,
         current_state: state,
         controls_accepted: controls,
         win32_exit_code: 0,
         service_specific_exit_code: 0,
-        checkpoint: 0,
-        wait_hint: 0,
-    };
-    // SAFETY: handle came from SCM and status points to initialized storage.
-    let _ = unsafe { SetServiceStatus(handle, &raw const status) };
+        checkpoint: u32::from(state == SERVICE_STOP_PENDING),
+        wait_hint: if state == SERVICE_STOP_PENDING {
+            30_000
+        } else {
+            0
+        },
+    }
 }
 
 fn cache_root() -> PathBuf {
@@ -1577,10 +1591,12 @@ fn run_event_driven_service() {
     for worker in workers {
         let _ = worker.join();
     }
-    for query_worker in query_workers {
-        let _ = query_worker.join();
-    }
-    let _ = focus_worker.join();
+    // Named-pipe workers can be blocked inside ConnectNamedPipe with no client
+    // available to wake them. They are read-only after the lifecycle barrier
+    // closes, so detach them and let the service process exit after SCM receives
+    // STOPPED instead of deadlocking service shutdown indefinitely.
+    drop(query_workers);
+    drop(focus_worker);
     let _ = session_worker.join();
 }
 
@@ -4154,6 +4170,15 @@ fn write_status_with_high_water(
 mod tests {
     use super::*;
     use std::{collections::BTreeMap, fs, path::Path};
+
+    #[test]
+    fn stop_pending_status_gives_scm_a_bounded_wait_hint() {
+        let status = service_status(SERVICE_STOP_PENDING, 0);
+        assert_eq!(status.current_state, SERVICE_STOP_PENDING);
+        assert_eq!(status.controls_accepted, 0);
+        assert_eq!(status.checkpoint, 1);
+        assert_eq!(status.wait_hint, 30_000);
+    }
 
     fn copy_legacy_fixture_directory(source: &Path, destination: &Path) {
         fs::create_dir_all(destination).unwrap();

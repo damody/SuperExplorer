@@ -135,6 +135,12 @@ service_request_stop:
     Pop $0
     Pop $1
     ${If} $0 != 0
+        ; Error 1061 means another controller won the race and SCM is already
+        ; transitioning the service. Do not send a second control request;
+        ; wait for the authoritative STOPPED state instead.
+        ${StrStr} $3 $1 "1061"
+        StrCmp $3 "" service_check_already_stopped_race service_wait_stopped_init
+service_check_already_stopped_race:
         ; Error 1062 means the service reached STOPPED between query and stop.
         ${StrStr} $3 $1 "1062"
         StrCmp $3 "" service_stop_failed service_wait_stopped_init
@@ -142,19 +148,22 @@ service_request_stop:
 
 service_wait_stopped_init:
     StrCpy $2 0
+    StrCpy $4 0
 service_wait_stopped:
     nsExec::ExecToStack '"$SYSDIR\sc.exe" query SuperExplorerMft'
     Pop $0
     Pop $1
     ${If} $0 != 0
-        Goto service_stop_query_failed
+        ; A service removed concurrently is also safe for file replacement.
+        ${StrStr} $3 $1 "1060"
+        StrCmp $3 "" service_stop_query_failed service_ready_for_files
     ${EndIf}
     ${StrStr} $3 $1 "STOPPED"
     StrCmp $3 "" service_not_stopped service_ready_for_files
 
 service_not_stopped:
     IntOp $2 $2 + 1
-    IntCmp $2 30 service_stop_timeout service_stop_retry service_stop_timeout
+    IntCmp $2 10 service_stop_timeout service_stop_retry service_stop_timeout
 service_stop_retry:
     Sleep 500
     Goto service_wait_stopped
@@ -170,7 +179,17 @@ service_stop_query_failed:
     Abort
 
 service_stop_timeout:
-    MessageBox MB_ICONSTOP|MB_OK "SuperExplorer MFT Windows Service 未能在 15 秒內進入 STOPPED 狀態。安裝尚未覆蓋服務檔案。"
+    StrCmp $4 "1" service_stop_timeout_final
+    StrCpy $4 1
+    StrCpy $2 0
+    DetailPrint "Graceful service stop timed out after 5 seconds; terminating only the process hosted by SuperExplorerMft."
+    nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /F /FI "SERVICES eq SuperExplorerMft"'
+    Pop $0
+    Pop $1
+    DetailPrint "SuperExplorerMft task termination result: exit=$0 $1"
+    Goto service_wait_stopped
+service_stop_timeout_final:
+    MessageBox MB_ICONSTOP|MB_OK "SuperExplorer MFT Windows Service 在正常停止與修復終止後仍未進入 STOPPED 狀態。安裝尚未覆蓋服務檔案。"
     Abort
 
 service_ready_for_files:
@@ -278,25 +297,32 @@ un.service_request_stop:
     Pop $0
     Pop $1
     ${If} $0 != 0
+        ; Treat an SCM transition owned by another controller as an accepted
+        ; stop and wait instead of failing the uninstaller with error 1061.
+        ${UnStrStr} $3 $1 "1061"
+        StrCmp $3 "" un.service_check_already_stopped_race un.service_wait_stopped_init
+un.service_check_already_stopped_race:
         ${UnStrStr} $3 $1 "1062"
         StrCmp $3 "" un.service_stop_failed un.service_wait_stopped_init
     ${EndIf}
 
 un.service_wait_stopped_init:
     StrCpy $2 0
+    StrCpy $4 0
 un.service_wait_stopped:
     nsExec::ExecToStack '"$SYSDIR\sc.exe" query SuperExplorerMft'
     Pop $0
     Pop $1
     ${If} $0 != 0
-        Goto un.service_stop_query_failed
+        ${UnStrStr} $3 $1 "1060"
+        StrCmp $3 "" un.service_stop_query_failed un.service_ready_for_delete
     ${EndIf}
     ${UnStrStr} $3 $1 "STOPPED"
     StrCmp $3 "" un.service_not_stopped un.service_ready_for_delete
 
 un.service_not_stopped:
     IntOp $2 $2 + 1
-    IntCmp $2 30 un.service_stop_timeout un.service_stop_retry un.service_stop_timeout
+    IntCmp $2 10 un.service_stop_timeout un.service_stop_retry un.service_stop_timeout
 un.service_stop_retry:
     Sleep 500
     Goto un.service_wait_stopped
@@ -317,7 +343,17 @@ un.service_stop_query_failed:
     Abort
 
 un.service_stop_timeout:
-    MessageBox MB_ICONSTOP|MB_OK "SuperExplorer MFT Windows Service 未能在 15 秒內進入 STOPPED 狀態。解除安裝尚未刪除服務或檔案。"
+    StrCmp $4 "1" un.service_stop_timeout_final
+    StrCpy $4 1
+    StrCpy $2 0
+    DetailPrint "Graceful service stop timed out after 5 seconds during uninstall; terminating only the process hosted by SuperExplorerMft."
+    nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /F /FI "SERVICES eq SuperExplorerMft"'
+    Pop $0
+    Pop $1
+    DetailPrint "SuperExplorerMft task termination result: exit=$0 $1"
+    Goto un.service_wait_stopped
+un.service_stop_timeout_final:
+    MessageBox MB_ICONSTOP|MB_OK "SuperExplorer MFT Windows Service 在正常停止與修復終止後仍未進入 STOPPED 狀態。解除安裝尚未刪除服務或檔案。"
     Abort
 
 un.service_ready_for_delete:

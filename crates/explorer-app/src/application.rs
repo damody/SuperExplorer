@@ -1412,6 +1412,7 @@ fn cancel_folder_size_context(
 fn publish_mft_folder_result_v1(
     pending: &(Mutex<PendingFolderSizeWorkV1>, Condvar),
     backend_status: &AtomicU8,
+    snapshot_service: &Arc<Mutex<crate::folder_size_service::FolderSizeServiceV1>>,
     result_tx: &mpsc::SyncSender<explorer_ui::folder_size_column::FolderSizeResultV1>,
     request: explorer_ui::folder_size_column::FolderSizeRequestV1,
     started: Instant,
@@ -1440,6 +1441,43 @@ fn publish_mft_folder_result_v1(
                     aggregate.directory_count,
                 )
             })
+    });
+    let measured = measured.or_else(|mft_error| {
+        let fallback = snapshot_service
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .snapshot_or_scan_recursive(&request.path, request.context.generation.value(), || {
+                folder_size_request_cancelled(pending, &request)
+            })
+            .and_then(|snapshot| {
+                (snapshot.status == crate::folder_size_service::SnapshotStatusV1::Complete)
+                    .then_some((
+                        snapshot.aggregate.recursive_bytes,
+                        Some(explorer_ui::folder_size_column::DirectoryFactsV1 {
+                            mft_generation: snapshot
+                                .mft_generation
+                                .unwrap_or(snapshot.refresh_generation),
+                            file_count: snapshot.aggregate.file_count,
+                            folder_count: snapshot.aggregate.directory_count.saturating_sub(1),
+                        }),
+                    ))
+                    .ok_or_else(|| {
+                        format!(
+                            "shared folder snapshot ended with {:?}: {}",
+                            snapshot.status,
+                            snapshot.diagnostic.as_deref().unwrap_or("no diagnostic")
+                        )
+                    })
+            });
+        match fallback {
+            Ok(value) => {
+                backend_status.store(1, Ordering::Release);
+                Ok(value)
+            }
+            Err(fallback_error) => Err(format!(
+                "MFT query failed: {mft_error}; recursive fallback failed: {fallback_error}"
+            )),
+        }
     });
     let (exact_bytes, directory_facts, error) = match measured {
         Ok((exact_bytes, directory_facts)) => (Some(exact_bytes), directory_facts, None),
@@ -1509,7 +1547,7 @@ impl ApplicationVisualColumnRuntimeV1 {
 
     fn start_with_renderer(
         renderer: Option<explorer_extension_host::SinglePluginVisualRenderRuntimeV1>,
-        _snapshot_service: Arc<Mutex<crate::folder_size_service::FolderSizeServiceV1>>,
+        snapshot_service: Arc<Mutex<crate::folder_size_service::FolderSizeServiceV1>>,
     ) -> Result<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1, Error> {
         let pending = Arc::new((
             Mutex::new(PendingFolderSizeWorkV1::default()),
@@ -1523,6 +1561,7 @@ impl ApplicationVisualColumnRuntimeV1 {
         let worker_backend_status = Arc::clone(&backend_status);
         let worker_backend_active = Arc::clone(&backend_active);
         let worker_result_tx = result_tx.clone();
+        let worker_snapshot_service = Arc::clone(&snapshot_service);
         std::thread::Builder::new()
             .name("p0-folder-size-batch".to_owned())
             .spawn(move || {
@@ -1627,6 +1666,7 @@ impl ApplicationVisualColumnRuntimeV1 {
                             publish_mft_folder_result_v1(
                                 &worker_pending,
                                 &worker_backend_status,
+                                &worker_snapshot_service,
                                 &worker_result_tx,
                                 request,
                                 started,
@@ -1642,6 +1682,7 @@ impl ApplicationVisualColumnRuntimeV1 {
                             if !publish_mft_folder_result_v1(
                                 &worker_pending,
                                 &worker_backend_status,
+                                &worker_snapshot_service,
                                 &worker_result_tx,
                                 request,
                                 started,
@@ -7239,6 +7280,59 @@ mod tests {
             pending.requests.as_ref().unwrap()[2].item_id,
             ShellItemId::from_provider_bytes(3_u64.to_le_bytes()).unwrap()
         );
+    }
+
+    #[test]
+    fn mft_failure_falls_back_to_exact_recursive_directory_facts() {
+        let fixture = tempfile::tempdir().unwrap();
+        let child = fixture.path().join("child");
+        fs::create_dir(&child).unwrap();
+        fs::write(fixture.path().join("root.txt"), b"a").unwrap();
+        fs::write(child.join("nested.txt"), b"bc").unwrap();
+
+        let context = RequestContext::new(TabId::new(), Generation::new(7));
+        let item_id = ShellItemId::from_provider_bytes([1]).unwrap();
+        let request = explorer_ui::folder_size_column::FolderSizeRequestV1 {
+            context: context.clone(),
+            item_id: item_id.clone(),
+            path: fixture.path().to_path_buf(),
+            mft_cache_memory_mb: 512,
+            require_directory_facts: true,
+        };
+        let pending = (
+            Mutex::new(PendingFolderSizeWorkV1::default()),
+            std::sync::Condvar::new(),
+        );
+        let backend_status = std::sync::atomic::AtomicU8::new(2);
+        let snapshots = Arc::new(Mutex::new(
+            crate::folder_size_service::FolderSizeServiceV1::with_capacity(8),
+        ));
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+
+        assert!(super::publish_mft_folder_result_v1(
+            &pending,
+            &backend_status,
+            &snapshots,
+            &sender,
+            request,
+            Instant::now(),
+            Err("forced MFT failure".to_owned()),
+        ));
+
+        let result = receiver.recv().unwrap();
+        assert_eq!(result.context, context);
+        assert_eq!(result.item_id, item_id);
+        assert_eq!(result.exact_bytes, Some(3));
+        assert_eq!(
+            result.directory_facts,
+            Some(explorer_ui::folder_size_column::DirectoryFactsV1 {
+                mft_generation: 7,
+                file_count: 2,
+                folder_count: 1,
+            })
+        );
+        assert_eq!(result.error, None);
+        assert_eq!(backend_status.load(Ordering::Acquire), 1);
     }
 
     #[test]
