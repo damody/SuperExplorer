@@ -13,7 +13,7 @@ Make the current-location bookmark control communicate its state immediately and
 
 ## Presentation
 
-The editor uses a compact fixed-size window centered by GPUI. Its content has a clear title, labeled name and path fields, a bounded destination list, and a right-aligned action row. Existing theme tokens provide surface, focus, accent, and danger colors. The design intentionally does not reproduce browser-only controls that have no SuperExplorer behavior.
+The editor uses a centered GPUI window whose initial width is 80% of the primary display, with a 640px minimum, and a 560px initial height. The user may resize it. Its content has a clear title, labeled name and path fields, a bounded destination list, and a right-aligned action row. Existing theme tokens provide surface, focus, accent, and danger colors. The design intentionally does not reproduce browser-only controls that have no SuperExplorer behavior.
 
 ## Data Flow and Errors
 
@@ -27,4 +27,4 @@ The toolbar derives the filled state from `current_folder_bookmark_target_and_id
 
 ## Verification
 
-Add source-contract coverage for the focus-blue solid star, existing-bookmark editor dispatch, compact normal-window bounds, and retained editor controls. Run focused `explorer-ui` tests, `cargo check -p explorer-app`, formatting checks, and strict OpenSpec validation.
+Add source-contract coverage for the focus-blue solid star, existing-bookmark editor dispatch, responsive 80%-wide normal-window bounds, and retained editor controls. Run focused `explorer-ui` tests, `cargo check -p explorer-app`, formatting checks, and strict OpenSpec validation.
