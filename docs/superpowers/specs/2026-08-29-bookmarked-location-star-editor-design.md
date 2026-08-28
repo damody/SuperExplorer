@@ -13,7 +13,7 @@ Make the current-location bookmark control communicate its state immediately and
 
 ## Presentation
 
-The editor uses a centered GPUI window whose initial width is 80% of the primary display, with a 640px minimum, and a 560px initial height. The user may resize it. Its content has a clear title, labeled name and path fields, a bounded destination list, and a right-aligned action row. Existing theme tokens provide surface, focus, accent, and danger colors. The design intentionally does not reproduce browser-only controls that have no SuperExplorer behavior.
+The editor uses a centered GPUI window whose initial width is 80% of the primary display, with a 640px minimum, and a 560px initial height. The user may resize it. It has no native system titlebar, so Windows does not add minimize, maximize, or close buttons; Cancel and Escape are the explicit close paths. Its content has a clear title, labeled name and path fields, a bounded destination list, and a right-aligned action row containing Remove Bookmark, Cancel, and Save. Remove deletes an existing bookmark through persistence; for an unsaved add draft it cancels creation. Existing theme tokens provide surface, focus, accent, and danger colors.
 
 ## Data Flow and Errors
 
