@@ -5698,6 +5698,9 @@ impl ExplorerRoot {
                     }
                     cx.notify();
                 }
+            } else {
+                self.state.cancel_bookmark_editor();
+                cx.notify();
             }
         }
         if action == ExplorerAction::ToggleBookmarkManager {

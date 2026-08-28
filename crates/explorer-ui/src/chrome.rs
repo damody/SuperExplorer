@@ -32,7 +32,7 @@ use gpui::{
     AccessibleAction, Anchor, AnchoredPositionMode, App, Context, DispatchPhase, Focusable,
     IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent, ObjectFit, Render, RenderImage,
     RenderOnce, Role, SharedString, Window, WindowControlArea, anchored, canvas, deferred, div,
-    img, point, prelude::*, px,
+    img, point, prelude::*, px, svg,
 };
 use gpui_elements::editable_text::{EditableTextState, text_input};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -917,7 +917,9 @@ fn bookmark_bar(
                 .py(px(4.0))
                 .text_size(px(20.0))
                 .rounded(px(4.0))
-                .text_color(if enabled {
+                .text_color(if bookmarked {
+                    tokens.theme.colors.focus.to_gpui()
+                } else if enabled {
                     tokens.theme.colors.text_primary.to_gpui()
                 } else {
                     tokens.theme.colors.text_disabled.to_gpui()
@@ -1756,6 +1758,226 @@ fn bookmark_context_menu(
         )
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RemoteMenuPlacement {
+    CommandStrip,
+    Text,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct RemoteMenuCommand {
+    label: &'static str,
+    action: ExplorerAction,
+    icon: Option<ExplorerIcon>,
+    placement: RemoteMenuPlacement,
+    danger: bool,
+}
+
+fn remote_menu_commands(background: bool, paste_available: bool) -> Vec<RemoteMenuCommand> {
+    let mut commands = Vec::new();
+    if background {
+        commands.push(RemoteMenuCommand {
+            label: "新增資料夾",
+            action: ExplorerAction::CreateFolder,
+            icon: Some(ExplorerIcon::New),
+            placement: RemoteMenuPlacement::Text,
+            danger: false,
+        });
+        if paste_available {
+            commands.push(RemoteMenuCommand {
+                label: "貼上",
+                action: ExplorerAction::Paste,
+                icon: Some(ExplorerIcon::Paste),
+                placement: RemoteMenuPlacement::Text,
+                danger: false,
+            });
+        }
+        return commands;
+    }
+
+    commands.extend([
+        RemoteMenuCommand {
+            label: "剪下",
+            action: ExplorerAction::CutSelected,
+            icon: Some(ExplorerIcon::Cut),
+            placement: RemoteMenuPlacement::CommandStrip,
+            danger: false,
+        },
+        RemoteMenuCommand {
+            label: "複製",
+            action: ExplorerAction::CopySelected,
+            icon: Some(ExplorerIcon::Copy),
+            placement: RemoteMenuPlacement::CommandStrip,
+            danger: false,
+        },
+        RemoteMenuCommand {
+            label: "重新命名",
+            action: ExplorerAction::BeginRenameFocused,
+            icon: Some(ExplorerIcon::Rename),
+            placement: RemoteMenuPlacement::CommandStrip,
+            danger: false,
+        },
+        RemoteMenuCommand {
+            label: "永久刪除…",
+            action: ExplorerAction::RecycleDeleteSelected,
+            icon: Some(ExplorerIcon::Delete),
+            placement: RemoteMenuPlacement::CommandStrip,
+            danger: true,
+        },
+        RemoteMenuCommand {
+            label: "開啟",
+            action: ExplorerAction::OpenFocused,
+            icon: None,
+            placement: RemoteMenuPlacement::Text,
+            danger: false,
+        },
+    ]);
+    if paste_available {
+        commands.push(RemoteMenuCommand {
+            label: "貼上",
+            action: ExplorerAction::Paste,
+            icon: Some(ExplorerIcon::Paste),
+            placement: RemoteMenuPlacement::Text,
+            danger: false,
+        });
+    }
+    commands
+}
+
+fn remote_menu_icon(
+    id: String,
+    icon: ExplorerIcon,
+    danger: bool,
+    tokens: UiTokens,
+) -> impl IntoElement {
+    let color = if danger {
+        tokens.theme.colors.danger
+    } else {
+        tokens.theme.colors.text_primary
+    };
+    div().id(id).w(px(18.0)).h(px(18.0)).flex_none().child(
+        svg()
+            .path(icon.asset_path())
+            .size_full()
+            .text_color(color.to_gpui()),
+    )
+}
+
+fn remote_menu_command_strip_button(
+    index: usize,
+    command: RemoteMenuCommand,
+    tokens: UiTokens,
+    callback: Option<ActionCallback>,
+) -> gpui::AnyElement {
+    let label = command.label;
+    let action = command.action;
+    let danger = command.danger;
+    let icon = command.icon.expect("command-strip entries require icons");
+    div()
+        .id(format!("remote-context-strip-command-{index}"))
+        .debug_selector(move || format!("remote-context-strip-{label}"))
+        .role(Role::Button)
+        .aria_label(label)
+        .focusable()
+        .tab_stop(true)
+        .w(px(44.0))
+        .h(px(40.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(4.0))
+        .text_color(if danger {
+            tokens.theme.colors.danger.to_gpui()
+        } else {
+            tokens.theme.colors.text_primary.to_gpui()
+        })
+        .cursor_pointer()
+        .hover(move |style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
+        .active(move |style| style.bg(tokens.theme.colors.control_pressed.to_gpui()))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .when_some(callback, move |element, cb| {
+            let accessibility_cb = cb.clone();
+            let accessibility_action = action.clone();
+            element
+                .on_click(move |_, window, cx| {
+                    cx.stop_propagation();
+                    cb(&action, window, cx);
+                })
+                .on_a11y_action(AccessibleAction::Click, move |_, window, cx| {
+                    accessibility_cb(&accessibility_action, window, cx);
+                })
+        })
+        .child(remote_menu_icon(
+            format!("remote-context-strip-icon-{index}"),
+            icon,
+            danger,
+            tokens,
+        ))
+        .into_any_element()
+}
+
+fn remote_menu_text_command(
+    index: usize,
+    command: RemoteMenuCommand,
+    tokens: UiTokens,
+    callback: Option<ActionCallback>,
+) -> gpui::AnyElement {
+    let label = command.label;
+    let action = command.action;
+    let icon = command.icon;
+    let danger = command.danger;
+    div()
+        .id(format!("remote-context-text-command-{index}"))
+        .debug_selector(move || format!("remote-context-text-{label}"))
+        .role(Role::Button)
+        .aria_label(label)
+        .focusable()
+        .tab_stop(true)
+        .h(px(34.0))
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .px(px(10.0))
+        .rounded(px(4.0))
+        .text_color(if danger {
+            tokens.theme.colors.danger.to_gpui()
+        } else {
+            tokens.theme.colors.text_primary.to_gpui()
+        })
+        .cursor_pointer()
+        .hover(move |style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
+        .active(move |style| style.bg(tokens.theme.colors.control_pressed.to_gpui()))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .when_some(callback, move |element, cb| {
+            let accessibility_cb = cb.clone();
+            let accessibility_action = action.clone();
+            element
+                .on_click(move |_, window, cx| {
+                    cx.stop_propagation();
+                    cb(&action, window, cx);
+                })
+                .on_a11y_action(AccessibleAction::Click, move |_, window, cx| {
+                    accessibility_cb(&accessibility_action, window, cx);
+                })
+        })
+        .child(
+            div()
+                .w(px(18.0))
+                .h(px(18.0))
+                .flex_none()
+                .when_some(icon, move |slot, icon| {
+                    slot.child(remote_menu_icon(
+                        format!("remote-context-text-icon-{index}"),
+                        icon,
+                        danger,
+                        tokens,
+                    ))
+                }),
+        )
+        .child(label)
+        .into_any_element()
+}
+
 fn remote_context_menu(
     tokens: UiTokens,
     menu: crate::state::RemoteContextMenuState,
@@ -1767,47 +1989,22 @@ fn remote_context_menu(
     let close_cb = callback.clone();
     let close_right = close.clone();
     let close_right_cb = callback.clone();
-    let mut commands = if menu.background {
-        vec![("新增資料夾", ExplorerAction::CreateFolder, false)]
-    } else {
-        vec![
-            ("開啟", ExplorerAction::OpenFocused, false),
-            ("剪下", ExplorerAction::CutSelected, false),
-            ("複製", ExplorerAction::CopySelected, false),
-            ("重新命名", ExplorerAction::BeginRenameFocused, false),
-            ("永久刪除…", ExplorerAction::RecycleDeleteSelected, true),
-        ]
-    };
-    if menu.paste_available {
-        commands.insert(
-            usize::from(!menu.background),
-            ("貼上", ExplorerAction::Paste, false),
-        );
-    }
+    let commands = remote_menu_commands(menu.background, menu.paste_available);
+    let strip = commands
+        .iter()
+        .filter(|command| command.placement == RemoteMenuPlacement::CommandStrip)
+        .cloned()
+        .enumerate()
+        .map(|(index, command)| {
+            remote_menu_command_strip_button(index, command, tokens, callback.clone())
+        })
+        .collect::<Vec<_>>();
     let rows = commands
         .into_iter()
+        .filter(|command| command.placement == RemoteMenuPlacement::Text)
         .enumerate()
-        .map(|(index, (label, action, danger))| {
-            let callback = callback.clone();
-            div()
-                .id(format!("remote-context-command-{index}"))
-                .role(Role::MenuItem)
-                .aria_label(label)
-                .cursor_pointer()
-                .px(px(12.0))
-                .py(px(7.0))
-                .rounded(px(4.0))
-                .text_color(if danger {
-                    tokens.theme.colors.danger.to_gpui()
-                } else {
-                    tokens.theme.colors.text_primary.to_gpui()
-                })
-                .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
-                .child(label)
-                .when_some(callback, move |element, cb| {
-                    element.on_click(move |_, window, cx| cb(&action, window, cx))
-                })
-        });
+        .map(|(index, command)| remote_menu_text_command(index, command, tokens, callback.clone()))
+        .collect::<Vec<_>>();
     let (left, top) = remote_context_menu_position(menu.x, menu.y, window_width, window_height);
     div()
         .id("remote-context-overlay")
@@ -1829,17 +2026,39 @@ fn remote_context_menu(
                     .id("remote-context-menu")
                     .role(Role::Menu)
                     .aria_label("Remote file context menu")
+                    .occlude()
                     .absolute()
                     .left(px(left))
                     .top(px(top))
-                    .min_w(px(212.0))
+                    .w(px(240.0))
                     .p(px(6.0))
-                    .rounded(px(6.0))
+                    .rounded(px(8.0))
                     .border(px(1.0))
                     .border_color(tokens.theme.colors.divider.to_gpui())
                     .bg(tokens.theme.colors.menu_fill.to_gpui())
                     .shadow_lg()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                    .when(!strip.is_empty(), |menu| {
+                        menu.child(
+                            div()
+                                .id("remote-context-command-strip")
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .px(px(4.0))
+                                .pb(px(4.0))
+                                .children(strip),
+                        )
+                        .child(
+                            div()
+                                .id("remote-context-strip-separator")
+                                .h(px(1.0))
+                                .mx(px(2.0))
+                                .mb(px(4.0))
+                                .bg(tokens.theme.colors.divider.to_gpui()),
+                        )
+                    })
                     .children(rows),
             )
             .with_priority(300),
@@ -1852,8 +2071,8 @@ fn remote_context_menu_position(
     window_width: f32,
     window_height: f32,
 ) -> (f32, f32) {
-    const MENU_WIDTH: f32 = 226.0;
-    const MENU_MAX_HEIGHT: f32 = 230.0;
+    const MENU_WIDTH: f32 = 240.0;
+    const MENU_MAX_HEIGHT: f32 = 132.0;
     (
         client_x.max(0.0).min((window_width - MENU_WIDTH).max(0.0)),
         client_y
@@ -1946,10 +2165,10 @@ pub(crate) fn bookmark_editor(
                 .role(Role::Dialog)
                 .aria_label("Bookmark editor")
                 .w_full()
-                .p(px(18.0))
+                .p(px(20.0))
                 .flex()
                 .flex_col()
-                .gap(px(10.0))
+                .gap(px(9.0))
                 .rounded(px(8.0))
                 .bg(tokens.theme.colors.surface.to_gpui())
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -1997,7 +2216,7 @@ pub(crate) fn bookmark_editor(
                     div()
                         .id("bookmark-destination-picker")
                         .role(Role::List)
-                        .max_h(px(140.0))
+                        .max_h(px(96.0))
                         .overflow_y_scroll()
                         .flex()
                         .flex_col()
@@ -2009,22 +2228,20 @@ pub(crate) fn bookmark_editor(
                         .flex()
                         .justify_end()
                         .gap(px(8.0))
-                        .when(editor.id.is_some(), |element| {
+                        .child({
                             let remove = ExplorerAction::RemoveEditingBookmark;
-                            element.child(
-                                div()
-                                    .id("bookmark-editor-remove")
-                                    .role(Role::Button)
-                                    .aria_label("Remove bookmark")
-                                    .cursor_pointer()
-                                    .px(px(12.0))
-                                    .py(px(6.0))
-                                    .text_color(colors.danger.to_gpui())
-                                    .child("移除書籤")
-                                    .when_some(remove_cb, move |e, cb| {
-                                        e.on_click(move |_, w, cx| cb(&remove, w, cx))
-                                    }),
-                            )
+                            div()
+                                .id("bookmark-editor-remove")
+                                .role(Role::Button)
+                                .aria_label("Remove bookmark")
+                                .cursor_pointer()
+                                .px(px(12.0))
+                                .py(px(6.0))
+                                .text_color(colors.danger.to_gpui())
+                                .child("移除書籤")
+                                .when_some(remove_cb, move |e, cb| {
+                                    e.on_click(move |_, w, cx| cb(&remove, w, cx))
+                                })
                         })
                         .child(
                             div()
@@ -12925,16 +13142,17 @@ mod tests {
     use super::{
         ACTIVE_TAB_ID, CAPTION_CLOSE_ID, CAPTION_CONTROL_AREAS, CAPTION_MAXIMIZE_ID,
         CAPTION_MINIMIZE_ID, COMMAND_BAR_ID, EXPLORER_WINDOW_ID, FILE_VIEW_HOST_ID, FileViewState,
-        NAVIGATION_BAR_ID, NAVIGATION_PANE_ID, NEW_TAB_BUTTON_ID, SEARCH_BOX_ID, STATUS_BAR_ID,
-        TAB_STRIP_ID, WINDOW_CHROME_ID, WINDOW_DRAG_REGION_ID, admission_cell_presentation,
-        bookmark_icon, breadcrumb_ancestry_partition, breadcrumb_location_shell_texture,
-        builtin_count_display, client_to_screen_point, details_name_column_contains,
-        editable_input_colors, file_view_background_context_hit, file_view_local_pointer,
-        format_explorer_size, is_generic_breadcrumb_folder_icon_key, localized_search_placeholder,
-        marquee_content_rect, navigation_item_shell_texture, navigation_shell_texture,
-        new_tab_button_background, operation_location_text, operation_message,
-        operation_message_opacity, operation_outcome_message, operation_request_summary,
-        remote_context_menu_position, select_file_row_shell_icon, tab_background,
+        NAVIGATION_BAR_ID, NAVIGATION_PANE_ID, NEW_TAB_BUTTON_ID, RemoteMenuPlacement,
+        SEARCH_BOX_ID, STATUS_BAR_ID, TAB_STRIP_ID, WINDOW_CHROME_ID, WINDOW_DRAG_REGION_ID,
+        admission_cell_presentation, bookmark_icon, breadcrumb_ancestry_partition,
+        breadcrumb_location_shell_texture, builtin_count_display, client_to_screen_point,
+        details_name_column_contains, editable_input_colors, file_view_background_context_hit,
+        file_view_local_pointer, format_explorer_size, is_generic_breadcrumb_folder_icon_key,
+        localized_search_placeholder, marquee_content_rect, navigation_item_shell_texture,
+        navigation_shell_texture, new_tab_button_background, operation_location_text,
+        operation_message, operation_message_opacity, operation_outcome_message,
+        operation_request_summary, remote_context_menu_position, remote_menu_commands,
+        select_file_row_shell_icon, tab_background,
     };
     use crate::{UiTokens, theme::ThemeTokens};
     use gpui::WindowControlArea;
@@ -13167,8 +13385,85 @@ mod tests {
         );
         assert_eq!(
             remote_context_menu_position(1_190.0, 790.0, 1_200.0, 800.0),
-            (974.0, 570.0)
+            (960.0, 668.0)
         );
+    }
+
+    #[test]
+    fn remote_item_menu_uses_windows_command_strip_and_text_groups() {
+        let commands = remote_menu_commands(false, false);
+        let strip = commands
+            .iter()
+            .filter(|command| command.placement == RemoteMenuPlacement::CommandStrip)
+            .map(|command| command.label)
+            .collect::<Vec<_>>();
+        let text = commands
+            .iter()
+            .filter(|command| command.placement == RemoteMenuPlacement::Text)
+            .map(|command| command.label)
+            .collect::<Vec<_>>();
+        assert_eq!(strip, ["剪下", "複製", "重新命名", "永久刪除…"]);
+        assert_eq!(text, ["開啟"]);
+        assert!(
+            commands
+                .iter()
+                .find(|command| command.label == "永久刪除…")
+                .expect("delete command")
+                .danger
+        );
+    }
+
+    #[test]
+    fn remote_menu_paste_and_background_membership_are_contextual() {
+        let item = remote_menu_commands(false, true);
+        assert_eq!(
+            item.iter()
+                .filter(|command| command.label == "貼上")
+                .count(),
+            1
+        );
+        assert_eq!(
+            item.iter()
+                .find(|command| command.label == "貼上")
+                .expect("item paste")
+                .placement,
+            RemoteMenuPlacement::Text
+        );
+
+        let background = remote_menu_commands(true, true);
+        assert_eq!(
+            background
+                .iter()
+                .map(|command| command.label)
+                .collect::<Vec<_>>(),
+            ["新增資料夾", "貼上"]
+        );
+        assert!(
+            background
+                .iter()
+                .all(|command| command.placement == RemoteMenuPlacement::Text)
+        );
+        for item_only in ["開啟", "剪下", "複製", "重新命名", "永久刪除…"] {
+            assert!(background.iter().all(|command| command.label != item_only));
+        }
+    }
+
+    #[test]
+    fn remote_windows_menu_keeps_lifecycle_accessibility_and_local_shell_contracts() {
+        let production = include_str!("chrome.rs");
+        let remote = production
+            .split("fn remote_context_menu(")
+            .nth(1)
+            .and_then(|source| source.split("fn remote_context_menu_position(").next())
+            .expect("remote context menu renderer");
+        assert!(remote.contains("remote-context-command-strip"));
+        assert!(remote.contains("Role::Menu"));
+        assert!(production.contains(".role(Role::Button)"));
+        assert!(production.contains(".on_a11y_action(AccessibleAction::Click"));
+        assert!(remote.contains(".on_mouse_down(MouseButton::Left"));
+        assert!(remote.contains(".on_mouse_down(MouseButton::Right"));
+        assert!(production.contains("ContextMenuRequest"));
+        assert!(production.contains("custom_virtual_parent"));
     }
 
     #[test]
@@ -15395,6 +15690,20 @@ mod tests {
     }
 
     #[test]
+    fn bookmarked_location_star_is_solid_and_focus_blue() {
+        let source = include_str!("chrome.rs");
+        let toolbar = source
+            .split("fn bookmark_bar(")
+            .nth(1)
+            .and_then(|source| source.split("fn bookmark_visible_count(").next())
+            .expect("bookmark toolbar source");
+        assert!(toolbar.contains("let bookmarked = current_folder.is_some_and"));
+        assert!(toolbar.contains("if bookmarked { \"★\" } else { \"☆\" }"));
+        assert!(toolbar.contains("tokens.theme.colors.focus.to_gpui()"));
+        assert!(toolbar.contains("ExplorerAction::ToggleCurrentFolderBookmark"));
+    }
+
+    #[test]
     fn lua_bookmark_editor_uses_visible_token_styled_inputs() {
         let source = include_str!("chrome.rs");
         let editor = source
@@ -15474,6 +15783,19 @@ mod tests {
                 "missing bookmark folder contract: {required}"
             );
         }
+    }
+
+    #[test]
+    fn bookmark_editor_always_exposes_remove_action() {
+        let source = include_str!("chrome.rs");
+        let editor = source
+            .split("fn bookmark_editor(")
+            .nth(1)
+            .and_then(|source| source.split("fn bookmark_folder_editor(").next())
+            .expect("bookmark editor source");
+        assert!(editor.contains("bookmark-editor-remove"));
+        assert!(editor.contains("移除書籤"));
+        assert!(!editor.contains("when(editor.id.is_some()"));
     }
 }
 #[test]
