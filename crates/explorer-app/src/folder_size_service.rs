@@ -671,6 +671,66 @@ impl FolderSizeServiceV1 {
             .cloned()
             .ok_or_else(|| "folder snapshot publication failed".to_owned())
     }
+
+    /// Uses a cached complete snapshot when possible, otherwise performs the
+    /// bounded recursive reference scan without retrying an unavailable MFT
+    /// backend. This is the terminal fallback for an MFT request that already
+    /// failed in the caller.
+    pub(crate) fn snapshot_or_scan_recursive(
+        &mut self,
+        root: &Path,
+        refresh_generation: u64,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<Arc<FolderSnapshotV1>, String> {
+        let canonical_root = root
+            .canonicalize()
+            .map_err(|_| "folder snapshot root is unavailable".to_owned())?;
+        let key = SnapshotLeaseKeyV1 {
+            canonical_root: canonical_root.clone(),
+            refresh_generation,
+        };
+        let modified_stamp = folder_modified_stamp(&canonical_root)?;
+        self.invalidate_modified_mismatch(&canonical_root, modified_stamp);
+        self.counters.subscribers = self.counters.subscribers.saturating_add(1);
+        if let Some(snapshot) = self
+            .snapshots
+            .get(&key)
+            .filter(|snapshot| snapshot.status == SnapshotStatusV1::Complete)
+            .cloned()
+        {
+            self.counters.cache_hits = self.counters.cache_hits.saturating_add(1);
+            self.emit_validation_counters();
+            return Ok(snapshot);
+        }
+        if let Some((cached_stamp, cached)) = self.modified_snapshots.get(&canonical_root)
+            && *cached_stamp == modified_stamp
+            && cached.status == SnapshotStatusV1::Complete
+        {
+            let mut reused = cached.as_ref().clone();
+            reused.refresh_generation = refresh_generation;
+            let reused = Arc::new(reused);
+            self.snapshots.insert(key.clone(), Arc::clone(&reused));
+            self.lru.retain(|candidate| candidate != &key);
+            self.lru.push_back(key);
+            self.counters.cache_hits = self.counters.cache_hits.saturating_add(1);
+            self.evict();
+            self.emit_validation_counters();
+            return Ok(reused);
+        }
+
+        self.counters.fallback_count = self.counters.fallback_count.saturating_add(1);
+        let snapshot = scan_recursive_reference(
+            &canonical_root,
+            refresh_generation,
+            RecursiveSnapshotPolicyV1::default(),
+            cancelled,
+        )?;
+        let _ = self.publish_with_modified_stamp(key.clone(), modified_stamp, snapshot);
+        self.snapshots
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| "folder snapshot publication failed".to_owned())
+    }
     fn publish_with_modified_stamp(
         &mut self,
         key: SnapshotLeaseKeyV1,
