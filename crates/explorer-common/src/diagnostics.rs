@@ -4,7 +4,7 @@ use std::{
     any::Any,
     error::Error as StdError,
     fs::{self, File, OpenOptions},
-    io::{self, Write as _},
+    io::{self, Seek as _, SeekFrom, Write as _},
     panic::PanicHookInfo,
     path::PathBuf,
     sync::{
@@ -15,6 +15,11 @@ use std::{
 };
 
 use thiserror::Error;
+
+/// Hard upper bound for the dedicated process error log.
+pub const MAX_ERROR_LOG_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_ERROR_MESSAGE_BYTES: usize = 512 * 1024;
+const TRUNCATED_ERROR_SUFFIX: &str = "…<truncated>";
 
 /// Immutable process diagnostics configuration.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -228,7 +233,10 @@ impl DiagnosticsSession {
             .as_millis();
         let thread = std::thread::current();
         let thread_name = thread.name().unwrap_or("unnamed");
-        let redacted_message = redact_text(message, &self.0.config.sensitive_roots);
+        let redacted_message = truncate_utf8(
+            &redact_text(message, &self.0.config.sensitive_roots),
+            MAX_ERROR_MESSAGE_BYTES,
+        );
         let mut line = format!(
             "timestamp_ms={timestamp_ms} severity={} subsystem={} operation={} error={} thread={} version={}",
             severity.as_str(),
@@ -257,7 +265,7 @@ impl DiagnosticsSession {
                     "error log unavailable",
                 ))
             },
-            |file| file.write_all(line.as_bytes()).and_then(|()| file.flush()),
+            |file| write_capped_error_line(file, line.as_bytes()),
         );
         if let Err(write_error) = write_result {
             sink.file = None;
@@ -347,7 +355,28 @@ fn open_error_sink(candidates: &[PathBuf]) -> ErrorSink {
         if fs::create_dir_all(directory).is_err() {
             continue;
         }
-        if let Ok(file) = OpenOptions::new().create(true).append(true).open(path) {
+        if fs::metadata(path).is_ok_and(|metadata| metadata.len() > MAX_ERROR_LOG_BYTES)
+            && OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(path)
+                .is_err()
+        {
+            continue;
+        }
+        if let Ok(file) = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)
+        {
+            if file
+                .metadata()
+                .is_ok_and(|metadata| metadata.len() > MAX_ERROR_LOG_BYTES)
+            {
+                continue;
+            }
             return ErrorSink {
                 file: Some(file),
                 path: Some(path.clone()),
@@ -358,6 +387,38 @@ fn open_error_sink(candidates: &[PathBuf]) -> ErrorSink {
         file: None,
         path: None,
     }
+}
+
+fn write_capped_error_line(file: &mut File, line: &[u8]) -> io::Result<()> {
+    let current = file.metadata()?.len();
+    let incoming = u64::try_from(line.len()).unwrap_or(MAX_ERROR_LOG_BYTES);
+    if current > MAX_ERROR_LOG_BYTES
+        || current
+            .checked_add(incoming)
+            .is_none_or(|length| length > MAX_ERROR_LOG_BYTES)
+    {
+        file.set_len(0)?;
+        file.seek(SeekFrom::Start(0))?;
+    } else {
+        file.seek(SeekFrom::End(0))?;
+    }
+    file.write_all(line)?;
+    file.flush()
+}
+
+fn truncate_utf8(value: &str, maximum_bytes: usize) -> String {
+    if value.len() <= maximum_bytes {
+        return value.to_owned();
+    }
+    let mut boundary = maximum_bytes
+        .saturating_sub(TRUNCATED_ERROR_SUFFIX.len())
+        .min(value.len());
+    while boundary > 0 && !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    let mut bounded = value[..boundary].to_owned();
+    bounded.push_str(TRUNCATED_ERROR_SUFFIX);
+    bounded
 }
 
 fn format_error_chain(error: &(dyn StdError + 'static)) -> String {
@@ -713,6 +774,35 @@ mod tests {
         assert!(log.contains("%REDACTED_ROOT%"));
         assert!(!log.contains(r"C:\Users\Sensitive"));
         assert_eq!(log.lines().count(), 2);
+    }
+
+    #[test]
+    fn oversized_error_log_is_reclaimed_and_never_exceeds_ten_mebibytes() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let path = temp.path().join("error.log");
+        let oversized = fs::File::create(&path).expect("create oversized log");
+        oversized
+            .set_len(super::MAX_ERROR_LOG_BYTES + 1)
+            .expect("extend oversized log");
+        drop(oversized);
+
+        let registry = DiagnosticsRegistry::new();
+        let session = registry
+            .initialize(config(temp.path(), Path::new("secret")))
+            .expect("initialize diagnostics");
+        assert_eq!(fs::metadata(&path).expect("reclaimed log").len(), 0);
+
+        session.record_error_message(
+            ErrorSeverity::Error,
+            "diagnostics",
+            "large_record",
+            &"資料".repeat(300_000),
+            None,
+        );
+        let metadata = fs::metadata(&path).expect("bounded log");
+        assert!(metadata.len() <= super::MAX_ERROR_LOG_BYTES);
+        let log = fs::read_to_string(path).expect("valid UTF-8 log");
+        assert!(log.contains("<truncated>"));
     }
 
     #[test]
