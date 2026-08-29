@@ -16,12 +16,12 @@ Make Local file context menus use the same Windows immersive styling already vis
 - Replacing Local Shell commands with a GPUI command snapshot.
 - Injecting code into `explorer.exe` or requiring ExplorerPatcher to be installed.
 - Copying ExplorerPatcher GPLv2 source or shipping its binary/pattern database.
-- Guaranteeing private Windows helpers on unsupported or future builds.
+- Reimplementing or calling private Windows immersive-menu helpers.
 - Making ADB/SFTP expose Local-only Shell extensions.
 
 ## Reference Finding
 
-ExplorerPatcher keeps the legacy `HMENU` command model but optionally applies Windows immersive owner-draw styling. Its implementation resolves private `twinui.pcshell` helpers, applies owner-draw before popup tracking, forwards measure/draw messages, and removes owner-draw afterward. SuperExplorer owns its popup call site, so it needs a scoped adapter rather than ExplorerPatcher's process-wide API hooks.
+ExplorerPatcher proves that the legacy `HMENU` command model can be retained while owner-draw changes its visual presentation. SuperExplorer adopts that architecture, but independently draws normal HMENU rows with documented Win32/UxTheme/GDI APIs. It does not call ExplorerPatcher or Windows private immersive helpers. SuperExplorer owns its popup call site, so it needs a scoped adapter rather than process-wide API hooks.
 
 ## Architecture
 
@@ -47,7 +47,7 @@ No global IAT hook or process injection is needed. The adapter runs only around 
 
 ### 2. Existing-skin and compatibility gate
 
-Before applying a skin, inspect the menu/session for existing immersive owner-draw state and third-party owner-draw entries. Already-skinned menus are left unchanged. Existing third-party owner-draw entries and their `dwItemData` remain authoritative; the adapter must either preserve them through the Windows helper or decline the entire session with an evidence-backed fallback reason.
+Before applying a skin, inspect the menu/session for existing owner-draw state and third-party owner-draw entries. Existing owner-draw entries and their `dwItemData` remain authoritative. The adapter converts only ordinary string/separator/check/bitmap items it can snapshot and restore; incompatible items remain extension-owned or cause an evidence-backed session fallback.
 
 The change must not overwrite command IDs, submenu handles, bitmaps, verbs, or Shell handler data.
 
@@ -65,7 +65,7 @@ A message claimed by one renderer is not sent to another renderer. `WM_INITMENUP
 
 Capability discovery, application, message handling, or cleanup failure must never suppress the menu. Before tracking begins, any failure falls back to the existing unskinned native path. A failure discovered during a session disables immersive styling for later sessions in that process and records diagnostics; the current menu remains cancellable and Shell resources are released exactly once.
 
-High-contrast mode always selects system-native rendering unless the runtime helper explicitly reports a system-theme-safe path.
+High-contrast mode always selects system-native rendering.
 
 ### 5. Shared visual tokens for ADB/SFTP
 
@@ -81,13 +81,13 @@ Record bounded diagnostics for capability status, Windows build, apply result, f
 
 ExplorerPatcher is a behavioral reference only. Its GPLv2 implementation is not copied. The SuperExplorer implementation uses independently written Rust/Win32 bindings and its existing Windows isolation boundaries.
 
-Private Windows immersive helpers are version-sensitive. Support is therefore capability-gated, not assumed from an OS version number. The current legacy menu remains the permanent fallback.
+The renderer uses documented public Windows APIs and still remains capability-gated for theme handles, owner-draw compatibility, and resource creation. The current unstyled legacy menu remains the permanent fallback.
 
 ## Testing
 
 ### Automated
 
-- Capability probe success, unsupported build, incomplete symbol set, and cached failure.
+- Capability probe success, missing theme service, incompatible owner-draw state, and cached failure.
 - Apply/finish exactly-once lifecycle for selection, cancellation, query failure, and replay.
 - Message routing precedence and no double handling.
 - Preservation of command IDs, submenu handles, bitmaps, `dwItemData`, and `IContextMenu3` messages.
