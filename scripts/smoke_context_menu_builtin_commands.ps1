@@ -68,7 +68,7 @@ function Get-NativePopupHandle {
             [void][RustExplorerUitest.Native]::GetClassName($hwnd, $className, $className.Capacity)
             [uint32]$processId = 0
             [void][RustExplorerUitest.Native]::GetWindowThreadProcessId($hwnd, [ref]$processId)
-            if ($className.ToString() -eq '#32768' -and $allowedProcessIds.Contains([int]$processId)) {
+            if ($className.ToString() -in @('#32768', 'SuperExplorer.ImmersivePopup.v1') -and $allowedProcessIds.Contains([int]$processId)) {
                 $handles.Add($hwnd)
             }
         }
@@ -127,11 +127,25 @@ function Invoke-NativeMenuCommand([string]$FileName, [char]$AccessKey, [string]$
             $matchCount++
             if ($matchCount -ne $Occurrence) { continue }
             Write-Output ("select native command {0}: {1}" -f $EnglishName, $label.ToString())
-            $rect = [RustExplorerUitest.MenuNative+RECT]::new()
-            if (-not [RustExplorerUitest.MenuNative]::GetMenuItemRect([IntPtr]::Zero, $menu, [uint32]$position, [ref]$rect)) {
-                throw "GetMenuItemRect failed for $EnglishName"
+            $className = [Text.StringBuilder]::new(64)
+            [void][RustExplorerUitest.Native]::GetClassName($popup, $className, $className.Capacity)
+            if ($className.ToString() -eq 'SuperExplorer.ImmersivePopup.v1') {
+                $layout = [RustExplorerUitest.MenuNative]::SendMessage($popup, 0x0451, [IntPtr]$position, [IntPtr]::Zero).ToInt64()
+                if ($layout -lt 0) { throw "owned popup row query failed for $EnglishName" }
+                $top = [int]($layout -band 0xffff)
+                $height = [int](($layout -shr 16) -band 0xffff)
+                $popupRect = [RustExplorerUitest.Native+RECT]::new()
+                if (-not [RustExplorerUitest.Native]::GetWindowRect($popup, [ref]$popupRect)) {
+                    throw "owned popup rectangle failed for $EnglishName"
+                }
+                [void][RustExplorerUitest.Native]::SetCursorPos($popupRect.Left + 100, $popupRect.Top + $top + [int]($height / 2))
+            } else {
+                $rect = [RustExplorerUitest.MenuNative+RECT]::new()
+                if (-not [RustExplorerUitest.MenuNative]::GetMenuItemRect([IntPtr]::Zero, $menu, [uint32]$position, [ref]$rect)) {
+                    throw "GetMenuItemRect failed for $EnglishName"
+                }
+                [void][RustExplorerUitest.Native]::SetCursorPos([int](($rect.Left + $rect.Right) / 2), [int](($rect.Top + $rect.Bottom) / 2))
             }
-            [void][RustExplorerUitest.Native]::SetCursorPos([int](($rect.Left + $rect.Right) / 2), [int](($rect.Top + $rect.Bottom) / 2))
             [RustExplorerUitest.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
             [RustExplorerUitest.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
             $matched = $true
