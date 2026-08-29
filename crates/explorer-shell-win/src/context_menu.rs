@@ -42,11 +42,10 @@ use windows::{
             Threading::GetCurrentProcessId,
         },
         UI::{
-            Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent},
-            Input::KeyboardAndMouse::{
-                GetAsyncKeyState, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_RIGHTDOWN,
-                MOUSEEVENTF_RIGHTUP, MOUSEINPUT, SendInput, VK_RBUTTON,
+            Accessibility::{
+                HCF_HIGHCONTRASTON, HIGHCONTRASTW, HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent,
             },
+            HiDpi::GetDpiForWindow,
             Shell::{
                 CMF_CANRENAME, CMF_EXPLORE, CMF_EXTENDEDVERBS, CMF_ITEMMENU, CMF_NORMAL,
                 CMF_SYNCCASCADEMENU, CMIC_MASK_PTINVOKE, CMINVOKECOMMANDINFO,
@@ -59,13 +58,14 @@ use windows::{
                 GA_ROOT, GWLP_USERDATA, GetAncestor, GetClassNameW, GetCursorPos, GetMenuItemCount,
                 GetMenuItemID, GetMenuStringW, GetSubMenu, GetWindowLongPtrW, GetWindowRect,
                 GetWindowThreadProcessId, HHOOK, HMENU, IsWindow, IsWindowVisible, MF_BYPOSITION,
-                MF_SEPARATOR, MF_STRING, OBJID_WINDOW, PostMessageW, RegisterClassW, SW_SHOWNORMAL,
-                SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetCursorPos, SetForegroundWindow,
-                SetWindowLongPtrW, SetWindowPos, SetWindowsHookExW, TPM_LEFTALIGN, TPM_RETURNCMD,
-                TPM_RIGHTBUTTON, TPM_TOPALIGN, TrackPopupMenuEx, UnhookWindowsHookEx, WH_MOUSE_LL,
-                WINDOW_EX_STYLE, WINEVENT_INCONTEXT, WM_CANCELMODE, WM_DRAWITEM, WM_INITMENUPOPUP,
-                WM_MEASUREITEM, WM_MENUCHAR, WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WNDCLASSW,
-                WS_POPUP, WindowFromPoint,
+                MF_SEPARATOR, MF_STRING, OBJID_WINDOW, PostMessageW, RegisterClassW,
+                SPI_GETHIGHCONTRAST, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+                SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, SetWindowsHookExW,
+                SystemParametersInfoW, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, TPM_TOPALIGN,
+                TrackPopupMenuEx, UnhookWindowsHookEx, WH_MOUSE_LL, WINDOW_EX_STYLE,
+                WINEVENT_INCONTEXT, WM_CANCELMODE, WM_DRAWITEM, WM_INITMENUPOPUP, WM_MEASUREITEM,
+                WM_MENUCHAR, WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WNDCLASSW, WS_POPUP,
+                WindowFromPoint,
             },
         },
     },
@@ -77,8 +77,6 @@ const COMMAND_LAST: u32 = 0x7fff;
 // The windows crate does not currently project this CMINVOKECOMMANDINFOEX flag.
 const CMIC_MASK_UNICODE: u32 = 0x0000_4000;
 const MENU_REPLAY_EXTRA_INFO: usize = 0x5355_5045_524D_454E;
-const MENU_REPLAY_RELEASE_TIMEOUT: Duration = Duration::from_millis(120);
-const MENU_REPLAY_SETTLE_DELAY: Duration = Duration::from_millis(16);
 const PROPERTIES_PLACEMENT_TIMEOUT: Duration = Duration::from_secs(2);
 const WINDOWS_DIALOG_CLASS: &[u16] = &[
     b'#' as u16,
@@ -331,14 +329,12 @@ pub(crate) fn start_brokered<P: RequiredTerminalPublisher>(
     events: P,
 ) {
     let deadline = Duration::from_millis(u64::from(request.deadline_ms.max(1)));
-    start_bounded_job_with_replay(context, deadline, events, move || {
+    start_bounded_job(context, deadline, events, move || {
         // SAFETY: the broker worker owns one apartment for its entire native menu session.
         unsafe { OleInitialize(None) }
             .map_err(|error| native_menu_error("initialize context menu broker", &error))?;
         let _apartment = OleApartment;
-        let mut replay = None;
-        let result = show_with_deferred_replay(&request, Some(&mut replay));
-        Ok((result?, replay))
+        show(&request)
     });
 }
 
@@ -356,39 +352,17 @@ pub(crate) fn run_host_owned<P: RequiredTerminalPublisher>(
     emit_broker_terminal(&AtomicBool::new(false), context, &events, result);
 }
 
-#[cfg(test)]
 fn start_bounded_job<F, P>(context: RequestContext, deadline: Duration, events: P, job: F)
 where
     F: FnOnce() -> Result<ContextMenuOutcome, ExplorerError> + Send + 'static,
     P: RequiredTerminalPublisher,
 {
-    start_bounded_job_inner(context, deadline, events, move || (job(), None));
-}
-
-fn start_bounded_job_with_replay<F, P>(
-    context: RequestContext,
-    deadline: Duration,
-    events: P,
-    job: F,
-) where
-    F: FnOnce() -> Result<(ContextMenuOutcome, Option<DeferredMenuReplay>), ExplorerError>
-        + Send
-        + 'static,
-    P: RequiredTerminalPublisher,
-{
-    start_bounded_job_inner(context, deadline, events, move || match job() {
-        Ok((outcome, replay)) => (Ok(outcome), replay),
-        Err(error) => (Err(error), None),
-    });
+    start_bounded_job_inner(context, deadline, events, job);
 }
 
 fn start_bounded_job_inner<F, P>(context: RequestContext, deadline: Duration, events: P, job: F)
 where
-    F: FnOnce() -> (
-            Result<ContextMenuOutcome, ExplorerError>,
-            Option<DeferredMenuReplay>,
-        ) + Send
-        + 'static,
+    F: FnOnce() -> Result<ContextMenuOutcome, ExplorerError> + Send + 'static,
     P: RequiredTerminalPublisher,
 {
     let terminal_sent = Arc::new(AtomicBool::new(false));
@@ -396,7 +370,7 @@ where
     let worker_context = context.clone();
     let worker_events = events.clone();
     std::thread::spawn(move || {
-        let (result, replay) = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)) {
+        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)) {
             Ok(completion) => completion,
             Err(payload) => {
                 let message = panic_payload_message(payload.as_ref());
@@ -407,23 +381,16 @@ where
                     &message,
                     Some(file!()),
                 );
-                (
-                    Err(ExplorerError::new(
-                        ExplorerErrorKind::Extension,
-                        "context menu handler panic",
-                        true,
-                        "The context menu failed, but Explorer can continue.",
-                        message,
-                    )),
-                    None,
-                )
+                Err(ExplorerError::new(
+                    ExplorerErrorKind::Extension,
+                    "context menu handler panic",
+                    true,
+                    "The context menu failed, but Explorer can continue.",
+                    message,
+                ))
             }
         };
-        if emit_broker_terminal(&worker_gate, &worker_context, &worker_events, result)
-            && let Some(replay) = replay
-        {
-            replay.schedule();
-        }
+        let _ = emit_broker_terminal(&worker_gate, &worker_context, &worker_events, result);
     });
     std::thread::spawn(move || {
         std::thread::sleep(deadline);
@@ -485,33 +452,6 @@ fn emit_broker_terminal<P: RequiredTerminalPublisher>(
     true
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct DeferredMenuReplay {
-    app_owner: usize,
-    point: ScreenPoint,
-}
-
-impl DeferredMenuReplay {
-    fn new(app_owner: HWND, point: POINT) -> Self {
-        Self {
-            app_owner: app_owner.0 as usize,
-            point: ScreenPoint::from(point),
-        }
-    }
-
-    fn schedule(self) {
-        let app_owner = HWND(self.app_owner as *mut c_void);
-        let point = POINT::from(self.point);
-        if !schedule_right_click_replay(app_owner, point) {
-            tracing::warn!(
-                x = point.x,
-                y = point.y,
-                "native context-menu replacement replay was rejected"
-            );
-        }
-    }
-}
-
 struct OleApartment;
 impl Drop for OleApartment {
     fn drop(&mut self) {
@@ -546,13 +486,6 @@ impl ContextMenuResourceSnapshot {
 }
 
 pub(crate) fn show(request: &ContextMenuRequest) -> Result<ContextMenuOutcome, ExplorerError> {
-    show_with_deferred_replay(request, None)
-}
-
-fn show_with_deferred_replay(
-    request: &ContextMenuRequest,
-    mut deferred_replay: Option<&mut Option<DeferredMenuReplay>>,
-) -> Result<ContextMenuOutcome, ExplorerError> {
     let started = Instant::now();
     // Capture immediately, before Shell extensions are queried, so a slow handler cannot move
     // the menu away from the point where the secondary button was released.
@@ -660,40 +593,83 @@ fn show_with_deferred_replay(
     }
     // SAFETY: the hidden owner window lives through the modal menu loop.
     let _ = unsafe { SetForegroundWindow(owner.hwnd()) };
+    // SAFETY: the hidden menu owner is a live HWND until this function returns.
+    let dpi = unsafe { GetDpiForWindow(owner.hwnd()) }.max(96);
     // SAFETY: HMENU and HWND remain valid; null TPMPARAMS selects default exclusion behavior.
     // Mouse events can arrive in GPUI logical/client coordinates. Querying the cursor here avoids
     // applying a window origin or DPI scale twice and matches Explorer's TrackPopupMenu contract.
     let replay_hook = MenuRightClickReplayHook::install(app_owner, owner.hwnd());
-    let selected = unsafe {
-        TrackPopupMenuEx(
-            popup.get(),
-            (TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN).0,
-            popup_point.x,
-            popup_point.y,
-            owner.hwnd(),
-            None,
-        )
-    };
+    tracing::debug!(
+        application_owned = request.immersive_native_context_menus,
+        dpi,
+        "selecting context-menu presentation path"
+    );
+    let high_contrast = high_contrast_active();
+    let (selected, owned_replacement_point) =
+        if should_use_owned_popup(request.immersive_native_context_menus, high_contrast) {
+            crate::immersive_popup::present(
+                popup.get(),
+                owner.hwnd(),
+                popup_point,
+                dpi,
+                matches!(
+                    request.color_scheme,
+                    explorer_model::ContextMenuColorScheme::Dark
+                ),
+            )
+            .map(|presentation| (presentation.command, presentation.replacement_point))
+            .unwrap_or_else(|reason| {
+                tracing::warn!(?reason, "application-owned context menu fell back");
+                let command = unsafe {
+                    TrackPopupMenuEx(
+                        popup.get(),
+                        (TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN).0,
+                        popup_point.x,
+                        popup_point.y,
+                        owner.hwnd(),
+                        None,
+                    )
+                }
+                .0;
+                (command, None)
+            })
+        } else {
+            let command = unsafe {
+                TrackPopupMenuEx(
+                    popup.get(),
+                    (TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN).0,
+                    popup_point.x,
+                    popup_point.y,
+                    owner.hwnd(),
+                    None,
+                )
+            }
+            .0;
+            (command, None)
+        };
     let replay_point = replay_hook
         .as_ref()
-        .and_then(|_| MenuRightClickReplayHook::take());
+        .and_then(|_| MenuRightClickReplayHook::take())
+        .or(owned_replacement_point);
     drop(replay_hook);
-    if selected.0 == 0 {
+    if selected == 0 {
         // No command needs the queried HMENU after cancellation. Destroy it before replay so the
         // replacement gesture cannot overlap the old native menu's resources or modal lifetime.
         drop(popup);
-        if let Some(app_owner) = app_owner
-            && let Some(point) = replay_point
-        {
-            let replay = DeferredMenuReplay::new(app_owner, point);
-            if let Some(deferred) = deferred_replay.as_mut() {
-                **deferred = Some(replay);
-            } else {
-                replay.schedule();
-            }
+        if let Some(app_owner) = app_owner {
+            // Cancellation must restore the real app owner as well as command activation does.
+            // The popup lives in the broker worker and can otherwise leave its hidden owner as
+            // the foreground window after Escape or click-outside dismissal.
+            let _ = unsafe { SetForegroundWindow(app_owner) };
         }
         let _ = state.transition(ContextMenuSessionState::Cancelled);
         let _ = state.release();
+        if let Some(point) = replay_point {
+            return Ok(ContextMenuOutcome::ReplayRequested {
+                x: point.x,
+                y: point.y,
+            });
+        }
         return Ok(ContextMenuOutcome::Cancelled);
     }
     if let Some(app_owner) = app_owner {
@@ -701,7 +677,7 @@ fn show_with_deferred_replay(
         // belongs to the real Explorer window again as soon as the popup terminates.
         let _ = unsafe { SetForegroundWindow(app_owner) };
     }
-    let command_id = u32::try_from(selected.0).map_err(|_| {
+    let command_id = u32::try_from(selected).map_err(|_| {
         menu_error(
             "select context menu command",
             "內容功能表命令無效",
@@ -735,6 +711,27 @@ fn show_with_deferred_replay(
     let _ = state.transition(ContextMenuSessionState::Finished);
     let _ = state.release();
     Ok(ContextMenuOutcome::Invoked { command_offset })
+}
+
+fn high_contrast_active() -> bool {
+    let mut contrast = HIGHCONTRASTW {
+        cbSize: size_of::<HIGHCONTRASTW>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        SystemParametersInfoW(
+            SPI_GETHIGHCONTRAST,
+            contrast.cbSize,
+            Some((&raw mut contrast).cast()),
+            Default::default(),
+        )
+    }
+    .is_ok()
+        && contrast.dwFlags.contains(HCF_HIGHCONTRASTON)
+}
+
+const fn should_use_owned_popup(enabled: bool, high_contrast: bool) -> bool {
+    enabled && !high_contrast
 }
 
 fn host_command_applies_to_target(
@@ -955,9 +952,8 @@ unsafe extern "system" fn menu_mouse_hook(code: i32, wparam: WPARAM, lparam: LPA
         };
         let app_owner = MENU_REPLAY_OWNER.with(Cell::get);
         let target = unsafe { WindowFromPoint(data.pt) };
-        let belongs_to_owner = app_owner.is_some_and(|app_owner| {
-            !target.0.is_null() && unsafe { GetAncestor(target, GA_ROOT) } == app_owner
-        });
+        let belongs_to_owner =
+            app_owner.is_some_and(|app_owner| window_belongs_to_app(target, app_owner));
         let action = MENU_RIGHT_CLICK.with(|capture| {
             let mut state = capture.get();
             let action = state.observe(
@@ -969,6 +965,16 @@ unsafe extern "system" fn menu_mouse_hook(code: i32, wparam: WPARAM, lparam: LPA
             capture.set(state);
             action
         });
+        tracing::debug!(
+            message,
+            x = data.pt.x,
+            y = data.pt.y,
+            target = target.0 as usize,
+            belongs_to_owner,
+            tagged_replay = data.dwExtraInfo == MENU_REPLAY_EXTRA_INFO,
+            ?action,
+            "observed context-menu right-click gesture"
+        );
         match action {
             MenuHookAction::Pass => {}
             MenuHookAction::Suppress => return LRESULT(1),
@@ -988,85 +994,25 @@ unsafe extern "system" fn menu_mouse_hook(code: i32, wparam: WPARAM, lparam: LPA
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
 }
 
-fn build_right_click_inputs() -> [INPUT; 2] {
-    let mouse = |flags| INPUT {
-        r#type: INPUT_MOUSE,
-        Anonymous: INPUT_0 {
-            mi: MOUSEINPUT {
-                dwFlags: flags,
-                dwExtraInfo: MENU_REPLAY_EXTRA_INFO,
-                ..MOUSEINPUT::default()
-            },
-        },
-    };
-    [mouse(MOUSEEVENTF_RIGHTDOWN), mouse(MOUSEEVENTF_RIGHTUP)]
-}
-
-fn wait_for_right_button_release(timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    loop {
-        // SAFETY: VK_RBUTTON is a documented virtual-key code and this call has no pointer inputs.
-        if unsafe { GetAsyncKeyState(i32::from(VK_RBUTTON.0)) } >= 0 {
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
-}
-
-fn schedule_right_click_replay(app_owner: HWND, screen_point: POINT) -> bool {
-    let owner_value = app_owner.0 as usize;
-    let point = ScreenPoint::from(screen_point);
-    std::thread::Builder::new()
-        .name("context-menu-replay".to_owned())
-        .spawn(move || {
-            // The menu result must cross the broker/host completion boundary before the app sees
-            // the new gesture. Otherwise its single-active-menu guard can reject a fast background
-            // click as overloaded even though the old native popup has already disappeared.
-            std::thread::sleep(MENU_REPLAY_SETTLE_DELAY);
-            let app_owner = HWND(owner_value as *mut c_void);
-            let point = POINT::from(point);
-            if !replay_right_click_on_owner(app_owner, point) {
-                tracing::warn!(
-                    x = point.x,
-                    y = point.y,
-                    "deferred native context-menu replay was rejected"
-                );
-            }
-        })
-        .is_ok()
-}
-
-fn replay_right_click_on_owner(app_owner: HWND, screen_point: POINT) -> bool {
-    // Only replay a click whose actual target is the originating top-level app window. A click on
-    // the menu, desktop, or another process remains an ordinary cancellation.
-    if app_owner.0.is_null() || !unsafe { IsWindow(Some(app_owner)).as_bool() } {
+fn window_belongs_to_app(target: HWND, app_owner: HWND) -> bool {
+    if target.0.is_null() || app_owner.0.is_null() {
         return false;
     }
-    let target = unsafe { WindowFromPoint(screen_point) };
-    if target.0.is_null() || unsafe { GetAncestor(target, GA_ROOT) } != app_owner {
-        return false;
+    let target_root = unsafe { GetAncestor(target, GA_ROOT) };
+    let owner_root = unsafe { GetAncestor(app_owner, GA_ROOT) };
+    if target_root == app_owner || target_root == owner_root {
+        return true;
     }
-    let _ = unsafe { SetForegroundWindow(app_owner) };
-    if !wait_for_right_button_release(MENU_REPLAY_RELEASE_TIMEOUT) {
-        return false;
+    // GPUI can supply a content/renderer HWND while WindowFromPoint resolves a sibling native
+    // surface. Explorer treats those windows as one application target. Process identity is the
+    // final boundary: clicks in other applications are never swallowed or replayed.
+    let mut target_process = 0;
+    let mut owner_process = 0;
+    unsafe {
+        GetWindowThreadProcessId(target_root, Some(&raw mut target_process));
+        GetWindowThreadProcessId(owner_root, Some(&raw mut owner_process));
     }
-    if unsafe { SetCursorPos(screen_point.x, screen_point.y) }.is_err() {
-        return false;
-    }
-    let target = unsafe { WindowFromPoint(screen_point) };
-    if target.0.is_null() || unsafe { GetAncestor(target, GA_ROOT) } != app_owner {
-        return false;
-    }
-    let inputs = build_right_click_inputs();
-    let Ok(input_size) = i32::try_from(size_of::<INPUT>()) else {
-        return false;
-    };
-    // SAFETY: both INPUT records are fully initialized mouse inputs and remain live for the call.
-    let sent = unsafe { SendInput(&inputs, input_size) };
-    sent == u32::try_from(inputs.len()).unwrap_or(u32::MAX)
+    target_process != 0 && target_process == owner_process
 }
 
 fn compress_selection_to_zip(target: &ShellContextMenuTarget) -> Result<PathBuf, ExplorerError> {
@@ -2064,7 +2010,15 @@ fn validated_owner_window(raw: u64) -> Option<HWND> {
     let value = usize::try_from(raw).ok().filter(|value| *value != 0)?;
     let hwnd = HWND(value as *mut c_void);
     // SAFETY: IsWindow only validates the value; no ownership is transferred across processes.
-    unsafe { IsWindow(Some(hwnd)) }.as_bool().then_some(hwnd)
+    if !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+        return None;
+    }
+    let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    if root.0.is_null() {
+        Some(hwnd)
+    } else {
+        Some(root)
+    }
 }
 impl Drop for OwnerWindow {
     fn drop(&mut self) {
@@ -2160,8 +2114,9 @@ mod tests {
             UI::{
                 Shell::{IContextMenu_Impl, IContextMenu2_Impl, IContextMenu3_Impl},
                 WindowsAndMessaging::{
-                    AppendMenuW, GetMenuItemID, MF_OWNERDRAW, PostThreadMessageW, SendMessageW,
-                    WM_KEYDOWN, WM_KEYUP,
+                    AppendMenuW, FindWindowW, GetMenuItemID, GetMenuItemInfoW, MENUITEMINFOW,
+                    MF_OWNERDRAW, MIIM_BITMAP, MIIM_ID, MIIM_SUBMENU, PostThreadMessageW,
+                    SendMessageW, WM_CLOSE, WM_KEYDOWN, WM_KEYUP,
                 },
             },
         },
@@ -2169,6 +2124,14 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn owned_popup_policy_falls_back_for_disabled_or_high_contrast_sessions() {
+        assert!(should_use_owned_popup(true, false));
+        assert!(!should_use_owned_popup(false, false));
+        assert!(!should_use_owned_popup(true, true));
+        assert!(!should_use_owned_popup(false, true));
+    }
 
     fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
         RECT {
@@ -2325,22 +2288,6 @@ mod tests {
     }
 
     #[test]
-    fn replacement_input_batch_is_ordered_and_recursion_tagged() {
-        let inputs = build_right_click_inputs();
-        assert_eq!(inputs.len(), 2);
-        for input in inputs {
-            assert_eq!(input.r#type, INPUT_MOUSE);
-        }
-        // SAFETY: build_right_click_inputs initializes the mouse union arm for both records.
-        let down = unsafe { inputs[0].Anonymous.mi };
-        let up = unsafe { inputs[1].Anonymous.mi };
-        assert_eq!(down.dwFlags, MOUSEEVENTF_RIGHTDOWN);
-        assert_eq!(up.dwFlags, MOUSEEVENTF_RIGHTUP);
-        assert_eq!(down.dwExtraInfo, MENU_REPLAY_EXTRA_INFO);
-        assert_eq!(up.dwExtraInfo, MENU_REPLAY_EXTRA_INFO);
-    }
-
-    #[test]
     fn host_context_command_verbs_are_delegated_to_the_long_lived_host() {
         for (verb, expected) in [
             ("open", ContextMenuHostCommand::Open),
@@ -2458,6 +2405,105 @@ mod tests {
                 collect_menu_entries(child, depth + 1, output);
             }
         }
+    }
+
+    fn top_level_submenu_by_label(menu: HMENU, needle: &str) -> Option<(HMENU, usize)> {
+        let count = unsafe { GetMenuItemCount(Some(menu)) };
+        for position in 0..count.max(0) {
+            let mut buffer = [0_u16; 512];
+            let length = unsafe {
+                GetMenuStringW(
+                    menu,
+                    u32::try_from(position).ok()?,
+                    Some(&mut buffer),
+                    MF_BYPOSITION,
+                )
+            };
+            let label =
+                String::from_utf16_lossy(&buffer[..usize::try_from(length).unwrap_or_default()]);
+            if label
+                .to_ascii_lowercase()
+                .contains(&needle.to_ascii_lowercase())
+            {
+                let submenu = unsafe { GetSubMenu(menu, position) };
+                if !submenu.0.is_null() {
+                    return Some((submenu, usize::try_from(position).ok()?));
+                }
+            }
+        }
+        None
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct MenuIdentityRow {
+        depth: usize,
+        position: i32,
+        command_id: u32,
+        submenu: isize,
+        canonical_verb: Option<String>,
+        bitmap_present: bool,
+    }
+
+    fn snapshot_menu_identity(
+        context_menu: &IContextMenu,
+        menu: HMENU,
+        depth: usize,
+        output: &mut Vec<MenuIdentityRow>,
+    ) {
+        if depth > 8 {
+            return;
+        }
+        let count = unsafe { GetMenuItemCount(Some(menu)) };
+        for position in 0..count.max(0) {
+            let mut info = MENUITEMINFOW {
+                cbSize: u32::try_from(size_of::<MENUITEMINFOW>()).expect("menu item size"),
+                fMask: MIIM_ID | MIIM_SUBMENU | MIIM_BITMAP,
+                ..Default::default()
+            };
+            unsafe {
+                GetMenuItemInfoW(menu, u32::try_from(position).unwrap(), true, &raw mut info)
+            }
+            .expect("snapshot menu identity");
+            let canonical_verb = (info.wID >= COMMAND_FIRST && info.wID <= COMMAND_LAST)
+                .then(|| canonical_verb_at_offset(context_menu, info.wID - COMMAND_FIRST))
+                .flatten();
+            output.push(MenuIdentityRow {
+                depth,
+                position,
+                command_id: info.wID,
+                submenu: info.hSubMenu.0 as isize,
+                canonical_verb,
+                bitmap_present: !info.hbmpItem.is_invalid(),
+            });
+            if !info.hSubMenu.0.is_null() {
+                snapshot_menu_identity(context_menu, info.hSubMenu, depth + 1, output);
+            }
+        }
+    }
+
+    fn assert_owned_popup_preserves_menu_identity(
+        context_menu: &IContextMenu,
+        menu: HMENU,
+        owner: HWND,
+    ) {
+        let mut before = Vec::new();
+        snapshot_menu_identity(context_menu, menu, 0, &mut before);
+        let thread_id = unsafe { GetCurrentThreadId() };
+        let cancel = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(3));
+            unsafe {
+                PostThreadMessageW(thread_id, WM_KEYDOWN, WPARAM(27), LPARAM(0))
+                    .expect("Escape custom popup");
+            }
+        });
+        let outcome =
+            crate::immersive_popup::present(menu, owner, POINT { x: 100, y: 100 }, 96, false)
+                .expect("installed menu is supported by the application-owned popup");
+        cancel.join().expect("cancel sender");
+        assert_eq!(outcome.command, 0);
+        let mut after = Vec::new();
+        snapshot_menu_identity(context_menu, menu, 0, &mut after);
+        assert_eq!(before, after, "popup presentation mutated HMENU identity");
     }
 
     #[allow(
@@ -2830,6 +2876,7 @@ mod tests {
                 .any(|(label, _, depth)| *depth == 0 && label.contains("7-Zip")),
             "installed 7-Zip submenu was not exposed by the real Shell menu"
         );
+        assert_owned_popup_preserves_menu_identity(&menu, popup.get(), owner.hwnd());
         let (_, command_id, _) = entries
             .iter()
             .find(|(label, id, depth)| {
@@ -2855,6 +2902,223 @@ mod tests {
         owner_state.menu3 = None;
         drop(menu);
         // SAFETY: all menu and COM references were released above.
+        unsafe { OleUninitialize() };
+    }
+
+    #[test]
+    #[ignore = "requires the locally installed WinRAR shell extension"]
+    fn installed_winrar_extension_initializes_and_invokes_owned_archive_command() {
+        let _guard = crate::clipboard::CLIPBOARD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        unsafe { OleInitialize(None) }.expect("OLE initialize");
+        let fixture = explorer_test_support::OwnedTempFixture::new().expect("WinRAR fixture");
+        let source = fixture
+            .create_file("winrar-safe.txt", b"owned WinRAR context menu fixture")
+            .expect("source fixture");
+        let target = ShellContextMenuTarget::Items {
+            parent: LocationDescriptor::file_system(fixture.root()),
+            items: vec![ItemDescriptor {
+                id: ShellItemId::from_provider_bytes([0x72]).expect("item id"),
+                location: LocationDescriptor::file_system(source),
+            }],
+        };
+        let mut owner_state = MenuOwnerState { menu3: None };
+        let owner = OwnerWindow::create(&raw mut owner_state).expect("menu owner");
+        let menu = resolve_menu(&target, owner.hwnd()).expect("real item context menu");
+        owner_state.menu3 = menu.cast::<IContextMenu3>().ok();
+        let popup = OwnedMenu::create().expect("popup");
+        query_menu(
+            &menu,
+            popup.get(),
+            true,
+            ContextMenuInvocationProfile::ExplorerExtended,
+        )
+        .expect("extended query");
+        let (winrar, position) =
+            top_level_submenu_by_label(popup.get(), "WinRAR").expect("installed WinRAR submenu");
+        unsafe {
+            SendMessageW(
+                owner.hwnd(),
+                WM_INITMENUPOPUP,
+                Some(WPARAM(winrar.0 as usize)),
+                Some(LPARAM(position as isize)),
+            );
+        }
+        let mut entries = Vec::new();
+        collect_menu_entries(winrar, 1, &mut entries);
+        for (label, command_id, depth) in &entries {
+            println!("depth={depth}; id={command_id}; label={label:?}");
+        }
+        assert_owned_popup_preserves_menu_identity(&menu, popup.get(), owner.hwnd());
+        let (_, command_id, _) = entries
+            .iter()
+            .find(|(label, id, _)| {
+                *id >= COMMAND_FIRST
+                    && *id <= COMMAND_LAST
+                    && label.to_ascii_lowercase().contains("winrar-safe.rar")
+                    && !label.contains("郵寄")
+                    && !label.to_ascii_lowercase().contains("email")
+            })
+            .expect("safe direct WinRAR add-to-winrar-safe.rar command");
+        invoke(&menu, owner.hwnd(), *command_id - COMMAND_FIRST).expect("invoke WinRAR command");
+        let archive = fixture.root().join("winrar-safe.rar");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !archive.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(archive.is_file(), "WinRAR did not create the owned archive");
+        assert!(std::fs::metadata(&archive).expect("archive metadata").len() > 0);
+        drop(popup);
+        drop(owner);
+        owner_state.menu3 = None;
+        drop(menu);
+        unsafe { OleUninitialize() };
+    }
+
+    #[test]
+    #[ignore = "requires the locally installed TortoiseGit shell extension"]
+    fn installed_tortoisegit_extension_initializes_and_closes_about_dialog() {
+        let _guard = crate::clipboard::CLIPBOARD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        unsafe { OleInitialize(None) }.expect("OLE initialize");
+        let fixture = explorer_test_support::OwnedTempFixture::new().expect("TortoiseGit fixture");
+        let source = fixture
+            .create_file(
+                "tortoise-safe.txt",
+                b"owned TortoiseGit context menu fixture",
+            )
+            .expect("source fixture");
+        let target = ShellContextMenuTarget::Items {
+            parent: LocationDescriptor::file_system(fixture.root()),
+            items: vec![ItemDescriptor {
+                id: ShellItemId::from_provider_bytes([0x74]).expect("item id"),
+                location: LocationDescriptor::file_system(source),
+            }],
+        };
+        let mut owner_state = MenuOwnerState { menu3: None };
+        let owner = OwnerWindow::create(&raw mut owner_state).expect("menu owner");
+        let menu = resolve_menu(&target, owner.hwnd()).expect("real item context menu");
+        owner_state.menu3 = menu.cast::<IContextMenu3>().ok();
+        let popup = OwnedMenu::create().expect("popup");
+        query_menu(
+            &menu,
+            popup.get(),
+            true,
+            ContextMenuInvocationProfile::ExplorerExtended,
+        )
+        .expect("extended query");
+        let (tortoise, position) = top_level_submenu_by_label(popup.get(), "TortoiseGit")
+            .expect("installed TortoiseGit submenu");
+        unsafe {
+            SendMessageW(
+                owner.hwnd(),
+                WM_INITMENUPOPUP,
+                Some(WPARAM(tortoise.0 as usize)),
+                Some(LPARAM(position as isize)),
+            );
+        }
+        let mut entries = Vec::new();
+        collect_menu_entries(tortoise, 1, &mut entries);
+        assert_owned_popup_preserves_menu_identity(&menu, popup.get(), owner.hwnd());
+        let (_, command_id, _) = entries
+            .iter()
+            .find(|(label, id, _)| {
+                *id >= COMMAND_FIRST
+                    && *id <= COMMAND_LAST
+                    && label.replace('&', "").eq_ignore_ascii_case("About")
+            })
+            .expect("non-mutating TortoiseGit About command");
+        invoke(&menu, owner.hwnd(), *command_id - COMMAND_FIRST).expect("invoke TortoiseGit About");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let dialog = loop {
+            if let Ok(dialog) = unsafe { FindWindowW(None, w!("About TortoiseGit")) } {
+                break Some(dialog);
+            }
+            if Instant::now() >= deadline {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let dialog = dialog.expect("TortoiseGit About dialog did not appear");
+        unsafe { PostMessageW(Some(dialog), WM_CLOSE, WPARAM(0), LPARAM(0)) }
+            .expect("close TortoiseGit About dialog");
+        drop(popup);
+        drop(owner);
+        owner_state.menu3 = None;
+        drop(menu);
+        unsafe { OleUninitialize() };
+    }
+
+    #[test]
+    #[ignore = "requires the locally installed VS Code shell extension"]
+    fn installed_vscode_extension_opens_and_closes_owned_folder_window() {
+        let _guard = crate::clipboard::CLIPBOARD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        unsafe { OleInitialize(None) }.expect("OLE initialize");
+        let fixture = explorer_test_support::OwnedTempFixture::new().expect("VS Code fixture");
+        let folder = fixture.root().join("vscode-shell-safe");
+        std::fs::create_dir(&folder).expect("owned VS Code folder");
+        let target = ShellContextMenuTarget::Items {
+            parent: LocationDescriptor::file_system(fixture.root()),
+            items: vec![ItemDescriptor {
+                id: ShellItemId::from_provider_bytes([0x76]).expect("item id"),
+                location: LocationDescriptor::file_system(folder),
+            }],
+        };
+        let mut owner_state = MenuOwnerState { menu3: None };
+        let owner = OwnerWindow::create(&raw mut owner_state).expect("menu owner");
+        let menu = resolve_menu(&target, owner.hwnd()).expect("real folder context menu");
+        owner_state.menu3 = menu.cast::<IContextMenu3>().ok();
+        let popup = OwnedMenu::create().expect("popup");
+        query_menu(
+            &menu,
+            popup.get(),
+            true,
+            ContextMenuInvocationProfile::ExplorerExtended,
+        )
+        .expect("extended query");
+        let mut entries = Vec::new();
+        collect_menu_entries(popup.get(), 0, &mut entries);
+        assert_owned_popup_preserves_menu_identity(&menu, popup.get(), owner.hwnd());
+        let (_, command_id, _) = entries
+            .iter()
+            .find(|(label, id, depth)| {
+                *depth == 0
+                    && *id >= COMMAND_FIRST
+                    && *id <= COMMAND_LAST
+                    && (label.contains("Code 開啟")
+                        || label.to_ascii_lowercase().contains("open with code"))
+            })
+            .expect("installed VS Code command");
+        let verb = canonical_verb_at_offset(&menu, *command_id - COMMAND_FIRST);
+        println!("VS Code command id={command_id}; canonical_verb={verb:?}");
+        invoke(&menu, owner.hwnd(), *command_id - COMMAND_FIRST).expect("invoke VS Code command");
+
+        let titles = [
+            "vscode-shell-safe - Visual Studio Code",
+            "vscode-shell-safe - SuperExplorer - Visual Studio Code",
+        ]
+        .map(|title| title.encode_utf16().chain([0]).collect::<Vec<_>>());
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let code_window = loop {
+            let found = titles
+                .iter()
+                .find_map(|title| unsafe { FindWindowW(None, PCWSTR(title.as_ptr())) }.ok());
+            if found.is_some() || Instant::now() >= deadline {
+                break found;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        let code_window = code_window.expect("owned VS Code folder window did not appear");
+        unsafe { PostMessageW(Some(code_window), WM_CLOSE, WPARAM(0), LPARAM(0)) }
+            .expect("close owned VS Code window");
+        drop(popup);
+        drop(owner);
+        owner_state.menu3 = None;
+        drop(menu);
         unsafe { OleUninitialize() };
     }
 
@@ -3208,7 +3472,7 @@ mod tests {
     }
 
     #[test]
-    fn real_popup_cancel_soak_forwards_messages_and_releases_menu_resources() {
+    fn real_application_popup_cancel_soak_releases_menu_resources() {
         let _guard = crate::clipboard::CLIPBOARD_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -3223,36 +3487,113 @@ mod tests {
             point: explorer_model::MenuPoint { x: 20, y: 20 },
             keyboard_invoked: false,
             invocation_profile: ContextMenuInvocationProfile::Explorer,
+            color_scheme: explorer_model::ContextMenuColorScheme::Light,
+            immersive_native_context_menus: true,
             paste_available: false,
             requested_verb: None,
             deadline_ms: 2_000,
         };
-        let before = ContextMenuResourceSnapshot::capture();
         // SAFETY: obtains the current OLE menu thread identifier.
         let thread_id = unsafe { GetCurrentThreadId() };
-        for _ in 0..10 {
-            let cancel = std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(80));
-                // SAFETY: value-only Escape messages target the live TrackPopupMenu loop.
+        let (cancel_tx, cancel_rx) = std::sync::mpsc::sync_channel::<()>(0);
+        let (posted_tx, posted_rx) = std::sync::mpsc::sync_channel::<()>(0);
+        let cancel = std::thread::spawn(move || {
+            while cancel_rx.recv().is_ok() {
+                std::thread::sleep(Duration::from_millis(5));
+                // SAFETY: value-only Escape messages target the live popup loop.
                 unsafe {
                     PostThreadMessageW(thread_id, WM_KEYDOWN, WPARAM(27), LPARAM(0))
                         .expect("Escape down");
                     PostThreadMessageW(thread_id, WM_KEYUP, WPARAM(27), LPARAM(0))
                         .expect("Escape up");
                 }
-            });
+                posted_tx.send(()).expect("acknowledge Escape");
+            }
+        });
+        let run_cycle = |request: &ContextMenuRequest| {
+            cancel_tx.send(()).expect("request Escape");
             assert_eq!(
-                show(&request).expect("show and cancel"),
+                show(request).expect("show and cancel"),
                 ContextMenuOutcome::Cancelled
             );
-            cancel.join().expect("cancel sender");
+            posted_rx.recv().expect("Escape was posted");
+        };
+        // Exclude one-time Shell handler, extension cache, allocator, and window-class
+        // initialization from the steady-state leak slope.
+        const WARMUP_CYCLES: usize = 100;
+        for _ in 0..WARMUP_CYCLES {
+            run_cycle(&request);
+        }
+        let before = ContextMenuResourceSnapshot::capture();
+        let (handles_before, private_bytes_before) = process_resource_totals();
+        const CYCLES: usize = 1_000;
+        for _ in 0..CYCLES {
+            run_cycle(&request);
         }
         let after = ContextMenuResourceSnapshot::capture();
+        let (handles_after, private_bytes_after) = process_resource_totals();
+        eprintln!(
+            "context-menu-soak warmup_cycles={WARMUP_CYCLES} cycles={CYCLES} handles_before={handles_before} handles_after={handles_after} handle_delta={} private_bytes_before={private_bytes_before} private_bytes_after={private_bytes_after} private_bytes_delta={}",
+            i64::from(handles_after) - i64::from(handles_before),
+            private_bytes_after as i128 - private_bytes_before as i128,
+        );
         assert_eq!(after.active_menus, before.active_menus);
         assert_eq!(after.active_owner_windows, before.active_owner_windows);
         assert_eq!(after.active_menu_hooks, before.active_menu_hooks);
-        assert!(after.forwarded_messages > before.forwarded_messages);
+        assert_eq!(after.forwarded_messages, before.forwarded_messages);
+        assert!(handles_after <= handles_before.saturating_add(8));
+        let owned_private_delta = private_bytes_after.saturating_sub(private_bytes_before);
+
+        let mut native_request = request.clone();
+        native_request.immersive_native_context_menus = false;
+        for _ in 0..WARMUP_CYCLES {
+            run_cycle(&native_request);
+        }
+        let (native_handles_before, native_private_before) = process_resource_totals();
+        for _ in 0..CYCLES {
+            run_cycle(&native_request);
+        }
+        let (native_handles_after, native_private_after) = process_resource_totals();
+        let native_private_delta = native_private_after.saturating_sub(native_private_before);
+        eprintln!(
+            "native-menu-soak warmup_cycles={WARMUP_CYCLES} cycles={CYCLES} handles_before={native_handles_before} handles_after={native_handles_after} handle_delta={} private_bytes_before={native_private_before} private_bytes_after={native_private_after} private_bytes_delta={native_private_delta}",
+            i64::from(native_handles_after) - i64::from(native_handles_before),
+        );
+        let owned_handle_delta = i64::from(handles_after) - i64::from(handles_before);
+        let native_handle_delta =
+            i64::from(native_handles_after) - i64::from(native_handles_before);
+        assert!(
+            owned_handle_delta <= native_handle_delta.saturating_add(8),
+            "application-owned presentation must not exceed the native Shell-query handle slope"
+        );
+        assert!(
+            owned_private_delta <= native_private_delta.saturating_add(16 * 1024 * 1024),
+            "application-owned presentation must stay within 16 MiB of the native Shell-query baseline"
+        );
+        drop(cancel_tx);
+        cancel.join().expect("cancel sender");
         // SAFETY: balances OleInitialize after every menu resource is released.
         unsafe { OleUninitialize() };
+    }
+
+    fn process_resource_totals() -> (u32, usize) {
+        let process = unsafe { windows::Win32::System::Threading::GetCurrentProcess() };
+        let mut handles = 0_u32;
+        unsafe {
+            windows::Win32::System::Threading::GetProcessHandleCount(process, &raw mut handles)
+        }
+        .expect("read process handle count");
+        let mut counters =
+            windows::Win32::System::ProcessStatus::PROCESS_MEMORY_COUNTERS_EX::default();
+        unsafe {
+            windows::Win32::System::ProcessStatus::GetProcessMemoryInfo(
+                process,
+                (&raw mut counters)
+                    .cast::<windows::Win32::System::ProcessStatus::PROCESS_MEMORY_COUNTERS>(),
+                u32::try_from(size_of_val(&counters)).expect("counter size fits u32"),
+            )
+        }
+        .expect("read process private commit");
+        (handles, counters.PrivateUsage)
     }
 }
