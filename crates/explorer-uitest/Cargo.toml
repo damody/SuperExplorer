@@ -20,5 +20,9 @@ uuid.workspace = true
 name = "explorer-session-fixture"
 path = "src/bin/session_fixture.rs"
 
+[[bin]]
+name = "explorer-session-repair"
+path = "src/bin/session_repair.rs"
+
 [lints]
 workspace = true

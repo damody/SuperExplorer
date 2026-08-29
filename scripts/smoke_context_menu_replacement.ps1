@@ -54,7 +54,19 @@ function Invoke-RightClick(
 ) {
     $bounds = $Element.Current.BoundingRectangle
     $x = if ($FromRightEdge) {
-        $bounds.Right - [Math]::Min(80, $bounds.Width / 4)
+        # UI Automation may report only the Name cell even though the Details row spans all
+        # visible columns. Choose a point beyond the active popup and inside the file viewport so
+        # a wider application-owned menu cannot accidentally consume the replacement gesture.
+        $candidate = $bounds.Right - [Math]::Min(80, $bounds.Width / 4)
+        $popups = @(Get-NativePopupMenus)
+        if ($popups.Count -eq 1) {
+            $popupRect = [RustExplorerUitest.Native+RECT]::new()
+            if ([RustExplorerUitest.Native]::GetWindowRect($popups[0], [ref]$popupRect)) {
+                $rootBounds = $context.Root.Current.BoundingRectangle
+                $candidate = [Math]::Min($rootBounds.Right - 120, $popupRect.Right + 40)
+            }
+        }
+        $candidate
     } else {
         $bounds.Left + [Math]::Min(80, $bounds.Width / 2)
     }
@@ -89,7 +101,9 @@ function Get-NativePopupMenus {
             [void][RustExplorerUitest.Native]::GetClassName($hwnd, $className, $className.Capacity)
             $processId = [uint32]0
             [void][RustExplorerUitest.Native]::GetWindowThreadProcessId($hwnd, [ref]$processId)
-            if ($className.ToString() -eq '#32768' -and $allowedProcessIds.Contains([int]$processId)) {
+            if (($className.ToString() -eq '#32768' -or
+                 $className.ToString() -eq 'SuperExplorer.ImmersivePopup.v1') -and
+                $allowedProcessIds.Contains([int]$processId)) {
                 $handles.Add($hwnd)
             }
         }
@@ -103,7 +117,14 @@ function Get-PopupSession([IntPtr]$Hwnd) {
     [uint32]$processId = 0
     [void][RustExplorerUitest.Native]::GetWindowThreadProcessId($Hwnd, [ref]$processId)
     $menu = [RustExplorerUitest.ReplacementMenuNative]::SendMessage($Hwnd, 0x01E1, [IntPtr]::Zero, [IntPtr]::Zero)
-    [pscustomobject]@{ Hwnd = $Hwnd; ProcessId = [int]$processId; Menu = $menu }
+    $className = [Text.StringBuilder]::new(64)
+    [void][RustExplorerUitest.Native]::GetClassName($Hwnd, $className, $className.Capacity)
+    [pscustomobject]@{
+        Hwnd = $Hwnd
+        ProcessId = [int]$processId
+        Menu = $menu
+        ApplicationOwned = $className.ToString() -eq 'SuperExplorer.ImmersivePopup.v1'
+    }
 }
 
 function Wait-SinglePopup([string]$Description, [int]$TimeoutSeconds = 10) {
@@ -193,11 +214,31 @@ function Invoke-PopupCopy($Session) {
         $label = [Text.StringBuilder]::new(512)
         [void][RustExplorerUitest.ReplacementMenuNative]::GetMenuString($menu, [uint32]$position, $label, $label.Capacity, 0x00000400)
         if ($label.ToString() -match '\(&?C\)$' -or $label.ToString() -match '^&?Copy(\t|$)') {
-            $rect = [RustExplorerUitest.ReplacementMenuNative+RECT]::new()
-            if (-not [RustExplorerUitest.ReplacementMenuNative]::GetMenuItemRect([IntPtr]::Zero, $menu, [uint32]$position, [ref]$rect)) {
-                throw 'GetMenuItemRect failed for replacement Copy'
+            if ($Session.ApplicationOwned) {
+                # The clean-room popup deliberately does not mutate Shell menu geometry. Its
+                # documented test seam returns the row top/height while the HWND supplies the
+                # screen origin, allowing the same physical single-dispatch check as #32768.
+                $packed = [RustExplorerUitest.ReplacementMenuNative]::SendMessage(
+                    $Session.Hwnd, 0x0451, [IntPtr]$position, [IntPtr]::Zero
+                ).ToInt64()
+                if ($packed -lt 0) { throw 'application-owned popup did not expose Copy geometry' }
+                $windowRect = [RustExplorerUitest.Native+RECT]::new()
+                if (-not [RustExplorerUitest.Native]::GetWindowRect($Session.Hwnd, [ref]$windowRect)) {
+                    throw 'GetWindowRect failed for application-owned replacement Copy'
+                }
+                $top = [int]($packed -band 0xffff)
+                $height = [int](($packed -shr 16) -band 0xffff)
+                [void][RustExplorerUitest.Native]::SetCursorPos(
+                    [int](($windowRect.Left + $windowRect.Right) / 2),
+                    [int]($windowRect.Top + $top + ($height / 2))
+                )
+            } else {
+                $rect = [RustExplorerUitest.ReplacementMenuNative+RECT]::new()
+                if (-not [RustExplorerUitest.ReplacementMenuNative]::GetMenuItemRect([IntPtr]::Zero, $menu, [uint32]$position, [ref]$rect)) {
+                    throw 'GetMenuItemRect failed for replacement Copy'
+                }
+                [void][RustExplorerUitest.Native]::SetCursorPos([int](($rect.Left + $rect.Right) / 2), [int](($rect.Top + $rect.Bottom) / 2))
             }
-            [void][RustExplorerUitest.Native]::SetCursorPos([int](($rect.Left + $rect.Right) / 2), [int](($rect.Top + $rect.Bottom) / 2))
             [RustExplorerUitest.Native]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
             [RustExplorerUitest.Native]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
             return
