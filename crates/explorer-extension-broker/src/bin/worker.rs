@@ -259,6 +259,8 @@ fn execute_context_menu(request: &explorer_extension_protocol::StartPayload) -> 
     };
     if let Some(verb) = requested_verb {
         let context_request = explorer_model::ContextMenuRequest {
+            immersive_native_context_menus: false,
+            color_scheme: explorer_model::ContextMenuColorScheme::Light,
             target,
             owner_window: 0,
             point: explorer_model::MenuPoint { x: 0, y: 0 },
@@ -282,6 +284,9 @@ fn execute_context_menu(request: &explorer_extension_protocol::StartPayload) -> 
             )
             .into_bytes(),
             Ok(explorer_model::ContextMenuOutcome::Cancelled) => b"context-menu-cancelled".to_vec(),
+            Ok(explorer_model::ContextMenuOutcome::ReplayRequested { x, y }) => {
+                format!("context-menu-replay:{x}:{y}").into_bytes()
+            }
             Ok(explorer_model::ContextMenuOutcome::Failed { .. }) | Err(_) => {
                 b"context-menu-unavailable".to_vec()
             }
@@ -331,6 +336,12 @@ fn execute_context_menu_payload(request: &explorer_extension_protocol::StartPayl
         explorer_model::ShellContextMenuTarget::Items { parent, items }
     };
     let context_request = explorer_model::ContextMenuRequest {
+        immersive_native_context_menus: payload.immersive_native_context_menus,
+        color_scheme: if payload.dark_theme {
+            explorer_model::ContextMenuColorScheme::Dark
+        } else {
+            explorer_model::ContextMenuColorScheme::Light
+        },
         target,
         owner_window: payload.owner_hwnd,
         point: explorer_model::MenuPoint {
@@ -398,6 +409,9 @@ fn execute_context_menu_payload(request: &explorer_extension_protocol::StartPayl
         )
         .into_bytes(),
         Ok(explorer_model::ContextMenuOutcome::Cancelled) => b"context-menu-cancelled".to_vec(),
+        Ok(explorer_model::ContextMenuOutcome::ReplayRequested { x, y }) => {
+            format!("context-menu-replay:{x}:{y}").into_bytes()
+        }
         Ok(explorer_model::ContextMenuOutcome::Failed { .. }) | Err(_) => {
             b"context-menu-unavailable".to_vec()
         }

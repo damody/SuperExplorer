@@ -404,6 +404,8 @@ fn brokered_real_popup_appears_without_console_and_cancels_cleanly() {
 
     let fixture = tempfile::tempdir().expect("popup fixture");
     let request = explorer_model::ContextMenuRequest {
+        immersive_native_context_menus: false,
+        color_scheme: explorer_model::ContextMenuColorScheme::Light,
         target: explorer_model::ShellContextMenuTarget::Background {
             parent: explorer_model::LocationDescriptor::file_system(fixture.path()),
         },
@@ -869,6 +871,8 @@ fn brokered_context_menu_profiles_are_bounded_across_all_target_shapes() {
                 keyboard_invoked: false,
                 invocation_profile: u8::from(profile.extended_verbs()),
                 paste_available: false,
+                immersive_native_context_menus: true,
+                dark_theme: false,
                 item_descriptors: locations.iter().map(encode_location).collect(),
                 verb: None,
             }
@@ -977,6 +981,8 @@ fn brokered_and_direct_context_menu_preserve_safe_filesystem_effects() {
     fn request_for(path: &std::path::Path) -> explorer_model::ContextMenuRequest {
         let parent = path.parent().expect("owned fixture parent");
         explorer_model::ContextMenuRequest {
+            immersive_native_context_menus: false,
+            color_scheme: explorer_model::ContextMenuColorScheme::Light,
             target: explorer_model::ShellContextMenuTarget::Items {
                 parent: explorer_model::LocationDescriptor::file_system(parent),
                 items: vec![explorer_model::ItemDescriptor {

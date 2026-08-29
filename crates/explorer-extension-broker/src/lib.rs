@@ -272,6 +272,13 @@ fn decode_context_menu_terminal(
     if text == "context-menu-cancelled" {
         return Ok(explorer_model::ContextMenuOutcome::Cancelled);
     }
+    if let Some(point) = text.strip_prefix("context-menu-replay:") {
+        let (x, y) = point.split_once(':').ok_or(BrokerClientError::Protocol)?;
+        return Ok(explorer_model::ContextMenuOutcome::ReplayRequested {
+            x: x.parse().map_err(|_| BrokerClientError::Protocol)?,
+            y: y.parse().map_err(|_| BrokerClientError::Protocol)?,
+        });
+    }
     if let Some(offset) = text.strip_prefix("context-menu-invoked:") {
         let command_offset = offset.parse().map_err(|_| BrokerClientError::Protocol)?;
         return Ok(explorer_model::ContextMenuOutcome::Invoked { command_offset });
@@ -489,6 +496,11 @@ impl BrokerClient {
             keyboard_invoked: request.keyboard_invoked,
             invocation_profile: u8::from(request.invocation_profile.extended_verbs()),
             paste_available: request.paste_available,
+            immersive_native_context_menus: request.immersive_native_context_menus,
+            dark_theme: matches!(
+                request.color_scheme,
+                explorer_model::ContextMenuColorScheme::Dark
+            ),
             item_descriptors: descriptors,
             verb: request.requested_verb.clone(),
         }
@@ -1364,6 +1376,26 @@ mod tests {
             Err(BrokerClientError::Protocol)
         );
     }
+
+    #[test]
+    fn context_menu_replacement_point_crosses_the_broker_boundary() {
+        let target = explorer_model::ShellContextMenuTarget::Background {
+            parent: explorer_model::LocationDescriptor::file_system(r"C:\fixture"),
+        };
+        assert_eq!(
+            decode_context_menu_terminal("context-menu-replay:-125:2048", &target),
+            Ok(explorer_model::ContextMenuOutcome::ReplayRequested { x: -125, y: 2048 })
+        );
+        assert_eq!(
+            decode_context_menu_terminal("context-menu-replay:invalid:2048", &target),
+            Err(BrokerClientError::Protocol)
+        );
+        assert_eq!(
+            decode_context_menu_terminal("context-menu-replay:125", &target),
+            Err(BrokerClientError::Protocol)
+        );
+    }
+
     #[test]
     fn quarantine_threshold_expiry_capacity_and_manual_reset_are_bounded() {
         let now = Instant::now();

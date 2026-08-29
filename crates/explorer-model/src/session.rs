@@ -22,6 +22,10 @@ const fn default_mft_folder_cache_memory_mb() -> u16 {
     crate::DEFAULT_MFT_FOLDER_CACHE_MEMORY_MB
 }
 
+const fn default_immersive_native_context_menus() -> bool {
+    true
+}
+
 /// Current durable session schema.
 pub const SESSION_SCHEMA_VERSION: u16 = 3;
 const MAX_PROVENANCE_BYTES: usize = 256;
@@ -219,6 +223,8 @@ pub struct PersistedViewSettings {
     pub compact_view: bool,
     #[serde(default)]
     pub always_show_icons: bool,
+    #[serde(default = "default_immersive_native_context_menus")]
+    pub immersive_native_context_menus: bool,
     #[serde(default = "default_icon_cache_memory_mb")]
     pub icon_cache_memory_mb: u16,
     #[serde(default = "default_thumbnail_cache_memory_mb")]
@@ -256,6 +262,7 @@ impl Default for PersistedViewSettings {
             hidden_items: false,
             compact_view: false,
             always_show_icons: false,
+            immersive_native_context_menus: true,
             icon_cache_memory_mb: crate::DEFAULT_ICON_CACHE_MEMORY_MB,
             thumbnail_cache_memory_mb: crate::DEFAULT_THUMBNAIL_CACHE_MEMORY_MB,
             mft_folder_cache_memory_mb: crate::DEFAULT_MFT_FOLDER_CACHE_MEMORY_MB,
@@ -1000,6 +1007,7 @@ impl PersistedViewSettings {
             hidden_items: self.hidden_items,
             compact_view: self.compact_view,
             always_show_icons: self.always_show_icons,
+            immersive_native_context_menus: self.immersive_native_context_menus,
             icon_cache_memory_mb: crate::normalized_icon_cache_memory_mb(self.icon_cache_memory_mb),
             thumbnail_cache_memory_mb: crate::normalized_thumbnail_cache_memory_mb(
                 self.thumbnail_cache_memory_mb,
@@ -1225,6 +1233,7 @@ impl From<ViewSettings> for PersistedViewSettings {
             hidden_items: settings.hidden_items,
             compact_view: settings.compact_view,
             always_show_icons: settings.always_show_icons,
+            immersive_native_context_menus: settings.immersive_native_context_menus,
             icon_cache_memory_mb: crate::normalized_icon_cache_memory_mb(
                 settings.icon_cache_memory_mb,
             ),
@@ -1978,6 +1987,29 @@ mod tests {
         let restored = decoded.to_runtime();
         assert_eq!(restored.extension_view_id, persisted.extension_view_id);
         assert_eq!(restored.mode, ViewMode::Details);
+    }
+
+    #[test]
+    fn immersive_context_menu_setting_round_trips_and_legacy_defaults_opt_in() {
+        let persisted = PersistedViewSettings {
+            immersive_native_context_menus: false,
+            ..PersistedViewSettings::default()
+        };
+        let bytes = serde_json::to_vec(&persisted).expect("serialize view settings");
+        let decoded: PersistedViewSettings =
+            serde_json::from_slice(&bytes).expect("deserialize view settings");
+        assert!(!decoded.immersive_native_context_menus);
+        assert!(!decoded.to_runtime().immersive_native_context_menus);
+
+        let mut legacy =
+            serde_json::to_value(PersistedViewSettings::default()).expect("legacy settings value");
+        legacy
+            .as_object_mut()
+            .expect("settings object")
+            .remove("immersive_native_context_menus");
+        let decoded: PersistedViewSettings =
+            serde_json::from_value(legacy).expect("legacy settings deserialize");
+        assert!(decoded.immersive_native_context_menus);
     }
 
     #[test]
