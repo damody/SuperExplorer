@@ -1,0 +1,1 @@
+{"task_id":"4.2.5","artifact":"evidence/rollout/rollback.md","expected":"One-step data-free rollback","actual":"Per-profile false bypasses probe and requires no content migration","exit_status":0,"hashes":{},"gates":["G9"],"adjustment_id":"B-002","timestamp":"2026-08-30T12:30:00+08:00"}

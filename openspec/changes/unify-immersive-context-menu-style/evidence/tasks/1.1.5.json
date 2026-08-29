@@ -1,0 +1,1 @@
+{"task_id":"1.1.5","artifact":"evidence/baseline/native-menu-architecture.md#baseline-tests","expected":"Focused native and remote tests pass","actual":"Shell 18 passed/1 environment-ignore; UI 11 passed","exit_status":0,"hashes":{},"gates":["G1"],"adjustment_id":null,"timestamp":"2026-08-30T00:16:34.0876900+08:00"}

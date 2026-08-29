@@ -1,0 +1,1 @@
+{"task_id":"4.3.5","artifact":"evidence/reviews/native-adapter-review.md","expected":"No unresolved P0/P1","actual":"Review found no P0/P1; two P2 dispositions remain governed by visual and accessibility gates","exit_status":0,"hashes":{},"gates":["G10"],"adjustment_id":"B-003","timestamp":"2026-08-30T03:15:00+08:00"}

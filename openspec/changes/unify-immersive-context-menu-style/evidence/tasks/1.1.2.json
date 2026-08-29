@@ -1,0 +1,1 @@
+{"task_id":"1.1.2","artifact":"evidence/baseline/native-menu-architecture.md#owner-message-routing","expected":"Enumerate IContextMenu message paths","actual":"Four message paths and fallback recorded","exit_status":0,"hashes":{},"gates":["G1"],"adjustment_id":null,"timestamp":"2026-08-30T00:16:34.0876900+08:00"}

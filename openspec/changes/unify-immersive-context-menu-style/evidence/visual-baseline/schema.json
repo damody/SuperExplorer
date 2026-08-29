@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "superexplorer.context-menu-visual-baseline.v1",
+  "title": "SuperExplorer context-menu visual baseline index",
+  "type": "object",
+  "required": ["schema", "captures", "tolerances", "review"],
+  "properties": {
+    "schema": { "const": "superexplorer.context-menu-visual-baseline.v1" },
+    "captures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id", "producer", "os_build", "app_build", "target", "theme",
+          "high_contrast", "monitor", "dpi", "font", "crop", "image",
+          "measurements", "status"
+        ],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "producer": { "enum": ["file-explorer", "superexplorer", "adb", "sftp"] },
+          "os_build": { "type": "string", "minLength": 1 },
+          "app_build": { "type": "string", "minLength": 1 },
+          "target": {
+            "type": "object",
+            "required": ["fixture_id", "kind"],
+            "properties": {
+              "fixture_id": { "type": "string" },
+              "kind": { "enum": ["file", "folder", "background", "submenu", "state-row"] }
+            },
+            "additionalProperties": false
+          },
+          "theme": { "enum": ["light", "dark", "system"] },
+          "high_contrast": { "type": "boolean" },
+          "monitor": {
+            "type": "object",
+            "required": ["id", "work_area_px"],
+            "properties": {
+              "id": { "type": "string" },
+              "work_area_px": { "$ref": "#/$defs/rect" }
+            },
+            "additionalProperties": false
+          },
+          "dpi": {
+            "type": "object",
+            "required": ["effective", "scale_percent"],
+            "properties": {
+              "effective": { "type": "integer", "minimum": 96 },
+              "scale_percent": { "type": "number", "minimum": 100 }
+            },
+            "additionalProperties": false
+          },
+          "font": {
+            "type": "object",
+            "required": ["family", "logical_px"],
+            "properties": {
+              "family": { "type": "string" },
+              "logical_px": { "type": "number", "exclusiveMinimum": 0 },
+              "weight": { "type": "integer" }
+            },
+            "additionalProperties": false
+          },
+          "crop": { "$ref": "#/$defs/rect" },
+          "image": {
+            "type": "object",
+            "required": ["path", "sha256", "width_px", "height_px"],
+            "properties": {
+              "path": { "type": "string" },
+              "sha256": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" },
+              "width_px": { "type": "integer", "minimum": 1 },
+              "height_px": { "type": "integer", "minimum": 1 }
+            },
+            "additionalProperties": false
+          },
+          "measurements": {
+            "type": "object",
+            "properties": {
+              "surface_rgb": { "$ref": "#/$defs/rgb" },
+              "border_rgb": { "$ref": "#/$defs/rgb" },
+              "divider_rgb": { "$ref": "#/$defs/rgb" },
+              "font_px": { "type": "number" },
+              "baseline_px": { "type": "number" },
+              "row_height_px": { "type": "number" },
+              "icon_gutter_px": { "type": "number" },
+              "left_inset_px": { "type": "number" },
+              "hover_rgb": { "$ref": "#/$defs/rgb" },
+              "pressed_rgb": { "$ref": "#/$defs/rgb" },
+              "menu_bounds_px": { "$ref": "#/$defs/rect" },
+              "shadow_extents_px": { "$ref": "#/$defs/rect" }
+            },
+            "additionalProperties": false
+          },
+          "status": { "enum": ["measured", "reference-only", "superseded", "blocked"] },
+          "notes": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "tolerances": { "type": "object", "additionalProperties": { "type": "number", "minimum": 0 } },
+    "review": {
+      "type": "object",
+      "required": ["status", "missing_matrix_cells"],
+      "properties": {
+        "status": { "enum": ["accepted", "rejected", "pending"] },
+        "missing_matrix_cells": { "type": "array", "items": { "type": "string" } },
+        "notes": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "rect": {
+      "type": "object",
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": { "type": "number" }, "y": { "type": "number" },
+        "width": { "type": "number", "minimum": 0 }, "height": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "rgb": {
+      "type": "array", "minItems": 3, "maxItems": 3,
+      "items": { "type": "integer", "minimum": 0, "maximum": 255 }
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,23 @@
+{
+  "schema": "superexplorer.context-menu-enablement.v1",
+  "timestamp": "2026-08-30T06:22:00+08:00",
+  "decision": "default-enabled-with-explicit-opt-out",
+  "default_enabled": true,
+  "gates": {
+    "G4": "passed",
+    "G10": "passed",
+    "G11": "blocked",
+    "G13": "blocked",
+    "G14": "passed",
+    "G15": "blocked",
+    "G16": "blocked"
+  },
+  "remaining_evidence_gaps": [
+    "Local light/dark 100/125/150/200 DPI capture and measurement matrix incomplete",
+    "ADB/SFTP item/folder/background light/dark DPI parity matrix incomplete",
+    "Only one active display work area is available, so mixed-DPI edge evidence cannot be produced"
+  ],
+  "persisted_true_is_preserved": true,
+  "legacy_missing_field_defaults_to": true,
+  "fallback": "TrackPopupMenuEx"
+}

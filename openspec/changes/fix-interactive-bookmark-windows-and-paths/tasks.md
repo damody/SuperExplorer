@@ -321,3 +321,103 @@
 - [x] 14.1.2 Cancel an unsaved add draft through Remove while retaining durable deletion for existing IDs.
 - [x] 14.1.3 Suppress the native titlebar and add action/window contract regression tests.
 - [x] 14.1.4 Run focused tests, application check, formatting, strict OpenSpec validation, and scoped diff review.
+
+## 15. Classic remote context-menu style
+
+### 15.1 Vertical square menu presentation
+
+**目的：** Match the reference typography and classic menu geometry without copying its commands.
+**輸入：** Existing remote context command model and custom GPUI renderer.
+**產出：** Vertical command rows, classic spacing/font, square borders, and retained behavior.
+**依賴：** Existing remote context lifecycle.
+**Owner／Wave：** Primary integrator／wave 17.
+**Gate／Evidence：** G21; focused command/render tests, app check, and strict validation.
+**完成門檻：** No horizontal strip or rounded UI remains, while all contextual commands still dispatch unchanged.
+
+- [x] 15.1.1 Reorder the existing item commands into classic vertical menu order without changing actions.
+- [x] 15.1.2 Replace the command strip with 16px, 30px full-width rows, icon gutter, divider, and square menu geometry.
+- [x] 15.1.3 Update positioning and regression coverage for command membership, typography, lifecycle, and no-rounded/no-strip contracts.
+- [x] 15.1.4 Run focused tests, application check, formatting, strict OpenSpec validation, and scoped diff review.
+
+## 16. Classic menu DPI alignment
+
+### 16.1 Calibrate typography and row geometry
+
+**目的：** Align the visible ADB menu baseline and density with the supplied classic-menu reference at the active DPI scale.
+**輸入：** Screenshot comparison and existing vertical renderer.
+**產出：** Exact logical font, row, gutter, and clamp dimensions.
+**依賴：** 15.1.
+**Owner／Wave：** Primary integrator／wave 18.
+**Gate／Evidence：** G22; focused geometry tests, app check, and strict validation.
+**完成門檻：** Rows use 12px text, 18px height, a 14px icon slot, 4px gap, and 216px menu width with consistent text alignment.
+
+- [x] 16.1.1 Set row font to 12px, row height to 18px, icon slot to 14px, gap to 4px, and menu width to 216px.
+- [x] 16.1.2 Recalculate popup clamping and update exact geometry regression coverage.
+- [x] 16.1.3 Run focused tests, application check, formatting, strict OpenSpec validation, and scoped diff review.
+
+## 17. Actionable remote file commands
+
+### 17.1 Capability-aware common commands
+
+**目的：** Add useful ADB/SFTP item commands without exposing unsupported operations.
+**輸入：** Focused row metadata and existing new-tab, clipboard-path, and bookmark actions.
+**產出：** Container-aware new-tab plus URI and bookmark rows.
+**依賴：** 16.1.
+**Owner／Wave：** Primary integrator／wave 19.
+**Gate／Evidence：** G23; membership/action tests, app check, and strict validation.
+**完成門檻：** Item/folder/background menus expose only valid commands and dispatch existing authoritative actions.
+
+- [x] 17.1.1 Capture focused row identity and container capability in the remote context snapshot.
+- [x] 17.1.2 Add folder-only Open in New Tab plus item-only Copy Remote Path and Add to Bookmarks commands.
+- [x] 17.1.3 Preserve classic alignment/separators and add item/folder/background action-identity tests.
+- [x] 17.1.4 Run focused tests, application check, formatting, strict OpenSpec validation, and scoped diff review.
+
+## 18. Remote download and properties commands
+
+### 18.1 Complete current backend-backed item actions
+
+**目的：** Add direct download and metadata entry points while preserving cross-provider semantics.
+**輸入：** Selected remote descriptors, transfer engine, Downloads location, and namespace properties action.
+**產出：** Download-to-Downloads request and Properties row.
+**依賴：** 17.1.
+**Owner／Wave：** Primary integrator／wave 20.
+**Gate／Evidence：** G24; action identity, transfer request, UI tests, app check, and strict validation.
+**完成門檻：** ADB/SFTP items can download to the user's Downloads folder and invoke Properties through real actions.
+
+- [x] 18.1.1 Add a remote-only Download to Downloads action and cross-provider copy request.
+- [x] 18.1.2 Add Download and Properties rows with existing classic alignment.
+- [x] 18.1.3 Add membership/action regression coverage and validate background exclusion.
+- [x] 18.1.4 Run focused tests, application check, formatting, strict OpenSpec validation, and scoped diff review.
+
+## 19. Remote menu surface and density correction
+
+### 19.1 Match the supplied soft-shadow reference
+
+**目的：** Correct only the ADB/SFTP context-menu face, spacing, and shadow without changing file or folder row colors.
+**輸入：** Latest screenshot comparison and existing classic remote-menu renderer.
+**產出：** A `#F7F7F7` light menu surface, soft shadow, and corrected row geometry.
+**依賴：** 18.1.
+**Owner／Wave：** Primary integrator／wave 21.
+**Gate／Evidence：** G25; exact render-contract tests, app check, and strict validation.
+**完成門檻：** Only the remote right-click menu uses 22px rows, 18px icon slots, 10px gaps, 6px insets, 236px width, gray lines, and a soft 14px shadow.
+
+- [x] 19.1.1 Correct row height, icon gutter, text spacing, inset, and popup width.
+- [x] 19.1.2 Apply the light `#F7F7F7` color and soft shadow exclusively to the remote context-menu surface.
+- [x] 19.1.3 Update popup clamping and exact style regression coverage.
+- [x] 19.1.4 Run focused tests, application check, formatting, strict OpenSpec validation, and scoped diff review.
+
+## 20. Directional remote-menu shadow
+
+### 20.1 Remove top/left spill while preserving the lower reach
+
+**目的：** Match the supplied directional shadow proportions without changing menu or listing colors.
+**輸入：** Existing remote-menu shadow and exact requested edge behavior.
+**產出：** No top/left shadow, unchanged 18px bottom reach, and shorter 10px right reach.
+**依賴：** 19.1.
+**Owner／Wave：** Primary integrator／wave 22.
+**Gate／Evidence：** G26; exact shadow-contract test, app check, and strict validation.
+**完成門檻：** The remote context menu uses offset `(5, 13)`, blur `8`, and spread `-3` exclusively.
+
+- [x] 20.1.1 Apply the directional soft-shadow geometry only to the remote context menu.
+- [x] 20.1.2 Update exact regression assertions and design/spec contracts.
+- [x] 20.1.3 Run focused tests, application check, formatting, strict OpenSpec validation, and scoped diff review.

@@ -1,0 +1,1 @@
+{"task_id":"4.3.3","artifact":"evidence/reviews/native-adapter-review.md","expected":"No prohibited diagnostic payload","actual":"Only structural presentation fields are logged; paths, labels, users, PIDLs and raw extension data are absent","exit_status":0,"hashes":{},"gates":["G10"],"adjustment_id":"B-003","timestamp":"2026-08-30T03:15:00+08:00"}

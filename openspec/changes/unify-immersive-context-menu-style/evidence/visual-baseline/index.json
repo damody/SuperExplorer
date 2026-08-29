@@ -1,0 +1,98 @@
+{
+  "schema": "superexplorer.context-menu-visual-baseline.v1",
+  "captures": [
+    {
+      "id": "file-explorer-light-soft-shadow-user-reference",
+      "producer": "file-explorer",
+      "os_build": "Windows 11 (user reference; exact build not embedded)",
+      "app_build": "ExplorerPatcher classic-menu presentation",
+      "target": { "fixture_id": "external-folder-menu", "kind": "folder" },
+      "theme": "light",
+      "high_contrast": false,
+      "monitor": { "id": "user-reference", "work_area_px": { "x": 0, "y": 0, "width": 0, "height": 0 } },
+      "dpi": { "effective": 168, "scale_percent": 175 },
+      "font": { "family": "system menu font", "logical_px": 15, "weight": 400 },
+      "crop": { "x": 0, "y": 0, "width": 465, "height": 539 },
+      "image": {
+        "path": "images/file-explorer-reference-light-soft-shadow.png",
+        "sha256": "2FD4930E88A26787E1E8E0906D7F35B24587712787807B9978FAE451C5951531",
+        "width_px": 465,
+        "height_px": 539
+      },
+      "measurements": {},
+      "status": "reference-only",
+      "notes": "User-provided visual reference. Exact monitor/work-area metadata is unavailable, so it cannot close a DPI matrix cell."
+    },
+    {
+      "id": "file-explorer-appverifui-user-reference",
+      "producer": "file-explorer",
+      "os_build": "Windows 11 (user reference; exact build not embedded)",
+      "app_build": "ExplorerPatcher classic-menu presentation",
+      "target": { "fixture_id": "appverifUI.dll", "kind": "file" },
+      "theme": "light",
+      "high_contrast": false,
+      "monitor": { "id": "user-reference", "work_area_px": { "x": 0, "y": 0, "width": 0, "height": 0 } },
+      "dpi": { "effective": 168, "scale_percent": 175 },
+      "font": { "family": "system menu font", "logical_px": 15, "weight": 400 },
+      "crop": { "x": 0, "y": 0, "width": 502, "height": 955 },
+      "image": {
+        "path": "images/file-explorer-appverifui-light.png",
+        "sha256": "2945EB76A0A918C4A59EAD9374B0033EA924D03BCB2F09A9756443AB05503BBD",
+        "width_px": 502,
+        "height_px": 955
+      },
+      "measurements": {},
+      "status": "reference-only",
+      "notes": "Same-file File Explorer reference supplied by the user."
+    },
+    {
+      "id": "superexplorer-local-file-light-current-runner",
+      "producer": "superexplorer",
+      "os_build": "Microsoft Windows 11 Pro 10.0.26200",
+      "app_build": "f219c0542a4ae636db1009fc321c0b4ef3037c25-dirty",
+      "target": { "fixture_id": "local-file-icon", "kind": "file" },
+      "theme": "light",
+      "high_contrast": false,
+      "monitor": { "id": "current-headful-runner", "work_area_px": { "x": 0, "y": 0, "width": 2520, "height": 1540 } },
+      "dpi": { "effective": 168, "scale_percent": 175 },
+      "font": { "family": "SPI_GETNONCLIENTMETRICS.lfMenuFont", "logical_px": 15, "weight": 400 },
+      "crop": { "x": 0, "y": 0, "width": 2520, "height": 1540 },
+      "image": {
+        "path": "images/superexplorer-local-file-light-168dpi.png",
+        "sha256": "A60B98940996E2D0B502234FB136925CC1F30A6DAB9A4E99A53CCA9D4C0CFDA1",
+        "width_px": 2520,
+        "height_px": 1540
+      },
+      "measurements": {
+        "surface_rgb": [249, 249, 249],
+        "border_rgb": [215, 215, 215],
+        "row_height_px": 42,
+        "icon_gutter_px": 74,
+        "left_inset_px": 16
+      },
+      "status": "measured",
+      "notes": "Physical values are 24/42 logical px projected at 168 DPI. Alpha-blended extension icons and one Copy dispatch were verified by the headful smoke."
+    }
+  ],
+  "tolerances": {
+    "color_channel": 3,
+    "row_height_px": 1,
+    "font_px": 1,
+    "baseline_px": 1,
+    "icon_gutter_px": 2,
+    "inset_px": 2,
+    "border_px": 1,
+    "divider_px": 1,
+    "shadow_extent_px": 3
+  },
+  "review": {
+    "status": "pending",
+    "missing_matrix_cells": [
+      "Local File Explorer + SuperExplorer light at 100/125/150/200%",
+      "Local File Explorer + SuperExplorer dark at 100/125/150/200%",
+      "Local high contrast fallback capture",
+      "matching file/folder/background crops with complete measurement sets"
+    ],
+    "notes": "Current 175% evidence is retained but does not substitute for the required physical-runner matrix."
+  }
+}

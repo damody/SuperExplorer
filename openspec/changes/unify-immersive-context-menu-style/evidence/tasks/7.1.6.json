@@ -1,0 +1,1 @@
+{"task_id":"7.1.6","artifact":"evidence/final/validation.md","expected":"Strict OpenSpec validation passes","actual":"Change unify-immersive-context-menu-style is valid","exit_status":0,"hashes":{"validation.md":"97EC5A3EA468C617E1769CDE497BE2AFEE718F76377137AAB474EA7531E85398"},"gates":["G16"],"adjustment_id":null,"timestamp":"2026-08-30T04:20:00+08:00"}
