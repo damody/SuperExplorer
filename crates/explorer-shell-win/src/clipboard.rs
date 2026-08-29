@@ -266,11 +266,11 @@ impl ClipboardRuntime {
             let mode = preferred_mode(&data).unwrap_or(ClipboardMode::Copy);
             (items, data, mode)
         };
+        let conflict = paste_conflict_for_request(mode, conflict, &items, &destination);
         let kind = match mode {
             ClipboardMode::Copy => FileOperationKind::Copy { items, destination },
             ClipboardMode::Cut => FileOperationKind::Move { items, destination },
         };
-        let conflict = paste_conflict_for_mode(mode, conflict);
         Ok((
             FileOperationRequest {
                 kind,
@@ -381,6 +381,39 @@ impl ClipboardRuntime {
 fn paste_conflict_for_mode(mode: ClipboardMode, conflict: ConflictDecision) -> ConflictDecision {
     if mode == ClipboardMode::Cut && conflict == ConflictDecision::KeepBoth {
         ConflictDecision::Prompt
+    } else {
+        conflict
+    }
+}
+
+fn paste_conflict_for_request(
+    mode: ClipboardMode,
+    conflict: ConflictDecision,
+    items: &[ItemDescriptor],
+    destination: &explorer_model::LocationDescriptor,
+) -> ConflictDecision {
+    let conflict = paste_conflict_for_mode(mode, conflict);
+    if mode != ClipboardMode::Copy || conflict != ConflictDecision::Prompt || items.is_empty() {
+        return conflict;
+    }
+    let Some(destination) = destination.path() else {
+        return conflict;
+    };
+    let copies_within_source_folder = items.iter().all(|item| {
+        item.location
+            .path()
+            .and_then(std::path::Path::parent)
+            .is_some_and(|parent| {
+                parent
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&destination.to_string_lossy())
+            })
+    });
+    if copies_within_source_folder {
+        // File Explorer treats Ctrl+C/Ctrl+V in the same folder as "make a copy", not as a
+        // replace prompt against the source item itself. KeepBoth also supplies deterministic
+        // collision-safe names when the operation is dispatched by our background Shell STA.
+        ConflictDecision::KeepBoth
     } else {
         conflict
     }
@@ -779,7 +812,8 @@ mod tests {
     use super::{
         CLIPBOARD_TEST_LOCK, ClipboardRuntime, background_paste_still_owns_clipboard,
         clear_clipboard_with_retry, create_shell_data_object, paste_conflict_for_mode,
-        set_clipboard_with_retry, set_drop_effect, validate_inspection_duration,
+        paste_conflict_for_request, set_clipboard_with_retry, set_drop_effect,
+        validate_inspection_duration,
     };
 
     #[test]
@@ -797,6 +831,32 @@ mod tests {
         );
         assert_eq!(
             paste_conflict_for_mode(ClipboardMode::Cut, ConflictDecision::KeepBoth),
+            ConflictDecision::Prompt
+        );
+    }
+
+    #[test]
+    fn same_folder_copy_paste_uses_collision_safe_copy_names() {
+        let item = ItemDescriptor {
+            id: ShellItemId::from_provider_bytes([1]).expect("identity"),
+            location: LocationDescriptor::file_system(r"C:\Fixture\Item.txt"),
+        };
+        assert_eq!(
+            paste_conflict_for_request(
+                ClipboardMode::Copy,
+                ConflictDecision::Prompt,
+                std::slice::from_ref(&item),
+                &LocationDescriptor::file_system(r"c:\fixture"),
+            ),
+            ConflictDecision::KeepBoth
+        );
+        assert_eq!(
+            paste_conflict_for_request(
+                ClipboardMode::Copy,
+                ConflictDecision::Prompt,
+                &[item],
+                &LocationDescriptor::file_system(r"C:\Elsewhere"),
+            ),
             ConflictDecision::Prompt
         );
     }

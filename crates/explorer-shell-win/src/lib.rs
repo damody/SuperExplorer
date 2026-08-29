@@ -32,6 +32,7 @@ mod extension;
 mod file_operation;
 mod icon;
 mod icon_disk_cache;
+mod immersive_popup;
 pub use bc7_codec::{Bc7PipelineStatsV1, bc7_pipeline_stats};
 pub use bc7_pipeline::{Bc7JobStatsV1, job_stats as bc7_job_stats};
 pub use icon_disk_cache::{
