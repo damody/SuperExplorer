@@ -652,6 +652,8 @@ pub(crate) struct RemoteContextMenuState {
     pub(crate) y: f32,
     pub(crate) background: bool,
     pub(crate) paste_available: bool,
+    pub(crate) item_row_index: Option<usize>,
+    pub(crate) item_is_container: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -4232,6 +4234,7 @@ impl AppViewState {
             self.context_menu_error = match outcome {
                 explorer_model::ContextMenuOutcome::Failed { error } => Some(error.clone()),
                 explorer_model::ContextMenuOutcome::Cancelled
+                | explorer_model::ContextMenuOutcome::ReplayRequested { .. }
                 | explorer_model::ContextMenuOutcome::Invoked { .. }
                 | explorer_model::ContextMenuOutcome::Delegated { .. } => None,
             };
@@ -5086,14 +5089,19 @@ impl AppViewState {
             }
         };
         if custom_virtual_parent {
+            let background = matches!(
+                target,
+                explorer_model::ShellContextMenuTarget::Background { .. }
+            );
+            let item_row_index = (!background).then(|| self.focused_row_index()).flatten();
             self.remote_context_menu = Some(RemoteContextMenuState {
                 x: client_x.max(0.0),
                 y: client_y.max(0.0),
-                background: matches!(
-                    target,
-                    explorer_model::ShellContextMenuTarget::Background { .. }
-                ),
+                background,
                 paste_available: self.paste_available(),
+                item_row_index,
+                item_is_container: item_row_index
+                    .is_some_and(|row| self.presentation_row_is_container(row)),
             });
             self.pending_context_hit = None;
             self.pending_context_extended_verbs = false;
@@ -5109,6 +5117,12 @@ impl AppViewState {
             } else {
                 explorer_model::ContextMenuInvocationProfile::Explorer
             },
+            color_scheme: if matches!(self.current_theme, ThemeMode::Dark) {
+                explorer_model::ContextMenuColorScheme::Dark
+            } else {
+                explorer_model::ContextMenuColorScheme::Light
+            },
+            immersive_native_context_menus: tab.view.settings.immersive_native_context_menus,
             paste_available: self.paste_available(),
             requested_verb: None,
             deadline_ms: 2_000,
@@ -5197,6 +5211,8 @@ impl AppViewState {
             point: explorer_model::MenuPoint { x: 0, y: 0 },
             keyboard_invoked: true,
             invocation_profile: explorer_model::ContextMenuInvocationProfile::Explorer,
+            color_scheme: explorer_model::ContextMenuColorScheme::Light,
+            immersive_native_context_menus: false,
             paste_available: false,
             requested_verb: Some("undo".to_owned()),
             deadline_ms: 2_000,
@@ -5237,6 +5253,8 @@ impl AppViewState {
             point: explorer_model::MenuPoint { x: 0, y: 0 },
             keyboard_invoked: true,
             invocation_profile: explorer_model::ContextMenuInvocationProfile::Explorer,
+            color_scheme: explorer_model::ContextMenuColorScheme::Light,
+            immersive_native_context_menus: false,
             paste_available: false,
             requested_verb: Some("properties".to_owned()),
             deadline_ms: 2_000,
@@ -5281,6 +5299,8 @@ impl AppViewState {
                 point: explorer_model::MenuPoint { x: 0, y: 0 },
                 keyboard_invoked: true,
                 invocation_profile: explorer_model::ContextMenuInvocationProfile::Explorer,
+                color_scheme: explorer_model::ContextMenuColorScheme::Light,
+                immersive_native_context_menus: false,
                 paste_available: false,
                 requested_verb: Some("empty".to_owned()),
                 deadline_ms: 10_000,
@@ -5308,6 +5328,8 @@ impl AppViewState {
             point: explorer_model::MenuPoint { x: 0, y: 0 },
             keyboard_invoked: true,
             invocation_profile: explorer_model::ContextMenuInvocationProfile::Explorer,
+            color_scheme: explorer_model::ContextMenuColorScheme::Light,
+            immersive_native_context_menus: false,
             paste_available: false,
             requested_verb: Some(canonical_verb.to_owned()),
             deadline_ms: 2_000,
@@ -5687,6 +5709,31 @@ impl AppViewState {
                 destination,
                 conflict,
             },
+        })
+    }
+
+    pub(crate) fn download_selected_to_downloads_request(&self) -> Option<FileOperationRequest> {
+        let items = self.selected_items();
+        if items.is_empty()
+            || items.iter().any(|item| {
+                item.location.file_system_kind().is_none_or(|kind| {
+                    !matches!(
+                        kind,
+                        explorer_model::FileSystemKind::Adb | explorer_model::FileSystemKind::Sftp
+                    )
+                })
+            })
+        {
+            return None;
+        }
+        let profile = std::env::var_os("USERPROFILE")?;
+        let destination = std::path::PathBuf::from(profile).join("Downloads");
+        Some(FileOperationRequest {
+            kind: FileOperationKind::Copy {
+                items,
+                destination: LocationDescriptor::file_system(destination),
+            },
+            flags: explorer_model::FileOperationFlags::default(),
         })
     }
 
@@ -8331,6 +8378,8 @@ mod tests {
                 y: 80.0,
                 background: true,
                 paste_available: false,
+                item_row_index: None,
+                item_is_container: false,
             })
         );
     }

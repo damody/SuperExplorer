@@ -268,6 +268,7 @@ pub enum ExplorerAction {
     CopySelected,
     CutSelected,
     Paste,
+    DownloadSelectedToDownloads,
     ShareSelected,
     PinSelectedToStart,
     ShowPropertiesSelected,
@@ -656,6 +657,7 @@ impl ExplorerAction {
             Self::CopySelected => "CopySelected",
             Self::CutSelected => "CutSelected",
             Self::Paste => "Paste",
+            Self::DownloadSelectedToDownloads => "DownloadSelectedToDownloads",
             Self::ShareSelected => "ShareSelected",
             Self::PinSelectedToStart => "PinSelectedToStart",
             Self::ShowPropertiesSelected => "ShowPropertiesSelected",
@@ -1365,6 +1367,7 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
                     | explorer_model::ClipboardState::Unsupported { .. }
             ) && state.active_presentation().can_write
         }
+        ExplorerAction::DownloadSelectedToDownloads => state.selected_items_include_remote(),
         ExplorerAction::DropExternal {
             destination_row, ..
         } => destination_row.is_none_or(|row| state.presentation_row_is_container(row)),
@@ -1708,6 +1711,7 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         | ExplorerAction::CopySelected
         | ExplorerAction::CutSelected
         | ExplorerAction::Paste
+        | ExplorerAction::DownloadSelectedToDownloads
         | ExplorerAction::ShareSelected
         | ExplorerAction::PinSelectedToStart
         | ExplorerAction::ShowPropertiesSelected

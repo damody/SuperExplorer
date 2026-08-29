@@ -29,10 +29,10 @@ fn extension_render_generation(item_id: &explorer_model::ShellItemId, snapshot: 
 use abi_stable::std_types::{ROption, RString};
 use explorer_model::{DirectoryState, TabId, TabSearchState};
 use gpui::{
-    AccessibleAction, Anchor, AnchoredPositionMode, App, Context, DispatchPhase, Focusable,
-    IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent, ObjectFit, Render, RenderImage,
-    RenderOnce, Role, SharedString, Window, WindowControlArea, anchored, canvas, deferred, div,
-    img, point, prelude::*, px, svg,
+    AccessibleAction, Anchor, AnchoredPositionMode, App, BoxShadow, Context, DispatchPhase,
+    Focusable, IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent, ObjectFit, Render,
+    RenderImage, RenderOnce, Role, SharedString, Window, WindowControlArea, anchored, canvas,
+    deferred, div, hsla, img, point, prelude::*, px, svg,
 };
 use gpui_elements::editable_text::{EditableTextState, text_input};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -1773,7 +1773,12 @@ struct RemoteMenuCommand {
     danger: bool,
 }
 
-fn remote_menu_commands(background: bool, paste_available: bool) -> Vec<RemoteMenuCommand> {
+fn remote_menu_commands(
+    background: bool,
+    paste_available: bool,
+    item_row_index: Option<usize>,
+    item_is_container: bool,
+) -> Vec<RemoteMenuCommand> {
     let mut commands = Vec::new();
     if background {
         commands.push(RemoteMenuCommand {
@@ -1795,7 +1800,33 @@ fn remote_menu_commands(background: bool, paste_available: bool) -> Vec<RemoteMe
         return commands;
     }
 
+    commands.push(RemoteMenuCommand {
+        label: "開啟",
+        action: ExplorerAction::OpenFocused,
+        icon: None,
+        placement: RemoteMenuPlacement::Text,
+        danger: false,
+    });
+    if item_is_container && let Some(row_index) = item_row_index {
+        commands.push(RemoteMenuCommand {
+            label: "在新分頁開啟",
+            action: ExplorerAction::OpenItem {
+                row_index,
+                new_tab: true,
+            },
+            icon: None,
+            placement: RemoteMenuPlacement::Text,
+            danger: false,
+        });
+    }
     commands.extend([
+        RemoteMenuCommand {
+            label: "下載到下載資料夾",
+            action: ExplorerAction::DownloadSelectedToDownloads,
+            icon: Some(ExplorerIcon::Add),
+            placement: RemoteMenuPlacement::CommandStrip,
+            danger: false,
+        },
         RemoteMenuCommand {
             label: "剪下",
             action: ExplorerAction::CutSelected,
@@ -1824,13 +1855,6 @@ fn remote_menu_commands(background: bool, paste_available: bool) -> Vec<RemoteMe
             placement: RemoteMenuPlacement::CommandStrip,
             danger: true,
         },
-        RemoteMenuCommand {
-            label: "開啟",
-            action: ExplorerAction::OpenFocused,
-            icon: None,
-            placement: RemoteMenuPlacement::Text,
-            danger: false,
-        },
     ]);
     if paste_available {
         commands.push(RemoteMenuCommand {
@@ -1841,6 +1865,29 @@ fn remote_menu_commands(background: bool, paste_available: bool) -> Vec<RemoteMe
             danger: false,
         });
     }
+    commands.extend([
+        RemoteMenuCommand {
+            label: "複製遠端路徑",
+            action: ExplorerAction::CopySelectedPaths,
+            icon: Some(ExplorerIcon::Copy),
+            placement: RemoteMenuPlacement::CommandStrip,
+            danger: false,
+        },
+        RemoteMenuCommand {
+            label: "加入書籤",
+            action: ExplorerAction::AddSelectedToBookmarks,
+            icon: Some(ExplorerIcon::Pin),
+            placement: RemoteMenuPlacement::CommandStrip,
+            danger: false,
+        },
+        RemoteMenuCommand {
+            label: "內容",
+            action: ExplorerAction::ShowPropertiesSelected,
+            icon: Some(ExplorerIcon::Details),
+            placement: RemoteMenuPlacement::CommandStrip,
+            danger: false,
+        },
+    ]);
     commands
 }
 
@@ -1848,6 +1895,7 @@ fn remote_menu_icon(
     id: String,
     icon: ExplorerIcon,
     danger: bool,
+    icon_size: f32,
     tokens: UiTokens,
 ) -> impl IntoElement {
     let color = if danger {
@@ -1855,65 +1903,108 @@ fn remote_menu_icon(
     } else {
         tokens.theme.colors.text_primary
     };
-    div().id(id).w(px(18.0)).h(px(18.0)).flex_none().child(
-        svg()
-            .path(icon.asset_path())
-            .size_full()
-            .text_color(color.to_gpui()),
-    )
+    div()
+        .id(id)
+        .w(px(icon_size))
+        .h(px(icon_size))
+        .flex_none()
+        .child(
+            svg()
+                .path(icon.asset_path())
+                .size_full()
+                .text_color(color.to_gpui()),
+        )
 }
 
-fn remote_menu_command_strip_button(
-    index: usize,
-    command: RemoteMenuCommand,
-    tokens: UiTokens,
-    callback: Option<ActionCallback>,
-) -> gpui::AnyElement {
-    let label = command.label;
-    let action = command.action;
-    let danger = command.danger;
-    let icon = command.icon.expect("command-strip entries require icons");
-    div()
-        .id(format!("remote-context-strip-command-{index}"))
-        .debug_selector(move || format!("remote-context-strip-{label}"))
-        .role(Role::Button)
-        .aria_label(label)
-        .focusable()
-        .tab_stop(true)
-        .w(px(44.0))
-        .h(px(40.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(4.0))
-        .text_color(if danger {
-            tokens.theme.colors.danger.to_gpui()
+#[derive(Clone, Debug, PartialEq)]
+struct ContextMenuVisualTokens {
+    width: f32,
+    maximum_height: f32,
+    row_height: f32,
+    font_size: f32,
+    icon_gutter: f32,
+    icon_size: f32,
+    icon_left: f32,
+    outer_padding: f32,
+    divider_left_inset: f32,
+    divider_right_inset: f32,
+    surface: gpui::Rgba,
+    border: gpui::Rgba,
+    text: gpui::Rgba,
+    danger: gpui::Rgba,
+    hover: gpui::Rgba,
+    pressed: gpui::Rgba,
+    shadow: BoxShadow,
+}
+
+fn context_menu_visual_tokens(tokens: UiTokens) -> ContextMenuVisualTokens {
+    let light = matches!(tokens.theme.mode, crate::theme::ThemeMode::Light);
+    let high_contrast = tokens.theme.high_contrast_active;
+    let metrics = explorer_model::WINDOWS_CONTEXT_MENU_VISUAL_METRICS;
+    let palette = if light {
+        explorer_model::WINDOWS_CONTEXT_MENU_LIGHT_PALETTE
+    } else {
+        explorer_model::WINDOWS_CONTEXT_MENU_DARK_PALETTE
+    };
+    let color = |rgb: [u8; 3]| crate::theme::Rgba8::opaque(rgb[0], rgb[1], rgb[2]).to_gpui();
+    ContextMenuVisualTokens {
+        width: f32::from(metrics.minimum_width),
+        maximum_height: 420.0,
+        row_height: f32::from(metrics.row_height),
+        font_size: f32::from(metrics.font_size),
+        icon_gutter: f32::from(metrics.icon_gutter),
+        icon_size: f32::from(metrics.icon_size),
+        icon_left: f32::from(metrics.icon_left),
+        outer_padding: f32::from(metrics.outer_padding),
+        divider_left_inset: f32::from(metrics.icon_gutter),
+        divider_right_inset: f32::from(metrics.divider_right_inset),
+        surface: if !high_contrast {
+            color(palette.surface)
         } else {
+            tokens.theme.colors.menu_fill.to_gpui()
+        },
+        border: if !high_contrast {
+            color(palette.divider)
+        } else {
+            tokens.theme.colors.divider.to_gpui()
+        },
+        text: if high_contrast {
             tokens.theme.colors.text_primary.to_gpui()
-        })
-        .cursor_pointer()
-        .hover(move |style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
-        .active(move |style| style.bg(tokens.theme.colors.control_pressed.to_gpui()))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .when_some(callback, move |element, cb| {
-            let accessibility_cb = cb.clone();
-            let accessibility_action = action.clone();
-            element
-                .on_click(move |_, window, cx| {
-                    cx.stop_propagation();
-                    cb(&action, window, cx);
-                })
-                .on_a11y_action(AccessibleAction::Click, move |_, window, cx| {
-                    accessibility_cb(&accessibility_action, window, cx);
-                })
-        })
-        .child(remote_menu_icon(
-            format!("remote-context-strip-icon-{index}"),
-            icon,
-            danger,
-            tokens,
-        ))
-        .into_any_element()
+        } else {
+            color(palette.text)
+        },
+        danger: tokens.theme.colors.danger.to_gpui(),
+        hover: if high_contrast {
+            tokens.theme.colors.control_hover.to_gpui()
+        } else {
+            color(palette.hover)
+        },
+        pressed: if high_contrast {
+            tokens.theme.colors.control_pressed.to_gpui()
+        } else {
+            color(palette.hover)
+        },
+        // The native classic popup casts no visible top/left shadow. Its soft shadow is biased
+        // down and slightly right, with a shorter right extent than bottom extent.
+        shadow: BoxShadow {
+            color: hsla(
+                0.0,
+                0.0,
+                0.0,
+                if high_contrast {
+                    0.0
+                } else if light {
+                    0.2
+                } else {
+                    0.34
+                },
+            ),
+            offset: point(px(3.0), px(9.0)),
+            blur_radius: px(12.0),
+            spread_radius: px(-4.0),
+            inset: false,
+        },
+    }
 }
 
 fn remote_menu_text_command(
@@ -1922,6 +2013,7 @@ fn remote_menu_text_command(
     tokens: UiTokens,
     callback: Option<ActionCallback>,
 ) -> gpui::AnyElement {
+    let visual = context_menu_visual_tokens(tokens);
     let label = command.label;
     let action = command.action;
     let icon = command.icon;
@@ -1929,29 +2021,31 @@ fn remote_menu_text_command(
     div()
         .id(format!("remote-context-text-command-{index}"))
         .debug_selector(move || format!("remote-context-text-{label}"))
-        .role(Role::Button)
+        .role(Role::MenuItem)
         .aria_label(label)
         .focusable()
         .tab_stop(true)
-        .h(px(34.0))
+        .h(px(visual.row_height))
         .flex()
         .items_center()
-        .gap(px(10.0))
-        .px(px(10.0))
-        .rounded(px(4.0))
-        .text_color(if danger {
-            tokens.theme.colors.danger.to_gpui()
-        } else {
-            tokens.theme.colors.text_primary.to_gpui()
-        })
+        .text_size(px(visual.font_size))
+        .text_color(if danger { visual.danger } else { visual.text })
         .cursor_pointer()
-        .hover(move |style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
-        .active(move |style| style.bg(tokens.theme.colors.control_pressed.to_gpui()))
+        .hover(move |style| style.bg(visual.hover))
+        .active(move |style| style.bg(visual.pressed))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .when_some(callback, move |element, cb| {
             let accessibility_cb = cb.clone();
             let accessibility_action = action.clone();
+            let keyboard_cb = cb.clone();
+            let keyboard_action = action.clone();
             element
+                .on_key_down(move |event, window, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        cx.stop_propagation();
+                        keyboard_cb(&keyboard_action, window, cx);
+                    }
+                })
                 .on_click(move |_, window, cx| {
                     cx.stop_propagation();
                     cb(&action, window, cx);
@@ -1962,16 +2056,17 @@ fn remote_menu_text_command(
         })
         .child(
             div()
-                .w(px(18.0))
-                .h(px(18.0))
+                .w(px(visual.icon_gutter))
+                .h(px(visual.icon_size))
                 .flex_none()
                 .when_some(icon, move |slot, icon| {
-                    slot.child(remote_menu_icon(
+                    slot.child(div().ml(px(visual.icon_left)).child(remote_menu_icon(
                         format!("remote-context-text-icon-{index}"),
                         icon,
                         danger,
+                        visual.icon_size,
                         tokens,
-                    ))
+                    )))
                 }),
         )
         .child(label)
@@ -1985,27 +2080,48 @@ fn remote_context_menu(
     window_height: f32,
     callback: Option<ActionCallback>,
 ) -> impl IntoElement {
+    let visual = context_menu_visual_tokens(tokens);
     let close = ExplorerAction::CloseRemoteContextMenu;
     let close_cb = callback.clone();
     let close_right = close.clone();
     let close_right_cb = callback.clone();
-    let commands = remote_menu_commands(menu.background, menu.paste_available);
-    let strip = commands
+    let commands = remote_menu_commands(
+        menu.background,
+        menu.paste_available,
+        menu.item_row_index,
+        menu.item_is_container,
+    );
+    let primary_count = commands
         .iter()
-        .filter(|command| command.placement == RemoteMenuPlacement::CommandStrip)
-        .cloned()
-        .enumerate()
-        .map(|(index, command)| {
-            remote_menu_command_strip_button(index, command, tokens, callback.clone())
-        })
-        .collect::<Vec<_>>();
+        .take_while(|command| command.placement == RemoteMenuPlacement::Text)
+        .count();
     let rows = commands
         .into_iter()
-        .filter(|command| command.placement == RemoteMenuPlacement::Text)
         .enumerate()
-        .map(|(index, command)| remote_menu_text_command(index, command, tokens, callback.clone()))
+        .map(|(index, command)| {
+            let row = remote_menu_text_command(index, command, tokens, callback.clone());
+            div()
+                .when(index == primary_count && primary_count > 0, |element| {
+                    element.child(
+                        div()
+                            .id("remote-context-primary-separator")
+                            .h(px(1.0))
+                            .ml(px(visual.divider_left_inset))
+                            .mr(px(visual.divider_right_inset))
+                            .bg(visual.border),
+                    )
+                })
+                .child(row)
+        })
         .collect::<Vec<_>>();
-    let (left, top) = remote_context_menu_position(menu.x, menu.y, window_width, window_height);
+    let (left, top) = remote_context_menu_position_with_size(
+        menu.x,
+        menu.y,
+        window_width,
+        window_height,
+        visual.width,
+        visual.maximum_height,
+    );
     div()
         .id("remote-context-overlay")
         .absolute()
@@ -2030,54 +2146,54 @@ fn remote_context_menu(
                     .absolute()
                     .left(px(left))
                     .top(px(top))
-                    .w(px(240.0))
-                    .p(px(6.0))
-                    .rounded(px(8.0))
+                    .w(px(visual.width))
+                    .py(px(visual.outer_padding))
+                    .font_family(tokens.typography.family.primary)
                     .border(px(1.0))
-                    .border_color(tokens.theme.colors.divider.to_gpui())
-                    .bg(tokens.theme.colors.menu_fill.to_gpui())
-                    .shadow_lg()
+                    .border_color(visual.border)
+                    .bg(visual.surface)
+                    .shadow(vec![visual.shadow])
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                    .when(!strip.is_empty(), |menu| {
-                        menu.child(
-                            div()
-                                .id("remote-context-command-strip")
-                                .flex()
-                                .items_center()
-                                .justify_between()
-                                .px(px(4.0))
-                                .pb(px(4.0))
-                                .children(strip),
-                        )
-                        .child(
-                            div()
-                                .id("remote-context-strip-separator")
-                                .h(px(1.0))
-                                .mx(px(2.0))
-                                .mb(px(4.0))
-                                .bg(tokens.theme.colors.divider.to_gpui()),
-                        )
-                    })
                     .children(rows),
             )
             .with_priority(300),
         )
 }
 
+#[allow(
+    dead_code,
+    reason = "kept as the deterministic default-size projection used by source-contract tests"
+)]
 fn remote_context_menu_position(
     client_x: f32,
     client_y: f32,
     window_width: f32,
     window_height: f32,
 ) -> (f32, f32) {
-    const MENU_WIDTH: f32 = 240.0;
-    const MENU_MAX_HEIGHT: f32 = 132.0;
+    remote_context_menu_position_with_size(
+        client_x,
+        client_y,
+        window_width,
+        window_height,
+        296.0,
+        420.0,
+    )
+}
+
+fn remote_context_menu_position_with_size(
+    client_x: f32,
+    client_y: f32,
+    window_width: f32,
+    window_height: f32,
+    menu_width: f32,
+    menu_max_height: f32,
+) -> (f32, f32) {
     (
-        client_x.max(0.0).min((window_width - MENU_WIDTH).max(0.0)),
+        client_x.max(0.0).min((window_width - menu_width).max(0.0)),
         client_y
             .max(0.0)
-            .min((window_height - MENU_MAX_HEIGHT).max(0.0)),
+            .min((window_height - menu_max_height).max(0.0)),
     )
 }
 
@@ -13146,15 +13262,15 @@ mod tests {
         SEARCH_BOX_ID, STATUS_BAR_ID, TAB_STRIP_ID, WINDOW_CHROME_ID, WINDOW_DRAG_REGION_ID,
         admission_cell_presentation, bookmark_icon, breadcrumb_ancestry_partition,
         breadcrumb_location_shell_texture, builtin_count_display, client_to_screen_point,
-        details_name_column_contains, editable_input_colors, file_view_background_context_hit,
-        file_view_local_pointer, format_explorer_size, is_generic_breadcrumb_folder_icon_key,
-        localized_search_placeholder, marquee_content_rect, navigation_item_shell_texture,
-        navigation_shell_texture, new_tab_button_background, operation_location_text,
-        operation_message, operation_message_opacity, operation_outcome_message,
-        operation_request_summary, remote_context_menu_position, remote_menu_commands,
-        select_file_row_shell_icon, tab_background,
+        context_menu_visual_tokens, details_name_column_contains, editable_input_colors,
+        file_view_background_context_hit, file_view_local_pointer, format_explorer_size,
+        is_generic_breadcrumb_folder_icon_key, localized_search_placeholder, marquee_content_rect,
+        navigation_item_shell_texture, navigation_shell_texture, new_tab_button_background,
+        operation_location_text, operation_message, operation_message_opacity,
+        operation_outcome_message, operation_request_summary, remote_context_menu_position,
+        remote_menu_commands, select_file_row_shell_icon, tab_background,
     };
-    use crate::{UiTokens, theme::ThemeTokens};
+    use crate::{UiTokens, actions::ExplorerAction, theme::ThemeTokens};
     use gpui::WindowControlArea;
     use std::{cmp::Ordering, time::Duration};
 
@@ -13385,25 +13501,31 @@ mod tests {
         );
         assert_eq!(
             remote_context_menu_position(1_190.0, 790.0, 1_200.0, 800.0),
-            (960.0, 668.0)
+            (904.0, 380.0)
         );
     }
 
     #[test]
-    fn remote_item_menu_uses_windows_command_strip_and_text_groups() {
-        let commands = remote_menu_commands(false, false);
-        let strip = commands
+    fn remote_item_menu_keeps_commands_in_classic_vertical_order() {
+        let commands = remote_menu_commands(false, false, Some(3), false);
+        let labels = commands
             .iter()
-            .filter(|command| command.placement == RemoteMenuPlacement::CommandStrip)
             .map(|command| command.label)
             .collect::<Vec<_>>();
-        let text = commands
-            .iter()
-            .filter(|command| command.placement == RemoteMenuPlacement::Text)
-            .map(|command| command.label)
-            .collect::<Vec<_>>();
-        assert_eq!(strip, ["剪下", "複製", "重新命名", "永久刪除…"]);
-        assert_eq!(text, ["開啟"]);
+        assert_eq!(
+            labels,
+            [
+                "開啟",
+                "下載到下載資料夾",
+                "剪下",
+                "複製",
+                "重新命名",
+                "永久刪除…",
+                "複製遠端路徑",
+                "加入書籤",
+                "內容"
+            ]
+        );
         assert!(
             commands
                 .iter()
@@ -13415,7 +13537,7 @@ mod tests {
 
     #[test]
     fn remote_menu_paste_and_background_membership_are_contextual() {
-        let item = remote_menu_commands(false, true);
+        let item = remote_menu_commands(false, true, Some(3), false);
         assert_eq!(
             item.iter()
                 .filter(|command| command.label == "貼上")
@@ -13430,7 +13552,7 @@ mod tests {
             RemoteMenuPlacement::Text
         );
 
-        let background = remote_menu_commands(true, true);
+        let background = remote_menu_commands(true, true, None, false);
         assert_eq!(
             background
                 .iter()
@@ -13443,27 +13565,138 @@ mod tests {
                 .iter()
                 .all(|command| command.placement == RemoteMenuPlacement::Text)
         );
-        for item_only in ["開啟", "剪下", "複製", "重新命名", "永久刪除…"] {
+        for item_only in [
+            "開啟",
+            "剪下",
+            "複製",
+            "重新命名",
+            "永久刪除…",
+            "下載到下載資料夾",
+            "複製遠端路徑",
+            "加入書籤",
+            "內容",
+        ] {
             assert!(background.iter().all(|command| command.label != item_only));
         }
     }
 
     #[test]
+    fn remote_folder_menu_adds_real_new_tab_path_and_common_commands() {
+        let commands = remote_menu_commands(false, false, Some(7), true);
+        assert!(commands.iter().any(|command| {
+            command.label == "在新分頁開啟"
+                && command.action
+                    == ExplorerAction::OpenItem {
+                        row_index: 7,
+                        new_tab: true,
+                    }
+        }));
+        assert!(commands.iter().any(|command| {
+            command.label == "複製遠端路徑" && command.action == ExplorerAction::CopySelectedPaths
+        }));
+        assert!(commands.iter().any(|command| {
+            command.label == "加入書籤" && command.action == ExplorerAction::AddSelectedToBookmarks
+        }));
+        assert!(commands.iter().any(|command| {
+            command.label == "下載到下載資料夾"
+                && command.action == ExplorerAction::DownloadSelectedToDownloads
+        }));
+        assert!(commands.iter().any(|command| {
+            command.label == "內容" && command.action == ExplorerAction::ShowPropertiesSelected
+        }));
+    }
+
+    #[test]
     fn remote_windows_menu_keeps_lifecycle_accessibility_and_local_shell_contracts() {
         let production = include_str!("chrome.rs");
+        let visual = production
+            .split("fn context_menu_visual_tokens(")
+            .nth(1)
+            .and_then(|source| source.split("fn remote_menu_text_command(").next())
+            .expect("remote context menu visual tokens");
+        let row = production
+            .split("fn remote_menu_text_command(")
+            .nth(1)
+            .and_then(|source| source.split("fn remote_context_menu(").next())
+            .expect("remote context menu row renderer");
         let remote = production
             .split("fn remote_context_menu(")
             .nth(1)
             .and_then(|source| source.split("fn remote_context_menu_position(").next())
             .expect("remote context menu renderer");
-        assert!(remote.contains("remote-context-command-strip"));
+        assert!(!remote.contains("remote-context-command-strip"));
+        assert!(remote.contains("remote-context-primary-separator"));
+        assert!(row.contains(".text_size(px(visual.font_size))"));
+        assert!(row.contains(".h(px(visual.row_height))"));
+        assert!(row.contains(".w(px(visual.icon_gutter))"));
+        assert!(row.contains(".ml(px(visual.icon_left))"));
+        assert!(!row.contains(".rounded("));
+        assert!(remote.contains(".font_family(tokens.typography.family.primary)"));
+        assert!(!remote.contains(".rounded("));
+        assert!(visual.contains("WINDOWS_CONTEXT_MENU_LIGHT_PALETTE"));
+        assert!(visual.contains("WINDOWS_CONTEXT_MENU_DARK_PALETTE"));
+        assert!(visual.contains("WINDOWS_CONTEXT_MENU_VISUAL_METRICS"));
+        assert!(visual.contains("offset: point(px(3.0), px(9.0))"));
+        assert!(visual.contains("blur_radius: px(12.0)"));
+        assert!(visual.contains("spread_radius: px(-4.0)"));
         assert!(remote.contains("Role::Menu"));
-        assert!(production.contains(".role(Role::Button)"));
+        assert!(row.contains(".role(Role::MenuItem)"));
+        assert!(row.contains(".on_key_down("));
+        assert!(row.contains("\"enter\" | \"space\""));
         assert!(production.contains(".on_a11y_action(AccessibleAction::Click"));
         assert!(remote.contains(".on_mouse_down(MouseButton::Left"));
         assert!(remote.contains(".on_mouse_down(MouseButton::Right"));
         assert!(production.contains("ContextMenuRequest"));
         assert!(production.contains("custom_virtual_parent"));
+    }
+
+    #[test]
+    fn remote_context_menu_tokens_project_light_dark_and_high_contrast_independently() {
+        let light_theme = ThemeTokens::light();
+        let dark_theme = ThemeTokens::dark();
+        let light = context_menu_visual_tokens(UiTokens {
+            theme: light_theme,
+            ..UiTokens::default()
+        });
+        let dark = context_menu_visual_tokens(UiTokens {
+            theme: dark_theme,
+            ..UiTokens::default()
+        });
+        assert_ne!(light.surface, dark.surface);
+        assert_ne!(light.text, dark.text);
+        assert_eq!(light.row_height, dark.row_height);
+        assert_eq!(light.icon_size, dark.icon_size);
+        assert_eq!(light.width, 282.0);
+        assert_eq!(light.row_height, 23.0);
+        assert_eq!(light.font_size, 15.0);
+        assert_eq!(light.icon_gutter, 42.0);
+        assert_eq!(light.icon_left, 13.0);
+        assert_eq!(light.divider_left_inset, 42.0);
+        assert_eq!(light.divider_right_inset, 8.0);
+        assert_ne!(
+            light.surface, dark.surface,
+            "light/dark surfaces must differ"
+        );
+
+        let high_contrast_theme = ThemeTokens::windows_high_contrast(|role| match role {
+            crate::theme::SystemColorRole::Window => crate::theme::Rgba8::opaque(0, 0, 0),
+            crate::theme::SystemColorRole::WindowText => crate::theme::Rgba8::opaque(255, 255, 255),
+            crate::theme::SystemColorRole::Highlight => crate::theme::Rgba8::opaque(0, 255, 0),
+            _ => crate::theme::Rgba8::opaque(128, 128, 128),
+        });
+        let high_contrast = context_menu_visual_tokens(UiTokens {
+            theme: high_contrast_theme,
+            ..UiTokens::default()
+        });
+        assert_eq!(
+            high_contrast.text,
+            high_contrast_theme.colors.text_primary.to_gpui()
+        );
+        assert_eq!(
+            high_contrast.surface,
+            high_contrast_theme.colors.menu_fill.to_gpui()
+        );
+        assert_eq!(high_contrast.shadow.color.a, 0.0);
     }
 
     #[test]

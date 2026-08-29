@@ -6522,6 +6522,11 @@ impl ExplorerRoot {
         {
             self.submit_command(command);
         }
+        if action == ExplorerAction::DownloadSelectedToDownloads
+            && let Some(request) = self.state.download_selected_to_downloads_request()
+        {
+            self.execute_file_operation(request);
+        }
         if let Some(command) = self.state.take_pending_drag_command() {
             // OLE owns capture for the modal drag loop. Release the short GPUI gesture capture
             // before crossing into the Shell so right-drag and left-drag do not compete for it.
@@ -7915,6 +7920,24 @@ impl Render for ExplorerRoot {
                         if let Some(command) = this.state.cancel_pending_context_menu() {
                             this.submit_command(command);
                         }
+                        return;
+                    }
+                    if this.state.remote_context_menu().is_some() {
+                        this.handle_action(
+                            ExplorerAction::CloseRemoteContextMenu,
+                            ActionSource::Keyboard,
+                            window,
+                            cx,
+                        );
+                        return;
+                    }
+                    if this.state.bookmark_context_menu().is_some() {
+                        this.handle_action(
+                            ExplorerAction::CloseBookmarkContextMenu,
+                            ActionSource::Keyboard,
+                            window,
+                            cx,
+                        );
                         return;
                     }
                     let menu_action = if this.state.folder_options().is_some() {
