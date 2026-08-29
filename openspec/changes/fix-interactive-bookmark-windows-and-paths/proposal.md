@@ -12,6 +12,8 @@ The bookmark manager is currently rendered as a non-interactive overlay inside t
 - Give Local, ADB, SFTP, and Lua bookmarks consistent source-specific icons.
 - Dismiss bookmark folder and overflow menus immediately when a bookmark is selected.
 - Show a solid focus-blue star for the current bookmarked location and open its compact dedicated editor when clicked.
+- Present custom remote-file context commands in a square, classic Windows vertical menu style without changing command membership.
+- Add only currently actionable remote item commands: folder new-tab opening, canonical URI copy, and bookmark creation.
 - Add bookmark-toolbar background and item context menus for creating, renaming/editing, and deleting logical folders and path bookmarks.
 - Make file and folder bookmark target text editable in the dedicated bookmark editor window.
 - Persist non-empty path text without existence or parse validation, preserving the exact user-authored value; report errors only when activation fails.
@@ -33,6 +35,8 @@ The bookmark manager is currently rendered as a non-interactive overlay inside t
 - `bookmark-provider-icons`: Shared provider-aware bookmark icon projection.
 - `bookmark-menu-dismissal`: Deterministic browse-menu dismissal before bookmark activation.
 - `bookmarked-location-star-editor`: Stateful current-location star and compact dedicated edit window.
+- `classic-remote-context-menu`: Traditional vertical typography and geometry for the custom remote fallback menu.
+- `remote-file-context-commands`: Capability-aware ADB/SFTP item commands backed by existing reducers.
 
 ### Modified Capabilities
 

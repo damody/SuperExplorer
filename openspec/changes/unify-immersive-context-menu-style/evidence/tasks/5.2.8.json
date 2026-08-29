@@ -1,0 +1,1 @@
+{"task_id":"5.2.8","artifact":"cargo test -p explorer-ui remote_ --lib; cargo test -p explorer-ui bookmark --lib","expected":"Focused remote and bookmark tests pass","actual":"11 remote tests and 28 bookmark tests passed","exit_status":0,"hashes":{},"gates":["G12"],"adjustment_id":null,"timestamp":"2026-08-30T13:00:00+08:00"}

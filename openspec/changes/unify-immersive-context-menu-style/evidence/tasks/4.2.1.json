@@ -1,0 +1,1 @@
+{"task_id":"4.2.1","artifact":"crates/explorer-model/src/navigation.rs","expected":"Typed runtime setting enabled after gates","actual":"ViewSettings owns immersive_native_context_menus with completed-feature default true","exit_status":0,"hashes":{},"gates":["G9"],"adjustment_id":"B-002","timestamp":"2026-08-30T12:30:00+08:00"}

@@ -1,0 +1,17 @@
+{
+  "schema": "superexplorer.context-menu-fixtures.v1",
+  "generator": "scripts/smoke_context_menu_builtin_commands.ps1",
+  "fixtures": [
+    { "id": "local-file-icon", "path": "fixture/01-copy.txt", "covers": ["file", "icon-row"] },
+    { "id": "local-folder", "path": "fixture/07-properties-folder", "covers": ["folder"] },
+    { "id": "local-background", "path": "fixture", "covers": ["background"] },
+    { "id": "local-nested", "path": "fixture/01-copy.txt", "covers": ["submenu", "dynamic-submenu"] },
+    { "id": "local-state", "path": "controlled HMENU test fixture", "covers": ["checked", "disabled"] },
+    { "id": "local-danger", "path": "fixture/06-delete.txt", "covers": ["danger"] },
+    { "id": "local-no-icon", "path": "fixture/00-first-sentinel.txt", "covers": ["no-icon-row"] }
+  ],
+  "source_contracts": [
+    "crates/explorer-shell-win/src/immersive_popup.rs::materialization_preserves_duplicates_checks_bitmaps_and_nested_handles",
+    "crates/explorer-shell-win/src/immersive_popup.rs::dynamic_submenu_initialization_runs_on_owner_before_rematerialization"
+  ]
+}

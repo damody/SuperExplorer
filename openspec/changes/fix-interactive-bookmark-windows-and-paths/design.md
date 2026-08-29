@@ -78,6 +78,14 @@ The toolbar continues to derive current-location state from the exact typed targ
 
 The editor suppresses the native titlebar so Windows does not add minimize, maximize, and close controls. Its in-content action row always exposes Remove Bookmark, Cancel, and Save. Remove uses the durable deletion path for an existing draft ID; for a not-yet-persisted add draft it cancels creation, producing the same visible result without a fake deletion.
 
+### Classic remote context-menu presentation
+
+The custom Local/ADB/SFTP fallback menu retains its existing context-derived command set and reducer actions but replaces the Windows 11-style horizontal icon strip with one vertical row per command. Open remains first and is separated from editing commands. Rows use the application UI font at 12 logical pixels, 22 logical-pixel height, an 18px icon slot, 10px gap, 6px inset, and 236px menu width. The light menu surface is `#F7F7F7` with medium-gray one-pixel lines and a directional soft shadow: no reach above or left, 18px reach below, and a shorter 10px reach to the right. Dark mode retains semantic menu colors. Rows remain square. The reference image defines typography and geometry only; its third-party commands, labels, shortcuts, and submenus are not copied.
+
+### Actionable remote file commands
+
+The custom context snapshot records the focused row index and whether it is a container. A single remote folder exposes Open in New Tab by dispatching the existing `OpenItem { new_tab: true }` route. Remote items expose Download to Downloads through a direct cross-provider copy request targeting `%USERPROFILE%\Downloads`, Copy Remote Path through `CopySelectedPaths`, Add to Bookmarks through `AddSelectedToBookmarks`, and Properties through the existing namespace metadata route. Background menus omit item-only commands. ADB intent/APK installation, SFTP chmod, and SSH terminal execution remain absent until those backend contracts exist; the UI never advertises a no-op.
+
 ### Evidence-driven corrections
 
 A-level changes may refine task order, tests, or internal method names. B-level corrections within this approved behavior require synchronized design/spec/task updates and stale-evidence marking. C-level changes—including website URLs, new dependencies, weaker persistence gates, or filesystem mutation—require user approval.

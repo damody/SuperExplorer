@@ -1,0 +1,1 @@
+{"task_id":"4.2.2","artifact":"crates/explorer-model/src/session.rs","expected":"Backward-compatible persistence","actual":"Serde default, runtime conversion and persisted conversion implemented","exit_status":0,"hashes":{},"gates":["G9"],"adjustment_id":"B-002","timestamp":"2026-08-30T12:30:00+08:00"}

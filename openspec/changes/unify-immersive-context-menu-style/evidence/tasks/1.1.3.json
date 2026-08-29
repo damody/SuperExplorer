@@ -1,0 +1,1 @@
+{"task_id":"1.1.3","artifact":"evidence/baseline/native-menu-architecture.md#terminal-resource-paths","expected":"Enumerate every terminal resource path","actual":"Selection, cancellation, verb, error, panic, and replay recorded","exit_status":0,"hashes":{},"gates":["G1"],"adjustment_id":null,"timestamp":"2026-08-30T00:16:34.0876900+08:00"}
