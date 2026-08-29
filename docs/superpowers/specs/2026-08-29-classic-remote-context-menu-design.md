@@ -7,7 +7,8 @@ Change the custom Local/ADB/SFTP fallback context menu from a Windows 11-style h
 ## Visual Contract
 
 - Every command is a full-width vertical row with a left icon gutter and text label.
-- Use the application's configured UI font at 12 logical pixels with 18 logical-pixel row height, a 14px icon slot, 4px icon-to-text gap, and 216px menu width so the active Windows DPI scale matches the supplied reference pixel-for-pixel.
+- Use the application's configured UI font at 12 logical pixels with 22 logical-pixel row height, an 18px icon slot, 10px icon-to-text gap, 6px row inset, and 236px menu width so the active Windows DPI scale matches the supplied reference.
+- In the light theme use a `#F7F7F7` menu face, medium-gray border/dividers, and a soft blurred shadow; dark mode continues to use its semantic menu colors.
 - Use the menu surface, a one-pixel divider-colored border, fully square corners on both the menu and rows, and no oversized card spacing.
 - Open is the first row and visually emphasized; a thin separator divides it from edit commands.
 - Hover and pressed feedback cover the full row. Destructive text remains theme-danger colored.
