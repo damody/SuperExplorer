@@ -2,6 +2,69 @@
 
 use crate::ShellContextMenuTarget;
 
+/// Provider-neutral logical metrics for the Windows-style context-menu presentation.
+///
+/// Local converts these values to physical pixels using the popup monitor DPI. GPUI already
+/// renders in logical pixels, so ADB/SFTP consume the same values directly.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ContextMenuVisualMetrics {
+    pub row_height: u16,
+    pub separator_height: u16,
+    pub minimum_width: u16,
+    pub maximum_width: u16,
+    pub icon_gutter: u16,
+    pub icon_size: u16,
+    pub icon_left: u16,
+    pub right_inset: u16,
+    pub divider_right_inset: u16,
+    pub outer_padding: u16,
+    pub font_size: u16,
+    pub right_shadow_extent: u16,
+    pub bottom_shadow_extent: u16,
+}
+
+pub const WINDOWS_CONTEXT_MENU_VISUAL_METRICS: ContextMenuVisualMetrics =
+    ContextMenuVisualMetrics {
+        row_height: 23,
+        separator_height: 7,
+        minimum_width: 282,
+        maximum_width: 520,
+        icon_gutter: 42,
+        icon_size: 16,
+        icon_left: 13,
+        right_inset: 24,
+        divider_right_inset: 8,
+        outer_padding: 3,
+        font_size: 15,
+        right_shadow_extent: 6,
+        bottom_shadow_extent: 8,
+    };
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ContextMenuPaletteRgb8 {
+    pub surface: [u8; 3],
+    pub hover: [u8; 3],
+    pub text: [u8; 3],
+    pub disabled_text: [u8; 3],
+    pub divider: [u8; 3],
+}
+
+pub const WINDOWS_CONTEXT_MENU_LIGHT_PALETTE: ContextMenuPaletteRgb8 = ContextMenuPaletteRgb8 {
+    surface: [249, 249, 249],
+    hover: [233, 233, 233],
+    text: [26, 26, 26],
+    disabled_text: [128, 128, 128],
+    divider: [215, 215, 215],
+};
+
+pub const WINDOWS_CONTEXT_MENU_DARK_PALETTE: ContextMenuPaletteRgb8 = ContextMenuPaletteRgb8 {
+    surface: [43, 43, 43],
+    hover: [61, 61, 61],
+    text: [242, 242, 242],
+    disabled_text: [152, 152, 152],
+    divider: [72, 72, 72],
+};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MenuPoint {
     pub x: i32,
@@ -23,6 +86,13 @@ impl ContextMenuInvocationProfile {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ContextMenuColorScheme {
+    #[default]
+    Light,
+    Dark,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContextMenuRequest {
     pub target: ShellContextMenuTarget,
@@ -30,6 +100,10 @@ pub struct ContextMenuRequest {
     pub point: MenuPoint,
     pub keyboard_invoked: bool,
     pub invocation_profile: ContextMenuInvocationProfile,
+    pub color_scheme: ContextMenuColorScheme,
+    /// Enables the application-owned documented Win32/GDI popup host for this popup only.
+    /// Canonical-verb requests leave this false because they do not display a menu.
+    pub immersive_native_context_menus: bool,
     /// Application-owned clipboard state captured when the popup request is created.
     pub paste_available: bool,
     /// When present, invoke this canonical Shell verb without showing the popup menu.
@@ -171,6 +245,10 @@ impl ContextMenuHostCommand {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ContextMenuOutcome {
     Cancelled,
+    ReplayRequested {
+        x: i32,
+        y: i32,
+    },
     Invoked {
         command_offset: u32,
     },
@@ -237,5 +315,17 @@ mod tests {
     fn invocation_profile_is_ordinary_by_default_and_extended_is_session_local() {
         assert!(!ContextMenuInvocationProfile::default().extended_verbs());
         assert!(ContextMenuInvocationProfile::ExplorerExtended.extended_verbs());
+    }
+
+    #[test]
+    fn windows_context_menu_contract_matches_the_accepted_local_baseline() {
+        assert_eq!(WINDOWS_CONTEXT_MENU_VISUAL_METRICS.row_height, 23);
+        assert_eq!(WINDOWS_CONTEXT_MENU_VISUAL_METRICS.minimum_width, 282);
+        assert_eq!(WINDOWS_CONTEXT_MENU_VISUAL_METRICS.icon_gutter, 42);
+        assert_eq!(WINDOWS_CONTEXT_MENU_VISUAL_METRICS.icon_left, 13);
+        assert_eq!(WINDOWS_CONTEXT_MENU_VISUAL_METRICS.font_size, 15);
+        assert_eq!(WINDOWS_CONTEXT_MENU_LIGHT_PALETTE.surface, [249; 3]);
+        assert_eq!(WINDOWS_CONTEXT_MENU_LIGHT_PALETTE.divider, [215; 3]);
+        assert_eq!(WINDOWS_CONTEXT_MENU_DARK_PALETTE.surface, [43; 3]);
     }
 }

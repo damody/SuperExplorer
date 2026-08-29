@@ -3,6 +3,7 @@
 use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
+    mem::size_of,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -331,6 +332,72 @@ fn prompt_archive_password(_: &str, _: bool) -> Option<Vec<u16>> {
     None
 }
 
+#[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "replays one validated app-local Windows mouse gesture"
+)]
+fn replay_context_menu_gesture(owner_window: u64, x: i32, y: i32) {
+    std::thread::spawn(move || {
+        use windows::Win32::{
+            Foundation::{HWND, POINT},
+            System::Threading::GetCurrentProcessId,
+            UI::{
+                Input::KeyboardAndMouse::{
+                    INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
+                    MOUSEINPUT, SendInput,
+                },
+                WindowsAndMessaging::{
+                    GA_ROOT, GetAncestor, GetWindowThreadProcessId, IsWindow, SetCursorPos,
+                    WindowFromPoint,
+                },
+            },
+        };
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let Ok(owner_window) = usize::try_from(owner_window) else {
+            return;
+        };
+        let owner = HWND(owner_window as *mut std::ffi::c_void);
+        let mut owner_process = 0;
+        if owner.0.is_null()
+            || !unsafe { IsWindow(Some(owner)).as_bool() }
+            || unsafe { GetWindowThreadProcessId(owner, Some(&raw mut owner_process)) } == 0
+            || owner_process != unsafe { GetCurrentProcessId() }
+        {
+            return;
+        }
+        let point = POINT { x, y };
+        let owner_root = unsafe { GetAncestor(owner, GA_ROOT) };
+        let target_root = unsafe { GetAncestor(WindowFromPoint(point), GA_ROOT) };
+        if target_root != owner && target_root != owner_root {
+            return;
+        }
+        if unsafe { SetCursorPos(x, y) }.is_err() {
+            return;
+        }
+        let target_root = unsafe { GetAncestor(WindowFromPoint(point), GA_ROOT) };
+        if target_root != owner && target_root != owner_root {
+            return;
+        }
+        let mouse = |flags| INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    dwFlags: flags,
+                    ..MOUSEINPUT::default()
+                },
+            },
+        };
+        let inputs = [mouse(MOUSEEVENTF_RIGHTDOWN), mouse(MOUSEEVENTF_RIGHTUP)];
+        if let Ok(input_size) = i32::try_from(size_of::<INPUT>()) {
+            let _ = unsafe { SendInput(&inputs, input_size) };
+        }
+    });
+}
+
+#[cfg(not(windows))]
+fn replay_context_menu_gesture(_: u64, _: i32, _: i32) {}
+
 impl BrokeredExplorerService {
     pub fn new(
         shell: Arc<explorer_shell_win::ShellStaHandle>,
@@ -373,8 +440,17 @@ impl BrokeredExplorerService {
                 {
                     active.remove(index);
                 }
+                let replay = match &outcome {
+                    explorer_model::ContextMenuOutcome::ReplayRequested { x, y } => {
+                        Some((request.owner_window, *x, *y))
+                    }
+                    _ => None,
+                };
                 let _ =
                     context_events.send(ExplorerEvent::ContextMenuFinished { context, outcome });
+                if let Some((owner_window, x, y)) = replay {
+                    replay_context_menu_gesture(owner_window, x, y);
+                }
             }
         });
         let (preview_sender, preview_receiver) = std::sync::mpsc::sync_channel::<(

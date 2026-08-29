@@ -1882,6 +1882,8 @@ pub struct ViewSettings {
     pub hidden_items: bool,
     pub compact_view: bool,
     pub always_show_icons: bool,
+    /// Use the application-owned documented Win32/UxTheme skin for Local Shell popups.
+    pub immersive_native_context_menus: bool,
     /// In-process Shell icon presentation cache budget in MiB.
     pub icon_cache_memory_mb: u16,
     /// In-process decoded thumbnail cache budget in MiB.
@@ -1908,6 +1910,7 @@ impl Default for ViewSettings {
             hidden_items: false,
             compact_view: false,
             always_show_icons: false,
+            immersive_native_context_menus: true,
             icon_cache_memory_mb: DEFAULT_ICON_CACHE_MEMORY_MB,
             thumbnail_cache_memory_mb: DEFAULT_THUMBNAIL_CACHE_MEMORY_MB,
             mft_folder_cache_memory_mb: DEFAULT_MFT_FOLDER_CACHE_MEMORY_MB,

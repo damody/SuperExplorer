@@ -50,8 +50,11 @@ pub use cache_telemetry::{
     CacheTelemetryValueV1, MAX_CACHE_TELEMETRY_ENTRIES,
 };
 pub use context_menu::{
-    ContextMenuHostCommand, ContextMenuInvocationProfile, ContextMenuOutcome, ContextMenuRequest,
-    ContextMenuSession, ContextMenuSessionState, MenuPoint,
+    ContextMenuColorScheme, ContextMenuHostCommand, ContextMenuInvocationProfile,
+    ContextMenuOutcome, ContextMenuPaletteRgb8, ContextMenuRequest, ContextMenuSession,
+    ContextMenuSessionState, ContextMenuVisualMetrics, MenuPoint,
+    WINDOWS_CONTEXT_MENU_DARK_PALETTE, WINDOWS_CONTEXT_MENU_LIGHT_PALETTE,
+    WINDOWS_CONTEXT_MENU_VISUAL_METRICS,
 };
 pub use domain::{
     CancellationRegistration, CancellationSignalReport, CancellationToken, FileSystemKind,
