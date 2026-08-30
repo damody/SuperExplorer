@@ -669,10 +669,12 @@ fn outcome_seeds(kind: &FileOperationKind) -> Vec<OutcomeSeed> {
             item: None,
             destination: Some(parent.clone()),
         }],
-        FileOperationKind::Rename { item, .. } => vec![OutcomeSeed {
-            item: Some(item.clone()),
-            destination: None,
-        }],
+        FileOperationKind::Rename { item, .. } | FileOperationKind::SetUnixMode { item, .. } => {
+            vec![OutcomeSeed {
+                item: Some(item.clone()),
+                destination: None,
+            }]
+        }
         FileOperationKind::Copy { items, destination }
         | FileOperationKind::Move { items, destination } => items
             .iter()
@@ -808,6 +810,13 @@ fn queue_request(
             Ok(())
         }
         FileOperationKind::CreateShortcut { .. } => Ok(()),
+        FileOperationKind::SetUnixMode { .. } => Err(ExplorerError::new(
+            ExplorerErrorKind::Availability,
+            "set Unix mode",
+            false,
+            "Windows 本機檔案不支援遠端權限編輯。",
+            "SetUnixMode reached the local Shell provider",
+        )),
     }
 }
 
@@ -981,6 +990,7 @@ fn conflict_targets(kind: &FileOperationKind) -> Vec<Option<ConflictTarget>> {
                     .join(new_name),
             }
         })],
+        FileOperationKind::SetUnixMode { .. } => vec![None],
         FileOperationKind::Copy { items, destination }
         | FileOperationKind::Move { items, destination } => items
             .iter()
@@ -1023,7 +1033,8 @@ fn item_count(kind: &FileOperationKind) -> usize {
     match kind {
         FileOperationKind::CreateFolder { .. }
         | FileOperationKind::CreateItem { .. }
-        | FileOperationKind::Rename { .. } => 1,
+        | FileOperationKind::Rename { .. }
+        | FileOperationKind::SetUnixMode { .. } => 1,
         FileOperationKind::Copy { items, .. }
         | FileOperationKind::Move { items, .. }
         | FileOperationKind::RecycleDelete { items }

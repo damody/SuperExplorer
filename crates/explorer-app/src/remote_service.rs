@@ -15,8 +15,8 @@ use explorer_model::{
     OperationItemOutcome, OperationItemResult, OperationTerminal, TransferEffects,
 };
 use explorer_remote::{
-    RemoteEntry, RemoteProvider, RemoteProviderRegistry, TransferEngine, TransferMode,
-    TransferResult,
+    RemoteEntry, RemoteMetadata, RemoteProvider, RemoteProviderRegistry, TransferEngine,
+    TransferMode, TransferResult,
 };
 
 fn arm_request_deadline(context: &explorer_model::RequestContext) {
@@ -51,6 +51,39 @@ fn remote_file_entry(entry: RemoteEntry) -> Option<FileEntry> {
                     | NamespaceCapabilities::COPY
                     | NamespaceCapabilities::RENAME
                     | NamespaceCapabilities::DELETE,
+            ),
+            ..FileEntryMetadata::default()
+        },
+    })
+}
+
+fn remote_metadata_file_entry(metadata: RemoteMetadata) -> Option<FileEntry> {
+    let display_name = match &metadata.location {
+        LocationDescriptor::Virtual(remote) => remote
+            .components
+            .last()
+            .cloned()
+            .or_else(|| remote.public_authority.clone())
+            .unwrap_or_else(|| "/".to_owned()),
+        _ => return None,
+    };
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    metadata.location.hash(&mut hasher);
+    Some(FileEntry {
+        id: explorer_model::ShellItemId::from_provider_bytes(hasher.finish().to_le_bytes())?,
+        display_name,
+        location: metadata.location,
+        is_container: metadata.kind.is_container(),
+        metadata: FileEntryMetadata {
+            modified_display: metadata
+                .modified_unix_seconds
+                .map(|seconds| format!("Unix {seconds}")),
+            modified_sort_key: metadata.modified_unix_seconds,
+            size_bytes: metadata.size,
+            unix_mode: metadata.unix_mode,
+            type_display: Some(metadata.kind.type_display().to_owned()),
+            namespace_capabilities: NamespaceCapabilities::from_public_bits(
+                NamespaceCapabilities::OPEN | NamespaceCapabilities::PROPERTIES,
             ),
             ..FileEntryMetadata::default()
         },
@@ -113,6 +146,50 @@ pub fn configured_remote_runtime() -> Arc<ConfiguredRemoteRuntime> {
 }
 
 impl ConfiguredRemoteRuntime {
+    pub fn create_symlink(
+        &self,
+        parent: LocationDescriptor,
+        name: String,
+        target: String,
+        cancellation: explorer_model::CancellationToken,
+    ) -> Result<FileEntry, String> {
+        let LocationDescriptor::Virtual(parent_remote) = &parent else {
+            return Err("Remote folder is invalid.".to_owned());
+        };
+        let mut destination = parent_remote.clone();
+        destination.components.push(name);
+        destination.entry_id = None;
+        let destination_location = LocationDescriptor::Virtual(destination.clone());
+        self.providers
+            .resolve(&parent)
+            .and_then(|provider| provider.create_symlink(&destination, &target, &cancellation))
+            .map_err(|error| error.to_string())?;
+        let metadata = self
+            .providers
+            .resolve(&destination_location)
+            .and_then(|provider| provider.metadata(&destination, &cancellation))
+            .map_err(|error| error.to_string())?;
+        remote_metadata_file_entry(metadata)
+            .ok_or_else(|| "The created remote link has no stable identity.".to_owned())
+    }
+
+    pub fn metadata(
+        &self,
+        location: LocationDescriptor,
+        cancellation: explorer_model::CancellationToken,
+    ) -> Result<FileEntry, String> {
+        let LocationDescriptor::Virtual(remote) = &location else {
+            return Err("Remote folder is invalid.".to_owned());
+        };
+        let metadata = self
+            .providers
+            .resolve(&location)
+            .and_then(|provider| provider.metadata(remote, &cancellation))
+            .map_err(|error| error.to_string())?;
+        remote_metadata_file_entry(metadata)
+            .ok_or_else(|| "Remote folder metadata has no stable identity.".to_owned())
+    }
+
     pub fn login_address(&self, input: &str) -> Result<Option<LocationDescriptor>, String> {
         let parsed =
             explorer_model::SftpAddressInput::parse(input).map_err(|error| error.to_string())?;
@@ -1190,7 +1267,9 @@ fn operation_is_remote(kind: &FileOperationKind) -> bool {
     match kind {
         FileOperationKind::CreateFolder { parent, .. }
         | FileOperationKind::CreateItem { parent, .. } => RemoteExplorerService::is_remote(parent),
-        FileOperationKind::Rename { item, .. } => RemoteExplorerService::is_remote(&item.location),
+        FileOperationKind::Rename { item, .. } | FileOperationKind::SetUnixMode { item, .. } => {
+            RemoteExplorerService::is_remote(&item.location)
+        }
         FileOperationKind::Copy { items, destination }
         | FileOperationKind::Move { items, destination } => {
             RemoteExplorerService::is_remote(destination)
@@ -1239,6 +1318,19 @@ fn execute_operation(
             providers
                 .resolve(&LocationDescriptor::Virtual(source.clone()))?
                 .rename(source, &destination, cancellation)?;
+            Ok(OperationTerminal::Finished)
+        }
+        FileOperationKind::SetUnixMode {
+            item:
+                ItemDescriptor {
+                    location: LocationDescriptor::Virtual(location),
+                    ..
+                },
+            mode,
+        } => {
+            providers
+                .resolve(&LocationDescriptor::Virtual(location.clone()))?
+                .set_unix_mode(location, *mode, cancellation)?;
             Ok(OperationTerminal::Finished)
         }
         FileOperationKind::PermanentDelete { items, .. }

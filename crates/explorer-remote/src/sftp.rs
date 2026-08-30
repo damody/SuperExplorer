@@ -25,7 +25,7 @@ use tokio::{
 };
 use unicode_normalization::UnicodeNormalization as _;
 
-use crate::{RemoteEntry, RemoteEntryKind, RemoteProvider};
+use crate::{RemoteEntry, RemoteEntryKind, RemoteMetadata, RemoteProvider};
 
 const MAX_SYMLINK_HOPS: usize = 40;
 
@@ -316,6 +316,66 @@ impl RemoteProvider for SftpProvider {
         })
     }
 
+    fn create_symlink(
+        &self,
+        location: &VirtualLocationDescriptor,
+        target: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        crate::provider::validate_remote_location(location, "sftp", false)?;
+        validate_symlink_target(target)?;
+        let profile = self.profile(location)?;
+        let remote = remote_path(location);
+        let target = target.to_owned();
+        self.runtime.block_on(async {
+            ensure_sftp_not_cancelled(cancellation)?;
+            let (session, sftp) = Self::connect(&profile).await?;
+            let result = sftp
+                .symlink(&remote, target)
+                .await
+                .context("create SFTP symbolic link");
+            Self::disconnect(session).await;
+            result
+        })
+    }
+
+    fn metadata(
+        &self,
+        location: &VirtualLocationDescriptor,
+        cancellation: &CancellationToken,
+    ) -> Result<RemoteMetadata> {
+        crate::provider::validate_remote_location(location, "sftp", true)?;
+        let profile = self.profile(location)?;
+        let remote = remote_path(location);
+        self.runtime.block_on(async {
+            ensure_sftp_not_cancelled(cancellation)?;
+            let (session, sftp) = Self::connect(&profile).await?;
+            let result = async {
+                let metadata = sftp
+                    .symlink_metadata(&remote)
+                    .await
+                    .context("inspect SFTP item metadata")?;
+                let kind = if metadata.is_symlink() {
+                    resolve_sftp_symlink(&sftp, &remote, cancellation).await?
+                } else if metadata.is_dir() {
+                    RemoteEntryKind::Directory
+                } else {
+                    RemoteEntryKind::File
+                };
+                Ok::<_, anyhow::Error>(RemoteMetadata {
+                    location: LocationDescriptor::Virtual(location.clone()),
+                    kind,
+                    size: metadata.size,
+                    unix_mode: metadata.permissions,
+                    modified_unix_seconds: metadata.mtime.map(u64::from),
+                })
+            }
+            .await;
+            Self::disconnect(session).await;
+            result
+        })
+    }
+
     fn rename(
         &self,
         source: &VirtualLocationDescriptor,
@@ -376,6 +436,38 @@ impl RemoteProvider for SftpProvider {
             Ok(())
         })
     }
+
+    fn set_unix_mode(
+        &self,
+        location: &VirtualLocationDescriptor,
+        mode: u32,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        crate::provider::validate_remote_location(location, "sftp", false)?;
+        if mode & !0o7777 != 0 {
+            bail!("SFTP mode contains non-permission bits");
+        }
+        let profile = self.profile(location)?;
+        let remote = remote_path(location);
+        self.runtime.block_on(async {
+            if cancellation.is_cancelled() {
+                bail!("SFTP operation cancelled");
+            }
+            let (session, sftp) = Self::connect(&profile).await?;
+            let result = sftp
+                .set_metadata(
+                    &remote,
+                    russh_sftp::client::fs::Metadata {
+                        permissions: Some(mode),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .context("change SFTP item permissions");
+            Self::disconnect(session).await;
+            result
+        })
+    }
 }
 
 async fn resolve_sftp_symlink(
@@ -427,6 +519,13 @@ async fn resolve_sftp_symlink(
 fn ensure_sftp_not_cancelled(cancellation: &CancellationToken) -> Result<()> {
     if cancellation.is_cancelled() {
         bail!("SFTP operation cancelled");
+    }
+    Ok(())
+}
+
+fn validate_symlink_target(target: &str) -> Result<()> {
+    if target.is_empty() || target.contains(['\0', '\r', '\n']) {
+        bail!("SFTP symbolic-link target is invalid");
     }
     Ok(())
 }
@@ -729,6 +828,16 @@ mod tests {
         assert_eq!(normalize_sftp_path("relative/link", Some("target")), None);
         assert_eq!(normalize_sftp_path("/root/link", Some("")), None);
         assert_eq!(normalize_sftp_path("/root/link", Some("bad\nname")), None);
+    }
+
+    #[test]
+    fn sftp_creation_target_validation_preserves_linux_dangling_semantics() {
+        for allowed in ["missing", "../missing target", "/absolute/missing"] {
+            assert!(validate_symlink_target(allowed).is_ok());
+        }
+        for rejected in ["", "bad\0target", "bad\ntarget", "bad\rtarget"] {
+            assert!(validate_symlink_target(rejected).is_err());
+        }
     }
 
     #[test]

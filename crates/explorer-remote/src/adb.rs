@@ -15,7 +15,7 @@ use anyhow::{Context as _, Result, bail};
 use explorer_common::configure_background_command;
 use explorer_model::{CancellationToken, LocationDescriptor, VirtualLocationDescriptor};
 
-use crate::{RemoteEntry, RemoteEntryKind, RemoteProvider};
+use crate::{RemoteEntry, RemoteEntryKind, RemoteMetadata, RemoteProvider};
 
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -84,12 +84,21 @@ $next_path
     fi
 done
 "#;
+const ADB_SYMLINK_SCRIPT: &str = r#"ln -s -- "$1" "$2""#;
+const ADB_METADATA_SCRIPT: &str = r#"stat -c '%f|%s|%Y' -- "$1""#;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdbDirectoryEntry {
     pub name: String,
     pub kind: RemoteEntryKind,
     pub unix_mode: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AdbMetadata {
+    unix_mode: u32,
+    size: u64,
+    modified_unix_seconds: u64,
 }
 
 /// Non-secret ADB device state reported by `adb devices -l`.
@@ -331,6 +340,59 @@ impl<R: AdbCommandRunner> AdbClient<R> {
         )
     }
 
+    pub fn symlink(
+        &self,
+        serial: &str,
+        target: &str,
+        remote: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        validate_remote_path(remote)?;
+        validate_symlink_target(target)?;
+        self.device_command(
+            serial,
+            [
+                OsString::from("shell"),
+                OsString::from("sh"),
+                OsString::from("-c"),
+                OsString::from(shell_quote(ADB_SYMLINK_SCRIPT)),
+                OsString::from("superexplorer-symlink"),
+                OsString::from(shell_quote(target)),
+                OsString::from(shell_quote(remote)),
+            ],
+            cancellation,
+            DEFAULT_COMMAND_TIMEOUT,
+            "create symbolic link",
+        )
+    }
+
+    fn metadata(
+        &self,
+        serial: &str,
+        remote: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<AdbMetadata> {
+        validate_serial(serial)?;
+        validate_remote_path(remote)?;
+        let output = self.runner.run(
+            &self.executable,
+            &[
+                OsString::from("-s"),
+                OsString::from(serial),
+                OsString::from("shell"),
+                OsString::from("sh"),
+                OsString::from("-c"),
+                OsString::from(shell_quote(ADB_METADATA_SCRIPT)),
+                OsString::from("superexplorer-metadata"),
+                OsString::from(shell_quote(remote)),
+            ],
+            cancellation,
+            DEFAULT_COMMAND_TIMEOUT,
+        )?;
+        ensure_success(&output, "read item metadata")?;
+        parse_metadata(&output.stdout)
+    }
+
     pub fn rename(
         &self,
         serial: &str,
@@ -376,6 +438,32 @@ impl<R: AdbCommandRunner> AdbClient<R> {
             cancellation,
             DEFAULT_COMMAND_TIMEOUT,
             "delete item",
+        )
+    }
+
+    pub fn chmod(
+        &self,
+        serial: &str,
+        remote: &str,
+        mode: u32,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        validate_remote_path(remote)?;
+        if mode & !0o7777 != 0 {
+            bail!("ADB chmod mode contains non-permission bits");
+        }
+        self.device_command(
+            serial,
+            [
+                OsString::from("shell"),
+                OsString::from("chmod"),
+                OsString::from(format!("{mode:04o}")),
+                OsString::from("--"),
+                OsString::from(shell_quote(remote)),
+            ],
+            cancellation,
+            DEFAULT_COMMAND_TIMEOUT,
+            "change item permissions",
         )
     }
 }
@@ -542,6 +630,41 @@ impl<R: AdbCommandRunner> RemoteProvider for AdbProvider<R> {
         )
     }
 
+    fn create_symlink(
+        &self,
+        location: &VirtualLocationDescriptor,
+        target: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        crate::provider::validate_remote_location(location, "adb", false)?;
+        self.client.symlink(
+            &self.serial(location)?,
+            target,
+            &remote_path(location),
+            cancellation,
+        )
+    }
+
+    fn metadata(
+        &self,
+        location: &VirtualLocationDescriptor,
+        cancellation: &CancellationToken,
+    ) -> Result<RemoteMetadata> {
+        crate::provider::validate_remote_location(location, "adb", true)?;
+        let raw = self.client.metadata(
+            &self.serial(location)?,
+            &remote_path(location),
+            cancellation,
+        )?;
+        Ok(RemoteMetadata {
+            location: LocationDescriptor::Virtual(location.clone()),
+            kind: kind_from_unix_mode(raw.unix_mode),
+            size: Some(raw.size),
+            unix_mode: Some(raw.unix_mode),
+            modified_unix_seconds: Some(raw.modified_unix_seconds),
+        })
+    }
+
     fn rename(
         &self,
         source: &VirtualLocationDescriptor,
@@ -572,6 +695,21 @@ impl<R: AdbCommandRunner> RemoteProvider for AdbProvider<R> {
             &self.serial(location)?,
             &remote_path(location),
             recursive,
+            cancellation,
+        )
+    }
+
+    fn set_unix_mode(
+        &self,
+        location: &VirtualLocationDescriptor,
+        mode: u32,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        crate::provider::validate_remote_location(location, "adb", false)?;
+        self.client.chmod(
+            &self.serial(location)?,
+            &remote_path(location),
+            mode,
             cancellation,
         )
     }
@@ -615,6 +753,48 @@ fn validate_remote_path(value: &str) -> Result<()> {
         bail!("ADB path is invalid");
     }
     Ok(())
+}
+
+fn validate_symlink_target(value: &str) -> Result<()> {
+    if value.is_empty() || value.contains(['\0', '\r', '\n']) {
+        bail!("ADB symbolic-link target is invalid");
+    }
+    Ok(())
+}
+
+fn kind_from_unix_mode(mode: u32) -> RemoteEntryKind {
+    match mode & 0o170_000 {
+        0o040_000 => RemoteEntryKind::Directory,
+        0o120_000 => RemoteEntryKind::FileSymlink,
+        _ => RemoteEntryKind::File,
+    }
+}
+
+fn parse_metadata(stdout: &[u8]) -> Result<AdbMetadata> {
+    let text = std::str::from_utf8(stdout)
+        .context("ADB metadata output is not UTF-8")?
+        .trim();
+    let mut fields = text.split('|');
+    let unix_mode = u32::from_str_radix(fields.next().context("ADB metadata has no mode")?, 16)
+        .context("ADB metadata mode is invalid")?;
+    let size = fields
+        .next()
+        .context("ADB metadata has no size")?
+        .parse()
+        .context("ADB metadata size is invalid")?;
+    let modified_unix_seconds = fields
+        .next()
+        .context("ADB metadata has no modification time")?
+        .parse()
+        .context("ADB metadata modification time is invalid")?;
+    if fields.next().is_some() {
+        bail!("ADB metadata contains unexpected fields");
+    }
+    Ok(AdbMetadata {
+        unix_mode,
+        size,
+        modified_unix_seconds,
+    })
 }
 
 fn parse_directory_entries(stdout: &[u8]) -> Result<Vec<AdbDirectoryEntry>> {
@@ -786,6 +966,96 @@ mod tests {
             .unwrap();
         let arguments = runner.arguments.lock().unwrap();
         assert_eq!(arguments.last().unwrap(), "'/sdcard/New folder'");
+    }
+
+    #[test]
+    fn adb_symlink_uses_fixed_script_and_separate_quoted_arguments() {
+        let runner = FakeRunner::with_stdout(Vec::new());
+        let client = AdbClient::new(PathBuf::from("fixture-adb.exe"), runner.clone());
+        let target = "../target with ' quote";
+        let link = "/sdcard/Download/link with ' quote";
+        client
+            .symlink("emulator-5554", target, link, &CancellationToken::new())
+            .unwrap();
+
+        let arguments = runner.arguments.lock().unwrap();
+        assert_eq!(arguments[2], "shell");
+        assert_eq!(arguments[3], "sh");
+        assert_eq!(arguments[4], "-c");
+        assert_eq!(
+            arguments[5],
+            OsString::from(shell_quote(ADB_SYMLINK_SCRIPT))
+        );
+        assert!(!arguments[5].to_string_lossy().contains(target));
+        assert!(!arguments[5].to_string_lossy().contains(link));
+        assert_eq!(arguments[7], OsString::from(shell_quote(target)));
+        assert_eq!(arguments[8], OsString::from(shell_quote(link)));
+    }
+
+    #[test]
+    fn adb_metadata_parses_mode_size_and_modification_time() {
+        let runner = FakeRunner::with_stdout(b"41ed|4096|1700000000\n".to_vec());
+        let client = AdbClient::new(PathBuf::from("fixture-adb.exe"), runner.clone());
+        let metadata = client
+            .metadata(
+                "emulator-5554",
+                "/sdcard/Download",
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(metadata.unix_mode, 0o040755);
+        assert_eq!(metadata.size, 4096);
+        assert_eq!(metadata.modified_unix_seconds, 1_700_000_000);
+        assert_eq!(
+            kind_from_unix_mode(metadata.unix_mode),
+            RemoteEntryKind::Directory
+        );
+        let arguments = runner.arguments.lock().unwrap();
+        assert_eq!(
+            arguments[5],
+            OsString::from(shell_quote(ADB_METADATA_SCRIPT))
+        );
+        assert_eq!(arguments[7], "'/sdcard/Download'");
+    }
+
+    #[test]
+    fn symbolic_link_targets_allow_dangling_paths_but_reject_control_bytes() {
+        for allowed in ["missing", "../missing target", "/absolute/missing"] {
+            assert!(validate_symlink_target(allowed).is_ok());
+        }
+        for rejected in ["", "bad\0target", "bad\ntarget", "bad\rtarget"] {
+            assert!(validate_symlink_target(rejected).is_err());
+        }
+    }
+
+    #[test]
+    fn adb_chmod_uses_octal_permission_argument_and_rejects_type_bits() {
+        let runner = FakeRunner::with_stdout(Vec::new());
+        let client = AdbClient::new(PathBuf::from("fixture-adb.exe"), runner.clone());
+        client
+            .chmod(
+                "emulator-5554",
+                "/sdcard/owner's file",
+                0o4750,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let arguments = runner.arguments.lock().unwrap();
+        assert_eq!(arguments[3], "chmod");
+        assert_eq!(arguments[4], "4750");
+        assert_eq!(arguments[5], "--");
+        assert_eq!(arguments[6], "'/sdcard/owner'\\''s file'");
+        drop(arguments);
+        assert!(
+            client
+                .chmod(
+                    "emulator-5554",
+                    "/sdcard/file",
+                    0o100644,
+                    &CancellationToken::new()
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -989,5 +1259,27 @@ mod tests {
                 "Android /sdcard must be navigable through its symbolic link",
             );
         }
+    }
+
+    #[test]
+    fn real_adb_metadata_uses_a_delimiter_preserved_by_adb_shell() {
+        let Ok(client) = AdbClient::discover() else {
+            return;
+        };
+        let Some(device) = client
+            .devices()
+            .expect("query real ADB device inventory")
+            .into_iter()
+            .find(|device| device.state == AdbDeviceState::Device)
+        else {
+            return;
+        };
+        let metadata = client
+            .metadata(&device.serial, "/data/local/tmp", &CancellationToken::new())
+            .expect("read real ADB metadata through the fixed script");
+        assert_eq!(
+            kind_from_unix_mode(metadata.unix_mode),
+            RemoteEntryKind::Directory
+        );
     }
 }

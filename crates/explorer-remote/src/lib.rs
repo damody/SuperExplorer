@@ -9,7 +9,9 @@ pub mod sftp;
 mod transfer;
 
 pub use adb::{AdbClient, AdbDevice, AdbDeviceState, AdbDirectoryEntry, AdbProvider};
-pub use provider::{RemoteEntry, RemoteEntryKind, RemoteProvider, RemoteProviderRegistry};
+pub use provider::{
+    RemoteEntry, RemoteEntryKind, RemoteMetadata, RemoteProvider, RemoteProviderRegistry,
+};
 pub use sftp::SftpProvider;
 pub use transfer::{
     TransferEngine, TransferItemOutcome, TransferMode, TransferResult, TransferStage,

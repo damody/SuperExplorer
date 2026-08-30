@@ -99,6 +99,18 @@ pub struct RemoteEntry {
     pub unix_mode: Option<u32>,
 }
 
+/// Authoritative metadata for one remote descriptor, including the directory currently being
+/// viewed. Optional fields remain absent when the provider cannot report them without a recursive
+/// scan or following an unrelated target.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RemoteMetadata {
+    pub location: LocationDescriptor,
+    pub kind: RemoteEntryKind,
+    pub size: Option<u64>,
+    pub unix_mode: Option<u32>,
+    pub modified_unix_seconds: Option<u64>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RemoteEntryKind {
     File,
@@ -152,6 +164,21 @@ pub trait RemoteProvider: Send + Sync {
         location: &VirtualLocationDescriptor,
         cancellation: &CancellationToken,
     ) -> Result<()>;
+    fn create_symlink(
+        &self,
+        _location: &VirtualLocationDescriptor,
+        _target: &str,
+        _cancellation: &CancellationToken,
+    ) -> Result<()> {
+        bail!("remote provider does not support symbolic-link creation")
+    }
+    fn metadata(
+        &self,
+        _location: &VirtualLocationDescriptor,
+        _cancellation: &CancellationToken,
+    ) -> Result<RemoteMetadata> {
+        bail!("remote provider does not support single-location metadata")
+    }
     fn rename(
         &self,
         source: &VirtualLocationDescriptor,
@@ -164,6 +191,14 @@ pub trait RemoteProvider: Send + Sync {
         recursive: bool,
         cancellation: &CancellationToken,
     ) -> Result<()>;
+    fn set_unix_mode(
+        &self,
+        _location: &VirtualLocationDescriptor,
+        _mode: u32,
+        _cancellation: &CancellationToken,
+    ) -> Result<()> {
+        bail!("remote provider does not support Unix permission changes")
+    }
 }
 
 #[derive(Default)]
@@ -194,7 +229,7 @@ impl RemoteProviderRegistry {
 mod tests {
     use super::{
         MAX_OPERATION_STAGING_BYTES, MAX_TRANSFER_DEPTH, MAX_TRANSFER_FILE_BYTES,
-        MAX_TRANSFER_NODES, RemoteEntryKind, transfer_bytes_within_limits,
+        MAX_TRANSFER_NODES, RemoteEntryKind, RemoteMetadata, transfer_bytes_within_limits,
         transfer_tree_within_limits, validate_remote_location, validate_windows_component,
     };
     use explorer_model::VirtualLocationDescriptor;
@@ -222,6 +257,32 @@ mod tests {
             assert_eq!(kind.is_container(), is_container);
             assert_eq!(kind.type_display(), type_display);
         }
+    }
+
+    #[test]
+    fn metadata_contract_preserves_optional_fields_and_opaque_location() {
+        let location = VirtualLocationDescriptor {
+            provider_id: "adb".to_owned(),
+            public_authority: Some("device".to_owned()),
+            container_identity: [3; 16],
+            container_generation: 7,
+            entry_id: None,
+            components: vec!["sdcard".to_owned(), "Download".to_owned()],
+        };
+        let metadata = RemoteMetadata {
+            location: explorer_model::LocationDescriptor::Virtual(location.clone()),
+            kind: RemoteEntryKind::Directory,
+            size: None,
+            unix_mode: Some(0o040755),
+            modified_unix_seconds: None,
+        };
+        assert_eq!(
+            metadata.location,
+            explorer_model::LocationDescriptor::Virtual(location)
+        );
+        assert!(metadata.kind.is_container());
+        assert_eq!(metadata.size, None);
+        assert_eq!(metadata.modified_unix_seconds, None);
     }
 
     #[test]
