@@ -19,6 +19,20 @@ use explorer_model::{
 const DIRECTORY_CACHE_MAX_LOCATIONS: usize = 64;
 const DIRECTORY_CACHE_MAX_ROWS: usize = 100_000;
 
+fn unique_remote_folder_symlink_name(base: &str, existing: &HashSet<&str>) -> String {
+    for ordinal in 1_u64.. {
+        let candidate = if ordinal == 1 {
+            format!("{base} - 捷徑")
+        } else {
+            format!("{base} - 捷徑 ({ordinal})")
+        };
+        if !existing.contains(candidate.as_str()) {
+            return candidate;
+        }
+    }
+    unreachable!("an unbounded suffix must eventually produce a free child name")
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 enum DirectoryCacheKey {
     Local(String),
@@ -656,6 +670,13 @@ pub(crate) struct RemoteContextMenuState {
     pub(crate) item_is_container: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RemotePropertiesState {
+    pub(crate) entry: explorer_model::FileEntry,
+    pub(crate) original_mode: u32,
+    pub(crate) mode: u32,
+}
+
 #[derive(Clone, Debug)]
 struct PermanentDeleteConfirmation {
     items: Vec<ItemDescriptor>,
@@ -714,6 +735,7 @@ pub struct AppViewState {
     bookmark_toolbar_context_menu: Option<BookmarkToolbarContextMenuState>,
     bookmark_context_menu: Option<BookmarkContextMenuState>,
     remote_context_menu: Option<RemoteContextMenuState>,
+    remote_properties: Option<RemotePropertiesState>,
     expanded_bookmark_folders: HashSet<explorer_model::BookmarkFolderId>,
     bookmark_folder_delete_confirmation: Option<(explorer_model::BookmarkFolderId, usize)>,
     bookmark_editor: Option<BookmarkEditorDraft>,
@@ -963,6 +985,7 @@ impl AppViewState {
             bookmark_toolbar_context_menu: None,
             bookmark_context_menu: None,
             remote_context_menu: None,
+            remote_properties: None,
             expanded_bookmark_folders: HashSet::new(),
             bookmark_folder_delete_confirmation: None,
             bookmark_editor: None,
@@ -3273,6 +3296,76 @@ impl AppViewState {
         self.remote_context_menu = None;
     }
 
+    pub(crate) const fn remote_properties(&self) -> Option<&RemotePropertiesState> {
+        self.remote_properties.as_ref()
+    }
+
+    pub(crate) fn open_remote_properties(&mut self) -> bool {
+        let tab = self.tabs.active_tab();
+        let Some(snapshot) = tab.visible_snapshot() else {
+            return false;
+        };
+        let mut selected = snapshot
+            .entries()
+            .iter()
+            .filter(|entry| tab.selection.contains(&entry.id));
+        let Some(entry) = selected.next() else {
+            return false;
+        };
+        if selected.next().is_some()
+            || !matches!(entry.location, LocationDescriptor::Virtual(ref remote)
+                if matches!(remote.provider_id.as_str(), "adb" | "sftp"))
+        {
+            return false;
+        }
+        let Some(mode) = entry.metadata.unix_mode else {
+            return false;
+        };
+        self.remote_properties = Some(RemotePropertiesState {
+            entry: entry.clone(),
+            original_mode: mode & 0o7777,
+            mode: mode & 0o7777,
+        });
+        true
+    }
+
+    pub(crate) fn close_remote_properties(&mut self) {
+        self.remote_properties = None;
+    }
+
+    pub(crate) fn toggle_remote_permission(&mut self, mask: u32) -> bool {
+        if mask == 0 || mask & !0o7777 != 0 {
+            return false;
+        }
+        let Some(properties) = self.remote_properties.as_mut() else {
+            return false;
+        };
+        properties.mode ^= mask;
+        true
+    }
+
+    pub(crate) fn apply_remote_properties_request(&mut self) -> Option<FileOperationRequest> {
+        let properties = self.remote_properties.as_mut()?;
+        if properties.mode == properties.original_mode {
+            return None;
+        }
+        let mode = properties.mode;
+        properties.original_mode = mode;
+        Some(FileOperationRequest {
+            kind: FileOperationKind::SetUnixMode {
+                item: ItemDescriptor {
+                    id: properties.entry.id.clone(),
+                    location: properties.entry.location.clone(),
+                },
+                mode,
+            },
+            flags: explorer_model::FileOperationFlags {
+                allow_undo: false,
+                ..Default::default()
+            },
+        })
+    }
+
     pub(crate) fn bookmark_folder_expanded(&self, id: explorer_model::BookmarkFolderId) -> bool {
         self.expanded_bookmark_folders.contains(&id)
     }
@@ -4755,6 +4848,19 @@ impl AppViewState {
         true
     }
 
+    pub(crate) fn select_location(&mut self, location: &LocationDescriptor) -> bool {
+        let Some(row_index) = self.directory_presentation().and_then(|presentation| {
+            (0..presentation.len()).find(|row_index| {
+                presentation
+                    .entry(*row_index)
+                    .is_some_and(|(_, entry)| &entry.location == location)
+            })
+        }) else {
+            return false;
+        };
+        self.select_row(row_index)
+    }
+
     pub(crate) fn typeahead_file_view(&mut self, text: &str, now: Instant) -> Option<usize> {
         if self.focused_surface() != FocusSurface::FileView
             || self.rename_editor.is_some()
@@ -4869,6 +4975,34 @@ impl AppViewState {
                 .entry(row_index)
                 .map(|(_, entry)| entry.clone())
         })
+    }
+
+    pub(crate) fn remote_folder_symlink_request(
+        &self,
+        row_index: usize,
+    ) -> Option<(LocationDescriptor, String, String)> {
+        let tab = self.tabs.active_tab();
+        let parent = tab.history.current()?.location.clone();
+        let LocationDescriptor::Virtual(remote_parent) = &parent else {
+            return None;
+        };
+        if !matches!(remote_parent.provider_id.as_str(), "adb" | "sftp")
+            || !self.active_presentation().can_write
+        {
+            return None;
+        }
+        let entry = self.presentation_entry(row_index)?;
+        if !entry.is_container {
+            return None;
+        }
+        let existing = tab
+            .visible_snapshot()?
+            .entries()
+            .iter()
+            .map(|entry| entry.display_name.as_str())
+            .collect::<HashSet<_>>();
+        let name = unique_remote_folder_symlink_name(&entry.display_name, &existing);
+        Some((parent, name, entry.display_name))
     }
 
     pub(crate) fn directory_presentation(&self) -> Option<crate::file_view::DirectoryPresentation> {
@@ -6320,7 +6454,8 @@ fn operation_item_count(request: &FileOperationRequest) -> usize {
     match &request.kind {
         FileOperationKind::CreateFolder { .. }
         | FileOperationKind::CreateItem { .. }
-        | FileOperationKind::Rename { .. } => 1,
+        | FileOperationKind::Rename { .. }
+        | FileOperationKind::SetUnixMode { .. } => 1,
         FileOperationKind::Copy { items, .. }
         | FileOperationKind::Move { items, .. }
         | FileOperationKind::RecycleDelete { items }
@@ -6340,7 +6475,9 @@ fn navigation_locations_for_operation(request: &FileOperationRequest) -> Vec<Loc
     match &request.kind {
         FileOperationKind::CreateFolder { parent, .. }
         | FileOperationKind::CreateItem { parent, .. } => vec![parent.clone()],
-        FileOperationKind::Rename { item, .. } => item_parent(item).into_iter().collect(),
+        FileOperationKind::Rename { item, .. } | FileOperationKind::SetUnixMode { item, .. } => {
+            item.location.virtual_parent().into_iter().collect()
+        }
         FileOperationKind::Copy { destination, .. } => vec![destination.clone()],
         FileOperationKind::Move { items, destination } => items
             .iter()
@@ -6360,7 +6497,23 @@ mod tests {
     use super::{
         AppViewState, CommandKind, DirectoryCacheKey, DirectorySnapshotCache,
         bookmark_target_for_current_location, resolve_details_column_insertion,
+        unique_remote_folder_symlink_name,
     };
+
+    #[test]
+    fn remote_folder_symlink_name_uses_first_free_windows_style_suffix() {
+        let existing = HashSet::from(["photos", "photos - 捷徑", "photos - 捷徑 (2)"]);
+        assert_eq!(
+            unique_remote_folder_symlink_name("photos", &existing),
+            "photos - 捷徑 (3)"
+        );
+
+        let empty = HashSet::new();
+        assert_eq!(
+            unique_remote_folder_symlink_name("photos", &empty),
+            "photos - 捷徑"
+        );
+    }
     use crate::{focus::FocusSurface, layout::LayoutTokens, theme::ThemeMode};
     use std::{
         collections::HashSet,
@@ -6786,6 +6939,61 @@ mod tests {
             is_container: true,
             metadata: explorer_model::FileEntryMetadata::default(),
         }
+    }
+
+    #[test]
+    fn remote_folder_symlink_request_targets_clicked_folder_and_avoids_collisions() {
+        let mut state = AppViewState::default();
+        let parent = cache_test_location("adb", "emulator-5554", &["data", "local", "tmp"], 7);
+        let command = state
+            .begin_active_navigation(parent.clone(), false)
+            .expect("remote navigation");
+        complete_cached_directory(
+            &mut state,
+            &command,
+            parent.clone(),
+            vec![
+                cached_virtual_entry(
+                    1,
+                    "photos",
+                    cache_test_location(
+                        "adb",
+                        "emulator-5554",
+                        &["data", "local", "tmp", "photos"],
+                        7,
+                    ),
+                ),
+                cached_virtual_entry(
+                    2,
+                    "photos - 捷徑",
+                    cache_test_location(
+                        "adb",
+                        "emulator-5554",
+                        &["data", "local", "tmp", "photos - 捷徑"],
+                        7,
+                    ),
+                ),
+            ],
+        );
+
+        let row = state
+            .directory_presentation()
+            .expect("presentation")
+            .ordered_indices()
+            .iter()
+            .position(|index| {
+                state
+                    .tabs()
+                    .active_tab()
+                    .visible_snapshot()
+                    .and_then(|snapshot| snapshot.entries().get(*index))
+                    .is_some_and(|entry| entry.display_name == "photos")
+            })
+            .expect("photos row");
+        assert_eq!(
+            state.remote_folder_symlink_request(row),
+            Some((parent, "photos - 捷徑 (2)".to_owned(), "photos".to_owned(),))
+        );
     }
 
     #[test]

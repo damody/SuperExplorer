@@ -45,6 +45,8 @@ pub mod performance;
 mod pointer_capture;
 pub use pointer_capture::{PointerCaptureFactory, PointerCaptureSession};
 pub mod qos;
+pub mod remote_properties_window;
+pub mod remote_symlink_window;
 pub mod state;
 pub mod theme;
 pub mod typography;
@@ -93,6 +95,11 @@ fn resolve_bookmark_path(path: &str) -> explorer_model::LocationDescriptor {
                 explorer_model::LocationDescriptor::file_system(path)
             }
         })
+}
+
+fn is_adb_or_sftp_location(location: &explorer_model::LocationDescriptor) -> bool {
+    matches!(location, explorer_model::LocationDescriptor::Virtual(remote)
+        if matches!(remote.provider_id.as_str(), "adb" | "sftp"))
 }
 
 fn lua_bookmark_notice(result: explorer_automation::LuaBookmarkResult) -> String {
@@ -384,12 +391,20 @@ fn remote_context_menu_command_dismisses(action: &ExplorerAction) -> bool {
     matches!(
         action,
         ExplorerAction::CreateFolder
+            | ExplorerAction::CreateRemoteSymlink
+            | ExplorerAction::CreateRemoteSymlinkToFolder { .. }
+            | ExplorerAction::ShowRemoteBackgroundProperties
             | ExplorerAction::Paste
             | ExplorerAction::OpenFocused
+            | ExplorerAction::OpenItem { .. }
+            | ExplorerAction::DownloadSelectedToDownloads
             | ExplorerAction::CutSelected
             | ExplorerAction::CopySelected
             | ExplorerAction::BeginRenameFocused
             | ExplorerAction::RecycleDeleteSelected
+            | ExplorerAction::CopySelectedPaths
+            | ExplorerAction::AddSelectedToBookmarks
+            | ExplorerAction::ShowPropertiesSelected
     )
 }
 
@@ -1104,6 +1119,14 @@ pub struct ExplorerRoot {
     bookmark_delete_window_observer: Option<BookmarkDeleteWindowObserver>,
     bookmark_folder_delete_window_observer: Option<BookmarkFolderDeleteWindowObserver>,
     bookmark_folder_editor_window_observer: Option<BookmarkFolderEditorWindowObserver>,
+    remote_properties_window_observer: Option<RemotePropertiesWindowObserver>,
+    remote_symlink_window_observer: Option<RemoteSymlinkWindowObserver>,
+    remote_runtime: Option<RemoteRuntimeState>,
+    pending_remote_selection: Option<(
+        explorer_model::TabId,
+        explorer_model::LocationDescriptor,
+        explorer_model::LocationDescriptor,
+    )>,
     last_window_title: Option<String>,
     navigation_history_release_deadline: Option<Instant>,
     safe_mode_offers: Vec<SafeModeOfferV1>,
@@ -1219,6 +1242,64 @@ pub type BookmarkFolderEditorWindowObserver = std::rc::Rc<
         &mut gpui::Context<ExplorerRoot>,
     ) -> bool,
 >;
+pub type RemotePropertiesWindowObserver = std::rc::Rc<
+    dyn Fn(
+        remote_properties_window::RemotePropertiesWindowSnapshotV1,
+        &mut Context<ExplorerRoot>,
+    ) -> bool,
+>;
+pub type RemoteSymlinkWindowObserver = std::rc::Rc<
+    dyn Fn(remote_symlink_window::RemoteSymlinkWindowUpdateV1, &mut Context<ExplorerRoot>) -> bool,
+>;
+pub type RemoteSymlinkExecutor = Arc<
+    dyn Fn(
+            explorer_model::LocationDescriptor,
+            String,
+            String,
+            explorer_model::CancellationToken,
+        ) -> Result<explorer_model::FileEntry, String>
+        + Send
+        + Sync,
+>;
+pub type RemoteMetadataExecutor = Arc<
+    dyn Fn(
+            explorer_model::LocationDescriptor,
+            explorer_model::CancellationToken,
+        ) -> Result<explorer_model::FileEntry, String>
+        + Send
+        + Sync,
+>;
+
+enum RemoteRuntimeResult {
+    Symlink {
+        request_id: u64,
+        result: Result<explorer_model::FileEntry, String>,
+    },
+    Metadata {
+        request_id: u64,
+        result: Result<explorer_model::FileEntry, String>,
+    },
+}
+
+struct ActiveRemoteRuntimeRequest {
+    request_id: u64,
+    session_id: u64,
+    tab_id: explorer_model::TabId,
+    generation: explorer_model::Generation,
+    location: explorer_model::LocationDescriptor,
+    cancellation: explorer_model::CancellationToken,
+}
+
+struct RemoteRuntimeState {
+    symlink_executor: RemoteSymlinkExecutor,
+    metadata_executor: RemoteMetadataExecutor,
+    sender: std::sync::mpsc::Sender<RemoteRuntimeResult>,
+    receiver: std::sync::mpsc::Receiver<RemoteRuntimeResult>,
+    next_request: u64,
+    next_session: u64,
+    active_symlink: Option<ActiveRemoteRuntimeRequest>,
+    active_metadata: Option<ActiveRemoteRuntimeRequest>,
+}
 /// Path-free Safe Mode identity shown before a native extension can be re-enabled.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SafeModeOfferV1 {
@@ -1489,6 +1570,10 @@ impl ExplorerRoot {
             bookmark_delete_window_observer: None,
             bookmark_folder_delete_window_observer: None,
             bookmark_folder_editor_window_observer: None,
+            remote_properties_window_observer: None,
+            remote_symlink_window_observer: None,
+            remote_runtime: None,
+            pending_remote_selection: None,
             last_window_title: None,
             navigation_history_release_deadline: None,
             safe_mode_offers: Vec::new(),
@@ -1640,6 +1725,351 @@ impl ExplorerRoot {
         observer: BookmarkFolderEditorWindowObserver,
     ) {
         self.bookmark_folder_editor_window_observer = Some(observer);
+    }
+
+    pub fn attach_remote_properties_window_observer(
+        &mut self,
+        observer: RemotePropertiesWindowObserver,
+    ) {
+        self.remote_properties_window_observer = Some(observer);
+    }
+
+    pub fn attach_remote_symlink_window_observer(&mut self, observer: RemoteSymlinkWindowObserver) {
+        self.remote_symlink_window_observer = Some(observer);
+    }
+
+    pub fn attach_remote_runtime_executors(
+        &mut self,
+        symlink_executor: RemoteSymlinkExecutor,
+        metadata_executor: RemoteMetadataExecutor,
+    ) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.remote_runtime = Some(RemoteRuntimeState {
+            symlink_executor,
+            metadata_executor,
+            sender,
+            receiver,
+            next_request: 0,
+            next_session: 0,
+            active_symlink: None,
+            active_metadata: None,
+        });
+    }
+
+    pub fn open_remote_symlink_editor(&mut self, cx: &mut Context<Self>) -> bool {
+        let tab = self.state.tabs().active_tab();
+        let Some(parent) = tab.history.current().map(|entry| entry.location.clone()) else {
+            return false;
+        };
+        if !is_adb_or_sftp_location(&parent) {
+            return false;
+        }
+        let Some(runtime) = self.remote_runtime.as_mut() else {
+            return false;
+        };
+        if let Some(active) = runtime.active_symlink.take() {
+            active.cancellation.cancel();
+        }
+        runtime.next_session = runtime.next_session.wrapping_add(1).max(1);
+        self.remote_symlink_window_observer
+            .clone()
+            .is_some_and(|observer| {
+                observer(
+                    remote_symlink_window::RemoteSymlinkWindowUpdateV1::Open(
+                        remote_symlink_window::RemoteSymlinkWindowSnapshotV1 {
+                            session_id: runtime.next_session,
+                            parent,
+                            name: "新捷徑".to_owned(),
+                            target: String::new(),
+                        },
+                    ),
+                    cx,
+                )
+            })
+    }
+
+    pub fn submit_remote_symlink_from_window(
+        &mut self,
+        session_id: u64,
+        parent: explorer_model::LocationDescriptor,
+        name: String,
+        target: String,
+    ) -> Result<(), String> {
+        remote_symlink_window::validate_remote_symlink_input(&name, &target)
+            .map_err(str::to_owned)?;
+        self.submit_remote_symlink_request(session_id, parent, name, target)
+    }
+
+    fn submit_remote_symlink_request(
+        &mut self,
+        session_id: u64,
+        parent: explorer_model::LocationDescriptor,
+        name: String,
+        target: String,
+    ) -> Result<(), String> {
+        let tab = self.state.tabs().active_tab();
+        if tab
+            .history
+            .current()
+            .is_none_or(|entry| entry.location != parent)
+        {
+            return Err("目前資料夾已變更，請重新開啟新增捷徑視窗。".to_owned());
+        }
+        let runtime = self
+            .remote_runtime
+            .as_mut()
+            .ok_or_else(|| "遠端服務目前無法使用。".to_owned())?;
+        if runtime.active_symlink.is_some() {
+            return Err("另一個捷徑正在建立中。".to_owned());
+        }
+        runtime.next_request = runtime.next_request.wrapping_add(1).max(1);
+        let request_id = runtime.next_request;
+        let cancellation = explorer_model::CancellationToken::new();
+        runtime.active_symlink = Some(ActiveRemoteRuntimeRequest {
+            request_id,
+            session_id,
+            tab_id: tab.id,
+            generation: tab.generation,
+            location: parent.clone(),
+            cancellation: cancellation.clone(),
+        });
+        let executor = Arc::clone(&runtime.symlink_executor);
+        let sender = runtime.sender.clone();
+        std::thread::spawn(move || {
+            let result = executor(parent, name, target, cancellation);
+            let _ = sender.send(RemoteRuntimeResult::Symlink { request_id, result });
+        });
+        Ok(())
+    }
+
+    pub fn create_remote_symlink_to_folder(&mut self, row_index: usize) -> bool {
+        let Some((parent, name, target)) = self.state.remote_folder_symlink_request(row_index)
+        else {
+            return false;
+        };
+        match self.submit_remote_symlink_request(0, parent, name, target) {
+            Ok(()) => true,
+            Err(message) => {
+                tracing::warn!(%message, "Direct remote folder shortcut request was rejected");
+                false
+            }
+        }
+    }
+
+    pub fn cancel_remote_symlink_session(&mut self, session_id: u64) {
+        let Some(runtime) = self.remote_runtime.as_mut() else {
+            return;
+        };
+        if runtime
+            .active_symlink
+            .as_ref()
+            .is_some_and(|active| active.session_id == session_id)
+            && let Some(active) = runtime.active_symlink.take()
+        {
+            active.cancellation.cancel();
+        }
+    }
+
+    pub fn open_remote_background_properties(&mut self) -> bool {
+        let tab = self.state.tabs().active_tab();
+        let Some(location) = tab.history.current().map(|entry| entry.location.clone()) else {
+            return false;
+        };
+        if !is_adb_or_sftp_location(&location) {
+            return false;
+        }
+        let Some(runtime) = self.remote_runtime.as_mut() else {
+            return false;
+        };
+        if let Some(active) = runtime.active_metadata.take() {
+            active.cancellation.cancel();
+        }
+        runtime.next_request = runtime.next_request.wrapping_add(1).max(1);
+        let request_id = runtime.next_request;
+        let cancellation = explorer_model::CancellationToken::new();
+        runtime.active_metadata = Some(ActiveRemoteRuntimeRequest {
+            request_id,
+            session_id: 0,
+            tab_id: tab.id,
+            generation: tab.generation,
+            location: location.clone(),
+            cancellation: cancellation.clone(),
+        });
+        let executor = Arc::clone(&runtime.metadata_executor);
+        let sender = runtime.sender.clone();
+        std::thread::spawn(move || {
+            let result = executor(location, cancellation);
+            let _ = sender.send(RemoteRuntimeResult::Metadata { request_id, result });
+        });
+        true
+    }
+
+    fn pump_remote_runtime(&mut self, cx: &mut Context<Self>) -> bool {
+        let results = self
+            .remote_runtime
+            .as_ref()
+            .map_or_else(Vec::new, |runtime| {
+                runtime.receiver.try_iter().collect::<Vec<_>>()
+            });
+        let mut changed = false;
+        for result in results {
+            match result {
+                RemoteRuntimeResult::Symlink { request_id, result } => {
+                    let active = self.remote_runtime.as_mut().and_then(|runtime| {
+                        runtime
+                            .active_symlink
+                            .as_ref()
+                            .is_some_and(|active| active.request_id == request_id)
+                            .then(|| runtime.active_symlink.take())
+                            .flatten()
+                    });
+                    let Some(active) = active else { continue };
+                    if !self.remote_request_is_current(&active) {
+                        continue;
+                    }
+                    match result {
+                        Ok(entry) => {
+                            self.pending_remote_selection =
+                                Some((active.tab_id, active.location.clone(), entry.location));
+                            if active.session_id != 0
+                                && let Some(observer) = self.remote_symlink_window_observer.clone()
+                            {
+                                observer(
+                                    remote_symlink_window::RemoteSymlinkWindowUpdateV1::Close {
+                                        session_id: active.session_id,
+                                    },
+                                    cx,
+                                );
+                            }
+                            if let Some(command) = self.state.begin_refresh_navigation() {
+                                self.submit_command(command);
+                            }
+                        }
+                        Err(message) => {
+                            if active.session_id != 0
+                                && let Some(observer) = self.remote_symlink_window_observer.clone()
+                            {
+                                observer(
+                                    remote_symlink_window::RemoteSymlinkWindowUpdateV1::Failed {
+                                        session_id: active.session_id,
+                                        message,
+                                    },
+                                    cx,
+                                );
+                            } else {
+                                tracing::warn!(%message, "Direct remote folder shortcut creation failed");
+                            }
+                        }
+                    }
+                    changed = true;
+                }
+                RemoteRuntimeResult::Metadata { request_id, result } => {
+                    let active = self.remote_runtime.as_mut().and_then(|runtime| {
+                        runtime
+                            .active_metadata
+                            .as_ref()
+                            .is_some_and(|active| active.request_id == request_id)
+                            .then(|| runtime.active_metadata.take())
+                            .flatten()
+                    });
+                    let Some(active) = active else { continue };
+                    if !self.remote_request_is_current(&active) {
+                        continue;
+                    }
+                    match result {
+                        Ok(entry) => {
+                            if let Some(mode) = entry.metadata.unix_mode
+                                && let Some(observer) =
+                                    self.remote_properties_window_observer.clone()
+                            {
+                                observer(
+                                    remote_properties_window::RemotePropertiesWindowSnapshotV1 {
+                                        entry,
+                                        mode,
+                                    },
+                                    cx,
+                                );
+                            }
+                        }
+                        Err(message) => {
+                            tracing::warn!(%message, "Remote folder metadata request failed");
+                        }
+                    }
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    fn remote_request_is_current(&self, active: &ActiveRemoteRuntimeRequest) -> bool {
+        let tab = self.state.tabs().active_tab();
+        tab.id == active.tab_id
+            && tab.generation == active.generation
+            && tab
+                .history
+                .current()
+                .is_some_and(|entry| entry.location == active.location)
+    }
+
+    fn apply_pending_remote_selection(&mut self) -> bool {
+        let Some((tab_id, parent, child)) = self.pending_remote_selection.clone() else {
+            return false;
+        };
+        let tab = self.state.tabs().active_tab();
+        if tab.id != tab_id
+            || tab
+                .history
+                .current()
+                .is_none_or(|entry| entry.location != parent)
+        {
+            self.pending_remote_selection = None;
+            return false;
+        }
+        if self.state.select_location(&child) {
+            self.pending_remote_selection = None;
+            return true;
+        }
+        false
+    }
+
+    fn present_remote_properties_window(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(properties) = self.state.remote_properties().cloned() else {
+            return false;
+        };
+        let snapshot = remote_properties_window::RemotePropertiesWindowSnapshotV1 {
+            entry: properties.entry,
+            mode: properties.mode,
+        };
+        let opened = self
+            .remote_properties_window_observer
+            .clone()
+            .is_some_and(|observer| observer(snapshot, cx));
+        self.state.close_remote_properties();
+        opened
+    }
+
+    pub fn apply_remote_properties_from_window(
+        &mut self,
+        entry: explorer_model::FileEntry,
+        mode: u32,
+    ) {
+        if mode & !0o7777 != 0 {
+            return;
+        }
+        self.execute_file_operation(explorer_model::FileOperationRequest {
+            kind: explorer_model::FileOperationKind::SetUnixMode {
+                item: explorer_model::ItemDescriptor {
+                    id: entry.id,
+                    location: entry.location,
+                },
+                mode,
+            },
+            flags: explorer_model::FileOperationFlags {
+                allow_undo: false,
+                ..Default::default()
+            },
+        });
     }
 
     pub fn bookmark_folder_editor_window_snapshot(
@@ -2918,6 +3348,10 @@ impl ExplorerRoot {
             bookmark_delete_window_observer: None,
             bookmark_folder_delete_window_observer: None,
             bookmark_folder_editor_window_observer: None,
+            remote_properties_window_observer: None,
+            remote_symlink_window_observer: None,
+            remote_runtime: None,
+            pending_remote_selection: None,
             last_window_title: None,
             navigation_history_release_deadline: None,
             safe_mode_offers: Vec::new(),
@@ -3021,6 +3455,10 @@ impl ExplorerRoot {
             bookmark_delete_window_observer: None,
             bookmark_folder_delete_window_observer: None,
             bookmark_folder_editor_window_observer: None,
+            remote_properties_window_observer: None,
+            remote_symlink_window_observer: None,
+            remote_runtime: None,
+            pending_remote_selection: None,
             last_window_title: None,
             navigation_history_release_deadline: None,
             safe_mode_offers: Vec::new(),
@@ -3228,6 +3666,7 @@ impl ExplorerRoot {
                         let extension_changed =
                             extension_ui_pump_due(this.extension_ui_pump.as_mut(), Instant::now());
                         let sftp_login_changed = this.pump_sftp_address_login();
+                        let remote_runtime_changed = this.pump_remote_runtime(cx);
                         let visual_column_changed = this.pump_visual_column_runtime();
                         let code_lines_changed = this.pump_code_lines_runtime();
                         let size_map_changed = this.pump_size_map_runtime();
@@ -3235,6 +3674,7 @@ impl ExplorerRoot {
                             this.state.operation_notice_needs_repaint(Instant::now());
                         if extension_changed
                             || sftp_login_changed
+                            || remote_runtime_changed
                             || visual_column_changed
                             || code_lines_changed
                             || size_map_changed
@@ -3344,6 +3784,10 @@ impl ExplorerRoot {
                                 &event,
                                 explorer_model::ExplorerEvent::DirectoryFinished { .. }
                                     | explorer_model::ExplorerEvent::SearchFinished { .. }
+                            );
+                            let directory_finished = matches!(
+                                &event,
+                                explorer_model::ExplorerEvent::DirectoryFinished { .. }
                             );
                             let navigation_children = matches!(
                                 &event,
@@ -3592,6 +4036,11 @@ impl ExplorerRoot {
                                 // rows are folders and lower visible file rows need extension
                                 // icons or thumbnails.
                                 this.resume_visual_refinement();
+                            }
+                            if outcome == explorer_model::WindowEventOutcome::Applied
+                                && directory_finished
+                            {
+                                let _ = this.apply_pending_remote_selection();
                             }
                             if outcome == explorer_model::WindowEventOutcome::Applied
                                 && let Some(action) = delegated_action
@@ -6446,6 +6895,15 @@ impl ExplorerRoot {
                 }
             }
         }
+        if action == ExplorerAction::CreateRemoteSymlink {
+            let _ = self.open_remote_symlink_editor(cx);
+        }
+        if let ExplorerAction::CreateRemoteSymlinkToFolder { row_index } = action {
+            let _ = self.create_remote_symlink_to_folder(row_index);
+        }
+        if action == ExplorerAction::ShowRemoteBackgroundProperties {
+            let _ = self.open_remote_background_properties();
+        }
         if let ExplorerAction::CreateNewItem { index } = action
             && let Some(request) = self.state.create_new_item_request(index)
         {
@@ -6547,11 +7005,29 @@ impl ExplorerRoot {
                 self.submit_command(command);
             }
         }
+        if action == ExplorerAction::CloseRemoteProperties {
+            self.state.close_remote_properties();
+        }
+        if let ExplorerAction::ToggleRemotePermission { mask } = action {
+            let _ = self.state.toggle_remote_permission(mask);
+        }
+        if action == ExplorerAction::ApplyRemoteProperties {
+            if let Some(request) = self.state.apply_remote_properties_request() {
+                self.execute_file_operation(request);
+            }
+            self.state.close_remote_properties();
+        }
         if action == ExplorerAction::ShowPropertiesSelected {
-            let (owner_window, _, _) =
-                chrome::context_menu_coordinates(gpui::point(px(0.0), px(0.0)), window);
-            if let Some(command) = self.state.begin_properties_request(owner_window) {
-                self.submit_command(command);
+            if self.state.selected_items_include_remote() {
+                if self.state.open_remote_properties() {
+                    let _ = self.present_remote_properties_window(cx);
+                }
+            } else {
+                let (owner_window, _, _) =
+                    chrome::context_menu_coordinates(gpui::point(px(0.0), px(0.0)), window);
+                if let Some(command) = self.state.begin_properties_request(owner_window) {
+                    self.submit_command(command);
+                }
             }
         }
         if action == ExplorerAction::AddSelectedToFavorites
@@ -8918,15 +9394,115 @@ mod tests {
         ));
         for action in [
             ExplorerAction::OpenFocused,
+            ExplorerAction::OpenItem {
+                row_index: 2,
+                new_tab: true,
+            },
+            ExplorerAction::DownloadSelectedToDownloads,
             ExplorerAction::CutSelected,
             ExplorerAction::CopySelected,
             ExplorerAction::BeginRenameFocused,
             ExplorerAction::RecycleDeleteSelected,
             ExplorerAction::CreateFolder,
+            ExplorerAction::CreateRemoteSymlink,
+            ExplorerAction::CreateRemoteSymlinkToFolder { row_index: 2 },
+            ExplorerAction::ShowRemoteBackgroundProperties,
             ExplorerAction::Paste,
+            ExplorerAction::CopySelectedPaths,
+            ExplorerAction::AddSelectedToBookmarks,
+            ExplorerAction::ShowPropertiesSelected,
         ] {
             assert!(remote_context_menu_command_dismisses(&action));
         }
+    }
+
+    #[test]
+    fn direct_remote_folder_shortcut_dispatches_without_an_editor_session() {
+        let mut root = ExplorerRoot::new(UiTokens::default());
+        let parent = explorer_model::LocationDescriptor::Virtual(
+            explorer_model::VirtualLocationDescriptor {
+                provider_id: "sftp".to_owned(),
+                public_authority: Some("fixture".to_owned()),
+                container_identity: [7; 16],
+                container_generation: 1,
+                entry_id: Some(1),
+                components: vec!["home".to_owned(), "fixture".to_owned()],
+            },
+        );
+        let command = root
+            .state
+            .begin_active_navigation(parent.clone(), false)
+            .expect("remote navigation");
+        let context = command.context().expect("context").clone();
+        assert_eq!(
+            root.state
+                .apply_service_event(explorer_model::ExplorerEvent::LocationResolved {
+                    context: context.clone(),
+                    metadata: explorer_model::LocationMetadata {
+                        descriptor: parent.clone(),
+                        display_title: "fixture".to_owned(),
+                        can_go_up: true,
+                        can_write: true,
+                    },
+                }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        let mut child = match &parent {
+            explorer_model::LocationDescriptor::Virtual(location) => location.clone(),
+            _ => unreachable!(),
+        };
+        child.components.push("photos".to_owned());
+        child.entry_id = Some(2);
+        let entry = explorer_model::FileEntry {
+            id: explorer_model::ShellItemId::from_provider_bytes([2]).expect("item id"),
+            display_name: "photos".to_owned(),
+            location: explorer_model::LocationDescriptor::Virtual(child),
+            is_container: true,
+            metadata: explorer_model::FileEntryMetadata::default(),
+        };
+        let _ = root
+            .state
+            .apply_service_event(explorer_model::ExplorerEvent::DirectoryBatch {
+                context: context.clone(),
+                entries: vec![entry],
+            });
+        let _ = root
+            .state
+            .apply_service_event(explorer_model::ExplorerEvent::DirectoryFinished { context });
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        root.attach_remote_runtime_executors(
+            Arc::new(move |parent, name, target, _| {
+                sender.send((parent.clone(), name.clone(), target)).unwrap();
+                let mut location = match parent {
+                    explorer_model::LocationDescriptor::Virtual(location) => location,
+                    _ => return Err("unexpected provider".to_owned()),
+                };
+                location.components.push(name.clone());
+                location.entry_id = None;
+                Ok(explorer_model::FileEntry {
+                    id: explorer_model::ShellItemId::from_provider_bytes([3]).unwrap(),
+                    display_name: name,
+                    location: explorer_model::LocationDescriptor::Virtual(location),
+                    is_container: false,
+                    metadata: explorer_model::FileEntryMetadata::default(),
+                })
+            }),
+            Arc::new(|_, _| Err("unused metadata executor".to_owned())),
+        );
+
+        assert!(root.create_remote_symlink_to_folder(0));
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
+            (parent, "photos - 捷徑".to_owned(), "photos".to_owned())
+        );
+        assert_eq!(
+            root.remote_runtime
+                .as_ref()
+                .and_then(|runtime| runtime.active_symlink.as_ref())
+                .map(|active| active.session_id),
+            Some(0)
+        );
     }
 
     #[test]
