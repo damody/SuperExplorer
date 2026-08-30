@@ -364,6 +364,10 @@ pub enum FileOperationKind {
         item: ItemDescriptor,
         new_name: String,
     },
+    SetUnixMode {
+        item: ItemDescriptor,
+        mode: u32,
+    },
     Copy {
         items: Vec<ItemDescriptor>,
         destination: LocationDescriptor,
