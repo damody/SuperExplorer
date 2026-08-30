@@ -255,6 +255,11 @@ pub enum ExplorerAction {
     },
     EndMarquee,
     CreateFolder,
+    CreateRemoteSymlink,
+    CreateRemoteSymlinkToFolder {
+        row_index: usize,
+    },
+    ShowRemoteBackgroundProperties,
     ToggleNewMenu,
     CloseNewMenu,
     MoveNewMenuFocus {
@@ -272,6 +277,11 @@ pub enum ExplorerAction {
     ShareSelected,
     PinSelectedToStart,
     ShowPropertiesSelected,
+    CloseRemoteProperties,
+    ToggleRemotePermission {
+        mask: u32,
+    },
+    ApplyRemoteProperties,
     RestoreSelected,
     EmptyRecycleBin,
     UndoCurrentFolder,
@@ -648,6 +658,9 @@ impl ExplorerAction {
             Self::UpdateMarquee { .. } => "UpdateMarquee",
             Self::EndMarquee => "EndMarquee",
             Self::CreateFolder => "CreateFolder",
+            Self::CreateRemoteSymlink => "CreateRemoteSymlink",
+            Self::CreateRemoteSymlinkToFolder { .. } => "CreateRemoteSymlinkToFolder",
+            Self::ShowRemoteBackgroundProperties => "ShowRemoteBackgroundProperties",
             Self::ToggleNewMenu => "ToggleNewMenu",
             Self::CloseNewMenu => "CloseNewMenu",
             Self::MoveNewMenuFocus { .. } => "MoveNewMenuFocus",
@@ -661,6 +674,9 @@ impl ExplorerAction {
             Self::ShareSelected => "ShareSelected",
             Self::PinSelectedToStart => "PinSelectedToStart",
             Self::ShowPropertiesSelected => "ShowPropertiesSelected",
+            Self::CloseRemoteProperties => "CloseRemoteProperties",
+            Self::ToggleRemotePermission { .. } => "ToggleRemotePermission",
+            Self::ApplyRemoteProperties => "ApplyRemoteProperties",
             Self::RestoreSelected => "RestoreSelected",
             Self::EmptyRecycleBin => "EmptyRecycleBin",
             Self::UndoCurrentFolder => "UndoCurrentFolder",
@@ -1316,9 +1332,11 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
             .is_some_and(crate::state::LockRecoveryUiState::can_retry),
         ExplorerAction::CancelLockedDeleteRecovery => state.lock_recovery().is_some(),
         ExplorerAction::MoveLockedDeleteDialogFocus { .. } => state.lock_recovery().is_some(),
-        ExplorerAction::CreateFolder | ExplorerAction::ToggleNewMenu => {
-            state.active_presentation().can_write
-        }
+        ExplorerAction::CreateFolder
+        | ExplorerAction::CreateRemoteSymlink
+        | ExplorerAction::CreateRemoteSymlinkToFolder { .. }
+        | ExplorerAction::ToggleNewMenu => state.active_presentation().can_write,
+        ExplorerAction::ShowRemoteBackgroundProperties => true,
         ExplorerAction::CloseNewMenu | ExplorerAction::MoveNewMenuFocus { .. } => true,
         ExplorerAction::CreateNewItem { index } => {
             state.active_presentation().can_write && *index < state.new_items().len()
@@ -1349,6 +1367,9 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         ExplorerAction::ShowPropertiesSelected => {
             state.selected_namespace_command_enabled(explorer_model::NamespaceCommand::Properties)
         }
+        ExplorerAction::CloseRemoteProperties
+        | ExplorerAction::ToggleRemotePermission { .. }
+        | ExplorerAction::ApplyRemoteProperties => state.remote_properties().is_some(),
         ExplorerAction::RestoreSelected => {
             state.selected_namespace_command_enabled(explorer_model::NamespaceCommand::Restore)
         }
@@ -1703,6 +1724,9 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         | ExplorerAction::OpenExtensionViewItem { .. }
         | ExplorerAction::OpenFocused
         | ExplorerAction::CreateFolder
+        | ExplorerAction::CreateRemoteSymlink
+        | ExplorerAction::CreateRemoteSymlinkToFolder { .. }
+        | ExplorerAction::ShowRemoteBackgroundProperties
         | ExplorerAction::CreateNewItem { .. }
         | ExplorerAction::RecycleDeleteSelected
         | ExplorerAction::CreateShortcutSelected
@@ -1715,6 +1739,9 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         | ExplorerAction::ShareSelected
         | ExplorerAction::PinSelectedToStart
         | ExplorerAction::ShowPropertiesSelected
+        | ExplorerAction::CloseRemoteProperties
+        | ExplorerAction::ToggleRemotePermission { .. }
+        | ExplorerAction::ApplyRemoteProperties
         | ExplorerAction::UndoCurrentFolder
         | ExplorerAction::CompressSelectedToZip
         | ExplorerAction::AddSelectedToFavorites

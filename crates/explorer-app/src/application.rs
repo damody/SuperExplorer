@@ -4475,6 +4475,7 @@ impl ApplicationLifecycle {
                 let visual_column_extension_loaded_for_window = visual_column_extension_loaded;
                 let code_lines_runtimes_for_window = code_lines_runtimes.clone();
                 let size_map_runtime_for_window = size_map_runtime.clone();
+                let remote_runtime_for_window = Arc::clone(&remote_runtime);
                 let folder_options_controller_for_window = Rc::clone(&folder_options_controller);
                 let folder_options_diagnostics = diagnostics.clone();
                 let fixture_diagnostics = diagnostics.clone();
@@ -4554,11 +4555,153 @@ impl ApplicationLifecycle {
                             explorer_ui::bookmark_folder_editor_window::BookmarkFolderEditorWindow,
                         >,
                     >));
+                    let remote_properties_handle = Rc::new(RefCell::new(None::<
+                        gpui::WindowHandle<
+                            explorer_ui::remote_properties_window::RemotePropertiesWindow,
+                        >,
+                    >));
+                    let remote_symlink_handle = Rc::new(RefCell::new(None::<
+                        gpui::WindowHandle<
+                            explorer_ui::remote_symlink_window::RemoteSymlinkWindow,
+                        >,
+                    >));
                     root.update(cx, |root, _| {
                         let runtime = Arc::clone(&sftp_login_runtime);
                         root.attach_sftp_address_login_observer(Arc::new(move |input| {
                             runtime.login_address(input)
                         }));
+                        let symlink_runtime = Arc::clone(&remote_runtime_for_window);
+                        let metadata_runtime = Arc::clone(&remote_runtime_for_window);
+                        root.attach_remote_runtime_executors(
+                            Arc::new(move |parent, name, target, cancellation| {
+                                symlink_runtime.create_symlink(
+                                    parent,
+                                    name,
+                                    target,
+                                    cancellation,
+                                )
+                            }),
+                            Arc::new(move |location, cancellation| {
+                                metadata_runtime.metadata(location, cancellation)
+                            }),
+                        );
+                        root.attach_remote_symlink_window_observer(Rc::new(
+                            move |update, cx| match update {
+                                explorer_ui::remote_symlink_window::RemoteSymlinkWindowUpdateV1::Open(snapshot) => {
+                                    if let Some(existing) = *remote_symlink_handle.borrow() {
+                                        if existing
+                                            .update(cx, |editor, window, cx| {
+                                                editor.replace_snapshot(snapshot.clone(), window, cx);
+                                                window.activate_window();
+                                            })
+                                            .is_ok()
+                                        {
+                                            return true;
+                                        }
+                                        *remote_symlink_handle.borrow_mut() = None;
+                                    }
+                                    let display_id = owner_window
+                                        .update(cx, |_, window, cx| {
+                                            window.display(cx).map(|display| display.id())
+                                        })
+                                        .ok()
+                                        .flatten();
+                                    let options = explorer_ui::remote_symlink_window::remote_symlink_window_options_on_display(cx, display_id);
+                                    let opened = cx.open_window(options, move |window, cx| {
+                                        cx.new(|cx| {
+                                            explorer_ui::remote_symlink_window::RemoteSymlinkWindow::new(
+                                                tokens,
+                                                owner_window,
+                                                snapshot,
+                                                window,
+                                                cx,
+                                            )
+                                        })
+                                    });
+                                    match opened {
+                                        Ok(handle) => {
+                                            *remote_symlink_handle.borrow_mut() = Some(handle);
+                                            true
+                                        }
+                                        Err(error) => {
+                                            tracing::warn!(%error, "Remote symlink window creation failed");
+                                            false
+                                        }
+                                    }
+                                }
+                                explorer_ui::remote_symlink_window::RemoteSymlinkWindowUpdateV1::Failed { session_id, message } => {
+                                    let Some(existing) = *remote_symlink_handle.borrow() else {
+                                        return false;
+                                    };
+                                    existing
+                                        .update(cx, |editor, _, cx| {
+                                            editor.apply_failure(session_id, message, cx);
+                                        })
+                                        .is_ok()
+                                }
+                                explorer_ui::remote_symlink_window::RemoteSymlinkWindowUpdateV1::Close { session_id } => {
+                                    let Some(existing) = *remote_symlink_handle.borrow() else {
+                                        return false;
+                                    };
+                                    let should_close = existing
+                                        .update(cx, |editor, _, _| editor.session_id() == session_id)
+                                        .unwrap_or(false);
+                                    if should_close {
+                                        let _ = existing.update(cx, |_, window, _| window.remove_window());
+                                        *remote_symlink_handle.borrow_mut() = None;
+                                    }
+                                    should_close
+                                }
+                            },
+                        ));
+                        root.attach_remote_properties_window_observer(Rc::new(
+                            move |snapshot, cx| {
+                                if let Some(existing) = *remote_properties_handle.borrow() {
+                                    if existing
+                                        .update(cx, |properties_window, window, cx| {
+                                            properties_window.replace_snapshot(
+                                                snapshot.clone(),
+                                                window,
+                                                cx,
+                                            );
+                                            window.activate_window();
+                                        })
+                                        .is_ok()
+                                    {
+                                        return true;
+                                    }
+                                    *remote_properties_handle.borrow_mut() = None;
+                                }
+                                let display_id = owner_window
+                                    .update(cx, |_, window, cx| {
+                                        window.display(cx).map(|display| display.id())
+                                    })
+                                    .ok()
+                                    .flatten();
+                                let options = explorer_ui::remote_properties_window::remote_properties_window_options_on_display(cx, &snapshot, display_id);
+                                let opened = cx.open_window(options, move |window, cx| {
+                                    cx.new(|cx| {
+                                        explorer_ui::remote_properties_window::RemotePropertiesWindow::new(
+                                            tokens,
+                                            owner_window,
+                                            snapshot,
+                                            window,
+                                            cx,
+                                        )
+                                    })
+                                });
+                                match opened {
+                                    Ok(handle) => {
+                                        *remote_properties_handle.borrow_mut() = Some(handle);
+                                        true
+                                    }
+                                    Err(error) => {
+                                        tracing::warn!(%error, "Remote Properties window creation failed");
+                                        false
+                                    }
+                                }
+                            },
+                        ));
                         root.attach_folder_options_window_observer(Rc::new(move |create, snapshot, cx| {
                             let existing = controller.borrow().window;
                             if let Some(existing) = existing {

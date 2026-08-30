@@ -35,7 +35,7 @@ pub const WINDOWS_CONTEXT_MENU_VISUAL_METRICS: ContextMenuVisualMetrics =
         right_inset: 24,
         divider_right_inset: 8,
         outer_padding: 3,
-        font_size: 15,
+        font_size: 12,
         right_shadow_extent: 6,
         bottom_shadow_extent: 8,
     };
@@ -323,7 +323,7 @@ mod tests {
         assert_eq!(WINDOWS_CONTEXT_MENU_VISUAL_METRICS.minimum_width, 282);
         assert_eq!(WINDOWS_CONTEXT_MENU_VISUAL_METRICS.icon_gutter, 42);
         assert_eq!(WINDOWS_CONTEXT_MENU_VISUAL_METRICS.icon_left, 13);
-        assert_eq!(WINDOWS_CONTEXT_MENU_VISUAL_METRICS.font_size, 15);
+        assert_eq!(WINDOWS_CONTEXT_MENU_VISUAL_METRICS.font_size, 12);
         assert_eq!(WINDOWS_CONTEXT_MENU_LIGHT_PALETTE.surface, [249; 3]);
         assert_eq!(WINDOWS_CONTEXT_MENU_LIGHT_PALETTE.divider, [215; 3]);
         assert_eq!(WINDOWS_CONTEXT_MENU_DARK_PALETTE.surface, [43; 3]);

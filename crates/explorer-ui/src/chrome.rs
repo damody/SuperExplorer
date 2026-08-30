@@ -30,9 +30,9 @@ use abi_stable::std_types::{ROption, RString};
 use explorer_model::{DirectoryState, TabId, TabSearchState};
 use gpui::{
     AccessibleAction, Anchor, AnchoredPositionMode, App, BoxShadow, Context, DispatchPhase,
-    Focusable, IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent, ObjectFit, Render,
-    RenderImage, RenderOnce, Role, SharedString, Window, WindowControlArea, anchored, canvas,
-    deferred, div, hsla, img, point, prelude::*, px, svg,
+    Focusable, FontWeight, IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent, ObjectFit,
+    Render, RenderImage, RenderOnce, Role, SharedString, Window, WindowControlArea, anchored,
+    canvas, deferred, div, hsla, img, point, prelude::*, px, svg,
 };
 use gpui_elements::editable_text::{EditableTextState, text_input};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -1788,6 +1788,20 @@ fn remote_menu_commands(
             placement: RemoteMenuPlacement::Text,
             danger: false,
         });
+        commands.push(RemoteMenuCommand {
+            label: "新增捷徑",
+            action: ExplorerAction::CreateRemoteSymlink,
+            icon: Some(ExplorerIcon::Add),
+            placement: RemoteMenuPlacement::Text,
+            danger: false,
+        });
+        commands.push(RemoteMenuCommand {
+            label: "內容",
+            action: ExplorerAction::ShowRemoteBackgroundProperties,
+            icon: Some(ExplorerIcon::Details),
+            placement: RemoteMenuPlacement::Text,
+            danger: false,
+        });
         if paste_available {
             commands.push(RemoteMenuCommand {
                 label: "貼上",
@@ -1815,6 +1829,13 @@ fn remote_menu_commands(
                 new_tab: true,
             },
             icon: None,
+            placement: RemoteMenuPlacement::Text,
+            danger: false,
+        });
+        commands.push(RemoteMenuCommand {
+            label: "新增捷徑",
+            action: ExplorerAction::CreateRemoteSymlinkToFolder { row_index },
+            icon: Some(ExplorerIcon::Add),
             placement: RemoteMenuPlacement::Text,
             danger: false,
         });
@@ -1922,6 +1943,8 @@ struct ContextMenuVisualTokens {
     maximum_height: f32,
     row_height: f32,
     font_size: f32,
+    line_height: f32,
+    font_weight: FontWeight,
     icon_gutter: f32,
     icon_size: f32,
     icon_left: f32,
@@ -1951,7 +1974,9 @@ fn context_menu_visual_tokens(tokens: UiTokens) -> ContextMenuVisualTokens {
         width: f32::from(metrics.minimum_width),
         maximum_height: 420.0,
         row_height: f32::from(metrics.row_height),
-        font_size: f32::from(metrics.font_size),
+        font_size: tokens.typography.menu.size.value(),
+        line_height: tokens.typography.menu.line_height.value(),
+        font_weight: FontWeight(f32::from(tokens.typography.menu.weight)),
         icon_gutter: f32::from(metrics.icon_gutter),
         icon_size: f32::from(metrics.icon_size),
         icon_left: f32::from(metrics.icon_left),
@@ -2029,6 +2054,8 @@ fn remote_menu_text_command(
         .flex()
         .items_center()
         .text_size(px(visual.font_size))
+        .line_height(px(visual.line_height))
+        .font_weight(visual.font_weight)
         .text_color(if danger { visual.danger } else { visual.text })
         .cursor_pointer()
         .hover(move |style| style.bg(visual.hover))
@@ -2602,6 +2629,195 @@ fn permanent_delete_confirmation_dialog(
                         )),
                 ),
         )
+}
+
+#[allow(
+    dead_code,
+    reason = "superseded by the dedicated native Properties window"
+)]
+fn remote_properties_dialog(
+    tokens: UiTokens,
+    properties: crate::state::RemotePropertiesState,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let entry = properties.entry;
+    let location = match &entry.location {
+        explorer_model::LocationDescriptor::Virtual(remote) => format!(
+            "{}://{}/{}",
+            remote.provider_id,
+            remote.public_authority.as_deref().unwrap_or("remote"),
+            remote.components.join("/")
+        ),
+        _ => "無法取得".to_owned(),
+    };
+    let type_name = entry.metadata.type_display.clone().unwrap_or_else(|| {
+        if entry.is_container {
+            "遠端資料夾"
+        } else {
+            "遠端檔案"
+        }
+        .to_owned()
+    });
+    let size = entry
+        .metadata
+        .size_bytes
+        .map_or_else(|| "無法取得".to_owned(), |value| format!("{value} 位元組"));
+    let changed = properties.mode != properties.original_mode;
+    let mut grid = div().flex().flex_col().gap(px(4.0));
+    for (label, read, write, execute) in [
+        ("擁有者", 0o400, 0o200, 0o100),
+        ("群組", 0o040, 0o020, 0o010),
+        ("其他", 0o004, 0o002, 0o001),
+    ] {
+        grid = grid.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(12.0))
+                .child(div().w(px(70.0)).child(label))
+                .child(remote_permission_toggle(
+                    "讀取",
+                    read,
+                    properties.mode,
+                    tokens,
+                    on_action.clone(),
+                ))
+                .child(remote_permission_toggle(
+                    "寫入",
+                    write,
+                    properties.mode,
+                    tokens,
+                    on_action.clone(),
+                ))
+                .child(remote_permission_toggle(
+                    "執行",
+                    execute,
+                    properties.mode,
+                    tokens,
+                    on_action.clone(),
+                )),
+        );
+    }
+    div()
+        .id("remote-properties-overlay")
+        .absolute()
+        .top_0()
+        .right_0()
+        .bottom_0()
+        .left_0()
+        .occlude()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(crate::theme::MODAL_BACKDROP.to_gpui())
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(
+            div()
+                .id("remote-properties-dialog")
+                .role(Role::Dialog)
+                .aria_label(format!("{} 內容", entry.display_name))
+                .w(px(560.0))
+                .p(px(24.0))
+                .flex()
+                .flex_col()
+                .gap(px(14.0))
+                .rounded(px(tokens.layout.corner_radius.value()))
+                .border(px(1.0))
+                .border_color(tokens.theme.colors.divider.to_gpui())
+                .bg(tokens.theme.colors.menu_fill.to_gpui())
+                .child(
+                    div()
+                        .text_size(px(20.0))
+                        .child(format!("{} - 內容", entry.display_name)),
+                )
+                .child("一般")
+                .child(format!("檔案類型：{type_name}"))
+                .child(format!("位置：{location}"))
+                .child(format!("大小：{size}"))
+                .when_some(entry.metadata.created_display.clone(), |dialog, value| {
+                    dialog.child(format!("建立日期：{value}"))
+                })
+                .when_some(entry.metadata.modified_display.clone(), |dialog, value| {
+                    dialog.child(format!("修改日期：{value}"))
+                })
+                .child(div().h(px(1.0)).bg(tokens.theme.colors.divider.to_gpui()))
+                .child(format!("權限：{:04o}", properties.mode))
+                .child(grid)
+                .child(
+                    div()
+                        .flex()
+                        .justify_end()
+                        .gap(px(8.0))
+                        .child(folder_option_button(
+                            "remote-properties-ok",
+                            "確定",
+                            ExplorerAction::ApplyRemoteProperties,
+                            tokens,
+                            on_action.clone(),
+                        ))
+                        .child(folder_option_button(
+                            "remote-properties-cancel",
+                            "取消",
+                            ExplorerAction::CloseRemoteProperties,
+                            tokens,
+                            on_action.clone(),
+                        ))
+                        .when(changed, |row| {
+                            row.child(folder_option_button(
+                                "remote-properties-apply",
+                                "套用",
+                                ExplorerAction::ApplyRemoteProperties,
+                                tokens,
+                                on_action,
+                            ))
+                        }),
+                ),
+        )
+}
+
+#[allow(
+    dead_code,
+    reason = "superseded by the dedicated native Properties window"
+)]
+fn remote_permission_toggle(
+    label: &'static str,
+    mask: u32,
+    mode: u32,
+    tokens: UiTokens,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let checked = mode & mask != 0;
+    let action = on_action;
+    div()
+        .id(format!("remote-permission-{mask:o}"))
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .gap(px(4.0))
+        .px(px(4.0))
+        .aria_label(format!(
+            "{label} {}",
+            if checked { "已允許" } else { "未允許" }
+        ))
+        .when_some(action, move |element, callback| {
+            element.on_click(move |_, window, cx| {
+                callback(&ExplorerAction::ToggleRemotePermission { mask }, window, cx);
+            })
+        })
+        .child(
+            div()
+                .w(px(14.0))
+                .h(px(14.0))
+                .border(px(1.0))
+                .border_color(tokens.theme.colors.text_secondary.to_gpui())
+                .when(checked, |box_element| {
+                    box_element
+                        .p(px(2.0))
+                        .child(div().size_full().bg(tokens.theme.colors.accent.to_gpui()))
+                }),
+        )
+        .child(label)
+        .text_color(tokens.theme.colors.text_primary.to_gpui())
 }
 
 fn lock_recovery_dialog(
@@ -11722,6 +11938,10 @@ fn operation_request_summary(record: &explorer_model::OperationRecord) -> String
             operation_location_text(&item.location),
             renamed_location_text(item, new_name)
         ),
+        Kind::SetUnixMode { item, mode } => format!(
+            "變更權限｜{} → {mode:04o}",
+            operation_location_text(&item.location)
+        ),
         Kind::Copy { items, destination } => format!(
             "複製 {} 個項目｜{} → {}",
             record.progress.total_items,
@@ -12021,6 +12241,16 @@ impl RenderOnce for StatusBar {
                     explorer_model::FileOperationKind::CreateFolder { name, .. }
                     | explorer_model::FileOperationKind::CreateItem { name, .. } => name.clone(),
                     explorer_model::FileOperationKind::Rename { new_name, .. } => new_name.clone(),
+                    explorer_model::FileOperationKind::SetUnixMode { item, .. } => {
+                        match &item.location {
+                            explorer_model::LocationDescriptor::Virtual(location) => location
+                                .components
+                                .last()
+                                .cloned()
+                                .unwrap_or_else(|| "item".to_owned()),
+                            _ => "item".to_owned(),
+                        }
+                    }
                     explorer_model::FileOperationKind::Copy { items, .. }
                     | explorer_model::FileOperationKind::Move { items, .. }
                     | explorer_model::FileOperationKind::RecycleDelete { items }
@@ -13558,7 +13788,7 @@ mod tests {
                 .iter()
                 .map(|command| command.label)
                 .collect::<Vec<_>>(),
-            ["新增資料夾", "貼上"]
+            ["新增資料夾", "新增捷徑", "內容", "貼上"]
         );
         assert!(
             background
@@ -13574,7 +13804,6 @@ mod tests {
             "下載到下載資料夾",
             "複製遠端路徑",
             "加入書籤",
-            "內容",
         ] {
             assert!(background.iter().all(|command| command.label != item_only));
         }
@@ -13592,6 +13821,10 @@ mod tests {
                     }
         }));
         assert!(commands.iter().any(|command| {
+            command.label == "新增捷徑"
+                && command.action == ExplorerAction::CreateRemoteSymlinkToFolder { row_index: 7 }
+        }));
+        assert!(commands.iter().any(|command| {
             command.label == "複製遠端路徑" && command.action == ExplorerAction::CopySelectedPaths
         }));
         assert!(commands.iter().any(|command| {
@@ -13604,6 +13837,34 @@ mod tests {
         assert!(commands.iter().any(|command| {
             command.label == "內容" && command.action == ExplorerAction::ShowPropertiesSelected
         }));
+    }
+
+    #[test]
+    fn remote_properties_dialog_exposes_metadata_permissions_and_apply_controls() {
+        let source = include_str!("chrome.rs");
+        let dialog = source
+            .split("fn remote_properties_dialog(")
+            .nth(1)
+            .and_then(|source| source.split("fn remote_permission_toggle(").next())
+            .expect("remote properties renderer");
+        for required in [
+            "remote-properties-dialog",
+            "檔案類型：",
+            "位置：",
+            "大小：",
+            "權限：{:04o}",
+            "remote-properties-ok",
+            "remote-properties-cancel",
+            "remote-properties-apply",
+        ] {
+            assert!(dialog.contains(required), "missing {required}");
+        }
+        let toggle = source
+            .split("fn remote_permission_toggle(")
+            .nth(1)
+            .expect("remote permission toggle renderer");
+        assert!(toggle.contains("ToggleRemotePermission"));
+        assert!(toggle.contains("mode & mask != 0"));
     }
 
     #[test]
@@ -13627,6 +13888,8 @@ mod tests {
         assert!(!remote.contains("remote-context-command-strip"));
         assert!(remote.contains("remote-context-primary-separator"));
         assert!(row.contains(".text_size(px(visual.font_size))"));
+        assert!(row.contains(".line_height(px(visual.line_height))"));
+        assert!(row.contains(".font_weight(visual.font_weight)"));
         assert!(row.contains(".h(px(visual.row_height))"));
         assert!(row.contains(".w(px(visual.icon_gutter))"));
         assert!(row.contains(".ml(px(visual.icon_left))"));
@@ -13668,7 +13931,11 @@ mod tests {
         assert_eq!(light.icon_size, dark.icon_size);
         assert_eq!(light.width, 282.0);
         assert_eq!(light.row_height, 23.0);
-        assert_eq!(light.font_size, 15.0);
+        assert_eq!(light.font_size, 12.0);
+        assert_eq!(light.line_height, 16.0);
+        assert_eq!(light.font_weight, gpui::FontWeight::NORMAL);
+        assert!(light.line_height <= light.row_height);
+        assert_eq!(light.row_height - light.line_height, 7.0);
         assert_eq!(light.icon_gutter, 42.0);
         assert_eq!(light.icon_left, 13.0);
         assert_eq!(light.divider_left_inset, 42.0);
@@ -13697,6 +13964,31 @@ mod tests {
             high_contrast_theme.colors.menu_fill.to_gpui()
         );
         assert_eq!(high_contrast.shadow.color.a, 0.0);
+        assert_eq!(high_contrast.font_size, light.font_size);
+        assert_eq!(high_contrast.line_height, light.line_height);
+        assert_eq!(high_contrast.font_weight, light.font_weight);
+    }
+
+    #[test]
+    fn remote_context_menu_uses_windows_zh_tw_menu_typography_and_fallbacks() {
+        let typography = crate::typography::TypographyTokens::WINDOWS_11_ZH_TW;
+        assert_eq!(typography.family.primary, "Microsoft JhengHei UI");
+        assert_eq!(
+            typography.family.fallbacks,
+            &["Segoe UI Variable Text", "Segoe UI", "sans-serif"]
+        );
+        assert_eq!(typography.menu.size.value(), 12.0);
+        assert_eq!(typography.menu.line_height.value(), 16.0);
+        assert_eq!(typography.menu.weight, 400);
+
+        let visual = context_menu_visual_tokens(UiTokens::default());
+        assert_eq!(visual.font_size, typography.menu.size.value());
+        assert_eq!(visual.line_height, typography.menu.line_height.value());
+        assert_eq!(visual.font_weight, gpui::FontWeight::NORMAL);
+        assert_eq!(visual.row_height, 23.0);
+        assert_eq!(visual.icon_gutter, 42.0);
+        assert_eq!(visual.icon_size, 16.0);
+        assert_eq!(visual.icon_left, 13.0);
     }
 
     #[test]
