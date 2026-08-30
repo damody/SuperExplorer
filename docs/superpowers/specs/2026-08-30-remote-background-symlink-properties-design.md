@@ -25,6 +25,10 @@ remote directory rather than a selected child item.
   It shows the display name, canonical public ADB/SFTP path, directory type, permissions, modified
   time, and size information when the provider can return it. Unsupported fields say they are
   unavailable rather than inventing values.
+- Right-clicking an ADB/SFTP folder item also exposes `新增捷徑`. This item command creates a
+  sibling symbolic link immediately, using the clicked folder's display name as the relative
+  target. It chooses `原名稱 - 捷徑`, then `原名稱 - 捷徑 (2)`, and so on without overwriting an
+  existing entry. This direct folder action does not open the background shortcut editor.
 
 ## Architecture
 
@@ -62,6 +66,9 @@ late result after navigation or tab-generation replacement.
 - Completion is applied only to the captured tab/generation/location.
 - Menu dismissal, keyboard focus, accessibility roles, edge clamping, and right-click replacement
   remain unchanged.
+- A direct folder shortcut uses the same asynchronous provider boundary and stale-context checks as
+  the editor flow. Failure is logged without reporting success; success refreshes and selects the
+  newly created sibling link.
 
 ## Testing
 

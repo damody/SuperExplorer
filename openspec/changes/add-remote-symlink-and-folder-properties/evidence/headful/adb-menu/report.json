@@ -1,0 +1,32 @@
+﻿{
+    "status":  "passed",
+    "path":  "adb://emulator-5554/sdcard/Download",
+    "click":  {
+                  "x":  1565,
+                  "y":  1398
+              },
+    "menu":  "Remote file context menu",
+    "commands":  [
+                     "新增資料夾"
+                 ],
+    "inline_rename":  null,
+    "interactions":  {
+                         "hover":  true,
+                         "pressed":  true,
+                         "escape_dismissal":  true,
+                         "outside_click_dismissal":  true,
+                         "right_click_replacement":  true,
+                         "single_dispatch":  true,
+                         "keyboard_focus_and_enter":  true,
+                         "accessible_menu_name":  "Remote file context menu",
+                         "accessible_command_role":  "MenuItem",
+                         "edge_clamped":  true,
+                         "hover_screenshot":  "D:\\SuperExplorer\\openspec\\changes\\add-remote-symlink-and-folder-properties\\evidence\\headful\\adb-menu\\remote-context-hover.png",
+                         "pressed_screenshot":  "D:\\SuperExplorer\\openspec\\changes\\add-remote-symlink-and-folder-properties\\evidence\\headful\\adb-menu\\remote-context-pressed.png"
+                     },
+    "screenshot":  "D:\\SuperExplorer\\openspec\\changes\\add-remote-symlink-and-folder-properties\\evidence\\headful\\adb-menu\\remote-background-context-menu.png",
+    "item_commands":  [
+
+                      ],
+    "item_screenshot":  null
+}
