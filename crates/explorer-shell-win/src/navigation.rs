@@ -614,9 +614,12 @@ mod tests {
 
     #[test]
     fn real_file_metadata_has_local_date_size_and_shell_type() {
-        let path = std::path::Path::new(r"D:\test\Cargo.toml");
-        let expected_size = std::fs::metadata(path).expect("fixture metadata").len();
-        let metadata = entry_metadata(&LocationDescriptor::file_system(path), false, 0);
+        let fixture = OwnedTempFixture::new().expect("metadata fixture root");
+        let path = fixture
+            .create_file("Cargo.toml", b"[package]\nname = \"fixture\"\n")
+            .expect("metadata fixture file");
+        let expected_size = std::fs::metadata(&path).expect("fixture metadata").len();
+        let metadata = entry_metadata(&LocationDescriptor::file_system(&path), false, 0);
         assert_eq!(metadata.size_bytes, Some(expected_size));
         assert!(
             metadata

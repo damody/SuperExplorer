@@ -263,7 +263,26 @@ impl RemoteProvider for SftpProvider {
         let local = local_destination.to_path_buf();
         self.runtime.block_on(async {
             let (session, sftp) = Self::connect(&profile).await?;
-            download_tree(&sftp, &remote, &local, cancellation).await?;
+            download_tree(&sftp, &remote, &local, cancellation, None).await?;
+            Self::disconnect(session).await;
+            Ok(())
+        })
+    }
+
+    fn download_with_progress(
+        &self,
+        source: &VirtualLocationDescriptor,
+        local_destination: &Path,
+        cancellation: &CancellationToken,
+        progress: &(dyn Fn(u64) + Send + Sync),
+    ) -> Result<()> {
+        crate::provider::validate_remote_location(source, "sftp", false)?;
+        let profile = self.profile(source)?;
+        let remote = remote_path(source);
+        let local = local_destination.to_path_buf();
+        self.runtime.block_on(async {
+            let (session, sftp) = Self::connect(&profile).await?;
+            download_tree(&sftp, &remote, &local, cancellation, Some(progress)).await?;
             Self::disconnect(session).await;
             Ok(())
         })
@@ -289,7 +308,30 @@ impl RemoteProvider for SftpProvider {
         let local = local_source.to_path_buf();
         self.runtime.block_on(async {
             let (session, sftp) = Self::connect(&profile).await?;
-            upload_tree(&sftp, &local, &remote, cancellation).await?;
+            upload_tree(&sftp, &local, &remote, cancellation, None).await?;
+            Self::disconnect(session).await;
+            Ok(())
+        })
+    }
+
+    fn upload_with_progress(
+        &self,
+        local_source: &Path,
+        destination: &VirtualLocationDescriptor,
+        cancellation: &CancellationToken,
+        progress: &(dyn Fn(u64) + Send + Sync),
+    ) -> Result<()> {
+        crate::provider::validate_remote_location(destination, "sftp", true)?;
+        let profile = self.profile(destination)?;
+        let mut remote = remote_path(destination);
+        if let Some(name) = local_source.file_name().and_then(|name| name.to_str()) {
+            remote.push('/');
+            remote.push_str(name);
+        }
+        let local = local_source.to_path_buf();
+        self.runtime.block_on(async {
+            let (session, sftp) = Self::connect(&profile).await?;
+            upload_tree(&sftp, &local, &remote, cancellation, Some(progress)).await?;
             Self::disconnect(session).await;
             Ok(())
         })
@@ -625,6 +667,7 @@ async fn download_tree(
     remote_root: &str,
     local_root: &Path,
     cancellation: &CancellationToken,
+    progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<()> {
     let mut pending = vec![(remote_root.to_owned(), local_root.to_path_buf(), 0_usize)];
     let mut visited = 0_usize;
@@ -693,6 +736,9 @@ async fn download_tree(
                 .write_all(&buffer[..read])
                 .await
                 .context("write local destination")?;
+            if let Some(progress) = progress {
+                progress(read as u64);
+            }
             file_bytes = next_file;
             operation_bytes = next_operation;
         }
@@ -706,6 +752,7 @@ async fn upload_tree(
     local_root: &Path,
     remote_root: &str,
     cancellation: &CancellationToken,
+    progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<()> {
     let mut pending = vec![(local_root.to_path_buf(), remote_root.to_owned(), 0_usize)];
     let mut visited = 0_usize;
@@ -781,6 +828,9 @@ async fn upload_tree(
                 .write_all(&buffer[..read])
                 .await
                 .context("write SFTP destination")?;
+            if let Some(progress) = progress {
+                progress(read as u64);
+            }
             file_bytes = next_file;
             operation_bytes = next_operation;
         }

@@ -153,12 +153,38 @@ pub trait RemoteProvider: Send + Sync {
         local_destination: &Path,
         cancellation: &CancellationToken,
     ) -> Result<()>;
+    fn download_with_progress(
+        &self,
+        source: &VirtualLocationDescriptor,
+        local_destination: &Path,
+        cancellation: &CancellationToken,
+        progress: &(dyn Fn(u64) + Send + Sync),
+    ) -> Result<()> {
+        self.download(source, local_destination, cancellation)?;
+        if let Ok(metadata) = self.metadata(source, cancellation)
+            && let Some(bytes) = metadata.size
+        {
+            progress(bytes);
+        }
+        Ok(())
+    }
     fn upload(
         &self,
         local_source: &Path,
         destination: &VirtualLocationDescriptor,
         cancellation: &CancellationToken,
     ) -> Result<()>;
+    fn upload_with_progress(
+        &self,
+        local_source: &Path,
+        destination: &VirtualLocationDescriptor,
+        cancellation: &CancellationToken,
+        progress: &(dyn Fn(u64) + Send + Sync),
+    ) -> Result<()> {
+        self.upload(local_source, destination, cancellation)?;
+        progress(crate::transfer::local_tree_bytes(local_source).unwrap_or(0));
+        Ok(())
+    }
     fn create_directory(
         &self,
         location: &VirtualLocationDescriptor,

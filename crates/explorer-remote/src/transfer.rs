@@ -2,6 +2,7 @@
 
 use std::{
     fs,
+    io::{Read as _, Write as _},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -205,11 +206,30 @@ impl<'a> TransferEngine<'a> {
         conflict: ConflictDecision,
         cancellation: &CancellationToken,
     ) -> TransferItemOutcome {
+        self.transfer_with_conflict_and_progress(
+            source,
+            destination,
+            mode,
+            conflict,
+            cancellation,
+            &|_| {},
+        )
+    }
+
+    pub fn transfer_with_conflict_and_progress(
+        &self,
+        source: LocationDescriptor,
+        destination: LocationDescriptor,
+        mode: TransferMode,
+        conflict: ConflictDecision,
+        cancellation: &CancellationToken,
+        progress: &(dyn Fn(u64) + Send + Sync),
+    ) -> TransferItemOutcome {
         let result = if cancellation.is_cancelled() {
             TransferResult::Cancelled
         } else {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.copy(&source, &destination, conflict, cancellation)
+                self.copy(&source, &destination, conflict, cancellation, progress)
             })) {
                 Err(_) => TransferResult::Failed {
                     stage: TransferStage::ProviderPanic,
@@ -246,12 +266,13 @@ impl<'a> TransferEngine<'a> {
         destination: &LocationDescriptor,
         conflict: ConflictDecision,
         cancellation: &CancellationToken,
+        progress: &(dyn Fn(u64) + Send + Sync),
     ) -> Result<bool, TransferFailure> {
         match (source, destination) {
             (
                 LocationDescriptor::FileSystem(source),
                 LocationDescriptor::FileSystem(destination),
-            ) => copy_local_with_conflict(source, destination, conflict)
+            ) => copy_local_with_conflict(source, destination, conflict, progress)
                 .map_err(|error| TransferFailure::new(TransferStage::LocalCopy, error)),
             (LocationDescriptor::FileSystem(source), LocationDescriptor::Virtual(destination)) => {
                 let name = source
@@ -278,7 +299,7 @@ impl<'a> TransferEngine<'a> {
                 self.providers
                     .resolve(&LocationDescriptor::Virtual(destination.clone()))
                     .map_err(|error| TransferFailure::new(TransferStage::DestinationUpload, error))?
-                    .upload(upload_source, destination, cancellation)
+                    .upload_with_progress(upload_source, destination, cancellation, progress)
                     .with_context(|| {
                         format!(
                             "upload to {}",
@@ -314,7 +335,7 @@ impl<'a> TransferEngine<'a> {
                 self.providers
                     .resolve(&LocationDescriptor::Virtual(source.clone()))
                     .map_err(|error| TransferFailure::new(TransferStage::SourceDownload, error))?
-                    .download(source, &target, cancellation)
+                    .download_with_progress(source, &target, cancellation, progress)
                     .with_context(|| {
                         format!(
                             "download from {}",
@@ -351,7 +372,7 @@ impl<'a> TransferEngine<'a> {
                 self.providers
                     .resolve(&LocationDescriptor::Virtual(source.clone()))
                     .map_err(|error| TransferFailure::new(TransferStage::SourceDownload, error))?
-                    .download(source, &staged, cancellation)
+                    .download_with_progress(source, &staged, cancellation, progress)
                     .with_context(|| {
                         format!(
                             "download from {}",
@@ -361,7 +382,7 @@ impl<'a> TransferEngine<'a> {
                     .map_err(|error| TransferFailure::new(TransferStage::SourceDownload, error))?;
                 ensure_owned_staging_containment(staging.path(), &staged)
                     .map_err(|error| TransferFailure::new(TransferStage::LocalCopy, error))?;
-                let staged_bytes = staged_tree_bytes(&staged)
+                let staged_bytes = local_tree_bytes(&staged)
                     .map_err(|error| TransferFailure::new(TransferStage::LocalCopy, error))?;
                 if staged_bytes > crate::provider::MAX_OPERATION_STAGING_BYTES {
                     return Err(TransferFailure::new(
@@ -388,7 +409,7 @@ impl<'a> TransferEngine<'a> {
                 self.providers
                     .resolve(&LocationDescriptor::Virtual(destination.clone()))
                     .map_err(|error| TransferFailure::new(TransferStage::DestinationUpload, error))?
-                    .upload(upload_source, destination, cancellation)
+                    .upload_with_progress(upload_source, destination, cancellation, progress)
                     .with_context(|| {
                         format!(
                             "upload to {}",
@@ -404,6 +425,36 @@ impl<'a> TransferEngine<'a> {
                 TransferStage::LocalCopy,
                 anyhow::anyhow!("unsupported Shell location in remote transfer"),
             )),
+        }
+    }
+
+    /// Best-effort byte work estimate. Remote-to-remote transfers perform both a download and
+    /// upload, hence twice the source size. Directory totals remain unknown unless the provider
+    /// can report an authoritative aggregate without following links.
+    pub fn estimate_work_bytes(
+        &self,
+        source: &LocationDescriptor,
+        destination: &LocationDescriptor,
+        cancellation: &CancellationToken,
+    ) -> Option<u64> {
+        let bytes = match source {
+            LocationDescriptor::FileSystem(path) => local_tree_bytes(path).ok()?,
+            LocationDescriptor::Virtual(remote) => {
+                self.providers
+                    .resolve(source)
+                    .ok()?
+                    .metadata(remote, cancellation)
+                    .ok()?
+                    .size?
+            }
+            _ => return None,
+        };
+        if matches!(source, LocationDescriptor::Virtual(_))
+            && matches!(destination, LocationDescriptor::Virtual(_))
+        {
+            bytes.checked_mul(2)
+        } else {
+            Some(bytes)
         }
     }
 
@@ -467,17 +518,20 @@ impl<'a> TransferEngine<'a> {
     }
 }
 
-fn copy_local(source: &Path, destination: &Path) -> Result<()> {
+fn copy_local(
+    source: &Path,
+    destination: &Path,
+    progress: &(dyn Fn(u64) + Send + Sync),
+) -> Result<()> {
     let target = if destination.is_dir() {
         destination.join(source.file_name().context("source has no file name")?)
     } else {
         PathBuf::from(destination)
     };
     if source.is_dir() {
-        return copy_local_tree(source, &target);
+        return copy_local_tree_progress(source, &target, progress);
     }
-    fs::copy(source, &target)
-        .with_context(|| format!("copy {} to {}", source.display(), target.display()))?;
+    copy_local_file_progress(source, &target, progress)?;
     Ok(())
 }
 
@@ -485,6 +539,7 @@ fn copy_local_with_conflict(
     source: &Path,
     destination: &Path,
     conflict: ConflictDecision,
+    progress: &(dyn Fn(u64) + Send + Sync),
 ) -> Result<bool> {
     let target = if destination.is_dir() {
         destination.join(source.file_name().context("source has no file name")?)
@@ -500,9 +555,9 @@ fn copy_local_with_conflict(
             let candidate = target.with_file_name(keep_both_name(name, suffix));
             if !candidate.exists() {
                 if source.is_dir() {
-                    copy_local_tree(source, &candidate)?;
+                    copy_local_tree_progress(source, &candidate, progress)?;
                 } else {
-                    fs::copy(source, candidate)?;
+                    copy_local_file_progress(source, &candidate, progress)?;
                 }
                 return Ok(true);
             }
@@ -512,7 +567,7 @@ fn copy_local_with_conflict(
     if !local_destination_allows(&target, conflict)? {
         return Ok(false);
     }
-    copy_local(source, destination)?;
+    copy_local(source, destination, progress)?;
     Ok(true)
 }
 
@@ -554,7 +609,7 @@ fn staged_with_name(source: &Path, name: &str) -> Result<(tempfile::TempDir, Pat
     Ok((root, target))
 }
 
-fn staged_tree_bytes(root: &Path) -> Result<u64> {
+pub fn local_tree_bytes(root: &Path) -> Result<u64> {
     let metadata = fs::symlink_metadata(root)?;
     if metadata.file_type().is_symlink() {
         bail!("staging tree contains a symbolic link");
@@ -662,6 +717,36 @@ fn ensure_staging_free_space(_: &Path) -> Result<()> {
 }
 
 fn copy_local_tree(source: &Path, target: &Path) -> Result<()> {
+    copy_local_tree_progress(source, target, &|_| {})
+}
+
+fn copy_local_file_progress(
+    source: &Path,
+    target: &Path,
+    progress: &(dyn Fn(u64) + Send + Sync),
+) -> Result<()> {
+    let mut input =
+        fs::File::open(source).with_context(|| format!("open copy source {}", source.display()))?;
+    let mut output = fs::File::create(target)
+        .with_context(|| format!("create copy destination {}", target.display()))?;
+    let mut buffer = vec![0_u8; 256 * 1024];
+    loop {
+        let read = input.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        output.write_all(&buffer[..read])?;
+        progress(read as u64);
+    }
+    output.flush()?;
+    Ok(())
+}
+
+fn copy_local_tree_progress(
+    source: &Path,
+    target: &Path,
+    progress: &(dyn Fn(u64) + Send + Sync),
+) -> Result<()> {
     fs::create_dir_all(target)
         .with_context(|| format!("create copied directory {}", target.display()))?;
     let mut pending = vec![(source.to_path_buf(), target.to_path_buf(), 0_usize)];
@@ -684,7 +769,7 @@ fn copy_local_tree(source: &Path, target: &Path) -> Result<()> {
                 fs::create_dir_all(&child_target)?;
                 pending.push((entry.path(), child_target, depth + 1));
             } else {
-                fs::copy(entry.path(), &child_target)?;
+                copy_local_file_progress(&entry.path(), &child_target, progress)?;
             }
         }
     }
@@ -695,7 +780,7 @@ fn copy_local_tree(source: &Path, target: &Path) -> Result<()> {
 mod tests {
     use std::sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering as AtomicOrdering},
+        atomic::{AtomicU64 as TestAtomicU64, AtomicUsize, Ordering as AtomicOrdering},
     };
 
     use super::*;
@@ -844,6 +929,35 @@ mod tests {
             &CancellationToken::new(),
         );
         assert_eq!(outcome.result, TransferResult::Succeeded);
+    }
+
+    #[test]
+    fn local_copy_reports_successfully_written_byte_chunks() {
+        let registry = RemoteProviderRegistry::default();
+        let source_root = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let source = source_root.path().join("large.bin");
+        let bytes = vec![0x5a; 1024 * 1024 + 17];
+        fs::write(&source, &bytes).unwrap();
+        let reported = TestAtomicU64::new(0);
+
+        let outcome = TransferEngine::new(&registry).transfer_with_conflict_and_progress(
+            LocationDescriptor::file_system(source),
+            LocationDescriptor::file_system(destination.path().to_path_buf()),
+            TransferMode::Copy,
+            ConflictDecision::Replace,
+            &CancellationToken::new(),
+            &|delta| {
+                reported.fetch_add(delta, AtomicOrdering::AcqRel);
+            },
+        );
+
+        assert_eq!(outcome.result, TransferResult::Succeeded);
+        assert_eq!(reported.load(AtomicOrdering::Acquire), bytes.len() as u64);
+        assert_eq!(
+            fs::read(destination.path().join("large.bin")).unwrap(),
+            bytes
+        );
     }
 
     #[test]

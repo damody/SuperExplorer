@@ -602,6 +602,56 @@ impl<R: AdbCommandRunner> RemoteProvider for AdbProvider<R> {
         )
     }
 
+    fn download_with_progress(
+        &self,
+        source: &VirtualLocationDescriptor,
+        local_destination: &Path,
+        cancellation: &CancellationToken,
+        progress: &(dyn Fn(u64) + Send + Sync),
+    ) -> Result<()> {
+        crate::provider::validate_remote_location(source, "adb", false)?;
+        let serial = self.serial(source)?;
+        let remote = remote_path(source);
+        let expected = self
+            .client
+            .metadata(&serial, &remote, cancellation)
+            .ok()
+            .map(|m| m.size);
+        if expected.is_none() {
+            return self
+                .client
+                .pull(&serial, &remote, local_destination, cancellation);
+        }
+        let destination = local_destination.to_path_buf();
+        let result = thread::scope(|scope| {
+            let handle = scope.spawn(|| {
+                self.client
+                    .pull(&serial, &remote, &destination, cancellation)
+            });
+            let mut reported = 0_u64;
+            while !handle.is_finished() {
+                if let Ok(size) = fs_file_or_tree_bytes(&destination)
+                    && size > reported
+                {
+                    progress(size - reported);
+                    reported = size;
+                }
+                thread::sleep(Duration::from_millis(75));
+            }
+            let result = handle
+                .join()
+                .map_err(|_| anyhow::anyhow!("ADB pull worker panicked"))?;
+            result?;
+            if let Ok(size) = fs_file_or_tree_bytes(&destination)
+                && size > reported
+            {
+                progress(size - reported);
+            }
+            Ok(())
+        });
+        result
+    }
+
     fn upload(
         &self,
         local_source: &Path,
@@ -615,6 +665,56 @@ impl<R: AdbCommandRunner> RemoteProvider for AdbProvider<R> {
             &remote_path(destination),
             cancellation,
         )
+    }
+
+    fn upload_with_progress(
+        &self,
+        local_source: &Path,
+        destination: &VirtualLocationDescriptor,
+        cancellation: &CancellationToken,
+        progress: &(dyn Fn(u64) + Send + Sync),
+    ) -> Result<()> {
+        crate::provider::validate_remote_location(destination, "adb", true)?;
+        let serial = self.serial(destination)?;
+        let mut target = destination.clone();
+        if let Some(name) = local_source.file_name().and_then(|name| name.to_str()) {
+            target.components.push(name.to_owned());
+        }
+        let remote_parent = remote_path(destination);
+        let remote_target = remote_path(&target);
+        let local = local_source.to_path_buf();
+        let expected = fs_file_or_tree_bytes(&local).ok();
+        if expected.is_none() {
+            return self
+                .client
+                .push(&serial, &local, &remote_parent, cancellation);
+        }
+        thread::scope(|scope| {
+            let handle = scope.spawn(|| {
+                self.client
+                    .push(&serial, &local, &remote_parent, cancellation)
+            });
+            let mut reported = 0_u64;
+            while !handle.is_finished() {
+                if let Ok(metadata) = self.client.metadata(&serial, &remote_target, cancellation)
+                    && metadata.size > reported
+                {
+                    progress(metadata.size - reported);
+                    reported = metadata.size;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            let result = handle
+                .join()
+                .map_err(|_| anyhow::anyhow!("ADB push worker panicked"))?;
+            result?;
+            if let Some(expected) = expected
+                && expected > reported
+            {
+                progress(expected - reported);
+            }
+            Ok(())
+        })
     }
 
     fn create_directory(
@@ -713,6 +813,10 @@ impl<R: AdbCommandRunner> RemoteProvider for AdbProvider<R> {
             cancellation,
         )
     }
+}
+
+fn fs_file_or_tree_bytes(path: &Path) -> Result<u64> {
+    crate::transfer::local_tree_bytes(path)
 }
 
 fn remote_path(location: &VirtualLocationDescriptor) -> String {

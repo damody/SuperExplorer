@@ -736,6 +736,17 @@ pub struct OperationProgress {
     pub total_items: usize,
     pub completed_bytes: u64,
     pub total_bytes: Option<u64>,
+    pub phase: TransferProgressPhase,
+    pub current_item: Option<String>,
+}
+
+/// User-visible phase of a file transfer. Terminal completion remains represented by
+/// `OperationTerminal`, so an in-flight progress event never implies success.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransferProgressPhase {
+    Preparing,
+    Transferring,
+    Finalizing,
 }
 
 /// Exactly-one terminal operation result.

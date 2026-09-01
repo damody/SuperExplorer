@@ -18,7 +18,7 @@ use windows::Win32::{
             CountClipboardFormats, GetClipboardSequenceNumber, IsClipboardFormatAvailable,
             RegisterClipboardFormatW,
         },
-        Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
+        Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock},
         Ole::{
             CF_HDROP, DROPEFFECT_COPY, DROPEFFECT_MOVE, OleFlushClipboard, OleGetClipboard,
             OleInitialize, OleSetClipboard, OleUninitialize, ReleaseStgMedium,
@@ -30,10 +30,24 @@ use windows::Win32::{
     },
 };
 
+/// Returns the process-global Windows clipboard sequence without opening the clipboard.
+#[must_use]
+pub fn native_clipboard_sequence() -> u32 {
+    // SAFETY: this observation is lock-free and retains no clipboard handles.
+    unsafe { GetClipboardSequenceNumber() }
+}
+
 /// Reads only native file-drop clipboard data on a short-lived OLE STA. Text, HTML, and image
 /// formats are ignored and never cleared, so file Paste cannot consume ordinary clipboard data.
 pub fn read_native_file_clipboard()
 -> Result<Option<(Vec<ItemDescriptor>, ClipboardMode)>, ExplorerError> {
+    read_native_file_clipboard_with_token().map(|value| value.map(|(items, mode, _)| (items, mode)))
+}
+
+/// Reads a native file clipboard together with SuperExplorer's optional ownership token. The
+/// token is advisory: standard external CF_HDROP providers do not need to publish it.
+pub fn read_native_file_clipboard_with_token()
+-> Result<Option<(Vec<ItemDescriptor>, ClipboardMode, Option<[u8; 32]>)>, ExplorerError> {
     // SAFETY: this function is called from a fresh worker thread and balances OLE initialization.
     unsafe { OleInitialize(None) }
         .map_err(|error| native_clipboard_error("initialize OLE clipboard worker", &error))?;
@@ -44,11 +58,57 @@ pub fn read_native_file_clipboard()
         }
         let data = get_clipboard_with_retry("read native file clipboard", Duration::from_secs(2))?;
         let mode = preferred_mode(&data).unwrap_or(ClipboardMode::Copy);
-        read_hdrop_items(&data).map(|items| Some((items, mode)))
+        let token = read_binary_clipboard_format(
+            &data,
+            windows::core::w!("SuperExplorer.RemoteClipboardToken.v1"),
+        )?;
+        read_hdrop_items(&data).map(|items| Some((items, mode, token)))
     })();
     // SAFETY: balances the successful OleInitialize on this worker thread.
     unsafe { OleUninitialize() };
     result
+}
+
+fn read_binary_clipboard_format(
+    data: &IDataObject,
+    name: windows::core::PCWSTR,
+) -> Result<Option<[u8; 32]>, ExplorerError> {
+    // SAFETY: name is a live NUL-terminated registered clipboard format name.
+    let format_id = unsafe { RegisterClipboardFormatW(name) };
+    let Ok(cf_format) = u16::try_from(format_id) else {
+        return Ok(None);
+    };
+    let format = FORMATETC {
+        cfFormat: cf_format,
+        ptd: std::ptr::null_mut(),
+        dwAspect: DVASPECT_CONTENT.0,
+        lindex: -1,
+        tymed: TYMED_HGLOBAL.0.unsigned_abs(),
+    };
+    // A missing private format is the normal path for File Explorer and other applications.
+    if unsafe { data.QueryGetData(&raw const format) }.is_err() {
+        return Ok(None);
+    }
+    let Ok(mut medium) = Medium::get(data, &format) else {
+        return Ok(None);
+    };
+    let memory = unsafe { medium.value.u.hGlobal };
+    // SAFETY: the private format contract uses a movable HGLOBAL.
+    if unsafe { GlobalSize(memory) } < 32 {
+        medium.release();
+        return Ok(None);
+    }
+    // SAFETY: GlobalSize proved at least 32 readable bytes and the medium remains live.
+    let pointer = unsafe { GlobalLock(memory) }.cast::<u8>();
+    if pointer.is_null() {
+        medium.release();
+        return Ok(None);
+    }
+    let mut token = [0_u8; 32];
+    unsafe { std::ptr::copy_nonoverlapping(pointer, token.as_mut_ptr(), token.len()) };
+    let _ = unsafe { GlobalUnlock(memory) };
+    medium.release();
+    Ok(Some(token))
 }
 
 /// Publishes local filesystem items as a standard Shell file clipboard object. Only file-drop
@@ -647,8 +707,17 @@ fn read_hdrop_items(data: &IDataObject) -> Result<Vec<ItemDescriptor>, ExplorerE
 }
 
 fn preferred_mode(data: &IDataObject) -> Option<ClipboardMode> {
+    let effect = drop_effect(data, CFSTR_PREFERREDDROPEFFECT)?;
+    if effect & DROPEFFECT_MOVE.0 != 0 {
+        Some(ClipboardMode::Cut)
+    } else {
+        Some(ClipboardMode::Copy)
+    }
+}
+
+pub(crate) fn drop_effect(data: &IDataObject, name: windows::core::PCWSTR) -> Option<u32> {
     // SAFETY: predefined constant is a valid NUL-terminated format name.
-    let format_id = unsafe { RegisterClipboardFormatW(CFSTR_PREFERREDDROPEFFECT) };
+    let format_id = unsafe { RegisterClipboardFormatW(name) };
     if format_id == 0 {
         return None;
     }
@@ -671,11 +740,7 @@ fn preferred_mode(data: &IDataObject) -> Option<ClipboardMode> {
     // SAFETY: balances successful GlobalLock; a false return may mean the lock count reached zero.
     let _ = unsafe { GlobalUnlock(medium.value.u.hGlobal) };
     medium.release();
-    if effect & DROPEFFECT_MOVE.0 != 0 {
-        Some(ClipboardMode::Cut)
-    } else {
-        Some(ClipboardMode::Copy)
-    }
+    Some(effect)
 }
 
 pub(crate) fn set_drop_effect(
@@ -812,8 +877,8 @@ mod tests {
     use super::{
         CLIPBOARD_TEST_LOCK, ClipboardRuntime, background_paste_still_owns_clipboard,
         clear_clipboard_with_retry, create_shell_data_object, paste_conflict_for_mode,
-        paste_conflict_for_request, set_clipboard_with_retry, set_drop_effect,
-        validate_inspection_duration,
+        paste_conflict_for_request, read_binary_clipboard_format, set_binary_clipboard_format,
+        set_clipboard_with_retry, set_drop_effect, validate_inspection_duration,
     };
 
     #[test]
@@ -821,6 +886,44 @@ mod tests {
         assert!(background_paste_still_owns_clipboard(42, 42));
         assert!(!background_paste_still_owns_clipboard(42, 43));
         assert!(!background_paste_still_owns_clipboard(u32::MAX, 0));
+    }
+
+    #[test]
+    fn private_remote_token_round_trips_without_becoming_required_for_hdrop() {
+        let _guard = CLIPBOARD_TEST_LOCK.lock().expect("clipboard lock");
+        unsafe { OleInitialize(None) }.expect("initialize OLE");
+        let fixture = explorer_test_support::OwnedTempFixture::new().expect("fixture");
+        let path = fixture.create_file("token.txt", b"token").expect("file");
+        let item = ItemDescriptor {
+            id: ShellItemId::from_provider_bytes([7]).expect("identity"),
+            location: LocationDescriptor::file_system(path),
+        };
+        let data = create_shell_data_object(&[item]).expect("Shell data object");
+        assert_eq!(
+            read_binary_clipboard_format(
+                &data,
+                windows::core::w!("SuperExplorer.RemoteClipboardToken.v1")
+            )
+            .expect("missing token is supported"),
+            None
+        );
+        let token = [0x5a; 32];
+        set_binary_clipboard_format(
+            &data,
+            windows::core::w!("SuperExplorer.RemoteClipboardToken.v1"),
+            &token,
+        )
+        .expect("set token");
+        assert_eq!(
+            read_binary_clipboard_format(
+                &data,
+                windows::core::w!("SuperExplorer.RemoteClipboardToken.v1")
+            )
+            .expect("read token"),
+            Some(token)
+        );
+        drop(data);
+        unsafe { OleUninitialize() };
     }
 
     #[test]
