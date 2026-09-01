@@ -18,9 +18,11 @@ matches, and verifies that none remain. Query, termination, timeout, or final
 verification failure returns nonzero.
 
 NSIS extracts and invokes the script before service shutdown and before any
-application file replacement. A nonzero result shows a controlled error and
-aborts the section, so installation cannot report success after a known stale-
-binary condition. Fresh installs with no matching process pass immediately.
+application file replacement or uninstall deletion. A nonzero result shows a
+controlled error and aborts the section, so installation or uninstallation
+cannot report success after a known stale-binary condition. Fresh installs with
+no matching process pass immediately. Silent-mode error dialogs use a default
+response and therefore cannot block unattended completion.
 
 ## Alternatives
 
