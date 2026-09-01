@@ -4230,6 +4230,11 @@ impl ApplicationLifecycle {
         reason = "application startup keeps platform, lifecycle, window, fixture, and auto-close ownership visible in one audited path"
     )]
     pub fn run_gpui(&self) -> Result<(), Error> {
+        self.run_gpui_with_initial_path(None)
+    }
+
+    /// Runs GPUI with an explicit initial filesystem path overriding restored tabs.
+    pub fn run_gpui_with_initial_path(&self, initial_path: Option<PathBuf>) -> Result<(), Error> {
         let launch_error = Arc::new(Mutex::new(None::<String>));
         let mut extension_job_ui_bridge = self.take_extension_job_ui_bridge()?;
         let closure_error = Arc::clone(&launch_error);
@@ -4332,7 +4337,7 @@ impl ApplicationLifecycle {
         let visual_fixture = VisualFixtureConfig::from_environment()?;
         let show_splash =
             crate::branding::should_show_splash(visual_fixture.is_some(), auto_close.is_some());
-        let initial_location = configured_initial_location()?;
+        let initial_location = configured_initial_location(initial_path)?;
         let (restored_tabs, restored_placement) = if visual_fixture.is_none() {
             load_session_restore(&diagnostics, initial_location.clone())
         } else {
@@ -4769,7 +4774,11 @@ impl ApplicationLifecycle {
                             }
                         }));
                         root.attach_bookmark_editor_window_observer(Rc::new(move |snapshot, cx| {
-                            let options = explorer_ui::bookmark_editor_window::bookmark_editor_window_options(cx);
+                            let options = explorer_ui::bookmark_editor_window::bookmark_editor_window_options(
+                                cx,
+                                snapshot.anchor,
+                                snapshot.multiline_payload,
+                            );
                             let opened = cx.open_window(options, move |window, cx| {
                                 cx.new(|cx| {
                                     explorer_ui::bookmark_editor_window::BookmarkEditorWindow::new(
@@ -5534,11 +5543,14 @@ fn system_drag_threshold(window: &gpui::Window) -> (f32, f32) {
     explorer_shell_win::SystemDragThreshold::current().logical_at_scale(window.scale_factor())
 }
 
-fn configured_initial_location() -> Result<Option<explorer_model::HistoryEntry>, Error> {
-    let Some(value) = std::env::var_os("EXPLORER_INITIAL_PATH") else {
+fn configured_initial_location(
+    startup_override: Option<PathBuf>,
+) -> Result<Option<explorer_model::HistoryEntry>, Error> {
+    let Some(path) =
+        startup_override.or_else(|| std::env::var_os("EXPLORER_INITIAL_PATH").map(PathBuf::from))
+    else {
         return Ok(None);
     };
-    let path = PathBuf::from(value);
     if !path.is_absolute() || !path.is_dir() {
         anyhow::bail!("EXPLORER_INITIAL_PATH must be an existing absolute directory");
     }

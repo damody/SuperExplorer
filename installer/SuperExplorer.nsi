@@ -82,6 +82,7 @@ VIAddVersionKey /LANG=1033 "ProductVersion" "${APP_VERSION}"
 !else
     !define APP_ARGS ""
 !endif
+!define SHORTCUT_ARGS ""
 !ifdef INCLUDE_SUPERDESKTOP
     !define MUI_FINISHPAGE_RUN "$INSTDIR\superdesktop-app.exe"
     !define MUI_FINISHPAGE_RUN_TEXT "執行 SuperDesktop"
@@ -106,6 +107,21 @@ VIAddVersionKey /LANG=1033 "ProductVersion" "${APP_VERSION}"
 
 Section "SuperExplorer" SEC_MAIN
     SetShellVarContext current
+
+    InitPluginsDir
+    SetOutPath "$PLUGINSDIR"
+    File /oname=quiesce-superexplorer.ps1 "quiesce-superexplorer.ps1"
+    DetailPrint "Closing SuperExplorer processes running from the selected installation directory."
+    nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\quiesce-superexplorer.ps1" -InstallDirectory "$INSTDIR"'
+    Pop $0
+    Pop $1
+    DetailPrint "$1"
+    ${If} $0 != 0
+        DetailPrint "Unable to quiesce installed SuperExplorer processes: exit=$0 $1"
+        SetErrorLevel 1603
+        MessageBox MB_ICONSTOP|MB_OK "無法安全關閉正在執行的 SuperExplorer。安裝尚未覆蓋任何程式檔案。$\r$\n$\r$\n$1" /SD IDOK
+        Abort
+    ${EndIf}
 
     ; Never overwrite the service binary until SCM confirms a full stop.
     ; Error 1060 is the expected first-install case; other failures are fatal.
@@ -259,8 +275,8 @@ service_running:
     WriteUninstaller "$INSTDIR\Uninstall.exe"
 
     CreateDirectory "$SMPROGRAMS\${PRODUCT_NAME}"
-    CreateShortcut "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk" "$INSTDIR\SuperExplorer.exe" "${APP_ARGS}"
-    CreateShortcut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\SuperExplorer.exe" "${APP_ARGS}"
+    CreateShortcut "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk" "$INSTDIR\SuperExplorer.exe" "${SHORTCUT_ARGS}"
+    CreateShortcut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\SuperExplorer.exe" "${SHORTCUT_ARGS}"
 
     WriteRegStr HKLM "${PRODUCT_REG_KEY}" "InstallDir" "$INSTDIR"
     WriteRegStr HKLM "${PRODUCT_UNINSTALL_KEY}" "DisplayName" "${PRODUCT_NAME}"
@@ -276,6 +292,21 @@ SectionEnd
 
 Section "Uninstall"
     SetShellVarContext current
+
+    InitPluginsDir
+    SetOutPath "$PLUGINSDIR"
+    File /oname=quiesce-superexplorer.ps1 "quiesce-superexplorer.ps1"
+    DetailPrint "Closing SuperExplorer processes running from the selected installation directory before uninstall."
+    nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\quiesce-superexplorer.ps1" -InstallDirectory "$INSTDIR"'
+    Pop $0
+    Pop $1
+    DetailPrint "$1"
+    ${If} $0 != 0
+        DetailPrint "Unable to quiesce installed SuperExplorer processes before uninstall: exit=$0 $1"
+        SetErrorLevel 1603
+        MessageBox MB_ICONSTOP|MB_OK "無法安全關閉正在執行的 SuperExplorer。解除安裝尚未刪除任何程式檔案。$\r$\n$\r$\n$1" /SD IDOK
+        Abort
+    ${EndIf}
 
     DetailPrint "Waiting for SuperExplorer MFT Windows Service to stop before uninstall."
     nsExec::ExecToStack '"$SYSDIR\sc.exe" query SuperExplorerMft'
