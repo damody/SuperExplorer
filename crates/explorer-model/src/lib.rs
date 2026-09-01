@@ -20,6 +20,7 @@ mod cache_telemetry;
 mod context_menu;
 mod domain;
 mod drag_drop;
+mod file_presentation;
 mod lock_recovery;
 mod namespace;
 mod navigation;
@@ -68,6 +69,9 @@ pub use drag_drop::{
     filesystem_drop_destination_is_valid, negotiate_effect, negotiate_filesystem_drop_effect,
 };
 pub use explorer_common::RequestId;
+pub use file_presentation::{
+    RemoteFileIconKind, RemoteFilePresentation, classify_remote_file_name,
+};
 pub use lock_recovery::{
     DeleteLockKind, LockOwner, LockOwnerApplicationType, LockOwnerCloseOutcome,
     LockOwnerCloseRequest, LockOwnerCloseResult, LockOwnerCloseTerminal, LockOwnerDiscoveryRequest,
@@ -116,7 +120,7 @@ pub use protocol::{
     SearchSourceStatus, SearchTerminal, ShellContextMenuTarget, ShellIconFallbackReason,
     ShellIconKey, ShellIconPayload, ShellIconPayloadError, ShellIconTheme, ShellNewItemDescriptor,
     ShellNewItemRecipe, ShellNewValidationError, TerminalLedger, TerminalViolation,
-    TransferEffects, base_icon_key, classify_base_icon,
+    TransferEffects, TransferProgressPhase, base_icon_key, classify_base_icon,
 };
 pub use remote::{
     RemoteAddress, RemoteAddressError, RemoteProviderKind, SftpAddressInput, SftpProfile,

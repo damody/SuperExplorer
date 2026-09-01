@@ -40,6 +40,23 @@ impl BookmarkTarget {
     pub const fn is_folder(&self) -> bool {
         matches!(self, Self::Folder { .. } | Self::FolderPath { .. })
     }
+
+    fn identifies_same_item(&self, other: &Self) -> bool {
+        if self == other {
+            return true;
+        }
+        let same_kind = matches!(
+            (self, other),
+            (
+                Self::Folder { .. } | Self::FolderPath { .. },
+                Self::Folder { .. } | Self::FolderPath { .. }
+            ) | (
+                Self::File { .. } | Self::FilePath { .. },
+                Self::File { .. } | Self::FilePath { .. }
+            )
+        );
+        same_kind && self.editable_payload() == other.editable_payload()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -195,7 +212,7 @@ impl Bookmarks {
     pub fn id_for_target(&self, target: &BookmarkTarget) -> Option<BookmarkId> {
         self.entries
             .iter()
-            .find(|item| &item.target == target)
+            .find(|item| item.target.identifies_same_item(target))
             .map(|item| item.id)
     }
 
@@ -639,6 +656,35 @@ mod tests {
         assert_eq!(value.id_for_target(&target), Some(id));
         assert!(value.begin_reorder(id, 1).changed());
         assert!(value.begin_update(id, "Renamed".into(), target).changed());
+    }
+
+    #[test]
+    fn lookup_matches_editable_folder_paths_inside_bookmark_folders() {
+        let mut value = Bookmarks::default();
+        value.begin_add_folder("Work".into(), None);
+        let parent_id = value.folders()[0].id;
+        value.begin_add_to(
+            "Fixture".into(),
+            BookmarkTarget::FolderPath {
+                path: r"C:\fixture".to_owned(),
+            },
+            Some(parent_id),
+        );
+        let id = value.entries()[0].id;
+
+        assert_eq!(
+            value.id_for_target(&BookmarkTarget::Folder {
+                location: LocationDescriptor::file_system(r"C:\fixture"),
+            }),
+            Some(id)
+        );
+        assert_eq!(
+            value.id_for_target(&BookmarkTarget::File {
+                location: LocationDescriptor::file_system(r"C:\fixture"),
+            }),
+            None,
+            "folder and file bookmarks must remain distinct"
+        );
     }
 
     #[test]

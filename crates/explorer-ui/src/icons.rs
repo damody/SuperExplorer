@@ -3,9 +3,200 @@
 use gpui::{IntoElement, div, prelude::*, px, svg};
 
 use crate::{
-    UiTokens, diagnostics::icon_probe, navigation_pane::NavigationIcon,
-    theme::NavigationIconPalette,
+    UiTokens,
+    diagnostics::icon_probe,
+    navigation_pane::NavigationIcon,
+    theme::{NavigationIconPalette, Rgba8},
 };
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RemoteFileIconSpec {
+    pub glyph_name: &'static str,
+    pub accessible_label: &'static str,
+    pub accent: Rgba8,
+    pub monochrome: bool,
+}
+
+impl RemoteFileIconSpec {
+    pub fn asset_path(self) -> String {
+        format!("remote-file/{}.svg", self.glyph_name)
+    }
+}
+
+pub const fn remote_file_icon_spec(kind: explorer_model::RemoteFileIconKind) -> RemoteFileIconSpec {
+    use explorer_model::RemoteFileIconKind as Kind;
+    let mut spec = match kind {
+        Kind::Generic => RemoteFileIconSpec {
+            glyph_name: "generic",
+            accessible_label: "file",
+            accent: Rgba8::opaque(116, 151, 184),
+            monochrome: false,
+        },
+        Kind::Pdf => RemoteFileIconSpec {
+            glyph_name: "pdf",
+            accessible_label: "PDF file",
+            accent: Rgba8::opaque(218, 55, 62),
+            monochrome: true,
+        },
+        Kind::Text => RemoteFileIconSpec {
+            glyph_name: "text",
+            accessible_label: "text file",
+            accent: Rgba8::opaque(48, 126, 190),
+            monochrome: false,
+        },
+        Kind::Settings => RemoteFileIconSpec {
+            glyph_name: "settings",
+            accessible_label: "settings file",
+            accent: Rgba8::opaque(88, 104, 122),
+            monochrome: false,
+        },
+        Kind::Image => RemoteFileIconSpec {
+            glyph_name: "image",
+            accessible_label: "image file",
+            accent: Rgba8::opaque(26, 148, 104),
+            monochrome: false,
+        },
+        Kind::Archive => RemoteFileIconSpec {
+            glyph_name: "archive",
+            accessible_label: "archive file",
+            accent: Rgba8::opaque(181, 129, 5),
+            monochrome: true,
+        },
+        Kind::Audio => RemoteFileIconSpec {
+            glyph_name: "audio",
+            accessible_label: "audio file",
+            accent: Rgba8::opaque(190, 72, 132),
+            monochrome: false,
+        },
+        Kind::Video => RemoteFileIconSpec {
+            glyph_name: "video",
+            accessible_label: "video file",
+            accent: Rgba8::opaque(116, 77, 169),
+            monochrome: false,
+        },
+        Kind::Code => RemoteFileIconSpec {
+            glyph_name: "code",
+            accessible_label: "code file",
+            accent: Rgba8::opaque(47, 111, 117),
+            monochrome: false,
+        },
+        Kind::Script => RemoteFileIconSpec {
+            glyph_name: "script",
+            accessible_label: "script file",
+            accent: Rgba8::opaque(45, 125, 91),
+            monochrome: true,
+        },
+        Kind::Executable => RemoteFileIconSpec {
+            glyph_name: "executable",
+            accessible_label: "executable or binary file",
+            accent: Rgba8::opaque(91, 96, 105),
+            monochrome: false,
+        },
+        Kind::AndroidPackage => RemoteFileIconSpec {
+            glyph_name: "android",
+            accessible_label: "Android package",
+            accent: Rgba8::opaque(61, 220, 132),
+            monochrome: false,
+        },
+        Kind::Word => RemoteFileIconSpec {
+            glyph_name: "word",
+            accessible_label: "word-processing document",
+            accent: Rgba8::opaque(42, 94, 171),
+            monochrome: true,
+        },
+        Kind::Spreadsheet => RemoteFileIconSpec {
+            glyph_name: "spreadsheet",
+            accessible_label: "spreadsheet",
+            accent: Rgba8::opaque(33, 115, 70),
+            monochrome: false,
+        },
+        Kind::Presentation => RemoteFileIconSpec {
+            glyph_name: "presentation",
+            accessible_label: "presentation",
+            accent: Rgba8::opaque(210, 71, 38),
+            monochrome: true,
+        },
+        Kind::Notebook => RemoteFileIconSpec {
+            glyph_name: "notebook",
+            accessible_label: "notebook",
+            accent: Rgba8::opaque(119, 61, 126),
+            monochrome: false,
+        },
+        Kind::Database => RemoteFileIconSpec {
+            glyph_name: "database",
+            accessible_label: "database",
+            accent: Rgba8::opaque(156, 100, 37),
+            monochrome: false,
+        },
+        Kind::Mail => RemoteFileIconSpec {
+            glyph_name: "mail",
+            accessible_label: "mail data file",
+            accent: Rgba8::opaque(30, 111, 180),
+            monochrome: false,
+        },
+        Kind::Font => RemoteFileIconSpec {
+            glyph_name: "font",
+            accessible_label: "font file",
+            accent: Rgba8::opaque(74, 74, 74),
+            monochrome: true,
+        },
+        Kind::Certificate => RemoteFileIconSpec {
+            glyph_name: "certificate",
+            accessible_label: "certificate or key file",
+            accent: Rgba8::opaque(186, 124, 14),
+            monochrome: false,
+        },
+        Kind::DiskImage => RemoteFileIconSpec {
+            glyph_name: "disk-image",
+            accessible_label: "disk image",
+            accent: Rgba8::opaque(83, 101, 118),
+            monochrome: true,
+        },
+        Kind::Web => RemoteFileIconSpec {
+            glyph_name: "web",
+            accessible_label: "web file",
+            accent: Rgba8::opaque(0, 120, 212),
+            monochrome: false,
+        },
+        Kind::Data => RemoteFileIconSpec {
+            glyph_name: "data",
+            accessible_label: "data file",
+            accent: Rgba8::opaque(92, 72, 169),
+            monochrome: false,
+        },
+        Kind::Markup => RemoteFileIconSpec {
+            glyph_name: "markup",
+            accessible_label: "markup file",
+            accent: Rgba8::opaque(44, 136, 153),
+            monochrome: false,
+        },
+    };
+    // GPUI's SVG path supports the official Filled subset through currentColor.
+    spec.monochrome = true;
+    spec
+}
+
+/// Scalable, dependency-free file tile used only when an ADB/SFTP item has no bitmap.
+pub fn remote_file_icon(
+    kind: explorer_model::RemoteFileIconKind,
+    size: f32,
+    _tokens: UiTokens,
+) -> impl IntoElement {
+    let spec = remote_file_icon_spec(kind);
+    let glyph_size = size * 0.94;
+    let glyph = svg()
+        .path(spec.asset_path())
+        .size(px(glyph_size))
+        .text_color(spec.accent.to_gpui());
+    div()
+        .w(px(size))
+        .h(px(size))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(glyph)
+}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ExplorerIcon {
@@ -127,10 +318,7 @@ pub fn chrome_icon(
 /// subpixel duplicate that makes the same Fluent path only slightly heavier.
 pub const NAVIGATION_HISTORY_ENABLED_EMBOLDEN_OFFSET: f32 = 0.35;
 
-pub(crate) fn navigation_history_icon_color(
-    enabled: bool,
-    tokens: UiTokens,
-) -> crate::theme::Rgba8 {
+pub(crate) fn navigation_history_icon_color(enabled: bool, tokens: UiTokens) -> Rgba8 {
     if enabled {
         tokens.theme.colors.text_primary
     } else {
@@ -321,6 +509,7 @@ pub fn unavailable_navigation_icon(tokens: UiTokens) -> impl IntoElement {
 mod tests {
     use super::{
         ExplorerIcon, NAVIGATION_HISTORY_ENABLED_EMBOLDEN_OFFSET, navigation_history_icon_color,
+        remote_file_icon_spec,
     };
     use crate::{UiTokens, theme::ThemeTokens};
 
@@ -357,6 +546,62 @@ mod tests {
             assert_ne!(
                 navigation_history_icon_color(true, tokens),
                 navigation_history_icon_color(false, tokens)
+            );
+        }
+    }
+
+    #[test]
+    fn every_remote_file_icon_kind_has_stable_accessible_visual_metadata() {
+        use explorer_model::RemoteFileIconKind as Kind;
+        let kinds = [
+            Kind::Generic,
+            Kind::Pdf,
+            Kind::Text,
+            Kind::Settings,
+            Kind::Image,
+            Kind::Archive,
+            Kind::Audio,
+            Kind::Video,
+            Kind::Code,
+            Kind::Script,
+            Kind::Executable,
+            Kind::AndroidPackage,
+            Kind::Word,
+            Kind::Spreadsheet,
+            Kind::Presentation,
+            Kind::Notebook,
+            Kind::Database,
+            Kind::Mail,
+            Kind::Font,
+            Kind::Certificate,
+            Kind::DiskImage,
+            Kind::Web,
+            Kind::Data,
+            Kind::Markup,
+        ];
+        let mut labels = std::collections::HashSet::new();
+        let mut accents = std::collections::HashSet::new();
+        let mut glyphs = std::collections::HashSet::new();
+        for kind in kinds {
+            let spec = remote_file_icon_spec(kind);
+            assert!(labels.insert(spec.accessible_label));
+            assert!(
+                spec.monochrome,
+                "all GPUI-compatible Filled assets are tintable"
+            );
+            assert!(accents.insert((spec.accent.red, spec.accent.green, spec.accent.blue)));
+            assert!(glyphs.insert(spec.glyph_name));
+        }
+    }
+
+    #[test]
+    fn remote_file_icon_geometry_scales_with_small_and_large_hosts() {
+        for size in [16.0_f32, 20.0, 64.0, 256.0, 512.0] {
+            let glyph_size = size * 0.94;
+            assert!(glyph_size > 0.0 && glyph_size <= size);
+            assert!(
+                glyph_size >= size - 31.0,
+                "small icons must use nearly the full host"
             );
         }
     }

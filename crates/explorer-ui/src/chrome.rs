@@ -32,7 +32,7 @@ use gpui::{
     AccessibleAction, Anchor, AnchoredPositionMode, App, BoxShadow, Context, DispatchPhase,
     Focusable, FontWeight, IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent, ObjectFit,
     Render, RenderImage, RenderOnce, Role, SharedString, Window, WindowControlArea, anchored,
-    canvas, deferred, div, hsla, img, point, prelude::*, px, svg,
+    canvas, deferred, div, hsla, img, point, prelude::*, px, relative, svg,
 };
 use gpui_elements::editable_text::{EditableTextState, text_input};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -530,6 +530,10 @@ impl RenderOnce for ExplorerWindow {
         let permanent_delete_count = self.state.permanent_delete_confirmation_count();
         let permanent_delete_focus = self.state.permanent_delete_confirmation_focus();
         let lock_recovery = self.state.lock_recovery().cloned();
+        let bookmark_folder_dismiss = self
+            .state
+            .bookmark_folder_menu()
+            .map(|id| (id, self.on_action.clone()));
         let file_viewport_width = explorer_file_viewport_width(window, &self.state, self.tokens);
         let file_origin_x =
             self.state.navigation_pane_width().value() + self.tokens.layout.divider_width.value();
@@ -577,6 +581,30 @@ impl RenderOnce for ExplorerWindow {
                 f32::from(window.bounds().size.width),
                 self.on_action.clone(),
             ))
+            .when_some(bookmark_folder_dismiss, |element, (id, callback)| {
+                let dismiss = ExplorerAction::ToggleBookmarkFolderMenu { id };
+                let right_callback = callback.clone();
+                let right_dismiss = dismiss.clone();
+                element.child(
+                    deferred(
+                        div()
+                            .id("bookmark-folder-menu-dismiss-overlay")
+                            .absolute()
+                            .inset_0()
+                            .when_some(callback, move |overlay, cb| {
+                                overlay.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                    cb(&dismiss, window, cx)
+                                })
+                            })
+                            .when_some(right_callback, move |overlay, cb| {
+                                overlay.on_mouse_down(MouseButton::Right, move |_, window, cx| {
+                                    cb(&right_dismiss, window, cx)
+                                })
+                            }),
+                    )
+                    .with_priority(155),
+                )
+            })
             .child(
                 CommandBar::new(self.tokens, self.state.clone(), self.on_action.clone())
                     .with_menu_focus(self.command_menu_focus)
@@ -907,7 +935,6 @@ fn bookmark_bar(
             } else {
                 "Current location cannot be bookmarked"
             };
-            let action = ExplorerAction::ToggleCurrentFolderBookmark;
             div()
                 .id("bookmark-star-toggle")
                 .role(Role::Button)
@@ -930,7 +957,18 @@ fn bookmark_bar(
                         .cursor_pointer()
                         .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
                         .when_some(callback.clone(), move |element, callback| {
-                            element.on_click(move |_, window, cx| callback(&action, window, cx))
+                            element.on_click(move |event, window, cx| {
+                                let (_, screen_x, screen_y) =
+                                    context_menu_coordinates(event.position(), window);
+                                callback(
+                                    &ExplorerAction::ToggleCurrentFolderBookmark {
+                                        screen_x: screen_x.saturating_sub(18),
+                                        screen_y: screen_y.saturating_add(18),
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            })
                         })
                 })
         })
@@ -1274,127 +1312,184 @@ fn bookmark_visible_count(entry_count: usize, width: f32) -> usize {
     entry_count.min(((width - 120.0) / 150.0).floor().max(1.0) as usize)
 }
 
+fn bookmark_manager_folder_depth(
+    bookmarks: &explorer_model::Bookmarks,
+    folder: &explorer_model::BookmarkFolder,
+    expanded: &HashSet<explorer_model::BookmarkFolderId>,
+) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut parent = folder.parent_id;
+    while let Some(id) = parent {
+        if !expanded.contains(&id) {
+            return None;
+        }
+        let ancestor = bookmarks.folder(id)?;
+        depth = depth.saturating_add(1);
+        parent = ancestor.parent_id;
+    }
+    Some(depth)
+}
+
 pub(crate) fn bookmark_manager(
     tokens: UiTokens,
     state: &AppViewState,
+    ui: &crate::bookmark_manager_window::BookmarkManagerUiState,
+    search_input: Option<gpui::WeakEntity<EditableTextState>>,
+    detail_input: Option<gpui::WeakEntity<EditableTextState>>,
+    detail_location_input: Option<gpui::WeakEntity<EditableTextState>>,
+    search_query: &str,
     callback: Option<ActionCallback>,
+    ui_callback: Option<crate::bookmark_manager_window::BookmarkManagerUiCallback>,
 ) -> impl IntoElement {
+    let search_query = search_query.trim().to_lowercase();
+    let manager_row_height = if ui.compact { 24.0 } else { 32.0 };
+    let (input_text, input_selection, input_selection_text, input_caret) =
+        editable_input_colors(tokens);
     let folder_rows = state
         .bookmarks()
         .folders()
         .iter()
         .cloned()
-        .map(|folder| {
-            let add_child = ExplorerAction::AddBookmarkFolder {
-                parent_id: Some(folder.id),
-            };
-            let add_path = ExplorerAction::AddPathBookmark {
-                parent_id: Some(folder.id),
-                kind: BookmarkPathKind::Folder,
-            };
+        .filter_map(|folder| {
+            let depth =
+                bookmark_manager_folder_depth(state.bookmarks(), &folder, &ui.expanded_folders)?;
+            (search_query.is_empty() || folder.name.to_lowercase().contains(&search_query))
+                .then_some((folder, depth))
+        })
+        .map(|(folder, depth)| {
             let edit = ExplorerAction::EditBookmarkFolder { id: folder.id };
-            let remove = ExplorerAction::RemoveBookmarkFolder { id: folder.id };
-            let add_cb = callback.clone();
-            let add_path_cb = callback.clone();
             let edit_cb = callback.clone();
-            let remove_cb = callback.clone();
-            let parent = folder
-                .parent_id
-                .and_then(|id| state.bookmarks().folder(id))
-                .map_or_else(|| "根目錄".to_owned(), |parent| parent.name.clone());
+            let select_cb = ui_callback.clone();
+            let toggle_cb = ui_callback.clone();
+            let toggle =
+                crate::bookmark_manager_window::BookmarkManagerUiAction::ToggleFolder(folder.id);
+            let select = crate::bookmark_manager_window::BookmarkManagerUiAction::Navigate(
+                crate::bookmark_manager_window::BookmarkManagerLocation::Folder(folder.id),
+            );
+            let selected = ui.selected_folder == Some(folder.id);
             div()
                 .id(("bookmark-folder-row", folder.id.as_u128() as u64))
                 .role(Role::ListItem)
                 .aria_label(format!("Bookmark folder {}", folder.name))
                 .flex()
                 .items_center()
-                .gap(px(8.0))
-                .py(px(5.0))
-                .child(format!("📁 {}（{}）", folder.name, parent))
+                .h(px(manager_row_height))
+                .pl(px(28.0 + depth as f32 * 20.0))
+                .pr(px(8.0))
+                .gap(px(7.0))
+                .cursor_pointer()
+                .when(selected, |row| {
+                    row.bg(tokens.theme.colors.control_pressed.to_gpui())
+                })
+                .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
                 .child(
                     div()
-                        .id(("bookmark-folder-edit", folder.id.as_u128() as u64))
+                        .id(("bookmark-manager-folder-toggle", folder.id.as_u128() as u64))
                         .role(Role::Button)
-                        .cursor_pointer()
-                        .child("重新命名")
-                        .when_some(edit_cb, move |element, cb| {
-                            element.on_click(move |_, window, cx| cb(&edit, window, cx))
+                        .child(if ui.expanded_folders.contains(&folder.id) {
+                            "⌄"
+                        } else {
+                            "▸"
+                        })
+                        .when_some(toggle_cb, move |arrow, cb| {
+                            arrow.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                cb(&toggle, window, cx)
+                            })
                         }),
                 )
-                .child(
-                    div()
-                        .id(("bookmark-folder-add-path", folder.id.as_u128() as u64))
-                        .role(Role::Button)
-                        .cursor_pointer()
-                        .child("新增路徑書籤")
-                        .when_some(add_path_cb, move |element, cb| {
-                            element.on_click(move |_, window, cx| cb(&add_path, window, cx))
-                        }),
-                )
-                .child(
-                    div()
-                        .id(("bookmark-folder-add-child", folder.id.as_u128() as u64))
-                        .role(Role::Button)
-                        .cursor_pointer()
-                        .child("新增子資料夾")
-                        .when_some(add_cb, move |element, cb| {
-                            element.on_click(move |_, window, cx| cb(&add_child, window, cx))
-                        }),
-                )
-                .child(
-                    div()
-                        .id(("bookmark-folder-remove", folder.id.as_u128() as u64))
-                        .role(Role::Button)
-                        .cursor_pointer()
-                        .text_color(tokens.theme.colors.danger.to_gpui())
-                        .child("刪除")
-                        .when_some(remove_cb, move |element, cb| {
-                            element.on_click(move |_, window, cx| cb(&remove, window, cx))
-                        }),
-                )
+                .child(format!("📁 {}", folder.name))
+                .when_some(select_cb, move |element, cb| {
+                    element.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                        cb(&select, window, cx)
+                    })
+                })
+                .when_some(edit_cb, move |element, cb| {
+                    element.on_click(move |event, window, cx| {
+                        if event.click_count() == 2 {
+                            cb(&edit, window, cx);
+                        }
+                    })
+                })
         })
         .collect::<Vec<_>>();
-    let rows = state
+    let mut presented_bookmarks = state
         .bookmarks()
         .entries()
         .iter()
         .cloned()
+        .filter(|bookmark| match ui.location {
+            crate::bookmark_manager_window::BookmarkManagerLocation::AllBookmarks => true,
+            crate::bookmark_manager_window::BookmarkManagerLocation::Root => {
+                bookmark.parent_id.is_none()
+            }
+            crate::bookmark_manager_window::BookmarkManagerLocation::Folder(id) => {
+                bookmark.parent_id == Some(id)
+            }
+        })
+        .filter(|bookmark| {
+            search_query.is_empty()
+                || bookmark.name.to_lowercase().contains(&search_query)
+                || bookmark
+                    .target
+                    .editable_payload()
+                    .to_lowercase()
+                    .contains(&search_query)
+        })
+        .collect::<Vec<_>>();
+    presented_bookmarks.sort_by(|left, right| {
+        let ordering = match ui.sort_column {
+            crate::bookmark_manager_window::BookmarkManagerSortColumn::Name => {
+                left.name.to_lowercase().cmp(&right.name.to_lowercase())
+            }
+            crate::bookmark_manager_window::BookmarkManagerSortColumn::Tags => {
+                std::cmp::Ordering::Equal
+            }
+            crate::bookmark_manager_window::BookmarkManagerSortColumn::Location => left
+                .target
+                .editable_payload()
+                .to_lowercase()
+                .cmp(&right.target.editable_payload().to_lowercase()),
+        };
+        ordering.then_with(|| left.order.cmp(&right.order))
+    });
+    if ui.descending {
+        presented_bookmarks.reverse();
+    }
+    let rows = presented_bookmarks
+        .into_iter()
         .map(|bookmark| {
             let sibling_index = state
                 .bookmarks()
                 .child_entries(bookmark.parent_id)
                 .position(|entry| entry.id == bookmark.id)
                 .unwrap_or(0);
-            let sibling_count = state.bookmarks().child_entries(bookmark.parent_id).count();
             let id = bookmark.id;
-            let up = ExplorerAction::MoveBookmark {
-                id,
-                destination: sibling_index.saturating_sub(1),
-            };
-            let down = ExplorerAction::MoveBookmark {
-                id,
-                destination: sibling_index
-                    .saturating_add(1)
-                    .min(sibling_count.saturating_sub(1)),
-            };
-            let remove = ExplorerAction::RemoveBookmark { id };
             let edit = ExplorerAction::EditBookmark { id };
             let drag_label = bookmark.name.clone();
+            let location = bookmark.target.editable_payload();
             let drop_cb = callback.clone();
-            let up_cb = callback.clone();
-            let down_cb = callback.clone();
-            let remove_cb = callback.clone();
             let edit_cb = callback.clone();
             let context_cb = callback.clone();
+            let select_cb = ui_callback.clone();
+            let select =
+                crate::bookmark_manager_window::BookmarkManagerUiAction::SelectBookmark(id);
+            let selected = ui.selected_bookmark == Some(id);
             div()
                 .id(("bookmark-row", id.as_u128() as u64))
                 .role(Role::ListItem)
                 .aria_label(format!("Bookmark {}", bookmark.name))
                 .flex()
                 .items_center()
-                .gap(px(8.0))
-                .py(px(5.0))
+                .h(px(manager_row_height))
+                .px(px(8.0))
                 .cursor_move()
+                .border_b(px(1.0))
+                .border_color(tokens.theme.colors.divider.to_gpui())
+                .when(selected, |row| {
+                    row.bg(tokens.theme.colors.file_row_selected_active.to_gpui())
+                        .text_color(tokens.theme.colors.file_row_selected_text.to_gpui())
+                })
+                .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
                 .on_drag(
                     BookmarkDrag {
                         id,
@@ -1434,109 +1529,536 @@ pub(crate) fn bookmark_manager(
                     })
                 })
                 .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                .child(bookmark_label(&bookmark.target, bookmark.name.clone()))
+                .when_some(select_cb, move |element, cb| {
+                    element.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                        cb(&select, window, cx)
+                    })
+                })
                 .child(
                     div()
-                        .id(("bookmark-edit", id.as_u128() as u64))
-                        .role(Role::Button)
-                        .aria_label(format!("Edit bookmark {}", bookmark.name))
-                        .cursor_pointer()
-                        .child("編輯")
-                        .when_some(edit_cb, move |e, cb| {
-                            e.on_click(move |_, w, cx| cb(&edit, w, cx))
-                        }),
+                        .w_2_5()
+                        .overflow_hidden()
+                        .child(bookmark_label(&bookmark.target, bookmark.name.clone())),
                 )
-                .child(
-                    div()
-                        .id(("bookmark-up", id.as_u128() as u64))
-                        .cursor_pointer()
-                        .child("↑")
-                        .when_some(up_cb, move |e, cb| {
-                            e.on_click(move |_, w, cx| cb(&up, w, cx))
-                        }),
-                )
-                .child(
-                    div()
-                        .id(("bookmark-down", id.as_u128() as u64))
-                        .cursor_pointer()
-                        .child("↓")
-                        .when_some(down_cb, move |e, cb| {
-                            e.on_click(move |_, w, cx| cb(&down, w, cx))
-                        }),
-                )
-                .child(
-                    div()
-                        .id(("bookmark-remove", id.as_u128() as u64))
-                        .cursor_pointer()
-                        .text_color(tokens.theme.colors.danger.to_gpui())
-                        .child("刪除")
-                        .when_some(remove_cb, move |e, cb| {
-                            e.on_click(move |_, w, cx| cb(&remove, w, cx))
-                        }),
-                )
+                .child(div().w_1_5().child(""))
+                .child(div().flex_1().overflow_hidden().child(location))
+                .when_some(edit_cb, move |element, cb| {
+                    element.on_click(move |event, window, cx| {
+                        if event.click_count() == 2 {
+                            cb(&edit, window, cx);
+                        }
+                    })
+                })
         })
         .collect::<Vec<_>>();
-    let close = ExplorerAction::ToggleBookmarkManager;
-    let add_root = ExplorerAction::AddBookmarkFolder { parent_id: None };
-    let add_root_cb = callback.clone();
-    let add_path_root = ExplorerAction::AddPathBookmark {
-        parent_id: None,
-        kind: BookmarkPathKind::Folder,
-    };
-    let add_path_root_cb = callback.clone();
+    let back_cb = ui_callback.clone();
+    let forward_cb = ui_callback.clone();
+    let manage_cb = ui_callback.clone();
+    let view_cb = ui_callback.clone();
+    let can_back = ui.history_index > 0;
+    let can_forward = ui.history_index + 1 < ui.history.len();
+    let import = ExplorerAction::ImportBookmarksFromClipboard;
+    let import_cb = callback.clone();
+    let backup = ExplorerAction::BackupBookmarksToClipboard;
+    let backup_cb = callback.clone();
+    let transfer_cb = ui_callback.clone();
+    let manage_add_cb = callback.clone();
+    let manage_parent_id = ui.selected_folder;
+    let manage_edit_cb = callback.clone();
+    let manage_remove_cb = callback.clone();
+    let view_name_cb = ui_callback.clone();
+    let view_location_cb = ui_callback.clone();
+    let view_density_cb = ui_callback.clone();
+    let all_bookmarks_cb = ui_callback.clone();
+    let root_bookmarks_cb = ui_callback.clone();
+    let toolbar_bookmarks_cb = ui_callback.clone();
+    let menu_bookmarks_cb = ui_callback.clone();
+    let column_name_cb = ui_callback.clone();
+    let column_tags_cb = ui_callback.clone();
+    let column_location_cb = ui_callback.clone();
+    let dismiss_menu_cb = ui_callback.clone();
     div()
         .id("bookmark-manager-content")
         .size_full()
-        .overflow_y_scroll()
-        .p(px(18.0))
+        .relative()
+        .overflow_hidden()
+        .flex()
+        .flex_col()
+        .font_family(tokens.typography.family.primary)
+        .text_size(px(14.0))
         .bg(tokens.theme.colors.surface.to_gpui())
         .child(
             div()
-                .id("bookmark-manager")
+                .id("bookmark-manager-toolbar")
                 .w_full()
-                .bg(tokens.theme.colors.surface.to_gpui())
+                .h(px(54.0))
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(14.0))
+                .px(px(14.0))
+                .border_b(px(1.0))
+                .border_color(tokens.theme.colors.divider.to_gpui())
+                .bg(tokens.theme.colors.subtle_surface.to_gpui())
                 .child(
                     div()
-                        .flex()
-                        .justify_between()
-                        .child("書籤管理員")
-                        .child(
-                            div()
-                                .id("bookmark-folder-add-root")
-                                .role(Role::Button)
-                                .aria_label("Add bookmark folder")
-                                .cursor_pointer()
-                                .child("新增資料夾")
-                                .when_some(add_root_cb, move |e, cb| {
-                                    e.on_click(move |_, w, cx| cb(&add_root, w, cx))
-                                }),
-                        )
-                        .child(
-                            div()
-                                .id("bookmark-path-add-root")
-                                .role(Role::Button)
-                                .aria_label("Add path bookmark")
-                                .cursor_pointer()
-                                .child("新增路徑書籤")
-                                .when_some(add_path_root_cb, move |e, cb| {
-                                    e.on_click(move |_, w, cx| cb(&add_path_root, w, cx))
-                                }),
-                        )
-                        .child(
-                            div()
-                                .id("bookmark-manager-close")
-                                .role(Role::Button)
-                                .aria_label("Close bookmark manager")
-                                .cursor_pointer()
-                                .child("關閉")
-                                .when_some(callback, move |e, cb| {
-                                    e.on_click(move |_, w, cx| cb(&close, w, cx))
-                                }),
-                        ),
+                        .id("bookmark-manager-back")
+                        .role(Role::Button)
+                        .text_size(px(22.0))
+                        .text_color(if can_back { tokens.theme.colors.text_primary.to_gpui() } else { tokens.theme.colors.text_disabled.to_gpui() })
+                        .when(can_back, |button| button.cursor_pointer())
+                        .child("‹")
+                        .when_some(back_cb, |button, cb| button.on_click(move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Back, window, cx))),
                 )
-                .children(folder_rows)
-                .children(rows),
+                .child(
+                    div()
+                        .id("bookmark-manager-forward")
+                        .role(Role::Button)
+                        .text_size(px(22.0))
+                        .text_color(if can_forward { tokens.theme.colors.text_primary.to_gpui() } else { tokens.theme.colors.text_disabled.to_gpui() })
+                        .when(can_forward, |button| button.cursor_pointer())
+                        .child("›")
+                        .when_some(forward_cb, |button, cb| button.on_click(move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Forward, window, cx))),
+                )
+                .child(
+                    div()
+                        .id("bookmark-manager-manage-menu")
+                        .role(Role::Button)
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .px(px(6.0))
+                        .py(px(5.0))
+                        .rounded(px(4.0))
+                        .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
+                        .child("⚙")
+                        .child("管理 (O)⌄")
+                        .when_some(manage_cb, move |e, cb| {
+                            e.on_click(move |_, w, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::ToggleMenu(crate::bookmark_manager_window::BookmarkManagerMenu::Manage), w, cx))
+                        }),
+                )
+                .child(
+                    div()
+                        .id("bookmark-manager-view-toggle")
+                        .role(Role::Button)
+                        .aria_label("Toggle compact bookmark view")
+                        .cursor_pointer()
+                        .child("☷  檢視 (V)⌄")
+                        .when_some(view_cb, move |e, cb| {
+                            e.on_click(move |_, w, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::ToggleMenu(crate::bookmark_manager_window::BookmarkManagerMenu::View), w, cx))
+                        }),
+                )
+                .child(
+                    div()
+                        .id("bookmark-manager-transfer-menu")
+                        .role(Role::Button)
+                        .aria_label("Import and backup bookmarks")
+                        .cursor_pointer()
+                        .child("↕  匯入及備份 (I)⌄")
+                        .when_some(transfer_cb, move |e, cb| {
+                            e.on_click(move |_, w, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::ToggleMenu(crate::bookmark_manager_window::BookmarkManagerMenu::Transfer), w, cx))
+                        }),
+                )
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .id("bookmark-manager-search")
+                        .w(px(300.0))
+                        .h(px(34.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .px(px(12.0))
+                        .rounded(px(16.0))
+                        .border(px(1.0))
+                        .border_color(tokens.theme.colors.divider.to_gpui())
+                        .text_color(tokens.theme.colors.text_disabled.to_gpui())
+                        .child("⌕")
+                        .when_some(search_input, |search, input| {
+                            search.child(
+                                text_input("bookmark-manager-search-input")
+                                    .state(input)
+                                    .multiline(false)
+                                    .placeholder("搜尋書籤")
+                                    .caret_blink_interval_500ms()
+                                    .flex_1()
+                                    .h_full()
+                                    .px(px(2.0))
+                                    .text_size(px(14.0))
+                                    .text_color(input_text)
+                                    .selection_color(input_selection.into())
+                                    .selection_text_color(input_selection_text.into())
+                                    .caret_color(input_caret.into()),
+                            )
+                        }),
+                ),
         )
+        .when_some(state.bookmark_notice(), |element, notice| {
+            element.child(
+                div()
+                    .id("bookmark-manager-notice")
+                    .flex_none()
+                    .px(px(12.0))
+                    .py(px(5.0))
+                    .bg(tokens.theme.colors.subtle_surface.to_gpui())
+                    .child(notice.to_owned()),
+            )
+        })
+        .when(ui.open_menu.is_some(), |element| {
+            element.child(
+                deferred(
+                    div()
+                        .id("bookmark-manager-menu-dismiss-overlay")
+                        .absolute()
+                        .inset_0()
+                        .when_some(dismiss_menu_cb, |overlay, cb| {
+                            overlay.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::DismissMenu, window, cx)
+                            })
+                        }),
+                )
+                .with_priority(210),
+            )
+        })
+        .when(
+            ui.open_menu == Some(crate::bookmark_manager_window::BookmarkManagerMenu::Manage),
+            |element| {
+                element.child(
+                    deferred(
+                        div()
+                            .id("bookmark-manager-manage-popup")
+                            .absolute()
+                            .top(px(48.0))
+                            .left(px(70.0))
+                            .w(px(230.0))
+                            .p(px(6.0))
+                            .rounded(px(6.0))
+                            .border(px(1.0))
+                            .border_color(tokens.theme.colors.divider.to_gpui())
+                            .bg(tokens.theme.colors.menu_fill.to_gpui())
+                            .child(
+                                div()
+                                    .id("bookmark-manager-command-add-folder")
+                                    .role(Role::MenuItem)
+                                    .cursor_pointer()
+                                    .px(px(10.0))
+                                    .py(px(6.0))
+                                    .child("新增資料夾")
+                                    .when_some(manage_add_cb, |row, cb| {
+                                        row.on_click(move |_, window, cx| {
+                                            cb(&ExplorerAction::AddBookmarkFolder { parent_id: manage_parent_id }, window, cx)
+                                        })
+                                    }),
+                            )
+                            .when_some(ui.selected_bookmark, |menu, id| {
+                                let edit = ExplorerAction::EditBookmark { id };
+                                let remove = ExplorerAction::RequestRemoveBookmark { id };
+                                menu.child(
+                                    div()
+                                        .id("bookmark-manager-command-edit")
+                                        .role(Role::MenuItem)
+                                        .cursor_pointer()
+                                        .px(px(10.0))
+                                        .py(px(6.0))
+                                        .child("編輯書籤")
+                                        .when_some(manage_edit_cb.clone(), |row, cb| row.on_click(move |_, window, cx| cb(&edit, window, cx))),
+                                )
+                                .child(
+                                    div()
+                                        .id("bookmark-manager-command-remove")
+                                        .role(Role::MenuItem)
+                                        .cursor_pointer()
+                                        .px(px(10.0))
+                                        .py(px(6.0))
+                                        .text_color(tokens.theme.colors.danger.to_gpui())
+                                        .child("刪除書籤")
+                                        .when_some(manage_remove_cb.clone(), |row, cb| row.on_click(move |_, window, cx| cb(&remove, window, cx))),
+                                )
+                            })
+                            .when_some(ui.selected_folder, |menu, id| {
+                                let edit = ExplorerAction::EditBookmarkFolder { id };
+                                let remove = ExplorerAction::RemoveBookmarkFolder { id };
+                                menu.child(
+                                    div().id("bookmark-manager-command-edit-folder").role(Role::MenuItem).cursor_pointer().px(px(10.0)).py(px(6.0)).child("重新命名資料夾").when_some(manage_edit_cb.clone(), |row, cb| row.on_click(move |_, window, cx| cb(&edit, window, cx))),
+                                ).child(
+                                    div().id("bookmark-manager-command-remove-folder").role(Role::MenuItem).cursor_pointer().px(px(10.0)).py(px(6.0)).text_color(tokens.theme.colors.danger.to_gpui()).child("刪除資料夾").when_some(manage_remove_cb.clone(), |row, cb| row.on_click(move |_, window, cx| cb(&remove, window, cx))),
+                                )
+                            }),
+                    )
+                    .with_priority(220),
+                )
+            },
+        )
+        .when(
+            ui.open_menu == Some(crate::bookmark_manager_window::BookmarkManagerMenu::View),
+            |element| {
+                element.child(
+                    deferred(
+                        div()
+                            .id("bookmark-manager-view-popup")
+                            .absolute()
+                            .top(px(48.0))
+                            .left(px(190.0))
+                            .w(px(210.0))
+                            .p(px(6.0))
+                            .rounded(px(6.0))
+                            .border(px(1.0))
+                            .border_color(tokens.theme.colors.divider.to_gpui())
+                            .bg(tokens.theme.colors.menu_fill.to_gpui())
+                            .child(bookmark_manager_ui_menu_row("bookmark-manager-sort-name", "依名稱排序", crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::Name), view_name_cb))
+                            .child(bookmark_manager_ui_menu_row("bookmark-manager-sort-location", "依網址排序", crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::Location), view_location_cb))
+                            .child(bookmark_manager_ui_menu_row("bookmark-manager-toggle-density", "切換緊湊檢視", crate::bookmark_manager_window::BookmarkManagerUiAction::ToggleDensity, view_density_cb)),
+                    )
+                    .with_priority(220),
+                )
+            },
+        )
+        .when(
+            ui.open_menu == Some(crate::bookmark_manager_window::BookmarkManagerMenu::Transfer),
+            |element| {
+                element.child(
+                    deferred(
+                        div()
+                            .id("bookmark-manager-transfer-popup")
+                            .absolute()
+                            .top(px(48.0))
+                            .left(px(300.0))
+                            .w(px(260.0))
+                            .p(px(6.0))
+                            .rounded(px(6.0))
+                            .border(px(1.0))
+                            .border_color(tokens.theme.colors.divider.to_gpui())
+                            .bg(tokens.theme.colors.menu_fill.to_gpui())
+                            .child(
+                                div().id("bookmark-manager-import").role(Role::MenuItem).cursor_pointer().px(px(10.0)).py(px(6.0)).child("從剪貼簿匯入").when_some(import_cb, |row, cb| row.on_click(move |_, window, cx| cb(&import, window, cx))),
+                            )
+                            .child(
+                                div().id("bookmark-manager-backup").role(Role::MenuItem).cursor_pointer().px(px(10.0)).py(px(6.0)).child("備份到剪貼簿").when_some(backup_cb, |row, cb| row.on_click(move |_, window, cx| cb(&backup, window, cx))),
+                            ),
+                    )
+                    .with_priority(220),
+                )
+            },
+        )
+        .child(
+            div()
+                .id("bookmark-manager")
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .child(
+                    div()
+                        .id("bookmark-manager-tree")
+                        .w(px(260.0))
+                        .h_full()
+                        .flex_none()
+                        .overflow_y_scroll()
+                        .py(px(8.0))
+                        .border_r(px(1.0))
+                        .border_color(tokens.theme.colors.divider.to_gpui())
+                        .bg(tokens.theme.colors.subtle_surface.to_gpui())
+                        .child(
+                            div()
+                                .id("bookmark-manager-all-bookmarks")
+                                .role(Role::Button)
+                                .cursor_pointer()
+                                .h(px(32.0))
+                                .px(px(12.0))
+                                .flex()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child("⌄  ◷  瀏覽紀錄"),
+                        )
+                        .child(
+                            div()
+                                .id("bookmark-manager-toolbar-bookmarks")
+                                .role(Role::Button)
+                                .cursor_pointer()
+                                .h(px(32.0))
+                                .px(px(12.0))
+                                .flex()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child("   ⇩  下載項目"),
+                        )
+                        .child(
+                            div()
+                                .h(px(32.0))
+                                .px(px(12.0))
+                                .flex()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child("▸  ◇  標籤"),
+                        )
+                        .child(
+                            div()
+                                .h(px(32.0))
+                                .px(px(12.0))
+                                .flex()
+                                .items_center()
+                                .gap(px(8.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .when(matches!(ui.location, crate::bookmark_manager_window::BookmarkManagerLocation::AllBookmarks), |row| row.bg(tokens.theme.colors.control_pressed.to_gpui()))
+                                .child("⌄  ★  所有書籤")
+                                .when_some(all_bookmarks_cb, |row, cb| row.on_mouse_down(MouseButton::Left, move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Navigate(crate::bookmark_manager_window::BookmarkManagerLocation::AllBookmarks), window, cx))),
+                        )
+                        .child(
+                            div()
+                                .id("bookmark-manager-root-bookmarks")
+                                .role(Role::Button)
+                                .cursor_pointer()
+                                .h(px(32.0))
+                                .pl(px(38.0))
+                                .flex()
+                                .items_center()
+                                .child("▸  ▣  書籤工具列")
+                                .when_some(toolbar_bookmarks_cb, |row, cb| row.on_mouse_down(MouseButton::Left, move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Navigate(crate::bookmark_manager_window::BookmarkManagerLocation::Root), window, cx))),
+                        )
+                        .child(
+                            div()
+                                .id("bookmark-manager-menu-bookmarks")
+                                .role(Role::Button)
+                                .cursor_pointer()
+                                .h(px(32.0))
+                                .pl(px(38.0))
+                                .flex()
+                                .items_center()
+                                .child("▸  ▤  書籤選單")
+                                .when_some(menu_bookmarks_cb, |row, cb| row.on_mouse_down(MouseButton::Left, move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Navigate(crate::bookmark_manager_window::BookmarkManagerLocation::Root), window, cx))),
+                        )
+                        .child(
+                            div()
+                                .h(px(32.0))
+                                .pl(px(38.0))
+                                .flex()
+                                .items_center()
+                                .when(matches!(ui.location, crate::bookmark_manager_window::BookmarkManagerLocation::Root), |row| row.bg(tokens.theme.colors.control_pressed.to_gpui()))
+                                .child("⌄  📁  其他書籤")
+                                .when_some(root_bookmarks_cb, |row, cb| row.on_mouse_down(MouseButton::Left, move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Navigate(crate::bookmark_manager_window::BookmarkManagerLocation::Root), window, cx))),
+                        )
+                        .children(folder_rows),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .id("bookmark-manager-columns")
+                                .h(px(32.0))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .border_b(px(1.0))
+                                .border_color(tokens.theme.colors.divider.to_gpui())
+                                .child(div().w_2_5().px(px(8.0)).cursor_pointer().child("名稱").when_some(column_name_cb, |header, cb| header.on_mouse_down(MouseButton::Left, move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::Name), window, cx))))
+                                .child(
+                                    div()
+                                        .w_1_5()
+                                        .px(px(8.0))
+                                        .border_l(px(1.0))
+                                        .border_color(tokens.theme.colors.divider.to_gpui())
+                                        .cursor_pointer()
+                                        .child("標籤")
+                                        .when_some(column_tags_cb, |header, cb| header.on_mouse_down(MouseButton::Left, move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::Tags), window, cx))),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .px(px(8.0))
+                                        .border_l(px(1.0))
+                                        .border_color(tokens.theme.colors.divider.to_gpui())
+                                        .cursor_pointer()
+                                        .child("網址")
+                                        .when_some(column_location_cb, |header, cb| header.on_mouse_down(MouseButton::Left, move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::Location), window, cx))),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("bookmark-manager-list")
+                                .flex_1()
+                                .min_h_0()
+                                .overflow_y_scroll()
+                                .children(rows),
+                        ),
+                ),
+        )
+        .child(
+            div()
+                .id("bookmark-manager-details")
+                .h(px(96.0))
+                .flex_none()
+                .flex()
+                .flex_col()
+                .justify_center()
+                .gap(px(10.0))
+                .px(px(10.0))
+                .border_t(px(1.0))
+                .border_color(tokens.theme.colors.divider.to_gpui())
+                .bg(tokens.theme.colors.subtle_surface.to_gpui())
+                .child(
+                    div().w_full().flex().items_center().gap(px(10.0)).child("名稱 (N)").when_some(detail_input, |row, input| {
+                    row.child(
+                        text_input("bookmark-manager-detail-name-input")
+                            .state(input)
+                            .multiline(false)
+                            .caret_blink_interval_500ms()
+                            .flex_1()
+                            .h(px(34.0))
+                            .px(px(10.0))
+                            .rounded(px(15.0))
+                            .border(px(1.0))
+                            .border_color(tokens.theme.colors.divider.to_gpui())
+                            .bg(tokens.theme.colors.surface.to_gpui())
+                            .text_color(input_text)
+                            .selection_color(input_selection.into())
+                            .selection_text_color(input_selection_text.into())
+                            .caret_color(input_caret.into()),
+                    )
+                }))
+                .child(
+                    div().w_full().flex().items_center().gap(px(10.0)).child("網址 (L)").when_some(detail_location_input, |row, input| {
+                    row.child(
+                        text_input("bookmark-manager-detail-location-input")
+                            .state(input)
+                            .multiline(false)
+                            .caret_blink_interval_500ms()
+                            .flex_1()
+                            .h(px(34.0))
+                            .px(px(10.0))
+                            .rounded(px(15.0))
+                            .border(px(1.0))
+                            .border_color(tokens.theme.colors.divider.to_gpui())
+                            .bg(tokens.theme.colors.surface.to_gpui())
+                            .text_color(input_text)
+                            .selection_color(input_selection.into())
+                            .selection_text_color(input_selection_text.into())
+                            .caret_color(input_caret.into()),
+                    )
+                })),
+        )
+}
+
+fn bookmark_manager_ui_menu_row(
+    id: &'static str,
+    label: &'static str,
+    action: crate::bookmark_manager_window::BookmarkManagerUiAction,
+    callback: Option<crate::bookmark_manager_window::BookmarkManagerUiCallback>,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .role(Role::MenuItem)
+        .cursor_pointer()
+        .px(px(10.0))
+        .py(px(6.0))
+        .child(label)
+        .when_some(callback, move |row, cb| {
+            row.on_click(move |_, window, cx| cb(&action, window, cx))
+        })
 }
 
 fn bookmark_toolbar_context_menu(
@@ -2232,6 +2754,7 @@ pub(crate) fn bookmark_editor(
     callback: Option<ActionCallback>,
 ) -> impl IntoElement {
     let editor = state.bookmark_editor().expect("editor is open");
+    let is_new = editor.id.is_none();
     let colors = tokens.theme.colors;
     let (input_text, input_selection, input_selection_text, input_caret) =
         editable_input_colors(tokens);
@@ -2296,7 +2819,7 @@ pub(crate) fn bookmark_editor(
         .flex()
         .items_center()
         .justify_center()
-        .bg(tokens.theme.colors.subtle_surface.to_gpui())
+        .bg(tokens.theme.colors.surface.to_gpui())
         .when_some(overlay_cancel_cb, move |element, cb| {
             element.on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 cb(&overlay_cancel, window, cx)
@@ -2312,11 +2835,25 @@ pub(crate) fn bookmark_editor(
                 .flex()
                 .flex_col()
                 .gap(px(9.0))
+                .font_family(tokens.typography.family.primary)
+                .text_size(px(tokens.typography.file_row.size.value()))
+                .line_height(px(tokens.typography.file_row.line_height.value()))
                 .rounded(px(8.0))
                 .bg(tokens.theme.colors.surface.to_gpui())
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child("編輯書籤")
-                .child("名稱")
+                .child(
+                    div()
+                        .text_size(px(20.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_center()
+                        .child(if is_new {
+                            "新增書籤"
+                        } else {
+                            "編輯書籤"
+                        }),
+                )
+                .child(div().h(px(1.0)).bg(colors.divider.to_gpui()))
+                .child("名稱 (N)")
                 .when_some(name_input, |e, input| {
                     e.child(
                         text_input("bookmark-name-input")
@@ -2324,67 +2861,94 @@ pub(crate) fn bookmark_editor(
                             .multiline(false)
                             .caret_blink_interval_500ms()
                             .w_full()
-                            .h(px(34.0))
+                            .h(px(32.0))
                             .px(px(8.0))
+                            .font_family(tokens.typography.family.primary)
+                            .text_size(px(16.0))
+                            .line_height(px(tokens.typography.address.line_height.value()))
                             .bg(colors.control_fill.to_gpui())
                             .text_color(input_text)
                             .selection_color(input_selection.into())
                             .selection_text_color(input_selection_text.into())
                             .caret_color(input_caret.into())
+                            .rounded(px(4.0))
                             .border(px(1.0))
                             .border_color(colors.focus.to_gpui()),
                     )
                 })
-                .child(payload_label)
-                .when_some(payload_input, |e, input| {
-                    e.child(
-                        text_input("bookmark-payload-input")
-                            .state(input)
-                            .multiline(payload_is_multiline)
-                            .caret_blink_interval_500ms()
-                            .w_full()
-                            .h(px(payload_height))
-                            .px(px(8.0))
-                            .bg(colors.control_fill.to_gpui())
-                            .text_color(input_text)
-                            .selection_color(input_selection.into())
-                            .selection_text_color(input_selection_text.into())
-                            .caret_color(input_caret.into())
-                            .border(px(1.0))
-                            .border_color(colors.focus.to_gpui()),
-                    )
+                .when(payload_is_multiline, |e| e.child(payload_label))
+                .when(payload_is_multiline, |e| {
+                    e.when_some(payload_input, |e, input| {
+                        e.child(
+                            text_input("bookmark-payload-input")
+                                .state(input)
+                                .multiline(payload_is_multiline)
+                                .caret_blink_interval_500ms()
+                                .w_full()
+                                .h(px(payload_height))
+                                .px(px(8.0))
+                                .bg(colors.control_fill.to_gpui())
+                                .text_color(input_text)
+                                .selection_color(input_selection.into())
+                                .selection_text_color(input_selection_text.into())
+                                .caret_color(input_caret.into())
+                                .border(px(1.0))
+                                .border_color(colors.focus.to_gpui()),
+                        )
+                    })
                 })
-                .child("位置")
+                .child("位置 (L)")
                 .child(
                     div()
                         .id("bookmark-destination-picker")
                         .role(Role::List)
-                        .max_h(px(96.0))
+                        .max_h(px(110.0))
                         .overflow_y_scroll()
                         .flex()
                         .flex_col()
                         .gap(px(4.0))
+                        .p(px(8.0))
+                        .rounded(px(12.0))
+                        .bg(colors.control_fill.to_gpui())
                         .children(destination_rows),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(
+                            div()
+                                .w(px(18.0))
+                                .h(px(18.0))
+                                .rounded(px(3.0))
+                                .bg(colors.accent.to_gpui())
+                                .child(div().size_full()),
+                        )
+                        .child("儲存時顯示編輯器 (S)"),
                 )
                 .child(
                     div()
                         .flex()
                         .justify_end()
                         .gap(px(8.0))
-                        .child({
-                            let remove = ExplorerAction::RemoveEditingBookmark;
-                            div()
-                                .id("bookmark-editor-remove")
-                                .role(Role::Button)
-                                .aria_label("Remove bookmark")
-                                .cursor_pointer()
-                                .px(px(12.0))
-                                .py(px(6.0))
-                                .text_color(colors.danger.to_gpui())
-                                .child("移除書籤")
-                                .when_some(remove_cb, move |e, cb| {
-                                    e.on_click(move |_, w, cx| cb(&remove, w, cx))
-                                })
+                        .when(!is_new, |row| {
+                            row.child({
+                                let remove = ExplorerAction::RemoveEditingBookmark;
+                                div()
+                                    .id("bookmark-editor-remove")
+                                    .role(Role::Button)
+                                    .aria_label("Remove bookmark")
+                                    .cursor_pointer()
+                                    .px(px(12.0))
+                                    .py(px(6.0))
+                                    .rounded(px(10.0))
+                                    .text_color(colors.danger.to_gpui())
+                                    .child("移除書籤")
+                                    .when_some(remove_cb, move |e, cb| {
+                                        e.on_click(move |_, w, cx| cb(&remove, w, cx))
+                                    })
+                            })
                         })
                         .child(
                             div()
@@ -2394,6 +2958,8 @@ pub(crate) fn bookmark_editor(
                                 .cursor_pointer()
                                 .px(px(12.0))
                                 .py(px(6.0))
+                                .rounded(px(10.0))
+                                .bg(colors.control_fill.to_gpui())
                                 .child("取消")
                                 .when_some(callback, move |e, cb| {
                                     e.on_click(move |_, w, cx| cb(&cancel, w, cx))
@@ -2407,7 +2973,9 @@ pub(crate) fn bookmark_editor(
                                 .cursor_pointer()
                                 .px(px(12.0))
                                 .py(px(6.0))
+                                .rounded(px(10.0))
                                 .bg(tokens.theme.colors.accent.to_gpui())
+                                .text_color(colors.surface.to_gpui())
                                 .child("儲存")
                                 .when_some(save_cb, move |e, cb| {
                                     e.on_click(move |_, w, cx| cb(&save, w, cx))
@@ -8997,6 +9565,14 @@ impl RenderOnce for FileViewHost {
                 let item_width = spatial_metrics.cell_width;
                 let item_height = spatial_metrics.cell_height;
                 let icon_size = spatial_metrics.icon_size;
+                let explicit_row_width = file_row_explicit_width(
+                    view_settings.mode,
+                    wrapped_view,
+                    item_width,
+                    render_item_width,
+                    layout.control_padding_horizontal.value()
+                        - layout.divider_width.value() / 2.0,
+                );
                 let can_accept_drop = entry.is_container;
                 let row_drop_destination = entry.location.clone();
                 let row_drop_cue = drop_target_row == Some(visible_index);
@@ -9029,18 +9605,15 @@ impl RenderOnce for FileViewHost {
                     ))
                     .aria_selected(selected)
                     .relative()
-                    .when(wrapped_view, |element| {
-                        element.w(px(item_width)).min_w(px(item_width))
+                    .when_some(explicit_row_width, |element, width| {
+                        element.w(px(width)).min_w(px(width))
                     })
-                    .when(!wrapped_view, Styled::w_full)
-                    .when(
-                        view_settings.mode == explorer_model::ViewMode::Details,
-                        |element| element.min_w(px(item_width)),
-                    )
+                    .when(explicit_row_width.is_none(), Styled::w_full)
                     .h(px(item_height))
                     .flex_none()
                     .flex()
                     .items_center()
+                    .text_color(row_visual.text_color.to_gpui())
                     .when(drive_view, |element| {
                         element.gap(px(layout.content_spacing.value()))
                     })
@@ -9061,9 +9634,12 @@ impl RenderOnce for FileViewHost {
                     .when_some(row_visual.hover_fill, |element, hover_fill| {
                         element.hover(move |style| style.bg(hover_fill.to_gpui()))
                     })
+                    .when_some(row_visual.selection_fill, |element, selection_fill| {
+                        element.bg(selection_fill.to_gpui())
+                    })
                     .when_some(row_visual.selection_border, |element, border| {
                         element
-                            .border(px(layout.focus_stroke.value()))
+                            .border(px(f32::from(row_visual.selection_border_width)))
                             .border_color(border.to_gpui())
                     })
                     .when(row_drop_cue, |element| {
@@ -9087,60 +9663,67 @@ impl RenderOnce for FileViewHost {
                         let drop_destination = row_drop_destination.clone();
                         let move_destination = row_drop_destination.clone();
                         element
-                            .can_drop(move |value, _, _| {
-                                value
-                                    .downcast_ref::<gpui::ExternalPaths>()
-                                    .is_some_and(|paths| {
-                                        negotiate_external_paths(
-                                            paths,
-                                            can_accept_drop,
-                                            Some(&can_drop_destination),
-                                        ) != explorer_model::DragEffect::None
+                            // File rows must remain transparent to external drops so the file-view
+                            // background can accept them into the current directory. Registering a
+                            // rejecting child drop target here makes a full Details viewport
+                            // impossible to drop onto, which is especially visible in populated
+                            // remote directories such as adb://.../Download.
+                            .when(can_accept_drop, |element| {
+                                element
+                                    .can_drop(move |value, _, _| {
+                                        value
+                                            .downcast_ref::<gpui::ExternalPaths>()
+                                            .is_some_and(|paths| {
+                                                negotiate_external_paths(
+                                                    paths,
+                                                    true,
+                                                    Some(&can_drop_destination),
+                                                ) != explorer_model::DragEffect::None
+                                            })
                                     })
-                            })
-                            .on_drop(move |paths: &gpui::ExternalPaths, window, cx| {
-                                // A folder row owns the drop. Letting this bubble to the file-view
-                                // background renegotiates against the current folder and can turn a
-                                // valid child-folder Move into a same-parent no-op.
-                                cx.stop_propagation();
-                                let effect = negotiate_external_paths(
-                                    paths,
-                                    can_accept_drop,
-                                    Some(&drop_destination),
-                                );
-                                drop_callback(
-                                    &ExplorerAction::DropExternal {
-                                        paths: paths.paths().to_vec(),
-                                        destination_row: Some(visible_index),
-                                        effect,
-                                        right_button: paths.drop_metadata().right_button,
-                                        allowed: external_transfer_effects(paths),
-                                    },
-                                    window,
-                                    cx,
-                                );
-                            })
-                            .on_drag_move::<gpui::ExternalPaths>(move |event, window, cx| {
-                                // Keep the native cursor effect aligned with the folder-row target;
-                                // parent surfaces must not overwrite the negotiated OLE effect.
-                                cx.stop_propagation();
-                                let effect = negotiate_external_paths(
-                                    event.drag(cx),
-                                    can_accept_drop,
-                                    Some(&move_destination),
-                                );
-                                drag_move_callback(
-                                    &ExplorerAction::UpdateExternalDrag {
-                                        destination_row: Some(visible_index),
-                                        target: explorer_model::DropTargetKind::FolderItem,
-                                        pointer_y: f32::from(event.event.position.y),
-                                        top: f32::from(event.bounds.top()),
-                                        bottom: f32::from(event.bounds.bottom()),
-                                        effect,
-                                    },
-                                    window,
-                                    cx,
-                                );
+                                    .on_drop(move |paths: &gpui::ExternalPaths, window, cx| {
+                                        // A folder row owns the drop. Letting this bubble to the
+                                        // background can change a valid child-folder effect.
+                                        cx.stop_propagation();
+                                        let effect = negotiate_external_paths(
+                                            paths,
+                                            true,
+                                            Some(&drop_destination),
+                                        );
+                                        drop_callback(
+                                            &ExplorerAction::DropExternal {
+                                                paths: paths.paths().to_vec(),
+                                                destination_row: Some(visible_index),
+                                                effect,
+                                                right_button: paths.drop_metadata().right_button,
+                                                allowed: external_transfer_effects(paths),
+                                            },
+                                            window,
+                                            cx,
+                                        );
+                                    })
+                                    .on_drag_move::<gpui::ExternalPaths>(
+                                        move |event, window, cx| {
+                                            cx.stop_propagation();
+                                            let effect = negotiate_external_paths(
+                                                event.drag(cx),
+                                                true,
+                                                Some(&move_destination),
+                                            );
+                                            drag_move_callback(
+                                                &ExplorerAction::UpdateExternalDrag {
+                                                    destination_row: Some(visible_index),
+                                                    target: explorer_model::DropTargetKind::FolderItem,
+                                                    pointer_y: f32::from(event.event.position.y),
+                                                    top: f32::from(event.bounds.top()),
+                                                    bottom: f32::from(event.bounds.bottom()),
+                                                    effect,
+                                                },
+                                                window,
+                                                cx,
+                                            );
+                                        },
+                                    )
                             })
                             .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                                 cx.stop_propagation();
@@ -9427,25 +10010,41 @@ impl RenderOnce for FileViewHost {
                                         )
                                         .into_any_element()
                                 }
-                                None => div()
-                                    .id(format!("file-row-icon-{visible_index}"))
-                                    .role(Role::Image)
-                                    .aria_label(format!("{} icon", entry.display_name))
-                                    .w(px(icon_size))
-                                    .h(px(icon_size))
-                                    .flex_none()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(navigation_icon(
-                                        if entry.is_container {
-                                            crate::navigation_pane::NavigationIcon::Folder
+                                None => {
+                                    let remote_kind =
+                                        crate::remote_file_fallback_icon_kind(&entry);
+                                    div()
+                                        .id(format!("file-row-icon-{visible_index}"))
+                                        .role(Role::Image)
+                                        .aria_label(format!("{} icon", entry.display_name))
+                                        .w(px(icon_size))
+                                        .h(px(icon_size))
+                                        .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(if entry.is_container {
+                                            navigation_icon(
+                                                crate::navigation_pane::NavigationIcon::Folder,
+                                                self.tokens,
+                                            )
+                                            .into_any_element()
+                                        } else if let Some(kind) = remote_kind {
+                                            crate::icons::remote_file_icon(
+                                                kind,
+                                                icon_size,
+                                                self.tokens,
+                                            )
+                                            .into_any_element()
                                         } else {
-                                            crate::navigation_pane::NavigationIcon::Documents
-                                        },
-                                        self.tokens,
-                                    ))
-                                    .into_any_element(),
+                                            navigation_icon(
+                                                crate::navigation_pane::NavigationIcon::Documents,
+                                                self.tokens,
+                                            )
+                                            .into_any_element()
+                                        })
+                                        .into_any_element()
+                                }
                             })
                             .child(if let Some(editor) = editor {
                                 let input = rename_input.clone();
@@ -10286,6 +10885,22 @@ pub(crate) fn view_item_width_with_registry(
             .map(|descriptor| f32::from(settings.details_column_width(&descriptor.id)))
             .sum(),
         explorer_model::ViewMode::Tiles => 280.0,
+    }
+}
+
+const fn file_row_explicit_width(
+    mode: explorer_model::ViewMode,
+    wrapped: bool,
+    item_width: f32,
+    details_width: f32,
+    details_leading_inset: f32,
+) -> Option<f32> {
+    if wrapped {
+        Some(item_width)
+    } else if matches!(mode, explorer_model::ViewMode::Details) {
+        Some(details_width + details_leading_inset)
+    } else {
+        None
     }
 }
 
@@ -11975,10 +12590,39 @@ fn operation_request_summary(record: &explorer_model::OperationRecord) -> String
 fn operation_message(record: &explorer_model::OperationRecord) -> String {
     let summary = operation_request_summary(record);
     match &record.terminal {
-        None => format!(
-            "{summary}｜進度 {}/{}",
-            record.progress.completed_items, record.progress.total_items
-        ),
+        None => {
+            let phase = match record.progress.phase {
+                explorer_model::TransferProgressPhase::Preparing => "準備中",
+                explorer_model::TransferProgressPhase::Transferring => "傳輸中",
+                explorer_model::TransferProgressPhase::Finalizing => "完成處理中",
+            };
+            let bytes = format_transfer_bytes(record.progress.completed_bytes);
+            match record.progress.total_bytes {
+                Some(0) => format!(
+                    "{summary}｜{phase}｜進度 {}/{} 項目",
+                    record.progress.completed_items, record.progress.total_items
+                ),
+                Some(total) => {
+                    let percent = record
+                        .progress
+                        .completed_bytes
+                        .saturating_mul(100)
+                        .checked_div(total)
+                        .unwrap_or(0)
+                        .min(99);
+                    format!(
+                        "{summary}｜{phase} {percent}%（{bytes} / {}）｜進度 {}/{} 項目",
+                        format_transfer_bytes(total),
+                        record.progress.completed_items,
+                        record.progress.total_items
+                    )
+                }
+                None => format!(
+                    "{summary}｜{phase} {bytes}｜進度 {}/{} 項目",
+                    record.progress.completed_items, record.progress.total_items
+                ),
+            }
+        }
         Some(explorer_model::OperationTerminal::Finished) => format!("{summary}｜完成"),
         Some(explorer_model::OperationTerminal::Cancelled) => format!("{summary}｜已取消"),
         Some(explorer_model::OperationTerminal::Failed(error)) => {
@@ -11996,6 +12640,21 @@ fn operation_message(record: &explorer_model::OperationRecord) -> String {
                 .count();
             format!("{summary}｜部分完成：{succeeded}/{} 成功", outcomes.len())
         }
+    }
+}
+
+fn format_transfer_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
     }
 }
 
@@ -12127,6 +12786,25 @@ impl RenderOnce for OperationCenter {
             ))
             .when_some(latest, |element, (record, opacity)| {
                 let summary = operation_message(&record);
+                let progress_ratio = if matches!(
+                    record.terminal,
+                    Some(explorer_model::OperationTerminal::Finished)
+                ) {
+                    Some(1.0)
+                } else if let Some(total) = record.progress.total_bytes.filter(|total| *total > 0) {
+                    Some((record.progress.completed_bytes as f32 / total as f32).clamp(0.0, 0.99))
+                } else if record.progress.total_bytes == Some(0) && record.progress.total_items > 0
+                {
+                    Some(
+                        (record.progress.completed_items as f32
+                            / record.progress.total_items as f32)
+                            .clamp(0.0, 0.99),
+                    )
+                } else {
+                    None
+                };
+                let indeterminate =
+                    !record.phase.is_terminal() && record.progress.total_bytes.is_none();
                 let append_item_name = matches!(
                     record.request.kind,
                     explorer_model::FileOperationKind::Copy { .. }
@@ -12168,6 +12846,31 @@ impl RenderOnce for OperationCenter {
                     .border_color(colors.divider.to_gpui())
                     .bg(colors.subtle_surface.to_gpui())
                     .child(summary)
+                    .when_some(progress_ratio, |element, ratio| {
+                        element.child(
+                            div()
+                                .id("operation-byte-progress")
+                                .absolute()
+                                .left(px(0.0))
+                                .bottom(px(0.0))
+                                .h(px(3.0))
+                                .w(relative(ratio))
+                                .bg(colors.accent.to_gpui()),
+                        )
+                    })
+                    .when(indeterminate, |element| {
+                        element.child(
+                            div()
+                                .id("operation-indeterminate-progress")
+                                .absolute()
+                                .left(px(0.0))
+                                .bottom(px(0.0))
+                                .h(px(3.0))
+                                .w_full()
+                                .opacity(0.35)
+                                .bg(colors.accent.to_gpui()),
+                        )
+                    })
                     .when_some(cancel, ParentElement::child)
                     .children(outcome_rows)
             })
@@ -12746,11 +13449,19 @@ fn negotiate_external_paths(
         shift: metadata.modifiers.shift,
         alt: metadata.modifiers.alt,
     };
-    let effect = destination
-        .and_then(explorer_model::LocationDescriptor::path)
-        .map_or_else(
-            || explorer_model::negotiate_effect(allowed, preferred, modifiers, target_can_write),
-            |destination| {
+    let effect = destination.map_or_else(
+        || explorer_model::DragEffect::None,
+        |destination| match destination {
+            explorer_model::LocationDescriptor::Virtual(_) => {
+                negotiate_remote_external_effect(allowed, modifiers, target_can_write)
+            }
+            _ if destination.path().is_none() => {
+                explorer_model::negotiate_effect(allowed, preferred, modifiers, target_can_write)
+            }
+            _ => {
+                let Some(destination) = destination.path() else {
+                    return explorer_model::DragEffect::None;
+                };
                 let effect = explorer_model::negotiate_filesystem_drop_effect(
                     allowed,
                     preferred,
@@ -12768,8 +13479,9 @@ fn negotiate_external_paths(
                 } else {
                     explorer_model::DragEffect::None
                 }
-            },
-        );
+            }
+        },
+    );
     paths.set_negotiated_effect(match effect {
         explorer_model::DragEffect::None => gpui::ExternalDropEffect::None,
         explorer_model::DragEffect::Copy => gpui::ExternalDropEffect::Copy,
@@ -12777,6 +13489,22 @@ fn negotiate_external_paths(
         explorer_model::DragEffect::Link => gpui::ExternalDropEffect::Link,
     });
     effect
+}
+
+const fn negotiate_remote_external_effect(
+    allowed: explorer_model::TransferEffects,
+    modifiers: explorer_model::DragModifiers,
+    target_can_write: bool,
+) -> explorer_model::DragEffect {
+    if !target_can_write {
+        explorer_model::DragEffect::None
+    } else if modifiers.shift && allowed.move_item {
+        explorer_model::DragEffect::Move
+    } else if allowed.copy {
+        explorer_model::DragEffect::Copy
+    } else {
+        explorer_model::DragEffect::None
+    }
 }
 
 fn external_transfer_effects(paths: &gpui::ExternalPaths) -> explorer_model::TransferEffects {
@@ -13372,8 +14100,11 @@ const fn file_row_selection_active(window_active: bool, context_menu_pending: bo
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct FileRowVisual {
+    selection_fill: Option<crate::theme::Rgba8>,
     hover_fill: Option<crate::theme::Rgba8>,
     selection_border: Option<crate::theme::Rgba8>,
+    selection_border_width: u8,
+    text_color: crate::theme::Rgba8,
 }
 
 const fn file_row_visual(
@@ -13383,17 +14114,27 @@ const fn file_row_visual(
 ) -> FileRowVisual {
     if selected {
         FileRowVisual {
+            selection_fill: Some(if selection_active {
+                colors.file_row_selected_active
+            } else {
+                colors.file_row_selected_inactive
+            }),
             hover_fill: None,
             selection_border: Some(if selection_active {
-                colors.focus
+                colors.file_row_focus_outline
             } else {
                 colors.divider
             }),
+            selection_border_width: 1,
+            text_color: colors.file_row_selected_text,
         }
     } else {
         FileRowVisual {
-            hover_fill: Some(colors.row_hover),
+            selection_fill: None,
+            hover_fill: Some(colors.file_row_hover),
             selection_border: None,
+            selection_border_width: 0,
+            text_color: colors.text_primary,
         }
     }
 }
@@ -14262,6 +15003,30 @@ mod tests {
     }
 
     #[test]
+    fn remote_drop_defaults_to_copy_and_requires_shift_for_move() {
+        let destination = virtual_location("sftp", "example", &["home"]);
+        let plain = external_paths_with_modifiers(r"C:\source\one.txt", false, false);
+        assert_eq!(
+            super::negotiate_external_paths(&plain, true, Some(&destination)),
+            explorer_model::DragEffect::Copy
+        );
+        let control = external_paths_with_modifiers(r"C:\source\one.txt", true, false);
+        assert_eq!(
+            super::negotiate_external_paths(&control, true, Some(&destination)),
+            explorer_model::DragEffect::Copy
+        );
+        let shift = external_paths_with_modifiers(r"C:\source\one.txt", false, true);
+        assert_eq!(
+            super::negotiate_external_paths(&shift, true, Some(&destination)),
+            explorer_model::DragEffect::Move
+        );
+        assert_eq!(
+            super::negotiate_external_paths(&plain, false, Some(&destination)),
+            explorer_model::DragEffect::None
+        );
+    }
+
+    #[test]
     fn shift_row_selection_does_not_suppress_left_drag_candidate() {
         let source = include_str!("chrome.rs");
         let production = source
@@ -14378,69 +15143,19 @@ mod tests {
         right: &explorer_model::FileEntry,
         sort: &explorer_model::SortDescriptor,
     ) -> Ordering {
-        match (left.is_container, right.is_container) {
-            (true, false) => return Ordering::Less,
-            (false, true) => return Ordering::Greater,
-            _ => {}
-        }
-        let ordering = match &sort.column {
-            explorer_model::ColumnId::Name => compare_text(
-                Some(left.display_name.as_str()),
-                Some(right.display_name.as_str()),
-                sort.direction,
-            ),
-            explorer_model::ColumnId::DateModified => compare_optional(
-                left.metadata.modified_sort_key,
-                right.metadata.modified_sort_key,
-                sort.direction,
-            ),
-            explorer_model::ColumnId::Type => compare_text(
-                left.metadata.type_display.as_deref(),
-                right.metadata.type_display.as_deref(),
-                sort.direction,
-            ),
-            explorer_model::ColumnId::Size => compare_optional(
-                left.metadata.size_bytes,
-                right.metadata.size_bytes,
-                sort.direction,
-            ),
-            explorer_model::ColumnId::DateCreated => compare_optional(
-                left.metadata.created_sort_key,
-                right.metadata.created_sort_key,
-                sort.direction,
-            ),
-            explorer_model::ColumnId::Authors => compare_text(
-                left.metadata.authors_display.as_deref(),
-                right.metadata.authors_display.as_deref(),
-                sort.direction,
-            ),
-            explorer_model::ColumnId::Tags => compare_text(
-                left.metadata.tags_display.as_deref(),
-                right.metadata.tags_display.as_deref(),
-                sort.direction,
-            ),
-            explorer_model::ColumnId::Title => compare_text(
-                left.metadata.title_display.as_deref(),
-                right.metadata.title_display.as_deref(),
-                sort.direction,
-            ),
-            explorer_model::ColumnId::Permissions => compare_optional(
-                left.metadata.unix_mode,
-                right.metadata.unix_mode,
-                sort.direction,
-            ),
-            explorer_model::ColumnId::FileCount | explorer_model::ColumnId::FolderCount => {
-                Ordering::Equal
-            }
-            explorer_model::ColumnId::Extension { .. } => Ordering::Equal,
-        };
-        ordering
-            .then_with(|| {
-                left.display_name
-                    .to_lowercase()
-                    .cmp(&right.display_name.to_lowercase())
-            })
-            .then_with(|| left.id.provider_bytes().cmp(right.id.provider_bytes()))
+        let mut snapshot = explorer_model::DirectorySnapshot::default();
+        snapshot.upsert(left.clone());
+        snapshot.upsert(right.clone());
+        let ordered = sorted_file_entries(&snapshot, true, sort);
+        let left_position = ordered
+            .iter()
+            .position(|(_, entry)| entry.id == left.id)
+            .expect("left entry is presented");
+        let right_position = ordered
+            .iter()
+            .position(|(_, entry)| entry.id == right.id)
+            .expect("right entry is presented");
+        left_position.cmp(&right_position)
     }
 
     fn sorted_file_entries(
@@ -14461,34 +15176,6 @@ mod tests {
                     .map(|entry| (*index, entry))
             })
             .collect()
-    }
-
-    fn compare_text(
-        left: Option<&str>,
-        right: Option<&str>,
-        direction: explorer_model::SortDirection,
-    ) -> Ordering {
-        compare_optional(
-            left.map(str::to_lowercase),
-            right.map(str::to_lowercase),
-            direction,
-        )
-    }
-
-    fn compare_optional<T: Ord>(
-        left: Option<T>,
-        right: Option<T>,
-        direction: explorer_model::SortDirection,
-    ) -> Ordering {
-        match (left, right) {
-            (Some(left), Some(right)) => match direction {
-                explorer_model::SortDirection::Ascending => left.cmp(&right),
-                explorer_model::SortDirection::Descending => right.cmp(&left),
-            },
-            (Some(_), None) => Ordering::Less,
-            (None, Some(_)) => Ordering::Greater,
-            (None, None) => Ordering::Equal,
-        }
     }
 
     #[test]
@@ -14861,6 +15548,40 @@ mod tests {
             super::details_horizontal_maximum_with_registry(&settings, &registry, 2_000.0).abs()
                 < f32::EPSILON
         );
+        let details_width = super::view_item_width_with_registry(&settings, &registry);
+        assert_eq!(
+            super::file_row_explicit_width(
+                explorer_model::ViewMode::Details,
+                false,
+                details_width,
+                details_width,
+                8.0,
+            ),
+            Some(1_908.0),
+            "row paint and hit boundary include the header's visible-divider inset"
+        );
+        assert_eq!(
+            super::file_row_explicit_width(
+                explorer_model::ViewMode::List,
+                false,
+                240.0,
+                details_width,
+                8.0,
+            ),
+            None,
+            "non-Details linear views keep their full-width row behavior"
+        );
+        assert_eq!(
+            super::file_row_explicit_width(
+                explorer_model::ViewMode::Tiles,
+                true,
+                280.0,
+                details_width,
+                8.0,
+            ),
+            Some(280.0),
+            "wrapped views retain their existing cell width"
+        );
     }
 
     #[test]
@@ -14897,6 +15618,24 @@ mod tests {
         assert_eq!(
             super::details_horizontal_maximum_with_registry(&settings, &registry, built_in_width),
             240.0
+        );
+        let extended_width = super::view_item_width_with_registry(&settings, &registry);
+        assert_eq!(
+            super::file_row_explicit_width(
+                explorer_model::ViewMode::Details,
+                false,
+                extended_width,
+                extended_width,
+                8.0,
+            ),
+            Some(built_in_width + 248.0),
+            "runtime columns and the visible-divider inset participate in the same row visual boundary"
+        );
+        assert!(settings.details_layout.set_visible(&id, false));
+        assert_eq!(
+            super::view_item_width_with_registry(&settings, &registry),
+            built_in_width,
+            "hiding the runtime column immediately shrinks the shared extent"
         );
     }
 
@@ -16066,7 +16805,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_file_row_uses_an_outline_without_a_hover_fill() {
+    fn file_row_visual_matches_explorer_and_preserves_accessible_theme_roles() {
         let high_contrast = ThemeTokens::windows_high_contrast(|role| match role {
             crate::theme::SystemColorRole::Window => crate::theme::Rgba8::opaque(0, 0, 0),
             crate::theme::SystemColorRole::WindowText => crate::theme::Rgba8::opaque(255, 255, 255),
@@ -16079,17 +16818,48 @@ mod tests {
             high_contrast.colors,
         ] {
             let active = super::file_row_visual(colors, true, true);
+            assert_eq!(active.selection_fill, Some(colors.file_row_selected_active));
             assert_eq!(active.hover_fill, None);
-            assert_eq!(active.selection_border, Some(colors.focus));
+            assert_eq!(active.selection_border, Some(colors.file_row_focus_outline));
+            assert_eq!(active.selection_border_width, 1);
+            assert_eq!(active.text_color, colors.file_row_selected_text);
 
             let inactive = super::file_row_visual(colors, true, false);
+            assert_eq!(
+                inactive.selection_fill,
+                Some(colors.file_row_selected_inactive)
+            );
             assert_eq!(inactive.hover_fill, None);
             assert_eq!(inactive.selection_border, Some(colors.divider));
+            assert_eq!(inactive.selection_border_width, 1);
+            assert_eq!(inactive.text_color, colors.file_row_selected_text);
 
             let unselected = super::file_row_visual(colors, false, true);
-            assert_eq!(unselected.hover_fill, Some(colors.row_hover));
+            assert_eq!(unselected.selection_fill, None);
+            assert_eq!(unselected.hover_fill, Some(colors.file_row_hover));
             assert_eq!(unselected.selection_border, None);
+            assert_eq!(unselected.selection_border_width, 0);
+            assert_eq!(unselected.text_color, colors.text_primary);
         }
+
+        let light = ThemeTokens::light().colors;
+        assert_eq!(
+            light.file_row_hover,
+            crate::theme::Rgba8::opaque(229, 243, 255)
+        );
+        assert_eq!(
+            light.file_row_selected_active,
+            crate::theme::Rgba8::opaque(204, 232, 255)
+        );
+        assert_eq!(
+            light.file_row_focus_outline,
+            crate::theme::Rgba8::opaque(0, 0, 0)
+        );
+
+        let dark = ThemeTokens::dark().colors;
+        assert_ne!(dark.file_row_hover, light.file_row_hover);
+        assert_ne!(dark.file_row_selected_active, dark.surface);
+        assert_ne!(dark.file_row_selected_text, dark.file_row_selected_active);
     }
 
     #[test]
@@ -16099,6 +16869,29 @@ mod tests {
         let visible_count = super::bookmark_visible_count(ordered.len(), 420.0);
         assert_eq!(&ordered[..visible_count], &["first", "second"]);
         assert_eq!(&ordered[visible_count..], &["third", "fourth", "fifth"]);
+    }
+
+    #[test]
+    fn bookmark_manager_tree_hides_descendants_until_ancestors_expand() {
+        let mut bookmarks = explorer_model::Bookmarks::default();
+        assert!(bookmarks.begin_add_folder("Parent".into(), None).changed());
+        let parent = bookmarks.folders()[0].id;
+        assert!(
+            bookmarks
+                .begin_add_folder("Child".into(), Some(parent))
+                .changed()
+        );
+        let child = bookmarks.folders()[1].clone();
+        let mut expanded = std::collections::HashSet::new();
+        assert_eq!(
+            super::bookmark_manager_folder_depth(&bookmarks, &child, &expanded),
+            None
+        );
+        expanded.insert(parent);
+        assert_eq!(
+            super::bookmark_manager_folder_depth(&bookmarks, &child, &expanded),
+            Some(1)
+        );
     }
 
     #[test]
@@ -16116,6 +16909,63 @@ mod tests {
         assert!(manager.contains("element.on_drop(move |drag: &BookmarkDrag"));
         assert!(manager.contains("id: drag.id"));
         assert!(manager.contains("destination: sibling_index"));
+        for required in [
+            "bookmark-manager-toolbar",
+            "管理 (O)⌄",
+            "檢視 (V)⌄",
+            "bookmark-manager-import",
+            "bookmark-manager-backup",
+            "ImportBookmarksFromClipboard",
+            "BackupBookmarksToClipboard",
+            "bookmark-manager-search-input",
+            "bookmark-manager-tree",
+            "所有書籤",
+            "書籤工具列",
+            "其他書籤",
+            "bookmark-manager-columns",
+            "名稱",
+            "標籤",
+            "網址",
+            "bookmark-manager-details",
+        ] {
+            assert!(
+                manager.contains(required),
+                "missing Firefox library UI: {required}"
+            );
+        }
+        for interactive in [
+            "bookmark-manager-back",
+            "bookmark-manager-forward",
+            "bookmark-manager-manage-menu",
+            "bookmark-manager-view-toggle",
+            "bookmark-manager-transfer-menu",
+            "bookmark-manager-all-bookmarks",
+            "bookmark-manager-root-bookmarks",
+            "bookmark-manager-detail-name-input",
+            "bookmark-manager-detail-location-input",
+            "bookmark-manager-menu-dismiss-overlay",
+        ] {
+            let control = manager
+                .split(interactive)
+                .nth(1)
+                .unwrap_or_else(|| panic!("missing interactive manager control: {interactive}"));
+            assert!(!control.is_empty());
+        }
+        for action in [
+            "BookmarkManagerUiAction::Back",
+            "BookmarkManagerUiAction::Forward",
+            "BookmarkManagerUiAction::Navigate",
+            "BookmarkManagerUiAction::SelectBookmark",
+            "BookmarkManagerUiAction::ToggleMenu",
+            "BookmarkManagerUiAction::Sort",
+            "BookmarkManagerUiAction::ToggleDensity",
+            "BookmarkManagerUiAction::DismissMenu",
+        ] {
+            assert!(
+                manager.contains(action),
+                "missing manager handler: {action}"
+            );
+        }
     }
 
     #[test]
@@ -16143,6 +16993,8 @@ mod tests {
     #[test]
     fn left_click_folder_menu_is_content_only_and_management_stays_on_right_click() {
         let source = include_str!("chrome.rs");
+        assert!(source.contains("bookmark-folder-menu-dismiss-overlay"));
+        assert!(source.contains(".with_priority(155)"));
         let start = source
             .find(".when_some(active_folder_menu")
             .expect("folder menu");
@@ -16226,6 +17078,8 @@ mod tests {
         assert!(toolbar.contains("if bookmarked { \"★\" } else { \"☆\" }"));
         assert!(toolbar.contains("tokens.theme.colors.focus.to_gpui()"));
         assert!(toolbar.contains("ExplorerAction::ToggleCurrentFolderBookmark"));
+        assert!(toolbar.contains("context_menu_coordinates(event.position(), window)"));
+        assert!(toolbar.contains("screen_y: screen_y.saturating_add(18)"));
     }
 
     #[test]
@@ -16251,6 +17105,11 @@ mod tests {
             "payload_is_multiline",
             "if payload_is_multiline { 220.0 } else { 36.0 }",
             ".w_full()",
+            ".h(px(32.0))",
+            ".font_family(tokens.typography.family.primary)",
+            ".text_size(px(16.0))",
+            ".line_height(px(tokens.typography.address.line_height.value()))",
+            ".rounded(px(4.0))",
         ] {
             assert!(
                 editor.contains(required),
@@ -16311,7 +17170,7 @@ mod tests {
     }
 
     #[test]
-    fn bookmark_editor_always_exposes_remove_action() {
+    fn bookmark_editor_exposes_remove_only_for_existing_bookmarks() {
         let source = include_str!("chrome.rs");
         let editor = source
             .split("fn bookmark_editor(")
@@ -16320,7 +17179,8 @@ mod tests {
             .expect("bookmark editor source");
         assert!(editor.contains("bookmark-editor-remove"));
         assert!(editor.contains("移除書籤"));
-        assert!(!editor.contains("when(editor.id.is_some()"));
+        assert!(editor.contains("let is_new = editor.id.is_none()"));
+        assert!(editor.contains(".when(!is_new"));
     }
 }
 #[test]

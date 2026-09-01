@@ -248,10 +248,9 @@ impl DirectoryPresentation {
         ordered_indices.sort_by(|left_index, right_index| {
             let left = &self.entries[*left_index];
             let right = &self.entries[*right_index];
-            match (left.is_container, right.is_container) {
-                (true, false) => return Ordering::Less,
-                (false, true) => return Ordering::Greater,
-                _ => {}
+            let classification = compare_entry_classification(left, right);
+            if classification != Ordering::Equal {
+                return classification;
             }
             compare_optional(
                 values.get(&left.id).copied().flatten(),
@@ -337,10 +336,9 @@ fn compare_file_entries(
 ) -> Ordering {
     let left = &snapshot.entries()[left_index];
     let right = &snapshot.entries()[right_index];
-    match (left.is_container, right.is_container) {
-        (true, false) => return Ordering::Less,
-        (false, true) => return Ordering::Greater,
-        _ => {}
+    let classification = compare_entry_classification(left, right);
+    if classification != Ordering::Equal {
+        return classification;
     }
     let (Some(left_keys), Some(right_keys)) = (
         snapshot.sort_keys(left_index),
@@ -399,6 +397,33 @@ fn compare_file_entries(
     ordering
         .then_with(|| left_keys.display_name().cmp(right_keys.display_name()))
         .then_with(|| left.id.provider_bytes().cmp(right.id.provider_bytes()))
+}
+
+/// Matches Windows File Explorer's primary grouping rule: real folders stay
+/// before files even when Shell exposes a file (for example a ZIP archive) as
+/// a browsable container.
+fn compare_entry_classification(left: &FileEntry, right: &FileEntry) -> Ordering {
+    is_folder_for_sorting(right).cmp(&is_folder_for_sorting(left))
+}
+
+const FILE_ATTRIBUTE_DIRECTORY_V1: u32 = 0x10;
+
+fn is_folder_for_sorting(entry: &FileEntry) -> bool {
+    if entry.location.path().is_some() {
+        let attributes = entry.metadata.filesystem_attributes;
+        if attributes & FILE_ATTRIBUTE_DIRECTORY_V1 != 0 {
+            return true;
+        }
+        // An on-disk size or any non-directory filesystem attribute proves this
+        // is a file even when SFGAO_FOLDER made it navigable (such as a ZIP).
+        if entry.metadata.size_bytes.is_some() || attributes != 0 {
+            return false;
+        }
+    }
+    // Remote, virtual, namespace, and metadata-unavailable entries have no
+    // trustworthy local FILE_ATTRIBUTE_DIRECTORY bit. Preserve their provider
+    // classification rather than performing filesystem I/O in the comparator.
+    entry.is_container
 }
 
 fn compare_text(left: Option<&str>, right: Option<&str>, direction: SortDirection) -> Ordering {
@@ -556,6 +581,270 @@ mod tests {
             is_container: false,
             metadata: FileEntryMetadata::default(),
         }
+    }
+
+    fn folder(id: u64, name: &str) -> FileEntry {
+        FileEntry {
+            is_container: true,
+            metadata: FileEntryMetadata {
+                filesystem_attributes: FILE_ATTRIBUTE_DIRECTORY_V1,
+                ..Default::default()
+            },
+            ..entry(id, name)
+        }
+    }
+
+    fn navigable_archive(id: u64, name: &str) -> FileEntry {
+        FileEntry {
+            is_container: true,
+            metadata: FileEntryMetadata {
+                size_bytes: Some(4096),
+                filesystem_attributes: 0x20,
+                ..Default::default()
+            },
+            ..entry(id, name)
+        }
+    }
+
+    fn visible_names(presentation: &DirectoryPresentation) -> Vec<&str> {
+        (0..presentation.len())
+            .map(|index| {
+                presentation
+                    .entry(index)
+                    .expect("visible entry")
+                    .1
+                    .display_name
+                    .as_str()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn folders_and_files_sort_as_independent_name_groups_in_both_directions() {
+        let mut snapshot = DirectorySnapshot::default();
+        for item in [
+            entry(1, "yankee.txt"),
+            folder(2, "zeta-folder"),
+            entry(3, "bravo.txt"),
+            folder(4, "alpha-folder"),
+        ] {
+            snapshot.upsert(item);
+        }
+
+        let ascending = DirectoryPresentation::build(
+            &snapshot,
+            false,
+            SortDescriptor {
+                column: ColumnId::Name,
+                direction: SortDirection::Ascending,
+            },
+        );
+        assert_eq!(
+            visible_names(&ascending),
+            ["alpha-folder", "zeta-folder", "bravo.txt", "yankee.txt"]
+        );
+
+        let descending = DirectoryPresentation::build(
+            &snapshot,
+            false,
+            SortDescriptor {
+                column: ColumnId::Name,
+                direction: SortDirection::Descending,
+            },
+        );
+        assert_eq!(
+            visible_names(&descending),
+            ["zeta-folder", "alpha-folder", "yankee.txt", "bravo.txt"]
+        );
+    }
+
+    #[test]
+    fn browsable_archive_sorts_as_a_file_without_losing_container_navigation() {
+        let archive = navigable_archive(2, "alpha.zip");
+        assert!(
+            archive.is_container,
+            "ZIP navigation capability must remain"
+        );
+        let mut snapshot = DirectorySnapshot::default();
+        for item in [entry(1, "aardvark.txt"), archive, folder(3, "zeta-folder")] {
+            snapshot.upsert(item);
+        }
+
+        let ascending = DirectoryPresentation::build(
+            &snapshot,
+            false,
+            SortDescriptor {
+                column: ColumnId::Name,
+                direction: SortDirection::Ascending,
+            },
+        );
+        assert_eq!(
+            visible_names(&ascending),
+            ["zeta-folder", "aardvark.txt", "alpha.zip"]
+        );
+
+        let descending = DirectoryPresentation::build(
+            &snapshot,
+            false,
+            SortDescriptor {
+                column: ColumnId::Name,
+                direction: SortDirection::Descending,
+            },
+        );
+        assert_eq!(
+            visible_names(&descending),
+            ["zeta-folder", "alpha.zip", "aardvark.txt"]
+        );
+    }
+
+    #[test]
+    fn non_filesystem_provider_container_remains_in_the_folder_group() {
+        let provider_folder = FileEntry {
+            location: LocationDescriptor::ShellNamespace(vec![1, 2, 3]),
+            is_container: true,
+            ..entry(1, "provider-folder")
+        };
+        let archive = navigable_archive(2, "archive.zip");
+        let mut snapshot = DirectorySnapshot::default();
+        for item in [archive, provider_folder] {
+            snapshot.upsert(item);
+        }
+
+        let presentation = DirectoryPresentation::build(
+            &snapshot,
+            false,
+            SortDescriptor {
+                column: ColumnId::Name,
+                direction: SortDirection::Ascending,
+            },
+        );
+        assert_eq!(
+            visible_names(&presentation),
+            ["provider-folder", "archive.zip"]
+        );
+    }
+
+    #[test]
+    fn metadata_sort_keeps_missing_folder_values_inside_the_folder_group() {
+        let mut old_folder = folder(1, "old-folder");
+        old_folder.metadata.modified_sort_key = Some(10);
+        let missing_folder = folder(2, "missing-folder");
+        let mut old_file = entry(3, "old.txt");
+        old_file.metadata.modified_sort_key = Some(20);
+        let mut new_file = entry(4, "new.txt");
+        new_file.metadata.modified_sort_key = Some(30);
+        let mut snapshot = DirectorySnapshot::default();
+        for item in [new_file, missing_folder, old_file, old_folder] {
+            snapshot.upsert(item);
+        }
+
+        let ascending = DirectoryPresentation::build(
+            &snapshot,
+            false,
+            SortDescriptor {
+                column: ColumnId::DateModified,
+                direction: SortDirection::Ascending,
+            },
+        );
+        assert_eq!(
+            visible_names(&ascending),
+            ["old-folder", "missing-folder", "old.txt", "new.txt"]
+        );
+
+        let descending = DirectoryPresentation::build(
+            &snapshot,
+            false,
+            SortDescriptor {
+                column: ColumnId::DateModified,
+                direction: SortDirection::Descending,
+            },
+        );
+        assert_eq!(
+            visible_names(&descending),
+            ["old-folder", "missing-folder", "new.txt", "old.txt"]
+        );
+    }
+
+    #[test]
+    fn extension_byte_sort_keeps_groups_and_missing_values_in_both_directions() {
+        let valued_folder = folder(1, "valued-folder");
+        let missing_folder = folder(2, "missing-folder");
+        let small_file = entry(3, "small.bin");
+        let large_file = entry(4, "large.bin");
+        let missing_file = entry(5, "missing.bin");
+        let mut values = HashMap::new();
+        values.insert(valued_folder.id.clone(), Some(50));
+        values.insert(missing_folder.id.clone(), None);
+        values.insert(small_file.id.clone(), Some(10));
+        values.insert(large_file.id.clone(), Some(100));
+        values.insert(missing_file.id.clone(), None);
+        let mut snapshot = DirectorySnapshot::default();
+        for item in [
+            missing_file,
+            large_file,
+            missing_folder,
+            small_file,
+            valued_folder,
+        ] {
+            snapshot.upsert(item);
+        }
+        let base = DirectoryPresentation::build(&snapshot, false, SortDescriptor::default());
+
+        let ascending = base.sorted_by_extension_bytes(&values, SortDirection::Ascending);
+        assert_eq!(
+            visible_names(&ascending),
+            [
+                "valued-folder",
+                "missing-folder",
+                "small.bin",
+                "large.bin",
+                "missing.bin"
+            ]
+        );
+
+        let descending = base.sorted_by_extension_bytes(&values, SortDirection::Descending);
+        assert_eq!(
+            visible_names(&descending),
+            [
+                "valued-folder",
+                "missing-folder",
+                "large.bin",
+                "small.bin",
+                "missing.bin"
+            ]
+        );
+    }
+
+    #[test]
+    fn extension_byte_sort_keeps_navigable_archive_in_the_file_group() {
+        let folder = folder(1, "folder");
+        let archive = navigable_archive(2, "archive.zip");
+        let file = entry(3, "file.bin");
+        let mut values = HashMap::new();
+        values.insert(folder.id.clone(), Some(100));
+        values.insert(archive.id.clone(), Some(1));
+        values.insert(file.id.clone(), Some(50));
+        let mut snapshot = DirectorySnapshot::default();
+        for item in [archive, file, folder] {
+            snapshot.upsert(item);
+        }
+        let base = DirectoryPresentation::build(&snapshot, false, SortDescriptor::default());
+
+        assert_eq!(
+            visible_names(&base.sorted_by_extension_bytes(&values, SortDirection::Ascending)),
+            ["folder", "archive.zip", "file.bin"]
+        );
+        assert_eq!(
+            visible_names(&base.sorted_by_extension_bytes(&values, SortDirection::Descending)),
+            ["folder", "file.bin", "archive.zip"]
+        );
+        assert!(
+            snapshot
+                .entries()
+                .iter()
+                .find(|entry| entry.display_name == "archive.zip")
+                .is_some_and(|entry| entry.is_container)
+        );
     }
 
     #[test]

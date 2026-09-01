@@ -12,6 +12,19 @@ impl AssetSource for ExplorerAssets {
         if path == "lua/logo.gif" {
             return Ok(Some(Cow::Owned(decode_base64(LUA_LOGO_GIF_BASE64))));
         }
+        if let Some(name) = path
+            .strip_prefix("remote-file/")
+            .and_then(|path| path.strip_suffix(".svg"))
+        {
+            return Ok(remote_file_glyph_svg(name).map(|(data, _)| {
+                Cow::Owned(
+                    String::from_utf8_lossy(data)
+                        .replace("#212121", "currentColor")
+                        .replacen("<svg ", "<svg fill=\"currentColor\" ", 1)
+                        .into_bytes(),
+                )
+            }));
+        }
         let Some(name) = path
             .strip_prefix("fluent/")
             .and_then(|path| path.strip_suffix(".svg"))
@@ -29,6 +42,12 @@ impl AssetSource for ExplorerAssets {
     }
 
     fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
+        if path == "remote-file" {
+            return Ok(REMOTE_FILE_GLYPH_NAMES
+                .into_iter()
+                .map(|name| SharedString::from(format!("remote-file/{name}.svg")))
+                .collect());
+        }
         if path != "fluent" {
             return Ok(Vec::new());
         }
@@ -37,6 +56,136 @@ impl AssetSource for ExplorerAssets {
             .map(|icon| SharedString::from(icon.asset_path()))
             .collect())
     }
+}
+
+const REMOTE_FILE_GLYPH_NAMES: [&str; 24] = [
+    "generic",
+    "pdf",
+    "text",
+    "settings",
+    "image",
+    "archive",
+    "audio",
+    "video",
+    "code",
+    "script",
+    "executable",
+    "android",
+    "word",
+    "spreadsheet",
+    "presentation",
+    "notebook",
+    "database",
+    "mail",
+    "font",
+    "certificate",
+    "disk-image",
+    "web",
+    "data",
+    "markup",
+];
+
+fn remote_file_glyph_svg(name: &str) -> Option<(&'static [u8], bool)> {
+    let asset = match name {
+        "generic" => (
+            include_bytes!("../assets/remote-file/fluent-color/generic.svg").as_slice(),
+            false,
+        ),
+        "pdf" => (
+            include_bytes!("../assets/remote-file/fluent-color/pdf.svg").as_slice(),
+            true,
+        ),
+        "text" => (
+            include_bytes!("../assets/remote-file/fluent-color/text.svg").as_slice(),
+            false,
+        ),
+        "settings" => (
+            include_bytes!("../assets/remote-file/fluent-color/settings.svg").as_slice(),
+            false,
+        ),
+        "image" => (
+            include_bytes!("../assets/remote-file/fluent-color/image.svg").as_slice(),
+            false,
+        ),
+        "archive" => (
+            include_bytes!("../assets/remote-file/fluent-color/archive.svg").as_slice(),
+            true,
+        ),
+        "audio" => (
+            include_bytes!("../assets/remote-file/fluent-color/audio.svg").as_slice(),
+            false,
+        ),
+        "video" => (
+            include_bytes!("../assets/remote-file/fluent-color/video.svg").as_slice(),
+            false,
+        ),
+        "code" => (
+            include_bytes!("../assets/remote-file/fluent-color/code.svg").as_slice(),
+            false,
+        ),
+        "script" => (
+            include_bytes!("../assets/remote-file/fluent-color/script.svg").as_slice(),
+            true,
+        ),
+        "executable" => (
+            include_bytes!("../assets/remote-file/fluent-color/executable.svg").as_slice(),
+            false,
+        ),
+        "android" => (
+            include_bytes!("../assets/remote-file/fluent-color/android.svg").as_slice(),
+            false,
+        ),
+        "word" => (
+            include_bytes!("../assets/remote-file/fluent-color/word.svg").as_slice(),
+            true,
+        ),
+        "spreadsheet" => (
+            include_bytes!("../assets/remote-file/fluent-color/spreadsheet.svg").as_slice(),
+            false,
+        ),
+        "presentation" => (
+            include_bytes!("../assets/remote-file/fluent-color/presentation.svg").as_slice(),
+            true,
+        ),
+        "notebook" => (
+            include_bytes!("../assets/remote-file/fluent-color/notebook.svg").as_slice(),
+            false,
+        ),
+        "database" => (
+            include_bytes!("../assets/remote-file/fluent-color/database.svg").as_slice(),
+            false,
+        ),
+        "mail" => (
+            include_bytes!("../assets/remote-file/fluent-color/mail.svg").as_slice(),
+            false,
+        ),
+        "font" => (
+            include_bytes!("../assets/remote-file/fluent-color/font.svg").as_slice(),
+            true,
+        ),
+        "certificate" => (
+            include_bytes!("../assets/remote-file/fluent-color/certificate.svg").as_slice(),
+            false,
+        ),
+        "disk-image" => (
+            include_bytes!("../assets/remote-file/fluent-color/disk-image.svg").as_slice(),
+            true,
+        ),
+        "web" => (
+            include_bytes!("../assets/remote-file/fluent-color/web.svg").as_slice(),
+            false,
+        ),
+        "data" => (
+            include_bytes!("../assets/remote-file/fluent-color/data.svg").as_slice(),
+            false,
+        ),
+        "markup" => (
+            include_bytes!("../assets/remote-file/fluent-color/markup.svg").as_slice(),
+            false,
+        ),
+        _ => return None,
+    };
+    Some(asset)
 }
 
 // Official Lua logo from https://www.lua.org/images/lua-logo.gif.
@@ -163,6 +312,60 @@ mod tests {
             let text = std::str::from_utf8(&data).unwrap();
             assert!(text.contains("<svg"));
             assert!(text.contains("currentColor"));
+        }
+    }
+
+    #[test]
+    fn remote_file_categories_use_unique_offline_fluent_svg_payloads() {
+        let assets = ExplorerAssets;
+        let listed = assets.list("remote-file").unwrap();
+        assert_eq!(listed.len(), REMOTE_FILE_GLYPH_NAMES.len());
+        let mut payloads = std::collections::HashSet::new();
+        for name in REMOTE_FILE_GLYPH_NAMES {
+            let path = format!("remote-file/{name}.svg");
+            let data = assets.load(&path).unwrap().expect("embedded remote glyph");
+            let text = std::str::from_utf8(&data).unwrap();
+            assert!(text.contains("viewBox=\"0 0 20 20\""), "{name}");
+            assert!(!text.contains("<text"), "{name}");
+            assert!(!text.contains("href=\"http"), "{name}");
+            assert!(payloads.insert(text.to_owned()), "duplicate glyph: {name}");
+        }
+    }
+
+    #[test]
+    fn every_remote_asset_is_gpui_visible_and_tintable() {
+        let assets = ExplorerAssets;
+        for name in REMOTE_FILE_GLYPH_NAMES {
+            let data = assets
+                .load(&format!("remote-file/{name}.svg"))
+                .unwrap()
+                .unwrap();
+            let text = std::str::from_utf8(&data).unwrap();
+            assert!(text.contains("<path"), "missing visible geometry: {name}");
+            assert!(text.contains("currentColor"), "not tintable: {name}");
+            assert!(!text.contains("#212121"), "default paint leaked: {name}");
+            for unsupported in [
+                "gradient",
+                "url(#",
+                "<script",
+                "<image",
+                "href=",
+                "<foreignObject",
+                "filter=",
+                "mask=",
+            ] {
+                assert!(!text.contains(unsupported), "{name}: {unsupported}");
+            }
+        }
+    }
+
+    #[test]
+    fn vendored_fluent_notice_covers_every_remote_asset() {
+        let notice = include_str!("../assets/remote-file/fluent-color/NOTICE.md");
+        assert!(notice.contains("@fluentui/svg-icons` version `1.1.339"));
+        assert!(include_str!("../assets/remote-file/fluent-color/LICENSE").contains("MIT License"));
+        for name in REMOTE_FILE_GLYPH_NAMES {
+            assert!(notice.contains(&format!("`{name}.svg`")), "{name}");
         }
     }
 

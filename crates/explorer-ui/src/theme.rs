@@ -96,12 +96,17 @@ pub enum SemanticColorSlot {
     AddressFill,
     SearchFill,
     RowHover,
+    FileRowHover,
+    FileRowSelectedActive,
+    FileRowSelectedInactive,
+    FileRowFocusOutline,
+    FileRowSelectedText,
     MenuFill,
     CaptionHover,
 }
 
 impl SemanticColorSlot {
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 26] = [
         Self::Surface,
         Self::SubtleSurface,
         Self::ControlFill,
@@ -121,6 +126,11 @@ impl SemanticColorSlot {
         Self::AddressFill,
         Self::SearchFill,
         Self::RowHover,
+        Self::FileRowHover,
+        Self::FileRowSelectedActive,
+        Self::FileRowSelectedInactive,
+        Self::FileRowFocusOutline,
+        Self::FileRowSelectedText,
         Self::MenuFill,
         Self::CaptionHover,
     ];
@@ -148,6 +158,11 @@ pub struct SemanticColors {
     pub address_fill: Rgba8,
     pub search_fill: Rgba8,
     pub row_hover: Rgba8,
+    pub file_row_hover: Rgba8,
+    pub file_row_selected_active: Rgba8,
+    pub file_row_selected_inactive: Rgba8,
+    pub file_row_focus_outline: Rgba8,
+    pub file_row_selected_text: Rgba8,
     pub menu_fill: Rgba8,
     pub caption_hover: Rgba8,
 }
@@ -174,6 +189,11 @@ impl SemanticColors {
             SemanticColorSlot::AddressFill => self.address_fill,
             SemanticColorSlot::SearchFill => self.search_fill,
             SemanticColorSlot::RowHover => self.row_hover,
+            SemanticColorSlot::FileRowHover => self.file_row_hover,
+            SemanticColorSlot::FileRowSelectedActive => self.file_row_selected_active,
+            SemanticColorSlot::FileRowSelectedInactive => self.file_row_selected_inactive,
+            SemanticColorSlot::FileRowFocusOutline => self.file_row_focus_outline,
+            SemanticColorSlot::FileRowSelectedText => self.file_row_selected_text,
             SemanticColorSlot::MenuFill => self.menu_fill,
             SemanticColorSlot::CaptionHover => self.caption_hover,
         }
@@ -221,6 +241,11 @@ pub struct HighContrastMappings {
     pub address_fill: SystemColorRole,
     pub search_fill: SystemColorRole,
     pub row_hover: SystemColorRole,
+    pub file_row_hover: SystemColorRole,
+    pub file_row_selected_active: SystemColorRole,
+    pub file_row_selected_inactive: SystemColorRole,
+    pub file_row_focus_outline: SystemColorRole,
+    pub file_row_selected_text: SystemColorRole,
     pub menu_fill: SystemColorRole,
     pub caption_hover: SystemColorRole,
 }
@@ -246,6 +271,11 @@ impl HighContrastMappings {
         address_fill: SystemColorRole::Window,
         search_fill: SystemColorRole::Window,
         row_hover: SystemColorRole::Highlight,
+        file_row_hover: SystemColorRole::Highlight,
+        file_row_selected_active: SystemColorRole::Highlight,
+        file_row_selected_inactive: SystemColorRole::ButtonFace,
+        file_row_focus_outline: SystemColorRole::WindowText,
+        file_row_selected_text: SystemColorRole::HighlightText,
         menu_fill: SystemColorRole::ButtonFace,
         caption_hover: SystemColorRole::Highlight,
     };
@@ -271,6 +301,11 @@ impl HighContrastMappings {
             SemanticColorSlot::AddressFill => self.address_fill,
             SemanticColorSlot::SearchFill => self.search_fill,
             SemanticColorSlot::RowHover => self.row_hover,
+            SemanticColorSlot::FileRowHover => self.file_row_hover,
+            SemanticColorSlot::FileRowSelectedActive => self.file_row_selected_active,
+            SemanticColorSlot::FileRowSelectedInactive => self.file_row_selected_inactive,
+            SemanticColorSlot::FileRowFocusOutline => self.file_row_focus_outline,
+            SemanticColorSlot::FileRowSelectedText => self.file_row_selected_text,
             SemanticColorSlot::MenuFill => self.menu_fill,
             SemanticColorSlot::CaptionHover => self.caption_hover,
         }
@@ -310,6 +345,11 @@ impl ThemeTokens {
                 address_fill: Rgba8::opaque(253, 253, 253),
                 search_fill: Rgba8::opaque(253, 253, 253),
                 row_hover: Rgba8::opaque(245, 245, 245),
+                file_row_hover: Rgba8::opaque(229, 243, 255),
+                file_row_selected_active: Rgba8::opaque(204, 232, 255),
+                file_row_selected_inactive: Rgba8::opaque(240, 240, 240),
+                file_row_focus_outline: Rgba8::opaque(0, 0, 0),
+                file_row_selected_text: Rgba8::opaque(26, 26, 26),
                 menu_fill: Rgba8::opaque(249, 249, 249),
                 caption_hover: Rgba8::opaque(224, 224, 224),
             },
@@ -341,6 +381,11 @@ impl ThemeTokens {
                 address_fill: Rgba8::opaque(45, 45, 45),
                 search_fill: Rgba8::opaque(45, 45, 45),
                 row_hover: Rgba8::opaque(47, 47, 47),
+                file_row_hover: Rgba8::opaque(47, 47, 47),
+                file_row_selected_active: Rgba8::opaque(0, 78, 140),
+                file_row_selected_inactive: Rgba8::opaque(59, 59, 59),
+                file_row_focus_outline: Rgba8::opaque(96, 205, 255),
+                file_row_selected_text: Rgba8::opaque(255, 255, 255),
                 menu_fill: Rgba8::opaque(44, 44, 44),
                 caption_hover: Rgba8::opaque(58, 58, 58),
             },
@@ -376,6 +421,11 @@ impl ThemeTokens {
                 address_fill: resolve(mapping.address_fill),
                 search_fill: resolve(mapping.search_fill),
                 row_hover: resolve(mapping.row_hover),
+                file_row_hover: resolve(mapping.file_row_hover),
+                file_row_selected_active: resolve(mapping.file_row_selected_active),
+                file_row_selected_inactive: resolve(mapping.file_row_selected_inactive),
+                file_row_focus_outline: resolve(mapping.file_row_focus_outline),
+                file_row_selected_text: resolve(mapping.file_row_selected_text),
                 menu_fill: resolve(mapping.menu_fill),
                 caption_hover: resolve(mapping.caption_hover),
             },
@@ -409,13 +459,18 @@ mod tests {
         address_fill: Rgba8::opaque(17, 0, 0),
         search_fill: Rgba8::opaque(18, 0, 0),
         row_hover: Rgba8::opaque(19, 0, 0),
-        menu_fill: Rgba8::opaque(20, 0, 0),
-        caption_hover: Rgba8::opaque(21, 0, 0),
+        file_row_hover: Rgba8::opaque(20, 0, 0),
+        file_row_selected_active: Rgba8::opaque(21, 0, 0),
+        file_row_selected_inactive: Rgba8::opaque(22, 0, 0),
+        file_row_focus_outline: Rgba8::opaque(23, 0, 0),
+        file_row_selected_text: Rgba8::opaque(24, 0, 0),
+        menu_fill: Rgba8::opaque(25, 0, 0),
+        caption_hover: Rgba8::opaque(26, 0, 0),
     };
 
     #[test]
     fn semantic_color_contract_contains_every_required_slot_once() {
-        assert_eq!(SemanticColorSlot::ALL.len(), 21);
+        assert_eq!(SemanticColorSlot::ALL.len(), 26);
         for (index, slot) in SemanticColorSlot::ALL.into_iter().enumerate() {
             assert_eq!(
                 DISTINCT_CONTRACT_COLORS.get(slot).red,
@@ -464,6 +519,18 @@ mod tests {
             mappings.get(SemanticColorSlot::TextDisabled),
             SystemColorRole::GrayText
         );
+        assert_eq!(
+            mappings.get(SemanticColorSlot::FileRowSelectedActive),
+            SystemColorRole::Highlight
+        );
+        assert_eq!(
+            mappings.get(SemanticColorSlot::FileRowFocusOutline),
+            SystemColorRole::WindowText
+        );
+        assert_eq!(
+            mappings.get(SemanticColorSlot::FileRowSelectedText),
+            SystemColorRole::HighlightText
+        );
     }
 
     #[test]
@@ -479,6 +546,10 @@ mod tests {
         assert_eq!(palette.colors.surface, Rgba8::opaque(0, 0, 0));
         assert_eq!(palette.colors.text_primary, Rgba8::opaque(255, 255, 255));
         assert_ne!(palette.colors.selected_active, palette.colors.surface);
+        assert_ne!(
+            palette.colors.file_row_selected_active,
+            palette.colors.file_row_selected_text
+        );
         assert_ne!(palette.colors.text_disabled, palette.colors.text_primary);
         assert!(
             SemanticColorSlot::ALL

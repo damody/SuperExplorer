@@ -1102,6 +1102,7 @@ pub struct ExplorerRoot {
     address_input: Option<gpui::Entity<EditableTextState>>,
     search_input: Option<gpui::Entity<EditableTextState>>,
     rename_input: Option<gpui::Entity<EditableTextState>>,
+    bookmark_editor_anchor: Option<(i32, i32)>,
     pointer_capture_factory: Option<PointerCaptureFactory>,
     pointer_capture: Option<Box<dyn PointerCaptureSession>>,
     durable_state_observer: Option<DurableStateObserver>,
@@ -1218,6 +1219,10 @@ pub type BookmarkManagerWindowObserver = std::rc::Rc<
         &mut gpui::Context<ExplorerRoot>,
     ) -> bool,
 >;
+
+fn parse_bookmark_backup(text: &str) -> Result<explorer_model::Bookmarks, serde_json::Error> {
+    serde_json::from_str(text)
+}
 pub type BookmarkActionWindowObserver = std::rc::Rc<
     dyn Fn(
         bookmark_action_window::BookmarkActionWindowSnapshotV1,
@@ -1553,6 +1558,7 @@ impl ExplorerRoot {
             address_input: None,
             search_input: None,
             rename_input: None,
+            bookmark_editor_anchor: None,
             pointer_capture_factory: None,
             pointer_capture: None,
             durable_state_observer: None,
@@ -2165,9 +2171,14 @@ impl ExplorerRoot {
     pub fn bookmark_editor_window_snapshot(
         &self,
     ) -> Option<bookmark_editor_window::BookmarkEditorWindowSnapshotV1> {
-        self.state.bookmark_editor()?;
+        let editor = self.state.bookmark_editor()?;
         Some(bookmark_editor_window::BookmarkEditorWindowSnapshotV1 {
             state: self.state.clone(),
+            anchor: self.bookmark_editor_anchor,
+            multiline_payload: matches!(
+                editor.target,
+                explorer_model::BookmarkTarget::LuaScript { .. }
+            ),
         })
     }
 
@@ -2177,6 +2188,34 @@ impl ExplorerRoot {
 
     pub fn update_bookmark_editor_payload_from_window(&mut self, value: String) {
         self.state.update_bookmark_editor_payload(value);
+    }
+
+    pub fn clear_bookmark_editor_anchor(&mut self) {
+        self.bookmark_editor_anchor = None;
+    }
+
+    pub fn update_bookmark_from_manager(
+        &mut self,
+        id: explorer_model::BookmarkId,
+        name: String,
+        payload: String,
+    ) {
+        self.state.begin_bookmark_editor(Some(id));
+        self.state.update_bookmark_editor_name(name);
+        self.state.update_bookmark_editor_payload(payload);
+        let draft = self.state.bookmark_editor().cloned();
+        if let Some(mutation) = self.state.commit_bookmark_editor() {
+            if self.notify_durable_state() {
+                self.state.set_bookmark_notice("Bookmark renamed.");
+            } else {
+                self.state.rollback_bookmark(mutation);
+                if let Some(draft) = draft {
+                    self.state.restore_bookmark_editor(draft);
+                }
+                self.state
+                    .set_bookmark_notice("Unable to rename the bookmark.");
+            }
+        }
     }
 
     pub fn update_bookmark_folder_editor_name_from_window(&mut self, value: String) {
@@ -3331,6 +3370,7 @@ impl ExplorerRoot {
             address_input: None,
             search_input: None,
             rename_input: None,
+            bookmark_editor_anchor: None,
             pointer_capture_factory: None,
             pointer_capture: None,
             durable_state_observer: None,
@@ -3438,6 +3478,7 @@ impl ExplorerRoot {
             address_input: None,
             search_input: None,
             rename_input: None,
+            bookmark_editor_anchor: None,
             pointer_capture_factory: None,
             pointer_capture: None,
             durable_state_observer: None,
@@ -6156,6 +6197,41 @@ impl ExplorerRoot {
             self.present_bookmark_manager_window(cx);
             cx.notify();
         }
+        if action == ExplorerAction::BackupBookmarksToClipboard {
+            match serde_json::to_string_pretty(self.state.bookmarks()) {
+                Ok(text) => {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                    self.state
+                        .set_bookmark_notice("Bookmark backup copied to the clipboard.");
+                }
+                Err(error) => self
+                    .state
+                    .set_bookmark_notice(format!("Unable to back up bookmarks: {error}")),
+            }
+            cx.notify();
+        }
+        if action == ExplorerAction::ImportBookmarksFromClipboard {
+            let imported = cx
+                .read_from_clipboard()
+                .and_then(|item| item.text())
+                .and_then(|text| parse_bookmark_backup(&text).ok());
+            if let Some(bookmarks) = imported {
+                let previous = self.state.bookmarks().clone();
+                self.state.configure_bookmarks(bookmarks);
+                if self.notify_durable_state() {
+                    self.state
+                        .set_bookmark_notice("Bookmarks imported from the clipboard.");
+                } else {
+                    self.state.configure_bookmarks(previous);
+                    self.state
+                        .set_bookmark_notice("Unable to persist imported bookmarks.");
+                }
+            } else {
+                self.state
+                    .set_bookmark_notice("Clipboard does not contain a valid bookmark backup.");
+            }
+            cx.notify();
+        }
         if action == ExplorerAction::ToggleBookmarkOverflow {
             self.state.toggle_bookmark_overflow();
             cx.notify();
@@ -6227,7 +6303,8 @@ impl ExplorerRoot {
                 cx.notify();
             }
         }
-        if action == ExplorerAction::ToggleCurrentFolderBookmark {
+        if let ExplorerAction::ToggleCurrentFolderBookmark { screen_x, screen_y } = action {
+            self.bookmark_editor_anchor = Some((screen_x, screen_y));
             if let Some((target, existing_id)) = self.state.current_folder_bookmark_target_and_id()
             {
                 if let Some(id) = existing_id {
@@ -7678,6 +7755,8 @@ fn seed_visual_directory(state: &mut AppViewState, fixture: VisualFixtureState) 
                             total_items: 1,
                             completed_bytes: 6_291_456,
                             total_bytes: Some(12_582_912),
+                            phase: explorer_model::TransferProgressPhase::Transferring,
+                            current_item: None,
                         },
                     });
             }
@@ -7884,6 +7963,92 @@ fn is_remote_virtual_location(location: &explorer_model::LocationDescriptor) -> 
     )
 }
 
+pub(crate) fn remote_file_fallback_icon_kind(
+    entry: &explorer_model::FileEntry,
+) -> Option<explorer_model::RemoteFileIconKind> {
+    (!entry.is_container && is_remote_virtual_location(&entry.location))
+        .then(|| explorer_model::classify_remote_file_name(&entry.display_name).icon_kind)
+}
+
+#[cfg(test)]
+mod remote_file_fallback_icon_tests {
+    use super::remote_file_fallback_icon_kind;
+    use explorer_model::{
+        FileEntry, FileEntryMetadata, LocationDescriptor, RemoteFileIconKind, ShellItemId,
+        VirtualLocationDescriptor,
+    };
+
+    fn entry(name: &str, provider: &str, is_container: bool) -> FileEntry {
+        FileEntry {
+            id: ShellItemId::from_provider_bytes(name.as_bytes()).expect("remote identity"),
+            display_name: name.to_owned(),
+            location: LocationDescriptor::Virtual(VirtualLocationDescriptor {
+                provider_id: provider.to_owned(),
+                container_identity: [7; 16],
+                container_generation: 1,
+                entry_id: Some(1),
+                public_authority: Some("fixture".to_owned()),
+                components: vec![name.to_owned()],
+            }),
+            is_container,
+            metadata: FileEntryMetadata::default(),
+        }
+    }
+
+    #[test]
+    fn required_remote_examples_select_category_icons() {
+        for (name, expected) in [
+            ("manual.pdf", RemoteFileIconKind::Pdf),
+            ("readme.txt", RemoteFileIconKind::Text),
+            ("photo.jpg", RemoteFileIconKind::Image),
+            ("backup.tar.gz", RemoteFileIconKind::Archive),
+            ("firmware.bin.gz", RemoteFileIconKind::Archive),
+            ("bundle.tgz", RemoteFileIconKind::Archive),
+            (".bashrc", RemoteFileIconKind::Settings),
+            (".profile", RemoteFileIconKind::Settings),
+            ("report.docx", RemoteFileIconKind::Word),
+            ("budget.xlsx", RemoteFileIconKind::Spreadsheet),
+            ("briefing.pptx", RemoteFileIconKind::Presentation),
+            ("notes.one", RemoteFileIconKind::Notebook),
+            ("contacts.accdb", RemoteFileIconKind::Database),
+            ("archive.pst", RemoteFileIconKind::Mail),
+            ("application.apk", RemoteFileIconKind::AndroidPackage),
+            ("init.sh", RemoteFileIconKind::Script),
+            ("font.woff2", RemoteFileIconKind::Font),
+            ("certificate.pem", RemoteFileIconKind::Certificate),
+            ("disk.qcow2", RemoteFileIconKind::DiskImage),
+            ("index.html", RemoteFileIconKind::Web),
+            ("manifest.json", RemoteFileIconKind::Data),
+            ("layout.xml", RemoteFileIconKind::Markup),
+            ("mystery.unknown", RemoteFileIconKind::Generic),
+        ] {
+            assert_eq!(
+                remote_file_fallback_icon_kind(&entry(name, "adb", false)),
+                Some(expected)
+            );
+            assert_eq!(
+                remote_file_fallback_icon_kind(&entry(name, "sftp", false)),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn containers_and_non_remote_locations_do_not_select_remote_file_icons() {
+        assert_eq!(
+            remote_file_fallback_icon_kind(&entry("folder.txt", "adb", true)),
+            None
+        );
+        assert_eq!(
+            remote_file_fallback_icon_kind(&entry("plugin.txt", "extension", false)),
+            None
+        );
+        let mut local = entry("local.txt", "adb", false);
+        local.location = LocationDescriptor::file_system(r"C:\fixture\local.txt");
+        assert_eq!(remote_file_fallback_icon_kind(&local), None);
+    }
+}
+
 /// GPUI CE's Windows image upload path consumes the first and third byte as B and R even though
 /// `image::RgbaImage` names them R and B. Keep the Shell/cache boundary in portable straight RGBA
 /// and adapt only at the renderer boundary; otherwise Explorer's yellow folder becomes cyan.
@@ -7941,6 +8106,7 @@ impl Render for ExplorerRoot {
             self.state.close_more_menu();
             self.state.close_extensions_menu();
             self.state.close_new_menu();
+            self.state.dismiss_bookmark_browse_menus();
             self.state.cancel_permanent_delete_confirmation();
         }
         if self.state.scrollbar_drag_session().is_some() && !window.is_window_active() {
@@ -8154,6 +8320,12 @@ impl Render for ExplorerRoot {
                 }),
             )
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if this.state.bookmark_folder_menu().is_some() && event.keystroke.key == "escape" {
+                    cx.stop_propagation();
+                    this.state.dismiss_bookmark_browse_menus();
+                    cx.notify();
+                    return;
+                }
                 if this.state.bookmark_context_menu().is_some() && event.keystroke.key == "escape" {
                     cx.stop_propagation();
                     this.handle_action(
@@ -12000,5 +12172,29 @@ mod tests {
             .find(".bookmarks()")
             .expect("bookmark lookup follows dismissal");
         assert!(dismiss < lookup);
+    }
+
+    #[test]
+    fn bookmark_folder_menu_dismisses_on_window_blur_and_escape() {
+        let source = include_str!("lib.rs");
+        let render = source
+            .split("impl Render for ExplorerRoot")
+            .nth(1)
+            .expect("root render exists");
+        assert!(render.contains("if !window.is_window_active()"));
+        assert!(render.contains("self.state.dismiss_bookmark_browse_menus();"));
+        assert!(render.contains("this.state.bookmark_folder_menu().is_some()"));
+        assert!(render.contains("event.keystroke.key == \"escape\""));
+    }
+
+    #[test]
+    fn bookmark_backup_parser_rejects_invalid_clipboard_without_partial_state() {
+        assert!(super::parse_bookmark_backup("not bookmark json").is_err());
+        let empty = explorer_model::Bookmarks::default();
+        let encoded = serde_json::to_string(&empty).expect("serialize bookmark backup");
+        assert_eq!(
+            super::parse_bookmark_backup(&encoded).expect("parse bookmark backup"),
+            empty
+        );
     }
 }
