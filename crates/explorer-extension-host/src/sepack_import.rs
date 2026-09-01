@@ -1252,6 +1252,7 @@ fn open_directory_path_handle(path: &Path) -> Result<isize, SePackImportErrorV1>
     const FILE_READ_ATTRIBUTES: u32 = 0x0000_0080;
     const SYNCHRONIZE: u32 = 0x0010_0000;
     const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
     const OPEN_EXISTING: u32 = 3;
     const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
     const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
@@ -1270,7 +1271,7 @@ fn open_directory_path_handle(path: &Path) -> Result<isize, SePackImportErrorV1>
                 | FILE_ADD_SUBDIRECTORY
                 | FILE_READ_ATTRIBUTES
                 | SYNCHRONIZE,
-            FILE_SHARE_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
             std::ptr::null_mut::<c_void>(),
             OPEN_EXISTING,
             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
@@ -2013,6 +2014,29 @@ mod tests {
                 .expect("read first generation after retry"),
             first_dll
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn independent_importers_can_hold_the_same_staging_root() {
+        let source = tempfile::tempdir().expect("temporary source root");
+        let archive_path = source.path().join("shared.sepack");
+        fs::write(
+            &archive_path,
+            stored_zip(&[("manifest.json", b"{}"), ("plugin/plugin.dll", b"dll")]),
+        )
+        .expect("write archive");
+
+        let first = SePackImporterV1::new(source.path()).expect("open first importer");
+        let second = SePackImporterV1::new(source.path()).expect("open concurrent importer");
+        let first_import = first
+            .import_archive(&archive_path)
+            .expect("first importer remains usable");
+        let second_import = second
+            .import_archive(&archive_path)
+            .expect("second importer remains usable");
+
+        assert_ne!(first_import.root(), second_import.root());
     }
 
     #[test]

@@ -13,6 +13,7 @@
 compile_error!("explorer-app supports Windows targets only");
 
 use explorer_app::application::ApplicationLifecycle;
+use explorer_app::launch_coordination::{LaunchKind, LaunchSession};
 use explorer_common::{
     AppBuildInfo, DiagnosticsConfig, DiagnosticsSession, ErrorSeverity, initialize_diagnostics,
     install_panic_hook,
@@ -64,7 +65,7 @@ fn main() {
         );
     }
     install_panic_hook(diagnostics.clone());
-    if let Err(error) = run(build, &diagnostics) {
+    if let Err(error) = run(build, &diagnostics, diagnostics_console) {
         diagnostics.record_error(
             ErrorSeverity::Critical,
             "application",
@@ -76,13 +77,31 @@ fn main() {
     }
 }
 
-fn run(build: AppBuildInfo, diagnostics: &DiagnosticsSession) -> anyhow::Result<()> {
+fn run(
+    build: AppBuildInfo,
+    diagnostics: &DiagnosticsSession,
+    diagnostics_console: bool,
+) -> anyhow::Result<()> {
     let plugin_dlls = parse_plugin_dll_arguments()?;
+    let launch_session = if LaunchKind::classify(diagnostics_console, !plugin_dlls.is_empty())
+        == LaunchKind::Ordinary
+    {
+        Some(LaunchSession::acquire()?)
+    } else {
+        None
+    };
+    let repeated_launch = launch_session
+        .as_ref()
+        .is_some_and(LaunchSession::is_repeated);
     diagnostics.record_event(
         "startup",
         &[
             ("version", build.package_version),
             ("revision", build.git_revision),
+            (
+                "repeated_launch",
+                if repeated_launch { "true" } else { "false" },
+            ),
         ],
     )?;
 
@@ -103,7 +122,8 @@ fn run(build: AppBuildInfo, diagnostics: &DiagnosticsSession) -> anyhow::Result<
         "Explorer bootstrap composition is ready"
     );
     diagnostics.record_event("composition_ready", &[])?;
-    lifecycle.run_gpui()?;
+    lifecycle
+        .run_gpui_with_initial_path(repeated_launch.then(|| std::path::PathBuf::from(r"C:\")))?;
     lifecycle.shutdown()?;
     Ok(())
 }
