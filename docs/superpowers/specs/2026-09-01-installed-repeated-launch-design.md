@@ -12,7 +12,8 @@ launch classification.
 ## Decision
 
 Keep the existing independent-process window model. Make the shared staging-root
-directory handle explicitly share read, write, and delete access. Imported
+directory handle explicitly share read and write access while continuing to
+deny delete sharing. Imported
 packages already use cryptographically random, create-new child directories, so
 the root handle can be shared without allowing two importers to own the same
 candidate. Existing identity, reparse-point, bounded scavenging, and active-owner
