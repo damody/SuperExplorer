@@ -1,0 +1,30 @@
+{"task_id":"1.1.1","status":"passed","evidence":"focused-validation.md","claim":"Captured real ADB 37 PTY progress frames."}
+{"task_id":"1.1.2","status":"passed","evidence":"crates/explorer-remote/src/adb.rs","claim":"Stateful tokenizer accepts split CR, LF, and ANSI cursor frames."}
+{"task_id":"1.1.3","status":"passed","evidence":"crates/explorer-remote/src/adb.rs","claim":"Checked percent and byte-pair parser implemented."}
+{"task_id":"1.1.4","status":"passed","evidence":"crates/explorer-remote/src/adb.rs","claim":"Invalid, regressive, out-of-range, and overflowing observations are rejected."}
+{"task_id":"1.1.5","status":"passed","evidence":"focused-validation.md","claim":"Parser fixture and hostile-input tests passed."}
+{"task_id":"1.2.1","status":"passed","evidence":"crates/explorer-remote/src/adb.rs","claim":"Percent observations map to expected bytes with checked arithmetic."}
+{"task_id":"1.2.2","status":"passed","evidence":"crates/explorer-remote/src/adb.rs","claim":"Cumulative observations become monotonic deltas."}
+{"task_id":"1.2.3","status":"passed","evidence":"focused-validation.md","claim":"Unknown or mismatched totals remain indeterminate."}
+{"task_id":"1.2.4","status":"passed","evidence":"focused-validation.md","claim":"Only successful terminal completion fills the rounding remainder."}
+{"task_id":"1.2.5","status":"passed","evidence":"focused-validation.md","claim":"Adapter rounding, regression, failure, unknown-total, and overflow cases passed."}
+{"task_id":"2.1.1","status":"passed","evidence":"crates/explorer-remote/src/adb.rs","claim":"Runner streaming API retains a backward-compatible default."}
+{"task_id":"2.1.2","status":"passed","evidence":"crates/explorer-remote/src/adb.rs","claim":"Hidden PTY reader delivers bounded incremental output."}
+{"task_id":"2.1.3","status":"passed","evidence":"focused-validation.md","claim":"Callback panic isolation test passed."}
+{"task_id":"2.1.4","status":"passed","evidence":"focused-validation.md","claim":"Cancellation, timeout, kill, wait, and hidden runner tests passed."}
+{"task_id":"2.1.5","status":"passed","evidence":"focused-validation.md","claim":"Runner capture and lifecycle focused tests passed."}
+{"task_id":"2.2.1","status":"passed","evidence":"crates/explorer-remote/src/adb.rs","claim":"ADB push consumes native streaming output."}
+{"task_id":"2.2.2","status":"passed","evidence":"crates/explorer-remote/src/adb.rs","claim":"ADB pull consumes native streaming output."}
+{"task_id":"2.2.3","status":"passed","evidence":"crates/explorer-remote/src/adb.rs","claim":"Provider upload/download publish delta progress and success-only completion."}
+{"task_id":"2.2.4","status":"passed","evidence":"focused-validation.md","claim":"Former destination polling and local tree rescans are absent."}
+{"task_id":"2.2.5","status":"passed","evidence":"focused-validation.md","claim":"Provider success and non-success progress tests passed."}
+{"task_id":"3.1.1","status":"passed","evidence":"focused-validation.md","claim":"Local/ADB progress traverses the existing monotonic reporter."}
+{"task_id":"3.1.2","status":"passed","evidence":"focused-validation.md","claim":"ADB/SFTP two-stage real fixture passed in both directions."}
+{"task_id":"3.1.3","status":"passed","evidence":"focused-validation.md","claim":"Failed and late callbacks do not synthesize terminal completion."}
+{"task_id":"3.1.4","status":"passed","evidence":"focused-validation.md","claim":"Progress API adds no credential or path payload."}
+{"task_id":"3.2.1","status":"passed","evidence":"focused-validation.md","claim":"Model, remote, app, and UI focused tests passed."}
+{"task_id":"3.2.2","status":"passed","evidence":"focused-validation.md","claim":"Formatting, relevant crate checks, and whitespace validation passed."}
+{"task_id":"3.2.3","status":"passed","evidence":"focused-validation.md","claim":"Emulator large-file push/pull emitted intermediate progress and verified length."}
+{"task_id":"3.2.4","status":"passed","evidence":"focused-validation.md","claim":"Controlled ADB/SFTP bidirectional matrix passed and remote fixtures were cleaned."}
+{"task_id":"3.2.5","status":"passed","evidence":"evidence/index.jsonl","claim":"Every leaf has one unique task_id evidence record."}
+{"task_id":"3.2.6","status":"passed","evidence":"focused-validation.md","claim":"Task validator, strict OpenSpec validation, and relevant diff review passed."}
