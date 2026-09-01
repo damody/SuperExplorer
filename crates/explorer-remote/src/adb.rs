@@ -3,7 +3,7 @@
 use std::{
     collections::HashMap,
     ffi::OsString,
-    io::Read as _,
+    io::{Read as _, Write as _},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     sync::{Mutex, mpsc},
@@ -14,6 +14,7 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 use explorer_common::configure_background_command;
 use explorer_model::{CancellationToken, LocationDescriptor, VirtualLocationDescriptor};
+use portable_pty::{CommandBuilder, PtyPair, PtySize, native_pty_system};
 
 use crate::{RemoteEntry, RemoteEntryKind, RemoteMetadata, RemoteProvider};
 
@@ -126,6 +127,20 @@ pub trait AdbCommandRunner: Send + Sync {
         cancellation: &CancellationToken,
         timeout: Duration,
     ) -> Result<Output>;
+
+    fn run_with_output(
+        &self,
+        executable: &Path,
+        arguments: &[OsString],
+        cancellation: &CancellationToken,
+        timeout: Duration,
+        output_callback: &(dyn Fn(&[u8]) + Send + Sync),
+    ) -> Result<Output> {
+        let output = self.run(executable, arguments, cancellation, timeout)?;
+        output_callback(&output.stdout);
+        output_callback(&output.stderr);
+        Ok(output)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -174,6 +189,145 @@ impl AdbCommandRunner for SystemAdbCommandRunner {
             stderr: stderr.recv().unwrap_or_default(),
         })
     }
+
+    fn run_with_output(
+        &self,
+        executable: &Path,
+        arguments: &[OsString],
+        cancellation: &CancellationToken,
+        timeout: Duration,
+        output_callback: &(dyn Fn(&[u8]) + Send + Sync),
+    ) -> Result<Output> {
+        let pair = match native_pty_system().openpty(adb_pty_size()) {
+            Ok(pair) => pair,
+            Err(_) => {
+                let output = self.run(executable, arguments, cancellation, timeout)?;
+                output_callback(&output.stdout);
+                output_callback(&output.stderr);
+                return Ok(output);
+            }
+        };
+        run_adb_in_pty(
+            pair,
+            executable,
+            arguments,
+            cancellation,
+            timeout,
+            output_callback,
+        )
+    }
+}
+
+const fn adb_pty_size() -> PtySize {
+    PtySize {
+        rows: 24,
+        cols: 160,
+        pixel_width: 0,
+        pixel_height: 0,
+    }
+}
+
+fn run_adb_in_pty(
+    pair: PtyPair,
+    executable: &Path,
+    arguments: &[OsString],
+    cancellation: &CancellationToken,
+    timeout: Duration,
+    output_callback: &(dyn Fn(&[u8]) + Send + Sync),
+) -> Result<Output> {
+    let mut command = CommandBuilder::new(executable);
+    command.args(arguments);
+    let mut child = pair
+        .slave
+        .spawn_command(command)
+        .context("start ADB in pseudo-terminal")?;
+    drop(pair.slave);
+    let mut writer = pair
+        .master
+        .take_writer()
+        .context("open ADB pseudo-terminal input")?;
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .context("clone ADB pseudo-terminal reader")?;
+    let (chunk_sender, chunk_receiver) = mpsc::sync_channel::<Vec<u8>>(32);
+    thread::spawn(move || {
+        let mut buffer = vec![0_u8; 16 * 1024];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(read) if chunk_sender.send(buffer[..read].to_vec()).is_err() => break,
+                Ok(_) => {}
+            }
+        }
+    });
+    let mut capture = Vec::new();
+    let mut accept_chunk = |chunk: Vec<u8>| {
+        if chunk.windows(4).any(|window| window == b"\x1b[6n") {
+            let _ = writer.write_all(b"\x1b[1;1R");
+            let _ = writer.flush();
+        }
+        invoke_adb_output_callback(output_callback, &chunk);
+        let remaining = (MAX_CAPTURE_BYTES as usize).saturating_sub(capture.len());
+        capture.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+    };
+    let started = Instant::now();
+    let status = loop {
+        while let Ok(chunk) = chunk_receiver.try_recv() {
+            accept_chunk(chunk);
+        }
+        if cancellation.is_cancelled() {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("ADB command cancelled");
+        }
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("ADB command timed out");
+        }
+        if let Some(status) = child
+            .try_wait()
+            .context("poll ADB pseudo-terminal process")?
+        {
+            break status;
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    drop(pair.master);
+    let drain_deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        let remaining = drain_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match chunk_receiver.recv_timeout(remaining.min(Duration::from_millis(50))) {
+            Ok(chunk) => accept_chunk(chunk),
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+        }
+    }
+    #[cfg(windows)]
+    let status = {
+        use std::os::windows::process::ExitStatusExt as _;
+        std::process::ExitStatus::from_raw(status.exit_code())
+    };
+    #[cfg(not(windows))]
+    let status = {
+        use std::os::unix::process::ExitStatusExt as _;
+        std::process::ExitStatus::from_raw(status.exit_code() as i32)
+    };
+    Ok(Output {
+        status,
+        stdout: Vec::new(),
+        stderr: capture,
+    })
+}
+
+fn invoke_adb_output_callback(output_callback: &(dyn Fn(&[u8]) + Send + Sync), chunk: &[u8]) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        output_callback(chunk);
+    }));
 }
 
 fn bounded_reader(mut reader: impl std::io::Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
@@ -187,6 +341,135 @@ fn bounded_reader(mut reader: impl std::io::Read + Send + 'static) -> mpsc::Rece
         let _ = sender.send(bytes);
     });
     receiver
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AdbProgressObservation {
+    Percent(u8),
+    Bytes { completed: u64, total: u64 },
+}
+
+#[derive(Default)]
+struct AdbProgressParser {
+    pending: Vec<u8>,
+}
+
+impl AdbProgressParser {
+    fn push(&mut self, chunk: &[u8], mut observe: impl FnMut(AdbProgressObservation)) {
+        for &byte in chunk {
+            if matches!(byte, b'\r' | b'\n') {
+                self.flush(&mut observe);
+                continue;
+            }
+            self.pending.push(byte);
+            if self.pending.ends_with(b"\x1b[H") {
+                self.pending.truncate(self.pending.len().saturating_sub(3));
+                self.flush(&mut observe);
+            }
+            if self.pending.len() > 16 * 1024 {
+                self.pending.clear();
+            }
+        }
+    }
+
+    fn finish(&mut self, mut observe: impl FnMut(AdbProgressObservation)) {
+        self.flush(&mut observe);
+    }
+
+    fn flush(&mut self, observe: &mut impl FnMut(AdbProgressObservation)) {
+        if let Some(observation) = parse_adb_progress_frame(&self.pending) {
+            observe(observation);
+        }
+        self.pending.clear();
+    }
+}
+
+fn parse_adb_progress_frame(frame: &[u8]) -> Option<AdbProgressObservation> {
+    let text = String::from_utf8_lossy(frame);
+    if let Some(bytes) = parse_adb_byte_pair(&text) {
+        return Some(bytes);
+    }
+    for (percent_index, _) in text.match_indices('%') {
+        let prefix = &text[..percent_index];
+        let digits = prefix
+            .char_indices()
+            .rev()
+            .take_while(|(_, character)| character.is_ascii_digit() || character.is_whitespace())
+            .map(|(_, character)| character)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect::<String>();
+        let percent = digits.trim().parse::<u8>().ok()?;
+        if percent <= 100 {
+            return Some(AdbProgressObservation::Percent(percent));
+        }
+    }
+    None
+}
+
+fn parse_adb_byte_pair(text: &str) -> Option<AdbProgressObservation> {
+    let bytes = text.as_bytes();
+    for slash in text.match_indices('/').map(|(index, _)| index) {
+        let mut start = slash;
+        while start > 0 && (bytes[start - 1].is_ascii_digit() || bytes[start - 1] == b',') {
+            start -= 1;
+        }
+        let mut end = slash + 1;
+        while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b',') {
+            end += 1;
+        }
+        let completed = text[start..slash].replace(',', "").parse::<u64>().ok()?;
+        let total = text[slash + 1..end].replace(',', "").parse::<u64>().ok()?;
+        if total > 0 && completed <= total {
+            return Some(AdbProgressObservation::Bytes { completed, total });
+        }
+    }
+    None
+}
+
+struct AdbProgressAdapter<'a> {
+    expected_total: Option<u64>,
+    completed: u64,
+    progress: &'a (dyn Fn(u64) + Send + Sync),
+}
+
+impl<'a> AdbProgressAdapter<'a> {
+    fn new(expected_total: Option<u64>, progress: &'a (dyn Fn(u64) + Send + Sync)) -> Self {
+        Self {
+            expected_total,
+            completed: 0,
+            progress,
+        }
+    }
+
+    fn observe(&mut self, observation: AdbProgressObservation) {
+        let cumulative = match observation {
+            AdbProgressObservation::Percent(percent) => self
+                .expected_total
+                .and_then(|total| total.checked_mul(u64::from(percent)))
+                .map(|bytes| bytes / 100),
+            AdbProgressObservation::Bytes { completed, total } => self
+                .expected_total
+                .filter(|expected| *expected == total)
+                .map(|_| completed),
+        };
+        if let Some(cumulative) = cumulative
+            && cumulative > self.completed
+        {
+            (self.progress)(cumulative - self.completed);
+            self.completed = cumulative;
+        }
+    }
+
+    fn complete_success(&mut self) {
+        if let Some(total) = self.expected_total
+            && total > self.completed
+        {
+            (self.progress)(total - self.completed);
+            self.completed = total;
+        }
+    }
 }
 
 /// ADB client that always supplies argument arrays rather than a shell command line.
@@ -276,6 +559,28 @@ impl<R: AdbCommandRunner> AdbClient<R> {
         ensure_success(&output, operation)
     }
 
+    fn device_command_with_output(
+        &self,
+        serial: &str,
+        arguments: impl IntoIterator<Item = OsString>,
+        cancellation: &CancellationToken,
+        timeout: Duration,
+        operation: &str,
+        output_callback: &(dyn Fn(&[u8]) + Send + Sync),
+    ) -> Result<()> {
+        validate_serial(serial)?;
+        let mut full = vec![OsString::from("-s"), OsString::from(serial)];
+        full.extend(arguments);
+        let output = self.runner.run_with_output(
+            &self.executable,
+            &full,
+            cancellation,
+            timeout,
+            output_callback,
+        )?;
+        ensure_success(&output, operation)
+    }
+
     pub fn push(
         &self,
         serial: &str,
@@ -297,6 +602,49 @@ impl<R: AdbCommandRunner> AdbClient<R> {
         )
     }
 
+    fn push_with_progress(
+        &self,
+        serial: &str,
+        local: &Path,
+        remote: &str,
+        cancellation: &CancellationToken,
+        expected_total: Option<u64>,
+        progress: &(dyn Fn(u64) + Send + Sync),
+    ) -> Result<()> {
+        validate_remote_path(remote)?;
+        let state = Mutex::new((
+            AdbProgressParser::default(),
+            AdbProgressAdapter::new(expected_total, progress),
+        ));
+        let result = self.device_command_with_output(
+            serial,
+            [
+                OsString::from("push"),
+                local.as_os_str().to_owned(),
+                OsString::from(remote),
+            ],
+            cancellation,
+            TRANSFER_TIMEOUT,
+            "push file",
+            &|chunk| {
+                let mut state = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let (parser, adapter) = &mut *state;
+                parser.push(chunk, |observation| adapter.observe(observation));
+            },
+        );
+        let mut state = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (parser, adapter) = &mut *state;
+        parser.finish(|observation| adapter.observe(observation));
+        if result.is_ok() {
+            adapter.complete_success();
+        }
+        result
+    }
+
     pub fn pull(
         &self,
         serial: &str,
@@ -316,6 +664,49 @@ impl<R: AdbCommandRunner> AdbClient<R> {
             TRANSFER_TIMEOUT,
             "pull file",
         )
+    }
+
+    fn pull_with_progress(
+        &self,
+        serial: &str,
+        remote: &str,
+        local: &Path,
+        cancellation: &CancellationToken,
+        expected_total: Option<u64>,
+        progress: &(dyn Fn(u64) + Send + Sync),
+    ) -> Result<()> {
+        validate_remote_path(remote)?;
+        let state = Mutex::new((
+            AdbProgressParser::default(),
+            AdbProgressAdapter::new(expected_total, progress),
+        ));
+        let result = self.device_command_with_output(
+            serial,
+            [
+                OsString::from("pull"),
+                OsString::from(remote),
+                local.as_os_str().to_owned(),
+            ],
+            cancellation,
+            TRANSFER_TIMEOUT,
+            "pull file",
+            &|chunk| {
+                let mut state = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let (parser, adapter) = &mut *state;
+                parser.push(chunk, |observation| adapter.observe(observation));
+            },
+        );
+        let mut state = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (parser, adapter) = &mut *state;
+        parser.finish(|observation| adapter.observe(observation));
+        if result.is_ok() {
+            adapter.complete_success();
+        }
+        result
     }
 
     pub fn mkdir(
@@ -432,13 +823,36 @@ impl<R: AdbCommandRunner> AdbClient<R> {
             arguments.push(OsString::from("-f"));
         }
         arguments.extend([OsString::from("--"), OsString::from(shell_quote(remote))]);
-        self.device_command(
+        let result = self.device_command(
             serial,
             arguments,
             cancellation,
             DEFAULT_COMMAND_TIMEOUT,
             "delete item",
-        )
+        );
+        if result.is_err() && recursive && !cancellation.is_cancelled() {
+            // Android's emulated /sdcard FUSE can remove every child yet report ETXTBSY for the
+            // now-empty directory immediately after a large transfer. A bounded exact-path rmdir
+            // completes that already-authorized recursive deletion without widening its scope.
+            if self
+                .device_command(
+                    serial,
+                    [
+                        OsString::from("shell"),
+                        OsString::from("rmdir"),
+                        OsString::from("--"),
+                        OsString::from(shell_quote(remote)),
+                    ],
+                    cancellation,
+                    DEFAULT_COMMAND_TIMEOUT,
+                    "remove empty directory",
+                )
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+        result
     }
 
     pub fn chmod(
@@ -616,40 +1030,16 @@ impl<R: AdbCommandRunner> RemoteProvider for AdbProvider<R> {
             .client
             .metadata(&serial, &remote, cancellation)
             .ok()
-            .map(|m| m.size);
-        if expected.is_none() {
-            return self
-                .client
-                .pull(&serial, &remote, local_destination, cancellation);
-        }
-        let destination = local_destination.to_path_buf();
-        let result = thread::scope(|scope| {
-            let handle = scope.spawn(|| {
-                self.client
-                    .pull(&serial, &remote, &destination, cancellation)
-            });
-            let mut reported = 0_u64;
-            while !handle.is_finished() {
-                if let Ok(size) = fs_file_or_tree_bytes(&destination)
-                    && size > reported
-                {
-                    progress(size - reported);
-                    reported = size;
-                }
-                thread::sleep(Duration::from_millis(75));
-            }
-            let result = handle
-                .join()
-                .map_err(|_| anyhow::anyhow!("ADB pull worker panicked"))?;
-            result?;
-            if let Ok(size) = fs_file_or_tree_bytes(&destination)
-                && size > reported
-            {
-                progress(size - reported);
-            }
-            Ok(())
-        });
-        result
+            .filter(|metadata| kind_from_unix_mode(metadata.unix_mode) == RemoteEntryKind::File)
+            .map(|metadata| metadata.size);
+        self.client.pull_with_progress(
+            &serial,
+            &remote,
+            local_destination,
+            cancellation,
+            expected,
+            progress,
+        )
     }
 
     fn upload(
@@ -676,45 +1066,23 @@ impl<R: AdbCommandRunner> RemoteProvider for AdbProvider<R> {
     ) -> Result<()> {
         crate::provider::validate_remote_location(destination, "adb", true)?;
         let serial = self.serial(destination)?;
-        let mut target = destination.clone();
-        if let Some(name) = local_source.file_name().and_then(|name| name.to_str()) {
-            target.components.push(name.to_owned());
-        }
         let remote_parent = remote_path(destination);
-        let remote_target = remote_path(&target);
-        let local = local_source.to_path_buf();
-        let expected = fs_file_or_tree_bytes(&local).ok();
-        if expected.is_none() {
-            return self
-                .client
-                .push(&serial, &local, &remote_parent, cancellation);
-        }
-        thread::scope(|scope| {
-            let handle = scope.spawn(|| {
-                self.client
-                    .push(&serial, &local, &remote_parent, cancellation)
-            });
-            let mut reported = 0_u64;
-            while !handle.is_finished() {
-                if let Ok(metadata) = self.client.metadata(&serial, &remote_target, cancellation)
-                    && metadata.size > reported
-                {
-                    progress(metadata.size - reported);
-                    reported = metadata.size;
-                }
-                thread::sleep(Duration::from_millis(100));
-            }
-            let result = handle
-                .join()
-                .map_err(|_| anyhow::anyhow!("ADB push worker panicked"))?;
-            result?;
-            if let Some(expected) = expected
-                && expected > reported
-            {
-                progress(expected - reported);
-            }
-            Ok(())
-        })
+        let expected = local_source
+            .is_file()
+            .then(|| {
+                std::fs::metadata(local_source)
+                    .ok()
+                    .map(|metadata| metadata.len())
+            })
+            .flatten();
+        self.client.push_with_progress(
+            &serial,
+            local_source,
+            &remote_parent,
+            cancellation,
+            expected,
+            progress,
+        )
     }
 
     fn create_directory(
@@ -813,10 +1181,6 @@ impl<R: AdbCommandRunner> RemoteProvider for AdbProvider<R> {
             cancellation,
         )
     }
-}
-
-fn fs_file_or_tree_bytes(path: &Path) -> Result<u64> {
-    crate::transfer::local_tree_bytes(path)
 }
 
 fn remote_path(location: &VirtualLocationDescriptor) -> String {
@@ -999,6 +1363,91 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn progress_parser_handles_split_cr_lf_ansi_percent_and_byte_pair_frames() {
+        let mut parser = AdbProgressParser::default();
+        let mut observations = Vec::new();
+        parser.push(b"[  7", |value| observations.push(value));
+        parser.push(
+            b"%] file\r440,401/1,048,576 bytes\n[ 42%] next\x1b[H",
+            |value| observations.push(value),
+        );
+        parser.finish(|value| observations.push(value));
+        assert_eq!(
+            observations,
+            vec![
+                AdbProgressObservation::Percent(7),
+                AdbProgressObservation::Bytes {
+                    completed: 440_401,
+                    total: 1_048_576,
+                },
+                AdbProgressObservation::Percent(42),
+            ]
+        );
+    }
+
+    #[test]
+    fn progress_parser_rejects_invalid_overflow_and_out_of_range_frames() {
+        for frame in [
+            b"[101%] bad\r".as_slice(),
+            b"999999999999999999999999/2\n".as_slice(),
+            b"9/8 bytes\r".as_slice(),
+            b"unrelated terminal summary\n".as_slice(),
+        ] {
+            let mut parser = AdbProgressParser::default();
+            let mut observations = Vec::new();
+            parser.push(frame, |value| observations.push(value));
+            assert!(
+                observations.is_empty(),
+                "unexpected observation for {frame:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn progress_adapter_is_monotonic_and_only_success_fills_rounding_remainder() {
+        let deltas = Mutex::new(Vec::new());
+        let record = |delta| {
+            deltas.lock().unwrap().push(delta);
+        };
+        let mut adapter = AdbProgressAdapter::new(Some(1_001), &record);
+        adapter.observe(AdbProgressObservation::Percent(10));
+        adapter.observe(AdbProgressObservation::Percent(10));
+        adapter.observe(AdbProgressObservation::Percent(5));
+        adapter.observe(AdbProgressObservation::Percent(99));
+        assert_eq!(*deltas.lock().unwrap(), vec![100, 890]);
+        adapter.complete_success();
+        assert_eq!(*deltas.lock().unwrap(), vec![100, 890, 11]);
+    }
+
+    #[test]
+    fn progress_adapter_keeps_unknown_totals_indeterminate() {
+        let bytes = std::sync::atomic::AtomicU64::new(0);
+        let record = |delta| {
+            bytes.fetch_add(delta, std::sync::atomic::Ordering::AcqRel);
+        };
+        let mut adapter = AdbProgressAdapter::new(None, &record);
+        adapter.observe(AdbProgressObservation::Percent(50));
+        adapter.observe(AdbProgressObservation::Bytes {
+            completed: 50,
+            total: 100,
+        });
+        adapter.complete_success();
+        assert_eq!(bytes.load(std::sync::atomic::Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn output_callback_panic_is_isolated() {
+        invoke_adb_output_callback(&|_| panic!("fixture callback panic"), b"first");
+
+        let delivered = std::sync::atomic::AtomicBool::new(false);
+        invoke_adb_output_callback(
+            &|_| delivered.store(true, std::sync::atomic::Ordering::Release),
+            b"second",
+        );
+        assert!(delivered.load(std::sync::atomic::Ordering::Acquire));
+    }
+
     #[derive(Clone)]
     struct FakeRunner {
         stdout: Arc<Vec<u8>>,
@@ -1032,6 +1481,106 @@ mod tests {
                 stderr: Vec::new(),
             })
         }
+    }
+
+    #[derive(Clone, Copy)]
+    struct StreamingRunner;
+
+    impl AdbCommandRunner for StreamingRunner {
+        fn run(
+            &self,
+            _: &Path,
+            _: &[OsString],
+            _: &CancellationToken,
+            _: Duration,
+        ) -> Result<Output> {
+            Ok(Output {
+                status: std::process::ExitStatus::default(),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+        }
+
+        fn run_with_output(
+            &self,
+            _: &Path,
+            _: &[OsString],
+            _: &CancellationToken,
+            _: Duration,
+            output_callback: &(dyn Fn(&[u8]) + Send + Sync),
+        ) -> Result<Output> {
+            output_callback(b"[ 10%] payload\r[ 50");
+            output_callback(b"%] payload\r");
+            self.run(
+                Path::new("fixture-adb.exe"),
+                &[],
+                &CancellationToken::new(),
+                Duration::ZERO,
+            )
+        }
+    }
+
+    #[test]
+    fn adb_client_streams_native_progress_and_success_fills_only_the_remainder() {
+        let client = AdbClient::new(PathBuf::from("fixture-adb.exe"), StreamingRunner);
+        let deltas = Mutex::new(Vec::new());
+        client
+            .push_with_progress(
+                "emulator-5554",
+                Path::new("payload.bin"),
+                "/sdcard/Download",
+                &CancellationToken::new(),
+                Some(1_000),
+                &|delta| deltas.lock().unwrap().push(delta),
+            )
+            .unwrap();
+        assert_eq!(*deltas.lock().unwrap(), vec![100, 400, 500]);
+    }
+
+    #[derive(Clone, Copy)]
+    struct FailingStreamingRunner;
+
+    impl AdbCommandRunner for FailingStreamingRunner {
+        fn run(
+            &self,
+            _: &Path,
+            _: &[OsString],
+            _: &CancellationToken,
+            _: Duration,
+        ) -> Result<Output> {
+            bail!("fixture transfer failed")
+        }
+
+        fn run_with_output(
+            &self,
+            _: &Path,
+            _: &[OsString],
+            _: &CancellationToken,
+            _: Duration,
+            output_callback: &(dyn Fn(&[u8]) + Send + Sync),
+        ) -> Result<Output> {
+            output_callback(b"[ 25%] payload\r");
+            bail!("fixture transfer failed")
+        }
+    }
+
+    #[test]
+    fn adb_client_failure_preserves_intermediate_progress_without_filling_total() {
+        let client = AdbClient::new(PathBuf::from("fixture-adb.exe"), FailingStreamingRunner);
+        let deltas = Mutex::new(Vec::new());
+        assert!(
+            client
+                .pull_with_progress(
+                    "emulator-5554",
+                    "/sdcard/Download/payload.bin",
+                    Path::new("payload.bin"),
+                    &CancellationToken::new(),
+                    Some(1_000),
+                    &|delta| deltas.lock().unwrap().push(delta),
+                )
+                .is_err()
+        );
+        assert_eq!(*deltas.lock().unwrap(), vec![250]);
     }
 
     #[test]

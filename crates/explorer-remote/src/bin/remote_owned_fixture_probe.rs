@@ -41,7 +41,17 @@ fn verify_and_delete(
     if !entries.iter().any(|entry| entry.name == MARKER) {
         bail!("owned remote fixture marker is missing; cleanup refused");
     }
-    provider.delete(fixture, true, cancellation)
+    let mut last_error = None;
+    for _ in 0..100 {
+        match provider.delete(fixture, true, cancellation) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last_error = Some(error);
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("owned fixture cleanup failed")))
 }
 
 fn run_adb(serial: &str) -> Result<()> {
@@ -58,6 +68,69 @@ fn run_adb(serial: &str) -> Result<()> {
         components: vec!["data".to_owned(), "local".to_owned(), "tmp".to_owned()],
     };
     run_fixture(&provider, parent)
+}
+
+fn run_adb_progress(serial: &str) -> Result<()> {
+    let client = AdbClient::discover()?;
+    let provider = AdbProvider::new(client);
+    let identity = remote_container_identity(RemoteProviderKind::Adb, serial);
+    provider.register_device(identity, serial.to_owned())?;
+    let cancellation = CancellationToken::new();
+    let parent = VirtualLocationDescriptor {
+        provider_id: "adb".to_owned(),
+        public_authority: Some(serial.to_owned()),
+        container_identity: identity,
+        container_generation: 1,
+        entry_id: None,
+        components: vec!["sdcard".to_owned(), "Download".to_owned(), unique_name()],
+    };
+    provider.create_directory(&parent, &cancellation)?;
+    let local = tempfile::tempdir()?;
+    let source = local.path().join("native-progress.bin");
+    let source_file = std::fs::File::create(&source)?;
+    source_file.set_len(512 * 1024 * 1024 + 17)?;
+    let marker = local.path().join(MARKER);
+    std::fs::write(&marker, b"SuperExplorer owned destructive fixture v1")?;
+    provider.upload(&marker, &parent, &cancellation)?;
+
+    let result = (|| -> Result<()> {
+        let upload_observations = std::sync::Mutex::new(Vec::new());
+        let upload_total = AtomicU64::new(0);
+        provider.upload_with_progress(&source, &parent, &cancellation, &|delta| {
+            let cumulative = upload_total.fetch_add(delta, Ordering::AcqRel) + delta;
+            upload_observations.lock().unwrap().push(cumulative);
+        })?;
+        let remote_source = child(&parent, "native-progress.bin");
+        let downloaded = local.path().join("downloaded-native-progress.bin");
+        let download_observations = std::sync::Mutex::new(Vec::new());
+        let download_total = AtomicU64::new(0);
+        provider.download_with_progress(&remote_source, &downloaded, &cancellation, &|delta| {
+            let cumulative = download_total.fetch_add(delta, Ordering::AcqRel) + delta;
+            download_observations.lock().unwrap().push(cumulative);
+        })?;
+        let expected = std::fs::metadata(&source)?.len();
+        for (direction, observations) in [
+            ("push", upload_observations.into_inner().unwrap()),
+            ("pull", download_observations.into_inner().unwrap()),
+        ] {
+            if observations.len() < 2
+                || observations.last().copied() != Some(expected)
+                || !observations.windows(2).all(|pair| pair[0] < pair[1])
+                || observations.first().is_none_or(|first| *first >= expected)
+            {
+                bail!("ADB {direction} did not publish monotonic intermediate native progress");
+            }
+        }
+        if std::fs::metadata(&downloaded)?.len() != expected {
+            bail!("ADB native progress fixture content length mismatch");
+        }
+        Ok(())
+    })();
+    let cleanup = verify_and_delete(&provider, &parent, &cancellation);
+    result?;
+    cleanup?;
+    println!("adb_native_progress_verified=true");
+    Ok(())
 }
 
 fn run_sftp(host: &str, username: &str, fingerprint: &str) -> Result<()> {
@@ -247,6 +320,7 @@ fn main() -> Result<()> {
     let mut arguments = std::env::args().skip(1);
     match arguments.next().as_deref() {
         Some("adb") => run_adb(&arguments.next().context("missing ADB serial")?),
+        Some("adb-progress") => run_adb_progress(&arguments.next().context("missing ADB serial")?),
         Some("sftp") => run_sftp(
             &arguments.next().context("missing SFTP host")?,
             &arguments.next().context("missing SFTP username")?,
