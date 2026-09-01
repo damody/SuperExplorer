@@ -1,12 +1,15 @@
 use std::{
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context as _, Result, bail};
 use explorer_model::{
-    CancellationToken, RemoteProviderKind, SftpProfile, VirtualLocationDescriptor,
-    remote_container_identity,
+    CancellationToken, ConflictDecision, RemoteProviderKind, SftpProfile,
+    VirtualLocationDescriptor, remote_container_identity,
 };
 use explorer_remote::{
     AdbClient, AdbProvider, RemoteProvider, RemoteProviderRegistry, SftpProvider, TransferEngine,
@@ -128,7 +131,8 @@ fn run_cross(serial: &str, host: &str, username: &str, fingerprint: &str) -> Res
         tree.join(MARKER),
         b"SuperExplorer owned destructive fixture v1",
     )?;
-    std::fs::write(tree.join("nested").join("payload.bin"), b"matrix-payload")?;
+    let payload = vec![0x5a; 4 * 1024 * 1024 + 17];
+    std::fs::write(tree.join("nested").join("payload.bin"), &payload)?;
     let root_marker = local.path().join(MARKER);
     std::fs::write(&root_marker, b"SuperExplorer owned destructive fixture v1")?;
     adb.upload(&root_marker, &adb_parent, &cancellation)?;
@@ -142,23 +146,53 @@ fn run_cross(serial: &str, host: &str, username: &str, fingerprint: &str) -> Res
     let engine = TransferEngine::new(&registry);
     let adb_tree = child(&adb_parent, "matrix-tree");
     let sftp_tree = child(&sftp_parent, "matrix-tree");
-    let adb_to_sftp = engine.transfer(
+    let adb_to_sftp_bytes = AtomicU64::new(0);
+    let adb_to_sftp_callbacks = AtomicUsize::new(0);
+    let adb_to_sftp = engine.transfer_with_conflict_and_progress(
         explorer_model::LocationDescriptor::Virtual(adb_tree.clone()),
         explorer_model::LocationDescriptor::Virtual(sftp_parent.clone()),
         TransferMode::Copy,
+        ConflictDecision::Replace,
         &cancellation,
+        &|delta| {
+            adb_to_sftp_bytes.fetch_add(delta, Ordering::AcqRel);
+            adb_to_sftp_callbacks.fetch_add(1, Ordering::AcqRel);
+        },
     );
     if adb_to_sftp.result != TransferResult::Succeeded {
         bail!("ADB to SFTP matrix transfer failed");
     }
-    let sftp_to_adb = engine.transfer(
+    let sftp_to_adb_bytes = AtomicU64::new(0);
+    let sftp_to_adb_callbacks = AtomicUsize::new(0);
+    let sftp_to_adb = engine.transfer_with_conflict_and_progress(
         explorer_model::LocationDescriptor::Virtual(sftp_tree.clone()),
         explorer_model::LocationDescriptor::Virtual(adb_parent.clone()),
         TransferMode::Copy,
+        ConflictDecision::Replace,
         &cancellation,
+        &|delta| {
+            sftp_to_adb_bytes.fetch_add(delta, Ordering::AcqRel);
+            sftp_to_adb_callbacks.fetch_add(1, Ordering::AcqRel);
+        },
     );
     if sftp_to_adb.result != TransferResult::Succeeded {
         bail!("SFTP to ADB matrix transfer failed");
+    }
+    for (direction, bytes, callbacks) in [
+        (
+            "adb-to-sftp",
+            adb_to_sftp_bytes.load(Ordering::Acquire),
+            adb_to_sftp_callbacks.load(Ordering::Acquire),
+        ),
+        (
+            "sftp-to-adb",
+            sftp_to_adb_bytes.load(Ordering::Acquire),
+            sftp_to_adb_callbacks.load(Ordering::Acquire),
+        ),
+    ] {
+        if bytes == 0 || callbacks < 2 {
+            bail!("{direction} did not publish intermediate byte progress");
+        }
     }
     let local_downloads = tempfile::tempdir()?;
     adb.download(
@@ -175,7 +209,7 @@ fn run_cross(serial: &str, host: &str, username: &str, fingerprint: &str) -> Res
         local_downloads.path().join("adb-tree/nested/payload.bin"),
         local_downloads.path().join("sftp-tree/nested/payload.bin"),
     ] {
-        if std::fs::read(path)? != b"matrix-payload" {
+        if std::fs::read(path)? != payload {
             bail!("cross-provider matrix content mismatch");
         }
     }
