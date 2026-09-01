@@ -4643,6 +4643,27 @@ fn permanent_delete_dialog_button(
 /// Installs window-wide drag listeners during GPUI's paint phase. Native `SetCapture` routes
 /// pointer messages to this window after the cursor leaves both the thumb and the HWND; this
 /// listener then keeps the typed scrollbar reducer as the sole owner of offset changes.
+fn captured_left_mouse_up_action(
+    marquee_active: bool,
+    scrollbar_dragging: Option<crate::interaction::ScrollbarKind>,
+    details_column_resizing: bool,
+    side_pane_resizing: bool,
+) -> Option<ExplorerAction> {
+    if marquee_active {
+        Some(ExplorerAction::EndMarquee)
+    } else if scrollbar_dragging.is_some() {
+        Some(ExplorerAction::EndScrollbarDrag {
+            reason: crate::interaction::ScrollbarTerminal::PointerUp,
+        })
+    } else if side_pane_resizing {
+        Some(ExplorerAction::EndSidePaneResize)
+    } else if details_column_resizing {
+        Some(ExplorerAction::EndDetailsColumnResize)
+    } else {
+        None
+    }
+}
+
 fn pointer_drag_capture_listener(
     on_action: Option<ActionCallback>,
     scrollbar_dragging: Option<crate::interaction::ScrollbarKind>,
@@ -4708,8 +4729,12 @@ fn pointer_drag_capture_listener(
                         }
                     } else if side_pane_resizing {
                         ExplorerAction::EndSidePaneResize
-                    } else {
+                    } else if details_column_resizing {
                         ExplorerAction::EndDetailsColumnResize
+                    } else {
+                        // External OLE drag-over is also represented as a pressed-button mouse
+                        // move. An idle resize-capture listener must not consume that event.
+                        return;
                     };
                     on_action(&action, window, cx);
                     cx.stop_propagation();
@@ -4722,16 +4747,18 @@ fn pointer_drag_capture_listener(
                     && event.button == MouseButton::Left
                     && let Some(on_action) = up_action.as_ref()
                 {
-                    let action = if marquee_active {
-                        ExplorerAction::EndMarquee
-                    } else if scrollbar_dragging.is_some() {
-                        ExplorerAction::EndScrollbarDrag {
-                            reason: crate::interaction::ScrollbarTerminal::PointerUp,
-                        }
-                    } else if side_pane_resizing {
-                        ExplorerAction::EndSidePaneResize
-                    } else {
-                        ExplorerAction::EndDetailsColumnResize
+                    let Some(action) = captured_left_mouse_up_action(
+                        marquee_active,
+                        scrollbar_dragging,
+                        details_column_resizing,
+                        side_pane_resizing,
+                    ) else {
+                        // Windows OLE submits an external file drop to GPUI as a synthetic left
+                        // MouseUp.  A capture listener that stops every idle MouseUp prevents the
+                        // file-view's bubble-phase `on_drop` handler from ever receiving that
+                        // terminal event.  Only an active capture-owned interaction may consume
+                        // the release; ordinary clicks and external drops must keep propagating.
+                        return;
                     };
                     on_action(&action, window, cx);
                     cx.stop_propagation();
@@ -15667,6 +15694,22 @@ mod tests {
             .expect("production source");
         assert!(!production.contains("let details_drag_cancel = self.on_action.clone();"));
         assert!(!production.contains(".when_some(details_drag_cancel, |element, callback|"));
+    }
+
+    #[test]
+    fn idle_pointer_capture_leaves_external_ole_mouse_up_for_drop_target() {
+        assert!(
+            super::captured_left_mouse_up_action(false, None, false, false).is_none(),
+            "an idle capture listener must not consume the synthetic MouseUp used by OLE Drop"
+        );
+        assert!(matches!(
+            super::captured_left_mouse_up_action(false, None, true, false),
+            Some(ExplorerAction::EndDetailsColumnResize)
+        ));
+        assert!(matches!(
+            super::captured_left_mouse_up_action(false, None, false, true),
+            Some(ExplorerAction::EndSidePaneResize)
+        ));
     }
 
     #[test]
