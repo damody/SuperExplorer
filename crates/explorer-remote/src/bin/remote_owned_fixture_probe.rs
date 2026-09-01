@@ -157,6 +157,43 @@ fn run_sftp(host: &str, username: &str, fingerprint: &str) -> Result<()> {
     run_fixture(&provider, parent)
 }
 
+fn cleanup_sftp_drag_fixture(host: &str, username: &str, fingerprint: &str) -> Result<()> {
+    let password = rpassword::read_password()?;
+    let identity = remote_container_identity(RemoteProviderKind::Sftp, host);
+    let mut profile = SftpProfile::new(
+        host.to_owned(),
+        host.to_owned(),
+        22,
+        username.to_owned(),
+        identity,
+    )?;
+    profile.host_key_fingerprint = Some(fingerprint.to_owned());
+    let provider = SftpProvider::new()?;
+    provider.register_profile(profile, password)?;
+    let parent = VirtualLocationDescriptor {
+        provider_id: "sftp".to_owned(),
+        public_authority: Some(host.to_owned()),
+        container_identity: identity,
+        container_generation: 1,
+        entry_id: None,
+        components: vec!["home".to_owned(), "linuxuser".to_owned()],
+    };
+    let cancellation = CancellationToken::new();
+    let controlled_names = [
+        "explorer-left-copy.txt",
+        "explorer-left-move.txt",
+        "explorer-left-copy-folder",
+    ];
+    let entries = provider.list(&parent, &cancellation)?;
+    for name in controlled_names {
+        if entries.iter().any(|entry| entry.name == name) {
+            provider.delete(&child(&parent, name), true, &cancellation)?;
+        }
+    }
+    println!("sftp_drag_fixture_cleanup_verified=true");
+    Ok(())
+}
+
 fn run_cross(serial: &str, host: &str, username: &str, fingerprint: &str) -> Result<()> {
     let password = rpassword::read_password()?;
     let adb_identity = remote_container_identity(RemoteProviderKind::Adb, serial);
@@ -322,6 +359,11 @@ fn main() -> Result<()> {
         Some("adb") => run_adb(&arguments.next().context("missing ADB serial")?),
         Some("adb-progress") => run_adb_progress(&arguments.next().context("missing ADB serial")?),
         Some("sftp") => run_sftp(
+            &arguments.next().context("missing SFTP host")?,
+            &arguments.next().context("missing SFTP username")?,
+            &arguments.next().context("missing SFTP fingerprint")?,
+        ),
+        Some("sftp-drag-cleanup") => cleanup_sftp_drag_fixture(
             &arguments.next().context("missing SFTP host")?,
             &arguments.next().context("missing SFTP username")?,
             &arguments.next().context("missing SFTP fingerprint")?,

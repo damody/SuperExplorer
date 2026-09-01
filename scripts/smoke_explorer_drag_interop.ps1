@@ -349,6 +349,17 @@ function Wait-AdbRemotePath([string]$RemotePath, [bool]$ShouldExist, [int]$Secon
     } while ([DateTime]::UtcNow -lt $deadline)
     throw "ADB path oracle mismatch: $RemotePath expected exists=$ShouldExist"
 }
+function Remove-AdbRemoteFixture([string]$RemotePath) {
+    if (-not (Test-AdbRemotePath $RemotePath)) { return }
+    & adb -s $script:adbDevice shell rm -rf $RemotePath | Out-Null
+    for ($attempt = 0; $attempt -lt 20 -and (Test-AdbRemotePath $RemotePath); $attempt++) {
+        # Android's emulated /sdcard FUSE can transiently return ETXTBSY for the now-empty
+        # directory immediately after a transfer. Retry only this exact controlled fixture.
+        & adb -s $script:adbDevice shell rmdir $RemotePath 2>$null | Out-Null
+        if (Test-AdbRemotePath $RemotePath) { Start-Sleep -Milliseconds 100 }
+    }
+    if (Test-AdbRemotePath $RemotePath) { throw "controlled ADB fixture cleanup failed: $RemotePath" }
+}
 
 $fixture = Join-Path $OutputDirectory 'fixture'
 $appSource = Join-Path $fixture 'app-source'
@@ -660,7 +671,7 @@ try {
     if ($RemoteAppTarget -and $script:remoteScheme -eq 'adb') {
         foreach ($name in @($files.Values) + @($folders.Values)) {
             $remoteFixture = $script:adbDirectory.TrimEnd('/') + '/' + $name
-            if (Test-AdbRemotePath $remoteFixture) { & adb -s $script:adbDevice shell rm -rf $remoteFixture | Out-Null }
+            Remove-AdbRemoteFixture $remoteFixture
         }
     }
 }
