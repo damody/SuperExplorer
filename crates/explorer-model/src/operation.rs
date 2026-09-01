@@ -192,6 +192,8 @@ impl OperationRecord {
                 total_items,
                 completed_bytes: 0,
                 total_bytes: None,
+                phase: crate::TransferProgressPhase::Preparing,
+                current_item: None,
             },
             terminal: None,
         }
@@ -229,6 +231,19 @@ impl OperationRecord {
             || progress.completed_items > progress.total_items
             || progress.total_items != self.progress.total_items
             || progress.completed_bytes < self.progress.completed_bytes
+            || matches!(
+                (self.progress.phase, progress.phase),
+                (
+                    crate::TransferProgressPhase::Transferring,
+                    crate::TransferProgressPhase::Preparing
+                ) | (
+                    crate::TransferProgressPhase::Finalizing,
+                    crate::TransferProgressPhase::Preparing
+                ) | (
+                    crate::TransferProgressPhase::Finalizing,
+                    crate::TransferProgressPhase::Transferring
+                )
+            )
         {
             return Err(OperationStateError::RegressingProgress);
         }
@@ -600,6 +615,8 @@ mod tests {
                     total_items: 2,
                     completed_bytes: 4,
                     total_bytes: Some(8),
+                    phase: crate::TransferProgressPhase::Transferring,
+                    current_item: None,
                 })
                 .expect("progress");
             record.finish(terminal).expect("terminal");
@@ -614,6 +631,8 @@ mod tests {
                     total_items: 2,
                     completed_bytes: 8,
                     total_bytes: Some(8),
+                    phase: crate::TransferProgressPhase::Transferring,
+                    current_item: None,
                 }),
                 Err(OperationStateError::LateProgress)
             );
@@ -631,6 +650,8 @@ mod tests {
                 total_items: 1,
                 completed_bytes: 0,
                 total_bytes: None,
+                phase: crate::TransferProgressPhase::Transferring,
+                current_item: None,
             }),
             Err(OperationStateError::RegressingProgress)
         );

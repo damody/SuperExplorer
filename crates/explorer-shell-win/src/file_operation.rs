@@ -110,6 +110,8 @@ pub(crate) fn execute(
             total_items,
             completed_bytes: 0,
             total_bytes: None,
+            phase: explorer_model::TransferProgressPhase::Preparing,
+            current_item: None,
         },
     });
     let sink_state = Arc::new(Mutex::new(ProgressSinkState::new(request, &skipped)));
@@ -165,6 +167,8 @@ pub(crate) fn execute(
             total_items,
             completed_bytes: 0,
             total_bytes: None,
+            phase: explorer_model::TransferProgressPhase::Finalizing,
+            current_item: None,
         },
     });
     let mut outcomes = skipped_outcomes(&request.kind, &skipped);
@@ -236,6 +240,8 @@ fn create_shortcuts(
             total_items,
             completed_bytes: 0,
             total_bytes: None,
+            phase: explorer_model::TransferProgressPhase::Preparing,
+            current_item: None,
         },
     });
     for (index, item) in items.iter().enumerate() {
@@ -250,6 +256,8 @@ fn create_shortcuts(
                 total_items,
                 completed_bytes: 0,
                 total_bytes: None,
+                phase: explorer_model::TransferProgressPhase::Transferring,
+                current_item: None,
             },
         });
     }
@@ -632,6 +640,8 @@ impl IFileOperationProgressSink_Impl for ProgressSink_Impl {
                 total_items,
                 completed_bytes: u64::from(completed),
                 total_bytes: Some(u64::from(total)),
+                phase: explorer_model::TransferProgressPhase::Transferring,
+                current_item: None,
             },
         });
         Ok(())

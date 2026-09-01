@@ -3835,6 +3835,8 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
                     total_items: 2,
                     completed_bytes: 1,
                     total_bytes: Some(2),
+                    phase: explorer_model::TransferProgressPhase::Transferring,
+                    current_item: None,
                 },
             })
             .expect("fill progress lane");
@@ -3847,6 +3849,8 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
                         total_items: 2,
                         completed_bytes: 2,
                         total_bytes: Some(2),
+                        phase: explorer_model::TransferProgressPhase::Transferring,
+                        current_item: None,
                     },
                 })
                 .is_err(),

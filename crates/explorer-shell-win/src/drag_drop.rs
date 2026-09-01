@@ -43,6 +43,7 @@ use windows::{
 };
 
 static ACTIVE_NATIVE_DRAGS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static LAST_NATIVE_DRAG_EFFECT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 struct ActiveDragGuard;
 impl Drop for ActiveDragGuard {
@@ -328,6 +329,13 @@ pub fn begin_native_drag(
             preferred,
         )?;
     }
+    // Pre-register writable performed-effect storage. Explorer can complete CF_HDROP work
+    // asynchronously and report the authoritative result through this Shell clipboard format.
+    crate::clipboard::set_drop_effect(
+        &data,
+        windows::Win32::UI::Shell::CFSTR_PERFORMEDDROPEFFECT,
+        0,
+    )?;
     let source: IDropSource = NativeDropSource {
         button,
         cancellation,
@@ -347,11 +355,27 @@ pub fn begin_native_drag(
     let _input_queue = InputQueueAttachment::to_foreground();
     // SAFETY: both COM interfaces remain alive for the nested OLE loop and output is writable.
     let result = unsafe { DoDragDrop(&data, &source, allowed, &raw mut performed) };
+    let performed_by_data =
+        crate::clipboard::drop_effect(&data, windows::Win32::UI::Shell::CFSTR_PERFORMEDDROPEFFECT)
+            .unwrap_or(0);
+    if performed_by_data != 0 {
+        performed = DROPEFFECT(performed_by_data);
+    }
     tracing::info!(
         hresult = format_args!("{:#010x}", result.0),
         performed_effect = performed.0,
         allowed_effects = allowed.0,
         "OLE drag source reached a terminal result"
+    );
+    LAST_NATIVE_DRAG_EFFECT.store(
+        if performed == DROPEFFECT_MOVE {
+            2
+        } else if performed == DROPEFFECT_COPY {
+            1
+        } else {
+            0
+        },
+        std::sync::atomic::Ordering::Release,
     );
     if result == DRAGDROP_S_CANCEL || performed.0 == 0 {
         Ok(OperationTerminal::Cancelled)
@@ -363,6 +387,28 @@ pub fn begin_native_drag(
             "拖放工作階段失敗，請重試",
             format!("HRESULT={:#010x}", result.0),
         ))
+    }
+}
+
+/// Takes the effect reported by the most recently completed native OLE drag.
+/// Native drag sessions are serialized by the Shell STA.
+pub fn take_last_native_drag_effect() -> Option<DragEffect> {
+    match LAST_NATIVE_DRAG_EFFECT.swap(0, std::sync::atomic::Ordering::AcqRel) {
+        1 => Some(DragEffect::Copy),
+        2 => Some(DragEffect::Move),
+        _ => None,
+    }
+}
+
+/// Samples the modifier that chooses the cross-filesystem drag intent before remote staging.
+/// Remote drags are copy-by-default and only an explicit Shift press requests move.
+#[must_use]
+pub fn requested_cross_filesystem_drag_effect() -> DragEffect {
+    let shift = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
+    if shift {
+        DragEffect::Move
+    } else {
+        DragEffect::Copy
     }
 }
 

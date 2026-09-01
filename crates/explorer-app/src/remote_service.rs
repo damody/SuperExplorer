@@ -12,12 +12,29 @@ use explorer_model::{
     ClipboardMode, ClipboardState, DataTransferRequest, ExplorerCommand, ExplorerEvent,
     ExplorerService, ExplorerServiceError, FileEntry, FileEntryMetadata, FileOperationKind,
     ItemDescriptor, LocationDescriptor, LocationMetadata, NamespaceCapabilities,
-    OperationItemOutcome, OperationItemResult, OperationTerminal, TransferEffects,
+    OperationItemOutcome, OperationItemResult, OperationProgress, OperationTerminal,
+    TransferEffects, TransferProgressPhase,
 };
 use explorer_remote::{
-    RemoteEntry, RemoteMetadata, RemoteProvider, RemoteProviderRegistry, TransferEngine,
-    TransferMode, TransferResult,
+    RemoteEntry, RemoteEntryKind, RemoteMetadata, RemoteProvider, RemoteProviderRegistry,
+    TransferEngine, TransferMode, TransferResult,
 };
+
+fn remote_type_display(name: &str, kind: RemoteEntryKind) -> String {
+    match kind {
+        RemoteEntryKind::File => explorer_model::classify_remote_file_name(name).type_label,
+        RemoteEntryKind::FileSymlink => {
+            format!(
+                "{} link",
+                explorer_model::classify_remote_file_name(name).type_label
+            )
+        }
+        RemoteEntryKind::Directory
+        | RemoteEntryKind::DirectorySymlink
+        | RemoteEntryKind::BrokenSymlink
+        | RemoteEntryKind::CircularSymlink => kind.type_display().to_owned(),
+    }
+}
 
 fn arm_request_deadline(context: &explorer_model::RequestContext) {
     let Some(remaining) = context.deadline.remaining_at(std::time::Instant::now()) else {
@@ -37,6 +54,7 @@ fn arm_request_deadline(context: &explorer_model::RequestContext) {
 fn remote_file_entry(entry: RemoteEntry) -> Option<FileEntry> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     entry.location.hash(&mut hasher);
+    let type_display = remote_type_display(&entry.name, entry.kind);
     Some(FileEntry {
         id: explorer_model::ShellItemId::from_provider_bytes(hasher.finish().to_le_bytes())?,
         display_name: entry.name,
@@ -45,7 +63,7 @@ fn remote_file_entry(entry: RemoteEntry) -> Option<FileEntry> {
         metadata: FileEntryMetadata {
             size_bytes: entry.size,
             unix_mode: entry.unix_mode,
-            type_display: Some(entry.kind.type_display().to_owned()),
+            type_display: Some(type_display),
             namespace_capabilities: NamespaceCapabilities::from_public_bits(
                 NamespaceCapabilities::OPEN
                     | NamespaceCapabilities::COPY
@@ -67,6 +85,7 @@ fn remote_metadata_file_entry(metadata: RemoteMetadata) -> Option<FileEntry> {
             .unwrap_or_else(|| "/".to_owned()),
         _ => return None,
     };
+    let type_display = remote_type_display(&display_name, metadata.kind);
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     metadata.location.hash(&mut hasher);
     Some(FileEntry {
@@ -81,7 +100,7 @@ fn remote_metadata_file_entry(metadata: RemoteMetadata) -> Option<FileEntry> {
             modified_sort_key: metadata.modified_unix_seconds,
             size_bytes: metadata.size,
             unix_mode: metadata.unix_mode,
-            type_display: Some(metadata.kind.type_display().to_owned()),
+            type_display: Some(type_display),
             namespace_capabilities: NamespaceCapabilities::from_public_bits(
                 NamespaceCapabilities::OPEN | NamespaceCapabilities::PROPERTIES,
             ),
@@ -521,6 +540,29 @@ struct RemoteClipboard {
     mode: ClipboardMode,
     items: Vec<ItemDescriptor>,
     token: [u8; 32],
+    native_sequence_at_capture: u32,
+}
+
+type NativeClipboardSnapshot = (Vec<ItemDescriptor>, ClipboardMode, Option<[u8; 32]>);
+
+fn select_remote_paste_sources(
+    native: Option<NativeClipboardSnapshot>,
+    internal: Option<RemoteClipboard>,
+    current_sequence: u32,
+) -> (Vec<ItemDescriptor>, ClipboardMode) {
+    match (native, internal) {
+        (Some((_native_items, _native_mode, native_token)), Some(value))
+            if native_token == Some(value.token)
+                || current_sequence == value.native_sequence_at_capture =>
+        {
+            (value.items, value.mode)
+        }
+        (Some((native_items, native_mode, _)), _) => (native_items, native_mode),
+        (None, Some(value)) if current_sequence == value.native_sequence_at_capture => {
+            (value.items, value.mode)
+        }
+        (None, _) => (Vec::new(), ClipboardMode::Copy),
+    }
 }
 
 fn mint_clipboard_token() -> [u8; 32] {
@@ -542,8 +584,23 @@ pub struct RemoteExplorerService {
     clipboard_staging: Arc<Mutex<Option<tempfile::TempDir>>>,
     open_staging: Arc<Mutex<Vec<tempfile::TempDir>>>,
     active_drag_staging:
-        Arc<Mutex<std::collections::HashMap<explorer_common::RequestId, tempfile::TempDir>>>,
+        Arc<Mutex<std::collections::HashMap<explorer_common::RequestId, ActiveRemoteDrag>>>,
 }
+
+struct ActiveRemoteDrag {
+    staging: tempfile::TempDir,
+    remote_items: Vec<ItemDescriptor>,
+    move_after_drop: bool,
+}
+
+#[cfg(not(test))]
+const REMOTE_DRAG_DESTINATION_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
+#[cfg(test)]
+const REMOTE_DRAG_DESTINATION_SETTLE: std::time::Duration = std::time::Duration::from_millis(10);
+#[cfg(not(test))]
+const REMOTE_DRAG_STAGING_RETENTION: std::time::Duration = std::time::Duration::from_secs(30);
+#[cfg(test)]
+const REMOTE_DRAG_STAGING_RETENTION: std::time::Duration = std::time::Duration::from_millis(20);
 
 impl RemoteExplorerService {
     pub fn new(inner: Arc<dyn ExplorerService>, providers: Arc<RemoteProviderRegistry>) -> Self {
@@ -760,7 +817,7 @@ impl RemoteExplorerService {
         let providers = Arc::clone(&self.providers);
         let sender = self.sender.clone();
         std::thread::spawn(move || {
-            let result = execute_operation(&providers, &kind, &context.cancellation);
+            let result = execute_operation(&providers, &kind, &context, &sender);
             let outcome = match result {
                 Ok(outcome) => outcome,
                 Err(_) if context.cancellation.is_cancelled() => OperationTerminal::Cancelled,
@@ -791,6 +848,7 @@ impl RemoteExplorerService {
             mode,
             items: items.clone(),
             token,
+            native_sequence_at_capture: explorer_shell_win::native_clipboard_sequence(),
         });
         let mut generation = self
             .clipboard_generation
@@ -879,14 +937,30 @@ impl RemoteExplorerService {
         let generation = Arc::clone(&self.clipboard_generation);
         let clipboard_staging = Arc::clone(&self.clipboard_staging);
         std::thread::spawn(move || {
-            let sources = if let Some(value) = internal.clone() {
-                Ok((value.items, value.mode))
-            } else {
-                explorer_shell_win::read_native_file_clipboard()
-                    .map(|value| {
-                        value.map_or_else(|| (Vec::new(), ClipboardMode::Copy), |value| value)
-                    })
-                    .map_err(|error| anyhow::anyhow!(error.to_string()))
+            // The Windows clipboard is authoritative when another application replaces a
+            // previously owned remote clipboard. Retain internal remote cut semantics only when
+            // the staged native object carries the matching private ownership token.
+            let native = explorer_shell_win::read_native_file_clipboard_with_token()
+                .map_err(|error| anyhow::anyhow!(error.to_string()));
+            let current_sequence = explorer_shell_win::native_clipboard_sequence();
+            let sources = match native {
+                Ok(native) => Ok(select_remote_paste_sources(
+                    native,
+                    internal.clone(),
+                    current_sequence,
+                )),
+                Err(_)
+                    if internal.as_ref().is_some_and(|value| {
+                        current_sequence == value.native_sequence_at_capture
+                    }) =>
+                {
+                    Ok(select_remote_paste_sources(
+                        None,
+                        internal.clone(),
+                        current_sequence,
+                    ))
+                }
+                Err(error) => Err(error),
             };
             let outcome = match sources {
                 Ok((items, mode)) if !items.is_empty() => transfer_items(
@@ -896,6 +970,8 @@ impl RemoteExplorerService {
                     mode,
                     conflict,
                     &context.cancellation,
+                    &sender,
+                    &context,
                 ),
                 Ok(_) => OperationTerminal::Failed(remote_error(
                     "remote clipboard paste",
@@ -932,6 +1008,7 @@ impl RemoteExplorerService {
                         token: internal
                             .as_ref()
                             .map_or_else(mint_clipboard_token, |value| value.token),
+                        native_sequence_at_capture: explorer_shell_win::native_clipboard_sequence(),
                     });
                 }
                 if remaining.is_empty()
@@ -972,15 +1049,26 @@ impl RemoteExplorerService {
         let inner = Arc::clone(&self.inner);
         let staging = Arc::clone(&self.active_drag_staging);
         let sender = self.sender.clone();
+        let requested_effect = explorer_shell_win::requested_cross_filesystem_drag_effect();
         std::thread::spawn(move || {
             let result = (|| {
+                if items.is_empty() {
+                    anyhow::bail!("remote drag has no source items");
+                }
+                if items
+                    .iter()
+                    .any(|item| !matches!(item.location, LocationDescriptor::Virtual(_)))
+                {
+                    anyhow::bail!("remote drag contains a non-remote source item");
+                }
                 let root = tempfile::Builder::new()
                     .prefix("superexplorer-remote-drag-")
                     .tempdir()?;
                 let mut local_items = Vec::with_capacity(items.len());
+                let remote_items = items.clone();
                 for item in items {
                     let LocationDescriptor::Virtual(remote) = &item.location else {
-                        continue;
+                        unreachable!("remote drag sources were validated above");
                     };
                     let name = remote
                         .components
@@ -1000,13 +1088,27 @@ impl RemoteExplorerService {
                 staging
                     .lock()
                     .map_err(|_| anyhow::anyhow!("remote drag staging lock failed"))?
-                    .insert(context.request_id, root);
+                    .insert(
+                        context.request_id,
+                        ActiveRemoteDrag {
+                            staging: root,
+                            remote_items,
+                            move_after_drop: requested_effect == explorer_model::DragEffect::Move,
+                        },
+                    );
+                // Explorer expects a standard CF_HDROP source to offer both operations. The
+                // modifier and target choose the performed effect returned by DoDragDrop.
+                let allowed_effects = TransferEffects {
+                    copy: true,
+                    move_item: true,
+                    link: false,
+                };
                 inner
                     .submit(ExplorerCommand::DataTransfer {
                         context: context.clone(),
                         request: DataTransferRequest::BeginDrag {
                             items: local_items,
-                            allowed_effects: TransferEffects::COPY,
+                            allowed_effects,
                             button,
                         },
                     })
@@ -1177,32 +1279,27 @@ impl ExplorerService for RemoteExplorerService {
                         conflict,
                     },
             } if Self::is_remote(&destination) => {
-                let items = sources
-                    .into_iter()
-                    .filter_map(|location| {
-                        let path = location.path()?;
-                        let id = explorer_model::ShellItemId::from_provider_bytes(
-                            path.as_os_str().to_string_lossy().as_bytes().to_vec(),
-                        )?;
-                        Some(ItemDescriptor { id, location })
-                    })
-                    .collect();
-                let mode = if effect == explorer_model::DragEffect::Move {
-                    ClipboardMode::Cut
-                } else {
-                    ClipboardMode::Copy
-                };
+                let prepared = prepare_remote_external_drop(sources, effect);
                 let providers = Arc::clone(&self.providers);
                 let sender = self.sender.clone();
                 std::thread::spawn(move || {
-                    let outcome = transfer_items(
-                        &providers,
-                        items,
-                        destination,
-                        mode,
-                        conflict,
-                        &context.cancellation,
-                    );
+                    let outcome = match prepared {
+                        Ok((items, mode)) => transfer_items(
+                            &providers,
+                            items,
+                            destination,
+                            mode,
+                            conflict,
+                            &context.cancellation,
+                            &sender,
+                            &context,
+                        ),
+                        Err(error) => OperationTerminal::Failed(remote_error(
+                            "remote external drop",
+                            "The dropped files could not be transferred.",
+                            error,
+                        )),
+                    };
                     let _ = sender.send(ExplorerEvent::OperationFinished { context, outcome });
                 });
                 Ok(())
@@ -1251,16 +1348,130 @@ impl ExplorerService for RemoteExplorerService {
             Ok(event) => Ok(Some(event)),
             Err(TryRecvError::Empty) => {
                 let event = self.inner.try_recv()?;
-                if let Some(ExplorerEvent::OperationFinished { context, .. }) = event.as_ref()
-                    && let Ok(mut staging) = self.active_drag_staging.lock()
+                if let Some(ExplorerEvent::OperationFinished { context, outcome }) = event.as_ref()
                 {
-                    staging.remove(&context.request_id);
+                    let active = self
+                        .active_drag_staging
+                        .lock()
+                        .ok()
+                        .and_then(|mut staging| staging.remove(&context.request_id));
+                    if let Some(active) = active {
+                        let performed_effect = explorer_shell_win::take_last_native_drag_effect()
+                            .or_else(|| {
+                                cfg!(test).then_some(if active.move_after_drop {
+                                    explorer_model::DragEffect::Move
+                                } else {
+                                    explorer_model::DragEffect::Copy
+                                })
+                            });
+                        if active.move_after_drop
+                            && performed_effect == Some(explorer_model::DragEffect::Move)
+                            && matches!(outcome, OperationTerminal::Finished)
+                        {
+                            let providers = Arc::clone(&self.providers);
+                            let sender = self.sender.clone();
+                            let context = context.clone();
+                            std::thread::spawn(move || {
+                                // Explorer can return from DoDragDrop after accepting CF_HDROP while
+                                // its file operation is still consuming the staged paths. Give the
+                                // destination a bounded settle window before deleting remote sources.
+                                std::thread::sleep(REMOTE_DRAG_DESTINATION_SETTLE);
+                                let outcome = delete_remote_drag_sources(
+                                    &providers,
+                                    active.remote_items,
+                                    &context.cancellation,
+                                );
+                                let _ = sender
+                                    .send(ExplorerEvent::OperationFinished { context, outcome });
+                                std::thread::sleep(
+                                    REMOTE_DRAG_STAGING_RETENTION
+                                        .saturating_sub(REMOTE_DRAG_DESTINATION_SETTLE),
+                                );
+                                drop(active.staging);
+                            });
+                            return Ok(None);
+                        }
+                        if matches!(outcome, OperationTerminal::Finished) {
+                            // CF_HDROP consumers such as Explorer may complete the actual copy
+                            // asynchronously after DoDragDrop returns. Retain ownership long enough
+                            // for that consumer to finish reading every file in the staged tree.
+                            std::thread::spawn(move || {
+                                std::thread::sleep(REMOTE_DRAG_STAGING_RETENTION);
+                                drop(active.staging);
+                            });
+                        }
+                    }
                 }
                 Ok(event)
             }
             Err(TryRecvError::Disconnected) => Err(ExplorerServiceError::Disconnected),
         }
     }
+}
+
+fn delete_remote_drag_sources(
+    providers: &RemoteProviderRegistry,
+    items: Vec<ItemDescriptor>,
+    cancellation: &explorer_model::CancellationToken,
+) -> OperationTerminal {
+    let mut outcomes = Vec::with_capacity(items.len());
+    for item in items {
+        let result = match &item.location {
+            LocationDescriptor::Virtual(location) => providers
+                .resolve(&item.location)
+                .and_then(|provider| provider.delete(location, true, cancellation)),
+            _ => Err(anyhow::anyhow!("remote drag move source is not remote")),
+        };
+        outcomes.push(OperationItemOutcome {
+            item: Some(item),
+            destination: None,
+            result: match result {
+                Ok(()) => OperationItemResult::Succeeded,
+                Err(_) if cancellation.is_cancelled() => OperationItemResult::Cancelled,
+                Err(error) => OperationItemResult::Failed(remote_error(
+                    "remote drag move cleanup",
+                    "The remote source could not be removed after the drop.",
+                    error,
+                )),
+            },
+        });
+    }
+    if outcomes
+        .iter()
+        .all(|outcome| outcome.result == OperationItemResult::Succeeded)
+    {
+        OperationTerminal::Finished
+    } else {
+        OperationTerminal::Partial { outcomes }
+    }
+}
+
+fn prepare_remote_external_drop(
+    sources: Vec<LocationDescriptor>,
+    effect: explorer_model::DragEffect,
+) -> anyhow::Result<(Vec<ItemDescriptor>, ClipboardMode)> {
+    let mode = match effect {
+        explorer_model::DragEffect::Copy => ClipboardMode::Copy,
+        explorer_model::DragEffect::Move => ClipboardMode::Cut,
+        explorer_model::DragEffect::None | explorer_model::DragEffect::Link => {
+            anyhow::bail!("unsupported remote drop effect: {effect:?}")
+        }
+    };
+    if sources.is_empty() {
+        anyhow::bail!("remote drop has no source items");
+    }
+    let mut items = Vec::with_capacity(sources.len());
+    for location in sources {
+        let path = location
+            .path()
+            .ok_or_else(|| anyhow::anyhow!("remote drop source is not a local filesystem path"))?;
+        let id = explorer_model::ShellItemId::from_provider_bytes(
+            path.as_os_str().to_string_lossy().as_bytes().to_vec(),
+        )
+        .ok_or_else(|| anyhow::anyhow!("remote drop source has no stable identity"))?;
+        items.push(ItemDescriptor { id, location });
+    }
+    Ok((items, mode))
 }
 
 fn operation_is_remote(kind: &FileOperationKind) -> bool {
@@ -1288,8 +1499,10 @@ fn operation_is_remote(kind: &FileOperationKind) -> bool {
 fn execute_operation(
     providers: &RemoteProviderRegistry,
     kind: &FileOperationKind,
-    cancellation: &explorer_model::CancellationToken,
+    context: &explorer_model::RequestContext,
+    sender: &SyncSender<ExplorerEvent>,
 ) -> anyhow::Result<OperationTerminal> {
+    let cancellation = &context.cancellation;
     match kind {
         FileOperationKind::CreateFolder {
             parent: LocationDescriptor::Virtual(parent),
@@ -1386,6 +1599,8 @@ fn execute_operation(
             ClipboardMode::Copy,
             explorer_model::ConflictDecision::Prompt,
             cancellation,
+            sender,
+            context,
         )),
         FileOperationKind::Move { items, destination } => Ok(transfer_items(
             providers,
@@ -1394,6 +1609,8 @@ fn execute_operation(
             ClipboardMode::Cut,
             explorer_model::ConflictDecision::Prompt,
             cancellation,
+            sender,
+            context,
         )),
         _ => Err(anyhow::anyhow!("remote operation is unsupported")),
     }
@@ -1403,6 +1620,135 @@ fn bail_mixed<T>() -> anyhow::Result<T> {
     Err(anyhow::anyhow!("mixed local/remote delete is unsupported"))
 }
 
+struct TransferProgressReporter<'a> {
+    sender: &'a SyncSender<ExplorerEvent>,
+    context: &'a explorer_model::RequestContext,
+    state: Mutex<TransferProgressState>,
+}
+
+struct TransferProgressState {
+    completed_items: usize,
+    total_items: usize,
+    completed_bytes: u64,
+    total_bytes: Option<u64>,
+    phase: TransferProgressPhase,
+    current_item: Option<String>,
+    last_emit: std::time::Instant,
+    last_percent: Option<u64>,
+    closed: bool,
+}
+
+impl<'a> TransferProgressReporter<'a> {
+    fn new(
+        sender: &'a SyncSender<ExplorerEvent>,
+        context: &'a explorer_model::RequestContext,
+        total_items: usize,
+        total_bytes: Option<u64>,
+    ) -> Self {
+        Self {
+            sender,
+            context,
+            state: Mutex::new(TransferProgressState {
+                completed_items: 0,
+                total_items,
+                completed_bytes: 0,
+                total_bytes,
+                phase: TransferProgressPhase::Preparing,
+                current_item: None,
+                last_emit: std::time::Instant::now()
+                    .checked_sub(std::time::Duration::from_secs(1))
+                    .unwrap_or_else(std::time::Instant::now),
+                last_percent: None,
+                closed: false,
+            }),
+        }
+    }
+
+    fn start_item(&self, name: String) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.closed {
+            return;
+        }
+        state.phase = TransferProgressPhase::Transferring;
+        state.current_item = Some(name);
+        self.emit_locked(&mut state, true);
+    }
+
+    fn add_bytes(&self, delta: u64) {
+        if delta == 0 || self.context.cancellation.is_cancelled() {
+            return;
+        }
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.closed {
+            return;
+        }
+        state.completed_bytes = state.completed_bytes.saturating_add(delta);
+        if state
+            .total_bytes
+            .is_some_and(|total| state.completed_bytes > total)
+        {
+            state.total_bytes = None;
+        }
+        self.emit_locked(&mut state, false);
+    }
+
+    fn finish_item(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.closed {
+            return;
+        }
+        state.completed_items = state
+            .completed_items
+            .saturating_add(1)
+            .min(state.total_items);
+        state.current_item = None;
+        self.emit_locked(&mut state, true);
+    }
+
+    fn finalizing(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.phase = TransferProgressPhase::Finalizing;
+        state.current_item = None;
+        self.emit_locked(&mut state, true);
+        state.closed = true;
+    }
+
+    fn emit_locked(&self, state: &mut TransferProgressState, force: bool) {
+        let percent = state.total_bytes.and_then(|total| {
+            (total > 0).then(|| state.completed_bytes.saturating_mul(100) / total)
+        });
+        let due = state.last_emit.elapsed() >= std::time::Duration::from_millis(75);
+        if !force && !due && percent == state.last_percent {
+            return;
+        }
+        state.last_emit = std::time::Instant::now();
+        state.last_percent = percent;
+        let _ = self.sender.try_send(ExplorerEvent::OperationProgress {
+            context: self.context.clone(),
+            progress: OperationProgress {
+                completed_items: state.completed_items,
+                total_items: state.total_items,
+                completed_bytes: state.completed_bytes,
+                total_bytes: state.total_bytes,
+                phase: state.phase,
+                current_item: state.current_item.clone(),
+            },
+        });
+    }
+}
+
 fn transfer_items(
     providers: &RemoteProviderRegistry,
     items: Vec<ItemDescriptor>,
@@ -1410,8 +1756,18 @@ fn transfer_items(
     mode: ClipboardMode,
     conflict: explorer_model::ConflictDecision,
     cancellation: &explorer_model::CancellationToken,
+    sender: &SyncSender<ExplorerEvent>,
+    context: &explorer_model::RequestContext,
 ) -> OperationTerminal {
     let engine = TransferEngine::new(providers);
+    let estimates = items
+        .iter()
+        .map(|item| engine.estimate_work_bytes(&item.location, &destination, cancellation))
+        .collect::<Vec<_>>();
+    let total_bytes = estimates
+        .iter()
+        .try_fold(0_u64, |total, bytes| total.checked_add((*bytes)?));
+    let reporter = TransferProgressReporter::new(sender, context, items.len(), total_bytes);
     let mut outcomes = Vec::with_capacity(items.len());
     for (index, item) in items.iter().cloned().enumerate() {
         if cancellation.is_cancelled() {
@@ -1430,7 +1786,20 @@ fn transfer_items(
             );
             return OperationTerminal::Partial { outcomes };
         }
-        let result = engine.transfer_with_conflict(
+        let item_name = match &item.location {
+            LocationDescriptor::FileSystem(path) => path.file_name().map_or_else(
+                || path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            ),
+            LocationDescriptor::Virtual(remote) => remote
+                .components
+                .last()
+                .cloned()
+                .unwrap_or_else(|| item.location.editable_text()),
+            _ => item.location.editable_text(),
+        };
+        reporter.start_item(item_name);
+        let result = engine.transfer_with_conflict_and_progress(
             item.location.clone(),
             destination.clone(),
             if mode == ClipboardMode::Cut {
@@ -1440,6 +1809,7 @@ fn transfer_items(
             },
             conflict,
             cancellation,
+            &|bytes| reporter.add_bytes(bytes),
         );
         let item_result = match result.result {
             TransferResult::Succeeded => OperationItemResult::Succeeded,
@@ -1461,7 +1831,9 @@ fn transfer_items(
             destination: Some(destination.clone()),
             result: item_result,
         });
+        reporter.finish_item();
     }
+    reporter.finalizing();
     if outcomes
         .iter()
         .all(|outcome| outcome.result == OperationItemResult::Succeeded)
@@ -1475,15 +1847,35 @@ fn transfer_items(
 fn remote_error(
     operation: &'static str,
     user: &'static str,
-    _error: impl std::fmt::Display,
+    error: impl std::fmt::Display,
 ) -> explorer_common::ExplorerError {
     explorer_common::ExplorerError::new(
         explorer_common::ExplorerErrorKind::Availability,
         operation,
         true,
         user,
-        "remote provider operation failed",
+        sanitise_remote_diagnostic(&error.to_string()),
     )
+}
+
+fn sanitise_remote_diagnostic(value: &str) -> String {
+    let mut output = value.to_owned();
+    for key in ["password", "passwd", "secret", "token"] {
+        let mut search_from = 0;
+        loop {
+            let lower = output.to_ascii_lowercase();
+            let Some(relative) = lower[search_from..].find(&format!("{key}=")) else {
+                break;
+            };
+            let start = search_from + relative + key.len() + 1;
+            let end = output[start..]
+                .find(|character: char| character.is_whitespace() || character == '&')
+                .map_or(output.len(), |relative| start + relative);
+            output.replace_range(start..end, "[REDACTED]");
+            search_from = start + "[REDACTED]".len();
+        }
+    }
+    output
 }
 
 fn remote_transfer_error(
@@ -1521,7 +1913,94 @@ fn map_send_error<T>(error: TrySendError<T>) -> ExplorerServiceError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use explorer_remote::RemoteEntryKind;
+
+    #[test]
+    fn transfer_progress_reporter_is_monotonic_degrades_unknown_and_rejects_late_callbacks() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(16);
+        let context = explorer_model::RequestContext::new(
+            explorer_model::TabId::new(),
+            explorer_model::Generation::new(1),
+        );
+        let reporter = TransferProgressReporter::new(&sender, &context, 1, Some(100));
+        reporter.start_item("payload.bin".to_owned());
+        reporter.add_bytes(40);
+        reporter.add_bytes(80);
+        reporter.finish_item();
+        reporter.finalizing();
+        reporter.add_bytes(10);
+
+        let events = receiver.try_iter().collect::<Vec<_>>();
+        let progress = events
+            .iter()
+            .filter_map(|event| match event {
+                ExplorerEvent::OperationProgress { progress, .. } => Some(progress),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(progress.windows(2).all(|pair| {
+            pair[0].completed_bytes <= pair[1].completed_bytes
+                && pair[0].completed_items <= pair[1].completed_items
+        }));
+        assert!(progress.iter().any(|value| value.completed_bytes == 40));
+        assert!(
+            progress
+                .iter()
+                .any(|value| { value.completed_bytes == 120 && value.total_bytes.is_none() })
+        );
+        let terminal_progress = progress.last().expect("finalizing progress flush");
+        assert_eq!(terminal_progress.phase, TransferProgressPhase::Finalizing);
+        assert_eq!(terminal_progress.completed_bytes, 120);
+    }
+
+    #[test]
+    fn remote_external_drop_is_fail_closed_for_empty_invalid_and_unsupported_inputs() {
+        assert!(
+            prepare_remote_external_drop(Vec::new(), explorer_model::DragEffect::Copy).is_err()
+        );
+        assert!(
+            prepare_remote_external_drop(
+                vec![remote_location()],
+                explorer_model::DragEffect::Copy,
+            )
+            .is_err()
+        );
+        for effect in [
+            explorer_model::DragEffect::None,
+            explorer_model::DragEffect::Link,
+        ] {
+            assert!(prepare_remote_external_drop(vec![local_item().location], effect).is_err());
+        }
+    }
+
+    #[test]
+    fn remote_drag_diagnostics_redact_credentials_but_keep_provider_reason() {
+        let diagnostic = sanitise_remote_diagnostic(
+            "SFTP permission denied password=hunter2 token=abc123 path=/home/linuxuser",
+        );
+        assert!(diagnostic.contains("SFTP permission denied"));
+        assert!(diagnostic.contains("path=/home/linuxuser"));
+        assert!(!diagnostic.contains("hunter2"));
+        assert!(!diagnostic.contains("abc123"));
+        assert_eq!(diagnostic.matches("[REDACTED]").count(), 2);
+    }
+
+    #[test]
+    fn remote_external_drop_preserves_copy_and_move_semantics_for_every_source() {
+        let first = local_item().location;
+        let second = LocationDescriptor::file_system(r"C:\fixture\second.txt");
+        for (effect, expected_mode) in [
+            (explorer_model::DragEffect::Copy, ClipboardMode::Copy),
+            (explorer_model::DragEffect::Move, ClipboardMode::Cut),
+        ] {
+            let (items, mode) =
+                prepare_remote_external_drop(vec![first.clone(), second.clone()], effect)
+                    .expect("valid external file drop");
+            assert_eq!(mode, expected_mode);
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0].location, first);
+            assert_eq!(items[1].location, second);
+        }
+    }
 
     struct DownloadProvider;
 
@@ -1536,6 +2015,74 @@ mod tests {
         provider_id: &'static str,
         fail_upload: bool,
         observations: Arc<Mutex<Vec<UploadObservation>>>,
+    }
+
+    struct DeleteProvider {
+        deleted: Arc<Mutex<Vec<explorer_model::VirtualLocationDescriptor>>>,
+        fail: bool,
+    }
+
+    impl RemoteProvider for DeleteProvider {
+        fn provider_id(&self) -> &'static str {
+            "adb"
+        }
+
+        fn list(
+            &self,
+            _: &explorer_model::VirtualLocationDescriptor,
+            _: &explorer_model::CancellationToken,
+        ) -> anyhow::Result<Vec<RemoteEntry>> {
+            Ok(Vec::new())
+        }
+
+        fn download(
+            &self,
+            _: &explorer_model::VirtualLocationDescriptor,
+            _: &std::path::Path,
+            _: &explorer_model::CancellationToken,
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("unused download")
+        }
+
+        fn upload(
+            &self,
+            _: &std::path::Path,
+            _: &explorer_model::VirtualLocationDescriptor,
+            _: &explorer_model::CancellationToken,
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("unused upload")
+        }
+
+        fn create_directory(
+            &self,
+            _: &explorer_model::VirtualLocationDescriptor,
+            _: &explorer_model::CancellationToken,
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("unused create directory")
+        }
+
+        fn rename(
+            &self,
+            _: &explorer_model::VirtualLocationDescriptor,
+            _: &explorer_model::VirtualLocationDescriptor,
+            _: &explorer_model::CancellationToken,
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("unused rename")
+        }
+
+        fn delete(
+            &self,
+            location: &explorer_model::VirtualLocationDescriptor,
+            recursive: bool,
+            _: &explorer_model::CancellationToken,
+        ) -> anyhow::Result<()> {
+            assert!(recursive);
+            if self.fail {
+                anyhow::bail!("fixture delete failure")
+            }
+            self.deleted.lock().unwrap().push(location.clone());
+            Ok(())
+        }
     }
 
     impl RemoteProvider for DownloadProvider {
@@ -1760,6 +2307,60 @@ mod tests {
     }
 
     #[test]
+    fn remote_drag_move_deletes_only_after_successful_drop_completion() {
+        let deleted = Arc::new(Mutex::new(Vec::new()));
+        let mut providers = RemoteProviderRegistry::default();
+        providers
+            .register(Arc::new(DeleteProvider {
+                deleted: Arc::clone(&deleted),
+                fail: false,
+            }))
+            .unwrap();
+        let item = ItemDescriptor {
+            id: explorer_model::ShellItemId::from_provider_bytes([9; 8]).unwrap(),
+            location: remote_location(),
+        };
+        assert_eq!(
+            delete_remote_drag_sources(
+                &providers,
+                vec![item],
+                &explorer_model::CancellationToken::new(),
+            ),
+            OperationTerminal::Finished
+        );
+        assert_eq!(deleted.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn remote_drag_move_delete_failure_is_partial_and_diagnostic() {
+        let mut providers = RemoteProviderRegistry::default();
+        providers
+            .register(Arc::new(DeleteProvider {
+                deleted: Arc::new(Mutex::new(Vec::new())),
+                fail: true,
+            }))
+            .unwrap();
+        let terminal = delete_remote_drag_sources(
+            &providers,
+            vec![ItemDescriptor {
+                id: explorer_model::ShellItemId::from_provider_bytes([9; 8]).unwrap(),
+                location: remote_location(),
+            }],
+            &explorer_model::CancellationToken::new(),
+        );
+        let OperationTerminal::Partial { outcomes } = terminal else {
+            panic!("delete failure must be partial")
+        };
+        assert!(matches!(
+            outcomes.as_slice(),
+            [OperationItemOutcome {
+                result: OperationItemResult::Failed(error),
+                ..
+            }] if error.operation == "remote drag move cleanup"
+        ));
+    }
+
+    #[test]
     fn local_copy_or_cut_invalidates_stale_remote_clipboard_and_staging() {
         for request in [
             DataTransferRequest::Copy {
@@ -1780,6 +2381,7 @@ mod tests {
                     location: remote_location(),
                 }],
                 token: [5; 32],
+                native_sequence_at_capture: explorer_shell_win::native_clipboard_sequence(),
             });
             *service.clipboard_staging.lock().unwrap() = Some(tempfile::tempdir().unwrap());
             let context = explorer_model::RequestContext::new(
@@ -1818,6 +2420,74 @@ mod tests {
             })
             .unwrap();
         assert!(service.clipboard.lock().unwrap().is_some());
+    }
+
+    #[test]
+    fn external_native_clipboard_replaces_stale_remote_sources() {
+        let external = local_item();
+        let internal_item = ItemDescriptor {
+            id: explorer_model::ShellItemId::from_provider_bytes([9; 8]).unwrap(),
+            location: remote_location(),
+        };
+        let (items, mode) = select_remote_paste_sources(
+            Some((vec![external.clone()], ClipboardMode::Copy, None)),
+            Some(RemoteClipboard {
+                mode: ClipboardMode::Cut,
+                items: vec![internal_item],
+                token: [5; 32],
+                native_sequence_at_capture: 40,
+            }),
+            41,
+        );
+        assert_eq!(items, vec![external]);
+        assert_eq!(mode, ClipboardMode::Copy);
+    }
+
+    #[test]
+    fn matching_remote_token_or_unchanged_sequence_keeps_internal_sources() {
+        let internal_item = ItemDescriptor {
+            id: explorer_model::ShellItemId::from_provider_bytes([9; 8]).unwrap(),
+            location: remote_location(),
+        };
+        for (native, current_sequence) in [
+            (
+                Some((vec![local_item()], ClipboardMode::Copy, Some([5; 32]))),
+                41,
+            ),
+            (None, 40),
+        ] {
+            let (items, mode) = select_remote_paste_sources(
+                native,
+                Some(RemoteClipboard {
+                    mode: ClipboardMode::Cut,
+                    items: vec![internal_item.clone()],
+                    token: [5; 32],
+                    native_sequence_at_capture: 40,
+                }),
+                current_sequence,
+            );
+            assert_eq!(items, vec![internal_item.clone()]);
+            assert_eq!(mode, ClipboardMode::Cut);
+        }
+    }
+
+    #[test]
+    fn non_file_clipboard_after_remote_copy_does_not_reuse_stale_sources() {
+        let (items, mode) = select_remote_paste_sources(
+            None,
+            Some(RemoteClipboard {
+                mode: ClipboardMode::Copy,
+                items: vec![ItemDescriptor {
+                    id: explorer_model::ShellItemId::from_provider_bytes([9; 8]).unwrap(),
+                    location: remote_location(),
+                }],
+                token: [5; 32],
+                native_sequence_at_capture: 40,
+            }),
+            41,
+        );
+        assert!(items.is_empty());
+        assert_eq!(mode, ClipboardMode::Copy);
     }
 
     #[test]
@@ -1920,6 +2590,46 @@ mod tests {
             assert_eq!(observations[0].bytes, b"remote clipboard fixture");
             assert!(!observations[0].staged_path.exists());
         }
+    }
+
+    #[test]
+    fn explorer_external_drop_uploads_to_sftp_through_remote_route() {
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let mut providers = RemoteProviderRegistry::default();
+        providers
+            .register(Arc::new(UploadProvider {
+                provider_id: "sftp",
+                fail_upload: false,
+                observations: Arc::clone(&observations),
+            }))
+            .unwrap();
+        let service = RemoteExplorerService::new(Arc::new(TelemetryService), Arc::new(providers));
+        let fixture = tempfile::tempdir().unwrap();
+        let source = fixture.path().join("external-drop.txt");
+        std::fs::write(&source, b"external drop fixture").unwrap();
+        let context = explorer_model::RequestContext::new(
+            explorer_model::TabId::new(),
+            explorer_model::Generation::new(1),
+        );
+        service
+            .submit(ExplorerCommand::DataTransfer {
+                context: context.clone(),
+                request: DataTransferRequest::DropExternal {
+                    sources: vec![LocationDescriptor::file_system(&source)],
+                    destination: virtual_destination("sftp"),
+                    effect: explorer_model::DragEffect::Copy,
+                    conflict: explorer_model::ConflictDecision::Prompt,
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            wait_for_operation(&service, &context),
+            OperationTerminal::Finished
+        );
+        let observations = observations.lock().unwrap();
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].bytes, b"external drop fixture");
+        assert!(source.exists(), "copy drop must retain its local source");
     }
 
     #[test]
@@ -2032,9 +2742,9 @@ mod tests {
     #[test]
     fn remote_entry_kinds_drive_rows_and_child_container_filtering() {
         let kinds = [
-            (RemoteEntryKind::File, false, "Remote file"),
+            (RemoteEntryKind::File, false, "File"),
             (RemoteEntryKind::Directory, true, "Remote folder"),
-            (RemoteEntryKind::FileSymlink, false, "Remote file link"),
+            (RemoteEntryKind::FileSymlink, false, "File link"),
             (
                 RemoteEntryKind::DirectorySymlink,
                 true,
@@ -2069,6 +2779,90 @@ mod tests {
                 remote_child_container(remote_entry).is_some(),
                 is_container,
                 "child menus must share the row container decision for {kind:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn remote_row_constructors_classify_names_without_changing_kind_semantics() {
+        let cases = [
+            ("report.txt", RemoteEntryKind::File, false, "TXT File"),
+            ("backup.tar.gz", RemoteEntryKind::File, false, "TAR.GZ File"),
+            ("firmware.bin.gz", RemoteEntryKind::File, false, "GZ File"),
+            (
+                ".bash_logout",
+                RemoteEntryKind::File,
+                false,
+                "Bash Logout Setting File",
+            ),
+            ("README", RemoteEntryKind::File, false, "File"),
+            (
+                "notes.txt",
+                RemoteEntryKind::FileSymlink,
+                false,
+                "TXT File link",
+            ),
+            (
+                "folder.txt",
+                RemoteEntryKind::Directory,
+                true,
+                "Remote folder",
+            ),
+            (
+                "folder.txt",
+                RemoteEntryKind::DirectorySymlink,
+                true,
+                "Remote folder link",
+            ),
+            (
+                "broken.txt",
+                RemoteEntryKind::BrokenSymlink,
+                false,
+                "Broken remote link",
+            ),
+            (
+                "cycle.txt",
+                RemoteEntryKind::CircularSymlink,
+                false,
+                "Circular remote link",
+            ),
+        ];
+
+        for (index, (name, kind, is_container, type_display)) in cases.into_iter().enumerate() {
+            let mut location = remote_location();
+            let LocationDescriptor::Virtual(remote) = &mut location else {
+                unreachable!();
+            };
+            remote.components.push(name.to_owned());
+
+            let listed = remote_file_entry(RemoteEntry {
+                name: name.to_owned(),
+                location: location.clone(),
+                kind,
+                size: Some(index as u64),
+                unix_mode: Some(0o100644),
+            })
+            .expect("listed row identity");
+            assert_eq!(listed.is_container, is_container, "listed {name}");
+            assert_eq!(
+                listed.metadata.type_display.as_deref(),
+                Some(type_display),
+                "listed {name}"
+            );
+
+            let metadata = remote_metadata_file_entry(RemoteMetadata {
+                location,
+                kind,
+                size: Some(index as u64),
+                unix_mode: Some(0o100644),
+                modified_unix_seconds: Some(1),
+            })
+            .expect("metadata row identity");
+            assert_eq!(metadata.is_container, is_container, "metadata {name}");
+            assert_eq!(
+                metadata.metadata.type_display.as_deref(),
+                Some(type_display),
+                "metadata {name}"
             );
         }
     }

@@ -19,8 +19,9 @@ compile_error!("explorer-shell-win supports Windows targets only");
 
 mod clipboard;
 pub use clipboard::{
-    publish_native_file_clipboard, publish_native_file_clipboard_with_token,
-    read_native_file_clipboard,
+    native_clipboard_sequence, publish_native_file_clipboard,
+    publish_native_file_clipboard_with_token, read_native_file_clipboard,
+    read_native_file_clipboard_with_token,
 };
 mod context_menu;
 mod drag_drop;
@@ -62,6 +63,7 @@ pub use context_menu::{
 pub use drag_drop::{
     DragResourceSnapshot, RightDragChoice, SystemDragThreshold, choose_right_drag_effect,
     dropped_file_operation, modifiers_from_key_state, negotiate_native_effect,
+    requested_cross_filesystem_drag_effect, take_last_native_drag_effect,
 };
 pub use extension::tortoise_git_is_installed;
 pub use namespace::inspect_namespace_item;
