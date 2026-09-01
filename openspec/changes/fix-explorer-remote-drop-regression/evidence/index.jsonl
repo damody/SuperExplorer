@@ -1,0 +1,37 @@
+{"task_id":"1.1.1","status":"passed","evidence":"focused-validation.md","claim":"Audited background, folder, ordinary row and capture handlers."}
+{"task_id":"1.1.2","status":"passed","evidence":"build/drag-regression-adb-before/failure.txt","claim":"Reproduced ADB missing terminal Drop."}
+{"task_id":"1.1.3","status":"passed","evidence":"focused-validation.md","claim":"SFTP follows the same shared external drop path."}
+{"task_id":"1.1.4","status":"passed","evidence":"focused-validation.md","claim":"Root cause classified at UI capture target boundary."}
+{"task_id":"1.2.1","status":"passed","evidence":"crates/explorer-ui/src/chrome.rs","claim":"Capture ownership is active-session-only."}
+{"task_id":"1.2.2","status":"passed","evidence":"build/drag-regression-adb-after/report.json","claim":"Background terminal drop reaches file view."}
+{"task_id":"1.2.3","status":"passed","evidence":"focused-validation.md","claim":"Existing writable folder ownership and stop propagation retained."}
+{"task_id":"1.2.4","status":"passed","evidence":"focused-validation.md","claim":"Ordinary row remains transparent to external drops."}
+{"task_id":"1.2.5","status":"passed","evidence":"focused-validation.md","claim":"Ownership and idle-capture focused tests passed."}
+{"task_id":"2.1.1","status":"passed","evidence":"focused-validation.md","claim":"DropExternal destination reconstruction audited."}
+{"task_id":"2.1.2","status":"passed","evidence":"focused-validation.md","claim":"Background and folder destination contracts retained."}
+{"task_id":"2.1.3","status":"passed","evidence":"focused-validation.md","claim":"Existing stale and capability validation remains fail closed."}
+{"task_id":"2.1.4","status":"passed","evidence":"focused-validation.md","claim":"Generation-safe drag focused tests passed."}
+{"task_id":"2.2.1","status":"passed","evidence":"focused-validation.md","claim":"External payload and Copy/Move validation passed."}
+{"task_id":"2.2.2","status":"passed","evidence":"focused-validation.md","claim":"Each headful drop produced one terminal transfer."}
+{"task_id":"2.2.3","status":"passed","evidence":"focused-validation.md","claim":"ADB and SFTP Move source deletion oracle passed."}
+{"task_id":"2.2.4","status":"passed","evidence":"focused-validation.md","claim":"File, folder, Copy, Move and invalid effect tests passed."}
+{"task_id":"2.2.5","status":"passed","evidence":"focused-validation.md","claim":"Cancellation, partial failure and late callback tests passed."}
+{"task_id":"3.1.1","status":"passed","evidence":"focused-validation.md","claim":"UI target, state rejection and dispatch stages are distinguishable."}
+{"task_id":"3.1.2","status":"passed","evidence":"focused-validation.md","claim":"Terminal action logging exposes DropExternal boundary."}
+{"task_id":"3.1.3","status":"passed","evidence":"focused-validation.md","claim":"Existing detailed transfer failure messages retained."}
+{"task_id":"3.1.4","status":"passed","evidence":"focused-validation.md","claim":"Credential-safe remote diagnostics tests passed."}
+{"task_id":"3.2.1","status":"passed","evidence":"build/drag-regression-local-after/report.json","claim":"Explorer to Local file and folder Copy passed."}
+{"task_id":"3.2.2","status":"passed","evidence":"focused-validation.md","claim":"Non-file clipboard isolation tests passed."}
+{"task_id":"3.2.3","status":"passed","evidence":"focused-validation.md","claim":"Shell drag source and internal drag contracts passed."}
+{"task_id":"4.1.1","status":"passed","evidence":"focused-validation.md","claim":"Runner used UI Automation source bounds and calibrated background point."}
+{"task_id":"4.1.2","status":"passed","evidence":"build/drag-regression-local-after/report.json","claim":"Local Ctrl Copy passed 2/2."}
+{"task_id":"4.1.3","status":"passed","evidence":"build/drag-regression-adb-after/report.json","claim":"ADB Ctrl Copy passed 2/2."}
+{"task_id":"4.1.4","status":"passed","evidence":"build/drag-regression-adb-move-after/report.json","claim":"ADB Shift Move passed 1/1."}
+{"task_id":"4.1.5","status":"passed","evidence":"build/drag-regression-sftp-after/report.json","claim":"SFTP Ctrl Copy passed 2/2."}
+{"task_id":"4.1.6","status":"passed","evidence":"build/drag-regression-sftp-move-after/report.json","claim":"SFTP Shift Move passed 1/1."}
+{"task_id":"4.1.7","status":"passed","evidence":"focused-validation.md","claim":"Controlled ADB and SFTP remote fixtures were cleaned; local report fixtures were retained as evidence."}
+{"task_id":"4.2.1","status":"passed","evidence":"focused-validation.md","claim":"Model, Shell, UI and app focused tests passed."}
+{"task_id":"4.2.2","status":"passed","evidence":"focused-validation.md","claim":"Format, relevant check and diff whitespace gates passed."}
+{"task_id":"4.2.3","status":"passed","evidence":"focused-validation.md","claim":"Credential and fixture scans passed."}
+{"task_id":"4.2.4","status":"passed","evidence":"evidence/index.jsonl","claim":"Every leaf has one unique task evidence record."}
+{"task_id":"4.2.5","status":"passed","evidence":"focused-validation.md","claim":"Task validator, strict OpenSpec validation and diff review passed."}
