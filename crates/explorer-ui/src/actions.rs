@@ -288,7 +288,10 @@ pub enum ExplorerAction {
     CompressSelectedToZip,
     AddSelectedToFavorites,
     AddSelectedToBookmarks,
-    ToggleCurrentFolderBookmark,
+    ToggleCurrentFolderBookmark {
+        screen_x: i32,
+        screen_y: i32,
+    },
     ActivateBookmark {
         id: explorer_model::BookmarkId,
     },
@@ -339,6 +342,8 @@ pub enum ExplorerAction {
     CancelRemoveBookmarkFolder,
     RemoveEditingBookmark,
     ToggleBookmarkManager,
+    ImportBookmarksFromClipboard,
+    BackupBookmarksToClipboard,
     ToggleBookmarkOverflow,
     ToggleBookmarkFolderMenu {
         id: explorer_model::BookmarkFolderId,
@@ -683,7 +688,7 @@ impl ExplorerAction {
             Self::CompressSelectedToZip => "CompressSelectedToZip",
             Self::AddSelectedToFavorites => "AddSelectedToFavorites",
             Self::AddSelectedToBookmarks => "AddSelectedToBookmarks",
-            Self::ToggleCurrentFolderBookmark => "ToggleCurrentFolderBookmark",
+            Self::ToggleCurrentFolderBookmark { .. } => "ToggleCurrentFolderBookmark",
             Self::ActivateBookmark { .. } => "ActivateBookmark",
             Self::OpenBookmarkInNewTab { .. } => "OpenBookmarkInNewTab",
             Self::OpenBookmarkContextMenu { .. } => "OpenBookmarkContextMenu",
@@ -707,6 +712,8 @@ impl ExplorerAction {
             Self::CancelRemoveBookmarkFolder => "CancelRemoveBookmarkFolder",
             Self::RemoveEditingBookmark => "RemoveEditingBookmark",
             Self::ToggleBookmarkManager => "ToggleBookmarkManager",
+            Self::ImportBookmarksFromClipboard => "ImportBookmarksFromClipboard",
+            Self::BackupBookmarksToClipboard => "BackupBookmarksToClipboard",
             Self::ToggleBookmarkOverflow => "ToggleBookmarkOverflow",
             Self::ToggleBookmarkFolderMenu { .. } => "ToggleBookmarkFolderMenu",
             Self::RemoveBookmark { .. } => "RemoveBookmark",
@@ -1377,7 +1384,7 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         ExplorerAction::AddSelectedToFavorites | ExplorerAction::AddSelectedToBookmarks => {
             state.selected_namespace_command_enabled(explorer_model::NamespaceCommand::Pin)
         }
-        ExplorerAction::ToggleCurrentFolderBookmark => {
+        ExplorerAction::ToggleCurrentFolderBookmark { .. } => {
             state.current_folder_bookmark_target_and_id().is_some()
         }
         ExplorerAction::CopySelectedPaths => !state.tabs().active_tab().selection.is_empty(),
@@ -1526,6 +1533,8 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::CancelRemoveBookmarkFolder
         | ExplorerAction::RemoveEditingBookmark
         | ExplorerAction::ToggleBookmarkManager
+        | ExplorerAction::ImportBookmarksFromClipboard
+        | ExplorerAction::BackupBookmarksToClipboard
         | ExplorerAction::ToggleBookmarkOverflow
         | ExplorerAction::ToggleBookmarkFolderMenu { .. }
         | ExplorerAction::RemoveBookmark { .. }
@@ -1746,7 +1755,7 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         | ExplorerAction::CompressSelectedToZip
         | ExplorerAction::AddSelectedToFavorites
         | ExplorerAction::AddSelectedToBookmarks
-        | ExplorerAction::ToggleCurrentFolderBookmark
+        | ExplorerAction::ToggleCurrentFolderBookmark { .. }
         | ExplorerAction::CopySelectedPaths
         | ExplorerAction::CancelOperation { .. } => FocusSurface::FileView,
         ExplorerAction::BeginFileDrag { x, y, button } => {
@@ -2004,6 +2013,8 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         | ExplorerAction::CancelRemoveBookmarkFolder
         | ExplorerAction::RemoveEditingBookmark
         | ExplorerAction::ToggleBookmarkManager
+        | ExplorerAction::ImportBookmarksFromClipboard
+        | ExplorerAction::BackupBookmarksToClipboard
         | ExplorerAction::ToggleBookmarkOverflow
         | ExplorerAction::ToggleBookmarkFolderMenu { .. }
         | ExplorerAction::RemoveBookmark { .. }

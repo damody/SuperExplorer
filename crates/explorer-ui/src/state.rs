@@ -5666,9 +5666,19 @@ impl AppViewState {
         let destination =
             item_destination.or_else(|| tab.history.current().map(|entry| entry.location.clone()));
         let Some(destination) = destination else {
+            tracing::warn!(
+                target = ?explorer_model::DropTargetKind::FileView,
+                ?effect,
+                "external file drop rejected because no destination was resolved"
+            );
             return;
         };
         if paths.is_empty() {
+            tracing::warn!(
+                destination = %destination,
+                ?effect,
+                "external file drop rejected because it contained no paths"
+            );
             return;
         }
         if let Some(destination_path) = destination.path()
@@ -5678,6 +5688,12 @@ impl AppViewState {
                 effect,
             )
         {
+            tracing::warn!(
+                destination = %destination,
+                source_count = paths.len(),
+                ?effect,
+                "external file drop rejected by filesystem destination validation"
+            );
             return;
         }
         if right_button {
@@ -9926,6 +9942,8 @@ mod tests {
                     total_items: 1,
                     completed_bytes: 1,
                     total_bytes: Some(1),
+                    phase: explorer_model::TransferProgressPhase::Transferring,
+                    current_item: None,
                 },
             }),
             explorer_model::WindowEventOutcome::Applied
@@ -9945,6 +9963,8 @@ mod tests {
                     total_items: 1,
                     completed_bytes: 1,
                     total_bytes: Some(1),
+                    phase: explorer_model::TransferProgressPhase::Transferring,
+                    current_item: None,
                 },
             }),
             explorer_model::WindowEventOutcome::IgnoredStale

@@ -13,6 +13,10 @@ param(
     [string]$State = 'populated',
     [ValidateSet('normal', 'hover', 'pressed')]
     [string]$InteractionState = 'normal',
+    [ValidateRange(0, 7680)]
+    [int]$InteractionX = 72,
+    [ValidateRange(0, 4320)]
+    [int]$InteractionY = 73,
     [ValidateSet('active', 'inactive')]
     [string]$WindowActivation = 'active',
     [int]$TimeoutSeconds = 30,
@@ -183,8 +187,8 @@ try {
     Start-Sleep -Milliseconds 150
     $foregroundWindow = [ExplorerVisual.NativeWindow]::GetForegroundWindow()
     $actualScale = [double]$actualDpi / 96.0
-    $interactionX = [int][math]::Round(72 * $actualScale)
-    $interactionY = [int][math]::Round(73 * $actualScale)
+    $interactionX = [int][math]::Round($InteractionX * $actualScale)
+    $interactionY = [int][math]::Round($InteractionY * $actualScale)
     $interactionPoint = [IntPtr](($interactionY -shl 16) -bor ($interactionX -band 0xffff))
     if ($InteractionState -in @('hover', 'pressed')) {
         [void][ExplorerVisual.NativeWindow]::PostMessage($windowHandle, 0x0200, [IntPtr]::Zero, $interactionPoint)
@@ -245,6 +249,7 @@ try {
         fixture_state = $State
         real_shell_path = if ($RealPath) { $resolvedRealPath } else { $null }
         interaction_state = $InteractionState
+        interaction_logical_point = [ordered]@{ x = $InteractionX; y = $InteractionY }
         window_activation = $WindowActivation
         activation_driver = 'WM_ACTIVATEAPP/WM_NCACTIVATE/WM_ACTIVATE fixture messages'
         activation_messages_posted = $activationMessagesPosted

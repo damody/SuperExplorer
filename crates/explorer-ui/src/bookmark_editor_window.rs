@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use gpui::{
     App, Bounds, Context, FocusHandle, Focusable, IntoElement, Render, Window, WindowBounds,
-    WindowHandle, WindowOptions, div, prelude::*, px, size,
+    WindowHandle, WindowOptions, div, point, prelude::*, px, size,
 };
 use gpui_elements::editable_text::{EditableTextState, StringStorage};
 
@@ -18,26 +18,53 @@ use crate::{
 #[derive(Clone)]
 pub struct BookmarkEditorWindowSnapshotV1 {
     pub state: AppViewState,
+    pub anchor: Option<(i32, i32)>,
+    pub multiline_payload: bool,
 }
 
 fn bookmark_editor_width(display_width: f32) -> f32 {
-    (display_width * 0.8).max(640.0)
+    display_width.min(540.0).max(420.0)
 }
 
-pub fn bookmark_editor_window_options(cx: &App) -> WindowOptions {
+const fn bookmark_editor_height(multiline_payload: bool) -> f32 {
+    if multiline_payload { 590.0 } else { 288.0 }
+}
+
+pub fn bookmark_editor_window_options(
+    cx: &App,
+    anchor: Option<(i32, i32)>,
+    multiline_payload: bool,
+) -> WindowOptions {
     let width = cx.primary_display().map_or(760.0, |display| {
         bookmark_editor_width(f32::from(display.bounds().size.width))
     });
+    let height = bookmark_editor_height(multiline_payload);
+    let window_size = size(px(width), px(height));
+    let bounds = anchor.map_or_else(
+        || Bounds::centered(None, window_size, cx),
+        |(requested_x, requested_y)| {
+            let Some(display) = cx.primary_display() else {
+                return Bounds::centered(None, window_size, cx);
+            };
+            let work = display.bounds();
+            let x = (requested_x as f32)
+                .max(f32::from(work.origin.x))
+                .min(f32::from(work.right()) - width);
+            let y = (requested_y as f32)
+                .max(f32::from(work.origin.y))
+                .min(f32::from(work.bottom()) - height);
+            Bounds {
+                origin: point(px(x), px(y)),
+                size: window_size,
+            }
+        },
+    );
     WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-            None,
-            size(px(width), px(560.0)),
-            cx,
-        ))),
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: None,
         kind: gpui::WindowKind::Normal,
-        is_resizable: true,
-        window_min_size: Some(size(px(640.0), px(460.0))),
+        is_resizable: false,
+        window_min_size: Some(size(px(420.0), px(height))),
         ..Default::default()
     }
 }
@@ -72,7 +99,12 @@ impl BookmarkEditorWindow {
             .expect("bookmark editor snapshot requires a draft");
         let payload = editor.target.editable_payload();
         let name_input = cx.new(|cx| EditableTextState::new(StringStorage::from(editor.name), cx));
+        name_input.update(cx, EditableTextState::select_document);
         let payload_input = cx.new(|cx| EditableTextState::new(StringStorage::from(payload), cx));
+        let name_for_focus = name_input.clone();
+        window.defer(cx, move |window, cx| {
+            name_for_focus.read(cx).focus_handle(cx).focus(window, cx);
+        });
         let close_owner = owner;
         window.on_window_should_close(cx, move |_, cx| {
             let _ = close_owner.update(cx, |root, owner_window, cx| {
@@ -166,14 +198,26 @@ impl Render for BookmarkEditorWindow {
             .size_full()
             .track_focus(&self.focus_handle)
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.key == "escape" {
-                    cx.stop_propagation();
-                    this.dispatch(
-                        ExplorerAction::CancelBookmarkEditor,
-                        ActionSource::Keyboard,
-                        window,
-                        cx,
-                    );
+                match event.keystroke.key.as_str() {
+                    "escape" => {
+                        cx.stop_propagation();
+                        this.dispatch(
+                            ExplorerAction::CancelBookmarkEditor,
+                            ActionSource::Keyboard,
+                            window,
+                            cx,
+                        );
+                    }
+                    "enter" => {
+                        cx.stop_propagation();
+                        this.dispatch(
+                            ExplorerAction::SaveBookmarkEditor,
+                            ActionSource::Keyboard,
+                            window,
+                            cx,
+                        );
+                    }
+                    _ => {}
                 }
             }))
             .child(chrome::bookmark_editor(
@@ -207,9 +251,40 @@ mod tests {
         assert!(source.contains("window.remove_window()"));
         assert!(source.contains("editor.target.editable_payload()"));
         assert!(source.contains("bookmark_editor_width"));
-        assert!(source.contains("is_resizable: true"));
+        assert!(source.contains("is_resizable: false"));
         assert!(source.contains("titlebar: None"));
-        assert_eq!(bookmark_editor_width(1920.0), 1536.0);
-        assert_eq!(bookmark_editor_width(800.0), 640.0);
+        assert_eq!(bookmark_editor_width(1920.0), 540.0);
+        assert_eq!(bookmark_editor_width(800.0), 540.0);
+    }
+
+    #[test]
+    fn firefox_style_quick_editor_focuses_name_and_supports_enter_escape() {
+        let window = include_str!("bookmark_editor_window.rs");
+        let chrome = include_str!("chrome.rs");
+        assert!(window.contains("EditableTextState::select_document"));
+        assert!(window.contains("name_for_focus.read(cx).focus_handle(cx).focus"));
+        assert!(window.contains("\"enter\" =>"));
+        assert!(window.contains("ExplorerAction::SaveBookmarkEditor"));
+        assert!(window.contains("anchor.map_or_else"));
+        assert!(window.contains("Bounds::centered(None, window_size, cx)"));
+        let production = window
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source");
+        assert!(!production.contains("anchor.unwrap_or((0, 0))"));
+        assert!(window.contains("WindowBounds::Windowed(bounds)"));
+        assert!(window.contains(".min(f32::from(work.right()) - width)"));
+        assert_eq!(bookmark_editor_height(false), 288.0);
+        assert_eq!(bookmark_editor_height(true), 590.0);
+        for required in [
+            "新增書籤",
+            "名稱 (N)",
+            "位置 (L)",
+            "儲存時顯示編輯器 (S)",
+            "bookmark-editor-save",
+            "bookmark-editor-cancel",
+        ] {
+            assert!(chrome.contains(required), "missing {required}");
+        }
     }
 }
