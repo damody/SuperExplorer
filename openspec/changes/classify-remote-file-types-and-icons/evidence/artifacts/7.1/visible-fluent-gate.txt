@@ -1,0 +1,20 @@
+G-VISIBLE-FLUENT: PASS
+
+Screenshot diagnosis:
+- PDF and Archive used official Filled SVGs and were visible.
+- Settings, text, code, and other Color SVG categories were transparent.
+- Classification was therefore correct; unsupported gradient/paint-server rendering was the failure.
+
+Correction:
+- All 24 categories now use official `@fluentui/svg-icons@1.1.339` 20px Filled SVGs.
+- All loaded payloads receive `currentColor`; the renderer always applies the family tint.
+- All 24 upstream paths and SHA-256 values were updated in NOTICE.md.
+
+Verification:
+- 24/24 asset hash reconciliation passed.
+- 24/24 payloads are distinct, contain path geometry, become tintable, and contain no gradients, paint URLs, external/active content, filters, masks, or foreignObject.
+- cargo test -p explorer-ui fluent_assets::tests: 5 passed, 0 failed.
+- cargo test -p explorer-ui remote_file: 5 passed, 0 failed.
+- cargo test -p explorer-model file_presentation: 6 passed, 0 failed.
+- cargo test -p explorer-app remote_service: 12 passed, 0 failed.
+

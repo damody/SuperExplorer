@@ -1,0 +1,9 @@
+Commands:
+  cargo test -p explorer-app remote_row_constructors_classify_names_without_changing_kind_semantics -- --nocapture
+  cargo test -p explorer-app remote_entry_kinds_drive_rows_and_child_container_filtering -- --nocapture
+Expected: both row constructors classify filenames and all authoritative kinds retain container semantics
+Actual: both focused tests passed; 0 failed
+Exit status: 0
+Gate: G-REMOTE-METADATA
+Recorded at: 2026-08-30T22:22:55.3663226+08:00
+Source SHA-256 (remote_service.rs): C19A20BE44DD83A4D8079DCCF1A0C0521D78DA9E4459F8CE5783A475938E2BC1

@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "capture_kind": "application",
+  "windows": {
+    "edition": "Microsoft Windows 11 專業版",
+    "version": "10.0.26200",
+    "build": "26200"
+  },
+  "explorer": {
+    "file_version": "10.0.26100.8875 (WinBuild.160101.0800)"
+  },
+  "app": {
+    "version": "0.1.0",
+    "commit": "79fac302cde145fb52f208ff3fa95b0b296f6127",
+    "dirty": true
+  },
+  "gpui": {
+    "repository": "https://github.com/gpui-ce/gpui-ce.git",
+    "revision": "54f1339ef1791cf1d1a281ff7fa37d7e0d6b8436"
+  },
+  "dpi": {
+    "expected_percent": 100,
+    "actual_window_dpi": 168,
+    "actual_scale_factor": 1.75,
+    "matches_expectation": false
+  },
+  "theme": "light",
+  "window": {
+    "logical_width": 1120,
+    "logical_height": 720,
+    "captured_width": 1984,
+    "captured_height": 1272
+  },
+  "font": "Microsoft JhengHei UI",
+  "fixture_state": "drag-cue",
+  "real_shell_path": null,
+  "interaction_state": "normal",
+  "interaction_logical_point": {
+    "x": 126,
+    "y": 128
+  },
+  "window_activation": "active",
+  "activation_driver": "WM_ACTIVATEAPP/WM_NCACTIVATE/WM_ACTIVATE fixture messages",
+  "activation_messages_posted": true,
+  "foreground_window_is_application": true,
+  "captured_utc": "2026-08-30T08:37:27.6223865Z",
+  "screenshot_sha256": "BED1339FE56690DDDB2637EA2D547130D743A9BF6823F9EAB2D1CC7E2C09752A",
+  "diagnostics_sha256": "8616E11D6D89256EDF78868145C2302E267769D7C50E10E0013AC4972578332C"
+}

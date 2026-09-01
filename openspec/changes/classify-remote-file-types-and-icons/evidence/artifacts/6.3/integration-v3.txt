@@ -1,0 +1,15 @@
+G-INTEGRATION-V3: PASS
+
+- cargo fmt --all -- --check: exit 0.
+- cargo check -p explorer-model -p explorer-ui -p explorer-app: exit 0.
+- cargo test -p explorer-model file_presentation: 6 passed, 0 failed.
+- cargo test -p explorer-app remote_service: 12 passed, 0 failed.
+- cargo test -p explorer-ui fluent_assets::tests: 5 passed, 0 failed.
+- cargo test -p explorer-ui remote_file: 5 passed, 0 failed.
+- openspec validate classify-remote-file-types-and-icons --strict: valid.
+- detailed task validator: L1=6, L2=11, L3=36, PASS.
+- placeholder scan: clean.
+- git diff --check: exit 0; existing LF/CRLF conversion warnings only.
+- vendored SVG unsupported/external construct scan: no script, image, external href, foreignObject, filter, or mask. Payload tags are limited to svg/path/rect/circle/defs/linearGradient/radialGradient/stop.
+- asset provenance hash reconciliation: 24/24 PASS.
+
