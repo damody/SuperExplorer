@@ -1,0 +1,35 @@
+{
+  "schema": "superexplorer.repeated-launch-smoke.v1",
+  "timestamp_utc": "2026-08-31T12:18:08.2145807Z",
+  "executable": "D:\\SuperExplorer\\target\\debug\\SuperExplorer.exe",
+  "profile_root": "C:\\Users\\Damody\\AppData\\Local\\Temp\\superexplorer-relaunch-286b12b0c65d49b7a59edd7e11050431",
+  "expected": {
+    "first_title": "D:\\",
+    "second_title": "C:\\"
+  },
+  "first": {
+    "pid": 46108,
+    "title": "D:\\",
+    "window_handle": 8069562,
+    "responding": true
+  },
+  "second": {
+    "pid": 28436,
+    "title": "C:\\",
+    "window_handle": 26741842,
+    "responding": true
+  },
+  "passed": true,
+  "cleanup": [
+    {
+      "pid": 28436,
+      "close_requested": true,
+      "exited": true
+    },
+    {
+      "pid": 46108,
+      "close_requested": true,
+      "exited": true
+    }
+  ]
+}

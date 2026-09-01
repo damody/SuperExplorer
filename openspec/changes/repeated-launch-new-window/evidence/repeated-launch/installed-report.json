@@ -1,0 +1,31 @@
+{
+  "schema": "superexplorer-installed-repeated-launch-v1",
+  "timestamp_local": "2026-09-01T16:42:00+08:00",
+  "shortcut": {
+    "path": "C:\\Users\\Damody\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\SuperExplorer\\SuperExplorer.lnk",
+    "target": "C:\\Program Files\\SuperExplorer\\SuperExplorer.exe",
+    "arguments": ""
+  },
+  "installer": {
+    "path": "D:\\SuperExplorer\\dist\\SuperExplorer-Test-Setup-1.2026.9.1-x64.exe",
+    "sha256": "09BE32ACDE42B035FE358E5B087A64D75466A6B7F5DBF5BE8F044B13DCC90FFB"
+  },
+  "installed_executable_sha256": "4BEEC28F56D183D712BE8558917CC8D2FAF399C5C8E69508AF49E8E09B74125B",
+  "release_executable_sha256": "4BEEC28F56D183D712BE8558917CC8D2FAF399C5C8E69508AF49E8E09B74125B",
+  "launches": [
+    {
+      "pid": 25400,
+      "responding": true,
+      "window_title": "D:\\SuperExplorer"
+    },
+    {
+      "pid": 60432,
+      "responding": true,
+      "window_title": "C:\\"
+    }
+  ],
+  "new_process_count": 2,
+  "staging_sharing_violation_observed": false,
+  "result": "pass",
+  "note": "The silent installer updated shortcuts but did not replace the running-product executable despite exit code 0. The prior installed executable was preserved as SuperExplorer.exe.pre-repeated-launch and the hash-matched release candidate was copied into place before the installed shortcut smoke test."
+}

@@ -1,113 +1,122 @@
 ## Context
 
-`explorer-app` currently performs all composition in one process and opens one
-GPUI main window in `ApplicationLifecycle::run_gpui`. A later executable launch
-creates another process, including session persistence, extension hosts, broker,
-and shell services. The first window may restore a session or honor
-`EXPLORER_INITIAL_PATH`. Main-window construction is currently embedded in the
-startup closure and is not reusable.
+Installed verification exposed two integration constraints that were not part
+of the initial implementation evidence. Windows rejected the second extension
+host's open of `.sepack-staging` because the long-lived directory handle allowed
+only read sharing, and test installers copied their finish-page diagnostics
+argument into persistent shortcuts. These are B-level corrections within the
+approved independent-process design.
 
-This Windows-only change must preserve GPUI thread affinity, avoid accepting
-cross-user commands, keep automated fixture launches isolated, and coexist with
-the repository's current Rust and Win32 dependency policy.
+`explorer-app` already creates an independent top-level GPUI window for every
+process invocation. The missing File Explorer behavior is location selection:
+every process currently applies the same session restore unless an explicit
+initial path overrides it. The large window-construction closure does not need
+to change to meet the user-visible requirement.
 
 ## Goals / Non-Goals
 
 **Goals:**
 
-- Elect one resident ordinary SuperExplorer process per interactive user.
-- Deliver one authenticated-by-user-boundary, bounded relaunch request to it.
-- Create exactly one independent top-level explorer window at `C:\` per request.
-- Keep first-launch restoration and final-window shutdown behavior.
-- Fail open to normal startup when coordination is unavailable.
+- Detect whether an ordinary SuperExplorer process already exists in the current
+  Windows login session.
+- Make every later ordinary invocation open its independent window at `C:\`.
+- Preserve first-launch session restoration and special-launch isolation.
+- Preserve independent window/process close behavior.
 
 **Non-Goals:**
 
-- Arbitrary command-line paths or cross-user launch delivery.
-- Persisting or restoring every open window.
-- A public automation, plugin, or SDK API for window creation.
-- Redirecting diagnostics-console, visual-fixture, auto-close, or plugin
-  development launches.
+- Consolidating windows into one process or adding IPC.
+- Arbitrary command-line paths, cross-session coordination, or multi-window
+  session restoration.
+- Changes to plugin APIs, persistence schemas, or existing window composition.
 
 ## Decisions
 
-### Resident process with a per-user named-pipe endpoint
+### Share the verified staging root, not import candidates
 
-Ordinary startup first attempts a bounded `OpenWindowV1` request. If no resident
-accepts it, the process claims a per-user named mutex and starts the pipe server.
-The endpoint identity incorporates the current Windows user SID rather than a
-display name. The pipe's security descriptor admits the current user and local
-system only. The fixed request is versioned, length bounded, and acknowledged.
+The staging-root directory handle allows `FILE_SHARE_READ` and
+`FILE_SHARE_WRITE`, but continues to deny delete sharing so the held handle
+prevents adversarial parent replacement. Candidate subdirectories remain unique and create-new;
+identity checks, reparse rejection, active-owner scavenging, and cleanup bounds
+remain unchanged. This permits multiple process-owned extension hosts without
+weakening candidate ownership.
 
-This is preferred to independent processes because session files and heavyweight
-services keep one owner. It is preferred to window-message discovery because a
-named pipe has explicit framing, user scoping, and acknowledgment semantics.
+### Separate finish-page and persistent shortcut arguments
 
-### Explicit launch-role boundary
+`--diagnostics-console` may be used by a test installer's immediate finish-page
+launch. Start Menu and desktop shortcuts always have empty arguments so they are
+classified as ordinary launches.
 
-Argument/environment classification happens before heavyweight composition.
-Only an ordinary production launch participates. Diagnostic console,
-`EXPLORER_VISUAL_FIXTURE`, `EXPLORER_AUTO_CLOSE_MS`, and explicit `--plugin-dll`
-launches remain independent so tests and plugin development are deterministic.
-If connection or acknowledgment fails, startup continues independently and logs
-the reason.
+### Quiesce exact installed application processes before replacement
 
-### Foreground command delivery and reusable main-window factory
+NSIS extracts an installer-owned PowerShell helper and invokes it with the
+selected install directory before service shutdown or file replacement. The
+helper gracefully closes, then boundedly force-stops only processes whose
+normalized executable path equals the target `SuperExplorer.exe`; it returns
+nonzero unless final absence is proven. NSIS aborts on nonzero so stale binary
+replacement can no longer be reported as a successful upgrade.
 
-The listener thread sends validated commands through a bounded in-process
-channel. A GPUI foreground task drains it and owns every `open_window` call.
-Main-window assembly is refactored into a reusable factory/context that retains
-shared shell, remote, extension, bookmark, settings, diagnostics, and auxiliary
-window controllers. The initial invocation supplies restored tabs and placement;
-a relaunch supplies a fresh filesystem `HistoryEntry` for `C:\` and normal
-placement. Each window receives independent `ExplorerRoot` state.
+### Login-session named mutex as a lifetime marker
 
-### Lifetime and persistence
+Every ordinary process calls `CreateMutexW` for a versioned name in the Windows
+`Local\` namespace and retains the returned handle until shutdown. Windows
+atomically reports `ERROR_ALREADY_EXISTS` to later processes. Because every
+process retains a handle, repeated-launch detection continues to work if the
+oldest window closes while another remains. The namespace scopes independent
+interactive sessions without parsing or persisting user identity.
 
-The resident listener lives in `ShutdownResources` and stops during normal app
-shutdown. Existing `on_window_closed` logic continues to quit only after the
-last top-level/owned window closes. Durable session observation remains attached
-to explorer roots, while startup restore is consumed only by the initial window.
+This is preferred to named-pipe forwarding because the application already
+supports independent top-level processes and no cross-thread GPUI dispatch is
+needed. It is preferred to process enumeration because it is race-free and does
+not depend on executable paths or localized window titles.
 
-### Diagnostics and evidence
+### Explicit startup override, not environment mutation
 
-Structured events record role selection, accepted/rejected requests, window
-dispatch, fallback startup, and listener shutdown without recording paths beyond
-the fixed public `C:\` contract. Automated evidence uses task-index JSON records
-under `openspec/changes/repeated-launch-new-window/evidence/`.
+`ApplicationLifecycle` accepts an optional initial filesystem path. A repeated
+launch passes `C:\`; an initial or isolated launch passes no override. Existing
+`configured_initial_location` validation turns the path into a `HistoryEntry`,
+and existing session logic suppresses restored tabs when an explicit location is
+present. This avoids unsafe process-environment mutation after diagnostics may
+have started threads.
+
+### Isolated modes bypass the marker
+
+Diagnostic-console launches, explicit plugin DLL launches,
+`EXPLORER_VISUAL_FIXTURE`, `EXPLORER_AUTO_CLOSE_MS`, and the explicit test bypass
+environment variable do not acquire or observe the marker. Automated and plugin
+development runs therefore retain deterministic process-local behavior.
+
+### Failure and observability
+
+If `CreateMutexW` fails, startup records the controlled error through the
+existing top-level diagnostic path and does not corrupt persistent state.
+Ordinary startup records a `repeated_launch` boolean. No user path or private
+identity is logged.
 
 ### Plan correction policy
 
-- **A — task refinement:** leaf split/order/command/evidence-path changes that do
-  not alter requirements or gates may be recorded in tasks and evidence.
-- **B — design/spec correction:** an in-scope technical correction pauses
-  affected work and updates design, spec, tasks, and stale evidence together.
-- **C — material change:** changing public behavior, platform, security boundary,
-  blocking gates, or required evidence requires user approval.
+The shift from resident IPC to independent-process detection is a category B
+design/spec correction within the approved visible scope. It removes unnecessary
+attack surface and refactoring without weakening any visible requirement.
+Category C changes to visible behavior, platforms, or validation gates still
+require user approval.
 
 ## Risks / Trade-offs
 
-- **[Race between simultaneous first launches]** → The named mutex is the single
-  election primitive; losers retry the pipe for a bounded interval.
-- **[Hung or stale resident endpoint]** → Timeouts are bounded and failure starts
-  an independent process rather than blocking launch.
-- **[Untrusted local client input]** → SID-scoped ACL, fixed command vocabulary,
-  strict version/framing limits, and no caller-supplied path.
-- **[Large startup closure refactor causes regressions]** → Extract the smallest
-  reusable factory and preserve existing observers; run focused application and
-  UI tests before headful validation.
-- **[Foreground activation restrictions]** → The secondary process grants
-  foreground permission to the resident when possible; the resident activates
-  the created window after opening it.
+- **[First-process crash]** → Windows closes its handle; any remaining process
+  retains its own handle, so future launches still detect an existing window.
+- **[Marker-name collision]** → Use a product-specific versioned `Local\` name.
+- **[Special test interference]** → Classify and bypass special launches before
+  marker acquisition.
+- **[External `EXPLORER_INITIAL_PATH`]** → The in-process repeated-launch
+  override has explicit precedence and deterministically selects `C:\`.
 
 ## Migration Plan
 
-Ship as an internal behavioral change with no persisted-data migration. Build,
-run focused tests, then perform a two-launch Windows smoke test. Rollback is a
-code revert; protocol versioning ensures mismatched binaries reject and fall
-back to independent startup.
+No data migration is required. Build and unit-test launch classification, then
+run a two-process Windows smoke test with the first path forced to `D:\`; the
+second must display `C:\`. Rollback is a code revert.
 
 ## Open Questions
 
-None. Evidence may refine implementation mechanics under category A but cannot
-weaken the user-visible or security requirements.
+None.

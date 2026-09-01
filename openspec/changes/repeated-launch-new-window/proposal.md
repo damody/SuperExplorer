@@ -1,21 +1,26 @@
 ## Why
 
-Launching SuperExplorer while it is already open currently starts another full
-application process, which does not match the familiar File Explorer interaction
-and risks concurrent ownership of session and background resources. Repeated
-launches should instead create another explorer window through the resident app.
+Launching SuperExplorer while it is already open currently restores the saved
+session instead of reliably presenting a fresh system-drive window. Repeated
+launches should behave like File Explorer by opening another independent window
+at `C:\`.
 
 ## What Changes
 
-- Coordinate ordinary launches per Windows user through a bounded, versioned
-  local IPC endpoint.
-- Keep the first process resident and translate each later launch into exactly
-  one new top-level explorer window at `C:\`.
+- Detect repeated ordinary launches through a login-session-scoped Windows
+  marker held for each process lifetime.
+- Make each later launch create exactly one independent top-level explorer
+  window at `C:\`.
 - Preserve first-launch session restoration and exclude explicit diagnostic,
   fixture, and test launches from redirection.
-- Fall back to an independent normal launch when no healthy resident endpoint
-  accepts the request.
-- Add protocol, coordination, UI integration, and Windows headful coverage.
+- Report marker-creation failures through controlled startup diagnostics.
+- Permit concurrent extension-host startup by sharing the verified private
+  staging-root directory handle while retaining unique import children.
+- Keep installed Start Menu and desktop shortcuts free of diagnostic arguments,
+  including installers built with test diagnostics enabled.
+- Make in-place upgrades quiesce only SuperExplorer processes running from the
+  selected install directory and fail closed when quiescence cannot be proven.
+- Add launch-classification, initial-location, and Windows headful coverage.
 
 Non-goals are arbitrary path command-line launches, cross-user coordination,
 multi-window session restoration, or changes to tab behavior.
@@ -24,9 +29,8 @@ multi-window session restoration, or changes to tab behavior.
 
 ### New Capabilities
 
-- `repeated-launch-window-coordination`: Per-user repeated-launch detection,
-  resident-process request delivery, and creation of a fresh `C:\` explorer
-  window.
+- `repeated-launch-window-coordination`: Login-session repeated-launch
+  detection and creation of a fresh `C:\` explorer window.
 
 ### Modified Capabilities
 
@@ -34,11 +38,12 @@ None.
 
 ## Impact
 
-- `explorer-app` gains Windows launch coordination and reusable main-window
-  construction.
-- GPUI startup owns a foreground-safe command receiver and multiple top-level
-  explorer windows.
-- Session persistence remains process-owned and continues to describe the
-  initial/restored window only.
-- Installer entry points require no argument or registration change.
+- `explorer-app` gains Windows launch classification and an explicit startup
+  path override.
+- Each main window remains independently process-owned; existing GPUI window
+  composition is unchanged.
+- Session persistence remains process-owned; explicit repeated-launch location
+  suppresses saved-tab restoration for that new window.
+- Installer shortcuts use ordinary launch arguments; a test build may use the
+  diagnostics argument only for the finish-page launch.
 - No public plugin ABI, SDK, persisted schema, or external service changes.
