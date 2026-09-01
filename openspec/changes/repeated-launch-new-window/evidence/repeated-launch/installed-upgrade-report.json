@@ -1,0 +1,31 @@
+{
+  "schema": "superexplorer-installed-upgrade-repeated-launch-v1",
+  "timestamp_local": "2026-09-01T17:05:00+08:00",
+  "upgrade": {
+    "installer_exit": 0,
+    "old_processes": [
+      { "pid": 3456, "window_title": "D:\\SuperExplorer" },
+      { "pid": 14040, "window_title": "C:\\" }
+    ],
+    "old_process_survivor_count": 0,
+    "manual_file_replacement_used": false
+  },
+  "artifacts": {
+    "installer_path": "D:\\SuperExplorer\\dist\\SuperExplorer-Test-Setup-1.2026.9.1-x64.exe",
+    "installer_sha256": "58B83DCF93B033FE7D16CD122DA8C1326DB6D8878D501CD0BD82EFE6E76BB475",
+    "release_executable_sha256": "CFD3147A93B3810D6D94DBF9D6A59AEE46F7D37B47E601FFB1739E2B9D1F6DF7",
+    "installed_executable_sha256": "CFD3147A93B3810D6D94DBF9D6A59AEE46F7D37B47E601FFB1739E2B9D1F6DF7",
+    "hash_match": true
+  },
+  "shortcut": {
+    "target": "C:\\Program Files\\SuperExplorer\\SuperExplorer.exe",
+    "arguments": ""
+  },
+  "post_upgrade_launches": [
+    { "pid": 69800, "responding": true, "window_title": "C:\\" },
+    { "pid": 76444, "responding": true, "window_title": "C:\\" }
+  ],
+  "new_log_bytes": 2622,
+  "new_staging_sharing_errors": 0,
+  "result": "pass"
+}
