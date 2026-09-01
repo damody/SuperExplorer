@@ -1,0 +1,14 @@
+Recorded at: 2026-08-30T22:30:29.3212509+08:00
+Gate: G-INTEGRATION
+
+PASS: cargo fmt --all -- --check
+PASS: cargo test -p explorer-model (123 unit + 14 integration; 0 failed)
+PASS after serialized rerun: cargo test -p explorer-app -- --test-threads=1 (all non-ignored tests passed)
+PASS: cargo test -p explorer-ui icons::tests -- --test-threads=1 (5 passed; 0 failed)
+PASS: cargo test -p explorer-ui remote_file_fallback_icon_tests -- --test-threads=1 (2 passed; 0 failed)
+PASS: cargo check -p explorer-model -p explorer-ui -p explorer-app
+PASS: openspec validate classify-remote-file-types-and-icons --strict
+PASS: detailed task validator (L1=4, L2=6, L3=17)
+PASS: incomplete-marker scan and git diff --check
+
+Additional audit: an unfiltered serialized explorer-ui run completed 409 tests and reported 8 failures in pre-existing dirty-worktree contracts for details-filter focus, background/context popups, pre-layout height, a Unicode placeholder already present in chrome.rs, This PC capacity localization, icon-cache budgeting, and stale-thumbnail demand. None invokes the new filename classifier, remote metadata formatter, remote icon spec, or remote-only fallback selector. These unrelated user-owned edits were preserved rather than overwritten. All tests that exercise this change passed, and the full crate compiles.

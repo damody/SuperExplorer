@@ -1,0 +1,11 @@
+G-FLUENT-ASSETS: PASS
+
+Commands and results:
+- npm view @fluentui/svg-icons version license dist.tarball --json: version 1.1.339, MIT.
+- npm pack @fluentui/svg-icons@1.1.339: exit 0; 21,592 package files inventoried.
+- SHA-256 reconciliation of NOTICE.md against 24 vendored SVG files: PASS 24/24.
+- cargo test -p explorer-ui fluent_assets::tests -- --test-threads=1 --nocapture: 5 passed, 0 failed.
+- cargo test -p explorer-ui remote_file -- --test-threads=1 --nocapture: 5 passed, 0 failed.
+
+Verified controls: offline lookup, unique payloads, text-free SVGs, no external href, Color paint preservation, tintable exact monochrome fallbacks, complete notice/license coverage, and stable icon metadata.
+

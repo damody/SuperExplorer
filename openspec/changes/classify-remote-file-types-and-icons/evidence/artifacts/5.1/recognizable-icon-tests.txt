@@ -1,0 +1,20 @@
+Recorded at: 2026-08-30T22:47:32.4525149+08:00
+Gate: G-REMOTE-ICON-V2
+
+PASS: cargo test -p explorer-model file_presentation -- --nocapture (4 passed; 0 failed)
+PASS: cargo test -p explorer-ui remote_file -- --test-threads=1 --nocapture (5 passed; 0 failed)
+PASS: cargo test -p explorer-ui fluent_assets::tests::remote_file_categories_have_unique_text_free_vector_geometry -- --test-threads=1 --nocapture (1 passed; 0 failed)
+PASS: cargo check -p explorer-model -p explorer-ui -p explorer-app
+PASS: cargo fmt --all -- --check
+
+Regression assertions:
+- `.bashrc` and `.profile` select `RemoteFileIconKind::Settings` while Type labels remain unchanged.
+- Eleven category assets have unique SVG payloads, use `currentColor`, share a 20x20 view box, and contain no text nodes.
+- The renderer uses 94% of 16px and 20px hosts; it no longer hides the only category identifier below 24px.
+- Required PDF, TXT, JPG, TAR.GZ, BIN.GZ, and TGZ mappings and ADB/SFTP-only selection continue to pass.
+
+Final source hashes:
+- file_presentation.rs: 3ABC658838148225B7408C430AD763E1C2A8039FC9B079C22228DA0F3E1B36E3
+- icons.rs: 3922A7225CF0BD7EBB8251C47F8C27E1CDB59DF0783141291F5459AF75898530
+- fluent_assets.rs: FB91FB00FC417835AD01743EF4567DED4E0CEA721CD033FCDE3A53489B9CA3EA
+- lib.rs: F491FF65D2BE0B3FE0379FDEE590C44C1928B645890F4175B3893676CD54126C

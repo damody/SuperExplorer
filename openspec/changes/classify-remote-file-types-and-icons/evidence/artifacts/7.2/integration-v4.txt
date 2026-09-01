@@ -1,0 +1,10 @@
+G-INTEGRATION-V4: PASS
+
+- cargo fmt --all -- --check: exit 0.
+- cargo check -p explorer-model -p explorer-ui -p explorer-app: exit 0.
+- openspec validate classify-remote-file-types-and-icons --strict: valid.
+- detailed task validator: L1=7, L2=13, L3=43, PASS.
+- git diff --check: exit 0; existing LF/CRLF warnings only.
+- Focused test total: 28 passed, 0 failed.
+- Filled asset hash reconciliation: 24/24 passed.
+

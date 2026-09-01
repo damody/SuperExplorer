@@ -1,0 +1,11 @@
+Commands:
+  cargo test -p explorer-ui remote_file_icon -- --nocapture
+  cargo test -p explorer-ui required_remote_examples_select_category_icons -- --nocapture
+Expected: category metadata/geometry, remote-only selection, container/local exclusions, and required examples pass
+Actual: 3 tests passed in first run and 1 required-example test passed in second run; 0 failed
+Exit status: 0
+Gate: G-REMOTE-ICON
+Recorded at: 2026-08-30T22:26:55.0145110+08:00
+Source SHA-256 (icons.rs): E95F76442990D3A61886770EC5D88FD6B03A3E73D8C5834C1B43B5BC974E3012
+Source SHA-256 (lib.rs): EB60F6597C17F4EF1BEBD778894A7525DCC9F845184A29A8B746F5E8FBA8525D
+Source SHA-256 (chrome.rs): 871BF9335F11A543ABD778832962BCAB189481EC0353A06F52743A21B6F03E79

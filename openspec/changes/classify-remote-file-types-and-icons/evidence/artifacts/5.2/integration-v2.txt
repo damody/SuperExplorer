@@ -1,0 +1,11 @@
+Recorded at: 2026-08-30T22:49:28.0768104+08:00
+Gate: G-INTEGRATION-V2
+
+PASS: legacy color-strip signature scan (no `badge_height`, `page_width`, hidden-below-24 branch, or badge bottom strip remains)
+PASS: cargo fmt --all -- --check
+PASS: openspec validate classify-remote-file-types-and-icons --strict
+PASS: detailed task validation (L1=5, L2=8, L3=23)
+PASS: git diff --check
+PASS: corrective model/UI focused tests and three-crate compile check (see ../5.1/recognizable-icon-tests.txt)
+
+The only rg match for the word `placeholder` is historical evidence documenting an unrelated pre-existing chrome test failure; no design/spec/task marker is incomplete.

@@ -1,0 +1,8 @@
+Command: cargo test -p explorer-model file_presentation -- --nocapture
+Expected: all filename grammar and icon-family tests pass
+Actual: 4 passed; 0 failed; 0 ignored; 119 filtered out
+Exit status: 0
+Gate: G-CLASSIFIER
+Recorded at: 2026-08-30T22:20:06.9032871+08:00
+Source SHA-256 (file_presentation.rs): CA037DADFEB44FC382F9A3AA0AD3EF4E0CDFD7674BFF3F568F3F61E5F372F4F8
+Export SHA-256 (lib.rs): 0A2B0221D9979BD6BAFA0237ED8AE700B1074BB4735465C07216F563D63AF814

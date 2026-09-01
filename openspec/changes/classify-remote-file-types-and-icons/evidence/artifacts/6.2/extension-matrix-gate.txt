@@ -1,0 +1,15 @@
+G-EXTENSION-MATRIX: PASS
+
+Coverage:
+- 9 longest-first compound rules and 265 unique final-extension rules.
+- Every final rule tested in lowercase and uppercase with exact Type label and icon family.
+- Every compound rule tested for Type label and expected family.
+- Required Office families are distinct: Word, spreadsheet, presentation, notebook, database, and mail.
+- Representative emulator formats cover conf/xml/json/json.gz/prop/pb/cil/policy/rc/sh/so/o/bc/prof/bprof.
+- Compound near miss `not-json.gz` follows the final GZ archive rule.
+
+Commands and results:
+- cargo test -p explorer-model file_presentation -- --nocapture: 6 passed, 0 failed.
+- cargo test -p explorer-app remote_service -- --test-threads=1 --nocapture: 12 passed, 0 failed.
+- cargo test -p explorer-ui remote_file -- --test-threads=1 --nocapture: 5 passed, 0 failed.
+
