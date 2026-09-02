@@ -26,7 +26,7 @@ if not exist "%BUILD_SCRIPT%" (
     goto :finish
 )
 
-"%LUA_EXE%" "%BUILD_SCRIPT%" --component superexplorer --allow-superexplorer-dirty %*
+"%LUA_EXE%" "%BUILD_SCRIPT%" --component superexplorer --allow-superexplorer-dirty --auto-install %*
 set "BUILD_EXIT_CODE=%ERRORLEVEL%"
 
 :finish
@@ -34,7 +34,7 @@ echo.
 if not "%BUILD_EXIT_CODE%"=="0" goto :report_failure
 if "%CHECK_ONLY%"=="1" goto :report_check
 if "%NO_LAUNCH%"=="1" goto :report_built
-echo [SUCCESS] SuperExplorer test installer build completed and launched.
+echo [SUCCESS] SuperExplorer test installer build completed, installed, verified, and launched.
 goto :report_done
 
 :report_built

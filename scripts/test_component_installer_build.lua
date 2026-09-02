@@ -47,6 +47,10 @@ local formal_with_openspec_untracked = components.parse_options({
 assert(formal_with_openspec_untracked.ignore_superdesktop_openspec_untracked)
 local explorer = components.parse_options({ "--component=superexplorer", "--allow-superexplorer-dirty" })
 assert(explorer.include_superexplorer and not explorer.include_superdesktop and explorer.allow_superexplorer_dirty)
+local auto_install_explorer = components.parse_options({
+    "--component=superexplorer", "--allow-superexplorer-dirty", "--auto-install",
+})
+assert(auto_install_explorer.auto_install)
 local desktop = components.parse_options({ "--component", "superdesktop", "--allow-superdesktop-dirty" })
 assert(not desktop.include_superexplorer and desktop.include_superdesktop and desktop.allow_superdesktop_dirty)
 
@@ -63,6 +67,12 @@ expect_failure("desktop allowance leak", "只能用於 superdesktop", function()
 end)
 expect_failure("OpenSpec untracked allowance leak", "can only be used with --component all", function()
     components.parse_options({ "--component", "superdesktop", "--ignore-superdesktop-openspec-untracked" })
+end)
+expect_failure("auto-install formal leak", "只能用於 superexplorer", function()
+    components.parse_options({ "--component", "all", "--auto-install" })
+end)
+expect_failure("auto-install desktop leak", "只能用於 superexplorer", function()
+    components.parse_options({ "--component", "superdesktop", "--auto-install" })
 end)
 
 local openspec_untracked = table.concat({
@@ -149,7 +159,8 @@ local desktop_nsis = read_file(root .. "/installer/SuperDesktop.nsi")
 local desktop_include = read_file(root .. "/installer/SuperDesktopFiles.nsh")
 
 assert_contains(formal_batch, "--component all --ignore-superdesktop-openspec-untracked", "formal batch")
-assert_contains(explorer_batch, "--component superexplorer --allow-superexplorer-dirty", "explorer batch")
+assert_contains(explorer_batch,
+    "--component superexplorer --allow-superexplorer-dirty --auto-install", "explorer batch")
 assert_contains(desktop_batch, "--component superdesktop --allow-superdesktop-dirty", "desktop batch")
 assert_contains(build, 'if options.include_superexplorer then', "SuperExplorer selection")
 assert_contains(build, 'if options.include_superdesktop then', "SuperDesktop selection")
@@ -159,6 +170,15 @@ assert_contains(build, '":(exclude)**/utit-results/**"', "generated test-result 
 assert_contains(build, '":(exclude)utit-results/**"', "SuperDesktop test-result status exclusion")
 assert_contains(build, 'options.component == "superdesktop" and "SuperDesktop.nsi" or "SuperExplorer.nsi"',
     "NSIS mode selection")
+assert_contains(build, 'if options.auto_install and not options.no_launch then',
+    "explicit SuperExplorer auto-install branch")
+assert_contains(build, 'args = { "/S" }', "silent installer argument")
+assert_contains(build, 'verify_installed_superexplorer(superexplorer_inputs, logs)',
+    "installed binary identity gate")
+assert_contains(build, 'for _, view in ipairs({ "64", "32" }) do',
+    "NSIS registry-view install directory resolver")
+assert_not_contains(formal_batch, "--auto-install", "formal batch auto-install isolation")
+assert_not_contains(desktop_batch, "--auto-install", "desktop batch auto-install isolation")
 assert_contains(explorer_nsis, "!ifdef INCLUDE_SUPERDESKTOP", "combined installer guard")
 assert_contains(explorer_nsis, '!insertmacro InstallSuperDesktopFiles "$INSTDIR"', "combined install")
 assert_contains(explorer_nsis, '!insertmacro QuiesceSuperDesktopFiles "$INSTDIR"',
