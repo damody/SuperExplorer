@@ -194,6 +194,82 @@ fn cleanup_sftp_drag_fixture(host: &str, username: &str, fingerprint: &str) -> R
     Ok(())
 }
 
+fn registered_sftp_provider(
+    host: &str,
+    username: &str,
+    fingerprint: &str,
+) -> Result<(SftpProvider, [u8; 16])> {
+    let password = rpassword::read_password()?;
+    let identity = remote_container_identity(RemoteProviderKind::Sftp, host);
+    let mut profile = SftpProfile::new(
+        host.to_owned(),
+        host.to_owned(),
+        22,
+        username.to_owned(),
+        identity,
+    )?;
+    profile.host_key_fingerprint = Some(fingerprint.to_owned());
+    let provider = SftpProvider::new()?;
+    provider.register_profile(profile, password)?;
+    Ok((provider, identity))
+}
+
+fn sftp_external_file_absent(
+    host: &str,
+    username: &str,
+    fingerprint: &str,
+    name: &str,
+) -> Result<()> {
+    let (provider, identity) = registered_sftp_provider(host, username, fingerprint)?;
+    let parent = VirtualLocationDescriptor {
+        provider_id: "sftp".to_owned(),
+        public_authority: Some(host.to_owned()),
+        container_identity: identity,
+        container_generation: 1,
+        entry_id: None,
+        components: vec!["home".to_owned(), "linuxuser".to_owned()],
+    };
+    let entries = provider.list(&parent, &CancellationToken::new())?;
+    if entries.iter().any(|entry| entry.name == name) {
+        bail!("refusing to overwrite an existing SFTP item with the requested fixture name");
+    }
+    println!("sftp_external_file_absent=true");
+    Ok(())
+}
+
+fn verify_and_cleanup_sftp_external_file(
+    host: &str,
+    username: &str,
+    fingerprint: &str,
+    local_source: &str,
+) -> Result<()> {
+    let source = std::path::Path::new(local_source);
+    let name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("local source filename is unavailable")?;
+    let expected = std::fs::read(source).context("read local source")?;
+    let (provider, identity) = registered_sftp_provider(host, username, fingerprint)?;
+    let parent = VirtualLocationDescriptor {
+        provider_id: "sftp".to_owned(),
+        public_authority: Some(host.to_owned()),
+        container_identity: identity,
+        container_generation: 1,
+        entry_id: None,
+        components: vec!["home".to_owned(), "linuxuser".to_owned()],
+    };
+    let remote = child(&parent, name);
+    let downloads = tempfile::tempdir()?;
+    let downloaded = downloads.path().join(name);
+    provider.download(&remote, &downloaded, &CancellationToken::new())?;
+    if std::fs::read(&downloaded)? != expected {
+        bail!("SFTP external file content did not match the local source; cleanup refused");
+    }
+    provider.delete(&remote, false, &CancellationToken::new())?;
+    println!("sftp_external_file_verified=true bytes={}", expected.len());
+    Ok(())
+}
+
 fn run_cross(serial: &str, host: &str, username: &str, fingerprint: &str) -> Result<()> {
     let password = rpassword::read_password()?;
     let adb_identity = remote_container_identity(RemoteProviderKind::Adb, serial);
@@ -367,6 +443,18 @@ fn main() -> Result<()> {
             &arguments.next().context("missing SFTP host")?,
             &arguments.next().context("missing SFTP username")?,
             &arguments.next().context("missing SFTP fingerprint")?,
+        ),
+        Some("sftp-external-file-absent") => sftp_external_file_absent(
+            &arguments.next().context("missing SFTP host")?,
+            &arguments.next().context("missing SFTP username")?,
+            &arguments.next().context("missing SFTP fingerprint")?,
+            &arguments.next().context("missing remote filename")?,
+        ),
+        Some("sftp-external-file-verify-cleanup") => verify_and_cleanup_sftp_external_file(
+            &arguments.next().context("missing SFTP host")?,
+            &arguments.next().context("missing SFTP username")?,
+            &arguments.next().context("missing SFTP fingerprint")?,
+            &arguments.next().context("missing local source path")?,
         ),
         Some("cross") => run_cross(
             &arguments.next().context("missing ADB serial")?,

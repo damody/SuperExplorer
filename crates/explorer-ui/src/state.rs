@@ -4329,7 +4329,9 @@ impl AppViewState {
                 explorer_model::ContextMenuOutcome::Cancelled
                 | explorer_model::ContextMenuOutcome::ReplayRequested { .. }
                 | explorer_model::ContextMenuOutcome::Invoked { .. }
-                | explorer_model::ContextMenuOutcome::Delegated { .. } => None,
+                | explorer_model::ContextMenuOutcome::Delegated { .. }
+                | explorer_model::ContextMenuOutcome::InstallApk { .. }
+                | explorer_model::ContextMenuOutcome::DownloadAdb { .. } => None,
             };
             if let Some((queued_context, request)) = self.queued_context_menu.take()
                 && self.tabs.active_tab().id == queued_context.tab_id
@@ -4583,6 +4585,11 @@ impl AppViewState {
     fn queue_file_operation(&mut self, request: FileOperationRequest) -> ExplorerCommand {
         let tab = self.tabs.active_tab();
         let context = RequestContext::new(tab.id, tab.generation);
+        self.insert_operation_record(&context, request.clone());
+        ExplorerCommand::ExecuteFileOperation { context, request }
+    }
+
+    fn insert_operation_record(&mut self, context: &RequestContext, request: FileOperationRequest) {
         let total_items = operation_item_count(&request);
         let mut record = OperationRecord::queued(context.request_id, request.clone(), total_items);
         let started = record.start().is_ok();
@@ -4590,7 +4597,6 @@ impl AppViewState {
         let inserted = self.operation_center.insert(record);
         debug_assert!(inserted, "request identifiers are unique");
         self.operation_terminal_notice = None;
-        ExplorerCommand::ExecuteFileOperation { context, request }
     }
 
     pub(crate) const fn lock_recovery(&self) -> Option<&LockRecoveryUiState> {
@@ -5621,8 +5627,9 @@ impl AppViewState {
             explorer_model::DragSessionState::Dragging { button, .. } => *button,
             _ => return false,
         };
+        let context = RequestContext::new(tab.id, tab.generation);
         self.pending_drag_command = Some(ExplorerCommand::DataTransfer {
-            context: RequestContext::new(tab.id, tab.generation),
+            context,
             request: explorer_model::DataTransferRequest::BeginDrag {
                 items,
                 allowed_effects: explorer_model::TransferEffects {
@@ -5710,8 +5717,11 @@ impl AppViewState {
             .into_iter()
             .map(LocationDescriptor::file_system)
             .collect::<Vec<_>>();
+        let context = RequestContext::new(tab.id, tab.generation);
+        let request = external_drop_operation_request(&sources, &destination, effect);
+        self.insert_operation_record(&context, request);
         self.pending_drag_command = Some(ExplorerCommand::DataTransfer {
-            context: RequestContext::new(tab.id, tab.generation),
+            context,
             request: explorer_model::DataTransferRequest::DropExternal {
                 sources,
                 destination,
@@ -5737,14 +5747,18 @@ impl AppViewState {
         if !allowed {
             return;
         }
+        let sources = pending
+            .paths
+            .into_iter()
+            .map(LocationDescriptor::file_system)
+            .collect::<Vec<_>>();
+        let context = RequestContext::new(tab.id, tab.generation);
+        let request = external_drop_operation_request(&sources, &pending.destination, effect);
+        self.insert_operation_record(&context, request);
         self.pending_drag_command = Some(ExplorerCommand::DataTransfer {
-            context: RequestContext::new(tab.id, tab.generation),
+            context,
             request: explorer_model::DataTransferRequest::DropExternal {
-                sources: pending
-                    .paths
-                    .into_iter()
-                    .map(LocationDescriptor::file_system)
-                    .collect(),
+                sources,
                 destination: pending.destination,
                 effect,
                 conflict: explorer_model::ConflictDecision::Prompt,
@@ -5833,19 +5847,29 @@ impl AppViewState {
             return None;
         }
         let destination = self.tabs.active_tab().history.current()?.location.clone();
-        let total_items = match &self.clipboard {
-            explorer_model::ClipboardState::Owned { items, .. } => items.len(),
-            explorer_model::ClipboardState::External { item_count, .. } => item_count.unwrap_or(0),
+        let (total_items, mode) = match &self.clipboard {
+            explorer_model::ClipboardState::Owned { items, mode, .. } => (items.len(), *mode),
+            explorer_model::ClipboardState::External { item_count, .. } => {
+                (item_count.unwrap_or(0), explorer_model::ClipboardMode::Copy)
+            }
             explorer_model::ClipboardState::None { .. }
             | explorer_model::ClipboardState::Unsupported { .. } => return None,
         };
         let tab = self.tabs.active_tab();
         let context = RequestContext::new(tab.id, tab.generation);
-        let placeholder = FileOperationRequest {
-            kind: FileOperationKind::Copy {
+        let items = Vec::new();
+        let kind = match mode {
+            explorer_model::ClipboardMode::Copy => FileOperationKind::Copy {
+                items,
+                destination: destination.clone(),
+            },
+            explorer_model::ClipboardMode::Cut => FileOperationKind::Move {
                 items: Vec::new(),
                 destination: destination.clone(),
             },
+        };
+        let placeholder = FileOperationRequest {
+            kind,
             flags: explorer_model::FileOperationFlags::default(),
         };
         let mut record = OperationRecord::queued(context.request_id, placeholder, total_items);
@@ -6397,6 +6421,39 @@ impl AppViewState {
             direction,
             LayoutTokens::WINDOWS_11,
         );
+    }
+}
+
+fn external_drop_operation_request(
+    sources: &[LocationDescriptor],
+    destination: &LocationDescriptor,
+    effect: explorer_model::DragEffect,
+) -> FileOperationRequest {
+    let items = sources
+        .iter()
+        .enumerate()
+        .map(|(index, location)| ItemDescriptor {
+            id: ShellItemId::from_provider_bytes(
+                format!("external-drop-operation-{index}").into_bytes(),
+            )
+            .expect("external drop operation identity is non-empty"),
+            location: location.clone(),
+        })
+        .collect();
+    let kind = if effect == explorer_model::DragEffect::Move {
+        FileOperationKind::Move {
+            items,
+            destination: destination.clone(),
+        }
+    } else {
+        FileOperationKind::Copy {
+            items,
+            destination: destination.clone(),
+        }
+    };
+    FileOperationRequest {
+        kind,
+        flags: explorer_model::FileOperationFlags::default(),
     }
 }
 
@@ -8320,6 +8377,19 @@ mod tests {
         let command = state
             .take_pending_drag_command()
             .expect("folder drop command");
+        let context = command.context().expect("drop context");
+        let record = state
+            .operation_center()
+            .get(context.request_id)
+            .expect("drop is visible before service submission");
+        assert_eq!(
+            record.progress.phase,
+            explorer_model::TransferProgressPhase::Preparing
+        );
+        assert!(matches!(
+            record.request.kind,
+            explorer_model::FileOperationKind::Copy { .. }
+        ));
         assert!(matches!(
             command,
             explorer_model::ExplorerCommand::DataTransfer {
@@ -8339,9 +8409,20 @@ mod tests {
             false,
             explorer_model::TransferEffects::MOVE,
         );
+        let command = state
+            .take_pending_drag_command()
+            .expect("background move drop command");
+        let context = command.context().expect("drop context");
         assert!(matches!(
-            state.take_pending_drag_command(),
-            Some(explorer_model::ExplorerCommand::DataTransfer {
+            state
+                .operation_center()
+                .get(context.request_id)
+                .map(|record| &record.request.kind),
+            Some(explorer_model::FileOperationKind::Move { .. })
+        ));
+        assert!(matches!(
+            command,
+            explorer_model::ExplorerCommand::DataTransfer {
                 request: explorer_model::DataTransferRequest::DropExternal {
                     destination,
                     effect: explorer_model::DragEffect::Move,
@@ -8349,7 +8430,7 @@ mod tests {
                     ..
                 },
                 ..
-            }) if destination == explorer_model::LocationDescriptor::file_system(r"C:\fixture")
+            } if destination == explorer_model::LocationDescriptor::file_system(r"C:\fixture")
         ));
     }
 
@@ -8410,6 +8491,7 @@ mod tests {
         );
         assert!(state.pending_right_drop().is_some());
         assert!(state.take_pending_drag_command().is_none());
+        assert!(state.operation_center().latest().is_none());
         state.resolve_right_drop(explorer_model::DragEffect::None);
         assert!(state.take_pending_drag_command().is_none());
 
@@ -8421,15 +8503,26 @@ mod tests {
             allowed,
         );
         state.resolve_right_drop(explorer_model::DragEffect::Move);
+        let command = state
+            .take_pending_drag_command()
+            .expect("right-drop move command");
+        let context = command.context().expect("right-drop context");
         assert!(matches!(
-            state.take_pending_drag_command(),
-            Some(explorer_model::ExplorerCommand::DataTransfer {
+            state
+                .operation_center()
+                .get(context.request_id)
+                .map(|record| &record.request.kind),
+            Some(explorer_model::FileOperationKind::Move { .. })
+        ));
+        assert!(matches!(
+            command,
+            explorer_model::ExplorerCommand::DataTransfer {
                 request: explorer_model::DataTransferRequest::DropExternal {
                     effect: explorer_model::DragEffect::Move,
                     ..
                 },
                 ..
-            })
+            }
         ));
 
         state.queue_external_drop(
@@ -10415,11 +10508,17 @@ mod tests {
             state.close_tab(source_tab),
             explorer_model::TabCloseOutcome::Closed
         );
-        assert!(
+        let paste = state
+            .begin_paste_request(explorer_model::ConflictDecision::Prompt)
+            .expect("cut paste remains available");
+        let paste_context = paste.context().expect("paste context");
+        assert!(matches!(
             state
-                .begin_paste_request(explorer_model::ConflictDecision::Prompt)
-                .is_some()
-        );
+                .operation_center()
+                .get(paste_context.request_id)
+                .map(|record| &record.request.kind),
+            Some(explorer_model::FileOperationKind::Move { .. })
+        ));
         let _ = state.apply_service_event(explorer_model::ExplorerEvent::ClipboardChanged {
             state: explorer_model::ClipboardState::None { generation: 8 },
         });

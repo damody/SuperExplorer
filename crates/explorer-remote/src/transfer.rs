@@ -440,12 +440,8 @@ impl<'a> TransferEngine<'a> {
         let bytes = match source {
             LocationDescriptor::FileSystem(path) => local_tree_bytes(path).ok()?,
             LocationDescriptor::Virtual(remote) => {
-                self.providers
-                    .resolve(source)
-                    .ok()?
-                    .metadata(remote, cancellation)
-                    .ok()?
-                    .size?
+                let provider = self.providers.resolve(source).ok()?;
+                estimate_remote_tree_bytes(provider.as_ref(), remote, cancellation)?
             }
             _ => return None,
         };
@@ -516,6 +512,59 @@ impl<'a> TransferEngine<'a> {
             _ => bail!("unsupported Shell source in remote transfer"),
         }
     }
+}
+
+fn estimate_remote_tree_bytes(
+    provider: &dyn crate::RemoteProvider,
+    root: &explorer_model::VirtualLocationDescriptor,
+    cancellation: &CancellationToken,
+) -> Option<u64> {
+    let metadata = provider.metadata(root, cancellation).ok()?;
+    match metadata.kind {
+        crate::RemoteEntryKind::File => return metadata.size,
+        crate::RemoteEntryKind::Directory => {}
+        crate::RemoteEntryKind::FileSymlink
+        | crate::RemoteEntryKind::DirectorySymlink
+        | crate::RemoteEntryKind::BrokenSymlink
+        | crate::RemoteEntryKind::CircularSymlink => return None,
+    }
+    let mut total = 0_u64;
+    let mut nodes = 0_usize;
+    let mut pending = vec![(root.clone(), 0_usize)];
+    while let Some((directory, depth)) = pending.pop() {
+        if cancellation.is_cancelled() {
+            return None;
+        }
+        for entry in provider.list(&directory, cancellation).ok()? {
+            nodes = nodes.checked_add(1)?;
+            if !crate::provider::transfer_tree_within_limits(depth, nodes) {
+                return None;
+            }
+            match entry.kind {
+                crate::RemoteEntryKind::File => {
+                    let bytes = entry.size?;
+                    if !crate::provider::transfer_bytes_within_limits(bytes, total) {
+                        return None;
+                    }
+                    total = total.checked_add(bytes)?;
+                    if !crate::provider::transfer_bytes_within_limits(bytes, total) {
+                        return None;
+                    }
+                }
+                crate::RemoteEntryKind::Directory => {
+                    let LocationDescriptor::Virtual(child) = entry.location else {
+                        return None;
+                    };
+                    pending.push((child, depth.checked_add(1)?));
+                }
+                crate::RemoteEntryKind::FileSymlink
+                | crate::RemoteEntryKind::DirectorySymlink
+                | crate::RemoteEntryKind::BrokenSymlink
+                | crate::RemoteEntryKind::CircularSymlink => return None,
+            }
+        }
+    }
+    Some(total)
 }
 
 fn copy_local(
@@ -784,7 +833,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{RemoteEntry, RemoteProvider};
+    use crate::{RemoteEntry, RemoteEntryKind, RemoteMetadata, RemoteProvider};
     use explorer_model::VirtualLocationDescriptor;
 
     struct FakeProvider {
@@ -793,6 +842,102 @@ mod tests {
     }
 
     struct FailingProvider;
+
+    struct TreeProvider {
+        unknown_leaf: bool,
+    }
+
+    impl RemoteProvider for TreeProvider {
+        fn provider_id(&self) -> &'static str {
+            "tree"
+        }
+        fn list(
+            &self,
+            location: &VirtualLocationDescriptor,
+            cancellation: &CancellationToken,
+        ) -> Result<Vec<RemoteEntry>> {
+            if cancellation.is_cancelled() {
+                bail!("cancelled");
+            }
+            let child = |name: &str, kind, size| {
+                let mut descriptor = location.clone();
+                descriptor.components.push(name.to_owned());
+                RemoteEntry {
+                    name: name.to_owned(),
+                    location: LocationDescriptor::Virtual(descriptor),
+                    kind,
+                    size,
+                    unix_mode: None,
+                }
+            };
+            Ok(if location.components == ["root"] {
+                vec![
+                    child("first.bin", RemoteEntryKind::File, Some(10)),
+                    child("nested", RemoteEntryKind::Directory, None),
+                ]
+            } else if location.components == ["root", "nested"] {
+                vec![child(
+                    "second.bin",
+                    RemoteEntryKind::File,
+                    (!self.unknown_leaf).then_some(20),
+                )]
+            } else {
+                Vec::new()
+            })
+        }
+        fn metadata(
+            &self,
+            location: &VirtualLocationDescriptor,
+            _: &CancellationToken,
+        ) -> Result<RemoteMetadata> {
+            Ok(RemoteMetadata {
+                location: LocationDescriptor::Virtual(location.clone()),
+                kind: RemoteEntryKind::Directory,
+                size: None,
+                unix_mode: None,
+                modified_unix_seconds: None,
+            })
+        }
+        fn download(
+            &self,
+            _: &VirtualLocationDescriptor,
+            _: &Path,
+            _: &CancellationToken,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn upload(
+            &self,
+            _: &Path,
+            _: &VirtualLocationDescriptor,
+            _: &CancellationToken,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn create_directory(
+            &self,
+            _: &VirtualLocationDescriptor,
+            _: &CancellationToken,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn rename(
+            &self,
+            _: &VirtualLocationDescriptor,
+            _: &VirtualLocationDescriptor,
+            _: &CancellationToken,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn delete(
+            &self,
+            _: &VirtualLocationDescriptor,
+            _: bool,
+            _: &CancellationToken,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
 
     impl RemoteProvider for FailingProvider {
         fn provider_id(&self) -> &'static str {
@@ -907,6 +1052,45 @@ mod tests {
 
     fn remote(name: &str) -> LocationDescriptor {
         LocationDescriptor::try_virtual("fake", [1; 16], 1, None, vec![name.into()]).unwrap()
+    }
+
+    fn tree_root() -> LocationDescriptor {
+        LocationDescriptor::try_virtual("tree", [3; 16], 1, None, vec!["root".into()]).unwrap()
+    }
+
+    #[test]
+    fn remote_tree_estimator_recurses_and_degrades_unknown_or_cancelled() {
+        let destination = LocationDescriptor::file_system(r"C:\destination");
+        for (unknown_leaf, expected) in [(false, Some(30)), (true, None)] {
+            let mut registry = RemoteProviderRegistry::default();
+            registry
+                .register(Arc::new(TreeProvider { unknown_leaf }))
+                .unwrap();
+            assert_eq!(
+                TransferEngine::new(&registry).estimate_work_bytes(
+                    &tree_root(),
+                    &destination,
+                    &CancellationToken::new(),
+                ),
+                expected
+            );
+        }
+        let mut registry = RemoteProviderRegistry::default();
+        registry
+            .register(Arc::new(TreeProvider {
+                unknown_leaf: false,
+            }))
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        assert_eq!(
+            TransferEngine::new(&registry).estimate_work_bytes(
+                &tree_root(),
+                &destination,
+                &cancellation,
+            ),
+            None
+        );
     }
 
     fn failing_remote(name: &str) -> LocationDescriptor {
