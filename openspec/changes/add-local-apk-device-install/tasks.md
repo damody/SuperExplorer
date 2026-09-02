@@ -79,7 +79,7 @@
 **完成門檻：** Eligible APKs show correct named/disabled/download/empty/loading/error/refresh states; ineligible selections never show the submenu; native menu remains responsive.
 
 - [x] 3.1.1 Implement exact single Local regular case-insensitive `.apk` context eligibility and exclude remote/multi/directory/non-APK inputs.
-- [x] 3.1.2 Add the `Install` submenu while preserving existing Shell/owned commands and menu-session replacement behavior.
+- [x] 3.1.2 Insert the `Install` submenu as the first item followed by a separator while preserving the order of existing Shell/owned commands and menu-session replacement behavior.
 - [x] 3.1.3 Render usable device names, duplicate-name rows, disabled state reasons, loading, empty, error, refresh, and missing-ADB download actions from immutable snapshots.
 - [x] 3.1.4 Bind rows to captured serial/generation and dispatch download/install asynchronously without using labels as identifiers.
 - [x] 3.1.5 Add complete Traditional Chinese, Simplified Chinese, and English strings following the existing localization fallback contract.

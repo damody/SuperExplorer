@@ -5,7 +5,7 @@ The system SHALL add an `Install` submenu only when the context target is exactl
 
 #### Scenario: One local APK is selected
 - **WHEN** the user opens the context menu for exactly one Local regular file ending in `.apk` with any extension casing
-- **THEN** the context menu includes the `Install` submenu without removing unrelated Shell commands
+- **THEN** the first context-menu item is the `Install` submenu, followed by a separator, without removing or reordering the remaining Shell commands
 
 #### Scenario: Input is not an eligible local APK
 - **WHEN** the selection is empty, multiple, a directory, a non-APK file, or belongs to ADB, SFTP, or another virtual provider

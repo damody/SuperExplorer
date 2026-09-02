@@ -34,7 +34,7 @@ The submenu can render disabled offline/unauthorized rows while never using pres
 
 ### Owned APK submenu feeding the existing operation lifecycle
 
-Eligibility is exactly one regular Local file with case-insensitive `.apk`. The owned context-menu layer adds an `Install` submenu without replacing unrelated Shell verbs. It renders loading, missing-tool, empty, error, and device states from the latest snapshot and offers refresh. Selecting an installable device submits a background operation containing the snapshot generation, resolved executable identity, canonical APK path, and serial.
+Eligibility is exactly one regular Local file with case-insensitive `.apk`. The owned context-menu layer inserts an `Install` submenu as the first item, followed by a separator, without replacing or reordering unrelated Shell verbs. It renders loading, missing-tool, empty, error, and device states from the latest snapshot and offers refresh. Selecting an installable device submits a background operation containing the snapshot generation, resolved executable identity, canonical APK path, and serial.
 
 Before spawn, the operation revalidates the local regular file and tool identity. It invokes the process with separate arguments `-s`, serial, `install`, `-r`, and path. No shell command string is constructed. Existing operation status receives pending, running, success, cancelled, timed-out, and failed terminals.
 
