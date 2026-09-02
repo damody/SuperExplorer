@@ -197,6 +197,68 @@ local function validate_executable(file_path, description)
     return installer_components.validate_pe(file_path, description)
 end
 
+local function query_superexplorer_install_directory(logs)
+    for _, view in ipairs({ "64", "32" }) do
+        local log_path = path(logs, "installer-superexplorer-install-dir-reg" .. view .. ".log")
+        local ok = pcall(process.run, {
+            stage = "讀取 SuperExplorer 實際安裝目錄（registry " .. view .. "-bit view）",
+            exe = path(assert(os.getenv("SystemRoot")), "System32", "reg.exe"),
+            args = { "query", "HKLM\\Software\\SuperExplorer", "/v", "InstallDir", "/reg:" .. view },
+            cwd = root,
+            log_path = log_path,
+            echo_output = false,
+        })
+        if ok then
+            local install_dir = read_file(log_path):match("InstallDir%s+REG_SZ%s+([^\r\n]+)")
+            if install_dir and not install_dir:match("^%s*$") then
+                return install_dir:match("^%s*(.-)%s*$")
+            end
+        end
+    end
+    error("安裝完成後無法從HKLM\\Software\\SuperExplorer讀取InstallDir（已檢查64與32-bit view）", 0)
+end
+
+local function sha256(file_path, description, logs, suffix)
+    require_file(file_path, description)
+    local log_path = path(logs, "installer-sha256-" .. suffix .. ".log")
+    process.run({
+        stage = "計算 " .. description .. " SHA-256",
+        exe = path(assert(os.getenv("SystemRoot")), "System32", "certutil.exe"),
+        args = { "-hashfile", file_path, "SHA256" },
+        cwd = root,
+        log_path = log_path,
+        echo_output = false,
+    })
+    for line in read_file(log_path):gmatch("[^\r\n]+") do
+        local compact = line:gsub("%s+", "")
+        if compact:match("^[0-9a-fA-F]+$") and #compact == 64 then return compact:upper() end
+    end
+    error("無法解析 " .. description .. " SHA-256：" .. file_path, 0)
+end
+
+local function verify_installed_superexplorer(superexplorer_inputs, logs)
+    local install_dir = query_superexplorer_install_directory(logs)
+    local required = {
+        { define = "APP_EXE", name = "SuperExplorer.exe", suffix = "superexplorer" },
+        { define = "BROKER_EXE", name = "explorer-extension-broker.exe", suffix = "broker" },
+        { define = "WORKER_EXE", name = "explorer-extension-worker.exe", suffix = "worker" },
+    }
+    for _, binary in ipairs(required) do
+        local source = superexplorer_inputs[binary.define]
+        local installed = path(install_dir, binary.name)
+        local source_hash = sha256(source, "release " .. binary.name, logs, binary.suffix .. "-release")
+        local installed_hash = sha256(installed, "installed " .. binary.name, logs, binary.suffix .. "-installed")
+        if source_hash ~= installed_hash then
+            error(string.format(
+                "安裝版 %s 與本次release不一致：release=%s installed=%s",
+                binary.name, source_hash, installed_hash
+            ), 0)
+        end
+        print(string.format("[驗證] %s SHA-256一致：%s", binary.name, installed_hash))
+    end
+    return path(install_dir, "SuperExplorer.exe")
+end
+
 local function main()
     local options = parse_options()
     local version = commit_version()
@@ -380,7 +442,21 @@ local function main()
     publish.apk(temporary_output, output)
     local installer_size = validate_executable(output, "安裝程式")
 
-    if not options.no_launch then
+    if options.auto_install and not options.no_launch then
+        process.run({
+            stage = "同步安裝 SuperExplorer 測試版本",
+            exe = output,
+            args = { "/S" },
+            cwd = dist,
+            log_path = path(logs, "installer-superexplorer-silent-install.log"),
+        })
+        local installed_executable = verify_installed_superexplorer(superexplorer_inputs, logs)
+        process.start({
+            stage = "啟動已驗證的 SuperExplorer 安裝版",
+            exe = installed_executable,
+            cwd = installed_executable:match("^(.*)[\\/][^\\/]+$"),
+        })
+    elseif not options.no_launch then
         process.start({
             stage = "啟動安裝程式",
             exe = output,
@@ -392,6 +468,8 @@ local function main()
     print(string.format("[完成] 安裝程式：%s（%d 位元組）", output, installer_size))
     if options.no_launch then
         print("[完成] 已略過啟動安裝程式")
+    elseif options.auto_install then
+        print("[完成] 已同步安裝、驗證並啟動本次SuperExplorer測試版本")
     else
         print("[完成] 已啟動本次建置的 " .. options.component .. " 安裝程式")
     end

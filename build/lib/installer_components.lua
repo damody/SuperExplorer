@@ -8,6 +8,7 @@ function M.parse_options(values)
         check = false,
         skip_build = false,
         no_launch = false,
+        auto_install = false,
         component = nil,
         allow_superexplorer_dirty = false,
         allow_superdesktop_dirty = false,
@@ -22,6 +23,8 @@ function M.parse_options(values)
             options.skip_build = true
         elseif value == "--no-launch" then
             options.no_launch = true
+        elseif value == "--auto-install" then
+            options.auto_install = true
         elseif value == "--allow-superexplorer-dirty" then
             options.allow_superexplorer_dirty = true
         elseif value == "--allow-superdesktop-dirty" then
@@ -46,6 +49,9 @@ function M.parse_options(values)
     end
     if options.allow_superexplorer_dirty and options.component ~= "superexplorer" then
         error("--allow-superexplorer-dirty 只能用於 superexplorer 模式", 0)
+    end
+    if options.auto_install and options.component ~= "superexplorer" then
+        error("--auto-install 只能用於 superexplorer 模式", 0)
     end
     if options.allow_superdesktop_dirty and options.component ~= "superdesktop" then
         error("--allow-superdesktop-dirty 只能用於 superdesktop 模式", 0)
