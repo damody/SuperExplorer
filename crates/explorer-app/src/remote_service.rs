@@ -585,6 +585,34 @@ pub struct RemoteExplorerService {
     open_staging: Arc<Mutex<Vec<tempfile::TempDir>>>,
     active_drag_staging:
         Arc<Mutex<std::collections::HashMap<explorer_common::RequestId, ActiveRemoteDrag>>>,
+    active_remote_requests: Arc<
+        Mutex<
+            std::collections::HashMap<
+                explorer_common::RequestId,
+                explorer_model::CancellationToken,
+            >,
+        >,
+    >,
+}
+
+struct ActiveRemoteRequestGuard {
+    request_id: explorer_common::RequestId,
+    active: Arc<
+        Mutex<
+            std::collections::HashMap<
+                explorer_common::RequestId,
+                explorer_model::CancellationToken,
+            >,
+        >,
+    >,
+}
+
+impl Drop for ActiveRemoteRequestGuard {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.active.lock() {
+            active.remove(&self.request_id);
+        }
+    }
 }
 
 struct ActiveRemoteDrag {
@@ -615,6 +643,39 @@ impl RemoteExplorerService {
             clipboard_staging: Arc::new(Mutex::new(None)),
             open_staging: Arc::new(Mutex::new(Vec::new())),
             active_drag_staging: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            active_remote_requests: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        }
+    }
+
+    fn track_remote_request(
+        &self,
+        context: &explorer_model::RequestContext,
+    ) -> Result<ActiveRemoteRequestGuard, ExplorerServiceError> {
+        self.active_remote_requests
+            .lock()
+            .map_err(|_| ExplorerServiceError::Internal)?
+            .insert(context.request_id, context.cancellation.clone());
+        Ok(ActiveRemoteRequestGuard {
+            request_id: context.request_id,
+            active: Arc::clone(&self.active_remote_requests),
+        })
+    }
+
+    fn cancel_remote_request(
+        &self,
+        request_id: explorer_common::RequestId,
+    ) -> Result<bool, ExplorerServiceError> {
+        let cancellation = self
+            .active_remote_requests
+            .lock()
+            .map_err(|_| ExplorerServiceError::Internal)?
+            .get(&request_id)
+            .cloned();
+        if let Some(cancellation) = cancellation {
+            cancellation.cancel();
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
 
@@ -644,9 +705,11 @@ impl RemoteExplorerService {
         location: LocationDescriptor,
     ) -> Result<(), ExplorerServiceError> {
         arm_request_deadline(&context);
+        let active_request = self.track_remote_request(&context)?;
         let providers = Arc::clone(&self.providers);
         let sender = self.sender.clone();
         std::thread::spawn(move || {
+            let _active_request = active_request;
             let outcome = (|| {
                 let LocationDescriptor::Virtual(remote) = &location else {
                     return Err(anyhow::anyhow!("remote location is invalid"));
@@ -706,8 +769,10 @@ impl RemoteExplorerService {
         location: LocationDescriptor,
     ) -> Result<(), ExplorerServiceError> {
         arm_request_deadline(&context);
+        let active_request = self.track_remote_request(&context)?;
         let sender = self.sender.clone();
         std::thread::spawn(move || {
+            let _active_request = active_request;
             let LocationDescriptor::Virtual(remote) = location else {
                 return;
             };
@@ -762,9 +827,11 @@ impl RemoteExplorerService {
         menu_generation: u64,
     ) -> Result<(), ExplorerServiceError> {
         arm_request_deadline(&context);
+        let active_request = self.track_remote_request(&context)?;
         let providers = Arc::clone(&self.providers);
         let sender = self.sender.clone();
         std::thread::spawn(move || {
+            let _active_request = active_request;
             let result = (|| {
                 let LocationDescriptor::Virtual(remote) = &parent else {
                     anyhow::bail!("remote parent is invalid");
@@ -814,9 +881,11 @@ impl RemoteExplorerService {
         kind: FileOperationKind,
     ) -> Result<(), ExplorerServiceError> {
         arm_request_deadline(&context);
+        let active_request = self.track_remote_request(&context)?;
         let providers = Arc::clone(&self.providers);
         let sender = self.sender.clone();
         std::thread::spawn(move || {
+            let _active_request = active_request;
             let result = execute_operation(&providers, &kind, &context, &sender);
             let outcome = match result {
                 Ok(outcome) => outcome,
@@ -926,6 +995,7 @@ impl RemoteExplorerService {
         conflict: explorer_model::ConflictDecision,
     ) -> Result<(), ExplorerServiceError> {
         arm_request_deadline(&context);
+        let active_request = self.track_remote_request(&context)?;
         let internal = self
             .clipboard
             .lock()
@@ -937,6 +1007,7 @@ impl RemoteExplorerService {
         let generation = Arc::clone(&self.clipboard_generation);
         let clipboard_staging = Arc::clone(&self.clipboard_staging);
         std::thread::spawn(move || {
+            let _active_request = active_request;
             // The Windows clipboard is authoritative when another application replaces a
             // previously owned remote clipboard. Retain internal remote cut semantics only when
             // the staged native object carries the matching private ownership token.
@@ -1045,12 +1116,14 @@ impl RemoteExplorerService {
         button: explorer_model::DragButton,
     ) -> Result<(), ExplorerServiceError> {
         arm_request_deadline(&context);
+        let active_request = self.track_remote_request(&context)?;
         let providers = Arc::clone(&self.providers);
         let inner = Arc::clone(&self.inner);
         let staging = Arc::clone(&self.active_drag_staging);
         let sender = self.sender.clone();
         let requested_effect = explorer_shell_win::requested_cross_filesystem_drag_effect();
         std::thread::spawn(move || {
+            let _active_request = active_request;
             let result = (|| {
                 if items.is_empty() {
                     anyhow::bail!("remote drag has no source items");
@@ -1279,10 +1352,12 @@ impl ExplorerService for RemoteExplorerService {
                         conflict,
                     },
             } if Self::is_remote(&destination) => {
+                let active_request = self.track_remote_request(&context)?;
                 let prepared = prepare_remote_external_drop(sources, effect);
                 let providers = Arc::clone(&self.providers);
                 let sender = self.sender.clone();
                 std::thread::spawn(move || {
+                    let _active_request = active_request;
                     let outcome = match prepared {
                         Ok((items, mode)) => transfer_items(
                             &providers,
@@ -1303,6 +1378,13 @@ impl ExplorerService for RemoteExplorerService {
                     let _ = sender.send(ExplorerEvent::OperationFinished { context, outcome });
                 });
                 Ok(())
+            }
+            ExplorerCommand::Cancel { request_id } => {
+                if self.cancel_remote_request(request_id)? {
+                    Ok(())
+                } else {
+                    self.inner.submit(ExplorerCommand::Cancel { request_id })
+                }
             }
             ExplorerCommand::DataTransfer {
                 context,
@@ -1628,10 +1710,10 @@ fn bail_mixed<T>() -> anyhow::Result<T> {
     Err(anyhow::anyhow!("mixed local/remote delete is unsupported"))
 }
 
-struct TransferProgressReporter<'a> {
-    sender: &'a SyncSender<ExplorerEvent>,
-    context: &'a explorer_model::RequestContext,
-    state: Mutex<TransferProgressState>,
+struct TransferProgressReporter {
+    sender: SyncSender<ExplorerEvent>,
+    context: explorer_model::RequestContext,
+    state: Arc<Mutex<TransferProgressState>>,
 }
 
 struct TransferProgressState {
@@ -1642,33 +1724,49 @@ struct TransferProgressState {
     phase: TransferProgressPhase,
     current_item: Option<String>,
     last_emit: std::time::Instant,
-    last_percent: Option<u64>,
     closed: bool,
 }
 
-impl<'a> TransferProgressReporter<'a> {
+impl TransferProgressReporter {
     fn new(
-        sender: &'a SyncSender<ExplorerEvent>,
-        context: &'a explorer_model::RequestContext,
+        sender: &SyncSender<ExplorerEvent>,
+        context: &explorer_model::RequestContext,
         total_items: usize,
         total_bytes: Option<u64>,
     ) -> Self {
+        let state = Arc::new(Mutex::new(TransferProgressState {
+            completed_items: 0,
+            total_items,
+            completed_bytes: 0,
+            total_bytes,
+            phase: TransferProgressPhase::Preparing,
+            current_item: None,
+            last_emit: std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(1))
+                .unwrap_or_else(std::time::Instant::now),
+            closed: false,
+        }));
+        let heartbeat_state = Arc::clone(&state);
+        let heartbeat_sender = sender.clone();
+        let heartbeat_context = context.clone();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                let mut state = heartbeat_state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if state.closed || heartbeat_context.cancellation.is_cancelled() {
+                    break;
+                }
+                if state.phase == TransferProgressPhase::Transferring {
+                    emit_transfer_progress(&heartbeat_sender, &heartbeat_context, &mut state, true);
+                }
+            }
+        });
         Self {
-            sender,
-            context,
-            state: Mutex::new(TransferProgressState {
-                completed_items: 0,
-                total_items,
-                completed_bytes: 0,
-                total_bytes,
-                phase: TransferProgressPhase::Preparing,
-                current_item: None,
-                last_emit: std::time::Instant::now()
-                    .checked_sub(std::time::Duration::from_secs(1))
-                    .unwrap_or_else(std::time::Instant::now),
-                last_percent: None,
-                closed: false,
-            }),
+            sender: sender.clone(),
+            context: context.clone(),
+            state,
         }
     }
 
@@ -1677,7 +1775,7 @@ impl<'a> TransferProgressReporter<'a> {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.emit_locked(&mut state, true);
+        emit_transfer_progress(&self.sender, &self.context, &mut state, true);
     }
 
     fn set_total_bytes(&self, total_bytes: Option<u64>) {
@@ -1689,7 +1787,7 @@ impl<'a> TransferProgressReporter<'a> {
             return;
         }
         state.total_bytes = total_bytes;
-        self.emit_locked(&mut state, true);
+        emit_transfer_progress(&self.sender, &self.context, &mut state, true);
     }
 
     fn start_item(&self, name: String) {
@@ -1701,7 +1799,7 @@ impl<'a> TransferProgressReporter<'a> {
             return;
         }
         state.current_item = Some(name);
-        self.emit_locked(&mut state, true);
+        emit_transfer_progress(&self.sender, &self.context, &mut state, true);
     }
 
     fn add_bytes(&self, delta: u64) {
@@ -1723,7 +1821,7 @@ impl<'a> TransferProgressReporter<'a> {
         {
             state.total_bytes = None;
         }
-        self.emit_locked(&mut state, false);
+        emit_transfer_progress(&self.sender, &self.context, &mut state, false);
     }
 
     fn finish_item(&self) {
@@ -1739,7 +1837,7 @@ impl<'a> TransferProgressReporter<'a> {
             .saturating_add(1)
             .min(state.total_items);
         state.current_item = None;
-        self.emit_locked(&mut state, true);
+        emit_transfer_progress(&self.sender, &self.context, &mut state, true);
     }
 
     fn finalizing(&self) {
@@ -1749,7 +1847,7 @@ impl<'a> TransferProgressReporter<'a> {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.phase = TransferProgressPhase::Finalizing;
         state.current_item = None;
-        self.emit_locked(&mut state, true);
+        emit_transfer_progress(&self.sender, &self.context, &mut state, true);
         state.closed = true;
     }
 
@@ -1760,29 +1858,30 @@ impl<'a> TransferProgressReporter<'a> {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.closed = true;
     }
+}
 
-    fn emit_locked(&self, state: &mut TransferProgressState, force: bool) {
-        let percent = state.total_bytes.and_then(|total| {
-            (total > 0).then(|| state.completed_bytes.saturating_mul(100) / total)
-        });
-        let due = state.last_emit.elapsed() >= std::time::Duration::from_millis(75);
-        if !force && !due && percent == state.last_percent {
-            return;
-        }
-        state.last_emit = std::time::Instant::now();
-        state.last_percent = percent;
-        let _ = self.sender.try_send(ExplorerEvent::OperationProgress {
-            context: self.context.clone(),
-            progress: OperationProgress {
-                completed_items: state.completed_items,
-                total_items: state.total_items,
-                completed_bytes: state.completed_bytes,
-                total_bytes: state.total_bytes,
-                phase: state.phase,
-                current_item: state.current_item.clone(),
-            },
-        });
+fn emit_transfer_progress(
+    sender: &SyncSender<ExplorerEvent>,
+    context: &explorer_model::RequestContext,
+    state: &mut TransferProgressState,
+    force: bool,
+) {
+    let due = state.last_emit.elapsed() >= std::time::Duration::from_millis(200);
+    if !force && !due {
+        return;
     }
+    state.last_emit = std::time::Instant::now();
+    let _ = sender.try_send(ExplorerEvent::OperationProgress {
+        context: context.clone(),
+        progress: OperationProgress {
+            completed_items: state.completed_items,
+            total_items: state.total_items,
+            completed_bytes: state.completed_bytes,
+            total_bytes: state.total_bytes,
+            phase: state.phase,
+            current_item: state.current_item.clone(),
+        },
+    });
 }
 
 fn transfer_items(
@@ -1954,6 +2053,64 @@ fn map_send_error<T>(error: TrySendError<T>) -> ExplorerServiceError {
 mod tests {
     use super::*;
 
+    struct CancelProbeService {
+        cancellations: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl ExplorerService for CancelProbeService {
+        fn submit(&self, command: ExplorerCommand) -> Result<(), ExplorerServiceError> {
+            if matches!(command, ExplorerCommand::Cancel { .. }) {
+                self.cancellations
+                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            }
+            Ok(())
+        }
+
+        fn try_recv(&self) -> Result<Option<ExplorerEvent>, ExplorerServiceError> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn remote_cancel_targets_exact_token_cleans_registry_and_delegates_unknown_requests() {
+        let delegated = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let service = RemoteExplorerService::new(
+            Arc::new(CancelProbeService {
+                cancellations: Arc::clone(&delegated),
+            }),
+            Arc::new(RemoteProviderRegistry::default()),
+        );
+        let context = explorer_model::RequestContext::new(
+            explorer_model::TabId::new(),
+            explorer_model::Generation::new(1),
+        );
+        let guard = service
+            .track_remote_request(&context)
+            .expect("track remote request");
+        service
+            .submit(ExplorerCommand::Cancel {
+                request_id: context.request_id,
+            })
+            .expect("cancel active remote request");
+        assert!(context.cancellation.is_cancelled());
+        assert_eq!(delegated.load(std::sync::atomic::Ordering::Acquire), 0);
+        drop(guard);
+        assert!(
+            !service
+                .active_remote_requests
+                .lock()
+                .unwrap()
+                .contains_key(&context.request_id)
+        );
+
+        service
+            .submit(ExplorerCommand::Cancel {
+                request_id: explorer_common::RequestId::new(),
+            })
+            .expect("delegate unknown cancellation");
+        assert_eq!(delegated.load(std::sync::atomic::Ordering::Acquire), 1);
+    }
+
     #[test]
     fn transfer_progress_reporter_is_monotonic_degrades_unknown_and_rejects_late_callbacks() {
         let (sender, receiver) = std::sync::mpsc::sync_channel(16);
@@ -1965,6 +2122,13 @@ mod tests {
         reporter.preparing();
         reporter.set_total_bytes(Some(100));
         reporter.start_item("payload.bin".to_owned());
+        reporter
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .last_emit = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_millis(201))
+            .expect("test clock can move backwards");
         reporter.add_bytes(40);
         reporter.add_bytes(80);
         reporter.finish_item();
@@ -1990,6 +2154,14 @@ mod tests {
         assert!(progress.iter().any(|value| {
             value.phase == TransferProgressPhase::Transferring && value.completed_bytes == 40
         }));
+        assert_eq!(
+            progress
+                .iter()
+                .filter(|value| value.phase == TransferProgressPhase::Transferring)
+                .count(),
+            2,
+            "the first due byte update and forced item boundary are published; the rapid middle update is coalesced"
+        );
         assert!(progress.windows(2).all(|pair| {
             pair[0].completed_bytes <= pair[1].completed_bytes
                 && pair[0].completed_items <= pair[1].completed_items
@@ -2003,6 +2175,31 @@ mod tests {
         let terminal_progress = progress.last().expect("finalizing progress flush");
         assert_eq!(terminal_progress.phase, TransferProgressPhase::Finalizing);
         assert_eq!(terminal_progress.completed_bytes, 120);
+    }
+
+    #[test]
+    fn transfer_progress_reporter_heartbeats_latest_snapshot_every_two_hundred_ms() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(16);
+        let context = explorer_model::RequestContext::new(
+            explorer_model::TabId::new(),
+            explorer_model::Generation::new(1),
+        );
+        let reporter = TransferProgressReporter::new(&sender, &context, 1, Some(1_000));
+        reporter.start_item("payload.bin".to_owned());
+        reporter.add_bytes(100);
+        let first = receiver
+            .recv_timeout(std::time::Duration::from_millis(50))
+            .expect("initial item boundary");
+        assert!(matches!(first, ExplorerEvent::OperationProgress { .. }));
+        let heartbeat = receiver
+            .recv_timeout(std::time::Duration::from_millis(350))
+            .expect("200 ms heartbeat");
+        let ExplorerEvent::OperationProgress { progress, .. } = heartbeat else {
+            panic!("heartbeat must be progress")
+        };
+        assert_eq!(progress.completed_bytes, 100);
+        assert_eq!(progress.phase, TransferProgressPhase::Transferring);
+        reporter.close();
     }
 
     #[test]

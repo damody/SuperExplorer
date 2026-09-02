@@ -2,6 +2,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    future::Future,
     path::Path,
     sync::{Arc, Mutex},
     time::Duration,
@@ -28,6 +29,32 @@ use unicode_normalization::UnicodeNormalization as _;
 use crate::{RemoteEntry, RemoteEntryKind, RemoteMetadata, RemoteProvider};
 
 const MAX_SYMLINK_HOPS: usize = 40;
+
+async fn await_with_cancellation<T, E, F>(cancellation: &CancellationToken, future: F) -> Result<T>
+where
+    E: std::error::Error + Send + Sync + 'static,
+    F: Future<Output = std::result::Result<T, E>>,
+{
+    ensure_sftp_not_cancelled(cancellation)?;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let sender = Arc::new(Mutex::new(Some(sender)));
+    let registration = cancellation.register(move || {
+        if let Some(sender) = sender
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            let _ = sender.send(());
+        }
+    });
+    let result = tokio::select! {
+        biased;
+        _ = receiver => bail!("SFTP operation cancelled"),
+        result = future => result.map_err(anyhow::Error::new),
+    };
+    drop(registration);
+    result
+}
 
 struct ProfileSecret(String);
 
@@ -678,8 +705,7 @@ async fn download_tree(
         if !crate::provider::transfer_tree_within_limits(depth, visited) {
             bail!("SFTP download tree exceeds safety limits");
         }
-        let metadata = sftp
-            .symlink_metadata(&remote)
+        let metadata = await_with_cancellation(cancellation, sftp.symlink_metadata(&remote))
             .await
             .context("inspect SFTP download source")?;
         if metadata.is_symlink() {
@@ -690,8 +716,7 @@ async fn download_tree(
                 .await
                 .context("create local download directory")?;
             let mut windows_names = HashSet::new();
-            for entry in sftp
-                .read_dir(&remote)
+            for entry in await_with_cancellation(cancellation, sftp.read_dir(&remote))
                 .await
                 .context("enumerate SFTP download directory")?
             {
@@ -715,7 +740,9 @@ async fn download_tree(
         if let Some(parent) = local.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        let mut input = sftp.open(&remote).await.context("open SFTP source")?;
+        let mut input = await_with_cancellation(cancellation, sftp.open(&remote))
+            .await
+            .context("open SFTP source")?;
         let mut output = tokio::fs::File::create(&local)
             .await
             .context("create local destination")?;
@@ -723,7 +750,9 @@ async fn download_tree(
         let mut file_bytes = 0_u64;
         loop {
             ensure_sftp_not_cancelled(cancellation)?;
-            let read = input.read(&mut buffer).await.context("read SFTP source")?;
+            let read = await_with_cancellation(cancellation, input.read(&mut buffer))
+                .await
+                .context("read SFTP source")?;
             if read == 0 {
                 break;
             }
@@ -770,13 +799,13 @@ async fn upload_tree(
             bail!("local symbolic links are not followed during SFTP transfer");
         }
         if metadata.is_dir() {
-            match sftp.create_dir(&remote).await {
+            match await_with_cancellation(cancellation, sftp.create_dir(&remote)).await {
                 Ok(()) => {}
                 Err(error) => {
-                    let existing = sftp
-                        .symlink_metadata(&remote)
-                        .await
-                        .with_context(|| format!("create SFTP directory: {error}"))?;
+                    let existing =
+                        await_with_cancellation(cancellation, sftp.symlink_metadata(&remote))
+                            .await
+                            .with_context(|| format!("create SFTP directory: {error}"))?;
                     if !existing.is_dir() || existing.is_symlink() {
                         return Err(error).context("create SFTP directory");
                     }
@@ -804,8 +833,7 @@ async fn upload_tree(
         let mut input = tokio::fs::File::open(&local)
             .await
             .context("open local upload source")?;
-        let mut output = sftp
-            .create(&remote)
+        let mut output = await_with_cancellation(cancellation, sftp.create(&remote))
             .await
             .context("create SFTP destination")?;
         let mut buffer = vec![0; 64 * 1024];
@@ -824,8 +852,7 @@ async fn upload_tree(
             if !crate::provider::transfer_bytes_within_limits(next_file, next_operation) {
                 bail!("SFTP upload exceeds transfer quota");
             }
-            output
-                .write_all(&buffer[..read])
+            await_with_cancellation(cancellation, output.write_all(&buffer[..read]))
                 .await
                 .context("write SFTP destination")?;
             if let Some(progress) = progress {
@@ -834,7 +861,9 @@ async fn upload_tree(
             file_bytes = next_file;
             operation_bytes = next_operation;
         }
-        output.shutdown().await.context("flush SFTP destination")?;
+        await_with_cancellation(cancellation, output.shutdown())
+            .await
+            .context("flush SFTP destination")?;
     }
     Ok(())
 }

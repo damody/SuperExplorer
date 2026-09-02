@@ -449,6 +449,7 @@ struct ProgressSinkState {
     outcomes: Vec<OperationItemOutcome>,
     last_progress: Option<(u32, u32)>,
     last_emitted_percent: Option<u32>,
+    last_progress_emit: std::time::Instant,
     skipped_items: usize,
     total_items: usize,
 }
@@ -466,6 +467,9 @@ impl ProgressSinkState {
             outcomes: Vec::new(),
             last_progress: None,
             last_emitted_percent: None,
+            last_progress_emit: std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(1))
+                .unwrap_or_else(std::time::Instant::now),
             skipped_items: skipped.len(),
         }
     }
@@ -626,10 +630,13 @@ impl IFileOperationProgressSink_Impl for ProgressSink_Impl {
             .saturating_mul(100)
             .checked_div(total)
             .unwrap_or(100);
-        if state.last_emitted_percent == Some(percent) {
+        if state.last_emitted_percent == Some(percent)
+            || state.last_progress_emit.elapsed() < std::time::Duration::from_millis(200)
+        {
             return Ok(());
         }
         state.last_emitted_percent = Some(percent);
+        state.last_progress_emit = std::time::Instant::now();
         let completed_items = state.skipped_items + state.outcomes.len();
         let total_items = state.total_items;
         drop(state);
