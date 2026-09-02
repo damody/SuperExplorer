@@ -1122,6 +1122,7 @@ pub struct ExplorerRoot {
     bookmark_folder_editor_window_observer: Option<BookmarkFolderEditorWindowObserver>,
     remote_properties_window_observer: Option<RemotePropertiesWindowObserver>,
     remote_symlink_window_observer: Option<RemoteSymlinkWindowObserver>,
+    details_column_menu_popup_observer: Option<DetailsColumnMenuPopupObserver>,
     remote_runtime: Option<RemoteRuntimeState>,
     pending_remote_selection: Option<(
         explorer_model::TabId,
@@ -1187,6 +1188,34 @@ pub type CommandPromptLauncher =
     Arc<dyn Fn(Option<std::path::PathBuf>) -> Result<(), String> + Send + Sync>;
 pub type BookmarkFileLauncher =
     Arc<dyn Fn(explorer_model::LocationDescriptor) -> Result<(), String> + Send + Sync>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DetailsColumnMenuPopupEntry {
+    Item {
+        label: String,
+        checked: bool,
+        enabled: bool,
+    },
+    Separator,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DetailsColumnMenuPopupRequest {
+    pub owner_window: u64,
+    pub screen_x: i32,
+    pub screen_y: i32,
+    pub dark: bool,
+    pub immersive: bool,
+    pub entries: Vec<DetailsColumnMenuPopupEntry>,
+}
+
+pub type DetailsColumnMenuPopupObserver = std::rc::Rc<
+    dyn Fn(
+        DetailsColumnMenuPopupRequest,
+        Vec<ExplorerAction>,
+        &mut gpui::Context<ExplorerRoot>,
+    ) -> bool,
+>;
 pub type SftpAddressLoginObserver =
     Arc<dyn Fn(&str) -> Result<Option<explorer_model::LocationDescriptor>, String> + Send + Sync>;
 type SftpAddressLoginResult = Result<Option<explorer_model::LocationDescriptor>, String>;
@@ -1578,6 +1607,7 @@ impl ExplorerRoot {
             bookmark_folder_editor_window_observer: None,
             remote_properties_window_observer: None,
             remote_symlink_window_observer: None,
+            details_column_menu_popup_observer: None,
             remote_runtime: None,
             pending_remote_selection: None,
             last_window_title: None,
@@ -1742,6 +1772,13 @@ impl ExplorerRoot {
 
     pub fn attach_remote_symlink_window_observer(&mut self, observer: RemoteSymlinkWindowObserver) {
         self.remote_symlink_window_observer = Some(observer);
+    }
+
+    pub fn attach_details_column_menu_popup_observer(
+        &mut self,
+        observer: DetailsColumnMenuPopupObserver,
+    ) {
+        self.details_column_menu_popup_observer = Some(observer);
     }
 
     pub fn attach_remote_runtime_executors(
@@ -3254,6 +3291,15 @@ impl ExplorerRoot {
         self.handle_action(action, source, window, cx);
     }
 
+    pub fn dispatch_details_column_popup_action(
+        &mut self,
+        action: ExplorerAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.handle_action(action, ActionSource::Mouse, window, cx);
+    }
+
     /// Connects deterministic visual data to production read-only Shell assets without replacing
     /// its fixture directory snapshot.
     pub fn attach_service_for_shell_assets(&mut self, service: Arc<dyn ExplorerService>) {
@@ -3390,6 +3436,7 @@ impl ExplorerRoot {
             bookmark_folder_editor_window_observer: None,
             remote_properties_window_observer: None,
             remote_symlink_window_observer: None,
+            details_column_menu_popup_observer: None,
             remote_runtime: None,
             pending_remote_selection: None,
             last_window_title: None,
@@ -3498,6 +3545,7 @@ impl ExplorerRoot {
             bookmark_folder_editor_window_observer: None,
             remote_properties_window_observer: None,
             remote_symlink_window_observer: None,
+            details_column_menu_popup_observer: None,
             remote_runtime: None,
             pending_remote_selection: None,
             last_window_title: None,
@@ -5279,6 +5327,9 @@ impl ExplorerRoot {
     /// Requests cooperative cancellation; the Shell STA flips the shared token immediately and
     /// the progress sink aborts at the next native callback boundary.
     pub fn cancel_file_operation(&mut self, request_id: explorer_common::RequestId) {
+        if !self.state.begin_operation_cancellation(request_id) {
+            return;
+        }
         self.submit_command(explorer_model::ExplorerCommand::Cancel { request_id });
     }
 
@@ -5354,7 +5405,11 @@ impl ExplorerRoot {
     }
 
     fn submit_command(&mut self, command: explorer_model::ExplorerCommand) -> bool {
-        let is_cancellation = matches!(&command, explorer_model::ExplorerCommand::Cancel { .. });
+        let cancel_request_id = match &command {
+            explorer_model::ExplorerCommand::Cancel { request_id } => Some(*request_id),
+            _ => None,
+        };
+        let is_cancellation = cancel_request_id.is_some();
         if let explorer_model::ExplorerCommand::Navigate { context, location }
         | explorer_model::ExplorerCommand::Refresh { context, location } = &command
             && let Some(root) = location.synthetic_root()
@@ -5390,6 +5445,18 @@ impl ExplorerRoot {
             return true;
         }
         let Some(service) = &self.service else {
+            if let Some(request_id) = cancel_request_id {
+                self.state.fail_operation_cancellation(
+                    request_id,
+                    explorer_common::ExplorerError::new(
+                        explorer_common::ExplorerErrorKind::Availability,
+                        "cancel file operation",
+                        true,
+                        "無法取消：檔案服務尚未連線。",
+                        "Explorer service is unavailable",
+                    ),
+                );
+            }
             return false;
         };
         let failed_command = command.clone();
@@ -5416,6 +5483,19 @@ impl ExplorerRoot {
                 &format!("context={context:?}; service endpoint: {error:?}"),
                 Some(file!()),
             );
+            if let Some(request_id) = cancel_request_id {
+                self.state.fail_operation_cancellation(
+                    request_id,
+                    explorer_common::ExplorerError::new(
+                        explorer_common::ExplorerErrorKind::Availability,
+                        "cancel file operation",
+                        true,
+                        format!("無法取消檔案操作：{error:?}"),
+                        format!("service endpoint: {error:?}"),
+                    ),
+                );
+                return false;
+            }
             if let Some(context) = &context
                 && let Some(started) = self.navigation_started.remove(&context.request_id)
             {
@@ -5678,6 +5758,72 @@ impl ExplorerRoot {
         clippy::too_many_lines,
         reason = "the root owns each event and may move external path payloads into the service command"
     )]
+    fn details_column_popup_model(
+        &self,
+        target: &explorer_model::ColumnId,
+    ) -> (Vec<DetailsColumnMenuPopupEntry>, Vec<ExplorerAction>) {
+        let mut entries = Vec::new();
+        let mut actions = Vec::new();
+        let mut push = |label: String, checked: bool, enabled: bool, action: ExplorerAction| {
+            entries.push(DetailsColumnMenuPopupEntry::Item {
+                label,
+                checked,
+                enabled,
+            });
+            actions.push(action);
+        };
+        push(
+            "自動調整此欄寬度".to_owned(),
+            false,
+            true,
+            ExplorerAction::AutoSizeDetailsColumn {
+                column: target.clone(),
+            },
+        );
+        push(
+            "自動調整所有欄寬度".to_owned(),
+            false,
+            true,
+            ExplorerAction::AutoSizeAllDetailsColumns,
+        );
+        if let Some(visuals) = self.folder_size_visuals.as_ref()
+            && visuals.config.descriptor.id == *target
+        {
+            push(
+                "顯示比例列".to_owned(),
+                visuals.config.folder_size_display.shows_bar(),
+                true,
+                ExplorerAction::ToggleFolderSizeProportionalBar,
+            );
+        }
+        for visuals in &self.code_lines_visuals {
+            if visuals.config.descriptor.id == *target {
+                push(
+                    "顯示註解與空白行明細".to_owned(),
+                    visuals.config.display.shows_detail(),
+                    true,
+                    ExplorerAction::ToggleCodeLinesDetail,
+                );
+            }
+        }
+        drop(push);
+        entries.push(DetailsColumnMenuPopupEntry::Separator);
+        let settings = self.state.view_settings();
+        for layout_entry in settings.details_layout.entries() {
+            let Some(descriptor) = self.state.column_registry().get(&layout_entry.id) else {
+                continue;
+            };
+            let column = descriptor.id.clone();
+            entries.push(DetailsColumnMenuPopupEntry::Item {
+                label: descriptor.display_name.clone(),
+                checked: settings.details_column_visible(&column),
+                enabled: column != explorer_model::ColumnId::Name,
+            });
+            actions.push(ExplorerAction::ToggleDetailsColumn(column));
+        }
+        (entries, actions)
+    }
+
     fn handle_action(
         &mut self,
         action: ExplorerAction,
@@ -5966,6 +6112,33 @@ impl ExplorerRoot {
         let ((), measurement) = measure_callback(action.name(), || {
             dispatch_action(&mut self.state, action.clone(), source);
         });
+        if let ExplorerAction::OpenDetailsColumnMenu {
+            column,
+            owner_window,
+            screen_x,
+            screen_y,
+            ..
+        } = &action
+            && let Some(observer) = self.details_column_menu_popup_observer.clone()
+        {
+            let (entries, popup_actions) = self.details_column_popup_model(column);
+            let settings = self.state.view_settings();
+            let request = DetailsColumnMenuPopupRequest {
+                owner_window: *owner_window,
+                screen_x: *screen_x,
+                screen_y: *screen_y,
+                dark: matches!(self.tokens.theme.mode, ThemeMode::Dark),
+                immersive: settings.immersive_native_context_menus,
+                entries,
+            };
+            dispatch_action(
+                &mut self.state,
+                ExplorerAction::CloseDetailsColumnMenu,
+                source,
+            );
+            let _ = observer(request, popup_actions, cx);
+            cx.notify();
+        }
         let directory_facts_demand_after =
             DirectoryFactsDemandV1::from_settings(&self.state.view_settings());
         if directory_facts_demand_before != directory_facts_demand_after {
@@ -8600,6 +8773,8 @@ impl Render for ExplorerRoot {
                         Some(ExplorerAction::CloseDetailsColumnMenu)
                     } else if this.state.extension_command_panel().is_some() {
                         Some(ExplorerAction::CloseExtensionCommandPanel)
+                    } else if this.state.transfer_panel_open() {
+                        Some(ExplorerAction::CloseTransferPanel)
                     } else if this.state.extensions_menu_open() {
                         Some(ExplorerAction::CloseExtensionsMenu)
                     } else if this.state.new_menu_open() {

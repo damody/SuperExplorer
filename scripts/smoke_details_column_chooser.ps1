@@ -10,6 +10,21 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+# The production app now presents Details columns through the same independent native popup as
+# filesystem context menus. Keep the legacy count-column fixture branches below, while routing the
+# ordinary chooser regression through the top-level popup contract.
+if (-not $CountColumnsPresenceMode -and -not $CountColumnsValueMode) {
+    $arguments = @(
+        '-ExecutionPolicy', 'Bypass',
+        '-File', (Join-Path $PSScriptRoot 'smoke_details_column_popup.ps1'),
+        '-Profile', $Profile,
+        '-OutputDirectory', $OutputDirectory
+    )
+    if ($SkipBuild) { $arguments += '-SkipBuild' }
+    & powershell @arguments
+    exit $LASTEXITCODE
+}
 Import-Module (Join-Path $PSScriptRoot 'UitestHeadful.psm1') -Force
 
 $output = [IO.Path]::GetFullPath($OutputDirectory)
@@ -165,10 +180,16 @@ try {
     [void][RustExplorerUitest.Native]::SetWindowPos($context.Hwnd, [IntPtr]::Zero, 40, 40, $initialWidth, 880, 0x0040)
     Start-Sleep -Milliseconds 350
 
-    Invoke-RightClick -Element (Find-DetailsHeader)
+    $clickedHeader = Find-DetailsHeader
+    $clickedPoint = Get-UitestPhysicalPoint -Element $clickedHeader -HorizontalOffset 30
+    Invoke-RightClick -Element $clickedHeader
     $chooser = Find-Chooser
     $windowBounds = $context.Root.Current.BoundingRectangle
     $chooserBounds = $chooser.Current.BoundingRectangle
+    if ([Math]::Abs($chooserBounds.Left - $clickedPoint.X) -gt 36 -or
+        [Math]::Abs($chooserBounds.Top - $clickedPoint.Y) -gt 36) {
+        throw "chooser was not anchored near the right-click point: click=$clickedPoint chooser=$chooserBounds"
+    }
     if ($chooserBounds.Bottom -gt $windowBounds.Bottom + 1) {
         throw "chooser exceeded the window bottom: chooser=$chooserBounds window=$windowBounds"
     }

@@ -529,6 +529,11 @@ impl RenderOnce for ExplorerWindow {
         let session_reset_confirmation = self.state.session_reset_confirmation();
         let permanent_delete_count = self.state.permanent_delete_confirmation_count();
         let permanent_delete_focus = self.state.permanent_delete_confirmation_focus();
+        let transfer_panel_dismiss = self
+            .state
+            .transfer_panel_open()
+            .then(|| self.on_action.clone())
+            .flatten();
         let lock_recovery = self.state.lock_recovery().cloned();
         let bookmark_folder_dismiss = self
             .state
@@ -546,6 +551,11 @@ impl RenderOnce for ExplorerWindow {
         div()
             .id(EXPLORER_WINDOW_ID)
             .debug_selector(|| EXPLORER_WINDOW_ID.to_owned())
+            .when_some(transfer_panel_dismiss, |element, callback| {
+                element.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    callback(&ExplorerAction::CloseTransferPanel, window, cx)
+                })
+            })
             .size_full()
             .flex()
             .flex_col()
@@ -681,6 +691,7 @@ impl RenderOnce for ExplorerWindow {
                                 thumbnail_icon_keys,
                                 self.shell_icon_dpi,
                                 self.state.details_column_menu(),
+                                self.state.details_column_menu_anchor(),
                                 self.state.details_filter_menu(),
                                 self.state.active_details_filters(),
                                 explorer_model::ColumnId::BUILT_INS
@@ -5099,6 +5110,14 @@ impl RenderOnce for CommandBar {
         let extensions_open = self.state.extensions_menu_open();
         let tortoise_git_available = self.state.tortoise_git_available();
         let loaded_extension_summary = self.state.loaded_extension_summary().map(str::to_owned);
+        let transfer_panel_open = self.state.transfer_panel_open();
+        let active_transfer_count = self.state.operation_center().active_transfer_count();
+        let transfer_records = self
+            .state
+            .operation_center()
+            .records_newest_first()
+            .cloned()
+            .collect::<Vec<_>>();
         let extension_commands = self
             .state
             .extensions()
@@ -5304,7 +5323,188 @@ impl RenderOnce for CommandBar {
                     .into_any_element()
                 }),
             ))
+            .child(div().flex_1())
+            .child(
+                div()
+                    .relative()
+                    .child(semantic_button_with_popup(
+                        "command-transfer-center",
+                        "傳輸",
+                        Some(ExplorerIcon::Details),
+                        None,
+                        Some(ExplorerAction::ToggleTransferPanel),
+                        true,
+                        self.tokens,
+                        self.on_action.clone(),
+                        transfer_panel_open.then(|| {
+                            transfer_center_panel(
+                                self.tokens,
+                                transfer_records,
+                                &self.state,
+                                self.on_action.clone(),
+                            )
+                            .into_any_element()
+                        }),
+                    ))
+                    .when(active_transfer_count > 0, |element| {
+                        element.child(
+                            div()
+                                .id("transfer-active-badge")
+                                .absolute()
+                                .top(px(0.0))
+                                .right(px(0.0))
+                                .min_w(px(16.0))
+                                .h(px(16.0))
+                                .px(px(4.0))
+                                .rounded(px(8.0))
+                                .bg(self.tokens.theme.colors.accent.to_gpui())
+                                .text_color(self.tokens.theme.colors.surface.to_gpui())
+                                .text_size(px(10.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .when_some(self.on_action.clone(), |badge, callback| {
+                                    badge.on_click(move |_, window, cx| {
+                                        cx.stop_propagation();
+                                        callback(&ExplorerAction::ToggleTransferPanel, window, cx);
+                                    })
+                                })
+                                .child(active_transfer_count.to_string()),
+                        )
+                    }),
+            )
     }
+}
+
+fn operation_navigation_location(
+    record: &explorer_model::OperationRecord,
+) -> Option<explorer_model::LocationDescriptor> {
+    match &record.request.kind {
+        explorer_model::FileOperationKind::Copy { destination, .. }
+        | explorer_model::FileOperationKind::Move { destination, .. } => Some(destination.clone()),
+        explorer_model::FileOperationKind::CreateFolder { parent, .. }
+        | explorer_model::FileOperationKind::CreateItem { parent, .. } => Some(parent.clone()),
+        explorer_model::FileOperationKind::Rename { item, .. }
+        | explorer_model::FileOperationKind::SetUnixMode { item, .. } => {
+            Some(item.location.clone())
+        }
+        explorer_model::FileOperationKind::RecycleDelete { items }
+        | explorer_model::FileOperationKind::PermanentDelete { items, .. }
+        | explorer_model::FileOperationKind::CreateShortcut { items } => {
+            items.first().map(|item| item.location.clone())
+        }
+    }
+}
+
+fn transfer_center_panel(
+    tokens: UiTokens,
+    records: Vec<explorer_model::OperationRecord>,
+    state: &AppViewState,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let colors = tokens.theme.colors;
+    let empty = records.is_empty();
+    let rows = records.into_iter().map(|record| {
+        let cancelling = state.operation_is_cancelling(record.id);
+        let message = operation_display_message(&record, cancelling);
+        let ratio = record
+            .progress
+            .total_bytes
+            .filter(|total| *total > 0)
+            .map(|total| (record.progress.completed_bytes as f32 / total as f32).clamp(0.0, 1.0));
+        let cancel = (!record.phase.is_terminal()).then_some(semantic_button(
+            "transfer-row-cancel",
+            "Cancel file operation",
+            Some(ExplorerIcon::Close),
+            None,
+            (!cancelling).then_some(ExplorerAction::CancelOperation {
+                request_id: record.id,
+            }),
+            !cancelling,
+            tokens,
+            on_action.clone(),
+        ));
+        let open = record
+            .phase
+            .is_terminal()
+            .then(|| operation_navigation_location(&record))
+            .flatten()
+            .map(|location| {
+                semantic_button(
+                    "transfer-row-open",
+                    "Open transfer location",
+                    Some(ExplorerIcon::Chevron),
+                    None,
+                    Some(ExplorerAction::ActivateNavigationItem { location }),
+                    true,
+                    tokens,
+                    on_action.clone(),
+                )
+            });
+        div()
+            .id(format!("transfer-row-{:?}", record.id))
+            .p(px(10.0))
+            .border_b(px(1.0))
+            .border_color(colors.divider.to_gpui())
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .child(message)
+                    .when_some(ratio, |element, ratio| {
+                        element.child(
+                            div()
+                                .h(px(4.0))
+                                .w_full()
+                                .rounded(px(2.0))
+                                .overflow_hidden()
+                                .bg(colors.control_fill.to_gpui())
+                                .child(
+                                    div()
+                                        .h_full()
+                                        .w(relative(ratio))
+                                        .rounded(px(2.0))
+                                        .bg(colors.accent.to_gpui()),
+                                ),
+                        )
+                    }),
+            )
+            .when_some(cancel, ParentElement::child)
+            .when_some(open, ParentElement::child)
+    });
+    div()
+        .id("transfer-center-panel")
+        .role(Role::Menu)
+        .aria_label("傳輸")
+        .occlude()
+        .w(px(520.0))
+        .max_h(px(560.0))
+        .overflow_y_scroll()
+        .rounded(px(10.0))
+        .border(px(1.0))
+        .border_color(colors.divider.to_gpui())
+        .bg(colors.surface.to_gpui())
+        .child(
+            div()
+                .p(px(12.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child("傳輸"),
+        )
+        .when(empty, |element| {
+            element.child(
+                div()
+                    .p(px(16.0))
+                    .text_color(colors.text_secondary.to_gpui())
+                    .child("本次執行期間尚無檔案操作"),
+            )
+        })
+        .children(rows)
 }
 
 #[allow(
@@ -8456,6 +8656,7 @@ pub struct FileViewHost {
     thumbnail_icon_keys: HashSet<explorer_model::ShellIconKey>,
     shell_icon_dpi: u16,
     details_column_menu: Option<explorer_model::ColumnId>,
+    details_column_menu_anchor: Option<(f32, f32)>,
     details_filter_menu: Option<explorer_model::ColumnId>,
     details_filters: crate::file_view::DetailsFilters,
     details_filter_options:
@@ -8503,6 +8704,7 @@ impl FileViewHost {
         thumbnail_icon_keys: HashSet<explorer_model::ShellIconKey>,
         shell_icon_dpi: u16,
         details_column_menu: Option<explorer_model::ColumnId>,
+        details_column_menu_anchor: Option<(f32, f32)>,
         details_filter_menu: Option<explorer_model::ColumnId>,
         details_filters: crate::file_view::DetailsFilters,
         details_filter_options: HashMap<
@@ -8548,6 +8750,7 @@ impl FileViewHost {
             thumbnail_icon_keys,
             shell_icon_dpi,
             details_column_menu,
+            details_column_menu_anchor,
             details_filter_menu,
             details_filters,
             details_filter_options,
@@ -9121,6 +9324,12 @@ impl RenderOnce for FileViewHost {
             }));
         let header_action = on_action.clone();
         let column_menu = self.details_column_menu;
+        let column_menu_anchor = self.details_column_menu_anchor.map(|(x, y)| {
+            (
+                (x - self.file_origin_x + 4.0).max(0.0),
+                (y - self.file_origin_y + 4.0).max(0.0),
+            )
+        });
         let column_menu_action = on_action.clone();
         let filter_menu_dismiss = on_action.clone();
         let column_menu_dismiss = on_action.clone();
@@ -10535,6 +10744,7 @@ impl RenderOnce for FileViewHost {
                 .child(details_column_menu(
                     self.tokens,
                     target,
+                    column_menu_anchor,
                     view_settings,
                     &column_registry,
                     folder_size_visuals,
@@ -11800,6 +12010,7 @@ fn this_pc_details_header(tokens: UiTokens) -> gpui::AnyElement {
 fn details_column_menu(
     tokens: UiTokens,
     target: explorer_model::ColumnId,
+    anchor: Option<(f32, f32)>,
     settings: explorer_model::ViewSettings,
     registry: &explorer_model::ColumnRegistry,
     folder_size_visuals: Option<crate::folder_size_column::FolderSizeColumnVisuals>,
@@ -11810,14 +12021,18 @@ fn details_column_menu(
     let current = on_action.clone();
     let all = on_action.clone();
     let target_for_auto_size = target.clone();
+    let (left, top) = anchor.unwrap_or((
+        tokens.layout.control_padding_horizontal.value(),
+        tokens.layout.details_header_height.value() + 4.0,
+    ));
     div()
         .id("details-column-menu")
         .role(Role::Menu)
         .aria_label("Choose details columns")
         .absolute()
-        .top(px(tokens.layout.details_header_height.value() + 4.0))
+        .top(px(top))
         .bottom(px(tokens.layout.content_spacing.value()))
-        .left(px(tokens.layout.control_padding_horizontal.value()))
+        .left(px(left))
         .w(px(crate::layout::feature::DETAILS_COLUMN_MENU_WIDTH.value()))
         .max_h(px(tokens.layout.menu_max_height.value()))
         .overflow_x_hidden()
@@ -12203,11 +12418,18 @@ fn details_header_column(
         })
         .hover(move |style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
         .when_some(context_callback, move |element, callback| {
-            element.on_mouse_down(MouseButton::Right, move |_, window, cx| {
+            element.on_mouse_down(MouseButton::Right, move |event, window, cx| {
                 cx.stop_propagation();
+                let (owner_window, screen_x, screen_y) =
+                    context_menu_coordinates(event.position, window);
                 callback(
                     &ExplorerAction::OpenDetailsColumnMenu {
                         column: context_column.clone(),
+                        owner_window,
+                        screen_x,
+                        screen_y,
+                        pointer_x: f32::from(event.position.x),
+                        pointer_y: f32::from(event.position.y),
                     },
                     window,
                     cx,
@@ -12283,10 +12505,17 @@ fn details_header_column(
                     })
                 })
                 .when_some(sort_context_callback, move |element, callback| {
-                    element.on_mouse_down(MouseButton::Right, move |_, window, cx| {
+                    element.on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                        let (owner_window, screen_x, screen_y) =
+                            context_menu_coordinates(event.position, window);
                         callback(
                             &ExplorerAction::OpenDetailsColumnMenu {
                                 column: sort_context_column.clone(),
+                                owner_window,
+                                screen_x,
+                                screen_y,
+                                pointer_x: f32::from(event.position.x),
+                                pointer_y: f32::from(event.position.y),
                             },
                             window,
                             cx,
@@ -12629,6 +12858,10 @@ fn operation_message(record: &explorer_model::OperationRecord) -> String {
                 explorer_model::TransferProgressPhase::Finalizing => "完成處理中",
             };
             let bytes = format_transfer_bytes(record.progress.completed_bytes);
+            let speed = record
+                .bytes_per_second()
+                .map(|value| format!("｜{}", format_transfer_speed(value)))
+                .unwrap_or_default();
             match record.progress.total_bytes {
                 Some(0) => format!(
                     "{summary}｜{phase}｜進度 {}/{} 項目",
@@ -12643,14 +12876,14 @@ fn operation_message(record: &explorer_model::OperationRecord) -> String {
                         .unwrap_or(0)
                         .min(99);
                     format!(
-                        "{summary}｜{phase} {percent}%（{bytes} / {}）｜進度 {}/{} 項目",
+                        "{summary}｜{phase} {percent}%（{bytes} / {}）{speed}｜進度 {}/{} 項目",
                         format_transfer_bytes(total),
                         record.progress.completed_items,
                         record.progress.total_items
                     )
                 }
                 None => format!(
-                    "{summary}｜{phase} {bytes}｜進度 {}/{} 項目",
+                    "{summary}｜{phase} {bytes}{speed}｜進度 {}/{} 項目",
                     record.progress.completed_items, record.progress.total_items
                 ),
             }
@@ -12681,6 +12914,14 @@ fn operation_message(record: &explorer_model::OperationRecord) -> String {
     }
 }
 
+fn operation_display_message(record: &explorer_model::OperationRecord, cancelling: bool) -> String {
+    if cancelling && !record.phase.is_terminal() {
+        format!("{}｜正在取消", operation_request_summary(record))
+    } else {
+        operation_message(record)
+    }
+}
+
 fn format_transfer_bytes(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut value = bytes as f64;
@@ -12691,6 +12932,21 @@ fn format_transfer_bytes(bytes: u64) -> String {
     }
     if unit == 0 {
         format!("{bytes} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+fn format_transfer_speed(bytes_per_second: f64) -> String {
+    const UNITS: [&str; 4] = ["B/s", "KB/s", "MB/s", "GB/s"];
+    let mut value = bytes_per_second.max(0.0);
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{value:.0} {}", UNITS[unit])
     } else {
         format!("{value:.1} {}", UNITS[unit])
     }
@@ -12806,7 +13062,7 @@ impl RenderOnce for OperationCenter {
         let latest = self
             .state
             .operation_center()
-            .latest()
+            .foreground()
             .cloned()
             .and_then(|record| {
                 operation_message_opacity(record.phase.is_terminal(), terminal_elapsed)
@@ -12823,7 +13079,8 @@ impl RenderOnce for OperationCenter {
                 "normal",
             ))
             .when_some(latest, |element, (record, opacity)| {
-                let summary = operation_message(&record);
+                let cancelling = self.state.operation_is_cancelling(record.id);
+                let summary = operation_display_message(&record, cancelling);
                 let progress_ratio = if matches!(
                     record.terminal,
                     Some(explorer_model::OperationTerminal::Finished)
@@ -12848,18 +13105,26 @@ impl RenderOnce for OperationCenter {
                     explorer_model::FileOperationKind::Copy { .. }
                         | explorer_model::FileOperationKind::Move { .. }
                 );
-                let cancel = (!record.phase.is_terminal()).then_some(semantic_button(
-                    "operation-cancel",
-                    "Cancel file operation",
-                    Some(ExplorerIcon::Close),
-                    Some("Cancel"),
-                    Some(ExplorerAction::CancelOperation {
-                        request_id: record.id,
-                    }),
-                    true,
-                    self.tokens,
-                    self.on_action.clone(),
-                ));
+                let cancel = (!record.phase.is_terminal()).then(|| {
+                    div()
+                        .id("operation-cancel-region")
+                        .w(px(250.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .child(semantic_button(
+                            "operation-cancel",
+                            "Cancel file operation",
+                            Some(ExplorerIcon::Close),
+                            Some(if cancelling { "正在取消" } else { "Cancel" }),
+                            (!cancelling).then_some(ExplorerAction::CancelOperation {
+                                request_id: record.id,
+                            }),
+                            !cancelling,
+                            self.tokens,
+                            self.on_action.clone(),
+                        ))
+                });
                 let outcome_rows = record
                     .terminal
                     .as_ref()
@@ -12883,33 +13148,63 @@ impl RenderOnce for OperationCenter {
                     .border_b(px(self.tokens.layout.focus_stroke.value()))
                     .border_color(colors.divider.to_gpui())
                     .bg(colors.subtle_surface.to_gpui())
-                    .child(summary)
-                    .when_some(progress_ratio, |element, ratio| {
-                        element.child(
-                            div()
-                                .id("operation-byte-progress")
-                                .absolute()
-                                .left(px(0.0))
-                                .bottom(px(0.0))
-                                .h(px(3.0))
-                                .w(relative(ratio))
-                                .bg(colors.accent.to_gpui()),
-                        )
-                    })
-                    .when(indeterminate, |element| {
-                        element.child(
-                            div()
-                                .id("operation-indeterminate-progress")
-                                .absolute()
-                                .left(px(0.0))
-                                .bottom(px(0.0))
-                                .h(px(3.0))
-                                .w_full()
-                                .opacity(0.35)
-                                .bg(colors.accent.to_gpui()),
-                        )
-                    })
-                    .when_some(cancel, ParentElement::child)
+                    .child(
+                        div()
+                            .id("operation-progress-layout")
+                            .flex()
+                            .items_center()
+                            .when_some(cancel, ParentElement::child)
+                            .child(
+                                div()
+                                    .id("operation-progress-region")
+                                    .relative()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.0))
+                                    .child(summary)
+                                    .when(progress_ratio.is_some() || indeterminate, |element| {
+                                        element.child(
+                                            div()
+                                                .id("operation-progress-track")
+                                                .relative()
+                                                .h(px(4.0))
+                                                .w_full()
+                                                .rounded(px(2.0))
+                                                .overflow_hidden()
+                                                .bg(colors.control_fill.to_gpui())
+                                                .when_some(progress_ratio, |track, ratio| {
+                                                    track.child(
+                                                        div()
+                                                            .id("operation-byte-progress")
+                                                            .absolute()
+                                                            .left(px(0.0))
+                                                            .top(px(0.0))
+                                                            .h_full()
+                                                            .w(relative(ratio))
+                                                            .rounded(px(2.0))
+                                                            .bg(colors.accent.to_gpui()),
+                                                    )
+                                                })
+                                                .when(indeterminate, |track| {
+                                                    track.child(
+                                                        div()
+                                                            .id("operation-indeterminate-progress")
+                                                            .absolute()
+                                                            .left(relative(0.12))
+                                                            .top(px(0.0))
+                                                            .h_full()
+                                                            .w(relative(0.32))
+                                                            .rounded(px(2.0))
+                                                            .bg(colors.accent.to_gpui()),
+                                                    )
+                                                }),
+                                        )
+                                    }),
+                            ),
+                    )
                     .children(outcome_rows)
             })
     }
@@ -14273,11 +14568,12 @@ mod tests {
         breadcrumb_location_shell_texture, builtin_count_display, client_to_screen_point,
         context_menu_visual_tokens, details_name_column_contains, editable_input_colors,
         file_view_background_context_hit, file_view_local_pointer, format_explorer_size,
-        is_generic_breadcrumb_folder_icon_key, localized_search_placeholder, marquee_content_rect,
-        navigation_item_shell_texture, navigation_shell_texture, new_tab_button_background,
-        operation_location_text, operation_message, operation_message_opacity,
-        operation_outcome_message, operation_request_summary, remote_context_menu_position,
-        remote_menu_commands, select_file_row_shell_icon, tab_background,
+        format_transfer_speed, is_generic_breadcrumb_folder_icon_key, localized_search_placeholder,
+        marquee_content_rect, navigation_item_shell_texture, navigation_shell_texture,
+        new_tab_button_background, operation_display_message, operation_location_text,
+        operation_message, operation_message_opacity, operation_outcome_message,
+        operation_request_summary, remote_context_menu_position, remote_menu_commands,
+        select_file_row_shell_icon, tab_background,
     };
     use crate::{UiTokens, actions::ExplorerAction, theme::ThemeTokens};
     use gpui::WindowControlArea;
@@ -14363,6 +14659,7 @@ mod tests {
         assert!(summary.contains("sftp://45.32.49.125/home/linuxuser"));
         assert!(!summary.contains("password"));
         assert!(operation_message(&record).contains("｜準備複製 "));
+        assert!(operation_display_message(&record, true).ends_with("｜正在取消"));
         record
             .update_progress(explorer_model::OperationProgress {
                 completed_items: 0,
@@ -14378,6 +14675,35 @@ mod tests {
             .finish(explorer_model::OperationTerminal::Finished)
             .expect("copy finishes");
         assert!(operation_message(&record).starts_with("複製完成｜"));
+    }
+
+    #[test]
+    fn operation_surface_uses_fixed_cancel_and_remaining_progress_regions() {
+        let source = include_str!("chrome.rs");
+        assert!(source.contains(".id(\"operation-cancel-region\")"));
+        assert!(source.contains(".w(px(250.0))"));
+        assert!(source.contains(".id(\"operation-progress-region\")"));
+        assert!(source.contains(".flex_1()"));
+        assert!(source.contains(".min_w_0()"));
+        assert!(source.contains(".id(\"operation-progress-track\")"));
+        assert!(source.contains(".h(px(4.0))"));
+        assert!(source.contains(".rounded(px(2.0))"));
+        assert!(source.contains(".id(\"operation-indeterminate-progress\")"));
+        assert!(source.contains(".w(relative(0.32))"));
+    }
+
+    #[test]
+    fn transfer_speed_and_session_panel_follow_selected_hybrid_design() {
+        assert_eq!(format_transfer_speed(512.0), "512 B/s");
+        assert_eq!(format_transfer_speed(1_572_864.0), "1.5 MB/s");
+        let source = include_str!("chrome.rs");
+        assert!(source.contains(".foreground()"));
+        assert!(source.contains("command-transfer-center"));
+        assert!(source.contains("transfer-active-badge"));
+        assert!(source.contains("transfer-center-panel"));
+        assert!(source.contains("records_newest_first"));
+        assert!(source.contains("transfer-row-cancel"));
+        assert!(source.contains("Open transfer location"));
     }
 
     #[test]
