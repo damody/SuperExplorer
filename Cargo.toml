@@ -53,6 +53,7 @@ mlua = { version = "0.11.6", features = ["async", "lua54", "send", "serialize", 
 globset = "0.4.16"
 notify = "8.2.0"
 reqwest = { version = "0.12.22", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+zip = { version = "4.6", default-features = false, features = ["deflate"] }
 russh = "0.48"
 russh-sftp = "2.0"
 rpassword = "7.4"

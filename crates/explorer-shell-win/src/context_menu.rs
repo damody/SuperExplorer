@@ -58,14 +58,14 @@ use windows::{
                 GA_ROOT, GWLP_USERDATA, GetAncestor, GetClassNameW, GetCursorPos, GetMenuItemCount,
                 GetMenuItemID, GetMenuStringW, GetSubMenu, GetWindowLongPtrW, GetWindowRect,
                 GetWindowThreadProcessId, HHOOK, HMENU, IsWindow, IsWindowVisible, MF_BYPOSITION,
-                MF_SEPARATOR, MF_STRING, OBJID_WINDOW, PostMessageW, RegisterClassW,
-                SPI_GETHIGHCONTRAST, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
-                SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, SetWindowsHookExW,
-                SystemParametersInfoW, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, TPM_TOPALIGN,
-                TrackPopupMenuEx, UnhookWindowsHookEx, WH_MOUSE_LL, WINDOW_EX_STYLE,
-                WINEVENT_INCONTEXT, WM_CANCELMODE, WM_DRAWITEM, WM_INITMENUPOPUP, WM_MEASUREITEM,
-                WM_MENUCHAR, WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WNDCLASSW, WS_POPUP,
-                WindowFromPoint,
+                MF_DISABLED, MF_POPUP, MF_SEPARATOR, MF_STRING, OBJID_WINDOW, PostMessageW,
+                RegisterClassW, SPI_GETHIGHCONTRAST, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOSIZE,
+                SWP_NOZORDER, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
+                SetWindowsHookExW, SystemParametersInfoW, TPM_LEFTALIGN, TPM_RETURNCMD,
+                TPM_RIGHTBUTTON, TPM_TOPALIGN, TrackPopupMenuEx, UnhookWindowsHookEx, WH_MOUSE_LL,
+                WINDOW_EX_STYLE, WINEVENT_INCONTEXT, WM_CANCELMODE, WM_DRAWITEM, WM_INITMENUPOPUP,
+                WM_MEASUREITEM, WM_MENUCHAR, WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WNDCLASSW,
+                WS_POPUP, WindowFromPoint,
             },
         },
     },
@@ -517,6 +517,7 @@ pub(crate) fn show(request: &ContextMenuRequest) -> Result<ContextMenuOutcome, E
         matches!(request.target, ShellContextMenuTarget::Items { .. }),
         profile,
     )?;
+    let apk_devices = local_apk_devices(&request.target);
     let item_menu = matches!(request.target, ShellContextMenuTarget::Items { .. });
     if item_menu || request.paste_available {
         let first_custom_id = COMMAND_FIRST
@@ -557,6 +558,71 @@ pub(crate) fn show(request: &ContextMenuRequest) -> Result<ContextMenuOutcome, E
                 )
             })?;
         }
+    }
+    let apk_first_id = COMMAND_FIRST
+        .saturating_add(u32::try_from(command_count).unwrap_or(COMMAND_LAST - COMMAND_FIRST))
+        .saturating_add(u32::from(request.paste_available))
+        .saturating_add(u32::from(item_menu));
+    if let Some(menu_data) = &apk_devices {
+        let submenu = unsafe { CreatePopupMenu() }.map_err(|error| {
+            menu_error("create APK submenu", "無法建立安裝選單", &error.to_string())
+        })?;
+        if matches!(menu_data, ApkMenuData::MissingTool) {
+            unsafe {
+                AppendMenuW(
+                    submenu,
+                    MF_STRING,
+                    apk_first_id as usize,
+                    w!("下載並安裝 Google 官方 ADB…"),
+                )
+            }
+            .map_err(|error| {
+                menu_error(
+                    "append ADB download",
+                    "無法建立 ADB 下載命令",
+                    &error.to_string(),
+                )
+            })?;
+        } else if let ApkMenuData::Devices(devices) = menu_data {
+            if devices.is_empty() {
+                unsafe {
+                    AppendMenuW(
+                        submenu,
+                        MF_STRING | MF_DISABLED,
+                        apk_first_id as usize,
+                        w!("未偵測到裝置"),
+                    )
+                }
+                .map_err(|error| {
+                    menu_error(
+                        "append empty APK device state",
+                        "無法建立裝置命令",
+                        &error.to_string(),
+                    )
+                })?;
+            }
+            for (index, device) in devices.iter().enumerate() {
+                let id = apk_first_id.saturating_add(u32::try_from(index).unwrap_or(u32::MAX));
+                let label = if device.is_installable() {
+                    device.display_name().to_owned()
+                } else {
+                    format!("{} ({:?})", device.display_name(), device.state)
+                };
+                let wide = label.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+                let flags = if device.is_installable() {
+                    MF_STRING
+                } else {
+                    MF_STRING | MF_DISABLED
+                };
+                unsafe { AppendMenuW(submenu, flags, id as usize, PCWSTR(wide.as_ptr())) }
+                    .map_err(|error| {
+                        menu_error("append APK device", "無法建立裝置命令", &error.to_string())
+                    })?;
+            }
+        }
+        unsafe { AppendMenuW(popup.get(), MF_POPUP, submenu.0 as usize, w!("安裝")) }.map_err(
+            |error| menu_error("append APK submenu", "無法建立安裝選單", &error.to_string()),
+        )?;
     }
     if started.elapsed() > Duration::from_millis(u64::from(request.deadline_ms.max(1))) {
         return Err(menu_error(
@@ -692,6 +758,26 @@ pub(crate) fn show(request: &ContextMenuRequest) -> Result<ContextMenuOutcome, E
         )
     })?;
     let _ = state.transition(ContextMenuSessionState::Invoking);
+    if let Some(menu_data) = apk_devices
+        && command_id >= apk_first_id
+    {
+        let index = usize::try_from(command_id - apk_first_id).unwrap_or(usize::MAX);
+        let _ = state.transition(ContextMenuSessionState::Finished);
+        let _ = state.release();
+        if matches!(menu_data, ApkMenuData::MissingTool) && index == 0 {
+            return Ok(ContextMenuOutcome::DownloadAdb {
+                target: request.target.clone(),
+            });
+        }
+        if let ApkMenuData::Devices(devices) = menu_data {
+            if let Some(device) = devices.get(index).filter(|device| device.is_installable()) {
+                return Ok(ContextMenuOutcome::InstallApk {
+                    serial: device.serial.clone(),
+                    target: request.target.clone(),
+                });
+            }
+        }
+    }
     if let Some(command) = host_command_at_offset(
         &menu,
         popup.get(),
@@ -711,6 +797,45 @@ pub(crate) fn show(request: &ContextMenuRequest) -> Result<ContextMenuOutcome, E
     let _ = state.transition(ContextMenuSessionState::Finished);
     let _ = state.release();
     Ok(ContextMenuOutcome::Invoked { command_offset })
+}
+
+enum ApkMenuData {
+    MissingTool,
+    Devices(Vec<explorer_remote::AdbDevice>),
+}
+
+fn local_apk_devices(target: &ShellContextMenuTarget) -> Option<ApkMenuData> {
+    let ShellContextMenuTarget::Items { parent, items } = target else {
+        return None;
+    };
+    if items.len() != 1 || !matches!(parent, explorer_model::LocationDescriptor::FileSystem(_)) {
+        return None;
+    }
+    let explorer_model::LocationDescriptor::FileSystem(path) = &items[0].location else {
+        return None;
+    };
+    let local = path.to_path_buf();
+    if !local.is_file()
+        || !local
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("apk"))
+    {
+        return None;
+    }
+    let managed = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)?
+        .join("RustGpuiExplorer")
+        .join("tools")
+        .join("adb");
+    let resolver = explorer_remote::AdbToolResolver::new(managed);
+    let cancellation = explorer_model::CancellationToken::new();
+    match resolver.resolve(&cancellation) {
+        Ok((tool, _)) => resolver
+            .discover_devices(tool, &cancellation)
+            .ok()
+            .map(|snapshot| ApkMenuData::Devices(snapshot.devices)),
+        Err(_) => Some(ApkMenuData::MissingTool),
+    }
 }
 
 fn high_contrast_active() -> bool {

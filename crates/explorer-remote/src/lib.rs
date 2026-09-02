@@ -4,11 +4,16 @@
 //! composes it into the Explorer command loop in a later integration step.
 
 pub mod adb;
+pub mod adb_tools;
 mod provider;
 pub mod sftp;
 mod transfer;
 
 pub use adb::{AdbClient, AdbDevice, AdbDeviceState, AdbDirectoryEntry, AdbProvider};
+pub use adb_tools::{
+    AdbCandidateRejection, AdbDeviceSnapshot, AdbInstallOutcome, AdbToolInstaller,
+    AdbToolProvenance, AdbToolResolver, ResolvedAdbTool,
+};
 pub use provider::{
     RemoteEntry, RemoteEntryKind, RemoteMetadata, RemoteProvider, RemoteProviderRegistry,
 };

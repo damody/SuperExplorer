@@ -398,6 +398,64 @@ fn replay_context_menu_gesture(owner_window: u64, x: i32, y: i32) {
 #[cfg(not(windows))]
 fn replay_context_menu_gesture(_: u64, _: i32, _: i32) {}
 
+fn execute_adb_context_action(
+    outcome: explorer_model::ContextMenuOutcome,
+    cancellation: &explorer_model::CancellationToken,
+) -> explorer_model::ContextMenuOutcome {
+    let managed = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("RustGpuiExplorer")
+        .join("tools")
+        .join("adb");
+    let result = match &outcome {
+        explorer_model::ContextMenuOutcome::DownloadAdb { .. } => {
+            explorer_remote::AdbToolInstaller::new(managed)
+                .install_official(cancellation, |_, _| ())
+                .map(|_| ())
+        }
+        explorer_model::ContextMenuOutcome::InstallApk { serial, target } => {
+            let apk = match target {
+                explorer_model::ShellContextMenuTarget::Items { items, .. } if items.len() == 1 => {
+                    match &items[0].location {
+                        explorer_model::LocationDescriptor::FileSystem(path) => {
+                            Some(path.to_path_buf())
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            apk.ok_or_else(|| anyhow::anyhow!("APK context target is no longer valid"))
+                .and_then(|apk| {
+                    let resolver = explorer_remote::AdbToolResolver::new(managed);
+                    let (tool, _) = resolver.resolve(cancellation)?;
+                    explorer_remote::adb_tools::install_apk(
+                        &tool,
+                        explorer_remote::adb::SystemAdbCommandRunner,
+                        serial,
+                        &apk,
+                        cancellation,
+                    )?;
+                    Ok(())
+                })
+        }
+        _ => return outcome,
+    };
+    match result {
+        Ok(()) => explorer_model::ContextMenuOutcome::Invoked { command_offset: 0 },
+        Err(error) => explorer_model::ContextMenuOutcome::Failed {
+            error: explorer_common::ExplorerError::new(
+                explorer_common::ExplorerErrorKind::Availability,
+                "install APK",
+                true,
+                "APK installation failed. Check the device connection and try again.",
+                error.to_string().chars().take(2048).collect::<String>(),
+            ),
+        },
+    }
+}
+
 impl BrokeredExplorerService {
     pub fn new(
         shell: Arc<explorer_shell_win::ShellStaHandle>,
@@ -415,7 +473,7 @@ impl BrokeredExplorerService {
         let context_broker = broker.clone();
         std::thread::spawn(move || {
             while let Ok((context, request)) = context_menu_receiver.recv() {
-                let outcome = if context.cancellation.is_cancelled() {
+                let mut outcome = if context.cancellation.is_cancelled() {
                     explorer_model::ContextMenuOutcome::Cancelled
                 } else {
                     context_broker
@@ -435,6 +493,7 @@ impl BrokeredExplorerService {
                             }
                         })
                 };
+                outcome = execute_adb_context_action(outcome, &context.cancellation);
                 if let Ok(mut active) = context_active.lock()
                     && let Some(index) = active.iter().position(|candidate| candidate == &context)
                 {
