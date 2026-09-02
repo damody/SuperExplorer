@@ -711,6 +711,7 @@ pub struct AppViewState {
     divider: DividerInteraction,
     operation_center: OperationCenterState,
     operation_terminal_notice: Option<(explorer_common::RequestId, Instant)>,
+    cancelling_operations: HashSet<explorer_common::RequestId>,
     rename_editor: Option<explorer_model::RenameEditorState>,
     pending_new_folder_rename: Option<PendingNewFolderRename>,
     permanent_delete_confirmation: Option<PermanentDeleteConfirmation>,
@@ -763,6 +764,7 @@ pub struct AppViewState {
     view_menu_index: usize,
     more_menu_open: bool,
     more_menu_index: usize,
+    transfer_panel_open: bool,
     about_dialog_open: bool,
     about_info: AboutInfoV1,
     extensions_menu_open: bool,
@@ -780,6 +782,7 @@ pub struct AppViewState {
     details_column_resize: Option<DetailsColumnResizeSession>,
     details_column_drag: Option<DetailsColumnDragPreviewSession>,
     details_column_menu: Option<explorer_model::ColumnId>,
+    details_column_menu_anchor: Option<(f32, f32)>,
     details_filter_menu: Option<explorer_model::ColumnId>,
     details_filters: HashMap<TabId, crate::file_view::DetailsFilters>,
     side_pane_resize: Option<SidePaneResizeSession>,
@@ -961,6 +964,7 @@ impl AppViewState {
             divider: DividerInteraction::default(),
             operation_center: OperationCenterState::default(),
             operation_terminal_notice: None,
+            cancelling_operations: HashSet::new(),
             rename_editor: None,
             pending_new_folder_rename: None,
             permanent_delete_confirmation: None,
@@ -1013,6 +1017,7 @@ impl AppViewState {
             view_menu_index: 0,
             more_menu_open: false,
             more_menu_index: 0,
+            transfer_panel_open: false,
             about_dialog_open: false,
             about_info: AboutInfoV1 {
                 version: "unknown".to_owned(),
@@ -1033,6 +1038,7 @@ impl AppViewState {
             details_column_resize: None,
             details_column_drag: None,
             details_column_menu: None,
+            details_column_menu_anchor: None,
             details_filter_menu: None,
             details_filters: HashMap::from([(
                 initial_tab_id,
@@ -1664,10 +1670,38 @@ impl AppViewState {
         &self.operation_center
     }
 
+    pub(crate) fn operation_is_cancelling(&self, request_id: explorer_common::RequestId) -> bool {
+        self.cancelling_operations.contains(&request_id)
+    }
+
+    pub(crate) fn begin_operation_cancellation(
+        &mut self,
+        request_id: explorer_common::RequestId,
+    ) -> bool {
+        let cancellable = self
+            .operation_center
+            .get(request_id)
+            .is_some_and(|record| !record.phase.is_terminal());
+        cancellable && self.cancelling_operations.insert(request_id)
+    }
+
+    pub(crate) fn fail_operation_cancellation(
+        &mut self,
+        request_id: explorer_common::RequestId,
+        error: explorer_common::ExplorerError,
+    ) {
+        self.cancelling_operations.remove(&request_id);
+        if let Some(record) = self.operation_center.get_mut(request_id)
+            && record.finish(OperationTerminal::Failed(error)).is_ok()
+        {
+            self.operation_terminal_notice = Some((request_id, Instant::now()));
+        }
+    }
+
     pub(crate) fn latest_operation_terminal_elapsed(&self, now: Instant) -> Option<Duration> {
         let (request_id, terminal_at) = self.operation_terminal_notice?;
         self.operation_center
-            .latest()
+            .foreground()
             .is_some_and(|record| record.id == request_id && record.phase.is_terminal())
             .then(|| now.saturating_duration_since(terminal_at))
     }
@@ -2021,6 +2055,7 @@ impl AppViewState {
     pub(crate) fn toggle_sort_menu(&mut self) {
         self.sort_menu_open = !self.sort_menu_open;
         if self.sort_menu_open {
+            self.transfer_panel_open = false;
             self.details_column_menu = None;
             self.details_filter_menu = None;
             self.sort_menu_index = 0;
@@ -2034,6 +2069,7 @@ impl AppViewState {
     pub(crate) fn toggle_new_menu(&mut self) {
         self.new_menu_open = !self.new_menu_open;
         if self.new_menu_open {
+            self.transfer_panel_open = false;
             self.details_column_menu = None;
             self.details_filter_menu = None;
             self.new_menu_index = 0;
@@ -2075,6 +2111,7 @@ impl AppViewState {
     pub(crate) fn toggle_more_menu(&mut self) {
         self.more_menu_open = !self.more_menu_open;
         if self.more_menu_open {
+            self.transfer_panel_open = false;
             self.details_column_menu = None;
             self.details_filter_menu = None;
             self.more_menu_index = 0;
@@ -2089,12 +2126,32 @@ impl AppViewState {
         self.more_menu_open = false;
     }
 
+    pub const fn transfer_panel_open(&self) -> bool {
+        self.transfer_panel_open
+    }
+
+    pub(crate) fn toggle_transfer_panel(&mut self) {
+        self.transfer_panel_open = !self.transfer_panel_open;
+        if self.transfer_panel_open {
+            self.sort_menu_open = false;
+            self.more_menu_open = false;
+            self.close_view_menu();
+            self.extensions_menu_open = false;
+            self.new_menu_open = false;
+        }
+    }
+
+    pub(crate) fn close_transfer_panel(&mut self) {
+        self.transfer_panel_open = false;
+    }
+
     pub(crate) fn toggle_extensions_menu(&mut self) {
         self.extensions_menu_open = !self.extensions_menu_open;
         if !self.extensions_menu_open {
             self.extension_command_panel = None;
         }
         if self.extensions_menu_open {
+            self.transfer_panel_open = false;
             self.details_column_menu = None;
             self.details_filter_menu = None;
             self.sort_menu_open = false;
@@ -2440,6 +2497,7 @@ impl AppViewState {
     pub(crate) fn toggle_view_menu(&mut self) {
         self.view_menu_open = !self.view_menu_open;
         if self.view_menu_open {
+            self.transfer_panel_open = false;
             self.details_column_menu = None;
             self.details_filter_menu = None;
             self.view_menu_index = 0;
@@ -2662,11 +2720,23 @@ impl AppViewState {
     pub fn details_column_menu(&self) -> Option<explorer_model::ColumnId> {
         self.details_column_menu.clone()
     }
+    pub const fn details_column_menu_anchor(&self) -> Option<(f32, f32)> {
+        self.details_column_menu_anchor
+    }
     pub fn open_details_column_menu(&mut self, column: explorer_model::ColumnId) {
+        self.open_details_column_menu_at(column, 0.0, 0.0);
+    }
+    pub fn open_details_column_menu_at(
+        &mut self,
+        column: explorer_model::ColumnId,
+        pointer_x: f32,
+        pointer_y: f32,
+    ) {
         if !self.details_column_applicable(&column) {
             return;
         }
         self.details_column_menu = Some(column);
+        self.details_column_menu_anchor = Some((pointer_x.max(0.0), pointer_y.max(0.0)));
         self.details_filter_menu = None;
         self.sort_menu_open = false;
         self.view_menu_open = false;
@@ -2676,6 +2746,7 @@ impl AppViewState {
     }
     pub fn close_details_column_menu(&mut self) {
         self.details_column_menu = None;
+        self.details_column_menu_anchor = None;
     }
 
     pub fn details_filter_menu(&self) -> Option<explorer_model::ColumnId> {
@@ -4469,6 +4540,7 @@ impl AppViewState {
                     .latest()
                     .is_some_and(|record| record.id == context.request_id)
             {
+                self.cancelling_operations.remove(&context.request_id);
                 self.operation_terminal_notice = Some((context.request_id, Instant::now()));
             }
             return if operation_applied || cleared_drag || recovery_transition {
@@ -8096,6 +8168,32 @@ mod tests {
                 .is_none(),
             "a stale completion cannot restart the latest notice"
         );
+    }
+
+    #[test]
+    fn operation_cancelling_state_is_immediate_idempotent_and_cleared_by_terminal() {
+        let mut state = state_with_rows();
+        let request = state.create_folder_request().expect("operation request");
+        let command = state.begin_file_operation(request);
+        let context = command.context().expect("operation context").clone();
+        assert!(state.begin_operation_cancellation(context.request_id));
+        assert!(state.operation_is_cancelling(context.request_id));
+        assert!(!state.begin_operation_cancellation(context.request_id));
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::OperationFinished {
+                context: context.clone(),
+                outcome: explorer_model::OperationTerminal::Cancelled,
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert!(!state.operation_is_cancelling(context.request_id));
+        assert!(matches!(
+            state
+                .operation_center()
+                .get(context.request_id)
+                .and_then(|record| record.terminal.as_ref()),
+            Some(explorer_model::OperationTerminal::Cancelled)
+        ));
     }
 
     #[test]

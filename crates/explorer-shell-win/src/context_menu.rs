@@ -57,15 +57,15 @@ use windows::{
                 DefWindowProcW, DestroyMenu, DestroyWindow, EVENT_OBJECT_SHOW, EnumWindows,
                 GA_ROOT, GWLP_USERDATA, GetAncestor, GetClassNameW, GetCursorPos, GetMenuItemCount,
                 GetMenuItemID, GetMenuStringW, GetSubMenu, GetWindowLongPtrW, GetWindowRect,
-                GetWindowThreadProcessId, HHOOK, HMENU, IsWindow, IsWindowVisible, MF_BYPOSITION,
-                MF_DISABLED, MF_POPUP, MF_SEPARATOR, MF_STRING, OBJID_WINDOW, PostMessageW,
-                RegisterClassW, SPI_GETHIGHCONTRAST, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOSIZE,
-                SWP_NOZORDER, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
-                SetWindowsHookExW, SystemParametersInfoW, TPM_LEFTALIGN, TPM_RETURNCMD,
-                TPM_RIGHTBUTTON, TPM_TOPALIGN, TrackPopupMenuEx, UnhookWindowsHookEx, WH_MOUSE_LL,
-                WINDOW_EX_STYLE, WINEVENT_INCONTEXT, WM_CANCELMODE, WM_DRAWITEM, WM_INITMENUPOPUP,
-                WM_MEASUREITEM, WM_MENUCHAR, WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WNDCLASSW,
-                WS_POPUP, WindowFromPoint,
+                GetWindowThreadProcessId, HHOOK, HMENU, InsertMenuW, IsWindow, IsWindowVisible,
+                MF_BYPOSITION, MF_CHECKED, MF_DISABLED, MF_POPUP, MF_SEPARATOR, MF_STRING,
+                OBJID_WINDOW, PostMessageW, RegisterClassW, SPI_GETHIGHCONTRAST, SW_SHOWNORMAL,
+                SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow, SetWindowLongPtrW,
+                SetWindowPos, SetWindowsHookExW, SystemParametersInfoW, TPM_LEFTALIGN,
+                TPM_RETURNCMD, TPM_RIGHTBUTTON, TPM_TOPALIGN, TrackPopupMenuEx,
+                UnhookWindowsHookEx, WH_MOUSE_LL, WINDOW_EX_STYLE, WINEVENT_INCONTEXT,
+                WM_CANCELMODE, WM_DRAWITEM, WM_INITMENUPOPUP, WM_MEASUREITEM, WM_MENUCHAR,
+                WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WNDCLASSW, WS_POPUP, WindowFromPoint,
             },
         },
     },
@@ -78,6 +78,111 @@ const COMMAND_LAST: u32 = 0x7fff;
 const CMIC_MASK_UNICODE: u32 = 0x0000_4000;
 const MENU_REPLAY_EXTRA_INFO: usize = 0x5355_5045_524D_454E;
 const PROPERTIES_PLACEMENT_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OwnedPopupMenuItem {
+    pub label: String,
+    pub checked: bool,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OwnedPopupMenuEntry {
+    Item(OwnedPopupMenuItem),
+    Separator,
+}
+
+/// Presents application-owned commands through the same top-level popup renderer used by
+/// filesystem context menus. The returned index counts command rows and excludes separators.
+pub fn show_owned_popup_menu(
+    owner_window: u64,
+    x: i32,
+    y: i32,
+    entries: &[OwnedPopupMenuEntry],
+    dark: bool,
+    immersive: bool,
+) -> Result<Option<usize>, ExplorerError> {
+    let mut point = POINT { x, y };
+    // Match filesystem context menus: pointer events can cross a DPI-virtualized test or host
+    // boundary, while the live cursor is already in the desktop coordinate space required by
+    // the popup window.
+    let _ = unsafe { GetCursorPos(&raw mut point) };
+    let owner = validated_owner_window(owner_window).ok_or_else(|| {
+        menu_error(
+            "validate owned popup window",
+            "無法顯示功能表",
+            "the owner window is unavailable",
+        )
+    })?;
+    let popup = OwnedMenu::create()?;
+    let mut command_count = 0_u32;
+    for entry in entries {
+        match entry {
+            OwnedPopupMenuEntry::Separator => unsafe {
+                AppendMenuW(popup.get(), MF_SEPARATOR, 0, PCWSTR::null())
+            },
+            OwnedPopupMenuEntry::Item(item) => {
+                command_count = command_count.saturating_add(1);
+                let mut flags = MF_STRING;
+                if item.checked {
+                    flags |= MF_CHECKED;
+                }
+                if !item.enabled {
+                    flags |= MF_DISABLED;
+                }
+                let label = item.label.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+                unsafe {
+                    AppendMenuW(
+                        popup.get(),
+                        flags,
+                        command_count as usize,
+                        PCWSTR(label.as_ptr()),
+                    )
+                }
+            }
+        }
+        .map_err(|error| {
+            menu_error(
+                "append owned popup command",
+                "無法建立功能表",
+                &error.to_string(),
+            )
+        })?;
+    }
+    let _ = unsafe { SetForegroundWindow(owner) };
+    let dpi = unsafe { GetDpiForWindow(owner) }.max(96);
+    let selected = if should_use_owned_popup(immersive, high_contrast_active()) {
+        crate::immersive_popup::present(popup.get(), owner, point, dpi, dark)
+            .map(|presentation| presentation.command)
+            .unwrap_or_else(|reason| {
+                tracing::warn!(?reason, "application-owned popup menu fell back");
+                unsafe {
+                    TrackPopupMenuEx(
+                        popup.get(),
+                        (TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN).0,
+                        point.x,
+                        point.y,
+                        owner,
+                        None,
+                    )
+                }
+                .0
+            })
+    } else {
+        unsafe {
+            TrackPopupMenuEx(
+                popup.get(),
+                (TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN).0,
+                point.x,
+                point.y,
+                owner,
+                None,
+            )
+        }
+        .0
+    };
+    Ok((selected != 0).then(|| selected.saturating_sub(1) as usize))
+}
 const WINDOWS_DIALOG_CLASS: &[u16] = &[
     b'#' as u16,
     b'3' as u16,
@@ -620,8 +725,30 @@ pub(crate) fn show(request: &ContextMenuRequest) -> Result<ContextMenuOutcome, E
                     })?;
             }
         }
-        unsafe { AppendMenuW(popup.get(), MF_POPUP, submenu.0 as usize, w!("安裝")) }.map_err(
-            |error| menu_error("append APK submenu", "無法建立安裝選單", &error.to_string()),
+        unsafe {
+            InsertMenuW(
+                popup.get(),
+                0,
+                MF_BYPOSITION | MF_POPUP,
+                submenu.0 as usize,
+                w!("安裝"),
+            )
+        }
+        .map_err(|error| {
+            menu_error(
+                "insert APK submenu first",
+                "無法建立安裝選單",
+                &error.to_string(),
+            )
+        })?;
+        unsafe { InsertMenuW(popup.get(), 1, MF_BYPOSITION | MF_SEPARATOR, 0, None) }.map_err(
+            |error| {
+                menu_error(
+                    "insert APK submenu separator",
+                    "無法建立安裝選單",
+                    &error.to_string(),
+                )
+            },
         )?;
     }
     if started.elapsed() > Duration::from_millis(u64::from(request.deadline_ms.max(1))) {

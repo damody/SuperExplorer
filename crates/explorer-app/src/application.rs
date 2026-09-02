@@ -4590,6 +4590,64 @@ impl ApplicationLifecycle {
                                 metadata_runtime.metadata(location, cancellation)
                             }),
                         );
+                        let details_popup_owner = owner_window;
+                        root.attach_details_column_menu_popup_observer(Rc::new(
+                            move |request, actions, cx| {
+                                let entries = request
+                                    .entries
+                                    .into_iter()
+                                    .map(|entry| match entry {
+                                        explorer_ui::DetailsColumnMenuPopupEntry::Item {
+                                            label,
+                                            checked,
+                                            enabled,
+                                        } => explorer_shell_win::OwnedPopupMenuEntry::Item(
+                                            explorer_shell_win::OwnedPopupMenuItem {
+                                                label,
+                                                checked,
+                                                enabled,
+                                            },
+                                        ),
+                                        explorer_ui::DetailsColumnMenuPopupEntry::Separator => {
+                                            explorer_shell_win::OwnedPopupMenuEntry::Separator
+                                        }
+                                    })
+                                    .collect::<Vec<_>>();
+                                let owner = details_popup_owner;
+                                cx.spawn(async move |_this, cx| {
+                                    let selected = cx
+                                        .background_executor()
+                                        .spawn(async move {
+                                            explorer_shell_win::show_owned_popup_menu(
+                                                request.owner_window,
+                                                request.screen_x,
+                                                request.screen_y,
+                                                &entries,
+                                                request.dark,
+                                                request.immersive,
+                                            )
+                                        })
+                                        .await;
+                                    match selected {
+                                        Ok(Some(index)) => {
+                                            if let Some(action) = actions.get(index).cloned() {
+                                                let _ = owner.update(cx, |root, window, cx| {
+                                                    root.dispatch_details_column_popup_action(
+                                                        action, window, cx,
+                                                    );
+                                                });
+                                            }
+                                        }
+                                        Ok(None) => {}
+                                        Err(error) => {
+                                            tracing::warn!(%error, "Details column popup failed");
+                                        }
+                                    }
+                                })
+                                .detach();
+                                true
+                            },
+                        ));
                         root.attach_remote_symlink_window_observer(Rc::new(
                             move |update, cx| match update {
                                 explorer_ui::remote_symlink_window::RemoteSymlinkWindowUpdateV1::Open(snapshot) => {

@@ -465,6 +465,8 @@ pub enum ExplorerAction {
     },
     ToggleMoreMenu,
     CloseMoreMenu,
+    ToggleTransferPanel,
+    CloseTransferPanel,
     MoveMoreMenuFocus {
         direction: i8,
     },
@@ -514,6 +516,11 @@ pub enum ExplorerAction {
     },
     OpenDetailsColumnMenu {
         column: explorer_model::ColumnId,
+        owner_window: u64,
+        screen_x: i32,
+        screen_y: i32,
+        pointer_x: f32,
+        pointer_y: f32,
     },
     CloseDetailsColumnMenu,
     OpenDetailsFilterMenu {
@@ -773,6 +780,8 @@ impl ExplorerAction {
             Self::SetSortMenuFocus { .. } => "SetSortMenuFocus",
             Self::ToggleMoreMenu => "ToggleMoreMenu",
             Self::CloseMoreMenu => "CloseMoreMenu",
+            Self::ToggleTransferPanel => "ToggleTransferPanel",
+            Self::CloseTransferPanel => "CloseTransferPanel",
             Self::MoveMoreMenuFocus { .. } => "MoveMoreMenuFocus",
             Self::SetMoreMenuFocus { .. } => "SetMoreMenuFocus",
             Self::ToggleExtensionsMenu => "ToggleExtensionsMenu",
@@ -1412,10 +1421,13 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
                 explorer_model::NamespaceCommand::ContextMenu,
             )
         }),
-        ExplorerAction::CancelOperation { request_id } => state
-            .operation_center()
-            .get(*request_id)
-            .is_some_and(|record| !record.phase.is_terminal()),
+        ExplorerAction::CancelOperation { request_id } => {
+            state
+                .operation_center()
+                .get(*request_id)
+                .is_some_and(|record| !record.phase.is_terminal())
+                && !state.operation_is_cancelling(*request_id)
+        }
         ExplorerAction::ToggleDetailsColumn(explorer_model::ColumnId::Name) => false,
         ExplorerAction::EndDetailsColumnResize => state.details_column_resize_active(),
         ExplorerAction::SetColumnId(column) => state.sort_column_supported(column.clone()),
@@ -1425,6 +1437,8 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::SetSortMenuFocus { .. }
         | ExplorerAction::ToggleMoreMenu
         | ExplorerAction::CloseMoreMenu
+        | ExplorerAction::ToggleTransferPanel
+        | ExplorerAction::CloseTransferPanel
         | ExplorerAction::MoveMoreMenuFocus { .. }
         | ExplorerAction::SetMoreMenuFocus { .. }
         | ExplorerAction::ToggleExtensionsMenu
@@ -1969,6 +1983,14 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             state.close_more_menu();
             FocusSurface::CommandBar
         }
+        ExplorerAction::ToggleTransferPanel => {
+            state.toggle_transfer_panel();
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::CloseTransferPanel => {
+            state.close_transfer_panel();
+            FocusSurface::CommandBar
+        }
         ExplorerAction::MoveMoreMenuFocus { direction } => {
             state.move_more_menu_focus(direction);
             FocusSurface::CommandBar
@@ -2268,8 +2290,15 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             state.auto_size_details_column(column);
             FocusSurface::FileView
         }
-        ExplorerAction::OpenDetailsColumnMenu { column } => {
-            state.open_details_column_menu(column);
+        ExplorerAction::OpenDetailsColumnMenu {
+            column,
+            owner_window: _,
+            screen_x: _,
+            screen_y: _,
+            pointer_x,
+            pointer_y,
+        } => {
+            state.open_details_column_menu_at(column, pointer_x, pointer_y);
             FocusSurface::FileView
         }
         ExplorerAction::CloseDetailsColumnMenu => {
@@ -2533,6 +2562,11 @@ mod tests {
             &mut state,
             ExplorerAction::OpenDetailsColumnMenu {
                 column: explorer_model::ColumnId::Size,
+                owner_window: 42,
+                screen_x: 520,
+                screen_y: 280,
+                pointer_x: 420.0,
+                pointer_y: 180.0,
             },
             ActionSource::Mouse,
         );
@@ -2542,6 +2576,7 @@ mod tests {
             state.details_column_menu(),
             Some(explorer_model::ColumnId::Size)
         );
+        assert_eq!(state.details_column_menu_anchor(), Some((420.0, 180.0)));
 
         let stray_resize_end = dispatch_action(
             &mut state,
