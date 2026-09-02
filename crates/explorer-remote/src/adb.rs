@@ -110,6 +110,16 @@ pub struct AdbDevice {
     pub state: AdbDeviceState,
 }
 
+impl AdbDevice {
+    pub fn display_name(&self) -> &str {
+        self.model.as_deref().unwrap_or(&self.serial)
+    }
+
+    pub const fn is_installable(&self) -> bool {
+        matches!(self.state, AdbDeviceState::Device)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AdbDeviceState {
     Device,
@@ -480,11 +490,15 @@ pub struct AdbClient<R = SystemAdbCommandRunner> {
 
 impl AdbClient {
     pub fn discover() -> Result<Self> {
-        let executable = std::env::var_os("ANDROID_HOME")
-            .map(PathBuf::from)
-            .map(|root| root.join("platform-tools").join("adb.exe"))
-            .filter(|path| path.is_file())
-            .or_else(|| find_on_path("adb.exe"))
+        let executable = find_on_path("adb.exe")
+            .or_else(|| {
+                ["ANDROID_HOME", "ANDROID_SDK_ROOT"]
+                    .into_iter()
+                    .filter_map(std::env::var_os)
+                    .map(PathBuf::from)
+                    .map(|root| root.join("platform-tools").join("adb.exe"))
+                    .find(|path| path.is_file())
+            })
             .context("Android Debug Bridge (adb.exe) was not found")?;
         Ok(Self::new(executable, SystemAdbCommandRunner))
     }
@@ -508,6 +522,33 @@ impl<R: AdbCommandRunner> AdbClient<R> {
         )?;
         ensure_success(&output, "list devices")?;
         parse_devices(&String::from_utf8_lossy(&output.stdout))
+    }
+
+    pub fn install_apk(
+        &self,
+        serial: &str,
+        apk: &Path,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        if !apk.is_absolute()
+            || !apk.is_file()
+            || !apk
+                .extension()
+                .is_some_and(|value| value.eq_ignore_ascii_case("apk"))
+        {
+            bail!("APK must be an existing absolute local .apk file");
+        }
+        self.device_command(
+            serial,
+            [
+                OsString::from("install"),
+                OsString::from("-r"),
+                apk.as_os_str().to_owned(),
+            ],
+            cancellation,
+            TRANSFER_TIMEOUT,
+            "install APK",
+        )
     }
 
     /// Lists direct children of an Android directory. The directory is supplied as one argv
@@ -1191,7 +1232,7 @@ fn remote_path(location: &VirtualLocationDescriptor) -> String {
     }
 }
 
-fn find_on_path(name: &str) -> Option<PathBuf> {
+pub(crate) fn find_on_path(name: &str) -> Option<PathBuf> {
     std::env::var_os("PATH")?
         .to_string_lossy()
         .split(';')
@@ -1332,8 +1373,15 @@ fn parse_devices(stdout: &str) -> Result<Vec<AdbDevice>> {
         }
         let Some(state) = fields.next() else { continue };
         validate_serial(serial)?;
-        let model = fields
+        let attributes = fields.collect::<Vec<_>>();
+        let model = attributes
+            .iter()
             .find_map(|field| field.strip_prefix("model:"))
+            .or_else(|| {
+                attributes
+                    .iter()
+                    .find_map(|field| field.strip_prefix("device:"))
+            })
             .filter(|value| !value.is_empty())
             .map(|value| value.replace('_', " "));
         output.push(AdbDevice {
@@ -1598,6 +1646,27 @@ mod tests {
     fn rejects_command_injection_in_path_or_serial() {
         assert!(validate_serial("serial\nother").is_err());
         assert!(validate_remote_path("sdcard/Download").is_err());
+    }
+
+    #[test]
+    fn apk_install_uses_exact_serial_replace_flag_and_single_path_argument() {
+        let directory = tempfile::tempdir().unwrap();
+        let apk = directory.path().join("QQ 測試 & update.apk");
+        std::fs::write(&apk, b"fixture").unwrap();
+        let runner = FakeRunner::with_stdout(b"Success\n".to_vec());
+        AdbClient::new(PathBuf::from("fixture-adb.exe"), runner.clone())
+            .install_apk("emulator-5554", &apk, &CancellationToken::new())
+            .unwrap();
+        assert_eq!(
+            *runner.arguments.lock().unwrap(),
+            vec![
+                OsString::from("-s"),
+                OsString::from("emulator-5554"),
+                OsString::from("install"),
+                OsString::from("-r"),
+                apk.into_os_string(),
+            ]
+        );
     }
 
     #[test]

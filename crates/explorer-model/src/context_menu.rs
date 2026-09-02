@@ -257,6 +257,13 @@ pub enum ContextMenuOutcome {
         command: ContextMenuHostCommand,
         target: ShellContextMenuTarget,
     },
+    InstallApk {
+        serial: String,
+        target: ShellContextMenuTarget,
+    },
+    DownloadAdb {
+        target: ShellContextMenuTarget,
+    },
     Failed {
         error: explorer_common::ExplorerError,
     },

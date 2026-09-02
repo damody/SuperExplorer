@@ -283,6 +283,17 @@ fn decode_context_menu_terminal(
         let command_offset = offset.parse().map_err(|_| BrokerClientError::Protocol)?;
         return Ok(explorer_model::ContextMenuOutcome::Invoked { command_offset });
     }
+    if let Some(serial) = text.strip_prefix("context-menu-install-apk:") {
+        return Ok(explorer_model::ContextMenuOutcome::InstallApk {
+            serial: serial.to_owned(),
+            target: target.clone(),
+        });
+    }
+    if text == "context-menu-download-adb" {
+        return Ok(explorer_model::ContextMenuOutcome::DownloadAdb {
+            target: target.clone(),
+        });
+    }
     let payload = text
         .strip_prefix("context-menu-delegated:")
         .ok_or(BrokerClientError::Protocol)?;
