@@ -1,0 +1,12 @@
+﻿{
+    "status":  "passed",
+    "remote_path":  "adb://emulator-5554/sdcard/Download",
+    "cancel_button_width":  151,
+    "cancel_button_compact":  true,
+    "cancelling_latency_ms":  100.8,
+    "cancelling_within_two_seconds":  true,
+    "first_speed":  "複製 1 個項目｜來源由系統剪貼簿提供 → adb://emulator-5554/sdcard/Download｜正在複製 86%（890.9 MB / 1.0 GB）｜3.0 GB/s｜進度 0/1 項目",
+    "second_speed":  "複製 1 個項目｜來源由系統剪貼簿提供 → adb://emulator-5554/sdcard/Download｜部分完成：0/1 成功",
+    "speed_snapshot_interval_ms":  268.5,
+    "terminal":  "cancel request reached terminal UI state"
+}

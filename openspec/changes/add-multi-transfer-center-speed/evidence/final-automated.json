@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-02T17:00:00+08:00",
+  "records": [
+    {"task_id":"4.1.1/fmt","command":"cargo fmt --all -- --check","exit_status":0,"actual":"passed"},
+    {"task_id":"4.1.1/model","command":"cargo test -p explorer-model operation_ --lib","exit_status":0,"actual":"4 passed"},
+    {"task_id":"4.1.1/app-cadence","command":"cargo test -p explorer-app transfer_progress_reporter --lib","exit_status":0,"actual":"2 passed including 200 ms heartbeat"},
+    {"task_id":"4.1.1/app-cancel","command":"cargo test -p explorer-app remote_cancel_targets_exact_token_cleans_registry_and_delegates_unknown_requests --lib","exit_status":0,"actual":"1 passed"},
+    {"task_id":"4.1.1/remote-progress","command":"cargo test -p explorer-remote progress --lib","exit_status":0,"actual":"6 passed"},
+    {"task_id":"4.1.1/remote-cancel","command":"cargo test -p explorer-remote cancellation --lib","exit_status":0,"actual":"5 passed"},
+    {"task_id":"4.1.1/ui-operation","command":"cargo test -p explorer-ui operation_ --lib","exit_status":0,"actual":"11 passed"},
+    {"task_id":"4.1.1/ui-panel","command":"cargo test -p explorer-ui transfer_speed_and_session_panel --lib","exit_status":0,"actual":"1 passed"},
+    {"task_id":"4.1.2/check","command":"cargo check -p explorer-app","exit_status":0,"actual":"passed"},
+    {"task_id":"4.1.2/spec","command":"openspec validate add-multi-transfer-center-speed --strict","exit_status":0,"actual":"valid"},
+    {"task_id":"4.1.2/placeholders","command":"rg -n TODO|TBD|待補 openspec/changes/add-multi-transfer-center-speed","exit_status":1,"actual":"no matches"},
+    {"task_id":"4.1.2/diff","command":"git diff --check -- focused paths","exit_status":0,"actual":"passed; line-ending warnings only"}
+  ]
+}
