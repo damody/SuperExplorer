@@ -1,6 +1,6 @@
 ## Why
 
-Local、ADB 與 SFTP 之間的傳輸目前只發布開始與 terminal 狀態，導致下方進度列長時間停在 0% 後直接跳到 100%。使用者無法判斷大型檔案或遞迴資料夾是否仍在傳輸，也無法從部分失敗或取消看出實際已完成的工作量。
+Local、ADB 與 SFTP 之間的傳輸目前只發布開始與 terminal 狀態，導致下方進度列長時間停在 0% 後直接跳到 100%。使用者無法判斷大型檔案或遞迴資料夾是否仍在傳輸，也無法從部分失敗或取消看出實際已完成的工作量。遠端連線與metadata preflight也可能在第一個可見狀態前阻塞數秒，使小檔案拖放看起來像完全沒有接受操作。
 
 ## What Changes
 
@@ -9,6 +9,7 @@ Local、ADB 與 SFTP 之間的傳輸目前只發布開始與 terminal 狀態，�
 - 將實際 byte delta 接入 Local、ADB、SFTP 的 upload/download/copy stream。
 - 將 ADB↔SFTP 等 staging 兩階段工作合併成單一加權進度，不在階段切換時重設。
 - 讓下方進度列正確呈現確定百分比、不確定進度、目前項目、取消、部分成功與失敗。
+- 在操作提交後300ms內顯示「準備複製／移動」，不等待provider preflight；小檔完成後顯示明確「複製完成／移動完成」。
 - 補齊六個跨端方向、檔案／資料夾、未知大小、取消與錯誤的聚焦及 headful 證據。
 - 不加入速度圖表、ETA，也不重做 operation center 外觀。
 

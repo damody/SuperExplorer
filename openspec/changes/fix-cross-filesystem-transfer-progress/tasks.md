@@ -1,5 +1,24 @@
 ## 1. Progress contract 與 reporter
 
+### 1.0 立即可見operation lifecycle
+
+**目的：** 讓Copy／Move提交後不等待provider preflight即可顯示Preparing，並以同一record收斂至明確terminal。
+**輸入：** 核准即時狀態設計、既有request context與operation center。
+**產出：** submit-time record、Preparing publisher、明確動詞與時序測試。
+**依賴：** 無。
+**Owner／Wave：** primary／1。
+**Gate／Evidence：** G-IMMEDIATE；`evidence/index.jsonl`。
+**完成門檻：** 慢速preflight在300ms內可見；小檔無人工延遲且顯示複製完成；submit failure不殘留Preparing。
+
+- [x] 1.0.1 盤點拖放、貼上、鍵盤與右鍵Copy／Move的record插入與submission順序
+- [x] 1.0.2 在具有效context的Copy／Move提交時立即插入Preparing operation record
+- [x] 1.0.3 在remote metadata estimator前force emit同一request的Preparing progress
+- [x] 1.0.4 讓第一個delivered-byte delta切換Transferring且不因preflight重建record
+- [x] 1.0.5 將Copy／Move lifecycle文字改為準備、正在與複製完成／移動完成
+- [x] 1.0.6 讓submission failure、panic與disconnect關閉既有Preparing record
+- [x] 1.0.7 新增慢速preflight 300ms、瞬間小檔與同request terminal聚焦測試
+- [x] 1.0.8 新增拖放／貼上及Local／ADB／SFTP入口共用狀態機測試
+
 ### 1.1 Domain contract
 
 **目的：** 建立 Local／ADB／SFTP 共用且可向後更新所有 workspace consumers 的 byte/item progress 型別。
@@ -10,11 +29,11 @@
 **Gate／Evidence：** G-CONTRACT；`evidence/index.jsonl`。
 **完成門檻：** 所有 producer/consumer 編譯；已知、未知、零 bytes 與 terminal 百分比規則有測試。
 
-- [ ] 1.1.1 盤點 `OperationProgress` 的所有 constructors、publishers、records 與 render consumers
-- [ ] 1.1.2 擴充 model contract，加入 completed／total bytes、phase 與 current item
-- [ ] 1.1.3 實作確定、未知、零 bytes 與 terminal presentation 計算 helper
-- [ ] 1.1.4 更新既有 Shell、fake service、automation 與 UI constructors
-- [ ] 1.1.5 新增 model progress 單調與百分比邊界測試
+- [x] 1.1.1 盤點 `OperationProgress` 的所有 constructors、publishers、records 與 render consumers
+- [x] 1.1.2 擴充 model contract，加入 completed／total bytes、phase 與 current item
+- [x] 1.1.3 實作確定、未知、零 bytes 與 terminal presentation 計算 helper
+- [x] 1.1.4 更新既有 Shell、fake service、automation 與 UI constructors
+- [x] 1.1.5 新增 model progress 單調與百分比邊界測試
 
 ### 1.2 TransferProgressReporter
 
@@ -26,11 +45,11 @@
 **Gate／Evidence：** G-REPORTER；`evidence/index.jsonl`。
 **完成門檻：** delta 聚合正確；高頻更新受限；phase/item/terminal flush；terminal 後無 late progress。
 
-- [ ] 1.2.1 實作 checked byte/item aggregation 與已知／未知 total 狀態轉換
-- [ ] 1.2.2 實作時間與 byte threshold coalescing及強制 flush 邊界
-- [ ] 1.2.3 實作 close／cancel／terminal barrier 與 late callback rejection
-- [ ] 1.2.4 接入 request context publisher且保持 nonblocking bounded semantics
-- [ ] 1.2.5 新增 monotonic、overflow、throttle、flush 與 terminal barrier 測試
+- [x] 1.2.1 實作 checked byte/item aggregation 與已知／未知 total 狀態轉換
+- [x] 1.2.2 實作時間與 byte threshold coalescing及強制 flush 邊界
+- [x] 1.2.3 實作 close／cancel／terminal barrier 與 late callback rejection
+- [x] 1.2.4 接入 request context publisher且保持 nonblocking bounded semantics
+- [x] 1.2.5 新增 monotonic、overflow、throttle、flush 與 terminal barrier 測試
 
 ## 2. Transfer engine 與 provider 串流
 
@@ -44,10 +63,10 @@
 **Gate／Evidence：** G-PREFLIGHT；`evidence/index.jsonl`。
 **完成門檻：** 檔案、巢狀資料夾、空節點、未知大小、overflow、取消均有決定性結果。
 
-- [ ] 2.1.1 盤點 Local／ADB／SFTP metadata 是否提供可靠 file size 與 cached list reuse
-- [ ] 2.1.2 實作可取消的遞迴 source tree byte/item estimator
-- [ ] 2.1.3 實作未知節點、overflow 與 actual-over-estimate 降級規則
-- [ ] 2.1.4 新增檔案、巢狀／空資料夾、未知、overflow 與取消測試
+- [x] 2.1.1 盤點 Local／ADB／SFTP metadata 是否提供可靠 file size 與 cached list reuse
+- [x] 2.1.2 實作可取消的遞迴 source tree byte/item estimator
+- [x] 2.1.3 實作未知節點、overflow 與 actual-over-estimate 降級規則
+- [x] 2.1.4 新增檔案、巢狀／空資料夾、未知、overflow 與取消測試
 
 ### 2.2 Local、ADB、SFTP delivered-byte callbacks
 
@@ -59,11 +78,11 @@
 **Gate／Evidence：** G-STREAMS；`evidence/index.jsonl`。
 **完成門檻：** read-only success 不計入；write success 精確累計；callback 不含 credential。
 
-- [ ] 2.2.1 擴充內部 provider transfer API 接受 delivered-byte callback
-- [ ] 2.2.2 將 Local copy stream 接入成功 write delta
-- [ ] 2.2.3 將 ADB upload／download stream 接入成功 write delta
-- [ ] 2.2.4 將 SFTP upload／download stream 接入成功 write delta
-- [ ] 2.2.5 新增 chunked success、read failure、write failure 與 callback redaction 測試
+- [x] 2.2.1 擴充內部 provider transfer API 接受 delivered-byte callback
+- [x] 2.2.2 將 Local copy stream 接入成功 write delta
+- [x] 2.2.3 將 ADB upload／download stream 接入成功 write delta
+- [x] 2.2.4 將 SFTP upload／download stream 接入成功 write delta
+- [x] 2.2.5 新增 chunked success、read failure、write failure 與 callback redaction 測試
 
 ### 2.3 TransferEngine aggregation
 
@@ -75,10 +94,10 @@
 **Gate／Evidence：** G-ENGINE；`evidence/index.jsonl`。
 **完成門檻：** item/byte counters 精確，conflict、skip、partial 與 Move cleanup 不扭曲 progress。
 
-- [ ] 2.3.1 將 reporter 生命週期與 Preparing／Transferring／Finalizing phase 接入 engine
-- [ ] 2.3.2 實作每個 root item 的 current item 與完成計數
-- [ ] 2.3.3 保持 conflict、skip、failure、partial 與 Move cleanup 的逐項語意
-- [ ] 2.3.4 新增多檔、遞迴資料夾、skip、partial 與 Move 聚焦測試
+- [x] 2.3.1 將 reporter 生命週期與 Preparing／Transferring／Finalizing phase 接入 engine
+- [x] 2.3.2 實作每個 root item 的 current item 與完成計數
+- [x] 2.3.3 保持 conflict、skip、failure、partial 與 Move cleanup 的逐項語意
+- [x] 2.3.4 新增多檔、遞迴資料夾、skip、partial 與 Move 聚焦測試
 
 ## 3. 跨遠端 staging 與應用程式事件
 
@@ -92,11 +111,11 @@
 **Gate／Evidence：** G-STAGED；`evidence/index.jsonl`。
 **完成門檻：** ADB↔SFTP 兩方向不重設、不倒退；第二階段失敗保留來源。
 
-- [ ] 3.1.1 盤點所有 remote→remote staging branches 與 request ownership
-- [ ] 3.1.2 實作已知 N bytes 的 download/upload 2N 加權 adapter
-- [ ] 3.1.3 實作未知 total 的跨 phase indeterminate aggregation
-- [ ] 3.1.4 將 destination terminal 與 Move cleanup gate 綁定逐項成功結果
-- [ ] 3.1.5 新增 ADB→SFTP、SFTP→ADB、第二階段失敗與取消測試
+- [x] 3.1.1 盤點所有 remote→remote staging branches 與 request ownership
+- [x] 3.1.2 實作已知 N bytes 的 download/upload 2N 加權 adapter
+- [x] 3.1.3 實作未知 total 的跨 phase indeterminate aggregation
+- [x] 3.1.4 將 destination terminal 與 Move cleanup gate 綁定逐項成功結果
+- [x] 3.1.5 新增 ADB→SFTP、SFTP→ADB、第二階段失敗與取消測試
 
 ### 3.2 Event routing 與 terminal
 
@@ -108,10 +127,10 @@
 **Gate／Evidence：** G-EVENTS；`evidence/index.jsonl`。
 **完成門檻：** request/generation 保持；terminal 後 progress 被拒；錯誤詳細且 credential-safe。
 
-- [ ] 3.2.1 接入 remote `OperationProgress` publisher 與 try_recv multiplexing
-- [ ] 3.2.2 在 Finished／Partial／Failed／Cancelled 前 flush 並關閉 reporter
-- [ ] 3.2.3 確保 submit failure、panic、disconnect 與 cancellation 都產生單一 terminal
-- [ ] 3.2.4 新增 saturation、late progress、terminal uniqueness 與 redaction 測試
+- [x] 3.2.1 接入 remote `OperationProgress` publisher 與 try_recv multiplexing
+- [x] 3.2.2 在 Finished／Partial／Failed／Cancelled 前 flush 並關閉 reporter
+- [x] 3.2.3 確保 submit failure、panic、disconnect 與 cancellation 都產生單一 terminal
+- [x] 3.2.4 新增 saturation、late progress、terminal uniqueness 與 redaction 測試
 
 ## 4. 下方進度 UI
 
@@ -125,12 +144,12 @@
 **Gate／Evidence：** G-UI；`evidence/index.jsonl`。
 **完成門檻：** 已知 total、未知 total、零 bytes、multi-item 與所有 terminals 呈現符合 spec。
 
-- [ ] 4.1.1 擴充 operation record 保存 byte、phase 與 current item progress
-- [ ] 4.1.2 修正已知 bytes 與零 bytes 的百分比及 terminal 100% 規則
-- [ ] 4.1.3 實作未知 total 的 indeterminate bar 與 transferred-byte 文字
-- [ ] 4.1.4 更新完整來源／目的、目前項目、item/byte 摘要與 accessibility semantics
-- [ ] 4.1.5 確保 Cancelled／Partial／Failed 不跳 100% 且保留詳細原因
-- [ ] 4.1.6 新增 operation record、render structure 與 stale terminal 測試
+- [x] 4.1.1 擴充 operation record 保存 byte、phase 與 current item progress
+- [x] 4.1.2 修正已知 bytes 與零 bytes 的百分比及 terminal 100% 規則
+- [x] 4.1.3 實作未知 total 的 indeterminate bar 與 transferred-byte 文字
+- [x] 4.1.4 更新完整來源／目的、目前項目、item/byte 摘要與 accessibility semantics
+- [x] 4.1.5 確保 Cancelled／Partial／Failed 不跳 100% 且保留詳細原因
+- [x] 4.1.6 新增 operation record、render structure 與 stale terminal 測試
 
 ## 5. 最後集中驗證
 
@@ -144,10 +163,10 @@
 **Gate／Evidence：** G-AUTO；`evidence/index.jsonl`。
 **完成門檻：** 所有 blocking 聚焦測試、編譯、格式與 diff gate 通過。
 
-- [ ] 5.1.1 執行 model／remote／app／UI progress 聚焦測試
-- [ ] 5.1.2 執行相關 crate 格式化與編譯檢查
-- [ ] 5.1.3 執行 Local↔ADB、Local↔SFTP、ADB↔SFTP 六方向整合矩陣
-- [ ] 5.1.4 建立每個 leaf 唯一 task_id 的 evidence index
+- [x] 5.1.1 執行 model／remote／app／UI progress 聚焦測試
+- [x] 5.1.2 執行相關 crate 格式化與編譯檢查
+- [x] 5.1.3 執行 Local↔ADB、Local↔SFTP、ADB↔SFTP 六方向整合矩陣
+- [x] 5.1.4 建立每個 leaf 唯一 task_id 的 evidence index
 
 ### 5.2 Headful 與 final review
 
@@ -159,9 +178,9 @@
 **Gate／Evidence：** G-HEADFUL、G-FINAL；`evidence/index.jsonl`。
 **完成門檻：** Local／ADB／SFTP 代表性大檔在 terminal 前觀察到 1–99%；取消不跳 100%；OpenSpec 及 diff 通過。
 
-- [ ] 5.2.1 Headful 驗證 Local→ADB 與 ADB→Local 中間 byte progress
-- [ ] 5.2.2 Headful 驗證 Local→SFTP 與 SFTP→Local 中間 byte progress
-- [ ] 5.2.3 Headful 驗證 ADB↔SFTP 兩階段不重設的中間 progress
-- [ ] 5.2.4 Headful 驗證取消／失敗保留最後實值且無 late progress
-- [ ] 5.2.5 審閱 relevant diff、credential scan 與 `git diff --check`
-- [ ] 5.2.6 執行 task validator、OpenSpec strict validation 並確認全部 task/evidence 完成
+- [x] 5.2.1 Headful 驗證 Local→ADB 與 ADB→Local 中間 byte progress
+- [x] 5.2.2 Headful 驗證 Local→SFTP 與 SFTP→Local 中間 byte progress
+- [x] 5.2.3 Headful 驗證 ADB↔SFTP 兩階段不重設的中間 progress
+- [x] 5.2.4 Headful 驗證取消／失敗保留最後實值且無 late progress
+- [x] 5.2.5 審閱 relevant diff、credential scan 與 `git diff --check`
+- [x] 5.2.6 執行 task validator、OpenSpec strict validation 並確認全部 task/evidence 完成

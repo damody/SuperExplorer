@@ -1,5 +1,31 @@
 ## ADDED Requirements
 
+### Requirement: Immediate accepted-operation status
+系統 SHALL 在Copy或Move request成功提交後立即建立同一request id的operation record，並在正常負載下最遲300ms內顯示`準備複製`或`準備移動`；provider連線、metadata preflight與總量估算 MUST NOT 延後第一個可見狀態。
+
+#### Scenario: Slow remote preflight remains responsive
+- **WHEN** ADB或SFTP連線／metadata preflight耗時超過300ms
+- **THEN** 下方operation surface SHALL 在preflight完成前顯示操作、來源、目的與Preparing狀態
+
+#### Scenario: Submit failure closes optimistic record
+- **WHEN** request建立record後submission失敗
+- **THEN** 同一record SHALL 轉為Failed並顯示具體原因，不得永久停留Preparing
+
+#### Scenario: No artificial delay
+- **WHEN** 小檔可立即完成
+- **THEN** 系統 SHALL 不為展示進度而延遲傳輸，但 SHALL 保留Preparing到明確terminal的狀態沿革
+
+### Requirement: Explicit operation verbs across lifecycle
+Copy與Move的Preparing、Transferring及Finished文字 SHALL 使用一致且明確的操作動詞；Finished MUST 顯示`複製完成`或`移動完成`，不得只顯示無上下文的泛用完成。
+
+#### Scenario: Small file copy completes between frames
+- **WHEN** 小檔案在下一個render frame前完成複製
+- **THEN** operation surface SHALL 顯示`複製完成`、來源與目的，並依既有8秒terminal淡出規則保留
+
+#### Scenario: Large file reports active copy
+- **WHEN** 大檔案已產生第一個成功delivered-byte callback且尚未terminal
+- **THEN** operation surface SHALL 顯示`正在複製`及真實bytes／百分比或indeterminate進度
+
 ### Requirement: Unified real transfer progress
 系統 SHALL 對 Local、ADB、SFTP 任意來源與目的的 file operation 發布同一 typed progress contract，包含已完成／總項目、實際已交付 bytes、可選總 bytes、phase 與目前項目；百分比不得由經過時間模擬。
 
