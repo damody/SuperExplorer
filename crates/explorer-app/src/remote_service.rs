@@ -1465,6 +1465,14 @@ fn prepare_remote_external_drop(
         let path = location
             .path()
             .ok_or_else(|| anyhow::anyhow!("remote drop source is not a local filesystem path"))?;
+        if !path.is_absolute() {
+            anyhow::bail!("remote drop source is not an absolute local filesystem path");
+        }
+        path.file_name()
+            .ok_or_else(|| anyhow::anyhow!("remote drop source has no filename"))?;
+        if !path.exists() {
+            anyhow::bail!("remote drop source no longer exists: {}", path.display());
+        }
         let id = explorer_model::ShellItemId::from_provider_bytes(
             path.as_os_str().to_string_lossy().as_bytes().to_vec(),
         )
@@ -1664,6 +1672,26 @@ impl<'a> TransferProgressReporter<'a> {
         }
     }
 
+    fn preparing(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.emit_locked(&mut state, true);
+    }
+
+    fn set_total_bytes(&self, total_bytes: Option<u64>) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.closed {
+            return;
+        }
+        state.total_bytes = total_bytes;
+        self.emit_locked(&mut state, true);
+    }
+
     fn start_item(&self, name: String) {
         let mut state = self
             .state
@@ -1672,7 +1700,6 @@ impl<'a> TransferProgressReporter<'a> {
         if state.closed {
             return;
         }
-        state.phase = TransferProgressPhase::Transferring;
         state.current_item = Some(name);
         self.emit_locked(&mut state, true);
     }
@@ -1688,6 +1715,7 @@ impl<'a> TransferProgressReporter<'a> {
         if state.closed {
             return;
         }
+        state.phase = TransferProgressPhase::Transferring;
         state.completed_bytes = state.completed_bytes.saturating_add(delta);
         if state
             .total_bytes
@@ -1722,6 +1750,14 @@ impl<'a> TransferProgressReporter<'a> {
         state.phase = TransferProgressPhase::Finalizing;
         state.current_item = None;
         self.emit_locked(&mut state, true);
+        state.closed = true;
+    }
+
+    fn close(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.closed = true;
     }
 
@@ -1760,6 +1796,8 @@ fn transfer_items(
     context: &explorer_model::RequestContext,
 ) -> OperationTerminal {
     let engine = TransferEngine::new(providers);
+    let reporter = TransferProgressReporter::new(sender, context, items.len(), None);
+    reporter.preparing();
     let estimates = items
         .iter()
         .map(|item| engine.estimate_work_bytes(&item.location, &destination, cancellation))
@@ -1767,11 +1805,12 @@ fn transfer_items(
     let total_bytes = estimates
         .iter()
         .try_fold(0_u64, |total, bytes| total.checked_add((*bytes)?));
-    let reporter = TransferProgressReporter::new(sender, context, items.len(), total_bytes);
+    reporter.set_total_bytes(total_bytes);
     let mut outcomes = Vec::with_capacity(items.len());
     for (index, item) in items.iter().cloned().enumerate() {
         if cancellation.is_cancelled() {
             if outcomes.is_empty() {
+                reporter.close();
                 return OperationTerminal::Cancelled;
             }
             outcomes.extend(
@@ -1784,6 +1823,7 @@ fn transfer_items(
                         result: OperationItemResult::Cancelled,
                     }),
             );
+            reporter.close();
             return OperationTerminal::Partial { outcomes };
         }
         let item_name = match &item.location {
@@ -1921,7 +1961,9 @@ mod tests {
             explorer_model::TabId::new(),
             explorer_model::Generation::new(1),
         );
-        let reporter = TransferProgressReporter::new(&sender, &context, 1, Some(100));
+        let reporter = TransferProgressReporter::new(&sender, &context, 1, None);
+        reporter.preparing();
+        reporter.set_total_bytes(Some(100));
         reporter.start_item("payload.bin".to_owned());
         reporter.add_bytes(40);
         reporter.add_bytes(80);
@@ -1937,6 +1979,17 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
+        assert_eq!(
+            progress.first().expect("preflight progress").phase,
+            TransferProgressPhase::Preparing
+        );
+        assert_eq!(progress.first().and_then(|value| value.total_bytes), None);
+        assert!(progress.iter().take(3).all(|value| {
+            value.phase == TransferProgressPhase::Preparing && value.completed_bytes == 0
+        }));
+        assert!(progress.iter().any(|value| {
+            value.phase == TransferProgressPhase::Transferring && value.completed_bytes == 40
+        }));
         assert!(progress.windows(2).all(|pair| {
             pair[0].completed_bytes <= pair[1].completed_bytes
                 && pair[0].completed_items <= pair[1].completed_items
@@ -1986,8 +2039,13 @@ mod tests {
 
     #[test]
     fn remote_external_drop_preserves_copy_and_move_semantics_for_every_source() {
-        let first = local_item().location;
-        let second = LocationDescriptor::file_system(r"C:\fixture\second.txt");
+        let fixture = tempfile::tempdir().unwrap();
+        let first_path = fixture.path().join("first.txt");
+        let second_path = fixture.path().join("second.txt");
+        std::fs::write(&first_path, b"first").unwrap();
+        std::fs::write(&second_path, b"second").unwrap();
+        let first = LocationDescriptor::file_system(first_path);
+        let second = LocationDescriptor::file_system(second_path);
         for (effect, expected_mode) in [
             (explorer_model::DragEffect::Copy, ClipboardMode::Copy),
             (explorer_model::DragEffect::Move, ClipboardMode::Cut),
@@ -2000,6 +2058,36 @@ mod tests {
             assert_eq!(items[0].location, first);
             assert_eq!(items[1].location, second);
         }
+    }
+
+    #[test]
+    fn remote_external_drop_accepts_and_preserves_dotfile_basename() {
+        let fixture = tempfile::tempdir().unwrap();
+        let source = fixture.path().join(".tmp-full-meta.json");
+        std::fs::write(&source, br#"[{"name":"fixture"}]"#).unwrap();
+        let location = LocationDescriptor::file_system(source.clone());
+
+        let (items, mode) =
+            prepare_remote_external_drop(vec![location.clone()], explorer_model::DragEffect::Copy)
+                .expect("an existing local dotfile is a valid external drop source");
+
+        assert_eq!(mode, ClipboardMode::Copy);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].location, location);
+        assert_eq!(source.file_name().unwrap(), ".tmp-full-meta.json");
+    }
+
+    #[test]
+    fn remote_external_drop_rejects_missing_local_source_before_dispatch() {
+        let fixture = tempfile::tempdir().unwrap();
+        let missing = fixture.path().join("missing.json");
+        assert!(
+            prepare_remote_external_drop(
+                vec![LocationDescriptor::file_system(missing)],
+                explorer_model::DragEffect::Copy,
+            )
+            .is_err()
+        );
     }
 
     struct DownloadProvider;

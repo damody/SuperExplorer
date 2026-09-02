@@ -6,6 +6,8 @@ param(
     [ValidateSet('all','move','copy','cancel')]
     [string]$ExplorerScenario = 'all',
     [string]$RemoteAppTarget,
+    [string]$ExistingExplorerSourceFile,
+    [string]$ExecutablePath,
     [string]$OutputDirectory = 'target\explorer-interop-evidence\actual-drag',
     [switch]$SkipBuild
 )
@@ -21,9 +23,21 @@ if (-not [IO.Path]::IsPathRooted($OutputDirectory)) {
 # Explorer and SuperExplorer are always launched against the same directory.
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
+$existingExplorerSource = $null
+if ($ExistingExplorerSourceFile) {
+    $existingExplorerSource = Get-Item -LiteralPath ([IO.Path]::GetFullPath($ExistingExplorerSourceFile))
+    if ($existingExplorerSource.PSIsContainer) {
+        throw '-ExistingExplorerSourceFile requires an existing file, not a directory'
+    }
+}
 if (-not $SkipBuild) {
     & (Join-Path $PSScriptRoot 'finalize_windows_artifact.ps1') -Profile $Profile
     if ($LASTEXITCODE -ne 0) { throw "artifact finalization failed: $LASTEXITCODE" }
+}
+$resolvedExecutable = if ($ExecutablePath) {
+    (Resolve-Path -LiteralPath $ExecutablePath).Path
+} else {
+    Join-Path $targetRoot "$Profile\SuperExplorer.exe"
 }
 
 if (-not ('ExplorerDragInterop.Native' -as [type])) {
@@ -212,6 +226,16 @@ function Navigate-App([IntPtr]$Window, [string]$Path, [string]$ExpectedFile) {
     if ($ExpectedFile) { [void](Find-FileElement $Window $ExpectedFile 20) }
     else { Start-Sleep -Seconds 1 }
 }
+function Navigate-AppAndWaitAddress([IntPtr]$Window, [string]$Path) {
+    $names = @("Address: $Path", "Address: $($Path.TrimEnd('/'))/" ) | Select-Object -Unique
+    foreach ($attempt in 1..3) {
+        Navigate-App $Window $Path $null
+        try { return Find-ElementByNames $Window $names 8 } catch {
+            if ($attempt -eq 3) { throw }
+            Start-Sleep -Milliseconds 500
+        }
+    }
+}
 function Drag-Bounds($Bounds, [int]$TargetX, [int]$TargetY, [ValidateSet('left','right')][string]$Button, [switch]$Copy, [switch]$Move, [switch]$Cancel) {
     $startX = [int][Math]::Round($Bounds.Left + [Math]::Min($Bounds.Width * 0.35, 80))
     $startY = [int][Math]::Round($Bounds.Top + $Bounds.Height / 2)
@@ -364,11 +388,12 @@ function Remove-AdbRemoteFixture([string]$RemotePath) {
 $fixture = Join-Path $OutputDirectory 'fixture'
 $appSource = Join-Path $fixture 'app-source'
 $explorerTarget = Join-Path $fixture 'explorer-target'
-$explorerSource = Join-Path $fixture 'explorer-source'
+$explorerSource = if ($existingExplorerSource) { $existingExplorerSource.DirectoryName } else { Join-Path $fixture 'explorer-source' }
 $appTarget = Join-Path $fixture 'app-target'
 $appInternal = Join-Path $fixture 'app-internal'
 $appInternalTarget = Join-Path $appInternal 'destination'
-foreach ($directory in @($appSource,$explorerTarget,$explorerSource,$appTarget,$appInternal,$appInternalTarget)) { New-Item -ItemType Directory -Force -Path $directory | Out-Null }
+foreach ($directory in @($appSource,$explorerTarget,$appTarget,$appInternal,$appInternalTarget)) { New-Item -ItemType Directory -Force -Path $directory | Out-Null }
+if (-not $existingExplorerSource) { New-Item -ItemType Directory -Force -Path $explorerSource | Out-Null }
 $files = [ordered]@{
     app_copy='app-left-copy.txt'; app_move='app-left-move.txt'; app_cancel='app-left-none.txt'; app_right='app-right-none.txt'
     explorer_copy='explorer-left-copy.txt'; explorer_move='explorer-left-move.txt'; explorer_cancel='explorer-left-none.txt'; explorer_right='explorer-right-none.txt'
@@ -377,8 +402,11 @@ $folders = [ordered]@{
     app_copy='app-left-copy-folder'; explorer_copy='explorer-left-copy-folder'
 }
 foreach ($name in @($files.app_copy,$files.app_move,$files.app_cancel,$files.app_right)) { Set-Content -Encoding utf8 -LiteralPath (Join-Path $appSource $name) -Value $name }
-foreach ($name in @($files.explorer_copy,$files.explorer_move,$files.explorer_cancel,$files.explorer_right)) { Set-Content -Encoding utf8 -LiteralPath (Join-Path $explorerSource $name) -Value $name }
+if (-not $existingExplorerSource) {
+    foreach ($name in @($files.explorer_copy,$files.explorer_move,$files.explorer_cancel,$files.explorer_right)) { Set-Content -Encoding utf8 -LiteralPath (Join-Path $explorerSource $name) -Value $name }
+}
 foreach ($name in $folders.Values) {
+    if ($existingExplorerSource -and $name -eq $folders.explorer_copy) { continue }
     $root = if ($name -eq $folders.app_copy) { $appSource } else { $explorerSource }
     $directory = Join-Path $root $name
     New-Item -ItemType Directory -Force -Path $directory | Out-Null
@@ -400,7 +428,8 @@ if ($RemoteAppTarget) {
         $script:adbDirectory = '/' + $remoteUri.AbsolutePath.TrimStart('/')
         & adb -s $script:adbDevice get-state | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "ADB device is unavailable: $script:adbDevice" }
-        foreach ($name in @($files.Values) + @($folders.Values)) {
+        $remoteFixtureNames = if ($existingExplorerSource) { @($existingExplorerSource.Name) } else { @($files.Values) + @($folders.Values) }
+        foreach ($name in $remoteFixtureNames) {
             $remoteFixture = $script:adbDirectory.TrimEnd('/') + '/' + $name
             if (Test-AdbRemotePath $remoteFixture) {
                 throw "refusing to overwrite existing ADB fixture: $remoteFixture"
@@ -409,7 +438,7 @@ if ($RemoteAppTarget) {
     }
 }
 
-$startInfo = [Diagnostics.ProcessStartInfo]::new((Join-Path $targetRoot "$Profile\SuperExplorer.exe"))
+$startInfo = [Diagnostics.ProcessStartInfo]::new($resolvedExecutable)
 $startInfo.WorkingDirectory = $workspaceRoot; $startInfo.UseShellExecute = $false
 # Do not redirect without continuously draining the pipes. The headful drag matrix emits
 # enough diagnostics to fill a pipe and freeze the application inside modal DoDragDrop.
@@ -451,8 +480,7 @@ try {
     [void][ExplorerDragInterop.Native]::SetWindowPos($appHwnd,[IntPtr](-1),$leftX,$workArea.Top,$appWidth,$paneHeight,0x0040)
 
     if ($RemoteAppTarget -and $Direction -eq 'app-to-explorer') {
-        Navigate-App $appHwnd $RemoteAppTarget $null
-        [void](Find-ElementByNames $appHwnd @("Address: $RemoteAppTarget") 20)
+        [void](Navigate-AppAndWaitAddress $appHwnd $RemoteAppTarget)
         Start-Sleep -Seconds 2
     }
 
@@ -581,14 +609,22 @@ try {
     if ($appHwnd -eq [IntPtr]::Zero) { throw 'target application HWND timeout' }
     [void][ExplorerDragInterop.Native]::SetWindowPos($appHwnd,[IntPtr](-1),$leftX,$workArea.Top,$appWidth,$paneHeight,0x0040)
     if ($RemoteAppTarget) {
-        Navigate-App $appHwnd $RemoteAppTarget $null
-        [void](Find-ElementByNames $appHwnd @("Address: $RemoteAppTarget") 20)
+        [void](Navigate-AppAndWaitAddress $appHwnd $RemoteAppTarget)
         Start-Sleep -Seconds 2
     }
     $targetWindow.Navigate2($explorerSource)
     $sourceDeadline = [DateTime]::UtcNow.AddSeconds(15)
     do { Start-Sleep -Milliseconds 200 } while ($targetWindow.LocationURL -ne ([Uri]$explorerSource).AbsoluteUri -and [DateTime]::UtcNow -lt $sourceDeadline)
     if ($targetWindow.LocationURL -ne ([Uri]$explorerSource).AbsoluteUri) { throw 'Explorer source navigation timeout' }
+    if ($existingExplorerSource) {
+        # Large or virtualized Explorer folders do not guarantee that a specific row is realized
+        # merely because LocationURL has changed. Select and scroll the real existing source into
+        # view through FolderView before resolving its UI Automation bounds.
+        $folderItem = $targetWindow.Document.Folder.ParseName($existingExplorerSource.Name)
+        if ($null -eq $folderItem) { throw "Explorer could not parse existing source: $($existingExplorerSource.Name)" }
+        $targetWindow.Document.SelectItem($folderItem, 0x1D)
+        Start-Sleep -Milliseconds 500
+    }
     $sourceHwnd = $targetHwnd
     $sourcePid = [uint32]0
     [void][ExplorerDragInterop.Native]::GetWindowThreadProcessId($sourceHwnd,[ref]$sourcePid)
@@ -599,11 +635,13 @@ try {
     Start-Sleep -Seconds 1
     $appRoot = [Windows.Automation.AutomationElement]::FromHandle($appHwnd)
     $appBounds = $appRoot.Current.BoundingRectangle
-    # Use the lower-right file-view background. The old left-side point could become occupied by
-    # the first inserted file row, causing the next valid drop to hit a non-container row and be
-    # correctly rejected by the product.
+    # Keep the drop inside the file-view body. At 86% window height a short window can already be
+    # inside the status/notification strip, which never owns external file drops and makes a valid
+    # OLE gesture look as though the application rejected it. Non-container rows deliberately
+    # bubble external drops to the file-view background, so the body midpoint is stable even when
+    # the directory is populated.
     $appDropX = [int]($appBounds.Left + $appBounds.Width*0.82)
-    $appDropY = [int]($appBounds.Top + $appBounds.Height*0.86)
+    $appDropY = [int]($appBounds.Top + $appBounds.Height*0.65)
     $explorerScenarios = @(
         @{ name='explorer-to-app-left-copy'; file=$files.explorer_copy; copy=$true; cancel=$false; button='left'; exists=$true; source=$true },
         @{ name='explorer-to-app-left-move'; file=$files.explorer_move; copy=$false; cancel=$false; button='left'; exists=$true; source=$false },
@@ -611,6 +649,12 @@ try {
         @{ name='explorer-to-app-right-none'; file=$files.explorer_right; copy=$false; cancel=$true; button='right'; exists=$false; source=$true },
         @{ name='explorer-to-app-folder-copy'; file=$folders.explorer_copy; copy=$true; cancel=$false; button='left'; exists=$true; source=$true }
     )
+    if ($existingExplorerSource) {
+        $explorerScenarios = @(@{
+            name='explorer-to-app-existing-file-copy'; file=$existingExplorerSource.Name
+            copy=$true; cancel=$false; button='left'; exists=$true; source=$true
+        })
+    }
     if ($ExplorerScenario -ne 'all') {
         $explorerScenarios = @($explorerScenarios | Where-Object {
             ($ExplorerScenario -eq 'move' -and -not $_.copy -and -not $_.cancel) -or
@@ -636,7 +680,14 @@ try {
                 Focus-Window $appHwnd
                 [ExplorerDragInterop.Native]::Key(0x74, $true)
                 [ExplorerDragInterop.Native]::Key(0x74, $false)
-                [void](Find-ElementByNamePrefix $appHwnd $scenario.file 30)
+                if ($existingExplorerSource) {
+                    # A real source can sort outside the currently virtualized accessibility
+                    # rows. Its independent provider download is the authoritative basename,
+                    # byte-length, and content-integrity oracle.
+                    Start-Sleep -Seconds 3
+                } else {
+                    [void](Find-FileElement $appHwnd $scenario.file 30)
+                }
             }
         } else {
             Wait-Path (Join-Path $appTarget $scenario.file) $scenario.exists
@@ -655,6 +706,11 @@ try {
 
     [ordered]@{
         schema_version=1; captured_utc=[DateTime]::UtcNow.ToString('o'); fixture=$fixture; app_target=$(if ($RemoteAppTarget) { $RemoteAppTarget } else { $appTarget })
+        existing_source=$(if ($existingExplorerSource) { $existingExplorerSource.FullName } else { $null })
+        existing_source_name=$(if ($existingExplorerSource) { $existingExplorerSource.Name } else { $null })
+        existing_source_size=$(if ($existingExplorerSource) { $existingExplorerSource.Length } else { $null })
+        existing_source_sha256=$(if ($existingExplorerSource) { (Get-FileHash -LiteralPath $existingExplorerSource.FullName -Algorithm SHA256).Hash } else { $null })
+        executable=$resolvedExecutable
         driver='real foreground SetCursorPos + mouse_event through production OLE and real Explorer HWNDs'
         matrix=$matrixPassed.ToArray(); passed=$matrixPassed.Count; disk_oracle='source/target existence asserted after every drag'
     } | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 (Join-Path $OutputDirectory 'report.json')
@@ -669,7 +725,8 @@ try {
     if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue; [void]$app.WaitForExit(5000) }
     $app.Dispose()
     if ($RemoteAppTarget -and $script:remoteScheme -eq 'adb') {
-        foreach ($name in @($files.Values) + @($folders.Values)) {
+        $remoteFixtureNames = if ($existingExplorerSource) { @($existingExplorerSource.Name) } else { @($files.Values) + @($folders.Values) }
+        foreach ($name in $remoteFixtureNames) {
             $remoteFixture = $script:adbDirectory.TrimEnd('/') + '/' + $name
             Remove-AdbRemoteFixture $remoteFixture
         }

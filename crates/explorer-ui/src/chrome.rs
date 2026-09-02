@@ -12616,11 +12616,16 @@ fn operation_request_summary(record: &explorer_model::OperationRecord) -> String
 
 fn operation_message(record: &explorer_model::OperationRecord) -> String {
     let summary = operation_request_summary(record);
+    let lifecycle = match &record.request.kind {
+        explorer_model::FileOperationKind::Copy { .. } => ("準備複製", "正在複製", "複製完成"),
+        explorer_model::FileOperationKind::Move { .. } => ("準備移動", "正在移動", "移動完成"),
+        _ => ("準備中", "處理中", "完成"),
+    };
     match &record.terminal {
         None => {
             let phase = match record.progress.phase {
-                explorer_model::TransferProgressPhase::Preparing => "準備中",
-                explorer_model::TransferProgressPhase::Transferring => "傳輸中",
+                explorer_model::TransferProgressPhase::Preparing => lifecycle.0,
+                explorer_model::TransferProgressPhase::Transferring => lifecycle.1,
                 explorer_model::TransferProgressPhase::Finalizing => "完成處理中",
             };
             let bytes = format_transfer_bytes(record.progress.completed_bytes);
@@ -12650,7 +12655,13 @@ fn operation_message(record: &explorer_model::OperationRecord) -> String {
                 ),
             }
         }
-        Some(explorer_model::OperationTerminal::Finished) => format!("{summary}｜完成"),
+        Some(explorer_model::OperationTerminal::Finished) => match &record.request.kind {
+            explorer_model::FileOperationKind::Copy { .. }
+            | explorer_model::FileOperationKind::Move { .. } => {
+                format!("{}｜{summary}", lifecycle.2)
+            }
+            _ => format!("{summary}｜完成"),
+        },
         Some(explorer_model::OperationTerminal::Cancelled) => format!("{summary}｜已取消"),
         Some(explorer_model::OperationTerminal::Failed(error)) => {
             format!("{summary}｜失敗：{}", error.user_message)
@@ -14351,6 +14362,22 @@ mod tests {
         assert!(summary.contains("另有 1 個項目"));
         assert!(summary.contains("sftp://45.32.49.125/home/linuxuser"));
         assert!(!summary.contains("password"));
+        assert!(operation_message(&record).contains("｜準備複製 "));
+        record
+            .update_progress(explorer_model::OperationProgress {
+                completed_items: 0,
+                total_items: 2,
+                completed_bytes: 64,
+                total_bytes: Some(128),
+                current_item: Some("one.txt".to_owned()),
+                phase: explorer_model::TransferProgressPhase::Transferring,
+            })
+            .expect("copy progress advances");
+        assert!(operation_message(&record).contains("｜正在複製 "));
+        record
+            .finish(explorer_model::OperationTerminal::Finished)
+            .expect("copy finishes");
+        assert!(operation_message(&record).starts_with("複製完成｜"));
     }
 
     #[test]
