@@ -238,6 +238,7 @@ impl<'a> TransferEngine<'a> {
                 Ok(copy_result) => match copy_result {
                     Ok(false) => TransferResult::Skipped,
                     Ok(true) if mode == TransferMode::Copy => TransferResult::Succeeded,
+                    Ok(true) if cancellation.is_cancelled() => TransferResult::Cancelled,
                     Ok(true) => match self.delete_source(&source, cancellation) {
                         Ok(()) => TransferResult::Succeeded,
                         Err(error) => TransferResult::Partial {
@@ -272,9 +273,11 @@ impl<'a> TransferEngine<'a> {
             (
                 LocationDescriptor::FileSystem(source),
                 LocationDescriptor::FileSystem(destination),
-            ) => copy_local_with_conflict(source, destination, conflict, progress)
+            ) => copy_local_with_conflict(source, destination, conflict, cancellation, progress)
                 .map_err(|error| TransferFailure::new(TransferStage::LocalCopy, error)),
             (LocationDescriptor::FileSystem(source), LocationDescriptor::Virtual(destination)) => {
+                ensure_transfer_active(cancellation)
+                    .map_err(|error| TransferFailure::new(TransferStage::LocalCopy, error))?;
                 let name = source
                     .file_name()
                     .and_then(|name| name.to_str())
@@ -309,9 +312,14 @@ impl<'a> TransferEngine<'a> {
                     .map_err(|error| {
                         TransferFailure::new(TransferStage::DestinationUpload, error)
                     })?;
+                ensure_transfer_active(cancellation).map_err(|error| {
+                    TransferFailure::new(TransferStage::DestinationUpload, error)
+                })?;
                 Ok(true)
             }
             (LocationDescriptor::Virtual(source), LocationDescriptor::FileSystem(destination)) => {
+                ensure_transfer_active(cancellation)
+                    .map_err(|error| TransferFailure::new(TransferStage::SourceDownload, error))?;
                 let target = if destination.is_dir() {
                     let name = source
                         .components
@@ -342,6 +350,8 @@ impl<'a> TransferEngine<'a> {
                             LocationDescriptor::Virtual(source.clone()).editable_text()
                         )
                     })
+                    .map_err(|error| TransferFailure::new(TransferStage::SourceDownload, error))?;
+                ensure_transfer_active(cancellation)
                     .map_err(|error| TransferFailure::new(TransferStage::SourceDownload, error))?;
                 Ok(true)
             }
@@ -379,6 +389,8 @@ impl<'a> TransferEngine<'a> {
                             LocationDescriptor::Virtual(source.clone()).editable_text()
                         )
                     })
+                    .map_err(|error| TransferFailure::new(TransferStage::SourceDownload, error))?;
+                ensure_transfer_active(cancellation)
                     .map_err(|error| TransferFailure::new(TransferStage::SourceDownload, error))?;
                 ensure_owned_staging_containment(staging.path(), &staged)
                     .map_err(|error| TransferFailure::new(TransferStage::LocalCopy, error))?;
@@ -419,6 +431,9 @@ impl<'a> TransferEngine<'a> {
                     .map_err(|error| {
                         TransferFailure::new(TransferStage::DestinationUpload, error)
                     })?;
+                ensure_transfer_active(cancellation).map_err(|error| {
+                    TransferFailure::new(TransferStage::DestinationUpload, error)
+                })?;
                 Ok(true)
             }
             _ => Err(TransferFailure::new(
@@ -514,6 +529,13 @@ impl<'a> TransferEngine<'a> {
     }
 }
 
+fn ensure_transfer_active(cancellation: &CancellationToken) -> Result<()> {
+    if cancellation.is_cancelled() {
+        bail!("transfer cancelled");
+    }
+    Ok(())
+}
+
 fn estimate_remote_tree_bytes(
     provider: &dyn crate::RemoteProvider,
     root: &explorer_model::VirtualLocationDescriptor,
@@ -570,17 +592,19 @@ fn estimate_remote_tree_bytes(
 fn copy_local(
     source: &Path,
     destination: &Path,
+    cancellation: &CancellationToken,
     progress: &(dyn Fn(u64) + Send + Sync),
 ) -> Result<()> {
+    ensure_transfer_active(cancellation)?;
     let target = if destination.is_dir() {
         destination.join(source.file_name().context("source has no file name")?)
     } else {
         PathBuf::from(destination)
     };
     if source.is_dir() {
-        return copy_local_tree_progress(source, &target, progress);
+        return copy_local_tree_progress(source, &target, cancellation, progress);
     }
-    copy_local_file_progress(source, &target, progress)?;
+    copy_local_file_progress(source, &target, cancellation, progress)?;
     Ok(())
 }
 
@@ -588,8 +612,10 @@ fn copy_local_with_conflict(
     source: &Path,
     destination: &Path,
     conflict: ConflictDecision,
+    cancellation: &CancellationToken,
     progress: &(dyn Fn(u64) + Send + Sync),
 ) -> Result<bool> {
+    ensure_transfer_active(cancellation)?;
     let target = if destination.is_dir() {
         destination.join(source.file_name().context("source has no file name")?)
     } else {
@@ -604,9 +630,9 @@ fn copy_local_with_conflict(
             let candidate = target.with_file_name(keep_both_name(name, suffix));
             if !candidate.exists() {
                 if source.is_dir() {
-                    copy_local_tree_progress(source, &candidate, progress)?;
+                    copy_local_tree_progress(source, &candidate, cancellation, progress)?;
                 } else {
-                    copy_local_file_progress(source, &candidate, progress)?;
+                    copy_local_file_progress(source, &candidate, cancellation, progress)?;
                 }
                 return Ok(true);
             }
@@ -616,7 +642,7 @@ fn copy_local_with_conflict(
     if !local_destination_allows(&target, conflict)? {
         return Ok(false);
     }
-    copy_local(source, destination, progress)?;
+    copy_local(source, destination, cancellation, progress)?;
     Ok(true)
 }
 
@@ -766,20 +792,23 @@ fn ensure_staging_free_space(_: &Path) -> Result<()> {
 }
 
 fn copy_local_tree(source: &Path, target: &Path) -> Result<()> {
-    copy_local_tree_progress(source, target, &|_| {})
+    copy_local_tree_progress(source, target, &CancellationToken::new(), &|_| {})
 }
 
 fn copy_local_file_progress(
     source: &Path,
     target: &Path,
+    cancellation: &CancellationToken,
     progress: &(dyn Fn(u64) + Send + Sync),
 ) -> Result<()> {
+    ensure_transfer_active(cancellation)?;
     let mut input =
         fs::File::open(source).with_context(|| format!("open copy source {}", source.display()))?;
     let mut output = fs::File::create(target)
         .with_context(|| format!("create copy destination {}", target.display()))?;
     let mut buffer = vec![0_u8; 256 * 1024];
     loop {
+        ensure_transfer_active(cancellation)?;
         let read = input.read(&mut buffer)?;
         if read == 0 {
             break;
@@ -794,13 +823,16 @@ fn copy_local_file_progress(
 fn copy_local_tree_progress(
     source: &Path,
     target: &Path,
+    cancellation: &CancellationToken,
     progress: &(dyn Fn(u64) + Send + Sync),
 ) -> Result<()> {
+    ensure_transfer_active(cancellation)?;
     fs::create_dir_all(target)
         .with_context(|| format!("create copied directory {}", target.display()))?;
     let mut pending = vec![(source.to_path_buf(), target.to_path_buf(), 0_usize)];
     let mut visited = 0_usize;
     while let Some((from, to, depth)) = pending.pop() {
+        ensure_transfer_active(cancellation)?;
         visited = visited.saturating_add(1);
         if visited > 100_000 || depth > 64 {
             bail!("local copy tree exceeds safety limits");
@@ -808,6 +840,7 @@ fn copy_local_tree_progress(
         for entry in fs::read_dir(&from)
             .with_context(|| format!("enumerate copied directory {}", from.display()))?
         {
+            ensure_transfer_active(cancellation)?;
             let entry = entry?;
             let metadata = entry.file_type()?;
             let child_target = to.join(entry.file_name());
@@ -818,7 +851,7 @@ fn copy_local_tree_progress(
                 fs::create_dir_all(&child_target)?;
                 pending.push((entry.path(), child_target, depth + 1));
             } else {
-                copy_local_file_progress(&entry.path(), &child_target, progress)?;
+                copy_local_file_progress(&entry.path(), &child_target, cancellation, progress)?;
             }
         }
     }
@@ -1228,6 +1261,32 @@ mod tests {
         );
         assert_eq!(outcome.result, TransferResult::Cancelled);
         assert_eq!(delete_calls.load(AtomicOrdering::Acquire), 0);
+    }
+
+    #[test]
+    fn cancellation_during_local_move_stops_chunks_and_preserves_source() {
+        let registry = RemoteProviderRegistry::default();
+        let source_root = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let source = source_root.path().join("cancel.bin");
+        fs::write(&source, vec![0x7a; 2 * 1024 * 1024]).unwrap();
+        let cancellation = CancellationToken::new();
+        let callback_token = cancellation.clone();
+        let outcome = TransferEngine::new(&registry).transfer_with_conflict_and_progress(
+            LocationDescriptor::file_system(source.clone()),
+            LocationDescriptor::file_system(destination.path().to_path_buf()),
+            TransferMode::Move,
+            ConflictDecision::Replace,
+            &cancellation,
+            &move |_| callback_token.cancel(),
+        );
+        assert_eq!(outcome.result, TransferResult::Cancelled);
+        assert!(source.exists(), "cancelled move must preserve its source");
+        assert!(
+            fs::metadata(destination.path().join("cancel.bin"))
+                .is_ok_and(|metadata| metadata.len() < 2 * 1024 * 1024),
+            "no later copy chunk may start after cancellation"
+        );
     }
 
     #[test]

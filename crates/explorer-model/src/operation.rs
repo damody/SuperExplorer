@@ -1,6 +1,6 @@
 //! Pure operation-center state machine and conservative undo journal.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Instant};
 
 use explorer_common::{ExplorerError, RequestId};
 
@@ -179,6 +179,8 @@ pub struct OperationRecord {
     pub phase: OperationPhase,
     pub progress: OperationProgress,
     pub terminal: Option<OperationTerminal>,
+    speed_sample: Option<(u64, Instant)>,
+    bytes_per_second: Option<f64>,
 }
 
 impl OperationRecord {
@@ -196,6 +198,8 @@ impl OperationRecord {
                 current_item: None,
             },
             terminal: None,
+            speed_sample: None,
+            bytes_per_second: None,
         }
     }
 
@@ -224,6 +228,14 @@ impl OperationRecord {
         &mut self,
         progress: OperationProgress,
     ) -> Result<(), OperationStateError> {
+        self.update_progress_at(progress, Instant::now())
+    }
+
+    fn update_progress_at(
+        &mut self,
+        progress: OperationProgress,
+        now: Instant,
+    ) -> Result<(), OperationStateError> {
         if self.phase != OperationPhase::Running {
             return Err(OperationStateError::LateProgress);
         }
@@ -247,8 +259,47 @@ impl OperationRecord {
         {
             return Err(OperationStateError::RegressingProgress);
         }
+        if progress.phase == crate::TransferProgressPhase::Transferring {
+            if let Some((previous_bytes, previous_at)) = self.speed_sample
+                && progress.completed_bytes > previous_bytes
+            {
+                let elapsed = now.saturating_duration_since(previous_at).as_secs_f64();
+                if elapsed > 0.0 {
+                    let instantaneous =
+                        (progress.completed_bytes - previous_bytes) as f64 / elapsed;
+                    self.bytes_per_second =
+                        Some(self.bytes_per_second.map_or(instantaneous, |current| {
+                            current * 0.65 + instantaneous * 0.35
+                        }));
+                }
+            }
+            if self
+                .speed_sample
+                .is_none_or(|(bytes, _)| progress.completed_bytes > bytes)
+            {
+                self.speed_sample = Some((progress.completed_bytes, now));
+            }
+        }
         self.progress = progress;
         Ok(())
+    }
+
+    pub const fn bytes_per_second(&self) -> Option<f64> {
+        self.bytes_per_second
+    }
+
+    pub const fn is_transfer(&self) -> bool {
+        matches!(
+            &self.request.kind,
+            FileOperationKind::Copy { .. } | FileOperationKind::Move { .. }
+        )
+    }
+
+    pub const fn is_permanent_delete(&self) -> bool {
+        matches!(
+            &self.request.kind,
+            FileOperationKind::PermanentDelete { .. }
+        )
     }
 
     /// Records the sole terminal result.
@@ -296,12 +347,18 @@ pub enum OperationStateError {
 pub struct OperationCenterState {
     records: HashMap<RequestId, OperationRecord>,
     latest: Option<RequestId>,
+    order: Vec<RequestId>,
 }
 
 impl OperationCenterState {
     pub fn insert(&mut self, record: OperationRecord) -> bool {
         self.latest = Some(record.id);
-        self.records.insert(record.id, record).is_none()
+        let id = record.id;
+        let inserted = self.records.insert(id, record).is_none();
+        if inserted {
+            self.order.push(id);
+        }
+        inserted
     }
 
     pub fn get(&self, id: RequestId) -> Option<&OperationRecord> {
@@ -318,6 +375,31 @@ impl OperationCenterState {
 
     pub fn latest(&self) -> Option<&OperationRecord> {
         self.latest.and_then(|id| self.records.get(&id))
+    }
+
+    pub fn records_newest_first(&self) -> impl Iterator<Item = &OperationRecord> {
+        self.order
+            .iter()
+            .rev()
+            .filter_map(|id| self.records.get(id))
+    }
+
+    pub fn active_transfer_count(&self) -> usize {
+        self.records
+            .values()
+            .filter(|record| record.is_transfer() && !record.phase.is_terminal())
+            .count()
+    }
+
+    pub fn foreground(&self) -> Option<&OperationRecord> {
+        self.records_newest_first()
+            .find(|record| record.is_transfer() && !record.phase.is_terminal())
+            .or_else(|| {
+                self.records_newest_first().find(|record| {
+                    record.phase.is_terminal()
+                        || (!record.is_permanent_delete() && !record.phase.is_terminal())
+                })
+            })
     }
 
     /// Applies one correlated operation event without allowing late progress or duplicate terminal
@@ -571,8 +653,8 @@ impl OperationJournal {
 #[cfg(test)]
 mod tests {
     use super::{
-        JournalPreimage, JournalValidation, OperationJournal, OperationPhase, OperationRecord,
-        OperationStateError, RenameCommitTrigger, RenameEditorState,
+        JournalPreimage, JournalValidation, OperationCenterState, OperationJournal, OperationPhase,
+        OperationRecord, OperationStateError, RenameCommitTrigger, RenameEditorState,
     };
     use crate::{
         ConflictDecision, FileOperationFlags, FileOperationKind, FileOperationRequest,
@@ -590,6 +672,93 @@ mod tests {
                 ..FileOperationFlags::default()
             },
         }
+    }
+
+    fn copy_request(name: &str) -> FileOperationRequest {
+        FileOperationRequest {
+            kind: FileOperationKind::Copy {
+                items: vec![crate::ItemDescriptor {
+                    id: crate::ShellItemId::from_provider_bytes(name.as_bytes().to_vec())
+                        .expect("non-empty id"),
+                    location: LocationDescriptor::file_system(format!(r"C:\fixture\{name}")),
+                }],
+                destination: LocationDescriptor::file_system(r"C:\target"),
+            },
+            flags: FileOperationFlags::default(),
+        }
+    }
+
+    #[test]
+    fn operation_center_orders_counts_and_falls_back_to_older_active_transfer() {
+        let mut center = OperationCenterState::default();
+        let older_id = explorer_common::RequestId::new();
+        let newer_id = explorer_common::RequestId::new();
+        center.insert(OperationRecord::queued(
+            older_id,
+            copy_request("older.bin"),
+            1,
+        ));
+        center.insert(OperationRecord::queued(
+            newer_id,
+            copy_request("newer.bin"),
+            1,
+        ));
+        assert_eq!(center.active_transfer_count(), 2);
+        assert_eq!(center.foreground().map(|record| record.id), Some(newer_id));
+        center
+            .get_mut(newer_id)
+            .unwrap()
+            .start()
+            .expect("start newer");
+        center
+            .get_mut(newer_id)
+            .unwrap()
+            .finish(OperationTerminal::Finished)
+            .expect("finish newer");
+        assert_eq!(center.active_transfer_count(), 1);
+        assert_eq!(center.foreground().map(|record| record.id), Some(older_id));
+        assert_eq!(
+            center
+                .records_newest_first()
+                .map(|record| record.id)
+                .collect::<Vec<_>>(),
+            vec![newer_id, older_id]
+        );
+    }
+
+    #[test]
+    fn operation_speed_uses_monotonic_samples_and_rejects_late_updates() {
+        let mut record = OperationRecord::queued(
+            explorer_common::RequestId::new(),
+            copy_request("speed.bin"),
+            1,
+        );
+        record.start().expect("start");
+        let start = std::time::Instant::now();
+        let progress = |bytes| OperationProgress {
+            completed_items: 0,
+            total_items: 1,
+            completed_bytes: bytes,
+            total_bytes: Some(1_000),
+            phase: crate::TransferProgressPhase::Transferring,
+            current_item: Some("speed.bin".to_owned()),
+        };
+        record.update_progress_at(progress(100), start).unwrap();
+        assert_eq!(record.bytes_per_second(), None);
+        record
+            .update_progress_at(progress(300), start + std::time::Duration::from_millis(200))
+            .unwrap();
+        assert_eq!(record.bytes_per_second(), Some(1_000.0));
+        record
+            .update_progress_at(progress(300), start + std::time::Duration::from_millis(400))
+            .unwrap();
+        assert_eq!(record.bytes_per_second(), Some(1_000.0));
+        record.finish(OperationTerminal::Cancelled).unwrap();
+        assert_eq!(
+            record.update_progress_at(progress(400), start + std::time::Duration::from_millis(600)),
+            Err(OperationStateError::LateProgress)
+        );
+        assert_eq!(record.bytes_per_second(), Some(1_000.0));
     }
 
     #[test]
