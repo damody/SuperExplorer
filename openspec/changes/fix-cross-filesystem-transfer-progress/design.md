@@ -13,6 +13,7 @@
 - 讓跨遠端 staging 形成單調、不重設的兩階段進度。
 - 保持 bounded/coalesced publication、request correlation、terminal barrier 與 credential-safe diagnostics。
 - 以聚焦測試及真實 ADB／SFTP 大型 fixture 證明完成前存在 0% 與 100% 之間的進度。
+- 讓任何大小的Copy／Move在正常負載下於提交後300ms內顯示Preparing狀態，消除遠端preflight沉默。
 
 **Non-Goals:**
 
@@ -56,6 +57,14 @@ Reporter 以 byte threshold 與最短時間合併更新，但 stage/item/termina
 - B 類：若 provider 實作證明大小或 callback 假設錯誤，可在核准範圍內同步修正 design/spec/tasks，重開受影響 evidence 並 strict validate。
 - C 類：降低真實 byte gate、移除任何傳輸方向、改 public ABI、增加 dependency／權限／外部 destructive 範圍，必須取得使用者核准。
 
+### 9. Operation record先於阻塞preflight可見
+
+UI在具有效request context的Copy／Move提交時立即插入同一request id的operation record；remote service亦在metadata estimator前force emit `Preparing`。這兩層共同保證provider連線或遞迴估算不會造成數秒沉默。不得以人工sleep延遲傳輸來換取可見性。第一個成功delivered-byte delta才切換`Transferring`，terminal更新同一record。
+
+### 10. 小檔與大檔採不同但真實的呈現
+
+小檔可能在兩個render frame間完成，不要求虛構1–99%中間值，但必須呈現立即Preparing與明確`複製完成／移動完成`terminal。足以產生多個stream chunk的大檔則必須在terminal前觀察到真實確定百分比或indeterminate bytes更新。
+
 ## Risks / Trade-offs
 
 - **預掃描增加遠端往返** → 對 metadata 已在 list cache 的項目重用資料；無可靠資料時降級 indeterminate，不為百分比阻塞太久。
@@ -64,6 +73,7 @@ Reporter 以 byte threshold 與最短時間合併更新，但 stage/item/termina
 - **兩階段失敗造成誤刪來源** → cleanup 仍依逐項 destination terminal；progress 不授權 deletion。
 - **u64 overflow** → checked/saturating aggregation並降級未知，不 panic。
 - **敏感路徑洩漏** → UI 可顯示使用者要求的 public location；persistent diagnostic 維持 credential redaction。
+- **小檔完成快於render** → record在submit時先建立，terminal文字明確；不加入人工傳輸延遲。
 
 ## Migration Plan
 
