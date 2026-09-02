@@ -1,0 +1,4 @@
+Scope: modified source, runner, OpenSpec artifacts and evidence
+Result: PASS
+No password, URI userinfo, private key, or source file content is stored in this change evidence.
+SFTP authentication was supplied only through interactive stdin.
