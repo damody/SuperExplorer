@@ -3824,6 +3824,86 @@ struct FolderOptionsWindowControllerV1 {
     lifecycle: FolderOptionsControllerLifecycleV1,
 }
 
+#[derive(Default)]
+struct TransferWindowControllerV1 {
+    window: Option<gpui::WindowHandle<explorer_ui::transfer_center_window::TransferCenterWindow>>,
+    owner: Option<gpui::WindowHandle<ExplorerRoot>>,
+    hwnd: u64,
+    owner_hwnd: u64,
+    visible: bool,
+}
+
+impl TransferWindowControllerV1 {
+    fn clear(&mut self) {
+        self.window = None;
+        self.owner = None;
+        self.hwnd = 0;
+        self.owner_hwnd = 0;
+        self.visible = false;
+    }
+
+    fn is_owner_group_foreground(&self) -> bool {
+        native_foreground_window().is_some_and(|hwnd| hwnd == self.hwnd || hwnd == self.owner_hwnd)
+    }
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code, reason = "read-only Win32 foreground-window query")]
+fn native_foreground_window() -> Option<u64> {
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    let hwnd = unsafe { GetForegroundWindow() };
+    (!hwnd.0.is_null()).then(|| hwnd.0 as usize as u64)
+}
+
+#[cfg(not(windows))]
+fn native_foreground_window() -> Option<u64> {
+    None
+}
+
+#[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "bounded Win32 owner/tool-window style bridge for GPUI popup"
+)]
+fn configure_transfer_tool_window(hwnd_value: u64, owner_value: u64, visible: bool) {
+    use windows::Win32::{
+        Foundation::HWND,
+        UI::WindowsAndMessaging::{
+            GWL_EXSTYLE, GWLP_HWNDPARENT, GetWindowLongPtrW, IsWindow, SW_HIDE, SW_SHOWNOACTIVATE,
+            SetWindowLongPtrW, ShowWindow, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+        },
+    };
+    let hwnd = HWND(hwnd_value as usize as *mut std::ffi::c_void);
+    let owner = HWND(owner_value as usize as *mut std::ffi::c_void);
+    unsafe {
+        // Activation callbacks are deferred so owner/tool focus transitions can
+        // settle.  The application may close either HWND during that delay.
+        // Never call style/show APIs with a stale GPUI native handle.
+        if hwnd_value == 0 || !IsWindow(Some(hwnd)).as_bool() {
+            return;
+        }
+        let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let style = (style as u32 | WS_EX_TOOLWINDOW.0) & !WS_EX_APPWINDOW.0;
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style as isize);
+        SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, owner.0 as isize);
+        let _ = ShowWindow(hwnd, if visible { SW_SHOWNOACTIVATE } else { SW_HIDE });
+    }
+}
+
+#[cfg(not(windows))]
+fn configure_transfer_tool_window(_: u64, _: u64, _: bool) {}
+
+fn gpui_window_hwnd(window: &gpui::Window) -> u64 {
+    use raw_window_handle::RawWindowHandle;
+    raw_window_handle::HasWindowHandle::window_handle(window)
+        .ok()
+        .and_then(|handle| match handle.as_raw() {
+            RawWindowHandle::Win32(handle) => u64::try_from(handle.hwnd.get()).ok(),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FolderOptionsOpenIntentV1 {
     Activate { generation: u64 },
@@ -4404,6 +4484,8 @@ impl ApplicationLifecycle {
 
                 let folder_options_controller =
                     Rc::new(RefCell::new(FolderOptionsWindowControllerV1::default()));
+                let transfer_window_controller =
+                    Rc::new(RefCell::new(TransferWindowControllerV1::default()));
 
                 cx.on_app_quit(move |_| {
                     if let Err(error) = shutdown_shared(&shutdown_resources) {
@@ -4423,6 +4505,8 @@ impl ApplicationLifecycle {
                 .detach();
 
                 let folder_options_controller_for_close = Rc::clone(&folder_options_controller);
+                let transfer_window_controller_for_close =
+                    Rc::clone(&transfer_window_controller);
                 cx.on_window_closed(move |cx, closed_id| {
                     let closing = {
                         let mut controller = folder_options_controller_for_close.borrow_mut();
@@ -4447,6 +4531,25 @@ impl ApplicationLifecycle {
                             });
                         } else {
                             let _ = options.update(cx, |_, window, _| window.remove_window());
+                        }
+                    }
+                    {
+                        let mut transfer = transfer_window_controller_for_close.borrow_mut();
+                        let tool_closed = transfer
+                            .window
+                            .is_some_and(|handle| handle.window_id() == closed_id);
+                        let owner_closed = transfer
+                            .owner
+                            .is_some_and(|handle| handle.window_id() == closed_id);
+                        if tool_closed || owner_closed {
+                            // Win32 destroys owned native windows as part of
+                            // owner teardown.  Calling GPUI remove_window from
+                            // this already-closed-owner callback races that
+                            // native destruction and produces stale-HWND
+                            // accessibility errors.  Clear our coordinator;
+                            // the tool's own close notification drains GPUI's
+                            // remaining window entry idempotently.
+                            transfer.clear();
                         }
                     }
                     if cx.windows().is_empty() {
@@ -4482,6 +4585,8 @@ impl ApplicationLifecycle {
                 let size_map_runtime_for_window = size_map_runtime.clone();
                 let remote_runtime_for_window = Arc::clone(&remote_runtime);
                 let folder_options_controller_for_window = Rc::clone(&folder_options_controller);
+                let transfer_window_controller_for_window =
+                    Rc::clone(&transfer_window_controller);
                 let folder_options_diagnostics = diagnostics.clone();
                 let fixture_diagnostics = diagnostics.clone();
                 let tokens = fixture_tokens(fixture_for_window.as_ref());
@@ -4498,6 +4603,20 @@ impl ApplicationLifecycle {
                     }
                     let owner_window =
                         gpui::WindowHandle::<ExplorerRoot>::new(window.window_handle().window_id());
+                    let transfer_before_owner_close =
+                        Rc::clone(&transfer_window_controller_for_window);
+                    window.on_window_should_close(cx, move |_, cx| {
+                        let tool = {
+                            let mut controller = transfer_before_owner_close.borrow_mut();
+                            let tool = controller.window;
+                            controller.clear();
+                            tool
+                        };
+                        if let Some(tool) = tool {
+                            let _ = tool.update(cx, |_, window, _| window.remove_window());
+                        }
+                        true
+                    });
                     let root = cx.new(move |cx| {
                         let extension_ui_pump =
                             extension_job_ui_bridge.take().and_then(|(inbox, ingress)| {
@@ -4534,6 +4653,8 @@ impl ApplicationLifecycle {
                         )
                     });
                     let controller = Rc::clone(&folder_options_controller_for_window);
+                    let transfer_controller =
+                        Rc::clone(&transfer_window_controller_for_window);
                     let observer_diagnostics = folder_options_diagnostics.clone();
                     let bookmark_manager_handle = Rc::new(RefCell::new(None::<
                         gpui::WindowHandle<
@@ -4765,6 +4886,105 @@ impl ApplicationLifecycle {
                                 }
                             },
                         ));
+                        root.attach_transfer_window_observer(Rc::new(move |request, cx| {
+                            let existing = transfer_controller.borrow().window;
+                            if !request.visible {
+                                let mut state = transfer_controller.borrow_mut();
+                                state.visible = false;
+                                if state.hwnd != 0 {
+                                    configure_transfer_tool_window(
+                                        state.hwnd,
+                                        state.owner_hwnd,
+                                        false,
+                                    );
+                                }
+                                return true;
+                            }
+                            if let Some(existing) = existing
+                                && existing
+                                    .update(cx, |_, window, _| {
+                                        let hwnd = gpui_window_hwnd(window);
+                                        configure_transfer_tool_window(
+                                            hwnd,
+                                            request.owner_hwnd,
+                                            true,
+                                        );
+                                    })
+                                    .is_ok()
+                            {
+                                transfer_controller.borrow_mut().visible = true;
+                                return true;
+                            }
+                            transfer_controller.borrow_mut().clear();
+                            let bounds = explorer_ui::transfer_center_window::transfer_window_bounds(
+                                request.owner_bounds,
+                            );
+                            let options =
+                                explorer_ui::transfer_center_window::transfer_window_options(bounds);
+                            let focus_controller = Rc::clone(&transfer_controller);
+                            let focus_owner = owner_window;
+                            let on_deactivate = Rc::new(move |cx: &mut gpui::App| {
+                                let is_live = {
+                                    let controller = focus_controller.borrow();
+                                    controller.visible
+                                        && controller.hwnd != 0
+                                        && controller.owner_hwnd != 0
+                                };
+                                if !is_live
+                                    || focus_controller.borrow().is_owner_group_foreground()
+                                {
+                                    return;
+                                }
+                                let state = focus_controller.borrow();
+                                if state.hwnd != 0 {
+                                    configure_transfer_tool_window(
+                                        state.hwnd,
+                                        state.owner_hwnd,
+                                        false,
+                                    );
+                                }
+                                drop(state);
+                                focus_controller.borrow_mut().visible = false;
+                                let _ = focus_owner.update(cx, |root, window, cx| {
+                                    root.dispatch_transfer_window_action(
+                                        explorer_ui::actions::ExplorerAction::CloseTransferPanel,
+                                        explorer_ui::actions::ActionSource::Programmatic,
+                                        window,
+                                        cx,
+                                    );
+                                });
+                            });
+                            let opened = cx.open_window(options, move |window, cx| {
+                                let hwnd = gpui_window_hwnd(window);
+                                configure_transfer_tool_window(hwnd, request.owner_hwnd, true);
+                                cx.new(|cx| {
+                                    explorer_ui::transfer_center_window::TransferCenterWindow::new(
+                                        owner_window,
+                                        on_deactivate,
+                                        window,
+                                        cx,
+                                    )
+                                })
+                            });
+                            match opened {
+                                Ok(handle) => {
+                                    let hwnd = handle
+                                        .update(cx, |_, window, _| gpui_window_hwnd(window))
+                                        .unwrap_or_default();
+                                    let mut state = transfer_controller.borrow_mut();
+                                    state.window = Some(handle);
+                                    state.owner = Some(owner_window);
+                                    state.hwnd = hwnd;
+                                    state.owner_hwnd = request.owner_hwnd;
+                                    state.visible = true;
+                                    true
+                                }
+                                Err(error) => {
+                                    tracing::warn!(%error, "Transfer tool window creation failed");
+                                    false
+                                }
+                            }
+                        }));
                         root.attach_folder_options_window_observer(Rc::new(move |create, snapshot, cx| {
                             let existing = controller.borrow().window;
                             if let Some(existing) = existing {
