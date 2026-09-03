@@ -1,0 +1,23 @@
+{
+  "status": "passed",
+  "remote_path": "adb://emulator-5554/sdcard/Download",
+  "cancel_button_width": 151.0,
+  "cancel_button_compact": true,
+  "cancelling_latency_ms": 69.7,
+  "cancelling_within_two_seconds": true,
+  "first_speed": "複製 1 個項目｜來源由系統剪貼簿提供 → adb://emulator-5554/sdcard/Download｜正在複製 56%（583.7 MB / 1.0 GB）｜2.1 GB/s｜進度 0/1 項目",
+  "second_speed": "複製 1 個項目｜來源由系統剪貼簿提供 → adb://emulator-5554/sdcard/Download｜已取消",
+  "speed_snapshot_interval_ms": 269.4,
+  "terminal": "cancel request reached terminal UI state",
+  "tool_window": {
+    "hwnd": 921306,
+    "owner_hwnd": 1445652,
+    "expected_owner_hwnd": 1445652,
+    "is_owned": true,
+    "has_toolwindow_style": true,
+    "has_appwindow_style": false,
+    "width": 934.0,
+    "height": 880.0,
+    "hides_on_external_focus": true
+  }
+}
