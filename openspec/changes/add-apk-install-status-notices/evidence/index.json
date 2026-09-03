@@ -1,0 +1,30 @@
+{
+  "change": "add-apk-install-status-notices",
+  "result": "PASS",
+  "implemented": [
+    "typed started/succeeded/failed/cancelled/timed-out lifecycle",
+    "friendly device name plus exact serial across broker boundary",
+    "Started delivery before asynchronous ADB resolver/process work",
+    "system-first ADB resolution with managed fallback unchanged",
+    "bounded concurrent in-app notices with first-terminal-wins",
+    "localized 安裝中 and 安裝完成 text with indeterminate activity",
+    "short success and longer unsuccessful retention",
+    "qq9.3.55.apk Local single-file eligibility"
+  ],
+  "verification": {
+    "focused_model_tests": "PASS (2)",
+    "focused_ui_tests": "PASS (2)",
+    "broker_round_trip": "PASS (1)",
+    "adb_argument_safety": "PASS (1)",
+    "qq_apk_eligibility": "PASS (1)",
+    "explorer_app_lib": "PASS (119 passed, 1 prerequisite-ignored)",
+    "explorer_app_check": "PASS",
+    "format": "PASS",
+    "openspec_strict": "PASS",
+    "headful_lifecycle": "PASS (SuperExplorer started and auto-closed cleanly)"
+  },
+  "safety": {
+    "real_device_install_performed": false,
+    "reason": "No explicit authority to mutate a connected Android device; supplied APK was used for eligibility and presentation verification."
+  }
+}
