@@ -1,0 +1,36 @@
+{
+  "change": "fix-transient-transfer-window-adb-progress",
+  "timestamp": "2026-09-02T15:56:00+08:00",
+  "status": "passed",
+  "gates": {
+    "G-AUTO": "cargo fmt/check, focused model, ADB provider, app reporter and UI tests passed",
+    "G-WINDOW-STYLE": "native probe confirmed owner, WS_EX_TOOLWINDOW and no WS_EX_APPWINDOW",
+    "G-FOCUS": "headful probe confirmed external-focus hide",
+    "G-CANCEL-TERMINAL": "ADB, SFTP and installed probes displayed 已取消",
+    "G-ADB-CADENCE": "native ADB PTY parser and 200 ms reporter tests passed",
+    "G-PACKAGE": "release and installed hashes match"
+  },
+  "task_ids": [
+    "1.1.1", "1.1.2", "1.1.3", "1.2.1", "1.2.2", "1.2.3", "1.2.4",
+    "2.1.1", "2.1.2", "2.1.3", "2.2.1", "2.2.2", "2.2.3",
+    "3.1.1", "3.1.2", "3.1.3", "3.1.4", "3.2.1", "3.2.2", "3.2.3", "3.2.4",
+    "4.1.1", "4.1.2", "4.1.3", "4.2.1", "4.2.2", "4.2.3", "4.2.4", "4.2.5", "4.2.6"
+  ],
+  "commands": [
+    "cargo fmt --all -- --check",
+    "cargo test -p explorer-model operation_center_orders_counts_and_falls_back_to_older_active_transfer --lib",
+    "cargo test -p explorer-model operation_speed_uses_monotonic_samples_and_rejects_late_updates --lib",
+    "cargo test -p explorer-model operation_state_machine_has_exactly_one_terminal --lib",
+    "cargo test -p explorer-remote adb::tests --lib",
+    "cargo test -p explorer-app remote_service::tests --lib",
+    "cargo test -p explorer-ui transfer_center_window --lib",
+    "cargo check -p explorer-app",
+    "openspec validate fix-transient-transfer-window-adb-progress --strict",
+    "build_test_install.bat"
+  ],
+  "hashes": {
+    "release_superexplorer_sha256": "0CCC729E43E102AE11CD99F32F77A5706B9351E086B6184256A05CA8A26FDD0E",
+    "installed_superexplorer_sha256": "0CCC729E43E102AE11CD99F32F77A5706B9351E086B6184256A05CA8A26FDD0E",
+    "installer_sha256": "B4933EFFC2FE677ACB1529200AF1A416B3C9F2A04B84BFC2F8437A3FE7F3F4B3"
+  }
+}
