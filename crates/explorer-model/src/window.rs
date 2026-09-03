@@ -235,6 +235,7 @@ impl ExplorerWindowState {
             | ExplorerEvent::OperationProgress { .. }
             | ExplorerEvent::OperationFinished { .. }
             | ExplorerEvent::ContextMenuFinished { .. }
+            | ExplorerEvent::ApkInstallStatus { .. }
             | ExplorerEvent::ShellIconLoaded { .. }
             | ExplorerEvent::ShellIconFailed { .. }
             | ExplorerEvent::ThumbnailFinished { .. }
