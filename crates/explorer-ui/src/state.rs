@@ -1,7 +1,7 @@
 //! Pure window presentation state consumed by the GPUI root.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -18,6 +18,17 @@ use explorer_model::{
 
 const DIRECTORY_CACHE_MAX_LOCATIONS: usize = 64;
 const DIRECTORY_CACHE_MAX_ROWS: usize = 100_000;
+const APK_INSTALL_NOTICE_CAPACITY: usize = 8;
+
+#[derive(Clone, Debug)]
+pub struct ApkInstallNotice {
+    pub context: RequestContext,
+    pub apk_name: String,
+    pub device_name: String,
+    pub serial: String,
+    pub status: explorer_model::ApkInstallStatus,
+    pub terminal_at: Option<Instant>,
+}
 
 fn unique_remote_folder_symlink_name(base: &str, existing: &HashSet<&str>) -> String {
     for ordinal in 1_u64.. {
@@ -711,6 +722,7 @@ pub struct AppViewState {
     divider: DividerInteraction,
     operation_center: OperationCenterState,
     operation_terminal_notice: Option<(explorer_common::RequestId, Instant)>,
+    apk_install_notices: VecDeque<ApkInstallNotice>,
     cancelling_operations: HashSet<explorer_common::RequestId>,
     rename_editor: Option<explorer_model::RenameEditorState>,
     pending_new_folder_rename: Option<PendingNewFolderRename>,
@@ -964,6 +976,7 @@ impl AppViewState {
             divider: DividerInteraction::default(),
             operation_center: OperationCenterState::default(),
             operation_terminal_notice: None,
+            apk_install_notices: VecDeque::with_capacity(APK_INSTALL_NOTICE_CAPACITY),
             cancelling_operations: HashSet::new(),
             rename_editor: None,
             pending_new_folder_rename: None,
@@ -1711,6 +1724,42 @@ impl AppViewState {
             .is_some_and(|elapsed| {
                 elapsed >= Duration::from_secs(7) && elapsed <= Duration::from_millis(8_050)
             })
+    }
+
+    pub(crate) fn apk_install_notices(&self) -> &VecDeque<ApkInstallNotice> {
+        &self.apk_install_notices
+    }
+
+    pub(crate) fn accepts_apk_install_event(
+        &self,
+        context: &RequestContext,
+        status: &explorer_model::ApkInstallStatus,
+    ) -> bool {
+        if matches!(status, explorer_model::ApkInstallStatus::Started) {
+            return self.pending_context_menu.as_ref() == Some(context)
+                && !self
+                    .apk_install_notices
+                    .iter()
+                    .any(|notice| notice.context.request_id == context.request_id);
+        }
+        self.apk_install_notices.iter().any(|notice| {
+            notice.context.request_id == context.request_id && !notice.status.is_terminal()
+        })
+    }
+
+    pub(crate) fn apk_notice_needs_repaint(&self, now: Instant) -> bool {
+        self.apk_install_notices.iter().any(|notice| {
+            notice.terminal_at.is_some_and(|at| {
+                let elapsed = now.saturating_duration_since(at);
+                let lifetime =
+                    if matches!(notice.status, explorer_model::ApkInstallStatus::Succeeded) {
+                        Duration::from_secs(5)
+                    } else {
+                        Duration::from_secs(12)
+                    };
+                elapsed <= lifetime + Duration::from_millis(100)
+            })
+        })
     }
 
     pub(crate) fn accepts_ancestry_context(&self, context: &RequestContext) -> bool {
@@ -4377,6 +4426,57 @@ impl AppViewState {
         }
         if let ExplorerEvent::ClipboardChanged { state } = &event {
             self.clipboard = state.clone();
+            return WindowEventOutcome::Applied;
+        }
+        if let ExplorerEvent::ApkInstallStatus {
+            context,
+            apk_name,
+            device_name,
+            serial,
+            status,
+        } = &event
+        {
+            match status {
+                explorer_model::ApkInstallStatus::Started => {
+                    if self.pending_context_menu.as_ref() != Some(context)
+                        || self
+                            .apk_install_notices
+                            .iter()
+                            .any(|notice| notice.context.request_id == context.request_id)
+                    {
+                        return WindowEventOutcome::IgnoredStale;
+                    }
+                    if self.apk_install_notices.len() >= APK_INSTALL_NOTICE_CAPACITY {
+                        if let Some(index) = self
+                            .apk_install_notices
+                            .iter()
+                            .position(|notice| notice.status.is_terminal())
+                        {
+                            self.apk_install_notices.remove(index);
+                        } else {
+                            return WindowEventOutcome::IgnoredStale;
+                        }
+                    }
+                    self.apk_install_notices.push_back(ApkInstallNotice {
+                        context: context.clone(),
+                        apk_name: apk_name.clone(),
+                        device_name: device_name.clone(),
+                        serial: serial.clone(),
+                        status: status.clone(),
+                        terminal_at: None,
+                    });
+                }
+                _ => {
+                    let Some(notice) = self.apk_install_notices.iter_mut().find(|notice| {
+                        notice.context.request_id == context.request_id
+                            && !notice.status.is_terminal()
+                    }) else {
+                        return WindowEventOutcome::IgnoredStale;
+                    };
+                    notice.status = status.clone();
+                    notice.terminal_at = Some(Instant::now());
+                }
+            }
             return WindowEventOutcome::Applied;
         }
         if let ExplorerEvent::ContextMenuFinished { context, outcome } = &event {
@@ -8762,6 +8862,45 @@ mod tests {
             explorer_model::WindowEventOutcome::Applied
         );
         assert!(state.context_menu_error().is_none());
+    }
+
+    #[test]
+    fn apk_install_notice_starts_immediately_and_first_terminal_wins() {
+        let mut state = state_with_rows();
+        let command = state
+            .begin_context_menu_request(None, 42, 100, 200, 10.0, 20.0, false, false)
+            .expect("context menu request");
+        let explorer_model::ExplorerCommand::ShowContextMenu { context, .. } = command else {
+            panic!("context menu command");
+        };
+        let event = |status| explorer_model::ExplorerEvent::ApkInstallStatus {
+            context: context.clone(),
+            apk_name: "qq9.3.55.apk".to_owned(),
+            device_name: "Pixel 9".to_owned(),
+            serial: "emulator-5554".to_owned(),
+            status,
+        };
+        assert_eq!(
+            state.apply_service_event(event(explorer_model::ApkInstallStatus::Started)),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert_eq!(state.apk_install_notices().len(), 1);
+        assert_eq!(
+            state.apply_service_event(event(explorer_model::ApkInstallStatus::Started)),
+            explorer_model::WindowEventOutcome::IgnoredStale
+        );
+        assert_eq!(
+            state.apply_service_event(event(explorer_model::ApkInstallStatus::Succeeded)),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert_eq!(
+            state.apply_service_event(event(explorer_model::ApkInstallStatus::TimedOut)),
+            explorer_model::WindowEventOutcome::IgnoredStale
+        );
+        assert!(matches!(
+            state.apk_install_notices()[0].status,
+            explorer_model::ApkInstallStatus::Succeeded
+        ));
     }
 
     #[test]

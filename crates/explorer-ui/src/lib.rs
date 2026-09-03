@@ -31,6 +31,7 @@ mod fluent_assets;
 pub mod folder_options_window;
 pub mod folder_size_column;
 pub mod size_map_view;
+pub mod transfer_center_window;
 pub use fluent_assets::ExplorerAssets;
 mod formatting;
 pub use formatting::format_file_size;
@@ -906,6 +907,7 @@ use gpui::{
     size,
 };
 use gpui_elements::editable_text::{EditableTextState, StringStorage, TextChanged};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::{
     actions::{ActionSource, ExplorerAction, dispatch_action},
@@ -1123,6 +1125,7 @@ pub struct ExplorerRoot {
     remote_properties_window_observer: Option<RemotePropertiesWindowObserver>,
     remote_symlink_window_observer: Option<RemoteSymlinkWindowObserver>,
     details_column_menu_popup_observer: Option<DetailsColumnMenuPopupObserver>,
+    transfer_window_observer: Option<TransferWindowObserver>,
     remote_runtime: Option<RemoteRuntimeState>,
     pending_remote_selection: Option<(
         explorer_model::TabId,
@@ -1213,6 +1216,12 @@ pub type DetailsColumnMenuPopupObserver = std::rc::Rc<
     dyn Fn(
         DetailsColumnMenuPopupRequest,
         Vec<ExplorerAction>,
+        &mut gpui::Context<ExplorerRoot>,
+    ) -> bool,
+>;
+pub type TransferWindowObserver = std::rc::Rc<
+    dyn Fn(
+        transfer_center_window::TransferWindowRequestV1,
         &mut gpui::Context<ExplorerRoot>,
     ) -> bool,
 >;
@@ -1608,6 +1617,7 @@ impl ExplorerRoot {
             remote_properties_window_observer: None,
             remote_symlink_window_observer: None,
             details_column_menu_popup_observer: None,
+            transfer_window_observer: None,
             remote_runtime: None,
             pending_remote_selection: None,
             last_window_title: None,
@@ -1709,6 +1719,39 @@ impl ExplorerRoot {
 
     pub fn attach_folder_options_window_observer(&mut self, observer: FolderOptionsWindowObserver) {
         self.folder_options_window_observer = Some(observer);
+    }
+
+    pub fn attach_transfer_window_observer(&mut self, observer: TransferWindowObserver) {
+        self.transfer_window_observer = Some(observer);
+    }
+
+    pub fn transfer_window_snapshot(&self) -> transfer_center_window::TransferWindowSnapshotV1 {
+        let records = self
+            .state
+            .operation_center()
+            .records_newest_first()
+            .cloned()
+            .collect::<Vec<_>>();
+        let cancelling_ids = records
+            .iter()
+            .filter(|record| self.state.operation_is_cancelling(record.id))
+            .map(|record| record.id)
+            .collect();
+        transfer_center_window::TransferWindowSnapshotV1 {
+            tokens: self.tokens,
+            records,
+            cancelling_ids,
+        }
+    }
+
+    pub fn dispatch_transfer_window_action(
+        &mut self,
+        action: ExplorerAction,
+        source: ActionSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.handle_action(action, source, window, cx);
     }
 
     pub fn attach_bookmark_editor_window_observer(
@@ -3177,6 +3220,15 @@ impl ExplorerRoot {
         ) {
             return true;
         }
+        if let explorer_model::ExplorerEvent::ApkInstallStatus {
+            context, status, ..
+        } = event
+        {
+            // The native context-menu request may be cancelled or retired as soon as its popup
+            // closes. APK execution continues in its detached worker, so its correlated terminal
+            // must be admitted by the active APK notice rather than the popup cancellation bit.
+            return self.state.accepts_apk_install_event(context, status);
+        }
         if let explorer_model::ExplorerEvent::DirectoryChanged {
             tab_id, generation, ..
         } = event
@@ -3437,6 +3489,7 @@ impl ExplorerRoot {
             remote_properties_window_observer: None,
             remote_symlink_window_observer: None,
             details_column_menu_popup_observer: None,
+            transfer_window_observer: None,
             remote_runtime: None,
             pending_remote_selection: None,
             last_window_title: None,
@@ -3546,6 +3599,7 @@ impl ExplorerRoot {
             remote_properties_window_observer: None,
             remote_symlink_window_observer: None,
             details_column_menu_popup_observer: None,
+            transfer_window_observer: None,
             remote_runtime: None,
             pending_remote_selection: None,
             last_window_title: None,
@@ -3761,6 +3815,8 @@ impl ExplorerRoot {
                         let size_map_changed = this.pump_size_map_runtime();
                         let operation_notice_changed =
                             this.state.operation_notice_needs_repaint(Instant::now());
+                        let apk_notice_changed =
+                            this.state.apk_notice_needs_repaint(Instant::now());
                         if extension_changed
                             || sftp_login_changed
                             || remote_runtime_changed
@@ -3768,6 +3824,7 @@ impl ExplorerRoot {
                             || code_lines_changed
                             || size_map_changed
                             || operation_notice_changed
+                            || apk_notice_changed
                         {
                             cx.notify();
                         }
@@ -6112,6 +6169,27 @@ impl ExplorerRoot {
         let ((), measurement) = measure_callback(action.name(), || {
             dispatch_action(&mut self.state, action.clone(), source);
         });
+        if matches!(
+            action,
+            ExplorerAction::ToggleTransferPanel | ExplorerAction::CloseTransferPanel
+        ) && let Some(observer) = self.transfer_window_observer.clone()
+        {
+            let owner_hwnd = HasWindowHandle::window_handle(window)
+                .ok()
+                .and_then(|handle| match handle.as_raw() {
+                    RawWindowHandle::Win32(handle) => u64::try_from(handle.hwnd.get()).ok(),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            let _ = observer(
+                transfer_center_window::TransferWindowRequestV1 {
+                    visible: self.state.transfer_panel_open(),
+                    owner_hwnd,
+                    owner_bounds: window.window_bounds().get_bounds(),
+                },
+                cx,
+            );
+        }
         if let ExplorerAction::OpenDetailsColumnMenu {
             column,
             owner_window,
@@ -9877,6 +9955,39 @@ mod tests {
         assert!(root.accepts_presentation_event(&current_event));
         assert!(!root.accepts_presentation_event(&stale_event));
         assert!(!root.accepts_presentation_event(&wrong_request_event));
+    }
+
+    #[test]
+    fn apk_terminal_is_admitted_after_native_menu_context_is_retired() {
+        let mut root = ExplorerRoot::new(UiTokens::default());
+        let command = root
+            .state
+            .begin_context_menu_request(None, 42, 100, 200, 10.0, 20.0, false, false)
+            .expect("context menu request");
+        let context = command.context().expect("context").clone();
+        let event = |status| explorer_model::ExplorerEvent::ApkInstallStatus {
+            context: context.clone(),
+            apk_name: "endfield-hg-1-1.5.3.apk".to_owned(),
+            device_name: "ASUSAI2501B".to_owned(),
+            serial: "emulator-5554".to_owned(),
+            status,
+        };
+        let started = event(explorer_model::ApkInstallStatus::Started);
+        assert!(root.accepts_presentation_event(&started));
+        assert_eq!(
+            root.state.apply_service_event(started),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        context.cancellation.cancel();
+        let terminal = event(explorer_model::ApkInstallStatus::Succeeded);
+        assert!(
+            root.accepts_presentation_event(&terminal),
+            "an active APK notice, not the retired popup token, owns terminal admission"
+        );
+        assert_eq!(
+            root.state.apply_service_event(terminal),
+            explorer_model::WindowEventOutcome::Applied
+        );
     }
 
     #[test]

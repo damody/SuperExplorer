@@ -111,16 +111,17 @@ pub use preview::{
     PreviewRequestIdentity, PreviewSelection, PreviewTransitionError,
 };
 pub use protocol::{
-    BaseIconClass, BaseIconKey, Bc7RasterPayload, BreadcrumbTerminal, ClipboardMode,
-    ClipboardState, CompressedRasterKind, ConflictDecision, DataTransferRequest, DirectoryDelta,
-    ExplorerCommand, ExplorerEvent, ExplorerService, ExplorerServiceError, FileOperationFlags,
-    FileOperationKind, FileOperationRequest, IconInvalidationEpochs, ItemDescriptor,
-    LocationMetadata, OpenDisposition, OperationItemOutcome, OperationItemResult,
+    ApkInstallStatus, BaseIconClass, BaseIconKey, Bc7RasterPayload, BreadcrumbTerminal,
+    ClipboardMode, ClipboardState, CompressedRasterKind, ConflictDecision, DataTransferRequest,
+    DirectoryDelta, ExplorerCommand, ExplorerEvent, ExplorerService, ExplorerServiceError,
+    FileOperationFlags, FileOperationKind, FileOperationRequest, IconInvalidationEpochs,
+    ItemDescriptor, LocationMetadata, OpenDisposition, OperationItemOutcome, OperationItemResult,
     OperationProgress, OperationTerminal, SearchBackend, SearchInput, SearchSourcePhase,
     SearchSourceStatus, SearchTerminal, ShellContextMenuTarget, ShellIconFallbackReason,
     ShellIconKey, ShellIconPayload, ShellIconPayloadError, ShellIconTheme, ShellNewItemDescriptor,
     ShellNewItemRecipe, ShellNewValidationError, TerminalLedger, TerminalViolation,
     TransferEffects, TransferProgressPhase, base_icon_key, classify_base_icon,
+    normalize_apk_notice_text,
 };
 pub use remote::{
     RemoteAddress, RemoteAddressError, RemoteProviderKind, SftpAddressInput, SftpProfile,

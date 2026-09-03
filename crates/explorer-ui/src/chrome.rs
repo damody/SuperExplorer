@@ -5110,14 +5110,7 @@ impl RenderOnce for CommandBar {
         let extensions_open = self.state.extensions_menu_open();
         let tortoise_git_available = self.state.tortoise_git_available();
         let loaded_extension_summary = self.state.loaded_extension_summary().map(str::to_owned);
-        let transfer_panel_open = self.state.transfer_panel_open();
         let active_transfer_count = self.state.operation_center().active_transfer_count();
-        let transfer_records = self
-            .state
-            .operation_center()
-            .records_newest_first()
-            .cloned()
-            .collect::<Vec<_>>();
         let extension_commands = self
             .state
             .extensions()
@@ -5327,7 +5320,7 @@ impl RenderOnce for CommandBar {
             .child(
                 div()
                     .relative()
-                    .child(semantic_button_with_popup(
+                    .child(semantic_button(
                         "command-transfer-center",
                         "傳輸",
                         Some(ExplorerIcon::Details),
@@ -5336,15 +5329,6 @@ impl RenderOnce for CommandBar {
                         true,
                         self.tokens,
                         self.on_action.clone(),
-                        transfer_panel_open.then(|| {
-                            transfer_center_panel(
-                                self.tokens,
-                                transfer_records,
-                                &self.state,
-                                self.on_action.clone(),
-                            )
-                            .into_any_element()
-                        }),
                     ))
                     .when(active_transfer_count > 0, |element| {
                         element.child(
@@ -5396,16 +5380,16 @@ fn operation_navigation_location(
     }
 }
 
-fn transfer_center_panel(
+pub(crate) fn transfer_center_panel(
     tokens: UiTokens,
     records: Vec<explorer_model::OperationRecord>,
-    state: &AppViewState,
+    cancelling_ids: &HashSet<explorer_common::RequestId>,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     let colors = tokens.theme.colors;
     let empty = records.is_empty();
     let rows = records.into_iter().map(|record| {
-        let cancelling = state.operation_is_cancelling(record.id);
+        let cancelling = cancelling_ids.contains(&record.id);
         let message = operation_display_message(&record, cancelling);
         let ratio = record
             .progress
@@ -12914,6 +12898,27 @@ fn operation_message(record: &explorer_model::OperationRecord) -> String {
     }
 }
 
+fn apk_install_notice_message(notice: &crate::state::ApkInstallNotice) -> String {
+    let target = format!("{}（{}）", notice.device_name, notice.serial);
+    match &notice.status {
+        explorer_model::ApkInstallStatus::Started => {
+            format!("安裝中：{} → {}", notice.apk_name, target)
+        }
+        explorer_model::ApkInstallStatus::Succeeded => {
+            format!("安裝完成：{} → {}", notice.apk_name, target)
+        }
+        explorer_model::ApkInstallStatus::Cancelled => {
+            format!("已取消安裝 {} 到 {}", notice.apk_name, target)
+        }
+        explorer_model::ApkInstallStatus::TimedOut => {
+            format!("安裝 {} 到 {} 逾時", notice.apk_name, target)
+        }
+        explorer_model::ApkInstallStatus::Failed { message } => {
+            format!("安裝 {} 到 {} 失敗：{}", notice.apk_name, target, message)
+        }
+    }
+}
+
 fn operation_display_message(record: &explorer_model::OperationRecord, cancelling: bool) -> String {
     if cancelling && !record.phase.is_terminal() {
         format!("{}｜正在取消", operation_request_summary(record))
@@ -13058,7 +13063,38 @@ impl OperationCenter {
 impl RenderOnce for OperationCenter {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let colors = self.tokens.theme.colors;
-        let terminal_elapsed = self.state.latest_operation_terminal_elapsed(Instant::now());
+        let now = Instant::now();
+        let terminal_elapsed = self.state.latest_operation_terminal_elapsed(now);
+        let apk_notices = self
+            .state
+            .apk_install_notices()
+            .iter()
+            .rev()
+            .filter_map(|notice| {
+                let lifetime =
+                    if matches!(notice.status, explorer_model::ApkInstallStatus::Succeeded) {
+                        Duration::from_secs(5)
+                    } else {
+                        Duration::from_secs(12)
+                    };
+                let opacity = notice.terminal_at.map_or(Some(1.0), |at| {
+                    let elapsed = now.saturating_duration_since(at);
+                    if elapsed < lifetime.saturating_sub(Duration::from_secs(1)) {
+                        Some(1.0)
+                    } else if elapsed < lifetime {
+                        Some(
+                            1.0 - (elapsed - lifetime.saturating_sub(Duration::from_secs(1)))
+                                .as_secs_f32(),
+                        )
+                    } else {
+                        None
+                    }
+                })?;
+                let message = apk_install_notice_message(notice);
+                let running = !notice.status.is_terminal();
+                Some((notice.context.request_id, message, running, opacity))
+            })
+            .collect::<Vec<_>>();
         let latest = self
             .state
             .operation_center()
@@ -13078,6 +13114,46 @@ impl RenderOnce for OperationCenter {
                 Some(EXPLORER_WINDOW_ID),
                 "normal",
             ))
+            .children(
+                apk_notices
+                    .into_iter()
+                    .map(|(request_id, message, running, opacity)| {
+                        div()
+                            .id(format!("apk-install-notice-{request_id:?}"))
+                            .role(Role::Status)
+                            .aria_label(message.clone())
+                            .opacity(opacity)
+                            .p(px(self.tokens.layout.control_padding_horizontal.value()))
+                            .border_b(px(self.tokens.layout.focus_stroke.value()))
+                            .border_color(colors.divider.to_gpui())
+                            .bg(colors.subtle_surface.to_gpui())
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.0))
+                            .child(message)
+                            .when(running, |element| {
+                                element.child(
+                                    div()
+                                        .relative()
+                                        .h(px(4.0))
+                                        .w_full()
+                                        .rounded(px(2.0))
+                                        .overflow_hidden()
+                                        .bg(colors.control_fill.to_gpui())
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .left(relative(0.12))
+                                                .top(px(0.0))
+                                                .h_full()
+                                                .w(relative(0.32))
+                                                .rounded(px(2.0))
+                                                .bg(colors.accent.to_gpui()),
+                                        ),
+                                )
+                            })
+                    }),
+            )
             .when_some(latest, |element, (record, opacity)| {
                 let cancelling = self.state.operation_is_cancelling(record.id);
                 let summary = operation_display_message(&record, cancelling);
@@ -14564,20 +14640,44 @@ mod tests {
         CAPTION_MINIMIZE_ID, COMMAND_BAR_ID, EXPLORER_WINDOW_ID, FILE_VIEW_HOST_ID, FileViewState,
         NAVIGATION_BAR_ID, NAVIGATION_PANE_ID, NEW_TAB_BUTTON_ID, RemoteMenuPlacement,
         SEARCH_BOX_ID, STATUS_BAR_ID, TAB_STRIP_ID, WINDOW_CHROME_ID, WINDOW_DRAG_REGION_ID,
-        admission_cell_presentation, bookmark_icon, breadcrumb_ancestry_partition,
-        breadcrumb_location_shell_texture, builtin_count_display, client_to_screen_point,
-        context_menu_visual_tokens, details_name_column_contains, editable_input_colors,
-        file_view_background_context_hit, file_view_local_pointer, format_explorer_size,
-        format_transfer_speed, is_generic_breadcrumb_folder_icon_key, localized_search_placeholder,
-        marquee_content_rect, navigation_item_shell_texture, navigation_shell_texture,
-        new_tab_button_background, operation_display_message, operation_location_text,
-        operation_message, operation_message_opacity, operation_outcome_message,
-        operation_request_summary, remote_context_menu_position, remote_menu_commands,
-        select_file_row_shell_icon, tab_background,
+        admission_cell_presentation, apk_install_notice_message, bookmark_icon,
+        breadcrumb_ancestry_partition, breadcrumb_location_shell_texture, builtin_count_display,
+        client_to_screen_point, context_menu_visual_tokens, details_name_column_contains,
+        editable_input_colors, file_view_background_context_hit, file_view_local_pointer,
+        format_explorer_size, format_transfer_speed, is_generic_breadcrumb_folder_icon_key,
+        localized_search_placeholder, marquee_content_rect, navigation_item_shell_texture,
+        navigation_shell_texture, new_tab_button_background, operation_display_message,
+        operation_location_text, operation_message, operation_message_opacity,
+        operation_outcome_message, operation_request_summary, remote_context_menu_position,
+        remote_menu_commands, select_file_row_shell_icon, tab_background,
     };
     use crate::{UiTokens, actions::ExplorerAction, theme::ThemeTokens};
     use gpui::WindowControlArea;
     use std::{cmp::Ordering, time::Duration};
+
+    #[test]
+    fn apk_install_notice_text_is_truthful_localized_and_has_no_fake_progress() {
+        let context = explorer_model::RequestContext::new(
+            explorer_model::TabId::new(),
+            explorer_model::Generation::new(1),
+        );
+        let mut notice = crate::state::ApkInstallNotice {
+            context,
+            apk_name: "qq9.3.55.apk".to_owned(),
+            device_name: "Pixel 9".to_owned(),
+            serial: "emulator-5554".to_owned(),
+            status: explorer_model::ApkInstallStatus::Started,
+            terminal_at: None,
+        };
+        let running = apk_install_notice_message(&notice);
+        assert!(running.contains("安裝中"));
+        assert!(running.contains("qq9.3.55.apk") && running.contains("Pixel 9"));
+        assert!(!running.contains('%') && !running.contains("MB"));
+        notice.status = explorer_model::ApkInstallStatus::Succeeded;
+        assert!(apk_install_notice_message(&notice).contains("安裝完成"));
+        notice.status = explorer_model::ApkInstallStatus::TimedOut;
+        assert!(apk_install_notice_message(&notice).contains("逾時"));
+    }
 
     #[test]
     fn bookmark_icons_distinguish_local_adb_sftp_and_lua() {
