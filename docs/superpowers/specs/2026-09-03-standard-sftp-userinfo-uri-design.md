@@ -2,7 +2,7 @@
 
 ## Goal
 
-SuperExplorer shall use the conventional SFTP authority order `sftp://username@host/path` everywhere a user sees, enters, copies, or bookmarks an authenticated SFTP location.
+SuperExplorer shall accept the conventional SFTP authority order `sftp://username@host/path` for direct address-bar entry and login prefilling.
 
 ## Accepted forms
 
@@ -13,13 +13,13 @@ SuperExplorer shall use the conventional SFTP authority order `sftp://username@h
 
 ## Canonical representation
 
-After credentials are known, user-facing SFTP addresses use `sftp://username@host/path`. Internal profile identifiers may remain stable so existing saved profiles and sessions do not require destructive migration. Host-only saved bookmarks remain readable; when the profile username is available, subsequent display and saved output are upgraded to the standard form.
+The parsed username is transient. The address is canonicalized to the existing credential-free `sftp://host/path` representation after login so profile aliases, history, bookmarks, copied paths, diagnostics, and credential targets remain stable and do not duplicate identity data.
 
 The host portion retains existing IPv4, DNS-name, port, and IPv6 validation rules. Usernames must be non-empty when `@` is present. URI formatting must preserve the existing path normalization behavior.
 
 ## Affected flows
 
-The shared SFTP address parser and formatter are the source of truth. Address-bar navigation, login prefilling, tab/breadcrumb display, copied remote paths, bookmarks, navigation history, and tests must consume that shared behavior instead of independently swapping authority components.
+The shared SFTP address parser is the source of truth. Address-bar navigation and login prefilling must consume that behavior instead of independently swapping authority components.
 
 ## Compatibility and failure behavior
 
@@ -27,4 +27,4 @@ Existing host-only profiles, credentials, bookmarks, and history remain valid. A
 
 ## Verification
 
-Focused tests cover parsing, canonical formatting, login prefilling, host-only compatibility, bookmarks/history round trips, malformed authorities, and secret redaction. A final targeted workspace check is run only after implementation, followed by a user-perspective check of address entry, login, navigation, bookmark restoration, and copied-path output.
+Focused tests cover parsing, login prefilling, host-only compatibility, malformed authorities, and secret redaction. A final targeted workspace check is run only after implementation, followed by a user-perspective check of address entry, login, and navigation.

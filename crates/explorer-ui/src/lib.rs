@@ -11935,11 +11935,12 @@ mod tests {
     }
 
     #[test]
-    fn sftp_username_hint_is_intercepted_and_navigates_to_canonical_host() {
+    fn standard_sftp_username_hint_is_intercepted_and_navigates_to_canonical_host() {
         let mut root = ExplorerRoot::default();
         root.attach_sftp_address_login_observer(Arc::new(|input| {
             let parsed = explorer_model::SftpAddressInput::parse(input)
                 .map_err(|error| error.to_string())?;
+            assert_eq!(parsed.username_hint.as_deref(), Some("root"));
             parsed
                 .address
                 .to_deterministic_location(1)
@@ -11948,7 +11949,7 @@ mod tests {
         }));
 
         assert!(
-            root.begin_address_navigation("sftp://45.32.49.125@root/")
+            root.begin_address_navigation("sftp://root@45.32.49.125/")
                 .is_none(),
             "SFTP login must not block the GPUI action callback"
         );

@@ -32,7 +32,7 @@ pub struct RemoteAddress {
 }
 
 /// A direct SFTP address submission. `username_hint` is transient and never becomes part of the
-/// canonical location stored by tabs, history, bookmarks, or diagnostics.
+/// canonical credential-free location stored by tabs, history, bookmarks, or diagnostics.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SftpAddressInput {
     pub address: RemoteAddress,
@@ -46,9 +46,12 @@ impl SftpAddressInput {
             .or_else(|| input.strip_prefix("SFTP://"))
             .ok_or(RemoteAddressError::UnsupportedScheme)?;
         let (authority, path) = remainder.split_once('/').unwrap_or((remainder, ""));
+        // SFTP URI user-info always precedes the host: `sftp://username@host/path`.
+        // Do not attempt to infer the former reversed convention; doing so can target an
+        // unintended host when a username and a hostname are both plausible strings.
         let (host, username_hint) = authority
             .split_once('@')
-            .map_or((authority, None), |(host, username)| {
+            .map_or((authority, None), |(username, host)| {
                 (host, Some(username.to_owned()))
             });
         validate_authority(host)?;
@@ -313,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn sftp_address_keeps_password_and_host_out_of_location() {
+    fn sftp_address_keeps_user_info_out_of_canonical_location() {
         let address = RemoteAddress::parse("sftp://production/root").unwrap();
         assert_eq!(address.canonical(), "sftp://production/root");
         for unsafe_address in [
@@ -326,11 +329,42 @@ mod tests {
     }
 
     #[test]
-    fn direct_sftp_username_hint_is_transient_and_canonicalized() {
-        let input = SftpAddressInput::parse("sftp://45.32.49.125@root/").unwrap();
+    fn direct_sftp_username_hint_uses_standard_userinfo_order() {
+        let input = SftpAddressInput::parse("sftp://root@45.32.49.125/").unwrap();
         assert_eq!(input.username_hint.as_deref(), Some("root"));
         assert_eq!(input.address.canonical(), "sftp://45.32.49.125");
         assert!(!format!("{:?}", input.address).contains("root"));
+    }
+
+    #[test]
+    fn direct_sftp_host_only_address_remains_compatible() {
+        let input = SftpAddressInput::parse("sftp://45.32.49.125/home/linuxuser").unwrap();
+        assert_eq!(input.username_hint, None);
+        assert_eq!(
+            input.address.canonical(),
+            "sftp://45.32.49.125/home/linuxuser"
+        );
+    }
+
+    #[test]
+    fn direct_sftp_reversed_legacy_order_is_not_inferred() {
+        let input = SftpAddressInput::parse("sftp://45.32.49.125@root/").unwrap();
+        assert_eq!(input.username_hint.as_deref(), Some("45.32.49.125"));
+        assert_eq!(input.address.canonical(), "sftp://root");
+    }
+
+    #[test]
+    fn direct_sftp_rejects_password_bearing_or_malformed_user_info() {
+        for input in [
+            "sftp://root:secret@45.32.49.125/",
+            "sftp://@45.32.49.125/",
+            "sftp://root@@45.32.49.125/",
+        ] {
+            assert_eq!(
+                SftpAddressInput::parse(input),
+                Err(RemoteAddressError::InvalidAuthority)
+            );
+        }
     }
 
     #[test]
