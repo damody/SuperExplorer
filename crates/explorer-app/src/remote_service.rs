@@ -1866,6 +1866,9 @@ fn emit_transfer_progress(
     state: &mut TransferProgressState,
     force: bool,
 ) {
+    // Provider callbacks only update the shared latest snapshot.  Publication
+    // is bounded to the same 200 ms cadence used by the heartbeat, while phase
+    // and terminal boundaries pass `force = true` and remain immediate.
     let due = state.last_emit.elapsed() >= std::time::Duration::from_millis(200);
     if !force && !due {
         return;
@@ -1906,24 +1909,10 @@ fn transfer_items(
         .try_fold(0_u64, |total, bytes| total.checked_add((*bytes)?));
     reporter.set_total_bytes(total_bytes);
     let mut outcomes = Vec::with_capacity(items.len());
-    for (index, item) in items.iter().cloned().enumerate() {
+    for item in items.iter().cloned() {
         if cancellation.is_cancelled() {
-            if outcomes.is_empty() {
-                reporter.close();
-                return OperationTerminal::Cancelled;
-            }
-            outcomes.extend(
-                items[index..]
-                    .iter()
-                    .cloned()
-                    .map(|item| OperationItemOutcome {
-                        item: Some(item),
-                        destination: Some(destination.clone()),
-                        result: OperationItemResult::Cancelled,
-                    }),
-            );
             reporter.close();
-            return OperationTerminal::Partial { outcomes };
+            return OperationTerminal::Cancelled;
         }
         let item_name = match &item.location {
             LocationDescriptor::FileSystem(path) => path.file_name().map_or_else(
@@ -1978,6 +1967,12 @@ fn transfer_items(
         .all(|outcome| outcome.result == OperationItemResult::Succeeded)
     {
         OperationTerminal::Finished
+    } else if cancellation.is_cancelled()
+        || outcomes
+            .iter()
+            .any(|outcome| outcome.result == OperationItemResult::Cancelled)
+    {
+        OperationTerminal::Cancelled
     } else {
         OperationTerminal::Partial { outcomes }
     }

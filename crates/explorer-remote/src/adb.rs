@@ -210,7 +210,11 @@ impl AdbCommandRunner for SystemAdbCommandRunner {
     ) -> Result<Output> {
         let pair = match native_pty_system().openpty(adb_pty_size()) {
             Ok(pair) => pair,
-            Err(_) => {
+            Err(error) => {
+                let diagnostic = format!(
+                    "SuperExplorer ADB progress: pseudo-terminal unavailable; using bounded pipe fallback: {error}\n"
+                );
+                invoke_adb_output_callback(output_callback, diagnostic.as_bytes());
                 let output = self.run(executable, arguments, cancellation, timeout)?;
                 output_callback(&output.stdout);
                 output_callback(&output.stderr);
@@ -362,20 +366,33 @@ enum AdbProgressObservation {
 #[derive(Default)]
 struct AdbProgressParser {
     pending: Vec<u8>,
+    in_escape: bool,
 }
 
 impl AdbProgressParser {
     fn push(&mut self, chunk: &[u8], mut observe: impl FnMut(AdbProgressObservation)) {
         for &byte in chunk {
+            if self.in_escape {
+                // CSI/OSC sequences end in an ASCII final byte.  ADB uses
+                // cursor visibility and cursor-home sequences around each
+                // progress frame; none of those bytes belong to the text.
+                if byte.is_ascii_alphabetic() || byte == b'~' || byte == 0x07 {
+                    self.in_escape = false;
+                    if byte == b'H' {
+                        self.flush(&mut observe);
+                    }
+                }
+                continue;
+            }
+            if byte == 0x1b {
+                self.in_escape = true;
+                continue;
+            }
             if matches!(byte, b'\r' | b'\n') {
                 self.flush(&mut observe);
                 continue;
             }
             self.pending.push(byte);
-            if self.pending.ends_with(b"\x1b[H") {
-                self.pending.truncate(self.pending.len().saturating_sub(3));
-                self.flush(&mut observe);
-            }
             if self.pending.len() > 16 * 1024 {
                 self.pending.clear();
             }
@@ -399,7 +416,7 @@ fn parse_adb_progress_frame(frame: &[u8]) -> Option<AdbProgressObservation> {
     if let Some(bytes) = parse_adb_byte_pair(&text) {
         return Some(bytes);
     }
-    for (percent_index, _) in text.match_indices('%') {
+    for (percent_index, _) in text.match_indices('%').rev() {
         let prefix = &text[..percent_index];
         let digits = prefix
             .char_indices()
@@ -1430,6 +1447,29 @@ mod tests {
                     total: 1_048_576,
                 },
                 AdbProgressObservation::Percent(42),
+            ]
+        );
+    }
+
+    #[test]
+    fn progress_parser_handles_real_adb_cursor_visibility_and_home_frames() {
+        let mut parser = AdbProgressParser::default();
+        let mut observations = Vec::new();
+        parser.push(b"\x1b[?25l[  0%] payload\x1b[H[ 17%] pay", |value| {
+            observations.push(value)
+        });
+        parser.push(
+            b"load\x1b[H[ 47%] payload\x1b[H[ 84%] payload\x1b[?25h",
+            |value| observations.push(value),
+        );
+        parser.finish(|value| observations.push(value));
+        assert_eq!(
+            observations,
+            vec![
+                AdbProgressObservation::Percent(0),
+                AdbProgressObservation::Percent(17),
+                AdbProgressObservation::Percent(47),
+                AdbProgressObservation::Percent(84),
             ]
         );
     }
