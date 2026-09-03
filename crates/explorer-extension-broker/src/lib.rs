@@ -283,9 +283,11 @@ fn decode_context_menu_terminal(
         let command_offset = offset.parse().map_err(|_| BrokerClientError::Protocol)?;
         return Ok(explorer_model::ContextMenuOutcome::Invoked { command_offset });
     }
-    if let Some(serial) = text.strip_prefix("context-menu-install-apk:") {
+    if let Some(payload) = text.strip_prefix("context-menu-install-apk:") {
+        let (serial, device_name) = payload.split_once('\u{1f}').unwrap_or((payload, payload));
         return Ok(explorer_model::ContextMenuOutcome::InstallApk {
             serial: serial.to_owned(),
+            device_name: device_name.to_owned(),
             target: target.clone(),
         });
     }
@@ -1405,6 +1407,26 @@ mod tests {
             decode_context_menu_terminal("context-menu-replay:125", &target),
             Err(BrokerClientError::Protocol)
         );
+    }
+
+    #[test]
+    fn apk_selection_round_trips_serial_and_friendly_device_name() {
+        let target = explorer_model::ShellContextMenuTarget::Background {
+            parent: explorer_model::LocationDescriptor::file_system(r"D:\fixture"),
+        };
+        let outcome = decode_context_menu_terminal(
+            "context-menu-install-apk:emulator-5554\u{1f}Pixel 9",
+            &target,
+        )
+        .expect("APK selection payload");
+        assert!(matches!(
+            outcome,
+            explorer_model::ContextMenuOutcome::InstallApk {
+                serial,
+                device_name,
+                ..
+            } if serial == "emulator-5554" && device_name == "Pixel 9"
+        ));
     }
 
     #[test]

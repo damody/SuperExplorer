@@ -401,6 +401,8 @@ fn replay_context_menu_gesture(_: u64, _: i32, _: i32) {}
 fn execute_adb_context_action(
     outcome: explorer_model::ContextMenuOutcome,
     cancellation: &explorer_model::CancellationToken,
+    context: &explorer_model::RequestContext,
+    events: &SyncSender<ExplorerEvent>,
 ) -> explorer_model::ContextMenuOutcome {
     let managed = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
@@ -408,13 +410,29 @@ fn execute_adb_context_action(
         .join("RustGpuiExplorer")
         .join("tools")
         .join("adb");
-    let result = match &outcome {
+    match &outcome {
         explorer_model::ContextMenuOutcome::DownloadAdb { .. } => {
-            explorer_remote::AdbToolInstaller::new(managed)
+            let result = explorer_remote::AdbToolInstaller::new(managed)
                 .install_official(cancellation, |_, _| ())
-                .map(|_| ())
+                .map(|_| ());
+            return match result {
+                Ok(()) => explorer_model::ContextMenuOutcome::Invoked { command_offset: 0 },
+                Err(error) => explorer_model::ContextMenuOutcome::Failed {
+                    error: explorer_common::ExplorerError::new(
+                        explorer_common::ExplorerErrorKind::Availability,
+                        "install ADB",
+                        true,
+                        "ADB installation failed. Check the network connection and try again.",
+                        error.to_string().chars().take(2048).collect::<String>(),
+                    ),
+                },
+            };
         }
-        explorer_model::ContextMenuOutcome::InstallApk { serial, target } => {
+        explorer_model::ContextMenuOutcome::InstallApk {
+            serial,
+            device_name,
+            target,
+        } => {
             let apk = match target {
                 explorer_model::ShellContextMenuTarget::Items { items, .. } if items.len() == 1 => {
                     match &items[0].location {
@@ -426,33 +444,75 @@ fn execute_adb_context_action(
                 }
                 _ => None,
             };
-            apk.ok_or_else(|| anyhow::anyhow!("APK context target is no longer valid"))
-                .and_then(|apk| {
-                    let resolver = explorer_remote::AdbToolResolver::new(managed);
-                    let (tool, _) = resolver.resolve(cancellation)?;
-                    explorer_remote::adb_tools::install_apk(
-                        &tool,
-                        explorer_remote::adb::SystemAdbCommandRunner,
-                        serial,
-                        &apk,
-                        cancellation,
-                    )?;
-                    Ok(())
-                })
+            let apk_name = apk
+                .as_deref()
+                .and_then(Path::file_name)
+                .map(|name| explorer_model::normalize_apk_notice_text(&name.to_string_lossy(), 160))
+                .unwrap_or_else(|| "APK".to_owned());
+            let started = ExplorerEvent::ApkInstallStatus {
+                context: context.clone(),
+                apk_name: apk_name.clone(),
+                device_name: explorer_model::normalize_apk_notice_text(device_name, 160),
+                serial: explorer_model::normalize_apk_notice_text(serial, 160),
+                status: explorer_model::ApkInstallStatus::Started,
+            };
+            if events.send(started).is_err() {
+                return explorer_model::ContextMenuOutcome::Failed {
+                    error: explorer_common::ExplorerError::new(
+                        explorer_common::ExplorerErrorKind::Availability,
+                        "start APK install",
+                        true,
+                        "Unable to start APK installation because the app notification channel is unavailable.",
+                        "APK install was rejected before spawning adb",
+                    ),
+                };
+            }
+            let install_events = events.clone();
+            let install_context = context.clone();
+            let install_cancellation = cancellation.clone();
+            let install_serial = serial.clone();
+            let install_device_name = device_name.clone();
+            std::thread::spawn(move || {
+                let result = apk
+                    .ok_or_else(|| anyhow::anyhow!("APK context target is no longer valid"))
+                    .and_then(|apk| {
+                        let resolver = explorer_remote::AdbToolResolver::new(managed);
+                        let (tool, _) = resolver.resolve(&install_cancellation)?;
+                        explorer_remote::adb_tools::install_apk(
+                            &tool,
+                            explorer_remote::adb::SystemAdbCommandRunner,
+                            &install_serial,
+                            &apk,
+                            &install_cancellation,
+                        )?;
+                        Ok(())
+                    });
+                let terminal = match &result {
+                    Ok(()) => explorer_model::ApkInstallStatus::Succeeded,
+                    Err(_) if install_cancellation.is_cancelled() => {
+                        explorer_model::ApkInstallStatus::Cancelled
+                    }
+                    Err(error) if error.to_string().to_ascii_lowercase().contains("timed out") => {
+                        explorer_model::ApkInstallStatus::TimedOut
+                    }
+                    Err(_) => explorer_model::ApkInstallStatus::Failed {
+                        message: "請檢查裝置連線與 APK 後再試一次".to_owned(),
+                    },
+                };
+                let _ = install_events.send(ExplorerEvent::ApkInstallStatus {
+                    context: install_context,
+                    apk_name,
+                    device_name: explorer_model::normalize_apk_notice_text(
+                        &install_device_name,
+                        160,
+                    ),
+                    serial: explorer_model::normalize_apk_notice_text(&install_serial, 160),
+                    status: terminal,
+                });
+            });
+            return explorer_model::ContextMenuOutcome::Invoked { command_offset: 0 };
         }
         _ => return outcome,
-    };
-    match result {
-        Ok(()) => explorer_model::ContextMenuOutcome::Invoked { command_offset: 0 },
-        Err(error) => explorer_model::ContextMenuOutcome::Failed {
-            error: explorer_common::ExplorerError::new(
-                explorer_common::ExplorerErrorKind::Availability,
-                "install APK",
-                true,
-                "APK installation failed. Check the device connection and try again.",
-                error.to_string().chars().take(2048).collect::<String>(),
-            ),
-        },
     }
 }
 
@@ -493,7 +553,12 @@ impl BrokeredExplorerService {
                             }
                         })
                 };
-                outcome = execute_adb_context_action(outcome, &context.cancellation);
+                outcome = execute_adb_context_action(
+                    outcome,
+                    &context.cancellation,
+                    &context,
+                    &context_events,
+                );
                 if let Ok(mut active) = context_active.lock()
                     && let Some(index) = active.iter().position(|candidate| candidate == &context)
                 {

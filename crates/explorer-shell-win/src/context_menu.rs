@@ -900,6 +900,7 @@ pub(crate) fn show(request: &ContextMenuRequest) -> Result<ContextMenuOutcome, E
             if let Some(device) = devices.get(index).filter(|device| device.is_installable()) {
                 return Ok(ContextMenuOutcome::InstallApk {
                     serial: device.serial.clone(),
+                    device_name: device.display_name().to_owned(),
                     target: request.target.clone(),
                 });
             }
@@ -932,6 +933,24 @@ enum ApkMenuData {
 }
 
 fn local_apk_devices(target: &ShellContextMenuTarget) -> Option<ApkMenuData> {
+    let local = local_apk_path(target)?;
+    let managed = PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
+        .join("RustGpuiExplorer")
+        .join("tools")
+        .join("adb");
+    let resolver = explorer_remote::AdbToolResolver::new(managed);
+    let cancellation = explorer_model::CancellationToken::new();
+    let _ = local;
+    match resolver.resolve(&cancellation) {
+        Ok((tool, _)) => resolver
+            .discover_devices(tool, &cancellation)
+            .ok()
+            .map(|snapshot| ApkMenuData::Devices(snapshot.devices)),
+        Err(_) => Some(ApkMenuData::MissingTool),
+    }
+}
+
+fn local_apk_path(target: &ShellContextMenuTarget) -> Option<PathBuf> {
     let ShellContextMenuTarget::Items { parent, items } = target else {
         return None;
     };
@@ -949,20 +968,7 @@ fn local_apk_devices(target: &ShellContextMenuTarget) -> Option<ApkMenuData> {
     {
         return None;
     }
-    let managed = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)?
-        .join("RustGpuiExplorer")
-        .join("tools")
-        .join("adb");
-    let resolver = explorer_remote::AdbToolResolver::new(managed);
-    let cancellation = explorer_model::CancellationToken::new();
-    match resolver.resolve(&cancellation) {
-        Ok((tool, _)) => resolver
-            .discover_devices(tool, &cancellation)
-            .ok()
-            .map(|snapshot| ApkMenuData::Devices(snapshot.devices)),
-        Err(_) => Some(ApkMenuData::MissingTool),
-    }
+    Some(local)
 }
 
 fn high_contrast_active() -> bool {
@@ -2376,6 +2382,28 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn local_qq_apk_is_eligible_only_as_a_single_filesystem_item() {
+        let fixture = explorer_test_support::OwnedTempFixture::new().expect("APK fixture");
+        let apk = fixture
+            .create_file("qq9.3.55.apk", b"controlled APK eligibility fixture")
+            .expect("APK file");
+        let item = ItemDescriptor {
+            id: ShellItemId::from_provider_bytes(b"qq-apk".to_vec()).expect("item id"),
+            location: LocationDescriptor::file_system(&apk),
+        };
+        let target = ShellContextMenuTarget::Items {
+            parent: LocationDescriptor::file_system(fixture.root()),
+            items: vec![item.clone()],
+        };
+        assert_eq!(local_apk_path(&target), Some(apk));
+        let multiple = ShellContextMenuTarget::Items {
+            parent: LocationDescriptor::file_system(fixture.root()),
+            items: vec![item.clone(), item],
+        };
+        assert!(local_apk_path(&multiple).is_none());
+    }
 
     #[test]
     fn owned_popup_policy_falls_back_for_disabled_or_high_contrast_sessions() {

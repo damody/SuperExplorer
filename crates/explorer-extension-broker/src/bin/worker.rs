@@ -287,9 +287,11 @@ fn execute_context_menu(request: &explorer_extension_protocol::StartPayload) -> 
             Ok(explorer_model::ContextMenuOutcome::ReplayRequested { x, y }) => {
                 format!("context-menu-replay:{x}:{y}").into_bytes()
             }
-            Ok(explorer_model::ContextMenuOutcome::InstallApk { serial, .. }) => {
-                format!("context-menu-install-apk:{serial}").into_bytes()
-            }
+            Ok(explorer_model::ContextMenuOutcome::InstallApk {
+                serial,
+                device_name,
+                ..
+            }) => format!("context-menu-install-apk:{serial}\u{1f}{device_name}").into_bytes(),
             Ok(explorer_model::ContextMenuOutcome::DownloadAdb { .. }) => {
                 b"context-menu-download-adb".to_vec()
             }
@@ -418,9 +420,11 @@ fn execute_context_menu_payload(request: &explorer_extension_protocol::StartPayl
         Ok(explorer_model::ContextMenuOutcome::ReplayRequested { x, y }) => {
             format!("context-menu-replay:{x}:{y}").into_bytes()
         }
-        Ok(explorer_model::ContextMenuOutcome::InstallApk { serial, .. }) => {
-            format!("context-menu-install-apk:{serial}").into_bytes()
-        }
+        Ok(explorer_model::ContextMenuOutcome::InstallApk {
+            serial,
+            device_name,
+            ..
+        }) => format!("context-menu-install-apk:{serial}\u{1f}{device_name}").into_bytes(),
         Ok(explorer_model::ContextMenuOutcome::DownloadAdb { .. }) => {
             b"context-menu-download-adb".to_vec()
         }
