@@ -803,6 +803,29 @@ pub struct SearchSourceStatus {
     pub diagnostic: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ApkInstallStatus {
+    Started,
+    Succeeded,
+    Failed { message: String },
+    Cancelled,
+    TimedOut,
+}
+
+impl ApkInstallStatus {
+    pub const fn is_terminal(&self) -> bool {
+        !matches!(self, Self::Started)
+    }
+}
+
+pub fn normalize_apk_notice_text(value: &str, max_chars: usize) -> String {
+    value
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(max_chars)
+        .collect()
+}
+
 /// Events emitted by fake and Windows service implementations.
 #[derive(Clone, Debug)]
 pub enum ExplorerEvent {
@@ -866,6 +889,13 @@ pub enum ExplorerEvent {
         context: RequestContext,
         outcome: crate::ContextMenuOutcome,
     },
+    ApkInstallStatus {
+        context: RequestContext,
+        apk_name: String,
+        device_name: String,
+        serial: String,
+        status: ApkInstallStatus,
+    },
     SearchFinished {
         context: RequestContext,
         outcome: SearchTerminal,
@@ -922,6 +952,7 @@ impl ExplorerEvent {
             | Self::DirectoryFinished { context }
             | Self::OperationFinished { context, .. }
             | Self::ContextMenuFinished { context, .. }
+            | Self::ApkInstallStatus { context, .. }
             | Self::SearchFinished { context, .. }
             | Self::ShellIconLoaded { context, .. }
             | Self::ShellIconFailed { context, .. }
@@ -937,23 +968,24 @@ impl ExplorerEvent {
 
     /// Returns whether this event completes its request.
     pub const fn is_terminal(&self) -> bool {
-        matches!(
-            self,
-            Self::DirectoryFinished { .. }
-                | Self::AncestryFinished { .. }
-                | Self::ChildContainersFinished { .. }
-                | Self::OperationFinished { .. }
-                | Self::ContextMenuFinished { .. }
-                | Self::SearchFinished { .. }
-                | Self::ShellIconLoaded { .. }
-                | Self::ShellIconFailed { .. }
-                | Self::ThumbnailFinished { .. }
-                | Self::ThumbnailCacheCleared { .. }
-                | Self::PreviewHostFinished { .. }
-                | Self::LockOwnersDiscovered { .. }
-                | Self::LockOwnersClosed { .. }
-                | Self::Failed { .. }
-        )
+        matches!(self, Self::ApkInstallStatus { status, .. } if status.is_terminal())
+            || matches!(
+                self,
+                Self::DirectoryFinished { .. }
+                    | Self::AncestryFinished { .. }
+                    | Self::ChildContainersFinished { .. }
+                    | Self::OperationFinished { .. }
+                    | Self::ContextMenuFinished { .. }
+                    | Self::SearchFinished { .. }
+                    | Self::ShellIconLoaded { .. }
+                    | Self::ShellIconFailed { .. }
+                    | Self::ThumbnailFinished { .. }
+                    | Self::ThumbnailCacheCleared { .. }
+                    | Self::PreviewHostFinished { .. }
+                    | Self::LockOwnersDiscovered { .. }
+                    | Self::LockOwnersClosed { .. }
+                    | Self::Failed { .. }
+            )
     }
 }
 
@@ -1169,6 +1201,35 @@ mod tests {
         let input = SearchInput::new("private customer name");
         assert_eq!(input.as_str(), "private customer name");
         assert!(!format!("{input:?}").contains("private customer name"));
+    }
+
+    #[test]
+    fn apk_install_status_distinguishes_started_and_every_terminal() {
+        assert!(!ApkInstallStatus::Started.is_terminal());
+        assert!(ApkInstallStatus::Succeeded.is_terminal());
+        assert!(
+            ApkInstallStatus::Failed {
+                message: "x".to_owned()
+            }
+            .is_terminal()
+        );
+        assert!(ApkInstallStatus::Cancelled.is_terminal());
+        assert!(ApkInstallStatus::TimedOut.is_terminal());
+        assert_eq!(normalize_apk_notice_text("qq\n9.apk", 6), "qq9.ap");
+    }
+
+    #[test]
+    fn apk_install_event_terminal_semantics_follow_its_status() {
+        let context = context();
+        let make = |status| ExplorerEvent::ApkInstallStatus {
+            context: context.clone(),
+            apk_name: "qq9.3.55.apk".to_owned(),
+            device_name: "Pixel 9".to_owned(),
+            serial: "emulator-5554".to_owned(),
+            status,
+        };
+        assert!(!make(ApkInstallStatus::Started).is_terminal());
+        assert!(make(ApkInstallStatus::Succeeded).is_terminal());
     }
 
     #[test]

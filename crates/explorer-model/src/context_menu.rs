@@ -259,6 +259,7 @@ pub enum ContextMenuOutcome {
     },
     InstallApk {
         serial: String,
+        device_name: String,
         target: ShellContextMenuTarget,
     },
     DownloadAdb {
