@@ -4821,7 +4821,12 @@ impl ApplicationLifecycle {
                                         })
                                         .ok()
                                         .flatten();
-                                    let options = explorer_ui::remote_symlink_window::remote_symlink_window_options_on_display(cx, display_id);
+                                    let title = owner_window
+                                        .update(cx, |root, _, _| {
+                                            root.catalog().t("dialog-new-shortcut")
+                                        })
+                                        .unwrap_or_else(|_| "New shortcut".into());
+                                    let options = explorer_ui::remote_symlink_window::remote_symlink_window_options_on_display(cx, display_id, title);
                                     let opened = cx.open_window(options, move |window, cx| {
                                         cx.new(|cx| {
                                             explorer_ui::remote_symlink_window::RemoteSymlinkWindow::new(
@@ -4893,7 +4898,14 @@ impl ApplicationLifecycle {
                                     })
                                     .ok()
                                     .flatten();
-                                let options = explorer_ui::remote_properties_window::remote_properties_window_options_on_display(cx, &snapshot, display_id);
+                                let title = owner_window
+                                    .update(cx, |root, _, _| {
+                                        let mut args = explorer_i18n::FluentArgs::new();
+                                        args.set("name", snapshot.entry.display_name.clone());
+                                        root.catalog().t_args("dialog-properties", &args)
+                                    })
+                                    .unwrap_or_else(|_| format!("{} - Properties", snapshot.entry.display_name));
+                                let options = explorer_ui::remote_properties_window::remote_properties_window_options_on_display(cx, &snapshot, display_id, title);
                                 let opened = cx.open_window(options, move |window, cx| {
                                     cx.new(|cx| {
                                         explorer_ui::remote_properties_window::RemotePropertiesWindow::new(
@@ -5130,7 +5142,12 @@ impl ApplicationLifecycle {
                                     }
                                     *bookmark_folder_editor_handle.borrow_mut() = None;
                                 }
-                                let options = explorer_ui::bookmark_folder_editor_window::bookmark_folder_editor_window_options(cx);
+                                let title = owner_window
+                                    .update(cx, |root, _, _| {
+                                        root.catalog().t("dialog-rename-bookmark-folder")
+                                    })
+                                    .unwrap_or_else(|_| "Rename bookmark folder".into());
+                                let options = explorer_ui::bookmark_folder_editor_window::bookmark_folder_editor_window_options(cx, title);
                                 let opened = cx.open_window(options, move |window, cx| {
                                     cx.new(|cx| {
                                         explorer_ui::bookmark_folder_editor_window::BookmarkFolderEditorWindow::new(
@@ -5167,7 +5184,12 @@ impl ApplicationLifecycle {
                                 }
                                 *bookmark_manager_handle.borrow_mut() = None;
                             }
-                            let options = explorer_ui::bookmark_manager_window::bookmark_manager_window_options(cx);
+                            let title = owner_window
+                                .update(cx, |root, _, _| {
+                                    root.catalog().t("dialog-bookmark-library")
+                                })
+                                .unwrap_or_else(|_| "Library".into());
+                            let options = explorer_ui::bookmark_manager_window::bookmark_manager_window_options(cx, title);
                             let opened = cx.open_window(options, move |window, cx| {
                                 cx.new(|cx| {
                                     explorer_ui::bookmark_manager_window::BookmarkManagerWindow::new(
@@ -5203,7 +5225,12 @@ impl ApplicationLifecycle {
                                 }
                                 *bookmark_action_handle.borrow_mut() = None;
                             }
-                            let options = explorer_ui::bookmark_action_window::bookmark_action_window_options(cx);
+                            let title = owner_window
+                                .update(cx, |root, _, _| {
+                                    root.catalog().t("dialog-bookmark-action")
+                                })
+                                .unwrap_or_else(|_| "Bookmark action".into());
+                            let options = explorer_ui::bookmark_action_window::bookmark_action_window_options(cx, title);
                             let opened = cx.open_window(options, move |window, cx| {
                                 cx.new(|cx| {
                                     explorer_ui::bookmark_action_window::BookmarkActionWindow::new(
@@ -5243,7 +5270,12 @@ impl ApplicationLifecycle {
                                 }
                                 *bookmark_delete_handle.borrow_mut() = None;
                             }
-                            let options = explorer_ui::bookmark_delete_window::bookmark_delete_window_options(cx);
+                            let title = owner_window
+                                .update(cx, |root, _, _| {
+                                    root.catalog().t("dialog-delete-bookmark")
+                                })
+                                .unwrap_or_else(|_| "Delete bookmark".into());
+                            let options = explorer_ui::bookmark_delete_window::bookmark_delete_window_options(cx, title);
                             let opened = cx.open_window(options, move |window, cx| {
                                 cx.new(|cx| {
                                     explorer_ui::bookmark_delete_window::BookmarkDeleteWindow::new(
@@ -5284,7 +5316,12 @@ impl ApplicationLifecycle {
                                     }
                                     *bookmark_folder_delete_handle.borrow_mut() = None;
                                 }
-                                let options = explorer_ui::bookmark_folder_delete_window::bookmark_folder_delete_window_options(cx);
+                                let title = owner_window
+                                    .update(cx, |root, _, _| {
+                                        root.catalog().t("dialog-delete-bookmark-folder")
+                                    })
+                                    .unwrap_or_else(|_| "Delete bookmark folder".into());
+                                let options = explorer_ui::bookmark_folder_delete_window::bookmark_folder_delete_window_options(cx, title);
                                 let opened = cx.open_window(options, move |window, cx| {
                                     cx.new(|cx| {
                                         explorer_ui::bookmark_folder_delete_window::BookmarkFolderDeleteWindow::new(

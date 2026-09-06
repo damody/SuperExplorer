@@ -20,7 +20,10 @@ pub struct BookmarkFolderEditorWindowSnapshotV1 {
     pub state: AppViewState,
 }
 
-pub fn bookmark_folder_editor_window_options(cx: &App) -> WindowOptions {
+pub fn bookmark_folder_editor_window_options(
+    cx: &App,
+    title: impl Into<SharedString>,
+) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
@@ -28,7 +31,7 @@ pub fn bookmark_folder_editor_window_options(cx: &App) -> WindowOptions {
             cx,
         ))),
         titlebar: Some(gpui::TitlebarOptions {
-            title: Some(SharedString::from("重新命名書籤資料夾")),
+            title: Some(title.into()),
             ..Default::default()
         }),
         kind: gpui::WindowKind::Normal,
@@ -161,7 +164,9 @@ impl Focusable for BookmarkFolderEditorWindow {
 }
 
 impl Render for BookmarkFolderEditorWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let catalog = self.snapshot.state.catalog();
+        window.set_window_title(&catalog.t("dialog-rename-bookmark-folder"));
         let on_action: ActionCallback =
             Rc::new(cx.listener(|this, action: &ExplorerAction, window, cx| {
                 this.dispatch(action.clone(), ActionSource::Mouse, window, cx);
@@ -169,7 +174,7 @@ impl Render for BookmarkFolderEditorWindow {
         div()
             .id("bookmark-folder-editor-window")
             .role(gpui::Role::Dialog)
-            .aria_label("Bookmark folder editor window")
+            .aria_label(catalog.t("a11y-bookmark-folder-editor"))
             .size_full()
             .track_focus(&self.focus_handle)
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
@@ -197,6 +202,7 @@ impl Render for BookmarkFolderEditorWindow {
             }))
             .child(chrome::bookmark_folder_editor(
                 self.tokens,
+                catalog,
                 Some(gpui::Entity::downgrade(&self.name_input)),
                 Some(on_action),
             ))

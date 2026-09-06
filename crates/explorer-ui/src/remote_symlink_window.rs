@@ -1,5 +1,6 @@
 //! Dedicated editor for creating one Linux symbolic link on ADB or SFTP.
 
+use explorer_i18n::{AppLocale, Catalog};
 use gpui::{
     App, Bounds, Context, FocusHandle, Focusable, IntoElement, Render, Role, SharedString, Window,
     WindowBounds, WindowHandle, WindowOptions, div, prelude::*, px, size,
@@ -7,6 +8,12 @@ use gpui::{
 use gpui_elements::editable_text::{EditableTextState, StringStorage, text_input};
 
 use crate::{ExplorerRoot, UiTokens};
+
+fn owner_catalog(owner: WindowHandle<ExplorerRoot>, cx: &mut App) -> Catalog {
+    owner
+        .update(cx, |root, _, _| root.catalog())
+        .unwrap_or_else(|_| Catalog::new(AppLocale::ZhTw))
+}
 
 #[derive(Clone, Debug)]
 pub struct RemoteSymlinkWindowSnapshotV1 {
@@ -23,13 +30,14 @@ pub enum RemoteSymlinkWindowUpdateV1 {
     Close { session_id: u64 },
 }
 
-pub fn remote_symlink_window_options(cx: &App) -> WindowOptions {
-    remote_symlink_window_options_on_display(cx, None)
+pub fn remote_symlink_window_options(cx: &App, title: impl Into<SharedString>) -> WindowOptions {
+    remote_symlink_window_options_on_display(cx, None, title)
 }
 
 pub fn remote_symlink_window_options_on_display(
     cx: &App,
     display_id: Option<gpui::DisplayId>,
+    title: impl Into<SharedString>,
 ) -> WindowOptions {
     let width = display_id
         .and_then(|id| cx.find_display(id))
@@ -44,7 +52,7 @@ pub fn remote_symlink_window_options_on_display(
             cx,
         ))),
         titlebar: Some(gpui::TitlebarOptions {
-            title: Some(SharedString::from("新增捷徑")),
+            title: Some(title.into()),
             ..Default::default()
         }),
         kind: gpui::WindowKind::Normal,
@@ -59,10 +67,10 @@ pub fn validate_remote_symlink_input(name: &str, target: &str) -> Result<(), &'s
         || matches!(name, "." | "..")
         || name.contains(['/', '\\', '\0', '\r', '\n'])
     {
-        return Err("捷徑名稱必須是目前資料夾內的一個有效名稱。");
+        return Err("dialog-shortcut-name-invalid");
     }
     if target.is_empty() || target.contains(['\0', '\r', '\n']) {
-        return Err("請輸入有效的目標路徑。");
+        return Err("dialog-shortcut-target-invalid");
     }
     Ok(())
 }
@@ -156,7 +164,7 @@ impl RemoteSymlinkWindow {
         let name = self.name_input.read(cx).as_str().to_owned();
         let target = self.target_input.read(cx).as_str().to_owned();
         if let Err(error) = validate_remote_symlink_input(&name, &target) {
-            self.error = Some(error.to_owned());
+            self.error = Some(owner_catalog(self.owner, cx).t(error));
             cx.notify();
             return;
         }
@@ -174,7 +182,9 @@ impl RemoteSymlinkWindow {
                 self.error = None;
             }
             Ok(Err(error)) => self.error = Some(error),
-            Err(_) => self.error = Some("主視窗已關閉，無法建立捷徑。".to_owned()),
+            Err(_) => {
+                self.error = Some(owner_catalog(owner, cx).t("dialog-shortcut-window-closed"))
+            }
         }
         cx.notify();
     }
@@ -194,7 +204,10 @@ impl Focusable for RemoteSymlinkWindow {
 }
 
 impl Render for RemoteSymlinkWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let catalog = owner_catalog(self.owner, cx);
+        let title = catalog.t("dialog-new-shortcut");
+        window.set_window_title(&title);
         let colors = self.tokens.theme.colors;
         let submit = cx.listener(|this, _, _, cx| this.submit(cx));
         let cancel = cx.listener(|this, _, window, cx| {
@@ -204,7 +217,7 @@ impl Render for RemoteSymlinkWindow {
         div()
             .id("remote-symlink-window")
             .role(Role::Dialog)
-            .aria_label("新增遠端捷徑")
+            .aria_label(catalog.t("a11y-new-remote-shortcut"))
             .track_focus(&self.focus_handle)
             .size_full()
             .p(px(26.0))
@@ -212,11 +225,11 @@ impl Render for RemoteSymlinkWindow {
             .flex_col()
             .gap(px(12.0))
             .bg(colors.surface.to_gpui())
-            .child(div().text_size(px(22.0)).child("新增捷徑"))
-            .child("捷徑名稱")
+            .child(div().text_size(px(22.0)).child(title))
+            .child(catalog.t("dialog-shortcut-name"))
             .child(
                 text_input("remote-symlink-name-input")
-                    .aria_label("捷徑名稱")
+                    .aria_label(catalog.t("a11y-shortcut-name"))
                     .state(gpui::Entity::downgrade(&self.name_input))
                     .multiline(false)
                     .caret_blink_interval_500ms()
@@ -227,10 +240,10 @@ impl Render for RemoteSymlinkWindow {
                     .border_1()
                     .border_color(colors.focus.to_gpui()),
             )
-            .child("目標路徑")
+            .child(catalog.t("dialog-shortcut-target"))
             .child(
                 text_input("remote-symlink-target-input")
-                    .aria_label("目標路徑")
+                    .aria_label(catalog.t("a11y-shortcut-target"))
                     .state(gpui::Entity::downgrade(&self.target_input))
                     .multiline(false)
                     .caret_blink_interval_500ms()
@@ -260,18 +273,18 @@ impl Render for RemoteSymlinkWindow {
                         div()
                             .id("remote-symlink-cancel")
                             .role(Role::Button)
-                            .aria_label("取消新增捷徑")
+                            .aria_label(catalog.t("a11y-cancel-new-shortcut"))
                             .cursor_pointer()
                             .px(px(18.0))
                             .py(px(8.0))
-                            .child("取消")
+                            .child(catalog.t("menu-cancel"))
                             .on_click(cancel),
                     )
                     .child(
                         div()
                             .id("remote-symlink-create")
                             .role(Role::Button)
-                            .aria_label("建立遠端捷徑")
+                            .aria_label(catalog.t("a11y-create-remote-shortcut"))
                             .px(px(18.0))
                             .py(px(8.0))
                             .bg(colors.accent.to_gpui())
@@ -279,7 +292,11 @@ impl Render for RemoteSymlinkWindow {
                             .when(!self.busy, |button| {
                                 button.cursor_pointer().on_click(submit)
                             })
-                            .child(if self.busy { "建立中…" } else { "建立" }),
+                            .child(if self.busy {
+                                catalog.t("menu-creating")
+                            } else {
+                                catalog.t("menu-create")
+                            }),
                     ),
             )
     }

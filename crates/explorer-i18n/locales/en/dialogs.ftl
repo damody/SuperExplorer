@@ -102,3 +102,31 @@ dialog-extension-lock-owner = Lock owner
 dialog-extension-exif = Rename from EXIF
 dialog-extension-7z = 7-Zip virtual folder
 dialog-extension-bulk-folder = Bulk folder generator
+dialog-git-hash = Git hash
+dialog-release-date-line = Release date: { $value }
+dialog-reset = Reset
+dialog-reset-prompt = Reset { $label }? This removes only persisted state; current files are not changed.
+dialog-reset-session-label = saved windows and tabs
+dialog-reset-view-label = saved view settings
+dialog-reset-quick-access-label = Quick Access pins
+dialog-reset-all-label = all saved Explorer state
+dialog-permanent-delete-prompt =
+    { $count ->
+        [one] Permanently delete { $count } item? This action cannot be undone.
+       *[other] Permanently delete { $count } items? This action cannot be undone.
+    }
+dialog-gdrive-trash-prompt =
+    { $count ->
+        [one] Move { $count } item to Google Drive trash? Recover them at drive.google.com for 30 days. This is not the Windows Recycle Bin.
+       *[other] Move { $count } items to Google Drive trash? Recover them at drive.google.com for 30 days. This is not the Windows Recycle Bin.
+    }
+dialog-permanent-delete-aria =
+    { $count ->
+        [one] Permanently delete { $count } item
+       *[other] Permanently delete { $count } items
+    }
+dialog-gdrive-trash-aria =
+    { $count ->
+        [one] Move { $count } item to Google Drive trash
+       *[other] Move { $count } items to Google Drive trash
+    }

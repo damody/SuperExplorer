@@ -28,6 +28,18 @@ fn extension_render_generation(item_id: &explorer_model::ShellItemId, snapshot: 
 
 use abi_stable::std_types::{ROption, RString};
 use explorer_i18n::{Catalog, FluentArgs};
+
+fn t_count(catalog: Catalog, key: &str, count: impl Into<i64>) -> String {
+    let mut args = FluentArgs::new();
+    args.set("count", count.into());
+    catalog.t_args(key, &args)
+}
+
+fn t_named(catalog: Catalog, key: &str, name: &str, value: impl Into<String>) -> String {
+    let mut args = FluentArgs::new();
+    args.set(name, value.into());
+    catalog.t_args(key, &args)
+}
 use explorer_model::{DirectoryState, TabId, TabSearchState};
 use gpui::{
     AccessibleAction, Anchor, AnchoredPositionMode, App, BoxShadow, Context, DispatchPhase,
@@ -756,6 +768,7 @@ impl RenderOnce for ExplorerWindow {
                                                 column_registry.clone(),
                                                 file_viewport_width,
                                                 self.tokens,
+                                                self.state.catalog(),
                                                 self.on_action.clone(),
                                             ))
                                         },
@@ -787,6 +800,7 @@ impl RenderOnce for ExplorerWindow {
                 |element, pending| {
                     element.child(right_drag_terminal_menu(
                         self.tokens,
+                        self.state.catalog(),
                         pending.allowed,
                         self.on_action.clone(),
                     ))
@@ -837,11 +851,17 @@ impl RenderOnce for ExplorerWindow {
                 ))
             })
             .when_some(about_dialog_info, |element, info| {
-                element.child(about_dialog(self.tokens, info, self.on_action.clone()))
+                element.child(about_dialog(
+                    self.tokens,
+                    self.state.catalog(),
+                    info,
+                    self.on_action.clone(),
+                ))
             })
             .when_some(session_reset_confirmation, |element, scope| {
                 element.child(session_reset_confirmation_dialog(
                     self.tokens,
+                    self.state.catalog(),
                     scope,
                     self.on_action.clone(),
                 ))
@@ -849,6 +869,7 @@ impl RenderOnce for ExplorerWindow {
             .when_some(permanent_delete_count, |element, count| {
                 element.child(permanent_delete_confirmation_dialog(
                     self.tokens,
+                    self.state.catalog(),
                     count,
                     permanent_delete_is_gdrive,
                     permanent_delete_focus
@@ -859,6 +880,7 @@ impl RenderOnce for ExplorerWindow {
             .when_some(lock_recovery, |element, recovery| {
                 element.child(lock_recovery_dialog(
                     self.tokens,
+                    self.state.catalog(),
                     recovery,
                     self.on_action.clone(),
                 ))
@@ -891,6 +913,7 @@ fn bookmark_bar(
     width: f32,
     callback: Option<ActionCallback>,
 ) -> impl IntoElement {
+    let catalog = state.catalog();
     let entries = state
         .bookmarks()
         .root_entries()
@@ -1076,7 +1099,12 @@ fn bookmark_bar(
             div()
                 .id(("bookmark", id.as_u128() as u64))
                 .role(Role::Button)
-                .aria_label(format!("{icon} Bookmark: {}", bookmark.name))
+                .aria_label({
+                    let mut args = FluentArgs::new();
+                    args.set("icon", icon);
+                    args.set("name", bookmark.name.clone());
+                    catalog.t_args("chrome-bookmark-aria", &args)
+                })
                 .cursor_pointer()
                 .px(px(8.0))
                 .py(px(4.0))
@@ -1124,7 +1152,11 @@ fn bookmark_bar(
                     .cursor_pointer()
                     .px(px(8.0))
                     .py(px(4.0))
-                    .child(format!("More Bookmarks ({overflow})"))
+                    .child(t_count(
+                        state.catalog(),
+                        "chrome-more-bookmarks",
+                        overflow as i64,
+                    ))
                     .when_some(toggle_callback, move |element, callback| {
                         element.on_click(move |_, window, cx| callback(&toggle, window, cx))
                     }),
@@ -1136,7 +1168,7 @@ fn bookmark_bar(
             div()
                 .id("bookmark-add-lua")
                 .role(Role::Button)
-                .aria_label("Add Lua bookmark")
+                .aria_label(state.catalog().t("chrome-add-lua-bookmark"))
                 .cursor_pointer()
                 .px(px(8.0))
                 .child("＋")
@@ -1150,7 +1182,7 @@ fn bookmark_bar(
             div()
                 .id("bookmark-manage")
                 .role(Role::Button)
-                .aria_label("Manage bookmarks")
+                .aria_label(state.catalog().t("chrome-manage-bookmarks"))
                 .cursor_pointer()
                 .px(px(8.0))
                 .child(state.catalog().t("menu-manage"))
@@ -1182,7 +1214,12 @@ fn bookmark_bar(
                             div()
                                 .id(("bookmark-overflow", id.as_u128() as u64))
                                 .role(Role::Button)
-                                .aria_label(format!("{icon} Bookmark: {}", bookmark.name))
+                                .aria_label({
+                                    let mut args = FluentArgs::new();
+                                    args.set("icon", icon);
+                                    args.set("name", bookmark.name.clone());
+                                    catalog.t_args("chrome-bookmark-aria", &args)
+                                })
                                 .cursor_pointer()
                                 .px(px(8.0))
                                 .py(px(6.0))
@@ -1225,7 +1262,7 @@ fn bookmark_bar(
                     div()
                         .id("bookmark-folder-menu")
                         .role(Role::Menu)
-                        .aria_label("Bookmark folder menu")
+                        .aria_label(state.catalog().t("chrome-bookmark-folder-menu"))
                         .absolute()
                         .top(px(BOOKMARK_BAR_HEIGHT - 1.0))
                         .left(px(52.0))
@@ -1283,7 +1320,12 @@ fn bookmark_bar(
                                 div()
                                     .id(("bookmark-folder-entry", id.as_u128() as u64))
                                     .role(Role::MenuItem)
-                                    .aria_label(format!("Bookmark {}", bookmark.name))
+                                    .aria_label(t_named(
+                    catalog,
+                    "chrome-bookmark-plain-aria",
+                    "name",
+                    bookmark.name.clone(),
+                ))
                                     .cursor_pointer()
                                     .px(px(8.0))
                                     .py(px(5.0))
@@ -1517,7 +1559,12 @@ pub(crate) fn bookmark_manager(
             div()
                 .id(("bookmark-row", id.as_u128() as u64))
                 .role(Role::ListItem)
-                .aria_label(format!("Bookmark {}", bookmark.name))
+                .aria_label(t_named(
+                    catalog,
+                    "chrome-bookmark-plain-aria",
+                    "name",
+                    bookmark.name.clone(),
+                ))
                 .flex()
                 .items_center()
                 .h(px(manager_row_height))
@@ -1682,7 +1729,7 @@ pub(crate) fn bookmark_manager(
                     div()
                         .id("bookmark-manager-view-toggle")
                         .role(Role::Button)
-                        .aria_label("Toggle compact bookmark view")
+                        .aria_label(catalog.t("chrome-toggle-compact-bookmarks"))
                         .cursor_pointer()
                         .child(catalog.t("menu-view-with-accelerator"))
                         .when_some(view_cb, move |e, cb| {
@@ -1693,7 +1740,7 @@ pub(crate) fn bookmark_manager(
                     div()
                         .id("bookmark-manager-transfer-menu")
                         .role(Role::Button)
-                        .aria_label("Import and backup bookmarks")
+                        .aria_label(catalog.t("chrome-import-backup-bookmarks"))
                         .cursor_pointer()
                         .child(catalog.t("menu-import-backup-with-accelerator"))
                         .when_some(transfer_cb, move |e, cb| {
@@ -2202,7 +2249,7 @@ fn bookmark_toolbar_context_menu(
                 div()
                     .id("bookmark-toolbar-context-menu")
                     .role(Role::Menu)
-                    .aria_label("Bookmark toolbar context menu")
+                    .aria_label(catalog.t("chrome-bookmark-toolbar-context"))
                     .absolute()
                     .left(px(left))
                     .top(px(top))
@@ -2308,7 +2355,7 @@ fn bookmark_context_menu(
                 div()
                     .id("bookmark-context-menu")
                     .role(Role::Menu)
-                    .aria_label("Bookmark context menu")
+                    .aria_label(catalog.t("chrome-bookmark-context"))
                     .absolute()
                     .left(px(left))
                     .top(px(top))
@@ -2752,7 +2799,7 @@ fn remote_context_menu(
                 div()
                     .id("remote-context-menu")
                     .role(Role::Menu)
-                    .aria_label("Remote file context menu")
+                    .aria_label(catalog.t("chrome-remote-file-context"))
                     .occlude()
                     .absolute()
                     .left(px(left))
@@ -2815,19 +2862,20 @@ pub(crate) fn bookmark_editor(
     payload_input: Option<gpui::WeakEntity<EditableTextState>>,
     callback: Option<ActionCallback>,
 ) -> impl IntoElement {
+    let catalog = state.catalog();
     let editor = state.bookmark_editor().expect("editor is open");
     let is_new = editor.id.is_none();
     let colors = tokens.theme.colors;
     let (input_text, input_selection, input_selection_text, input_caret) =
         editable_input_colors(tokens);
     let payload_label = match &editor.target {
-        explorer_model::BookmarkTarget::LuaScript { .. } => {
-            "Lua 原始碼（僅可使用唯讀 current_folder）"
-        }
+        explorer_model::BookmarkTarget::LuaScript { .. } => catalog.t("dialog-lua-source"),
         explorer_model::BookmarkTarget::Folder { .. }
-        | explorer_model::BookmarkTarget::FolderPath { .. } => "資料夾路徑（可編輯）",
+        | explorer_model::BookmarkTarget::FolderPath { .. } => {
+            catalog.t("dialog-folder-path-editable")
+        }
         explorer_model::BookmarkTarget::File { .. }
-        | explorer_model::BookmarkTarget::FilePath { .. } => "檔案路徑（可編輯）",
+        | explorer_model::BookmarkTarget::FilePath { .. } => catalog.t("dialog-file-path-editable"),
     };
     let payload_is_multiline = matches!(
         &editor.target,
@@ -2840,7 +2888,7 @@ pub(crate) fn bookmark_editor(
     let remove_cb = callback.clone();
     let overlay_cancel_cb = callback.clone();
     let overlay_cancel = cancel.clone();
-    let destination_rows = std::iter::once((None, "根目錄".to_owned()))
+    let destination_rows = std::iter::once((None, catalog.t("dialog-root")))
         .chain(
             state
                 .bookmarks()
@@ -2858,7 +2906,7 @@ pub(crate) fn bookmark_editor(
                     None => "bookmark-destination-root".to_owned(),
                 })
                 .role(Role::Button)
-                .aria_label(format!("Save in {name}"))
+                .aria_label(t_named(catalog, "chrome-save-in", "name", name.clone()))
                 .cursor_pointer()
                 .px(px(8.0))
                 .py(px(5.0))
@@ -2891,7 +2939,7 @@ pub(crate) fn bookmark_editor(
             div()
                 .id("bookmark-editor")
                 .role(Role::Dialog)
-                .aria_label("Bookmark editor")
+                .aria_label(catalog.t("chrome-bookmark-editor"))
                 .w_full()
                 .p(px(20.0))
                 .flex()
@@ -2909,13 +2957,13 @@ pub(crate) fn bookmark_editor(
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_center()
                         .child(if is_new {
-                            "新增書籤"
+                            catalog.t("dialog-new-bookmark")
                         } else {
-                            "編輯書籤"
+                            catalog.t("dialog-edit-bookmark")
                         }),
                 )
                 .child(div().h(px(1.0)).bg(colors.divider.to_gpui()))
-                .child("名稱 (N)")
+                .child(catalog.t("dialog-name-accelerator"))
                 .when_some(name_input, |e, input| {
                     e.child(
                         text_input("bookmark-name-input")
@@ -2959,7 +3007,7 @@ pub(crate) fn bookmark_editor(
                         )
                     })
                 })
-                .child("位置 (L)")
+                .child(catalog.t("dialog-location-accelerator"))
                 .child(
                     div()
                         .id("bookmark-destination-picker")
@@ -2987,7 +3035,7 @@ pub(crate) fn bookmark_editor(
                                 .bg(colors.accent.to_gpui())
                                 .child(div().size_full()),
                         )
-                        .child("儲存時顯示編輯器 (S)"),
+                        .child(catalog.t("dialog-show-editor-on-save")),
                 )
                 .child(
                     div()
@@ -3000,13 +3048,13 @@ pub(crate) fn bookmark_editor(
                                 div()
                                     .id("bookmark-editor-remove")
                                     .role(Role::Button)
-                                    .aria_label("Remove bookmark")
+                                    .aria_label(catalog.t("chrome-remove-bookmark"))
                                     .cursor_pointer()
                                     .px(px(12.0))
                                     .py(px(6.0))
                                     .rounded(px(10.0))
                                     .text_color(colors.danger.to_gpui())
-                                    .child("移除書籤")
+                                    .child(catalog.t("menu-remove-bookmark"))
                                     .when_some(remove_cb, move |e, cb| {
                                         e.on_click(move |_, w, cx| cb(&remove, w, cx))
                                     })
@@ -3016,13 +3064,13 @@ pub(crate) fn bookmark_editor(
                             div()
                                 .id("bookmark-editor-cancel")
                                 .role(Role::Button)
-                                .aria_label("Cancel bookmark edit")
+                                .aria_label(catalog.t("chrome-cancel-bookmark-edit"))
                                 .cursor_pointer()
                                 .px(px(12.0))
                                 .py(px(6.0))
                                 .rounded(px(10.0))
                                 .bg(colors.control_fill.to_gpui())
-                                .child("取消")
+                                .child(catalog.t("menu-cancel"))
                                 .when_some(callback, move |e, cb| {
                                     e.on_click(move |_, w, cx| cb(&cancel, w, cx))
                                 }),
@@ -3031,14 +3079,14 @@ pub(crate) fn bookmark_editor(
                             div()
                                 .id("bookmark-editor-save")
                                 .role(Role::Button)
-                                .aria_label("Save bookmark")
+                                .aria_label(catalog.t("chrome-save-bookmark"))
                                 .cursor_pointer()
                                 .px(px(12.0))
                                 .py(px(6.0))
                                 .rounded(px(10.0))
                                 .bg(tokens.theme.colors.accent.to_gpui())
                                 .text_color(colors.surface.to_gpui())
-                                .child("儲存")
+                                .child(catalog.t("menu-save"))
                                 .when_some(save_cb, move |e, cb| {
                                     e.on_click(move |_, w, cx| cb(&save, w, cx))
                                 }),
@@ -3049,6 +3097,7 @@ pub(crate) fn bookmark_editor(
 
 pub(crate) fn bookmark_folder_editor(
     tokens: UiTokens,
+    catalog: Catalog,
     input: Option<gpui::WeakEntity<EditableTextState>>,
     callback: Option<ActionCallback>,
 ) -> impl IntoElement {
@@ -3069,7 +3118,7 @@ pub(crate) fn bookmark_folder_editor(
             div()
                 .id("bookmark-folder-editor")
                 .role(Role::Dialog)
-                .aria_label("Rename bookmark folder")
+                .aria_label(catalog.t("chrome-rename-bookmark-folder"))
                 .w(px(420.0))
                 .p(px(18.0))
                 .flex()
@@ -3077,7 +3126,7 @@ pub(crate) fn bookmark_folder_editor(
                 .gap(px(10.0))
                 .rounded(px(8.0))
                 .bg(colors.surface.to_gpui())
-                .child("重新命名書籤資料夾")
+                .child(catalog.t("dialog-rename-bookmark-folder"))
                 .when_some(input, |element, input| {
                     element.child(
                         text_input("bookmark-folder-name-input")
@@ -3105,11 +3154,11 @@ pub(crate) fn bookmark_folder_editor(
                             div()
                                 .id("bookmark-folder-editor-cancel")
                                 .role(Role::Button)
-                                .aria_label("Cancel bookmark folder edit")
+                                .aria_label(catalog.t("chrome-cancel-bookmark-folder-edit"))
                                 .cursor_pointer()
                                 .px(px(12.0))
                                 .py(px(6.0))
-                                .child("取消")
+                                .child(catalog.t("menu-cancel"))
                                 .when_some(callback, move |element, cb| {
                                     element.on_click(move |_, window, cx| cb(&cancel, window, cx))
                                 }),
@@ -3118,12 +3167,12 @@ pub(crate) fn bookmark_folder_editor(
                             div()
                                 .id("bookmark-folder-editor-save")
                                 .role(Role::Button)
-                                .aria_label("Save bookmark folder")
+                                .aria_label(catalog.t("chrome-save-bookmark-folder"))
                                 .cursor_pointer()
                                 .px(px(12.0))
                                 .py(px(6.0))
                                 .bg(colors.accent.to_gpui())
-                                .child("儲存")
+                                .child(catalog.t("menu-save"))
                                 .when_some(save_cb, move |element, cb| {
                                     element.on_click(move |_, window, cx| cb(&save, window, cx))
                                 }),
@@ -3134,14 +3183,17 @@ pub(crate) fn bookmark_folder_editor(
 
 fn session_reset_confirmation_dialog(
     tokens: UiTokens,
+    catalog: Catalog,
     scope: explorer_model::SessionResetScope,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     let label = match scope {
-        explorer_model::SessionResetScope::Session => "saved windows and tabs",
-        explorer_model::SessionResetScope::ViewSettings => "saved view settings",
-        explorer_model::SessionResetScope::QuickAccess => "Quick Access pins",
-        explorer_model::SessionResetScope::AllRoadmapState => "all saved Explorer state",
+        explorer_model::SessionResetScope::Session => catalog.t("dialog-reset-session-label"),
+        explorer_model::SessionResetScope::ViewSettings => catalog.t("dialog-reset-view-label"),
+        explorer_model::SessionResetScope::QuickAccess => {
+            catalog.t("dialog-reset-quick-access-label")
+        }
+        explorer_model::SessionResetScope::AllRoadmapState => catalog.t("dialog-reset-all-label"),
     };
     div()
         .id("session-reset-confirmation-overlay")
@@ -3161,7 +3213,7 @@ fn session_reset_confirmation_dialog(
             div()
                 .id("session-reset-confirmation-dialog")
                 .role(Role::Dialog)
-                .aria_label(format!("Confirm reset of {label}"))
+                .aria_label(t_named(catalog, "chrome-confirm-reset", "label", label.clone()))
                 .w(px(crate::layout::folder_options::DIALOG_WIDTH.value()))
                 .p(px(crate::layout::folder_options::PAGE_PADDING.value()))
                 .flex()
@@ -3171,9 +3223,7 @@ fn session_reset_confirmation_dialog(
                 .border(px(1.0))
                 .border_color(tokens.theme.colors.divider.to_gpui())
                 .bg(tokens.theme.colors.menu_fill.to_gpui())
-                .child(format!(
-                    "Reset {label}? This removes only persisted state; current files are not changed."
-                ))
+                .child(t_named(catalog, "dialog-reset-prompt", "label", label))
                 .child(
                     div()
                         .flex()
@@ -3181,14 +3231,14 @@ fn session_reset_confirmation_dialog(
                         .gap(px(tokens.layout.control_padding_horizontal.value()))
                         .child(folder_option_button(
                             "session-reset-cancel",
-                            "Cancel",
+                            catalog.t("menu-cancel"),
                             ExplorerAction::CancelSavedStateReset,
                             tokens,
                             on_action.clone(),
                         ))
                         .child(folder_option_button(
                             "session-reset-confirm",
-                            "Reset",
+                            catalog.t("dialog-reset"),
                             ExplorerAction::ConfirmSavedStateReset,
                             tokens,
                             on_action,
@@ -3199,23 +3249,22 @@ fn session_reset_confirmation_dialog(
 
 fn permanent_delete_confirmation_dialog(
     tokens: UiTokens,
+    catalog: Catalog,
     item_count: usize,
     gdrive_trash: bool,
     focused_target: crate::actions::PermanentDeleteDialogTarget,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
-    let item_label = if item_count == 1 { "item" } else { "items" };
+    let count = item_count as i64;
     let message = if gdrive_trash {
-        format!(
-            "Move {item_count} {item_label} to Google Drive trash? Recover them at drive.google.com for 30 days. This is not the Windows Recycle Bin."
-        )
+        t_count(catalog, "dialog-gdrive-trash-prompt", count)
     } else {
-        format!("Permanently delete {item_count} {item_label}? This action cannot be undone.")
+        t_count(catalog, "dialog-permanent-delete-prompt", count)
     };
     let aria = if gdrive_trash {
-        format!("Move {item_count} {item_label} to Google Drive trash")
+        t_count(catalog, "dialog-gdrive-trash-aria", count)
     } else {
-        format!("Permanently delete {item_count} {item_label}")
+        t_count(catalog, "dialog-permanent-delete-aria", count)
     };
     div()
         .id("permanent-delete-confirmation-overlay")
@@ -3252,7 +3301,7 @@ fn permanent_delete_confirmation_dialog(
                         .gap(px(tokens.layout.control_padding_horizontal.value()))
                         .child(permanent_delete_dialog_button(
                             "permanent-delete-cancel",
-                            "Cancel",
+                            catalog.t("menu-cancel"),
                             ExplorerAction::CancelPermanentDelete,
                             crate::actions::PermanentDeleteDialogTarget::Cancel,
                             focused_target == crate::actions::PermanentDeleteDialogTarget::Cancel,
@@ -3261,7 +3310,7 @@ fn permanent_delete_confirmation_dialog(
                         ))
                         .child(permanent_delete_dialog_button(
                             "permanent-delete-confirm",
-                            "Delete",
+                            catalog.t("menu-delete"),
                             ExplorerAction::ConfirmPermanentDelete,
                             crate::actions::PermanentDeleteDialogTarget::Delete,
                             focused_target == crate::actions::PermanentDeleteDialogTarget::Delete,
@@ -3463,13 +3512,14 @@ fn remote_permission_toggle(
 
 fn lock_recovery_dialog(
     tokens: UiTokens,
+    catalog: Catalog,
     recovery: LockRecoveryUiState,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     let title = if recovery.item_count == 1 {
-        "檔案正在使用中"
+        catalog.t("dialog-file-in-use")
     } else {
-        "部分項目正在使用中"
+        catalog.t("dialog-items-in-use")
     };
     let owners = recovery.owners.clone();
     let result_owners = recovery.owners.clone();
@@ -3500,7 +3550,7 @@ fn lock_recovery_dialog(
             div()
                 .id("lock-recovery-dialog")
                 .role(Role::Dialog)
-                .aria_label(title)
+                .aria_label(title.clone())
                 .w(px(crate::layout::folder_options::DIALOG_WIDTH.value()))
                 .max_h(px(crate::layout::lock_recovery::DIALOG_MAX_HEIGHT.value()))
                 .p(px(crate::layout::folder_options::PAGE_PADDING.value()))
@@ -3516,16 +3566,13 @@ fn lock_recovery_dialog(
                         .text_size(px(tokens.typography.command.size.value()))
                         .child(title),
                 )
-                .child(format!(
-                    "Windows 無法刪除選取的 {} 個項目，因為其他應用程式正在使用它。",
-                    recovery.item_count
-                ))
+                .child(t_count(catalog, "dialog-lock-owner-body", recovery.item_count as i64))
                 .when(!owners.is_empty(), |dialog| {
                     dialog.child(
                         div()
                             .id("lock-owner-list")
                             .role(Role::List)
-                            .aria_label("正在使用檔案的應用程式")
+                            .aria_label(catalog.t("dialog-apps-using-file"))
                             .max_h(px(
                                 crate::layout::lock_recovery::OWNER_LIST_MAX_HEIGHT.value()
                             ))
@@ -3536,23 +3583,25 @@ fn lock_recovery_dialog(
                                     owner.identity.process_id, owner.identity.creation_time_100ns
                                 );
                                 let eligibility = match owner.eligibility {
-                                    explorer_model::LockOwnerEligibility::Eligible => "可安全關閉",
+                                    explorer_model::LockOwnerEligibility::Eligible => {
+                                        catalog.t("a11y-eligible-close")
+                                    }
                                     explorer_model::LockOwnerEligibility::ThisApplication => {
-                                        "本程式不會被關閉"
+                                        catalog.t("a11y-will-not-close-self")
                                     }
                                     explorer_model::LockOwnerEligibility::System
                                     | explorer_model::LockOwnerEligibility::Critical => {
-                                        "系統程序不會被關閉"
+                                        catalog.t("a11y-will-not-close-system")
                                     }
                                     explorer_model::LockOwnerEligibility::Service => {
-                                        "服務不會被關閉"
+                                        catalog.t("a11y-will-not-close-service")
                                     }
                                     explorer_model::LockOwnerEligibility::Protected
                                     | explorer_model::LockOwnerEligibility::Elevated => {
-                                        "受保護的程序不會被關閉"
+                                        catalog.t("a11y-will-not-close-protected")
                                     }
                                     explorer_model::LockOwnerEligibility::IdentityUnavailable => {
-                                        "無法確認程序身分"
+                                        catalog.t("a11y-cannot-confirm-identity")
                                     }
                                 };
                                 div()
@@ -3579,29 +3628,44 @@ fn lock_recovery_dialog(
                         div()
                             .id("lock-owner-results")
                             .role(Role::List)
-                            .aria_label("關閉應用程式的結果")
+                            .aria_label(catalog.t("dialog-close-results"))
                             .children(close_outcomes.into_iter().map(move |outcome| {
                                 let name = result_owners
                                     .iter()
                                     .find(|owner| owner.identity == outcome.identity)
                                     .map_or_else(
-                                        || format!("程序 {}", outcome.identity.process_id),
+                                        || {
+                                            t_named(
+                                                catalog,
+                                                "a11y-process",
+                                                "pid",
+                                                outcome.identity.process_id.to_string(),
+                                            )
+                                        },
                                         |owner| owner.display_name.clone(),
                                     );
                                 let result = match outcome.result {
-                                    explorer_model::LockOwnerCloseResult::Closed => "已關閉",
-                                    explorer_model::LockOwnerCloseResult::AlreadyExited => "已結束",
-                                    explorer_model::LockOwnerCloseResult::StaleIdentity => {
-                                        "程序身分已變更"
+                                    explorer_model::LockOwnerCloseResult::Closed => {
+                                        catalog.t("a11y-closed")
                                     }
-                                    explorer_model::LockOwnerCloseResult::Denied => "拒絕存取",
+                                    explorer_model::LockOwnerCloseResult::AlreadyExited => {
+                                        catalog.t("a11y-already-exited")
+                                    }
+                                    explorer_model::LockOwnerCloseResult::StaleIdentity => {
+                                        catalog.t("a11y-identity-changed")
+                                    }
+                                    explorer_model::LockOwnerCloseResult::Denied => {
+                                        catalog.t("a11y-access-denied")
+                                    }
                                     explorer_model::LockOwnerCloseResult::Protected => {
-                                        "受保護，未關閉"
+                                        catalog.t("a11y-protected-not-closed")
                                     }
                                     explorer_model::LockOwnerCloseResult::Refused => {
-                                        "應用程式拒絕關閉"
+                                        catalog.t("a11y-app-refused")
                                     }
-                                    explorer_model::LockOwnerCloseResult::Timeout => "等候關閉逾時",
+                                    explorer_model::LockOwnerCloseResult::Timeout => {
+                                        catalog.t("a11y-timeout")
+                                    }
                                 };
                                 let result_id = format!(
                                     "lock-owner-result-{}-{}",
@@ -3631,7 +3695,7 @@ fn lock_recovery_dialog(
                         .gap(px(tokens.layout.control_padding_horizontal.value()))
                         .child(lock_dialog_button(
                             "lock-recovery-close-retry",
-                            "關閉程式並重試",
+                            catalog.t("menu-close-apps-and-retry"),
                             close_enabled,
                             focused_target == crate::state::LockRecoveryFocusTarget::CloseAndRetry,
                             ExplorerAction::CloseLockOwnersAndRetry,
@@ -3640,7 +3704,11 @@ fn lock_recovery_dialog(
                         ))
                         .child(lock_dialog_button(
                             "lock-recovery-retry",
-                            if busy { "請稍候…" } else { "重試" },
+                            if busy {
+                                catalog.t("menu-please-wait")
+                            } else {
+                                catalog.t("menu-retry")
+                            },
                             retry_enabled,
                             focused_target == crate::state::LockRecoveryFocusTarget::Retry,
                             ExplorerAction::RetryLockedDelete,
@@ -3649,7 +3717,7 @@ fn lock_recovery_dialog(
                         ))
                         .child(lock_dialog_button(
                             "lock-recovery-cancel",
-                            "取消",
+                            catalog.t("menu-cancel"),
                             true,
                             focused_target == crate::state::LockRecoveryFocusTarget::Cancel,
                             ExplorerAction::CancelLockedDeleteRecovery,
@@ -3662,17 +3730,18 @@ fn lock_recovery_dialog(
 
 fn lock_dialog_button(
     id: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     enabled: bool,
     focused: bool,
     action: ExplorerAction,
     tokens: UiTokens,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
+    let label = label.into();
     div()
         .id(id)
         .role(Role::Button)
-        .aria_label(label)
+        .aria_label(label.clone())
         .min_w(px(crate::layout::folder_options::BUTTON_MIN_WIDTH.value()))
         .h(px(tokens.layout.minimum_hit_target.value()))
         .flex()
@@ -3747,7 +3816,7 @@ pub(crate) fn folder_options_window_content(
                         .child(title)
                         .child(folder_option_button(
                             "folder-options-close",
-                            "關閉",
+                            catalog.t("settings-close"),
                             ExplorerAction::CloseFolderOptions,
                             tokens,
                             on_action.clone(),
@@ -3761,7 +3830,7 @@ pub(crate) fn folder_options_window_content(
                         .px(px(tokens.layout.control_padding_horizontal.value()))
                         .child(folder_option_tab(
                             "folder-options-general-tab",
-                            "一般",
+                            catalog.t("settings-general"),
                             page == FolderOptionsPage::General,
                             ExplorerAction::SetFolderOptionsPage(FolderOptionsPage::General),
                             tokens,
@@ -3769,7 +3838,7 @@ pub(crate) fn folder_options_window_content(
                         ))
                         .child(folder_option_tab(
                             "folder-options-view-tab",
-                            "檢視",
+                            catalog.t("settings-view"),
                             page == FolderOptionsPage::View,
                             ExplorerAction::SetFolderOptionsPage(FolderOptionsPage::View),
                             tokens,
@@ -3777,7 +3846,7 @@ pub(crate) fn folder_options_window_content(
                         ))
                         .child(folder_option_tab(
                             "folder-options-extensions-tab",
-                            "Extensions",
+                            catalog.t("settings-extensions"),
                             page == FolderOptionsPage::Extensions,
                             ExplorerAction::SetFolderOptionsPage(FolderOptionsPage::Extensions),
                             tokens,
@@ -3789,9 +3858,9 @@ pub(crate) fn folder_options_window_content(
                         .id("folder-options-page")
                         .role(Role::List)
                         .aria_label(match page {
-                            FolderOptionsPage::General => "一般",
-                            FolderOptionsPage::View => "檢視",
-                            FolderOptionsPage::Extensions => "Extensions",
+                            FolderOptionsPage::General => catalog.t("settings-general"),
+                            FolderOptionsPage::View => catalog.t("settings-view"),
+                            FolderOptionsPage::Extensions => catalog.t("settings-extensions"),
                         })
                         .flex_1()
                         .min_h_0()
@@ -3816,6 +3885,7 @@ pub(crate) fn folder_options_window_content(
                         .when(page == FolderOptionsPage::View, |body| {
                             body.child(folder_options_view_page(
                                 tokens,
+                                catalog,
                                 &settings,
                                 on_action.clone(),
                                 cache_budget_inputs.clone(),
@@ -3825,6 +3895,7 @@ pub(crate) fn folder_options_window_content(
                         .when(page == FolderOptionsPage::Extensions, |body| {
                             body.child(folder_options_extensions_page(
                                 tokens,
+                                catalog,
                                 &extensions,
                                 &draft.extension_enabled,
                                 on_action.clone(),
@@ -3854,21 +3925,21 @@ pub(crate) fn folder_options_window_content(
                         })
                         .child(folder_option_button(
                             "folder-options-ok",
-                            "確定",
+                            catalog.t("settings-ok"),
                             ExplorerAction::ConfirmFolderOptions,
                             tokens,
                             on_action.clone(),
                         ))
                         .child(folder_option_button(
                             "folder-options-cancel",
-                            "取消",
+                            catalog.t("settings-cancel"),
                             ExplorerAction::CloseFolderOptions,
                             tokens,
                             on_action.clone(),
                         ))
                         .child(folder_option_button(
                             "folder-options-apply",
-                            "套用",
+                            catalog.t("settings-apply"),
                             ExplorerAction::ApplyFolderOptions,
                             tokens,
                             on_action,
@@ -3880,10 +3951,11 @@ pub(crate) fn folder_options_window_content(
 
 fn about_dialog(
     tokens: UiTokens,
+    catalog: Catalog,
     info: crate::state::AboutInfoV1,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
-    let row = |label: &'static str, value: String| {
+    let row = |label: String, value: String| {
         div()
             .flex()
             .gap(px(tokens.layout.content_spacing.value() * 2.0))
@@ -3912,7 +3984,7 @@ fn about_dialog(
             div()
                 .id("about-dialog")
                 .role(Role::Dialog)
-                .aria_label("關於 SuperExplorer")
+                .aria_label(catalog.t("a11y-about"))
                 .w(px(460.0))
                 .flex()
                 .flex_col()
@@ -3927,13 +3999,13 @@ fn about_dialog(
                         .text_size(px(tokens.typography.address.size.value()))
                         .child("SuperExplorer"),
                 )
-                .child(row("版本", info.version))
-                .child(row("編譯日期", info.build_date))
-                .child(row("Git hash", info.git_hash))
-                .child(row("作者", info.author))
+                .child(row(catalog.t("dialog-version"), info.version))
+                .child(row(catalog.t("dialog-build-date"), info.build_date))
+                .child(row(catalog.t("dialog-git-hash"), info.git_hash))
+                .child(row(catalog.t("dialog-author"), info.author))
                 .child(div().flex().justify_end().child(folder_option_button(
                     "about-ok",
-                    "OK",
+                    catalog.t("menu-ok"),
                     ExplorerAction::CloseAboutDialog,
                     tokens,
                     on_action,
@@ -3943,6 +4015,7 @@ fn about_dialog(
 
 fn folder_options_extensions_page(
     tokens: UiTokens,
+    catalog: Catalog,
     extensions: &[crate::state::ExtensionOptionV1],
     enabled: &[bool],
     on_action: Option<ActionCallback>,
@@ -3950,7 +4023,7 @@ fn folder_options_extensions_page(
     div()
         .id("folder-options-extensions-page")
         .role(Role::List)
-        .aria_label("Extensions")
+        .aria_label(catalog.t("a11y-extensions"))
         .flex()
         .flex_col()
         .gap(px(tokens.layout.maximum_visible_glyph.value()))
@@ -3959,12 +4032,12 @@ fn folder_options_extensions_page(
                 div()
                     .id("folder-options-extension-safe-mode")
                     .role(Role::Status)
-                    .aria_label("Plugin Safe Mode")
+                    .aria_label(catalog.t("a11y-plugin-safe-mode"))
                     .p(px(tokens.layout.control_padding_horizontal.value()))
                     .border(px(1.0))
                     .border_color(tokens.theme.colors.divider.to_gpui())
                     .rounded(px(tokens.layout.corner_radius.value()))
-                    .child("Plugin Safe Mode 已啟用。勾選要重新啟用的 Plugin，按 Apply 或 OK，然後重新啟動 SuperExplorer。"),
+                    .child(catalog.t("dialog-plugin-safe-mode-body")),
             )
         })
         .children(extensions.iter().enumerate().map(|(index, extension)| {
@@ -3999,7 +4072,7 @@ fn folder_options_extensions_page(
                         .ml(px(tokens.layout.minimum_hit_target.value()))
                         .text_size(px(tokens.typography.tooltip.size.value()))
                         .text_color(tokens.theme.colors.text_secondary.to_gpui())
-                        .child(format!("用途：{}", extension.purpose)),
+                        .child(t_named(catalog, "dialog-purpose", "value", extension.purpose)),
                 )
                 .child(
                     div()
@@ -4011,10 +4084,13 @@ fn folder_options_extensions_page(
                         .cursor_pointer()
                         .text_size(px(tokens.typography.tooltip.size.value()))
                         .text_color(tokens.theme.colors.accent.to_gpui())
-                        .child(format!(
-                            "作者：{} — {} · {}",
-                            extension.author_name, extension.author_bio, extension.author_website
-                        ))
+                        .child({
+                            let mut args = FluentArgs::new();
+                            args.set("name", extension.author_name);
+                            args.set("bio", extension.author_bio);
+                            args.set("date", extension.author_website);
+                            catalog.t_args("dialog-author-line", &args)
+                        })
                         .when_some(on_action.clone(), |author, callback| {
                             author.on_click(move |_, window, cx| {
                                 callback(&website_action, window, cx)
@@ -4026,7 +4102,12 @@ fn folder_options_extensions_page(
                         .ml(px(tokens.layout.minimum_hit_target.value()))
                         .text_size(px(tokens.typography.tooltip.size.value()))
                         .text_color(tokens.theme.colors.text_secondary.to_gpui())
-                        .child(format!("Release date：{}", extension.release_date)),
+                        .child(t_named(
+                            catalog,
+                            "dialog-release-date-line",
+                            "value",
+                            extension.release_date,
+                        )),
                 )
                 .child(
                     div()
@@ -4038,7 +4119,12 @@ fn folder_options_extensions_page(
                         .cursor_pointer()
                         .text_size(px(tokens.typography.tooltip.size.value()))
                         .text_color(tokens.theme.colors.accent.to_gpui())
-                        .child(format!("社群：{}", extension.community_website))
+                        .child(t_named(
+                            catalog,
+                            "dialog-community",
+                            "url",
+                            extension.community_website,
+                        ))
                         .when_some(on_action.clone(), |community, callback| {
                             community.on_click(move |_, window, cx| {
                                 callback(&community_action, window, cx)
@@ -4068,13 +4154,16 @@ fn folder_options_general_page(
             on_action.clone(),
         ))
         .child(folder_option_group(
-            "瀏覽資料夾",
-            vec!["在同一個視窗中開啟每個資料夾", "在不同視窗中開啟每個資料夾"],
+            catalog.t("settings-browse-folders"),
+            vec![
+                catalog.t("settings-open-same-window"),
+                catalog.t("settings-open-new-window"),
+            ],
             tokens,
         ))
         .child(folder_option_checkbox(
             "folder-option-restore-session",
-            "Restore previous windows and tabs at startup",
+            catalog.t("settings-restore-session"),
             restore_previous_session,
             ExplorerAction::ToggleRestorePreviousSession,
             tokens,
@@ -4086,31 +4175,31 @@ fn folder_options_general_page(
                 .gap(px(tokens.layout.content_spacing.value()))
                 .child(folder_option_button(
                     "folder-options-reset-session",
-                    "Reset session",
+                    catalog.t("settings-reset-session"),
                     ExplorerAction::ResetSavedSession,
                     tokens,
                     on_action.clone(),
                 ))
                 .child(folder_option_button(
                     "folder-options-reset-view",
-                    "Reset view settings",
+                    catalog.t("settings-reset-view"),
                     ExplorerAction::ResetSavedViewSettings,
                     tokens,
                     on_action.clone(),
                 ))
                 .child(folder_option_button(
                     "folder-options-reset-all-state",
-                    "Reset all Explorer state",
+                    catalog.t("settings-reset-all-state"),
                     ExplorerAction::ResetAllSavedExplorerState,
                     tokens,
                     on_action,
                 )),
         )
         .child(folder_option_group(
-            "按一下項目的方式",
+            catalog.t("settings-click-items"),
             vec![
-                "按兩下以開啟項目（按一下以選取）",
-                "按一下以開啟項目（指向以選取）",
+                catalog.t("settings-double-click"),
+                catalog.t("settings-single-click"),
             ],
             tokens,
         ))
@@ -4205,10 +4294,11 @@ fn folder_option_locale_row(
 }
 
 fn folder_option_group(
-    title: &'static str,
-    options: Vec<&'static str>,
+    title: impl Into<SharedString>,
+    options: Vec<String>,
     tokens: UiTokens,
 ) -> impl IntoElement {
+    let title = title.into();
     div()
         .flex()
         .flex_col()
@@ -4234,6 +4324,7 @@ fn folder_option_group(
 
 fn folder_options_view_page(
     tokens: UiTokens,
+    catalog: Catalog,
     settings: &explorer_model::ViewSettings,
     on_action: Option<ActionCallback>,
     cache_budget_inputs: Vec<gpui::WeakEntity<EditableTextState>>,
@@ -4251,10 +4342,10 @@ fn folder_options_view_page(
                 .p(px(tokens.layout.control_padding_horizontal.value()))
                 .border(px(1.0))
                 .border_color(tokens.theme.colors.divider.to_gpui())
-                .child("資料夾檢視：將目前檢視套用到此類型的所有資料夾")
+                .child(catalog.t("settings-folder-views"))
                 .child(folder_option_button(
                     "folder-options-reset",
-                    "重設資料夾",
+                    catalog.t("settings-reset-folders"),
                     ExplorerAction::ResetFolderOptions,
                     tokens,
                     on_action.clone(),
@@ -4262,6 +4353,7 @@ fn folder_options_view_page(
         )
         .child(cache_budget_controls(
             tokens,
+            catalog,
             settings.cache_budgets,
             cache_budget_inputs,
             cache_usage,
@@ -4270,11 +4362,11 @@ fn folder_options_view_page(
         .child(
             div()
                 .text_size(px(tokens.typography.address.size.value()))
-                .child("進階設定："),
+                .child(catalog.t("settings-advanced")),
         )
         .child(folder_option_checkbox(
             "folder-option-checkboxes",
-            "使用核取方塊選取項目",
+            catalog.t("settings-item-checkboxes"),
             settings.item_check_boxes,
             ExplorerAction::ToggleFolderOptionItemCheckBoxes,
             tokens,
@@ -4282,7 +4374,7 @@ fn folder_options_view_page(
         ))
         .child(folder_option_checkbox(
             "folder-option-extensions",
-            "隱藏已知檔案類型的副檔名",
+            catalog.t("settings-hide-extensions"),
             !settings.file_name_extensions,
             ExplorerAction::ToggleFolderOptionFileNameExtensions,
             tokens,
@@ -4290,7 +4382,7 @@ fn folder_options_view_page(
         ))
         .child(folder_option_checkbox(
             "folder-option-hidden",
-            "顯示隱藏的檔案、資料夾及磁碟機",
+            catalog.t("settings-show-hidden"),
             settings.hidden_items,
             ExplorerAction::ToggleFolderOptionHiddenItems,
             tokens,
@@ -4298,7 +4390,7 @@ fn folder_options_view_page(
         ))
         .child(folder_option_checkbox(
             "folder-option-compact",
-            "減少項目間的空白區域（精簡檢視）",
+            catalog.t("settings-compact-spacing"),
             settings.compact_view,
             ExplorerAction::ToggleFolderOptionCompactView,
             tokens,
@@ -4306,7 +4398,7 @@ fn folder_options_view_page(
         ))
         .child(folder_option_checkbox(
             "folder-option-always-icons",
-            "一律顯示圖示，不顯示縮圖",
+            catalog.t("settings-always-icons"),
             settings.always_show_icons,
             ExplorerAction::ToggleFolderOptionAlwaysShowIcons,
             tokens,
@@ -4314,14 +4406,14 @@ fn folder_options_view_page(
         ))
         .child(folder_option_button(
             "folder-option-clear-thumbnail-cache",
-            "清除縮圖快取",
+            catalog.t("settings-clear-thumbnail-cache"),
             ExplorerAction::ClearThumbnailCache,
             tokens,
             on_action.clone(),
         ))
         .child(folder_option_checkbox(
             "folder-option-details-pane",
-            "顯示詳細資料窗格",
+            catalog.t("settings-show-details-pane"),
             settings.details_pane,
             ExplorerAction::ToggleFolderOptionDetailsPane,
             tokens,
@@ -4329,7 +4421,7 @@ fn folder_options_view_page(
         ))
         .child(folder_option_checkbox(
             "folder-option-preview-pane",
-            "顯示預覽窗格",
+            catalog.t("settings-show-preview-pane"),
             settings.preview_pane,
             ExplorerAction::ToggleFolderOptionPreviewPane,
             tokens,
@@ -4339,6 +4431,7 @@ fn folder_options_view_page(
 
 fn cache_budget_controls(
     tokens: UiTokens,
+    catalog: Catalog,
     budgets: explorer_model::CacheBudgetSettingsV1,
     inputs: Vec<gpui::WeakEntity<EditableTextState>>,
     usage: crate::folder_options_window::CacheUsageSnapshotV1,
@@ -4375,21 +4468,21 @@ fn cache_budget_controls(
         _ => None,
     };
     let labels = [
-        "Icon memory",
-        "Shared/base icon memory",
-        "Thumbnail memory",
-        "Extension data-column memory",
-        "Icon GPU",
-        "Thumbnail GPU",
-        "Icon BC7 disk",
-        "Thumbnail BC7 disk",
-        "Extension data-column disk",
-        "Persisted MFT index",
-        "Volume index memory",
-        "File data memory",
-        "Folder aggregates memory",
-        "MFT Service LRU",
-        "Folder size cache TTL",
+        catalog.t("settings-icon-memory"),
+        catalog.t("settings-shared-icon-memory"),
+        catalog.t("settings-thumbnail-memory"),
+        catalog.t("settings-extension-memory"),
+        catalog.t("settings-icon-gpu"),
+        catalog.t("settings-thumbnail-gpu"),
+        catalog.t("settings-icon-disk"),
+        catalog.t("settings-thumbnail-disk"),
+        catalog.t("settings-extension-disk"),
+        catalog.t("settings-mft-index"),
+        catalog.t("settings-volume-index-memory"),
+        catalog.t("settings-file-data-memory"),
+        catalog.t("settings-folder-aggregates-memory"),
+        catalog.t("settings-mft-lru"),
+        catalog.t("settings-folder-size-ttl"),
     ];
     let used_bytes = |id| match id {
         explorer_model::CacheBudgetIdV1::IconMemory => Some(usage.icon_memory_bytes),
@@ -4428,11 +4521,11 @@ fn cache_budget_controls(
     div()
         .id("folder-options-cache-usage")
         .role(Role::Group)
-        .aria_label("Cache usage")
+        .aria_label(catalog.t("a11y-cache-usage"))
         .flex()
         .flex_col()
         .gap(px(tokens.layout.control_padding_horizontal.value()))
-        .child("Cache usage and limits (updates every second)")
+        .child(catalog.t("settings-cache-usage-limits"))
         .child(
             div()
                 .id("folder-options-cache-budget-controls")
@@ -4448,14 +4541,23 @@ fn cache_budget_controls(
                             let value = budgets.get(descriptor.id);
                             let is_ttl_row = descriptor.id
                                 == explorer_model::CacheBudgetIdV1::FolderSizeCacheTtlSeconds;
-                            let unit_label = if is_ttl_row { "seconds" } else { "MB" };
-                            let unit_short = if is_ttl_row { "sec" } else { "MB" };
+                            let unit_label = if is_ttl_row {
+                                catalog.t("settings-seconds")
+                            } else {
+                                catalog.t("settings-mb")
+                            };
+                            let unit_short = if is_ttl_row {
+                                catalog.t("settings-seconds-short")
+                            } else {
+                                catalog.t("settings-mb")
+                            };
                             let configured_limit = u64::from(value) * 1024 * 1024;
                             let limit = effective_limit(descriptor.id).unwrap_or(configured_limit);
                             let availability = telemetry_id(descriptor.id)
                                 .map(|id| usage.availability(id))
                                 .unwrap_or(crate::folder_options_window::CacheUsageAvailabilityV1::Available);
                             let usage_text = cache_budget_usage_text(
+                                catalog,
                                 availability,
                                 used_bytes(descriptor.id),
                                 limit,
@@ -4463,6 +4565,14 @@ fn cache_budget_controls(
                             let stops = descriptor.slider_stops();
                             let segment_width = 400.0 / stops.len().max(1) as f32;
                             let keyboard_stops = stops.clone();
+                            let mut limit_args = FluentArgs::new();
+                            limit_args.set("label", label.clone());
+                            let slider_aria = catalog.t_args("settings-limit", &limit_args);
+                            let mut value_args = FluentArgs::new();
+                            value_args.set("label", label.clone());
+                            value_args.set("value", value.to_string());
+                            value_args.set("unit", unit_label.clone());
+                            let input_aria = catalog.t_args("settings-limit-value", &value_args);
                             div()
                                 .id(SharedString::from(format!(
                                     "cache-budget-row-{:?}",
@@ -4486,9 +4596,7 @@ fn cache_budget_controls(
                                                     descriptor.id
                                                 )))
                                                 .role(Role::TextInput)
-                                                .aria_label(SharedString::from(format!(
-                                                    "{label} limit, {value} {unit_label}"
-                                                )))
+                                                .aria_label(input_aria)
                                                 .w(px(112.0))
                                                 .h(px(tokens.layout.minimum_hit_target.value()))
                                                 .child(
@@ -4522,7 +4630,7 @@ fn cache_budget_controls(
                                         )))
                                         .role(Role::Slider)
                                         .tab_index(0)
-                                        .aria_label(SharedString::from(format!("{label} limit")))
+                                        .aria_label(slider_aria)
                                         .aria_numeric_value(f64::from(value))
                                         .aria_min_numeric_value(f64::from(descriptor.minimum_mb))
                                         .aria_max_numeric_value(f64::from(descriptor.maximum_mb))
@@ -4640,7 +4748,7 @@ fn cache_budget_controls(
                         div()
                             .id("folder-options-mft-service-resources")
                             .role(Role::Group)
-                            .aria_label("MFT Service resources")
+                            .aria_label(catalog.t("a11y-mft-resources"))
                             .flex()
                             .flex_col()
                             .gap(px(tokens.layout.control_padding_horizontal.value()))
@@ -4651,15 +4759,13 @@ fn cache_budget_controls(
                             .child(
                                 div()
                                     .text_size(px(tokens.typography.address.size.value()))
-                                    .child("MFT Service 資源"),
+                                    .child(catalog.t("settings-mft-resources")),
                             )
                             .child(
                                 div()
                                     .text_size(px(tokens.typography.tooltip.size.value()))
                                     .text_color(tokens.theme.colors.text_secondary.to_gpui())
-                                    .child(
-                                        "由所有 SuperExplorer 程序共用；磁碟索引會保留，記憶體快取會在 MFT Service 重新啟動後重建。",
-                                    ),
+                                    .child(catalog.t("settings-mft-resources-help")),
                             )
                             .children(mft_rows)
                             .into_any_element(),
@@ -4671,18 +4777,19 @@ fn cache_budget_controls(
 }
 
 fn cache_budget_usage_text(
+    catalog: Catalog,
     availability: crate::folder_options_window::CacheUsageAvailabilityV1,
     used_bytes: Option<u64>,
     limit: u64,
 ) -> String {
-    let formatted_limit = crate::formatting::format_file_size(limit);
+    let formatted_limit = crate::formatting::format_file_size(limit, catalog.locale());
     match (availability, used_bytes) {
         (crate::folder_options_window::CacheUsageAvailabilityV1::Unavailable, _) => {
-            format!("Unavailable / {formatted_limit}")
+            t_named(catalog, "settings-unavailable-of", "limit", formatted_limit)
         }
         (_, Some(bytes)) => format!(
             "{} / {formatted_limit}",
-            crate::formatting::format_file_size(bytes),
+            crate::formatting::format_file_size(bytes, catalog.locale()),
         ),
         _ => format!("\u{2014} / {formatted_limit}"),
     }
@@ -4690,16 +4797,17 @@ fn cache_budget_usage_text(
 
 fn folder_option_checkbox(
     id: impl Into<gpui::ElementId>,
-    label: &'static str,
+    label: impl Into<SharedString>,
     checked: bool,
     action: ExplorerAction,
     tokens: UiTokens,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
+    let label = label.into();
     div()
         .id(id)
         .role(Role::CheckBox)
-        .aria_label(label)
+        .aria_label(label.clone())
         .aria_selected(checked)
         .h(px(tokens.layout.minimum_hit_target.value()))
         .flex()
@@ -4717,16 +4825,17 @@ fn folder_option_checkbox(
 
 fn folder_option_tab(
     id: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     selected: bool,
     action: ExplorerAction,
     tokens: UiTokens,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
+    let label = label.into();
     div()
         .id(id)
         .role(Role::Tab)
-        .aria_label(label)
+        .aria_label(label.clone())
         .aria_selected(selected)
         .min_w(px(crate::layout::folder_options::TAB_MIN_WIDTH.value()))
         .h_full()
@@ -4744,15 +4853,16 @@ fn folder_option_tab(
 
 fn folder_option_button(
     id: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     action: ExplorerAction,
     tokens: UiTokens,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
+    let label = label.into();
     div()
         .id(id)
         .role(Role::Button)
-        .aria_label(label)
+        .aria_label(label.clone())
         .min_w(px(crate::layout::folder_options::BUTTON_MIN_WIDTH.value()))
         .h(px(tokens.layout.minimum_hit_target.value()))
         .flex()
@@ -4774,17 +4884,18 @@ fn folder_option_button(
 )]
 fn permanent_delete_dialog_button(
     id: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     action: ExplorerAction,
     target: crate::actions::PermanentDeleteDialogTarget,
     focused: bool,
     tokens: UiTokens,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
+    let label = label.into();
     div()
         .id(id)
         .role(Role::Button)
-        .aria_label(label)
+        .aria_label(label.clone())
         .aria_selected(focused)
         .min_w(px(crate::layout::folder_options::BUTTON_MIN_WIDTH.value()))
         .h(px(tokens.layout.minimum_hit_target.value()))
@@ -4963,7 +5074,7 @@ fn side_pane_divider(
     div()
         .id("side-pane-divider")
         .role(Role::Splitter)
-        .aria_label("調整側邊窗格大小")
+        .aria_label(state.catalog().t("a11y-resize-side-pane"))
         .aria_numeric_value(f64::from(width))
         .aria_min_numeric_value(f64::from(tokens.layout.side_pane_min_width.value()))
         .aria_max_numeric_value(f64::from(tokens.layout.side_pane_max_width.value()))
@@ -5007,11 +5118,12 @@ fn details_side_pane(tokens: UiTokens, state: &AppViewState) -> impl IntoElement
                 .find(|entry| state.tabs().active_tab().selection.contains(&entry.id))
         });
     let selected_count = state.tabs().active_tab().selection.len();
+    let catalog = state.catalog();
     let title = match (selected_count, selected) {
-        (0, _) => "未選取任何項目".to_owned(),
+        (0, _) => catalog.t("status-no-selection"),
         (1, Some(entry)) => entry.display_name.clone(),
-        (1, None) => "無法載入詳細資料".to_owned(),
-        (count, _) => format!("{count} 個項目"),
+        (1, None) => catalog.t("status-details-unavailable"),
+        (count, _) => t_count(catalog, "status-item-count", count as i64),
     };
     let modified = selected
         .and_then(|entry| entry.metadata.modified_display.as_deref())
@@ -5021,12 +5133,12 @@ fn details_side_pane(tokens: UiTokens, state: &AppViewState) -> impl IntoElement
         .unwrap_or("");
     let size = selected
         .and_then(|entry| entry.metadata.size_bytes)
-        .map(format_explorer_size)
+        .map(|bytes| format_explorer_size(bytes, catalog))
         .unwrap_or_default();
     div()
         .id("details-side-pane")
         .role(Role::Complementary)
-        .aria_label("詳細資料窗格")
+        .aria_label(catalog.t("a11y-details-pane"))
         .w(px(f32::from(state.view_settings().details_pane_width)))
         .h_full()
         .flex_none()
@@ -5062,12 +5174,13 @@ fn preview_side_pane(
                 .iter()
                 .find(|entry| state.tabs().active_tab().selection.contains(&entry.id))
         });
+    let catalog = state.catalog();
     let message = match (selected_count, selected.is_some(), preview_failed) {
-        (0, _, _) => "選取一個項目以預覽",
-        (1, true, true) => "無法產生這個檔案的預覽",
-        (1, true, false) if preview_texture.is_none() => "正在載入預覽…",
-        (1, false, _) => "無法載入預覽項目",
-        (_, _, _) => "選取單一項目以預覽",
+        (0, _, _) => catalog.t("status-preview-select-one"),
+        (1, true, true) => catalog.t("status-preview-failed"),
+        (1, true, false) if preview_texture.is_none() => catalog.t("status-preview-loading"),
+        (1, false, _) => catalog.t("status-preview-item-failed"),
+        (_, _, _) => catalog.t("status-preview-select-single"),
     };
     let has_texture = preview_texture.is_some();
     let broker_message = state.broker_health().message();
@@ -5076,13 +5189,13 @@ fn preview_side_pane(
         .unwrap_or("");
     let selected_size = selected
         .and_then(|entry| entry.metadata.size_bytes)
-        .map(format_explorer_size)
+        .map(|bytes| format_explorer_size(bytes, catalog))
         .unwrap_or_default();
     let retry_visible = preview_failed || broker_message.is_some();
     div()
         .id("preview-side-pane")
         .role(Role::Complementary)
-        .aria_label("預覽窗格")
+        .aria_label(catalog.t("a11y-preview-pane"))
         .w(px(f32::from(state.view_settings().preview_pane_width)))
         .h_full()
         .flex_none()
@@ -5099,7 +5212,7 @@ fn preview_side_pane(
                 div()
                     .id("preview-image-host")
                     .role(Role::Image)
-                    .aria_label("Preview image loaded")
+                    .aria_label(catalog.t("chrome-preview-image-loaded"))
                     .w_full()
                     .flex_1()
                     .min_h(px(crate::layout::feature::PREVIEW_IMAGE_MIN_HEIGHT.value()))
@@ -5112,7 +5225,12 @@ fn preview_side_pane(
                 div()
                     .id("preview-file-name")
                     .role(Role::Label)
-                    .aria_label(format!("Preview file: {}", entry.display_name))
+                    .aria_label(t_named(
+                        catalog,
+                        "chrome-preview-file",
+                        "name",
+                        entry.display_name.clone(),
+                    ))
                     .w_full()
                     .text_size(px(tokens.typography.address.size.value()))
                     .child(entry.display_name.clone()),
@@ -5121,7 +5239,12 @@ fn preview_side_pane(
                 div()
                     .id("preview-file-properties")
                     .role(Role::Label)
-                    .aria_label(format!("檔案類型：{selected_kind}；大小：{selected_size}"))
+                    .aria_label({
+                        let mut args = FluentArgs::new();
+                        args.set("kind", selected_kind);
+                        args.set("size", selected_size.clone());
+                        catalog.t_args("chrome-preview-file-type-size", &args)
+                    })
                     .w_full()
                     .text_color(colors.text_secondary.to_gpui())
                     .child(format!("{selected_kind}  {selected_size}")),
@@ -5132,7 +5255,7 @@ fn preview_side_pane(
                 div()
                     .id("preview-live-status")
                     .role(Role::Status)
-                    .aria_label(message)
+                    .aria_label(message.clone())
                     .flex_1()
                     .flex()
                     .relative()
@@ -5298,7 +5421,7 @@ impl RenderOnce for CommandBar {
                 element.track_focus(&handle)
             })
             .relative()
-            .aria_label("Explorer command bar")
+            .aria_label(catalog.t("chrome-command-bar"))
             .h(px(layout.command_bar_height.value()))
             .flex_none()
             .flex()
@@ -5559,6 +5682,7 @@ fn operation_navigation_location(
 
 pub(crate) fn transfer_center_panel(
     tokens: UiTokens,
+    catalog: Catalog,
     records: Vec<explorer_model::OperationRecord>,
     cancelling_ids: &HashSet<explorer_common::RequestId>,
     on_action: Option<ActionCallback>,
@@ -5567,7 +5691,7 @@ pub(crate) fn transfer_center_panel(
     let empty = records.is_empty();
     let rows = records.into_iter().map(|record| {
         let cancelling = cancelling_ids.contains(&record.id);
-        let message = operation_display_message(&record, cancelling);
+        let message = operation_display_message(&record, cancelling, catalog);
         let ratio = record
             .progress
             .total_bytes
@@ -5575,7 +5699,7 @@ pub(crate) fn transfer_center_panel(
             .map(|total| (record.progress.completed_bytes as f32 / total as f32).clamp(0.0, 1.0));
         let cancel = (!record.phase.is_terminal()).then_some(semantic_button(
             "transfer-row-cancel",
-            "Cancel file operation",
+            catalog.t("transfer-cancel-operation"),
             Some(ExplorerIcon::Close),
             None,
             (!cancelling).then_some(ExplorerAction::CancelOperation {
@@ -5593,7 +5717,7 @@ pub(crate) fn transfer_center_panel(
             .map(|location| {
                 semantic_button(
                     "transfer-row-open",
-                    "Open transfer location",
+                    catalog.t("transfer-open-location"),
                     Some(ExplorerIcon::Chevron),
                     None,
                     Some(ExplorerAction::ActivateNavigationItem { location }),
@@ -5642,7 +5766,7 @@ pub(crate) fn transfer_center_panel(
     div()
         .id("transfer-center-panel")
         .role(Role::Menu)
-        .aria_label("傳輸")
+        .aria_label(catalog.t("a11y-transfers"))
         .occlude()
         .w(px(520.0))
         .max_h(px(560.0))
@@ -5655,14 +5779,14 @@ pub(crate) fn transfer_center_panel(
             div()
                 .p(px(12.0))
                 .font_weight(FontWeight::SEMIBOLD)
-                .child("傳輸"),
+                .child(catalog.t("menu-transfers")),
         )
         .when(empty, |element| {
             element.child(
                 div()
                     .p(px(16.0))
                     .text_color(colors.text_secondary.to_gpui())
-                    .child("本次執行期間尚無檔案操作"),
+                    .child(catalog.t("status-no-transfers")),
             )
         })
         .children(rows)
@@ -6831,7 +6955,7 @@ impl RenderOnce for NavigationBar {
             .debug_selector(|| NAVIGATION_BAR_ID.to_owned())
             .role(Role::Document)
             .relative()
-            .aria_label("Explorer navigation bar")
+            .aria_label(self.state.catalog().t("chrome-navigation-bar"))
             .h(px(navigation_height))
             .flex_none()
             .flex()
@@ -6849,7 +6973,7 @@ impl RenderOnce for NavigationBar {
             ))
             .child(navigation_history_button(
                 "navigation-back",
-                "Back",
+                self.state.catalog().t("chrome-back"),
                 ExplorerIcon::Back,
                 ExplorerAction::Back,
                 NavigationHistoryDirection::Back,
@@ -6858,12 +6982,13 @@ impl RenderOnce for NavigationBar {
                 history_index,
                 available.is_enabled(CommandKind::Back),
                 self.tokens,
+                self.state.catalog(),
                 self.breadcrumb_menu_focus.clone(),
                 self.on_action.as_ref(),
             ))
             .child(navigation_history_button(
                 "navigation-forward",
-                "Forward",
+                self.state.catalog().t("chrome-forward"),
                 ExplorerIcon::Forward,
                 ExplorerAction::Forward,
                 NavigationHistoryDirection::Forward,
@@ -6872,6 +6997,7 @@ impl RenderOnce for NavigationBar {
                 history_index,
                 available.is_enabled(CommandKind::Forward),
                 self.tokens,
+                self.state.catalog(),
                 self.breadcrumb_menu_focus.clone(),
                 self.on_action.as_ref(),
             ))
@@ -8079,7 +8205,7 @@ impl RenderOnce for NavigationDivider {
             .debug_selector(|| NAVIGATION_DIVIDER_ID.to_owned())
             .role(Role::Splitter)
             .relative()
-            .aria_label("Resize navigation pane")
+            .aria_label(self.state.catalog().t("chrome-resize-nav-pane"))
             .aria_numeric_value(f64::from(self.state.navigation_pane_width().value()))
             .aria_min_numeric_value(f64::from(
                 self.tokens.layout.navigation_pane_min_width.value(),
@@ -8215,7 +8341,7 @@ impl RenderOnce for NavigationPane {
             .debug_selector(|| NAVIGATION_PANE_ID.to_owned())
             .role(Role::Document)
             .relative()
-            .aria_label("Navigation pane; services unavailable")
+            .aria_label(self.state.catalog().t("chrome-nav-unavailable"))
             .w(px(self.state.navigation_pane_width().value()))
             .h_full()
             .flex_none()
@@ -8360,6 +8486,7 @@ impl RenderOnce for NavigationPane {
                         item.clone(),
                         is_selected(&item, current_location.as_ref()),
                         self.tokens,
+                        self.state.catalog(),
                         texture,
                         on_action.clone(),
                     )
@@ -8473,7 +8600,7 @@ fn bookmark_navigation_rows(
         div()
             .id("favorites-tree-heading")
             .role(Role::Heading)
-            .aria_label("Favorites; right click to add a bookmark folder")
+            .aria_label(state.catalog().t("chrome-favorites-hint"))
             .px(px(8.0))
             .py(px(5.0))
             .child(state.catalog().t("nav-favorites"))
@@ -8596,6 +8723,7 @@ fn navigation_item_row(
     item: NavigationItem,
     selected: bool,
     tokens: UiTokens,
+    catalog: Catalog,
     shell_icon: Option<Arc<RenderImage>>,
     on_action: Option<ActionCallback>,
 ) -> gpui::AnyElement {
@@ -8687,7 +8815,11 @@ fn navigation_item_row(
                 .when(has_chevron, |element| {
                     element
                         .role(Role::Button)
-                        .aria_label(if item.expanded { "Collapse" } else { "Expand" })
+                        .aria_label(if item.expanded {
+                            catalog.t("chrome-collapse")
+                        } else {
+                            catalog.t("chrome-expand")
+                        })
                         .aria_expanded(item.expanded)
                         .hover(move |style| style.bg(colors.control_hover.to_gpui()))
                         .when_some(
@@ -9061,6 +9193,7 @@ fn authorize_view_selection(
 
 fn size_map_surface(
     tokens: UiTokens,
+    catalog: Catalog,
     plan: crate::size_map_view::SizeMapRenderPlanV1,
     indexes: HashMap<explorer_model::ShellItemId, usize>,
     selected: HashSet<explorer_model::ShellItemId>,
@@ -9117,7 +9250,7 @@ fn size_map_surface(
                 .and_then(|(bytes, _)| bytes.trim().parse::<u64>().ok())
                 .map_or_else(
                     || label.clone(),
-                    |bytes| format!("{label} ({})", crate::format_file_size(bytes)),
+                    |bytes| format!("{label} ({})", crate::format_file_size(bytes, catalog.locale())),
                 );
             let status = rectangle.status.clone();
             let aggregate_items = rectangle.aggregate_items;
@@ -9871,7 +10004,7 @@ impl RenderOnce for FileViewHost {
                         .and_then(|visuals| visuals.value_for(&entry.id)),
                 );
                 let size_display = size_bytes
-                    .map(format_explorer_size)
+                    .map(|bytes| format_explorer_size(bytes, catalog))
                     .unwrap_or_default();
                 let created = entry.metadata.created_display.clone().unwrap_or_default();
                 let authors = entry.metadata.authors_display.clone().unwrap_or_default();
@@ -10027,12 +10160,12 @@ impl RenderOnce for FileViewHost {
                 let drive_total_display = drive
                     .as_ref()
                     .and_then(|drive| drive.total_bytes)
-                    .map(format_explorer_size)
+                    .map(|bytes| format_explorer_size(bytes, catalog))
                     .unwrap_or_default();
                 let drive_free_display = drive
                     .as_ref()
                     .and_then(|drive| drive.available_bytes)
-                    .map(format_explorer_size)
+                    .map(|bytes| format_explorer_size(bytes, catalog))
                     .unwrap_or_default();
                 let drive_filesystem_display = drive
                     .as_ref()
@@ -10430,7 +10563,12 @@ impl RenderOnce for FileViewHost {
                                     div()
                                         .id(format!("file-row-checkbox-{visible_index}"))
                                         .role(Role::CheckBox)
-                                        .aria_label(format!("Select {}", entry.display_name))
+                                        .aria_label(t_named(
+                                            catalog,
+                                            "chrome-select-item",
+                                            "name",
+                                            entry.display_name.clone(),
+                                        ))
                                         .w(px(layout.navigation_icon_size.value()))
                                         .h(px(layout.navigation_icon_size.value()))
                                         .flex_none()
@@ -10470,7 +10608,12 @@ impl RenderOnce for FileViewHost {
                                     div()
                                         .id(format!("file-row-icon-{visible_index}"))
                                         .role(Role::Image)
-                                        .aria_label(format!("{} icon", entry.display_name))
+                                        .aria_label(t_named(
+                                            catalog,
+                                            "chrome-item-icon",
+                                            "name",
+                                            entry.display_name.clone(),
+                                        ))
                                         .w(px(host_width))
                                         .h(px(host_height))
                                         .flex_none()
@@ -10489,10 +10632,24 @@ impl RenderOnce for FileViewHost {
                                 None => {
                                     let remote_kind =
                                         crate::remote_file_fallback_icon_kind(&entry);
+                                    let icon_aria = remote_kind.map_or_else(
+                                        || {
+                                            t_named(
+                                                catalog,
+                                                "chrome-item-icon",
+                                                "name",
+                                                entry.display_name.clone(),
+                                            )
+                                        },
+                                        |kind| {
+                                            crate::icons::remote_file_icon_spec(kind)
+                                                .localized_accessible_label(catalog)
+                                        },
+                                    );
                                     div()
                                         .id(format!("file-row-icon-{visible_index}"))
                                         .role(Role::Image)
-                                        .aria_label(format!("{} icon", entry.display_name))
+                                        .aria_label(icon_aria)
                                         .w(px(icon_size))
                                         .h(px(icon_size))
                                         .flex_none()
@@ -10928,6 +11085,7 @@ impl RenderOnce for FileViewHost {
             .when_some(size_map_plan, |element, (plan, indexes, selected)| {
                 element.child(size_map_surface(
                     self.tokens,
+                    self.catalog,
                     plan,
                     indexes,
                     selected,
@@ -11006,6 +11164,7 @@ impl RenderOnce for FileViewHost {
                 })
                 .child(details_column_menu(
                     self.tokens,
+                    self.catalog,
                     target,
                     column_menu_anchor,
                     view_settings,
@@ -11038,8 +11197,8 @@ fn file_view_background_context_hit(
         && y <= origin_y + viewport_height.max(0.0)
 }
 
-fn format_explorer_size(bytes: u64) -> String {
-    crate::format_file_size(bytes)
+fn format_explorer_size(bytes: u64, catalog: Catalog) -> String {
+    crate::format_file_size(bytes, catalog.locale())
 }
 
 fn builtin_count_display(eligible_container: bool, value: Option<u64>) -> String {
@@ -11229,8 +11388,8 @@ fn this_pc_drive_capacity_text(drive: &explorer_model::DriveMetadata, catalog: C
     match (drive.available_bytes, drive.total_bytes, drive.availability) {
         (Some(available), Some(total), explorer_model::DriveAvailability::Available) => {
             let mut args = FluentArgs::new();
-            args.set("free", format_explorer_size(available));
-            args.set("total", format_explorer_size(total));
+            args.set("free", format_explorer_size(available, catalog));
+            args.set("total", format_explorer_size(total, catalog));
             catalog.t_args("status-drive-free-of", &args)
         }
         (_, _, explorer_model::DriveAvailability::NoMedia) => catalog.t("status-no-media"),
@@ -11559,6 +11718,7 @@ fn explorer_horizontal_scrollbar(
     registry: explorer_model::ColumnRegistry,
     viewport_width: f32,
     tokens: UiTokens,
+    catalog: Catalog,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     let colors = tokens.theme.colors;
@@ -11581,7 +11741,7 @@ fn explorer_horizontal_scrollbar(
         .id("file-view-horizontal-scrollbar")
         .debug_selector(|| "file-view-horizontal-scrollbar".to_owned())
         .role(Role::ScrollBar)
-        .aria_label("File view horizontal scroll bar")
+        .aria_label(catalog.t("chrome-file-view-hscroll"))
         .aria_numeric_value(f64::from(current))
         .aria_min_numeric_value(0.0)
         .aria_max_numeric_value(f64::from(maximum))
@@ -12282,6 +12442,7 @@ fn this_pc_details_header(tokens: UiTokens, catalog: Catalog) -> gpui::AnyElemen
 )]
 fn details_column_menu(
     tokens: UiTokens,
+    catalog: Catalog,
     target: explorer_model::ColumnId,
     anchor: Option<(f32, f32)>,
     settings: explorer_model::ViewSettings,
@@ -12301,7 +12462,7 @@ fn details_column_menu(
     div()
         .id("details-column-menu")
         .role(Role::Menu)
-        .aria_label("Choose details columns")
+        .aria_label(catalog.t("chrome-choose-details-columns"))
         .absolute()
         .top(px(top))
         .bottom(px(tokens.layout.content_spacing.value()))
@@ -12532,7 +12693,7 @@ fn details_filter_menu(
                     div()
                         .id("details-filter-clear")
                         .role(Role::MenuItem)
-                        .aria_label("Clear filter")
+                        .aria_label(catalog.t("chrome-clear-filter"))
                         .h(px(tokens.layout.minimum_hit_target.value()))
                         .px(px(tokens.layout.content_spacing.value()))
                         .flex()
@@ -13047,64 +13208,101 @@ fn renamed_location_text(item: &explorer_model::ItemDescriptor, new_name: &str) 
     }
 }
 
-fn operation_sources_text(items: &[explorer_model::ItemDescriptor]) -> String {
+fn operation_sources_text(
+    catalog: Catalog,
+    items: &[explorer_model::ItemDescriptor],
+) -> String {
     let Some(first) = items.first() else {
-        return "來源由系統剪貼簿提供".to_owned();
+        return catalog.t("clipboard-source");
     };
     let first = operation_location_text(&first.location);
     if items.len() == 1 {
         first
     } else {
-        format!("{first}（另有 {} 個項目）", items.len() - 1)
+        let mut args = FluentArgs::new();
+        args.set("first", first);
+        args.set("count", (items.len() - 1) as i64);
+        catalog.t_args("extra-items", &args)
     }
 }
 
-fn operation_request_summary(record: &explorer_model::OperationRecord) -> String {
+fn operation_route_summary(
+    catalog: Catalog,
+    key: &str,
+    count: usize,
+    source: String,
+    destination: Option<String>,
+) -> String {
+    let mut args = FluentArgs::new();
+    args.set("count", count as i64);
+    args.set("source", source);
+    if let Some(destination) = destination {
+        args.set("destination", destination);
+    }
+    catalog.t_args(key, &args)
+}
+
+fn operation_request_summary(
+    record: &explorer_model::OperationRecord,
+    catalog: Catalog,
+) -> String {
     use explorer_model::FileOperationKind as Kind;
     match &record.request.kind {
-        Kind::CreateFolder { parent, name } => {
-            format!(
-                "新增資料夾｜{}",
-                operation_child_location_text(parent, name)
-            )
-        }
+        Kind::CreateFolder { parent, name } => t_named(
+            catalog,
+            "op-new-folder",
+            "path",
+            operation_child_location_text(parent, name),
+        ),
         Kind::CreateItem {
             parent,
             name,
             recipe,
         } => {
-            let label = if matches!(recipe, explorer_model::ShellNewItemRecipe::Folder) {
-                "新增資料夾"
+            let key = if matches!(recipe, explorer_model::ShellNewItemRecipe::Folder) {
+                "op-new-folder"
             } else {
-                "新增檔案"
+                "op-new-file"
             };
-            format!("{label}｜{}", operation_child_location_text(parent, name))
+            t_named(
+                catalog,
+                key,
+                "path",
+                operation_child_location_text(parent, name),
+            )
         }
-        Kind::Rename { item, new_name } => format!(
-            "重新命名｜{} → {}",
-            operation_location_text(&item.location),
-            renamed_location_text(item, new_name)
-        ),
-        Kind::SetUnixMode { item, mode } => format!(
-            "變更權限｜{} → {mode:04o}",
-            operation_location_text(&item.location)
-        ),
-        Kind::Copy { items, destination } => format!(
-            "複製 {} 個項目｜{} → {}",
+        Kind::Rename { item, new_name } => {
+            let mut args = FluentArgs::new();
+            args.set("from", operation_location_text(&item.location));
+            args.set("to", renamed_location_text(item, new_name));
+            catalog.t_args("op-rename", &args)
+        }
+        Kind::SetUnixMode { item, mode } => {
+            let mut args = FluentArgs::new();
+            args.set("path", operation_location_text(&item.location));
+            args.set("mode", format!("{mode:04o}"));
+            catalog.t_args("op-chmod", &args)
+        }
+        Kind::Copy { items, destination } => operation_route_summary(
+            catalog,
+            "op-copy-route",
             record.progress.total_items,
-            operation_sources_text(items),
-            operation_location_text(destination)
+            operation_sources_text(catalog, items),
+            Some(operation_location_text(destination)),
         ),
-        Kind::Move { items, destination } => format!(
-            "移動 {} 個項目｜{} → {}",
+        Kind::Move { items, destination } => operation_route_summary(
+            catalog,
+            "op-move-route",
             record.progress.total_items,
-            operation_sources_text(items),
-            operation_location_text(destination)
+            operation_sources_text(catalog, items),
+            Some(operation_location_text(destination)),
         ),
-        Kind::RecycleDelete { items } => format!(
-            "移至資源回收筒 {} 個項目｜{}",
+        Kind::RecycleDelete { items } => operation_route_summary(
+            catalog,
+            "op-recycle-route",
             record.progress.total_items,
-            operation_sources_text(items)
+            operation_sources_text(catalog, items),
+            None,
         ),
         Kind::PermanentDelete { items, .. } => {
             let gdrive = items.iter().any(|item| {
@@ -13114,52 +13312,75 @@ fn operation_request_summary(record: &explorer_model::OperationRecord) -> String
                         if remote.provider_id == "gdrive"
                 )
             });
-            if gdrive {
-                format!(
-                    "移到 Google Drive 垃圾桶 {} 個項目｜{}",
-                    record.progress.total_items,
-                    operation_sources_text(items)
-                )
-            } else {
-                format!(
-                    "永久刪除 {} 個項目｜{}",
-                    record.progress.total_items,
-                    operation_sources_text(items)
-                )
-            }
+            operation_route_summary(
+                catalog,
+                if gdrive {
+                    "op-gdrive-trash-route"
+                } else {
+                    "op-permanent-delete-route"
+                },
+                record.progress.total_items,
+                operation_sources_text(catalog, items),
+                None,
+            )
         }
-        Kind::CreateShortcut { items } => format!(
-            "建立捷徑 {} 個項目｜{}",
+        Kind::CreateShortcut { items } => operation_route_summary(
+            catalog,
+            "op-shortcut-route",
             record.progress.total_items,
-            operation_sources_text(items)
+            operation_sources_text(catalog, items),
+            None,
         ),
     }
 }
 
-fn operation_message(record: &explorer_model::OperationRecord) -> String {
-    let summary = operation_request_summary(record);
-    let lifecycle = match &record.request.kind {
-        explorer_model::FileOperationKind::Copy { .. } => ("準備複製", "正在複製", "複製完成"),
-        explorer_model::FileOperationKind::Move { .. } => ("準備移動", "正在移動", "移動完成"),
-        _ => ("準備中", "處理中", "完成"),
-    };
+fn operation_lifecycle(catalog: Catalog, record: &explorer_model::OperationRecord) -> (String, String, String) {
+    match &record.request.kind {
+        explorer_model::FileOperationKind::Copy { .. } => (
+            catalog.t("op-preparing-copy"),
+            catalog.t("op-copying"),
+            catalog.t("op-copy-complete"),
+        ),
+        explorer_model::FileOperationKind::Move { .. } => (
+            catalog.t("op-preparing-move"),
+            catalog.t("op-moving"),
+            catalog.t("op-move-complete"),
+        ),
+        _ => (
+            catalog.t("op-preparing"),
+            catalog.t("op-processing"),
+            catalog.t("op-complete"),
+        ),
+    }
+}
+
+fn operation_message(record: &explorer_model::OperationRecord, catalog: Catalog) -> String {
+    let summary = operation_request_summary(record, catalog);
+    let lifecycle = operation_lifecycle(catalog, record);
     match &record.terminal {
         None => {
             let phase = match record.progress.phase {
                 explorer_model::TransferProgressPhase::Preparing => lifecycle.0,
                 explorer_model::TransferProgressPhase::Transferring => lifecycle.1,
-                explorer_model::TransferProgressPhase::Finalizing => "完成處理中",
+                explorer_model::TransferProgressPhase::Finalizing => catalog.t("op-finalizing"),
             };
-            let bytes = format_transfer_bytes(record.progress.completed_bytes);
-            let speed = record
-                .bytes_per_second()
-                .map(|value| format!("｜{}", format_transfer_speed(value)))
-                .unwrap_or_default();
+            let bytes = crate::formatting::format_transfer_bytes(
+                record.progress.completed_bytes,
+                catalog.locale(),
+            );
+            let speed = record.bytes_per_second().map_or_else(String::new, |value| {
+                format!(
+                    "｜{}",
+                    crate::formatting::format_transfer_speed(value, catalog.locale())
+                )
+            });
+            let mut args = FluentArgs::new();
+            args.set("summary", summary);
+            args.set("phase", phase);
+            args.set("completed", record.progress.completed_items as i64);
+            args.set("total", record.progress.total_items as i64);
             match record.progress.total_bytes {
-                Some(0) => format!(
-                    "{summary}｜{phase}｜進度 {}/{} 項目",
-                    record.progress.completed_items, record.progress.total_items
-                ),
+                Some(0) => catalog.t_args("op-progress-items", &args),
                 Some(total) => {
                     let percent = record
                         .progress
@@ -13168,29 +13389,40 @@ fn operation_message(record: &explorer_model::OperationRecord) -> String {
                         .checked_div(total)
                         .unwrap_or(0)
                         .min(99);
-                    format!(
-                        "{summary}｜{phase} {percent}%（{bytes} / {}）{speed}｜進度 {}/{} 項目",
-                        format_transfer_bytes(total),
-                        record.progress.completed_items,
-                        record.progress.total_items
-                    )
+                    args.set("percent", percent as i64);
+                    args.set("bytes", bytes);
+                    args.set(
+                        "total-bytes",
+                        crate::formatting::format_transfer_bytes(total, catalog.locale()),
+                    );
+                    args.set("speed", speed);
+                    catalog.t_args("op-progress-bytes", &args)
                 }
-                None => format!(
-                    "{summary}｜{phase} {bytes}{speed}｜進度 {}/{} 項目",
-                    record.progress.completed_items, record.progress.total_items
-                ),
+                None => {
+                    args.set("bytes", bytes);
+                    args.set("speed", speed);
+                    catalog.t_args("op-progress-unknown", &args)
+                }
             }
         }
         Some(explorer_model::OperationTerminal::Finished) => match &record.request.kind {
             explorer_model::FileOperationKind::Copy { .. }
             | explorer_model::FileOperationKind::Move { .. } => {
-                format!("{}｜{summary}", lifecycle.2)
+                let mut args = FluentArgs::new();
+                args.set("phase", lifecycle.2);
+                args.set("summary", summary);
+                catalog.t_args("op-finished", &args)
             }
-            _ => format!("{summary}｜完成"),
+            _ => t_named(catalog, "op-done", "summary", summary),
         },
-        Some(explorer_model::OperationTerminal::Cancelled) => format!("{summary}｜已取消"),
+        Some(explorer_model::OperationTerminal::Cancelled) => {
+            t_named(catalog, "op-cancelled", "summary", summary)
+        }
         Some(explorer_model::OperationTerminal::Failed(error)) => {
-            format!("{summary}｜失敗：{}", error.user_message)
+            let mut args = FluentArgs::new();
+            args.set("summary", summary);
+            args.set("error", error.user_message.clone());
+            catalog.t_args("op-failed", &args)
         }
         Some(explorer_model::OperationTerminal::Partial { outcomes }) => {
             let succeeded = outcomes
@@ -13202,67 +13434,49 @@ fn operation_message(record: &explorer_model::OperationRecord) -> String {
                     )
                 })
                 .count();
-            format!("{summary}｜部分完成：{succeeded}/{} 成功", outcomes.len())
+            let mut args = FluentArgs::new();
+            args.set("summary", summary);
+            args.set("succeeded", succeeded as i64);
+            args.set("total", outcomes.len() as i64);
+            catalog.t_args("op-partial", &args)
         }
     }
 }
 
-fn apk_install_notice_message(notice: &crate::state::ApkInstallNotice) -> String {
+fn apk_install_notice_message(
+    notice: &crate::state::ApkInstallNotice,
+    catalog: Catalog,
+) -> String {
     let target = format!("{}（{}）", notice.device_name, notice.serial);
+    let mut args = FluentArgs::new();
+    args.set("name", notice.apk_name.clone());
+    args.set("target", target);
     match &notice.status {
-        explorer_model::ApkInstallStatus::Started => {
-            format!("安裝中：{} → {}", notice.apk_name, target)
-        }
-        explorer_model::ApkInstallStatus::Succeeded => {
-            format!("安裝完成：{} → {}", notice.apk_name, target)
-        }
-        explorer_model::ApkInstallStatus::Cancelled => {
-            format!("已取消安裝 {} 到 {}", notice.apk_name, target)
-        }
-        explorer_model::ApkInstallStatus::TimedOut => {
-            format!("安裝 {} 到 {} 逾時", notice.apk_name, target)
-        }
+        explorer_model::ApkInstallStatus::Started => catalog.t_args("apk-installing", &args),
+        explorer_model::ApkInstallStatus::Succeeded => catalog.t_args("apk-installed", &args),
+        explorer_model::ApkInstallStatus::Cancelled => catalog.t_args("apk-cancelled", &args),
+        explorer_model::ApkInstallStatus::TimedOut => catalog.t_args("apk-timeout", &args),
         explorer_model::ApkInstallStatus::Failed { message } => {
-            format!("安裝 {} 到 {} 失敗：{}", notice.apk_name, target, message)
+            args.set("error", message.clone());
+            catalog.t_args("apk-failed", &args)
         }
     }
 }
 
-fn operation_display_message(record: &explorer_model::OperationRecord, cancelling: bool) -> String {
+fn operation_display_message(
+    record: &explorer_model::OperationRecord,
+    cancelling: bool,
+    catalog: Catalog,
+) -> String {
     if cancelling && !record.phase.is_terminal() {
-        format!("{}｜正在取消", operation_request_summary(record))
+        t_named(
+            catalog,
+            "op-cancelling",
+            "summary",
+            operation_request_summary(record, catalog),
+        )
     } else {
-        operation_message(record)
-    }
-}
-
-fn format_transfer_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} {}", UNITS[unit])
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
-}
-
-fn format_transfer_speed(bytes_per_second: f64) -> String {
-    const UNITS: [&str; 4] = ["B/s", "KB/s", "MB/s", "GB/s"];
-    let mut value = bytes_per_second.max(0.0);
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{value:.0} {}", UNITS[unit])
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
+        operation_message(record, catalog)
     }
 }
 
@@ -13279,11 +13493,12 @@ fn operation_item_name(item: &explorer_model::ItemDescriptor) -> Option<String> 
 }
 
 fn operation_outcome_destination_text(
+    catalog: Catalog,
     outcome: &explorer_model::OperationItemOutcome,
     append_item_name: bool,
 ) -> String {
     let Some(destination) = &outcome.destination else {
-        return "未提供目的地".to_owned();
+        return catalog.t("op-no-destination");
     };
     if !append_item_name {
         return operation_location_text(destination);
@@ -13298,41 +13513,49 @@ fn operation_outcome_destination_text(
 }
 
 fn operation_outcome_route_text(
+    catalog: Catalog,
     outcome: &explorer_model::OperationItemOutcome,
     append_item_name: bool,
 ) -> String {
     let source = outcome.item.as_ref().map_or_else(
-        || "未提供來源".to_owned(),
+        || catalog.t("op-no-source"),
         |item| operation_location_text(&item.location),
     );
     format!(
         "{source} → {}",
-        operation_outcome_destination_text(outcome, append_item_name)
+        operation_outcome_destination_text(catalog, outcome, append_item_name)
     )
 }
 
 fn operation_outcome_message(
+    catalog: Catalog,
     outcome: &explorer_model::OperationItemOutcome,
     append_item_name: bool,
 ) -> String {
-    let route = operation_outcome_route_text(outcome, append_item_name);
+    let route = operation_outcome_route_text(catalog, outcome, append_item_name);
     match &outcome.result {
-        explorer_model::OperationItemResult::Succeeded => format!("成功｜{route}"),
-        explorer_model::OperationItemResult::Skipped => format!("略過｜{route}"),
-        explorer_model::OperationItemResult::Cancelled => format!("已取消｜{route}"),
+        explorer_model::OperationItemResult::Succeeded => {
+            t_named(catalog, "op-success-route", "route", route)
+        }
+        explorer_model::OperationItemResult::Skipped => {
+            t_named(catalog, "op-skipped-route", "route", route)
+        }
+        explorer_model::OperationItemResult::Cancelled => {
+            t_named(catalog, "op-cancelled-route", "route", route)
+        }
         explorer_model::OperationItemResult::Partial(error)
         | explorer_model::OperationItemResult::Failed(error) => {
             let status = if matches!(
                 &outcome.result,
                 explorer_model::OperationItemResult::Partial(_)
             ) {
-                "部分完成"
+                catalog.t("op-partial-status")
             } else {
-                "失敗"
+                catalog.t("op-failed-status")
             };
-            let native = error
-                .native_code
-                .map_or_else(String::new, |code| format!("｜錯誤碼 {code}"));
+            let native = error.native_code.map_or_else(String::new, |code| {
+                t_named(catalog, "op-error-code", "code", code.to_string())
+            });
             format!(
                 "{status}｜{route}｜{}｜{}{native}",
                 error.operation, error.user_message
@@ -13371,6 +13594,7 @@ impl OperationCenter {
 
 impl RenderOnce for OperationCenter {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let catalog = self.state.catalog();
         let colors = self.tokens.theme.colors;
         let now = Instant::now();
         let terminal_elapsed = self.state.latest_operation_terminal_elapsed(now);
@@ -13399,7 +13623,7 @@ impl RenderOnce for OperationCenter {
                         None
                     }
                 })?;
-                let message = apk_install_notice_message(notice);
+                let message = apk_install_notice_message(notice, catalog);
                 let running = !notice.status.is_terminal();
                 Some((notice.context.request_id, message, running, opacity))
             })
@@ -13465,7 +13689,7 @@ impl RenderOnce for OperationCenter {
             )
             .when_some(latest, |element, (record, opacity)| {
                 let cancelling = self.state.operation_is_cancelling(record.id);
-                let summary = operation_display_message(&record, cancelling);
+                let summary = operation_display_message(&record, cancelling, catalog);
                 let progress_ratio = if matches!(
                     record.terminal,
                     Some(explorer_model::OperationTerminal::Finished)
@@ -13499,12 +13723,12 @@ impl RenderOnce for OperationCenter {
                         .items_center()
                         .child(semantic_button(
                             "operation-cancel",
-                            "Cancel file operation",
+                            catalog.t("transfer-cancel-operation"),
                             Some(ExplorerIcon::Close),
                             Some(SharedString::from(if cancelling {
-                                "正在取消"
+                                catalog.t("transfer-cancelling")
                             } else {
-                                "Cancel"
+                                catalog.t("transfer-cancel")
                             })),
                             (!cancelling).then_some(ExplorerAction::CancelOperation {
                                 request_id: record.id,
@@ -13525,7 +13749,7 @@ impl RenderOnce for OperationCenter {
                     .flatten()
                     .take(5)
                     .map(|outcome| {
-                        let result = operation_outcome_message(outcome, append_item_name);
+                        let result = operation_outcome_message(catalog, outcome, append_item_name);
                         div()
                             .text_color(colors.text_secondary.to_gpui())
                             .child(result)
@@ -13625,6 +13849,7 @@ impl StatusBar {
 
 impl RenderOnce for StatusBar {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let catalog = self.state.catalog();
         let layout = self.tokens.layout;
         let colors = self.tokens.theme.colors;
         let presentation = self.state.active_presentation();
@@ -13635,26 +13860,26 @@ impl RenderOnce for StatusBar {
         });
         let phase = match &tab.search {
             TabSearchState::Loading { .. } if index_unavailable => {
-                "Searching (filesystem fallback; index unavailable) · "
+                catalog.t("status-search-fallback")
             }
-            TabSearchState::Loading { .. } => "Searching (indexed + fallback) · ",
-            TabSearchState::Partial { .. } => "Partial search results · ",
-            TabSearchState::Error { .. } => "Search error · ",
-            TabSearchState::Cancelled { .. } => "Search cancelled · ",
-            TabSearchState::Ready { .. } => "Search results · ",
+            TabSearchState::Loading { .. } => catalog.t("status-search-indexed"),
+            TabSearchState::Partial { .. } => catalog.t("status-search-partial"),
+            TabSearchState::Error { .. } => catalog.t("status-search-error"),
+            TabSearchState::Cancelled { .. } => catalog.t("status-search-cancelled"),
+            TabSearchState::Ready { .. } => catalog.t("status-search-results"),
             TabSearchState::Idle | TabSearchState::Editing(_) => match &tab.directory {
-                DirectoryState::Loading { .. } => "Loading · ",
-                DirectoryState::Error { .. } => "Error · ",
-                DirectoryState::Idle | DirectoryState::Ready(_) => "",
+                DirectoryState::Loading { .. } => catalog.t("status-loading"),
+                DirectoryState::Error { .. } => catalog.t("status-error"),
+                DirectoryState::Idle | DirectoryState::Ready(_) => String::new(),
             },
         };
         let status = if presentation.selected_count > 0 {
-            format!(
-                "{} items — {} selected",
-                presentation.item_count, presentation.selected_count
-            )
+            let mut args = FluentArgs::new();
+            args.set("count", presentation.item_count as i64);
+            args.set("selected", presentation.selected_count as i64);
+            catalog.t_args("status-items-selected", &args)
         } else {
-            format!("{} items", presentation.item_count)
+            t_count(catalog, "status-item-count", presentation.item_count as i64)
         };
         let operation_status = self
             .state
@@ -13689,10 +13914,13 @@ impl RenderOnce for StatusBar {
                             |name| name.to_string_lossy().into_owned(),
                         ),
                 };
-                format!(
-                    "Operation {}/{} · {current_name}",
-                    record.progress.completed_items, record.progress.total_items
-                )
+                {
+                    let mut args = FluentArgs::new();
+                    args.set("completed", record.progress.completed_items as i64);
+                    args.set("total", record.progress.total_items as i64);
+                    args.set("name", current_name);
+                    catalog.t_args("status-operation-progress", &args)
+                }
             });
         let mut full_status = operation_status.map_or_else(
             || format!("{phase}{status}"),
@@ -13765,7 +13993,7 @@ impl RenderOnce for StatusBar {
                     })
                     .child(status_view_button(
                         "status-details-view",
-                        "Details view",
+                        catalog.t("status-details-view"),
                         ExplorerIcon::Details,
                         self.tokens,
                         Some(ExplorerAction::SetViewMode(
@@ -13775,7 +14003,7 @@ impl RenderOnce for StatusBar {
                     ))
                     .child(status_view_button(
                         "status-icon-view",
-                        "Icon view",
+                        catalog.t("status-icon-view"),
                         ExplorerIcon::View,
                         self.tokens,
                         Some(ExplorerAction::SetViewMode(
@@ -13789,7 +14017,7 @@ impl RenderOnce for StatusBar {
 
 fn status_view_button(
     id: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     icon: ExplorerIcon,
     tokens: UiTokens,
     action: Option<ExplorerAction>,
@@ -13841,7 +14069,7 @@ fn semantic_button(
 #[allow(clippy::too_many_arguments)]
 fn navigation_history_button(
     id: &'static str,
-    semantic_label: &'static str,
+    semantic_label: impl Into<SharedString>,
     icon: ExplorerIcon,
     primary_action: ExplorerAction,
     direction: NavigationHistoryDirection,
@@ -13850,9 +14078,11 @@ fn navigation_history_button(
     focused_index: usize,
     enabled: bool,
     tokens: UiTokens,
+    catalog: Catalog,
     menu_focus: Option<gpui::FocusHandle>,
     on_action: Option<&ActionCallback>,
 ) -> impl IntoElement {
+    let semantic_label = semantic_label.into();
     let colors = tokens.theme.colors;
     let left_callback = on_action.cloned();
     let right_callback = on_action.cloned();
@@ -13861,7 +14091,7 @@ fn navigation_history_button(
         .debug_selector(move || id.to_owned())
         .role(Role::Button)
         .relative()
-        .aria_label(semantic_label)
+        .aria_label(semantic_label.clone())
         .h(px(tokens.layout.minimum_hit_target.value()))
         .min_w(px(tokens.layout.minimum_hit_target.value()))
         .flex()
@@ -13907,10 +14137,11 @@ fn navigation_history_button(
             if enabled { "enabled" } else { "disabled" },
         ))
         .child(navigation_history_icon(id, icon, enabled, tokens))
-        .child(semantic_tooltip(SharedString::from(semantic_label)))
+        .child(semantic_tooltip(semantic_label))
         .when(menu_open, |element| {
             element.child(navigation_history_menu(
                 tokens,
+                catalog,
                 direction,
                 entries,
                 focused_index,
@@ -13922,6 +14153,7 @@ fn navigation_history_button(
 
 fn navigation_history_menu(
     tokens: UiTokens,
+    catalog: Catalog,
     direction: NavigationHistoryDirection,
     entries: Vec<explorer_model::HistoryEntry>,
     focused_index: usize,
@@ -13936,8 +14168,8 @@ fn navigation_history_menu(
         })
         .role(Role::Menu)
         .aria_label(match direction {
-            NavigationHistoryDirection::Back => "Back history",
-            NavigationHistoryDirection::Forward => "Forward history",
+            NavigationHistoryDirection::Back => catalog.t("chrome-back-history"),
+            NavigationHistoryDirection::Forward => catalog.t("chrome-forward-history"),
         })
         .occlude()
         .when_some(menu_focus, |menu, focus| menu.track_focus(&focus))
@@ -13957,10 +14189,10 @@ fn navigation_history_menu(
         })
         .children(entries.into_iter().enumerate().map(|(index, entry)| {
             let label = if entry.display_title.trim().is_empty() {
-                entry
-                    .location
-                    .path()
-                    .map_or_else(|| "Location".to_owned(), |path| path.display().to_string())
+                entry.location.path().map_or_else(
+                    || catalog.t("chrome-location"),
+                    |path| path.display().to_string(),
+                )
             } else {
                 entry.display_title
             };
@@ -14105,22 +14337,23 @@ fn semantic_tooltip(label: SharedString) -> impl IntoElement {
 
 fn right_drag_terminal_menu(
     tokens: UiTokens,
+    catalog: Catalog,
     allowed: explorer_model::TransferEffects,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     div()
         .id("right-drag-terminal-menu")
         .role(Role::Menu)
-        .aria_label("Right drag action")
+        .aria_label(catalog.t("chrome-right-drag-action"))
         .flex()
         .gap(px(tokens.layout.content_spacing.value()))
         .p(px(tokens.layout.control_padding_horizontal.value()))
         .bg(tokens.theme.colors.subtle_surface.to_gpui())
         .child(semantic_button(
             "right-drag-copy",
-            "Copy here",
+            catalog.t("chrome-copy-here"),
             None,
-            Some(SharedString::from("Copy here")),
+            Some(SharedString::from(catalog.t("chrome-copy-here"))),
             Some(ExplorerAction::ResolveRightDrop {
                 effect: explorer_model::DragEffect::Copy,
             }),
@@ -14130,9 +14363,9 @@ fn right_drag_terminal_menu(
         ))
         .child(semantic_button(
             "right-drag-move",
-            "Move here",
+            catalog.t("chrome-move-here"),
             None,
-            Some(SharedString::from("Move here")),
+            Some(SharedString::from(catalog.t("chrome-move-here"))),
             Some(ExplorerAction::ResolveRightDrop {
                 effect: explorer_model::DragEffect::Move,
             }),
@@ -14142,9 +14375,9 @@ fn right_drag_terminal_menu(
         ))
         .child(semantic_button(
             "right-drag-cancel",
-            "Cancel right drag",
+            catalog.t("chrome-cancel-right-drag"),
             None,
-            Some(SharedString::from("Cancel")),
+            Some(SharedString::from(catalog.t("menu-cancel"))),
             Some(ExplorerAction::ResolveRightDrop {
                 effect: explorer_model::DragEffect::None,
             }),
@@ -14550,6 +14783,7 @@ impl RenderOnce for WindowChrome {
                 });
                 explorer_tab(
                     self.tokens,
+                    self.state.catalog(),
                     tab.id,
                     title,
                     shell_icon,
@@ -14632,7 +14866,11 @@ impl RenderOnce for WindowChrome {
                             .px(px(layout.control_padding_horizontal.value()))
                             .child(region_probe(TAB_STRIP_ID, Some(WINDOW_CHROME_ID), "normal"))
                             .children(tabs)
-                            .child(new_tab_button(self.tokens, self.on_action)),
+                            .child(new_tab_button(
+                                self.tokens,
+                                self.state.catalog(),
+                                self.on_action,
+                            )),
                     ),
             )
             .child(caption_button(
@@ -14664,6 +14902,7 @@ impl RenderOnce for WindowChrome {
 
 fn explorer_tab(
     tokens: UiTokens,
+    catalog: Catalog,
     tab_id: TabId,
     title: String,
     shell_icon: Option<Arc<RenderImage>>,
@@ -14692,7 +14931,7 @@ fn explorer_tab(
     } else {
         format!("background-tab-location-icon-{tab_id:?}")
     };
-    let icon_label = format!("{title} folder icon");
+    let icon_label = t_named(catalog, "chrome-folder-icon", "name", title.clone());
     div()
         .id(id.clone())
         .debug_selector(move || debug_id.clone())
@@ -14772,7 +15011,7 @@ fn explorer_tab(
             div()
                 .id(close_id.clone())
                 .role(Role::Button)
-                .aria_label("Close tab")
+                .aria_label(catalog.t("chrome-close-tab"))
                 .px(px(layout.content_spacing.value()))
                 .rounded(px(layout.corner_radius.value()))
                 .hover(move |style| style.bg(colors.control_hover.to_gpui()))
@@ -14862,7 +15101,11 @@ const fn file_row_visual(
     }
 }
 
-fn new_tab_button(tokens: UiTokens, on_action: Option<ActionCallback>) -> impl IntoElement {
+fn new_tab_button(
+    tokens: UiTokens,
+    catalog: Catalog,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
     let layout = tokens.layout;
     let colors = tokens.theme.colors;
     div()
@@ -14870,7 +15113,7 @@ fn new_tab_button(tokens: UiTokens, on_action: Option<ActionCallback>) -> impl I
         .debug_selector(|| NEW_TAB_BUTTON_ID.to_owned())
         .role(Role::Button)
         .relative()
-        .aria_label("New tab")
+        .aria_label(catalog.t("chrome-new-tab"))
         .h(px(layout.minimum_hit_target.value()))
         .w(px(layout.minimum_hit_target.value()))
         .flex()
@@ -14958,7 +15201,7 @@ mod tests {
         breadcrumb_ancestry_partition, breadcrumb_location_shell_texture, builtin_count_display,
         client_to_screen_point, context_menu_visual_tokens, details_name_column_contains,
         editable_input_colors, file_view_background_context_hit, file_view_local_pointer,
-        format_explorer_size, format_transfer_speed, is_generic_breadcrumb_folder_icon_key,
+        format_explorer_size, is_generic_breadcrumb_folder_icon_key,
         localized_search_placeholder, marquee_content_rect, navigation_item_shell_texture,
         navigation_shell_texture, new_tab_button_background, operation_display_message,
         operation_location_text, operation_message, operation_message_opacity,
@@ -14994,14 +15237,14 @@ mod tests {
             status: explorer_model::ApkInstallStatus::Started,
             terminal_at: None,
         };
-        let running = apk_install_notice_message(&notice);
+        let running = apk_install_notice_message(&notice, zh_tw_catalog());
         assert!(running.contains("安裝中"));
         assert!(running.contains("qq9.3.55.apk") && running.contains("Pixel 9"));
         assert!(!running.contains('%') && !running.contains("MB"));
         notice.status = explorer_model::ApkInstallStatus::Succeeded;
-        assert!(apk_install_notice_message(&notice).contains("安裝完成"));
+        assert!(apk_install_notice_message(&notice, zh_tw_catalog()).contains("安裝完成"));
         notice.status = explorer_model::ApkInstallStatus::TimedOut;
-        assert!(apk_install_notice_message(&notice).contains("逾時"));
+        assert!(apk_install_notice_message(&notice, zh_tw_catalog()).contains("逾時"));
     }
 
     #[test]
@@ -15082,14 +15325,16 @@ mod tests {
         let mut record =
             explorer_model::OperationRecord::queued(explorer_common::RequestId::new(), request, 2);
         record.start().expect("operation starts");
-        let summary = operation_request_summary(&record);
+        let catalog = zh_tw_catalog();
+        let summary = strip_isolates(&operation_request_summary(&record, catalog));
         assert!(summary.contains("複製 2 個項目"));
         assert!(summary.contains(r"C:\Downloads\one.txt"));
         assert!(summary.contains("另有 1 個項目"));
         assert!(summary.contains("sftp://45.32.49.125/home/linuxuser"));
         assert!(!summary.contains("password"));
-        assert!(operation_message(&record).contains("｜準備複製 "));
-        assert!(operation_display_message(&record, true).ends_with("｜正在取消"));
+        assert!(strip_isolates(&operation_message(&record, catalog)).contains("｜準備複製 "));
+        assert!(strip_isolates(&operation_display_message(&record, true, catalog))
+            .ends_with("｜正在取消"));
         record
             .update_progress(explorer_model::OperationProgress {
                 completed_items: 0,
@@ -15100,11 +15345,15 @@ mod tests {
                 phase: explorer_model::TransferProgressPhase::Transferring,
             })
             .expect("copy progress advances");
-        assert!(operation_message(&record).contains("｜正在複製 "));
+        assert!(strip_isolates(&operation_message(&record, catalog)).contains("｜正在複製 "));
         record
             .finish(explorer_model::OperationTerminal::Finished)
             .expect("copy finishes");
-        assert!(operation_message(&record).starts_with("複製完成｜"));
+        assert!(strip_isolates(&operation_message(&record, catalog)).starts_with("複製完成｜"));
+        let en = explorer_i18n::Catalog::new(explorer_i18n::AppLocale::En);
+        assert!(
+            strip_isolates(&operation_request_summary(&record, en)).contains("Copy 2 items")
+        );
     }
 
     #[test]
@@ -15124,8 +15373,20 @@ mod tests {
 
     #[test]
     fn transfer_speed_and_session_panel_follow_selected_hybrid_design() {
-        assert_eq!(format_transfer_speed(512.0), "512 B/s");
-        assert_eq!(format_transfer_speed(1_572_864.0), "1.5 MB/s");
+        assert_eq!(
+            strip_isolates(&crate::formatting::format_transfer_speed(
+                512.0,
+                explorer_i18n::AppLocale::En
+            )),
+            "512 B/s"
+        );
+        assert_eq!(
+            strip_isolates(&crate::formatting::format_transfer_speed(
+                1_572_864.0,
+                explorer_i18n::AppLocale::En
+            )),
+            "1.5 MB/s"
+        );
         let source = include_str!("chrome.rs");
         assert!(source.contains(".foreground()"));
         assert!(source.contains("command-transfer-center"));
@@ -15133,7 +15394,7 @@ mod tests {
         assert!(source.contains("transfer-center-panel"));
         assert!(source.contains("records_newest_first"));
         assert!(source.contains("transfer-row-cancel"));
-        assert!(source.contains("Open transfer location"));
+        assert!(source.contains("transfer-open-location"));
     }
 
     #[test]
@@ -15148,12 +15409,12 @@ mod tests {
         let mut record =
             explorer_model::OperationRecord::queued(explorer_common::RequestId::new(), create, 1);
         record.start().expect("operation starts");
-        assert!(operation_message(&record).contains("進度 0/1"));
+        assert!(strip_isolates(&operation_message(&record, zh_tw_catalog())).contains("進度 0/1"));
         record
             .finish(explorer_model::OperationTerminal::Finished)
             .expect("operation finishes");
         assert_eq!(
-            operation_message(&record),
+            strip_isolates(&operation_message(&record, zh_tw_catalog())),
             "新增資料夾｜adb://emulator-5554/sdcard/Download/New folder｜完成"
         );
 
@@ -15188,7 +15449,7 @@ mod tests {
                 request,
                 1,
             );
-            assert!(!operation_request_summary(&record).is_empty());
+            assert!(!operation_request_summary(&record, zh_tw_catalog()).is_empty());
         }
     }
 
@@ -15233,7 +15494,7 @@ mod tests {
             result: explorer_model::OperationItemResult::Failed(error),
         };
         assert_eq!(
-            operation_outcome_message(&outcome, true),
+            strip_isolates(&operation_outcome_message(zh_tw_catalog(), &outcome, true)),
             r"失敗｜C:\Downloads\report.zip → adb://emulator-5554/sdcard/Download/report.zip｜目的地上傳｜adb push failed: device offline｜錯誤碼 17"
         );
     }
@@ -15258,9 +15519,16 @@ mod tests {
                 ),
             ),
         };
-        let denied =
-            operation_outcome_message(&make_outcome(92, "a.txt", "permission denied"), true);
-        let missing = operation_outcome_message(&make_outcome(93, "b.txt", "未提供底層錯誤"), true);
+        let denied = operation_outcome_message(
+            zh_tw_catalog(),
+            &make_outcome(92, "a.txt", "permission denied"),
+            true,
+        );
+        let missing = operation_outcome_message(
+            zh_tw_catalog(),
+            &make_outcome(93, "b.txt", "未提供底層錯誤"),
+            true,
+        );
         assert!(denied.contains("sftp://45.32.49.125/home/linuxuser/a.txt"));
         assert!(denied.contains(r"C:\Downloads\a.txt"));
         assert!(denied.contains("permission denied"));
@@ -15684,8 +15952,7 @@ mod tests {
             .next()
             .expect("production source");
         for marker in [
-            "Cache usage and limits (updates every second)",
-            "updates every second",
+            "settings-cache-usage-limits",
             "folder-options-cache-budget-controls",
             "cache-budget-input-",
             "cache-budget-slider-",
@@ -15693,14 +15960,12 @@ mod tests {
             "\"left\" | \"down\"",
             "\"home\"",
             "\"end\"",
-            "Persisted MFT index",
-            "Folder aggregates memory",
+            "settings-mft-index",
+            "settings-folder-aggregates-memory",
             "folder-options-mft-service-resources",
-            "MFT Service resources",
-            "MFT Service 資源",
-            "由所有 SuperExplorer 程序共用",
-            "磁碟索引會保留",
-            "記憶體快取會在 MFT Service 重新啟動後重建",
+            "a11y-mft-resources",
+            "settings-mft-resources",
+            "settings-mft-resources-help",
         ] {
             assert!(
                 production.contains(marker),
@@ -17664,13 +17929,20 @@ mod tests {
 
     #[test]
     fn details_size_uses_adaptive_binary_units() {
-        assert_eq!(format_explorer_size(0), "0 KB");
-        assert_eq!(format_explorer_size(1), "1.0 KB");
-        assert_eq!(format_explorer_size(1024), "1.0 KB");
-        assert_eq!(format_explorer_size(1536), "1.5 KB");
-        assert_eq!(format_explorer_size(5_427_537_920), "5.1 GB");
+        let en = explorer_i18n::Catalog::new(explorer_i18n::AppLocale::En);
+        assert_eq!(strip_isolates(&format_explorer_size(0, en)), "0 KB");
+        assert_eq!(strip_isolates(&format_explorer_size(1, en)), "1.0 KB");
+        assert_eq!(strip_isolates(&format_explorer_size(1024, en)), "1.0 KB");
+        assert_eq!(strip_isolates(&format_explorer_size(1536, en)), "1.5 KB");
         assert_eq!(
-            format_explorer_size(250 * 1024_u64.pow(3) + 512 * 1024_u64.pow(2)),
+            strip_isolates(&format_explorer_size(5_427_537_920, en)),
+            "5.1 GB"
+        );
+        assert_eq!(
+            strip_isolates(&format_explorer_size(
+                250 * 1024_u64.pow(3) + 512 * 1024_u64.pow(2),
+                en
+            )),
             "250.5 GB"
         );
     }
@@ -18057,7 +18329,11 @@ mod tests {
 
     #[test]
     fn bookmark_folder_and_destination_surfaces_are_accessible_and_destructive_delete_confirms() {
-        let source = include_str!("chrome.rs");
+        let source = format!(
+            "{}{}",
+            include_str!("chrome.rs"),
+            include_str!("bookmark_folder_delete_window.rs")
+        );
         for required in [
             "favorites-tree-heading",
             "favorite-folder-nav",
@@ -18066,8 +18342,8 @@ mod tests {
             "bookmark-folder-menu-remove",
             "bookmark-destination-picker",
             "bookmark-editor-remove",
-            "bookmark-folder-delete-dialog",
-            "不會刪除磁碟上的檔案",
+            "bookmark-folder-delete-window",
+            "dialog-delete-bookmark-folder-note",
         ] {
             assert!(
                 source.contains(required),
@@ -18085,7 +18361,7 @@ mod tests {
             .and_then(|source| source.split("fn bookmark_folder_editor(").next())
             .expect("bookmark editor source");
         assert!(editor.contains("bookmark-editor-remove"));
-        assert!(editor.contains("移除書籤"));
+        assert!(editor.contains("menu-remove-bookmark"));
         assert!(editor.contains("let is_new = editor.id.is_none()"));
         assert!(editor.contains(".when(!is_new"));
     }
@@ -18094,24 +18370,38 @@ mod tests {
 fn cache_budget_usage_text_reserves_unavailable_for_confirmed_failure() {
     use crate::folder_options_window::CacheUsageAvailabilityV1;
 
+    let en = Catalog::new(explorer_i18n::AppLocale::En);
+    let strip = |value: String| {
+        value
+            .chars()
+            .filter(|ch| !matches!(*ch, '\u{2066}' | '\u{2067}' | '\u{2068}' | '\u{2069}'))
+            .collect::<String>()
+    };
     assert_eq!(
-        cache_budget_usage_text(CacheUsageAvailabilityV1::Pending, None, 512 * 1024 * 1024),
+        strip(cache_budget_usage_text(
+            en,
+            CacheUsageAvailabilityV1::Pending,
+            None,
+            512 * 1024 * 1024
+        )),
         "\u{2014} / 512.0 MB"
     );
     assert_eq!(
-        cache_budget_usage_text(
+        strip(cache_budget_usage_text(
+            en,
             CacheUsageAvailabilityV1::Pending,
             Some(64 * 1024 * 1024),
             1024 * 1024 * 1024,
-        ),
+        )),
         "64.0 MB / 1.0 GB"
     );
     assert_eq!(
-        cache_budget_usage_text(
+        strip(cache_budget_usage_text(
+            en,
             CacheUsageAvailabilityV1::Unavailable,
             Some(64 * 1024 * 1024),
             1024 * 1024 * 1024,
-        ),
+        )),
         "Unavailable / 1.0 GB"
     );
 }

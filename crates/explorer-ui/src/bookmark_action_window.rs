@@ -1,5 +1,6 @@
 //! Dedicated confirmed command window opened by bookmark-item right-click.
 
+use explorer_i18n::{AppLocale, Catalog};
 use gpui::{
     App, Bounds, Context, FocusHandle, Focusable, IntoElement, MouseButton, Render, SharedString,
     Window, WindowBounds, WindowHandle, WindowOptions, div, prelude::*, px, size,
@@ -9,6 +10,12 @@ use crate::{
     ExplorerRoot, UiTokens,
     actions::{ActionSource, ExplorerAction},
 };
+
+fn owner_catalog(owner: WindowHandle<ExplorerRoot>, cx: &mut App) -> Catalog {
+    owner
+        .update(cx, |root, _, _| root.catalog())
+        .unwrap_or_else(|_| Catalog::new(AppLocale::ZhTw))
+}
 
 #[derive(Clone)]
 pub struct BookmarkActionWindowSnapshotV1 {
@@ -24,12 +31,12 @@ pub enum BookmarkActionCommand {
 }
 
 impl BookmarkActionCommand {
-    fn label(self) -> &'static str {
+    fn label(self, catalog: Catalog) -> String {
         match self {
-            Self::Open => "開啟",
-            Self::OpenInNewTab => "在新分頁開啟",
-            Self::Edit => "編輯名稱與路徑",
-            Self::Delete => "刪除書籤",
+            Self::Open => catalog.t("menu-open"),
+            Self::OpenInNewTab => catalog.t("menu-open-in-new-tab"),
+            Self::Edit => catalog.t("menu-edit-name-and-path"),
+            Self::Delete => catalog.t("menu-delete-bookmark"),
         }
     }
 
@@ -52,7 +59,10 @@ fn applicable_commands(target: &explorer_model::BookmarkTarget) -> Vec<BookmarkA
     commands
 }
 
-pub fn bookmark_action_window_options(cx: &App) -> WindowOptions {
+pub fn bookmark_action_window_options(
+    cx: &App,
+    title: impl Into<SharedString>,
+) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
@@ -60,7 +70,7 @@ pub fn bookmark_action_window_options(cx: &App) -> WindowOptions {
             cx,
         ))),
         titlebar: Some(gpui::TitlebarOptions {
-            title: Some(SharedString::from("書籤操作")),
+            title: Some(title.into()),
             ..Default::default()
         }),
         kind: gpui::WindowKind::Normal,
@@ -151,17 +161,21 @@ impl Focusable for BookmarkActionWindow {
 }
 
 impl Render for BookmarkActionWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let catalog = owner_catalog(self.owner, cx);
+        let title = catalog.t("dialog-bookmark-action");
+        window.set_window_title(&title);
         let colors = self.tokens.theme.colors;
         let selected = self.selected;
         let commands = applicable_commands(&self.snapshot.bookmark.target)
             .into_iter()
             .map(|command| {
                 let active = selected == command;
+                let label = command.label(catalog);
                 div()
                     .id(format!("bookmark-action-{:?}", command))
                     .role(gpui::Role::Button)
-                    .aria_label(command.label())
+                    .aria_label(label.clone())
                     .cursor_pointer()
                     .px(px(12.0))
                     .py(px(9.0))
@@ -174,7 +188,7 @@ impl Render for BookmarkActionWindow {
                     .child(format!(
                         "{} {}",
                         if active { "●" } else { "○" },
-                        command.label()
+                        label
                     ))
                     .on_mouse_down(
                         MouseButton::Left,
@@ -189,7 +203,7 @@ impl Render for BookmarkActionWindow {
         div()
             .id("bookmark-action-window")
             .role(gpui::Role::Dialog)
-            .aria_label("Bookmark action window")
+            .aria_label(catalog.t("a11y-bookmark-action-window"))
             .size_full()
             .track_focus(&self.focus_handle)
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
@@ -210,7 +224,7 @@ impl Render for BookmarkActionWindow {
             .flex_col()
             .gap(px(12.0))
             .bg(colors.surface.to_gpui())
-            .child("書籤操作")
+            .child(title)
             .child(format!("{}", self.snapshot.bookmark.name))
             .children(commands)
             .child(
@@ -228,7 +242,7 @@ impl Render for BookmarkActionWindow {
                             .border_color(colors.divider.to_gpui())
                             .px(px(12.0))
                             .py(px(7.0))
-                            .child("取消")
+                            .child(catalog.t("menu-cancel"))
                             .on_click(|_, window, _| window.remove_window()),
                     )
                     .child(
@@ -242,7 +256,7 @@ impl Render for BookmarkActionWindow {
                             .px(px(12.0))
                             .py(px(7.0))
                             .text_color(colors.text_primary.to_gpui())
-                            .child("確認")
+                            .child(catalog.t("menu-confirm"))
                             .on_click(cx.listener(|this, _, window, cx| this.confirm(window, cx))),
                     ),
             )

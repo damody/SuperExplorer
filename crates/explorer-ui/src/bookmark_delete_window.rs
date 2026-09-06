@@ -1,5 +1,6 @@
 //! Dedicated confirmation window for deleting one bookmark.
 
+use explorer_i18n::{AppLocale, Catalog, FluentArgs};
 use gpui::{
     App, Bounds, Context, FocusHandle, Focusable, IntoElement, Render, SharedString, Window,
     WindowBounds, WindowHandle, WindowOptions, div, prelude::*, px, size,
@@ -10,12 +11,21 @@ use crate::{
     actions::{ActionSource, ExplorerAction},
 };
 
+fn owner_catalog(owner: WindowHandle<ExplorerRoot>, cx: &mut App) -> Catalog {
+    owner
+        .update(cx, |root, _, _| root.catalog())
+        .unwrap_or_else(|_| Catalog::new(AppLocale::ZhTw))
+}
+
 #[derive(Clone)]
 pub struct BookmarkDeleteWindowSnapshotV1 {
     pub bookmark: explorer_model::Bookmark,
 }
 
-pub fn bookmark_delete_window_options(cx: &App) -> WindowOptions {
+pub fn bookmark_delete_window_options(
+    cx: &App,
+    title: impl Into<SharedString>,
+) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
@@ -23,7 +33,7 @@ pub fn bookmark_delete_window_options(cx: &App) -> WindowOptions {
             cx,
         ))),
         titlebar: Some(gpui::TitlebarOptions {
-            title: Some(SharedString::from("刪除書籤")),
+            title: Some(title.into()),
             ..Default::default()
         }),
         kind: gpui::WindowKind::Normal,
@@ -91,12 +101,17 @@ impl Focusable for BookmarkDeleteWindow {
 }
 
 impl Render for BookmarkDeleteWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let catalog = owner_catalog(self.owner, cx);
+        let title = catalog.t("dialog-delete-bookmark");
+        window.set_window_title(&title);
+        let mut prompt_args = FluentArgs::new();
+        prompt_args.set("name", self.snapshot.bookmark.name.clone());
         let colors = self.tokens.theme.colors;
         div()
             .id("bookmark-delete-window")
             .role(gpui::Role::Dialog)
-            .aria_label("Delete bookmark confirmation")
+            .aria_label(catalog.t("a11y-delete-bookmark"))
             .size_full()
             .track_focus(&self.focus_handle)
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
@@ -117,8 +132,8 @@ impl Render for BookmarkDeleteWindow {
             .flex_col()
             .gap(px(16.0))
             .bg(colors.surface.to_gpui())
-            .child(format!("刪除書籤「{}」？", self.snapshot.bookmark.name))
-            .child("這會移除書籤，不會刪除磁碟上的檔案。")
+            .child(catalog.t_args("dialog-delete-bookmark-prompt", &prompt_args))
+            .child(catalog.t("dialog-delete-bookmark-note"))
             .child(
                 div()
                     .flex()
@@ -134,7 +149,7 @@ impl Render for BookmarkDeleteWindow {
                             .border_color(colors.divider.to_gpui())
                             .px(px(12.0))
                             .py(px(7.0))
-                            .child("取消")
+                            .child(catalog.t("menu-cancel"))
                             .on_click(|_, window, _| window.remove_window()),
                     )
                     .child(
@@ -148,7 +163,7 @@ impl Render for BookmarkDeleteWindow {
                             .px(px(12.0))
                             .py(px(7.0))
                             .text_color(colors.danger.to_gpui())
-                            .child("刪除")
+                            .child(catalog.t("menu-delete"))
                             .on_click(cx.listener(|this, _, window, cx| this.confirm(window, cx))),
                     ),
             )
@@ -161,7 +176,7 @@ mod tests {
     fn delete_uses_a_normal_dedicated_confirmation_window() {
         let source = include_str!("bookmark_delete_window.rs");
         assert!(source.contains("WindowKind::Normal"));
-        assert!(source.contains("不會刪除磁碟上的檔案"));
+        assert!(source.contains("dialog-delete-bookmark-note"));
         assert!(source.contains("bookmark_exists"));
         assert!(source.contains("ExplorerAction::RemoveBookmark"));
         assert!(source.contains(".border_1()"));

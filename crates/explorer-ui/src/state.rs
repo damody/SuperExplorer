@@ -31,13 +31,29 @@ pub struct ApkInstallNotice {
     pub terminal_at: Option<Instant>,
 }
 
-fn unique_remote_folder_symlink_name(base: &str, existing: &HashSet<&str>) -> String {
+fn strip_fluent_isolates(value: String) -> String {
+    value
+        .chars()
+        .filter(|ch| !matches!(*ch, '\u{2066}' | '\u{2067}' | '\u{2068}' | '\u{2069}'))
+        .collect()
+}
+
+fn unique_remote_folder_symlink_name(
+    base: &str,
+    existing: &HashSet<&str>,
+    catalog: Catalog,
+) -> String {
     for ordinal in 1_u64.. {
-        let candidate = if ordinal == 1 {
-            format!("{base} - 捷徑")
+        let candidate = strip_fluent_isolates(if ordinal == 1 {
+            let mut args = explorer_i18n::FluentArgs::new();
+            args.set("base", base);
+            catalog.t_args("shortcut-suffix", &args)
         } else {
-            format!("{base} - 捷徑 ({ordinal})")
-        };
+            let mut args = explorer_i18n::FluentArgs::new();
+            args.set("base", base);
+            args.set("ordinal", ordinal);
+            catalog.t_args("shortcut-suffix-n", &args)
+        });
         if !existing.contains(candidate.as_str()) {
             return candidate;
         }
@@ -1886,7 +1902,7 @@ impl AppViewState {
             location: pending.parent.clone(),
             is_container: true,
             metadata: explorer_model::FileEntryMetadata {
-                type_display: Some("檔案資料夾".to_owned()),
+                type_display: Some(self.catalog().t("type-file-folder")),
                 ..explorer_model::FileEntryMetadata::default()
             },
         })
@@ -3074,21 +3090,22 @@ impl AppViewState {
     /// includes the header, row padding, and (for Name) the Explorer icon/gap allocation.
     pub(crate) fn auto_size_details_column(&mut self, column: explorer_model::ColumnId) {
         self.end_details_column_resize();
+        let catalog = self.catalog();
         let header = match column {
-            explorer_model::ColumnId::Name => "名稱",
-            explorer_model::ColumnId::DateModified => "修改日期",
-            explorer_model::ColumnId::Type => "類型",
-            explorer_model::ColumnId::Size => "大小",
-            explorer_model::ColumnId::DateCreated => "建立日期",
-            explorer_model::ColumnId::Authors => "作者",
-            explorer_model::ColumnId::Tags => "標籤",
-            explorer_model::ColumnId::Title => "標題",
-            explorer_model::ColumnId::FileCount => "File Count",
-            explorer_model::ColumnId::FolderCount => "Folder Count",
-            explorer_model::ColumnId::Permissions => "Permissions",
-            explorer_model::ColumnId::Extension { .. } => "擴充欄位",
+            explorer_model::ColumnId::Name => catalog.t("column-name"),
+            explorer_model::ColumnId::DateModified => catalog.t("column-date-modified"),
+            explorer_model::ColumnId::Type => catalog.t("column-type"),
+            explorer_model::ColumnId::Size => catalog.t("column-size"),
+            explorer_model::ColumnId::DateCreated => catalog.t("column-date-created"),
+            explorer_model::ColumnId::Authors => catalog.t("column-authors"),
+            explorer_model::ColumnId::Tags => catalog.t("column-tags"),
+            explorer_model::ColumnId::Title => catalog.t("column-title"),
+            explorer_model::ColumnId::FileCount => catalog.t("column-file-count"),
+            explorer_model::ColumnId::FolderCount => catalog.t("column-folder-count"),
+            explorer_model::ColumnId::Permissions => catalog.t("column-permissions"),
+            explorer_model::ColumnId::Extension { .. } => catalog.t("column-extension"),
         };
-        let header_width = estimated_text_width(header) + 32.0;
+        let header_width = estimated_text_width(&header) + 32.0;
         let content_width = self
             .tabs
             .active_tab()
@@ -3110,7 +3127,7 @@ impl AppViewState {
                     .as_deref()
                     .map_or(16.0, |text| estimated_text_width(text) + 16.0),
                 explorer_model::ColumnId::Size => entry.metadata.size_bytes.map_or(16.0, |size| {
-                    estimated_text_width(&crate::format_file_size(size)) + 16.0
+                    estimated_text_width(&crate::format_file_size(size, self.locale())) + 16.0
                 }),
                 explorer_model::ColumnId::DateCreated => entry
                     .metadata
@@ -4645,6 +4662,9 @@ impl AppViewState {
             return WindowEventOutcome::Applied;
         }
         if let ExplorerEvent::LockOwnersDiscovered { context, outcome } = &event {
+            let catalog = self.catalog();
+            let discovery_timeout = catalog.t("status-lock-discovery-timeout");
+            let unidentified = catalog.t("status-lock-unidentified");
             let Some(recovery) = self.lock_recovery.as_mut() else {
                 return WindowEventOutcome::IgnoredStale;
             };
@@ -4658,16 +4678,14 @@ impl AppViewState {
                     recovery.owners.clone_from(owners);
                     recovery.phase = LockRecoveryPhase::Ready;
                     recovery.focus_index = 0;
-                    recovery.status = format!(
-                        "{} application(s) are using the selected item.",
-                        owners.len()
-                    );
+                    let mut args = explorer_i18n::FluentArgs::new();
+                    args.set("count", owners.len() as i64);
+                    recovery.status = catalog.t_args("status-lock-owners-found", &args);
                 }
                 LockOwnerDiscoveryTerminal::Empty => {
                     recovery.phase = LockRecoveryPhase::Unavailable;
                     recovery.focus_index = 0;
-                    "Windows could not identify the application using this item."
-                        .clone_into(&mut recovery.status);
+                    unidentified.clone_into(&mut recovery.status);
                 }
                 LockOwnerDiscoveryTerminal::Unavailable(error)
                 | LockOwnerDiscoveryTerminal::Failed(error) => {
@@ -4678,7 +4696,7 @@ impl AppViewState {
                 LockOwnerDiscoveryTerminal::DeadlineElapsed => {
                     recovery.phase = LockRecoveryPhase::Unavailable;
                     recovery.focus_index = 0;
-                    "Lock owner discovery reached its deadline.".clone_into(&mut recovery.status);
+                    discovery_timeout.clone_into(&mut recovery.status);
                 }
                 LockOwnerDiscoveryTerminal::Cancelled => {
                     self.lock_recovery = None;
@@ -4687,6 +4705,9 @@ impl AppViewState {
             return WindowEventOutcome::Applied;
         }
         if let ExplorerEvent::LockOwnersClosed { context, outcome } = &event {
+            let retrying = self.catalog().t("status-lock-retrying");
+            let partial_close = self.catalog().t("status-lock-partial-close");
+            let close_cancelled = self.catalog().t("status-lock-close-cancelled");
             let Some(recovery) = self.lock_recovery.as_mut() else {
                 return WindowEventOutcome::IgnoredStale;
             };
@@ -4699,7 +4720,7 @@ impl AppViewState {
                     recovery.close_outcomes.clone_from(outcomes);
                     let request = recovery.original_request.clone();
                     recovery.phase = LockRecoveryPhase::Retrying;
-                    "Retrying the delete operation…".clone_into(&mut recovery.status);
+                    retrying.clone_into(&mut recovery.status);
                     let command = self.queue_file_operation(request);
                     if let Some(recovery) = self.lock_recovery.as_mut() {
                         recovery.retry_operation_id =
@@ -4711,8 +4732,7 @@ impl AppViewState {
                     recovery.close_outcomes.clone_from(outcomes);
                     recovery.phase = LockRecoveryPhase::Partial;
                     recovery.focus_index = 0;
-                    "Some applications did not close. No process was force-terminated."
-                        .clone_into(&mut recovery.status);
+                    partial_close.clone_into(&mut recovery.status);
                 }
                 LockOwnerCloseTerminal::Failed(error) => {
                     recovery.phase = LockRecoveryPhase::Partial;
@@ -4722,16 +4742,16 @@ impl AppViewState {
                 LockOwnerCloseTerminal::Cancelled => {
                     recovery.phase = LockRecoveryPhase::Ready;
                     recovery.focus_index = 0;
-                    "Closing applications was cancelled.".clone_into(&mut recovery.status);
+                    close_cancelled.clone_into(&mut recovery.status);
                 }
             }
             return WindowEventOutcome::Applied;
         }
         if let ExplorerEvent::ThumbnailCacheCleared { success, .. } = &event {
             self.thumbnail_cache_notice = Some(if *success {
-                "縮圖快取已清除".to_owned()
+                self.catalog().t("status-thumbnail-cleared")
             } else {
-                "無法完整清除縮圖快取；可重試，檔案瀏覽仍可使用".to_owned()
+                self.catalog().t("status-thumbnail-clear-partial")
             });
             return WindowEventOutcome::Applied;
         }
@@ -4922,13 +4942,14 @@ impl AppViewState {
 
     pub(crate) fn retry_locked_delete(&mut self) -> Option<ExplorerCommand> {
         let limits = explorer_common::RoadmapLimits::default();
+        let retrying = self.catalog().t("status-lock-retrying");
         let recovery = self.lock_recovery.as_mut()?;
         if !recovery.can_retry() || recovery.retry_count >= limits.lock_recovery_max_retries {
             return None;
         }
         recovery.retry_count += 1;
         recovery.phase = LockRecoveryPhase::Retrying;
-        "Retrying the delete operation…".clone_into(&mut recovery.status);
+        retrying.clone_into(&mut recovery.status);
         let request = recovery.original_request.clone();
         let command = self.queue_file_operation(request);
         if let Some(recovery) = self.lock_recovery.as_mut() {
@@ -5001,10 +5022,10 @@ impl AppViewState {
             .filter(|recovery| recovery.retry_operation_id == Some(context.request_id))
             .map_or(0, |recovery| recovery.retry_count);
         if retry_count >= limits.lock_recovery_max_retries {
+            let retry_limit = self.catalog().t("status-lock-retry-limit");
             if let Some(recovery) = self.lock_recovery.as_mut() {
                 recovery.phase = LockRecoveryPhase::Unavailable;
-                "The retry limit was reached. The item was not deleted."
-                    .clone_into(&mut recovery.status);
+                retry_limit.clone_into(&mut recovery.status);
             }
             return true;
         }
@@ -5023,7 +5044,7 @@ impl AppViewState {
             phase: LockRecoveryPhase::Discovering,
             owners: Vec::new(),
             close_outcomes: Vec::new(),
-            status: "Finding applications that are using the selected item…".to_owned(),
+            status: self.catalog().t("status-lock-finding"),
             item_count: resources.len(),
             original_request: record.request.clone(),
             request_context,
@@ -5303,7 +5324,7 @@ impl AppViewState {
             .iter()
             .map(|entry| entry.display_name.as_str())
             .collect::<HashSet<_>>();
-        let name = unique_remote_folder_symlink_name(&entry.display_name, &existing);
+        let name = unique_remote_folder_symlink_name(&entry.display_name, &existing, self.catalog());
         Some((parent, name, entry.display_name))
     }
 
@@ -7002,13 +7023,13 @@ mod tests {
     fn remote_folder_symlink_name_uses_first_free_windows_style_suffix() {
         let existing = HashSet::from(["photos", "photos - 捷徑", "photos - 捷徑 (2)"]);
         assert_eq!(
-            unique_remote_folder_symlink_name("photos", &existing),
+            unique_remote_folder_symlink_name("photos", &existing, Catalog::new(AppLocale::ZhTw)),
             "photos - 捷徑 (3)"
         );
 
         let empty = HashSet::new();
         assert_eq!(
-            unique_remote_folder_symlink_name("photos", &empty),
+            unique_remote_folder_symlink_name("photos", &empty, Catalog::new(AppLocale::ZhTw)),
             "photos - 捷徑"
         );
     }

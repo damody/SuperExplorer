@@ -1996,6 +1996,7 @@ impl ExplorerRoot {
         if !is_adb_or_sftp_location(&parent) {
             return false;
         }
+        let default_name = self.catalog().t("dialog-new-shortcut-default");
         let Some(runtime) = self.remote_runtime.as_mut() else {
             return false;
         };
@@ -2003,15 +2004,16 @@ impl ExplorerRoot {
             active.cancellation.cancel();
         }
         runtime.next_session = runtime.next_session.wrapping_add(1).max(1);
+        let session_id = runtime.next_session;
         self.remote_symlink_window_observer
             .clone()
             .is_some_and(|observer| {
                 observer(
                     remote_symlink_window::RemoteSymlinkWindowUpdateV1::Open(
                         remote_symlink_window::RemoteSymlinkWindowSnapshotV1 {
-                            session_id: runtime.next_session,
+                            session_id,
                             parent,
-                            name: "新捷徑".to_owned(),
+                            name: default_name,
                             target: String::new(),
                         },
                     ),
@@ -2028,7 +2030,7 @@ impl ExplorerRoot {
         target: String,
     ) -> Result<(), String> {
         remote_symlink_window::validate_remote_symlink_input(&name, &target)
-            .map_err(str::to_owned)?;
+            .map_err(|key| self.catalog().t(key))?;
         self.submit_remote_symlink_request(session_id, parent, name, target)
     }
 
@@ -2045,14 +2047,16 @@ impl ExplorerRoot {
             .current()
             .is_none_or(|entry| entry.location != parent)
         {
-            return Err("目前資料夾已變更，請重新開啟新增捷徑視窗。".to_owned());
+            return Err(self.catalog().t("dialog-folder-changed"));
         }
+        let unavailable = self.catalog().t("dialog-remote-unavailable");
+        let in_progress = self.catalog().t("dialog-shortcut-in-progress");
         let runtime = self
             .remote_runtime
             .as_mut()
-            .ok_or_else(|| "遠端服務目前無法使用。".to_owned())?;
+            .ok_or(unavailable)?;
         if runtime.active_symlink.is_some() {
-            return Err("另一個捷徑正在建立中。".to_owned());
+            return Err(in_progress);
         }
         runtime.next_request = runtime.next_request.wrapping_add(1).max(1);
         let request_id = runtime.next_request;
@@ -9242,9 +9246,12 @@ impl Render for ExplorerRoot {
                             div()
                                 .id("safe-mode-offer-dialog")
                                 .role(Role::Dialog)
-                                .aria_label(format!(
-                                    "Safe Mode confirmation required; Suspect package: {package}"
-                                ))
+                                .aria_label({
+                                    let mut args = explorer_i18n::FluentArgs::new();
+                                    args.set("package", package);
+                                    self.catalog()
+                                        .t_args("dialog-safe-mode-confirm-aria", &args)
+                                })
                                 .w(px(480.0))
                                 .p(px(20.0))
                                 .rounded(px(8.0))
@@ -9255,17 +9262,33 @@ impl Render for ExplorerRoot {
                                 .child(
                                     div()
                                         .text_size(px(20.0))
-                                        .child("Safe Mode requires confirmation"),
+                                        .child(self.catalog().t("dialog-safe-mode-confirm-title")),
                                 )
                                 .child(
                                     div()
                                         .id("safe-mode-suspect-package")
                                         .role(Role::Label)
-                                        .aria_label(format!("Suspect package: {package}"))
-                                        .child(format!("Suspect package: {package}")),
+                                        .aria_label({
+                                            let mut args = explorer_i18n::FluentArgs::new();
+                                            args.set("package", package);
+                                            self.catalog().t_args("dialog-suspect-package", &args)
+                                        })
+                                        .child({
+                                            let mut args = explorer_i18n::FluentArgs::new();
+                                            args.set("package", package);
+                                            self.catalog().t_args("dialog-suspect-package", &args)
+                                        }),
                                 )
-                                .child(div().child(format!("Interface: {interface}")))
-                                .child(div().child(format!("Operation: {}", offer.operation)))
+                                .child(div().child({
+                                    let mut args = explorer_i18n::FluentArgs::new();
+                                    args.set("value", interface);
+                                    self.catalog().t_args("dialog-interface", &args)
+                                }))
+                                .child(div().child({
+                                    let mut args = explorer_i18n::FluentArgs::new();
+                                    args.set("value", offer.operation.clone());
+                                    self.catalog().t_args("dialog-operation", &args)
+                                }))
                                 .when_some(safe_mode_error, |dialog, error| {
                                     dialog.child(
                                         div()
@@ -9278,14 +9301,14 @@ impl Render for ExplorerRoot {
                                     div()
                                         .id("safe-mode-confirm")
                                         .role(Role::Button)
-                                        .aria_label("Confirm and re-enable")
+                                        .aria_label(self.catalog().t("a11y-confirm-and-reenable"))
                                         .p(px(8.0))
                                         .rounded(px(4.0))
                                         .bg(self.tokens.theme.colors.accent.to_gpui())
                                         .text_color(
                                             self.tokens.theme.colors.selected_text.to_gpui(),
                                         )
-                                        .child("Confirm and re-enable")
+                                        .child(self.catalog().t("dialog-confirm-reenable"))
                                         .on_click(cx.listener(move |this, _, _, _| {
                                             this.confirm_safe_mode_offer(offer.presentation_token);
                                         })),

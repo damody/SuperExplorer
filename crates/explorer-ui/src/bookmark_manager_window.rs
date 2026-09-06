@@ -178,7 +178,10 @@ impl BookmarkManagerUiState {
     }
 }
 
-pub fn bookmark_manager_window_options(cx: &App) -> WindowOptions {
+pub fn bookmark_manager_window_options(
+    cx: &App,
+    title: impl Into<SharedString>,
+) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
@@ -186,7 +189,7 @@ pub fn bookmark_manager_window_options(cx: &App) -> WindowOptions {
             cx,
         ))),
         titlebar: Some(gpui::TitlebarOptions {
-            title: Some(SharedString::from("收藏庫")),
+            title: Some(title.into()),
             ..Default::default()
         }),
         kind: gpui::WindowKind::Normal,
@@ -366,10 +369,12 @@ impl Render for BookmarkManagerWindow {
             },
         ));
         let search_query = self.search_input.read(cx).as_str().to_owned();
+        let catalog = self.snapshot.state.catalog();
+        window.set_window_title(&catalog.t("dialog-bookmark-library"));
         div()
             .id("bookmark-manager-window")
             .role(gpui::Role::Dialog)
-            .aria_label("Bookmark manager window")
+            .aria_label(catalog.t("a11y-bookmark-manager-window"))
             .size_full()
             .track_focus(&self.focus_handle)
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {

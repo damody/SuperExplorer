@@ -1,11 +1,24 @@
 //! Dedicated Windows-style Properties window for one ADB or SFTP item.
 
+use explorer_i18n::{AppLocale, Catalog, FluentArgs};
 use gpui::{
     App, Bounds, Context, FocusHandle, Focusable, IntoElement, Render, Role, SharedString, Window,
     WindowBounds, WindowHandle, WindowOptions, div, prelude::*, px, size,
 };
 
 use crate::{ExplorerRoot, UiTokens};
+
+fn owner_catalog(owner: WindowHandle<ExplorerRoot>, cx: &mut App) -> Catalog {
+    owner
+        .update(cx, |root, _, _| root.catalog())
+        .unwrap_or_else(|_| Catalog::new(AppLocale::ZhTw))
+}
+
+fn properties_title(catalog: Catalog, name: &str) -> String {
+    let mut args = FluentArgs::new();
+    args.set("name", name);
+    catalog.t_args("dialog-properties", &args)
+}
 
 #[derive(Clone)]
 pub struct RemotePropertiesWindowSnapshotV1 {
@@ -16,14 +29,16 @@ pub struct RemotePropertiesWindowSnapshotV1 {
 pub fn remote_properties_window_options(
     cx: &App,
     snapshot: &RemotePropertiesWindowSnapshotV1,
+    title: impl Into<SharedString>,
 ) -> WindowOptions {
-    remote_properties_window_options_on_display(cx, snapshot, None)
+    remote_properties_window_options_on_display(cx, snapshot, None, title)
 }
 
 pub fn remote_properties_window_options_on_display(
     cx: &App,
-    snapshot: &RemotePropertiesWindowSnapshotV1,
+    _snapshot: &RemotePropertiesWindowSnapshotV1,
     display_id: Option<gpui::DisplayId>,
+    title: impl Into<SharedString>,
 ) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
@@ -32,10 +47,7 @@ pub fn remote_properties_window_options_on_display(
             cx,
         ))),
         titlebar: Some(gpui::TitlebarOptions {
-            title: Some(SharedString::from(format!(
-                "{} - 內容",
-                snapshot.entry.display_name
-            ))),
+            title: Some(title.into()),
             ..Default::default()
         }),
         kind: gpui::WindowKind::Normal,
@@ -85,7 +97,10 @@ impl RemotePropertiesWindow {
         self.snapshot = snapshot;
         self.original_mode = mode;
         self.mode = mode;
-        window.set_window_title(&format!("{} - 內容", self.snapshot.entry.display_name));
+        window.set_window_title(&properties_title(
+            owner_catalog(self.owner, cx),
+            &self.snapshot.entry.display_name,
+        ));
         self.confirm_focus.focus(window, cx);
         cx.notify();
         window.refresh();
@@ -118,9 +133,13 @@ impl Focusable for RemotePropertiesWindow {
 }
 
 impl Render for RemotePropertiesWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let catalog = owner_catalog(self.owner, cx);
         let colors = self.tokens.theme.colors;
         let entry = self.snapshot.entry.clone();
+        window.set_window_title(&properties_title(catalog, &entry.display_name));
+        let mut aria_args = FluentArgs::new();
+        aria_args.set("name", entry.display_name.clone());
         let location = match &entry.location {
             explorer_model::LocationDescriptor::Virtual(remote) => format!(
                 "{}://{}/{}",
@@ -128,41 +147,69 @@ impl Render for RemotePropertiesWindow {
                 remote.public_authority.as_deref().unwrap_or("remote"),
                 remote.components.join("/")
             ),
-            _ => "無法取得".to_owned(),
+            _ => catalog.t("dialog-unavailable"),
         };
         let type_name = entry.metadata.type_display.clone().unwrap_or_else(|| {
             if entry.is_container {
-                "遠端資料夾"
+                catalog.t("dialog-remote-folder")
             } else {
-                "遠端檔案"
+                catalog.t("dialog-remote-file")
             }
-            .to_owned()
         });
-        let size = entry
-            .metadata
-            .size_bytes
-            .map_or_else(|| "無法取得".to_owned(), |value| format!("{value} 位元組"));
+        let size = entry.metadata.size_bytes.map_or_else(
+            || catalog.t("dialog-unavailable"),
+            |value| {
+                let mut args = FluentArgs::new();
+                args.set("value", value.to_string());
+                catalog.t_args("dialog-bytes", &args)
+            },
+        );
+        let labeled = |key, value: String| {
+            let mut args = FluentArgs::new();
+            args.set("value", value);
+            catalog.t_args(key, &args)
+        };
         let mut permission_grid = div().flex().flex_col().gap(px(7.0));
-        for (label, read, write, execute) in [
-            ("擁有者", 0o400, 0o200, 0o100),
-            ("群組", 0o040, 0o020, 0o010),
-            ("其他", 0o004, 0o002, 0o001),
+        for (label_key, read, write, execute) in [
+            ("dialog-owner", 0o400, 0o200, 0o100),
+            ("dialog-group", 0o040, 0o020, 0o010),
+            ("dialog-others", 0o004, 0o002, 0o001),
         ] {
             permission_grid = permission_grid.child(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(14.0))
-                    .child(div().w(px(72.0)).child(label))
-                    .child(permission_button("讀取", read, self.mode, colors, cx))
-                    .child(permission_button("寫入", write, self.mode, colors, cx))
-                    .child(permission_button("執行", execute, self.mode, colors, cx)),
+                    .child(div().w(px(72.0)).child(catalog.t(label_key)))
+                    .child(permission_button(
+                        catalog.t("dialog-read"),
+                        read,
+                        self.mode,
+                        colors,
+                        cx,
+                    ))
+                    .child(permission_button(
+                        catalog.t("dialog-write"),
+                        write,
+                        self.mode,
+                        colors,
+                        cx,
+                    ))
+                    .child(permission_button(
+                        catalog.t("dialog-execute"),
+                        execute,
+                        self.mode,
+                        colors,
+                        cx,
+                    )),
             );
         }
+        let mut mode_args = FluentArgs::new();
+        mode_args.set("mode", format!("{:04o}", self.mode));
         div()
             .id("remote-properties-window")
             .role(Role::Dialog)
-            .aria_label(format!("{} 內容", entry.display_name))
+            .aria_label(catalog.t_args("dialog-properties-aria", &aria_args))
             .size_full()
             .track_focus(&self.confirm_focus)
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
@@ -184,19 +231,19 @@ impl Render for RemotePropertiesWindow {
             .gap(px(15.0))
             .bg(colors.surface.to_gpui())
             .child(div().text_size(px(21.0)).child(entry.display_name))
-            .child("一般")
+            .child(catalog.t("dialog-general"))
             .child(div().h(px(1.0)).bg(colors.divider.to_gpui()))
-            .child(format!("檔案類型：{type_name}"))
-            .child(format!("位置：{location}"))
-            .child(format!("大小：{size}"))
+            .child(labeled("dialog-file-type", type_name))
+            .child(labeled("dialog-location", location))
+            .child(labeled("dialog-size", size))
             .when_some(entry.metadata.created_display, |view, value| {
-                view.child(format!("建立日期：{value}"))
+                view.child(labeled("dialog-date-created", value))
             })
             .when_some(entry.metadata.modified_display, |view, value| {
-                view.child(format!("修改日期：{value}"))
+                view.child(labeled("dialog-date-modified", value))
             })
             .child(div().h(px(1.0)).bg(colors.divider.to_gpui()))
-            .child(format!("權限：{:04o}", self.mode))
+            .child(catalog.t_args("dialog-permissions", &mode_args))
             .child(permission_grid)
             .child(div().flex_1())
             .child(
@@ -214,7 +261,7 @@ impl Render for RemotePropertiesWindow {
                             .border_color(colors.divider.to_gpui())
                             .px(px(18.0))
                             .py(px(7.0))
-                            .child("取消")
+                            .child(catalog.t("menu-cancel"))
                             .on_click(|_, window, _| window.remove_window()),
                     )
                     .child(
@@ -228,7 +275,7 @@ impl Render for RemotePropertiesWindow {
                             .border_color(colors.focus.to_gpui())
                             .px(px(18.0))
                             .py(px(6.0))
-                            .child("確定")
+                            .child(catalog.t("menu-ok"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.confirm(window, cx);
                             })),
@@ -238,7 +285,7 @@ impl Render for RemotePropertiesWindow {
 }
 
 fn permission_button(
-    label: &'static str,
+    label: String,
     mask: u32,
     mode: u32,
     colors: crate::theme::SemanticColors,

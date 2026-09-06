@@ -693,7 +693,9 @@ impl FolderOptionsWindow {
             .id("folder-options-scrollbar")
             .debug_selector(|| "folder-options-scrollbar".to_owned())
             .role(Role::ScrollBar)
-            .aria_label("資料夾選項垂直捲動列")
+            .aria_label(
+                explorer_i18n::Catalog::new(self.snapshot.locale).t("a11y-folder-options-scrollbar"),
+            )
             .aria_numeric_value(f64::from(current))
             .aria_min_numeric_value(0.0)
             .aria_max_numeric_value(f64::from(maximum))

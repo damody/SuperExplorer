@@ -1,5 +1,6 @@
 //! Dedicated confirmation window for deleting one bookmark folder.
 
+use explorer_i18n::{AppLocale, Catalog, FluentArgs};
 use gpui::{
     App, Bounds, Context, FocusHandle, Focusable, IntoElement, Render, SharedString, Window,
     WindowBounds, WindowHandle, WindowOptions, div, prelude::*, px, size,
@@ -10,6 +11,12 @@ use crate::{
     actions::{ActionSource, ExplorerAction},
 };
 
+fn owner_catalog(owner: WindowHandle<ExplorerRoot>, cx: &mut App) -> Catalog {
+    owner
+        .update(cx, |root, _, _| root.catalog())
+        .unwrap_or_else(|_| Catalog::new(AppLocale::ZhTw))
+}
+
 #[derive(Clone)]
 pub struct BookmarkFolderDeleteWindowSnapshotV1 {
     pub id: explorer_model::BookmarkFolderId,
@@ -17,7 +24,10 @@ pub struct BookmarkFolderDeleteWindowSnapshotV1 {
     pub descendant_count: usize,
 }
 
-pub fn bookmark_folder_delete_window_options(cx: &App) -> WindowOptions {
+pub fn bookmark_folder_delete_window_options(
+    cx: &App,
+    title: impl Into<SharedString>,
+) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
@@ -25,7 +35,7 @@ pub fn bookmark_folder_delete_window_options(cx: &App) -> WindowOptions {
             cx,
         ))),
         titlebar: Some(gpui::TitlebarOptions {
-            title: Some(SharedString::from("刪除書籤資料夾")),
+            title: Some(title.into()),
             ..Default::default()
         }),
         kind: gpui::WindowKind::Normal,
@@ -106,12 +116,19 @@ impl Focusable for BookmarkFolderDeleteWindow {
 }
 
 impl Render for BookmarkFolderDeleteWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let catalog = owner_catalog(self.owner, cx);
+        let title = catalog.t("dialog-delete-bookmark-folder");
+        window.set_window_title(&title);
+        let mut prompt_args = FluentArgs::new();
+        prompt_args.set("name", self.snapshot.name.clone());
+        let mut note_args = FluentArgs::new();
+        note_args.set("count", self.snapshot.descendant_count as i64);
         let colors = self.tokens.theme.colors;
         div()
             .id("bookmark-folder-delete-window")
             .role(gpui::Role::Dialog)
-            .aria_label("Delete bookmark folder confirmation")
+            .aria_label(catalog.t("a11y-delete-bookmark-folder"))
             .size_full()
             .track_focus(&self.focus_handle)
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
@@ -140,11 +157,8 @@ impl Render for BookmarkFolderDeleteWindow {
             .flex_col()
             .gap(px(16.0))
             .bg(colors.surface.to_gpui())
-            .child(format!("刪除書籤資料夾「{}」？", self.snapshot.name))
-            .child(format!(
-                "這會移除資料夾以及其中 {} 個項目，不會刪除磁碟上的檔案。",
-                self.snapshot.descendant_count
-            ))
+            .child(catalog.t_args("dialog-delete-bookmark-folder-prompt", &prompt_args))
+            .child(catalog.t_args("dialog-delete-bookmark-folder-note", &note_args))
             .child(
                 div()
                     .flex()
@@ -160,7 +174,7 @@ impl Render for BookmarkFolderDeleteWindow {
                             .border_color(colors.divider.to_gpui())
                             .px(px(12.0))
                             .py(px(7.0))
-                            .child("取消")
+                            .child(catalog.t("menu-cancel"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.dispatch_and_close(
                                     ExplorerAction::CancelRemoveBookmarkFolder,
@@ -180,7 +194,7 @@ impl Render for BookmarkFolderDeleteWindow {
                             .px(px(12.0))
                             .py(px(7.0))
                             .text_color(colors.danger.to_gpui())
-                            .child("刪除")
+                            .child(catalog.t("menu-delete"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.dispatch_and_close(
                                     ExplorerAction::ConfirmRemoveBookmarkFolder,
@@ -201,7 +215,7 @@ mod tests {
         assert!(source.contains("WindowKind::Normal"));
         assert!(source.contains("ConfirmRemoveBookmarkFolder"));
         assert!(source.contains("CancelRemoveBookmarkFolder"));
-        assert!(source.contains("不會刪除磁碟上的檔案"));
+        assert!(source.contains("dialog-delete-bookmark-folder-note"));
         assert!(source.contains(".border_1()"));
         assert!(source.contains("border_color(colors.danger.to_gpui())"));
     }

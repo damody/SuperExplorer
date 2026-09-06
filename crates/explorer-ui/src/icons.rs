@@ -1,5 +1,6 @@
 //! Centralized Explorer chrome icons backed by official embedded Fluent System Icons SVG data.
 
+use explorer_i18n::Catalog;
 use gpui::{IntoElement, div, prelude::*, px, svg};
 
 use crate::{
@@ -21,6 +22,10 @@ impl RemoteFileIconSpec {
     pub fn asset_path(self) -> String {
         format!("remote-file/{}.svg", self.glyph_name)
     }
+
+    pub fn localized_accessible_label(self, catalog: Catalog) -> String {
+        catalog.t(self.accessible_label)
+    }
 }
 
 pub const fn remote_file_icon_spec(kind: explorer_model::RemoteFileIconKind) -> RemoteFileIconSpec {
@@ -28,145 +33,145 @@ pub const fn remote_file_icon_spec(kind: explorer_model::RemoteFileIconKind) -> 
     let mut spec = match kind {
         Kind::Generic => RemoteFileIconSpec {
             glyph_name: "generic",
-            accessible_label: "file",
+            accessible_label: "a11y-file",
             accent: Rgba8::opaque(116, 151, 184),
             monochrome: false,
         },
         Kind::Pdf => RemoteFileIconSpec {
             glyph_name: "pdf",
-            accessible_label: "PDF file",
+            accessible_label: "a11y-pdf",
             accent: Rgba8::opaque(218, 55, 62),
             monochrome: true,
         },
         Kind::Text => RemoteFileIconSpec {
             glyph_name: "text",
-            accessible_label: "text file",
+            accessible_label: "a11y-text",
             accent: Rgba8::opaque(48, 126, 190),
             monochrome: false,
         },
         Kind::Settings => RemoteFileIconSpec {
             glyph_name: "settings",
-            accessible_label: "settings file",
+            accessible_label: "a11y-settings-file",
             accent: Rgba8::opaque(88, 104, 122),
             monochrome: false,
         },
         Kind::Image => RemoteFileIconSpec {
             glyph_name: "image",
-            accessible_label: "image file",
+            accessible_label: "a11y-image",
             accent: Rgba8::opaque(26, 148, 104),
             monochrome: false,
         },
         Kind::Archive => RemoteFileIconSpec {
             glyph_name: "archive",
-            accessible_label: "archive file",
+            accessible_label: "a11y-archive",
             accent: Rgba8::opaque(181, 129, 5),
             monochrome: true,
         },
         Kind::Audio => RemoteFileIconSpec {
             glyph_name: "audio",
-            accessible_label: "audio file",
+            accessible_label: "a11y-audio",
             accent: Rgba8::opaque(190, 72, 132),
             monochrome: false,
         },
         Kind::Video => RemoteFileIconSpec {
             glyph_name: "video",
-            accessible_label: "video file",
+            accessible_label: "a11y-video",
             accent: Rgba8::opaque(116, 77, 169),
             monochrome: false,
         },
         Kind::Code => RemoteFileIconSpec {
             glyph_name: "code",
-            accessible_label: "code file",
+            accessible_label: "a11y-code",
             accent: Rgba8::opaque(47, 111, 117),
             monochrome: false,
         },
         Kind::Script => RemoteFileIconSpec {
             glyph_name: "script",
-            accessible_label: "script file",
+            accessible_label: "a11y-script",
             accent: Rgba8::opaque(45, 125, 91),
             monochrome: true,
         },
         Kind::Executable => RemoteFileIconSpec {
             glyph_name: "executable",
-            accessible_label: "executable or binary file",
+            accessible_label: "a11y-executable",
             accent: Rgba8::opaque(91, 96, 105),
             monochrome: false,
         },
         Kind::AndroidPackage => RemoteFileIconSpec {
             glyph_name: "android",
-            accessible_label: "Android package",
+            accessible_label: "a11y-apk",
             accent: Rgba8::opaque(61, 220, 132),
             monochrome: false,
         },
         Kind::Word => RemoteFileIconSpec {
             glyph_name: "word",
-            accessible_label: "word-processing document",
+            accessible_label: "a11y-word",
             accent: Rgba8::opaque(42, 94, 171),
             monochrome: true,
         },
         Kind::Spreadsheet => RemoteFileIconSpec {
             glyph_name: "spreadsheet",
-            accessible_label: "spreadsheet",
+            accessible_label: "a11y-spreadsheet",
             accent: Rgba8::opaque(33, 115, 70),
             monochrome: false,
         },
         Kind::Presentation => RemoteFileIconSpec {
             glyph_name: "presentation",
-            accessible_label: "presentation",
+            accessible_label: "a11y-presentation",
             accent: Rgba8::opaque(210, 71, 38),
             monochrome: true,
         },
         Kind::Notebook => RemoteFileIconSpec {
             glyph_name: "notebook",
-            accessible_label: "notebook",
+            accessible_label: "a11y-notebook",
             accent: Rgba8::opaque(119, 61, 126),
             monochrome: false,
         },
         Kind::Database => RemoteFileIconSpec {
             glyph_name: "database",
-            accessible_label: "database",
+            accessible_label: "a11y-database",
             accent: Rgba8::opaque(156, 100, 37),
             monochrome: false,
         },
         Kind::Mail => RemoteFileIconSpec {
             glyph_name: "mail",
-            accessible_label: "mail data file",
+            accessible_label: "a11y-mail",
             accent: Rgba8::opaque(30, 111, 180),
             monochrome: false,
         },
         Kind::Font => RemoteFileIconSpec {
             glyph_name: "font",
-            accessible_label: "font file",
+            accessible_label: "a11y-font",
             accent: Rgba8::opaque(74, 74, 74),
             monochrome: true,
         },
         Kind::Certificate => RemoteFileIconSpec {
             glyph_name: "certificate",
-            accessible_label: "certificate or key file",
+            accessible_label: "a11y-certificate",
             accent: Rgba8::opaque(186, 124, 14),
             monochrome: false,
         },
         Kind::DiskImage => RemoteFileIconSpec {
             glyph_name: "disk-image",
-            accessible_label: "disk image",
+            accessible_label: "a11y-disk-image",
             accent: Rgba8::opaque(83, 101, 118),
             monochrome: true,
         },
         Kind::Web => RemoteFileIconSpec {
             glyph_name: "web",
-            accessible_label: "web file",
+            accessible_label: "a11y-web",
             accent: Rgba8::opaque(0, 120, 212),
             monochrome: false,
         },
         Kind::Data => RemoteFileIconSpec {
             glyph_name: "data",
-            accessible_label: "data file",
+            accessible_label: "a11y-data",
             accent: Rgba8::opaque(92, 72, 169),
             monochrome: false,
         },
         Kind::Markup => RemoteFileIconSpec {
             glyph_name: "markup",
-            accessible_label: "markup file",
+            accessible_label: "a11y-markup",
             accent: Rgba8::opaque(44, 136, 153),
             monochrome: false,
         },

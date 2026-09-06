@@ -125,11 +125,16 @@ impl Render for TransferCenterWindow {
                 );
             });
         });
+        let catalog = self
+            .owner
+            .update(cx, |root, _, _| root.catalog())
+            .unwrap_or_else(|_| explorer_i18n::Catalog::new(explorer_i18n::AppLocale::ZhTw));
         let content = snapshot.map_or_else(
             || gpui::div().into_any_element(),
             |snapshot| {
                 transfer_center_panel(
                     snapshot.tokens,
+                    catalog,
                     snapshot.records,
                     &snapshot.cancelling_ids,
                     Some(on_action),

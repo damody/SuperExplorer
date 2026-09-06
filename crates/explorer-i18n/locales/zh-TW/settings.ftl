@@ -54,3 +54,7 @@ settings-ok = 確定
 settings-cancel = 取消
 settings-apply = 套用
 settings-close = 關閉
+settings-restore-session = Restore previous windows and tabs at startup
+settings-reset-session = Reset session
+settings-reset-view = Reset view settings
+settings-reset-all-state = Reset all Explorer state
