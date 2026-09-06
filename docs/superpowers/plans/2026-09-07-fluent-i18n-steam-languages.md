@@ -76,9 +76,8 @@ assert_eq!(AppLocale::Ko.steamworks(), "koreana");
 - [ ] Write `en/` as source of truth.
 - [ ] Write `zh-TW/` to match current Traditional Chinese UI exactly for those strings.
 - [ ] Write the other 18 locales in full. Plurals: `ru`, `uk`, `pl`, `cs` must use CLDR categories, not English `one/other` only.
-- [ ] Completeness test walks `locales/en/**/*.ftl` message ids and asserts each other locale defines the same set (no missing, no extras). Also `Catalog::new(locale).t(id)` is non-empty and not equal to `id` for every pair.
 - [ ] Plural spot checks: `copy-items` with counts 1, 2, 5 for `en`, `ru`, `pl`.
-- [ ] `cargo test -p explorer-i18n --test catalog_complete` passes.
+- [ ] `cargo test -p explorer-i18n --lib` passes. Do **not** run or gate on a full 20-locale completeness sweep here — that is Task 10.
 
 ---
 
@@ -206,20 +205,22 @@ Replace every user-visible literal with `catalog.t` / `t_args`. Keep action enum
 - [ ] Path dep `explorer-i18n = { path = "../crates/explorer-i18n" }`.
 - [ ] Every `localized(presentation, zh, en)` becomes `catalog.t(key)`.
 - [ ] Settings persist independent of Explorer `session.json`.
-- [ ] Tests for zh-TW and en flyout strings via catalog; completeness already covered by Task 2 `desktop.ftl`.
-- [ ] SuperDesktop workspace `cargo test` for the touched crates.
+- [ ] Tests for zh-TW and en flyout strings via catalog.
+- [ ] Focused tests for the touched SuperDesktop crates only. Full workspace / catalog completeness is Task 10.
 
 ---
 
-### Task 10: Uitest pin, workspace gates, leftover sweep
+### Task 10: Uitest pin, workspace gates, leftover sweep, catalog completeness
 
 **Files:**
 - Modify: uitest launchers / `explorer-uitest` / scripts that start the app for UIA
 - Modify: any test helpers in `explorer-ui/src/harness.rs`
+- Create or keep: `crates/explorer-i18n/tests/catalog_complete.rs`
 
 - [ ] Default headful/uitest process env `SUPEREXPLORER_LOCALE=zh-TW` unless a test opts into another locale.
 - [ ] Repo sweep: no user-visible CJK or English chrome literals left in `explorer-ui` / SuperDesktop UI crates except inside `.ftl`, tests that pin a locale, and brand names (SFTP, FTP, Google Drive, SuperExplorer).
-- [ ] `cargo test -p explorer-i18n`
+- [ ] Completeness test walks `locales/en/**/*.ftl` message ids and asserts each other locale defines the same set (no missing, no extras). `Catalog` lookup for every pair is non-empty and not the raw id (dummy args allowed for variable messages).
+- [ ] `cargo test -p explorer-i18n` (lib + catalog_complete)
 - [ ] `cargo test -p explorer-model --lib session`
 - [ ] `cargo test -p explorer-ui`
 - [ ] `cargo test -p explorer-extension-host` (locale selection)
@@ -229,6 +230,6 @@ Replace every user-visible literal with `catalog.t` / `t_args`. Keep action enum
 
 ## Execution notes
 
-Task 1–2 are the foundation; 3–5 can overlap after 1; 6–7 are the large UI grind and must keep `ZhTw` snapshots green; 8 is independent after 1; 9 needs Task 2 `desktop.ftl`; 10 is the gate.
+Task 1–2 are the foundation; 3–9 use focused tests only. Task 10 is the only full gate: catalog completeness, leftover sweep, package tests, clippy.
 
-Do not commit locale files that are missing keys. The completeness test is the release gate, not a later cleanup.
+Tasks 3–9 must not run `catalog_complete`, workspace-wide clippy, or a leftover-string sweep. New keys found mid-UI may be added to `en`/`zh-TW` immediately; filling the other 18 locales can wait until Task 10.
