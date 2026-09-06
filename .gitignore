@@ -8,3 +8,6 @@
 /.github/workflows/*
 __pycache__/
 *.py[cod]
+google-oauth.local.json
+**/google-oauth.local.json
+client_secret_*.json

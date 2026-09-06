@@ -1,0 +1,6 @@
+{
+  "client_id": "YOUR_DESKTOP_CLIENT_ID.apps.googleusercontent.com",
+  "client_secret": ""
+}
+
+Place a real Google Desktop client JSON at crates/explorer-remote/google-oauth.local.json to embed it at compile time. That file is gitignored. A Google Cloud "Download JSON" file with an "installed" wrapper is accepted.
