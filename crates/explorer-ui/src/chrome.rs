@@ -4049,7 +4049,7 @@ fn folder_options_extensions_page(
                     extension.package_id
                 )))
                 .role(Role::ListItem)
-                .aria_label(extension.display_name)
+                .aria_label(catalog.t(extension.display_name))
                 .flex()
                 .flex_col()
                 .p(px(tokens.layout.control_padding_horizontal.value()))
@@ -4061,7 +4061,7 @@ fn folder_options_extensions_page(
                         "folder-option-extension-toggle-{}",
                         extension.package_id
                     )),
-                    extension.display_name,
+                    catalog.t(extension.display_name),
                     enabled.get(index).copied().unwrap_or(false),
                     ExplorerAction::ToggleFolderOptionExtension { index },
                     tokens,
@@ -4072,7 +4072,12 @@ fn folder_options_extensions_page(
                         .ml(px(tokens.layout.minimum_hit_target.value()))
                         .text_size(px(tokens.typography.tooltip.size.value()))
                         .text_color(tokens.theme.colors.text_secondary.to_gpui())
-                        .child(t_named(catalog, "dialog-purpose", "value", extension.purpose)),
+                        .child(t_named(
+                            catalog,
+                            "dialog-purpose",
+                            "value",
+                            catalog.t(extension.purpose),
+                        )),
                 )
                 .child(
                     div()
@@ -4087,7 +4092,7 @@ fn folder_options_extensions_page(
                         .child({
                             let mut args = FluentArgs::new();
                             args.set("name", extension.author_name);
-                            args.set("bio", extension.author_bio);
+                            args.set("bio", catalog.t(extension.author_bio));
                             args.set("date", extension.author_website);
                             catalog.t_args("dialog-author-line", &args)
                         })
@@ -5409,7 +5414,7 @@ impl RenderOnce for CommandBar {
             .filter_map(|extension| {
                 extension
                     .command_contribution
-                    .map(|id| (id, extension.display_name))
+                    .map(|id| (id, catalog.t(extension.display_name)))
             })
             .collect::<Vec<_>>();
         let extension_view = self.extension_view;
@@ -5878,7 +5883,7 @@ fn command_extensions_menu_legacy(
     catalog: Catalog,
     tortoise_git_available: bool,
     loaded_extension_summary: Option<String>,
-    extension_commands: Vec<(&'static str, &'static str)>,
+    extension_commands: Vec<(&'static str, String)>,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     let outside = on_action.clone();
@@ -6197,7 +6202,7 @@ fn command_extensions_menu(
     catalog: Catalog,
     tortoise_git_available: bool,
     loaded_extension_summary: Option<String>,
-    extension_commands: Vec<(&'static str, &'static str)>,
+    extension_commands: Vec<(&'static str, String)>,
     panel: Option<ExtensionCommandPanel>,
     has_selection: bool,
     on_action: Option<ActionCallback>,
@@ -13228,18 +13233,21 @@ fn operation_sources_text(
 
 fn operation_route_summary(
     catalog: Catalog,
-    key: &str,
+    action_key: &str,
+    route_key: &str,
     count: usize,
     source: String,
     destination: Option<String>,
 ) -> String {
+    let action = t_count(catalog, action_key, count as i64);
     let mut args = FluentArgs::new();
+    args.set("action", action);
     args.set("count", count as i64);
     args.set("source", source);
     if let Some(destination) = destination {
         args.set("destination", destination);
     }
-    catalog.t_args(key, &args)
+    catalog.t_args(route_key, &args)
 }
 
 fn operation_request_summary(
@@ -13285,6 +13293,7 @@ fn operation_request_summary(
         }
         Kind::Copy { items, destination } => operation_route_summary(
             catalog,
+            "copy-items",
             "op-copy-route",
             record.progress.total_items,
             operation_sources_text(catalog, items),
@@ -13292,6 +13301,7 @@ fn operation_request_summary(
         ),
         Kind::Move { items, destination } => operation_route_summary(
             catalog,
+            "move-items",
             "op-move-route",
             record.progress.total_items,
             operation_sources_text(catalog, items),
@@ -13299,6 +13309,7 @@ fn operation_request_summary(
         ),
         Kind::RecycleDelete { items } => operation_route_summary(
             catalog,
+            "recycle-items",
             "op-recycle-route",
             record.progress.total_items,
             operation_sources_text(catalog, items),
@@ -13315,6 +13326,11 @@ fn operation_request_summary(
             operation_route_summary(
                 catalog,
                 if gdrive {
+                    "gdrive-trash-items"
+                } else {
+                    "permanent-delete-items"
+                },
+                if gdrive {
                     "op-gdrive-trash-route"
                 } else {
                     "op-permanent-delete-route"
@@ -13326,6 +13342,7 @@ fn operation_request_summary(
         }
         Kind::CreateShortcut { items } => operation_route_summary(
             catalog,
+            "shortcut-items",
             "op-shortcut-route",
             record.progress.total_items,
             operation_sources_text(catalog, items),
@@ -15353,6 +15370,27 @@ mod tests {
         let en = explorer_i18n::Catalog::new(explorer_i18n::AppLocale::En);
         assert!(
             strip_isolates(&operation_request_summary(&record, en)).contains("Copy 2 items")
+        );
+        let one = explorer_model::FileOperationRequest {
+            kind: explorer_model::FileOperationKind::Copy {
+                items: vec![operation_item(
+                    1,
+                    explorer_model::LocationDescriptor::file_system(r"C:\Downloads\one.txt"),
+                )],
+                destination: virtual_location("sftp", "45.32.49.125", &["home", "linuxuser"]),
+            },
+            flags: explorer_model::FileOperationFlags::default(),
+        };
+        let one = explorer_model::OperationRecord::queued(
+            explorer_common::RequestId::new(),
+            one,
+            1,
+        );
+        assert!(
+            strip_isolates(&operation_request_summary(&one, en)).contains("Copy 1 item")
+        );
+        assert!(
+            !strip_isolates(&operation_request_summary(&one, en)).contains("Copy 1 items")
         );
     }
 

@@ -352,11 +352,11 @@ fn official_extensions_v1() -> Vec<ExtensionOptionV1> {
     vec![
         ExtensionOptionV1 {
             package_id: "rust-folder-size-visual-column",
-            display_name: "Folder size column",
+            display_name: "dialog-extension-folder-size",
             author_name: "Damody",
-            author_bio: "SuperExplorer 與官方範例擴充功能作者",
+            author_bio: "dialog-extension-author-bio",
             author_website: "https://github.com/damody/SuperExplorer",
-            purpose: "顯示檔案大小並在背景遞迴計算資料夾總大小。",
+            purpose: "dialog-extension-purpose-folder-size",
             community_website: "https://github.com/damody/SuperExplorer/discussions",
             release_date: "2026-08-04",
             command_contribution: None,
@@ -364,11 +364,11 @@ fn official_extensions_v1() -> Vec<ExtensionOptionV1> {
         },
         ExtensionOptionV1 {
             package_id: "rust-folder-size-map-view",
-            display_name: "Size Map",
+            display_name: "dialog-extension-size-map",
             author_name: "Damody",
-            author_bio: "SuperExplorer 與官方範例擴充功能作者",
+            author_bio: "dialog-extension-author-bio",
             author_website: "https://github.com/damody/SuperExplorer",
-            purpose: "以面積圖呈現目前資料夾內各項目的空間占用。",
+            purpose: "dialog-extension-purpose-size-map",
             community_website: "https://github.com/damody/SuperExplorer/discussions",
             release_date: "2026-08-04",
             command_contribution: None,
@@ -376,11 +376,11 @@ fn official_extensions_v1() -> Vec<ExtensionOptionV1> {
         },
         ExtensionOptionV1 {
             package_id: "rust-tokei-code-lines-column",
-            display_name: "Main code lines",
+            display_name: "dialog-extension-main-code-lines",
             author_name: "Damody",
-            author_bio: "SuperExplorer 與官方範例擴充功能作者",
+            author_bio: "dialog-extension-author-bio",
             author_website: "https://github.com/damody/SuperExplorer",
-            purpose: "使用 Rust 與 tokei 統計檔案或資料夾中的程式碼行數。",
+            purpose: "dialog-extension-purpose-tokei",
             community_website: "https://github.com/damody/SuperExplorer/discussions",
             release_date: "2026-08-04",
             command_contribution: None,
@@ -388,11 +388,11 @@ fn official_extensions_v1() -> Vec<ExtensionOptionV1> {
         },
         ExtensionOptionV1 {
             package_id: "lua-tokei-code-lines-column",
-            display_name: "Code lines",
+            display_name: "dialog-extension-code-lines",
             author_name: "Damody",
-            author_bio: "SuperExplorer 與官方範例擴充功能作者",
+            author_bio: "dialog-extension-author-bio",
             author_website: "https://github.com/damody/SuperExplorer",
-            purpose: "示範以 Lua 擴充功能統計程式碼行數。",
+            purpose: "dialog-extension-purpose-lua-tokei",
             community_website: "https://github.com/damody/SuperExplorer/discussions",
             release_date: "2026-08-04",
             command_contribution: None,
@@ -400,11 +400,11 @@ fn official_extensions_v1() -> Vec<ExtensionOptionV1> {
         },
         ExtensionOptionV1 {
             package_id: "rust-lock-owner-column",
-            display_name: "Lock owner",
+            display_name: "dialog-extension-lock-owner",
             author_name: "Damody",
-            author_bio: "SuperExplorer 與官方範例擴充功能作者",
+            author_bio: "dialog-extension-author-bio",
             author_website: "https://github.com/damody/SuperExplorer",
-            purpose: "顯示目前鎖定檔案的程式或服務擁有者。",
+            purpose: "dialog-extension-purpose-lock-owner",
             community_website: "https://github.com/damody/SuperExplorer/discussions",
             release_date: "2026-08-04",
             command_contribution: None,
@@ -412,11 +412,11 @@ fn official_extensions_v1() -> Vec<ExtensionOptionV1> {
         },
         ExtensionOptionV1 {
             package_id: "rust-exif-rename-command",
-            display_name: "Rename from EXIF",
+            display_name: "dialog-extension-exif",
             author_name: "Damody",
-            author_bio: "SuperExplorer 與官方範例擴充功能作者",
+            author_bio: "dialog-extension-author-bio",
             author_website: "https://github.com/damody/SuperExplorer",
-            purpose: "依相片 EXIF 拍攝資訊批次產生重新命名建議。",
+            purpose: "dialog-extension-purpose-exif",
             community_website: "https://github.com/damody/SuperExplorer/discussions",
             release_date: "2026-08-04",
             command_contribution: Some("rust-exif-rename:button"),
@@ -424,11 +424,11 @@ fn official_extensions_v1() -> Vec<ExtensionOptionV1> {
         },
         ExtensionOptionV1 {
             package_id: "rust-7z-virtual-folder",
-            display_name: "7-Zip virtual folder",
+            display_name: "dialog-extension-7z",
             author_name: "Damody",
-            author_bio: "SuperExplorer 與官方範例擴充功能作者",
+            author_bio: "dialog-extension-author-bio",
             author_website: "https://github.com/damody/SuperExplorer",
-            purpose: "將 7-Zip 壓縮檔以可瀏覽的虛擬資料夾呈現。",
+            purpose: "dialog-extension-purpose-7z",
             community_website: "https://github.com/damody/SuperExplorer/discussions",
             release_date: "2026-08-04",
             command_contribution: None,
@@ -436,11 +436,11 @@ fn official_extensions_v1() -> Vec<ExtensionOptionV1> {
         },
         ExtensionOptionV1 {
             package_id: "lua-bulk-folder-generator",
-            display_name: "Bulk folder generator",
+            display_name: "dialog-extension-bulk-folder",
             author_name: "Damody",
-            author_bio: "SuperExplorer 與官方範例擴充功能作者",
+            author_bio: "dialog-extension-author-bio",
             author_website: "https://github.com/damody/SuperExplorer",
-            purpose: "依使用者指定的樣板一次建立多個資料夾。",
+            purpose: "dialog-extension-purpose-bulk-folder",
             community_website: "https://github.com/damody/SuperExplorer/discussions",
             release_date: "2026-08-04",
             command_contribution: Some("lua-bulk-folder:button"),
@@ -6371,6 +6371,8 @@ impl AppViewState {
             .cloned();
         let edited_id = editor.item.id.clone();
         let edited_name = editor.buffer.clone();
+        let invalid_folder_name = self.catalog().t("status-invalid-folder-name");
+        let name_conflict = self.catalog().t("status-name-conflict");
         let collision = self
             .tabs
             .active_tab()
@@ -6389,7 +6391,7 @@ impl AppViewState {
                     explorer_common::ExplorerErrorKind::Input,
                     "validate new folder name",
                     true,
-                    "資料夾名稱無效，請修正後再試一次。",
+                    invalid_folder_name.clone(),
                     format!("Windows file-name validation failed: {reason:?}"),
                 );
                 editor.error = Some(error.clone());
@@ -6400,7 +6402,7 @@ impl AppViewState {
                     explorer_common::ExplorerErrorKind::Conflict,
                     "validate new folder collision",
                     true,
-                    "此位置已有同名項目。",
+                    name_conflict.clone(),
                     "new-folder destination collision detected before submission",
                 );
                 editor.error = Some(error.clone());
@@ -6428,7 +6430,18 @@ impl AppViewState {
                 },
             }));
         }
-        let result = editor.commit(trigger, collision)?;
+        if collision {
+            let error = explorer_common::ExplorerError::new(
+                explorer_common::ExplorerErrorKind::Conflict,
+                "validate inline rename collision",
+                true,
+                name_conflict,
+                "rename destination collision detected before Shell submission",
+            );
+            editor.error = Some(error.clone());
+            return Err(error);
+        }
+        let result = editor.commit(trigger, false)?;
         if result.is_some()
             || self
                 .rename_editor
@@ -10588,10 +10601,12 @@ mod tests {
             0.."file".len()
         );
         assert!(state.update_inline_rename("folder".to_owned()));
-        assert!(
-            state
-                .commit_inline_rename(explorer_model::RenameCommitTrigger::Enter)
-                .is_err()
+        let conflict = state
+            .commit_inline_rename(explorer_model::RenameCommitTrigger::Enter)
+            .expect_err("collision");
+        assert_eq!(
+            conflict.user_message,
+            Catalog::new(AppLocale::ZhTw).t("status-name-conflict")
         );
         assert_eq!(
             state.rename_editor().expect("collision retained").buffer,
@@ -11257,6 +11272,28 @@ mod tests {
                 && extension.community_website.starts_with("https://")
                 && extension.release_date.len() == 10
         }));
+        let folder_size = state
+            .extensions()
+            .iter()
+            .find(|extension| extension.package_id == "rust-folder-size-visual-column")
+            .expect("folder size extension");
+        assert_eq!(folder_size.purpose, "dialog-extension-purpose-folder-size");
+        assert_eq!(
+            Catalog::new(AppLocale::En).t(folder_size.purpose),
+            "Shows file sizes and recursively totals folder size in the background."
+        );
+        assert_eq!(
+            Catalog::new(AppLocale::ZhTw).t(folder_size.purpose),
+            "顯示檔案大小並在背景遞迴計算資料夾總大小。"
+        );
+        assert_eq!(
+            Catalog::new(AppLocale::En).t(folder_size.display_name),
+            "Folder size column"
+        );
+        assert_eq!(
+            Catalog::new(AppLocale::En).t(folder_size.author_bio),
+            "SuperExplorer and official sample extension author"
+        );
         state.open_folder_options();
         state.set_folder_options_page(crate::actions::FolderOptionsPage::Extensions);
         state.toggle_folder_option_extension(1);
