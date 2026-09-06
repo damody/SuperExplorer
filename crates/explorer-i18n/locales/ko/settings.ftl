@@ -107,3 +107,8 @@ settings-cancel = 취소
 settings-apply = 적용
 
 settings-close = 닫기
+
+settings-restore-session = 시작 시 이전 창과 탭 복원
+settings-reset-session = 세션 다시 설정
+settings-reset-view = 보기 설정 다시 설정
+settings-reset-all-state = 모든 Explorer 상태 다시 설정

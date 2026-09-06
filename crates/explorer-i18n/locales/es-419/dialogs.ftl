@@ -195,3 +195,32 @@ dialog-extension-exif = Cambiar nombre desde EXIF
 dialog-extension-7z = Carpeta virtual 7-Zip
 
 dialog-extension-bulk-folder = Generador de carpetas por lotes
+
+dialog-git-hash = Hash de Git
+dialog-release-date-line = Fecha de publicación: { $value }
+dialog-reset = Restablecer
+dialog-reset-prompt = ¿Restablecer { $label }? Solo se quita el estado persistido; los archivos actuales no cambian.
+dialog-reset-session-label = ventanas y pestañas guardadas
+dialog-reset-view-label = configuración de vista guardada
+dialog-reset-quick-access-label = elementos anclados de Acceso rápido
+dialog-reset-all-label = todo el estado guardado de Explorer
+dialog-permanent-delete-prompt =
+    { $count ->
+        [one] ¿Eliminar permanentemente { $count } elemento? Esta acción no se puede deshacer.
+       *[other] ¿Eliminar permanentemente { $count } elementos? Esta acción no se puede deshacer.
+    }
+dialog-gdrive-trash-prompt =
+    { $count ->
+        [one] ¿Mover { $count } elemento a la papelera de Google Drive? Se pueden recuperar en drive.google.com durante 30 días. No es la Papelera de Windows.
+       *[other] ¿Mover { $count } elementos a la papelera de Google Drive? Se pueden recuperar en drive.google.com durante 30 días. No es la Papelera de Windows.
+    }
+dialog-permanent-delete-aria =
+    { $count ->
+        [one] Eliminar permanentemente { $count } elemento
+       *[other] Eliminar permanentemente { $count } elementos
+    }
+dialog-gdrive-trash-aria =
+    { $count ->
+        [one] Mover { $count } elemento a la papelera de Google Drive
+       *[other] Mover { $count } elementos a la papelera de Google Drive
+    }

@@ -197,3 +197,26 @@ transfer-download = Download da origem
 transfer-cancelling = Cancelando
 
 transfer-cancel = Cancelar
+
+status-details-view = Exibição de detalhes
+status-icon-view = Exibição de ícones
+status-error = Erro · 
+status-loading = Carregando · 
+status-items-selected = { $count } itens — { $selected } selecionados
+status-operation-progress = Operação { $completed }/{ $total } · { $name }
+status-search-cancelled = Pesquisa cancelada · 
+status-search-error = Erro de pesquisa · 
+status-search-fallback = Pesquisando (sistema de arquivos; índice indisponível) · 
+status-search-indexed = Pesquisando (índice + fallback) · 
+status-search-partial = Resultados parciais da pesquisa · 
+status-search-results = Resultados da pesquisa · 
+status-lock-close-cancelled = O fechamento dos aplicativos foi cancelado.
+status-lock-discovery-timeout = A descoberta do proprietário do bloqueio atingiu o prazo.
+status-lock-finding = Localizando aplicativos que estão usando o item selecionado…
+status-lock-owners-found = { $count } aplicativo(s) estão usando o item selecionado.
+status-lock-partial-close = Alguns aplicativos não fecharam. Nenhum processo foi forçado a encerrar.
+status-lock-retry-limit = O limite de novas tentativas foi atingido. O item não foi excluído.
+status-lock-retrying = Tentando a exclusão novamente…
+status-lock-unidentified = O Windows não conseguiu identificar o aplicativo que está usando este item.
+transfer-cancel-operation = Cancelar operação de arquivo
+transfer-open-location = Abrir local da transferência

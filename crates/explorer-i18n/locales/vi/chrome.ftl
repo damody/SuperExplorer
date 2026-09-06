@@ -209,3 +209,18 @@ chrome-sort-name = Tên
 chrome-sort-url = URL
 
 chrome-sort-tags = Thẻ
+
+nav-recycle-bin = Thùng rác
+chrome-nav-loading = { $label } (Đang tải...)
+chrome-nav-unavailable-retry = { $label } (Không khả dụng — mở rộng để thử lại)
+chrome-back = Quay lại
+chrome-forward = Tiến
+chrome-up = Lên trên
+chrome-back-history = Lịch sử quay lại
+chrome-forward-history = Lịch sử tiến
+chrome-location = Vị trí
+chrome-copy-here = Sao chép vào đây
+chrome-move-here = Di chuyển vào đây
+chrome-create-shortcut-here = Tạo lối tắt tại đây
+chrome-cancel-right-drag = Hủy kéo chuột phải
+chrome-folder-icon = Biểu tượng thư mục { $name }

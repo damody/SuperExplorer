@@ -199,3 +199,40 @@ dialog-extension-exif = Přejmenovat podle EXIF
 dialog-extension-7z = Virtuální složka 7-Zip
 
 dialog-extension-bulk-folder = Hromadný generátor složek
+
+dialog-git-hash = Git hash
+dialog-release-date-line = Datum vydání: { $value }
+dialog-reset = Resetovat
+dialog-reset-prompt = Resetovat { $label }? Odstraní se jen uložený stav; aktuální soubory se nemění.
+dialog-reset-session-label = uložená okna a karty
+dialog-reset-view-label = uložená nastavení zobrazení
+dialog-reset-quick-access-label = připnutí Rychlého přístupu
+dialog-reset-all-label = veškerý uložený stav Průzkumníka
+dialog-permanent-delete-prompt =
+    { $count ->
+        [one] Odstranit trvale { $count } položku? Tuto akci nelze vrátit zpět.
+        [few] Odstranit trvale { $count } položky? Tuto akci nelze vrátit zpět.
+        [many] Odstranit trvale { $count } položek? Tuto akci nelze vrátit zpět.
+       *[other] Odstranit trvale { $count } položek? Tuto akci nelze vrátit zpět.
+    }
+dialog-gdrive-trash-prompt =
+    { $count ->
+        [one] Přesunout { $count } položku do koše Google Drive? Obnova na drive.google.com po 30 dní. Toto není Koš Windows.
+        [few] Přesunout { $count } položky do koše Google Drive? Obnova na drive.google.com po 30 dní. Toto není Koš Windows.
+        [many] Přesunout { $count } položek do koše Google Drive? Obnova na drive.google.com po 30 dní. Toto není Koš Windows.
+       *[other] Přesunout { $count } položek do koše Google Drive? Obnova na drive.google.com po 30 dní. Toto není Koš Windows.
+    }
+dialog-permanent-delete-aria =
+    { $count ->
+        [one] Odstranit trvale { $count } položku
+        [few] Odstranit trvale { $count } položky
+        [many] Odstranit trvale { $count } položek
+       *[other] Odstranit trvale { $count } položek
+    }
+dialog-gdrive-trash-aria =
+    { $count ->
+        [one] Přesunout { $count } položku do koše Google Drive
+        [few] Přesunout { $count } položky do koše Google Drive
+        [many] Přesunout { $count } položek do koše Google Drive
+       *[other] Přesunout { $count } položek do koše Google Drive
+    }

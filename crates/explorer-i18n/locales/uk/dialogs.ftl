@@ -199,3 +199,40 @@ dialog-extension-exif = Перейменування за EXIF
 dialog-extension-7z = Віртуальна папка 7-Zip
 
 dialog-extension-bulk-folder = Масове створення папок
+
+dialog-git-hash = Геш Git
+dialog-release-date-line = Дата випуску: { $value }
+dialog-reset = Скинути
+dialog-reset-prompt = Скинути { $label }? Буде видалено лише збережений стан; поточні файли не зміняться.
+dialog-reset-session-label = збережені вікна та вкладки
+dialog-reset-view-label = збережені параметри подання
+dialog-reset-quick-access-label = закріплення швидкого доступу
+dialog-reset-all-label = увесь збережений стан Explorer
+dialog-permanent-delete-prompt =
+    { $count ->
+        [one] Видалити остаточно { $count } елемент? Цю дію не можна скасувати.
+        [few] Видалити остаточно { $count } елементи? Цю дію не можна скасувати.
+        [many] Видалити остаточно { $count } елементів? Цю дію не можна скасувати.
+       *[other] Видалити остаточно { $count } елементи? Цю дію не можна скасувати.
+    }
+dialog-gdrive-trash-prompt =
+    { $count ->
+        [one] Перемістити { $count } елемент до кошика Google Drive? Їх можна відновити на drive.google.com протягом 30 днів. Це не Кошик Windows.
+        [few] Перемістити { $count } елементи до кошика Google Drive? Їх можна відновити на drive.google.com протягом 30 днів. Це не Кошик Windows.
+        [many] Перемістити { $count } елементів до кошика Google Drive? Їх можна відновити на drive.google.com протягом 30 днів. Це не Кошик Windows.
+       *[other] Перемістити { $count } елементи до кошика Google Drive? Їх можна відновити на drive.google.com протягом 30 днів. Це не Кошик Windows.
+    }
+dialog-permanent-delete-aria =
+    { $count ->
+        [one] Видалити остаточно { $count } елемент
+        [few] Видалити остаточно { $count } елементи
+        [many] Видалити остаточно { $count } елементів
+       *[other] Видалити остаточно { $count } елементи
+    }
+dialog-gdrive-trash-aria =
+    { $count ->
+        [one] Перемістити { $count } елемент до кошика Google Drive
+        [few] Перемістити { $count } елементи до кошика Google Drive
+        [many] Перемістити { $count } елементів до кошика Google Drive
+       *[other] Перемістити { $count } елементи до кошика Google Drive
+    }

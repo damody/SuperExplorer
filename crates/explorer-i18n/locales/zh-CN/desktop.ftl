@@ -289,3 +289,18 @@ desktop-touch-keyboard-unavailable = 触摸键盘尚未接管
 desktop-lower-volume-aria = 降低音量
 
 desktop-raise-volume-aria = 提高音量
+
+desktop-taskbar = 任务栏
+desktop-personalization-breadcrumb = 个性化  ›  任务栏
+desktop-language-preferences = 语言首选项
+desktop-input-profiles-unavailable = 输入配置文件不可用
+desktop-no-wifi-adapter = 找不到 Wi-Fi 网络适配器
+desktop-inbox-surfaces-notice = 部分 Windows 内置界面仍待 SuperDesktop 完整接管。
+desktop-setting-unavailable-owned = 此功能尚未由 SuperDesktop 拥有
+desktop-context-lock-taskbar = 锁定任务栏
+desktop-context-taskbar-settings = 任务栏设置
+desktop-context-task-view = 显示任务视图按钮
+desktop-context-show-desktop = 显示桌面
+desktop-context-task-manager = 任务管理器
+desktop-context-search = 搜索：{ $mode }
+desktop-context-return-explorer = 返回默认 Explorer

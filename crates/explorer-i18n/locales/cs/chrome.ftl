@@ -209,3 +209,18 @@ chrome-sort-name = Název
 chrome-sort-url = Adresa
 
 chrome-sort-tags = Tagy
+
+nav-recycle-bin = Koš
+chrome-nav-loading = { $label } (Načítání...)
+chrome-nav-unavailable-retry = { $label } (Nedostupné — rozbalte a zkuste znovu)
+chrome-back = Zpět
+chrome-forward = Vpřed
+chrome-up = Nahoru
+chrome-back-history = Historie Zpět
+chrome-forward-history = Historie Vpřed
+chrome-location = Umístění
+chrome-copy-here = Kopírovat sem
+chrome-move-here = Přesunout sem
+chrome-create-shortcut-here = Vytvořit zástupce sem
+chrome-cancel-right-drag = Zrušit přetažení pravým tlačítkem
+chrome-folder-icon = Ikona složky { $name }

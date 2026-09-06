@@ -213,3 +213,32 @@ transfer-download = Скачивание из источника
 transfer-cancelling = Отмена
 
 transfer-cancel = Отмена
+
+status-details-view = Таблица
+status-icon-view = Значки
+status-error = Ошибка · 
+status-loading = Загрузка · 
+status-items-selected = { $count } элементов — выбрано: { $selected }
+status-operation-progress = Операция { $completed }/{ $total } · { $name }
+status-search-cancelled = Поиск отменён · 
+status-search-error = Ошибка поиска · 
+status-search-fallback = Поиск (обходной путь по файловой системе; индекс недоступен) · 
+status-search-indexed = Поиск (индекс + обходной путь) · 
+status-search-partial = Частичные результаты поиска · 
+status-search-results = Результаты поиска · 
+status-lock-close-cancelled = Закрытие приложений отменено.
+status-lock-discovery-timeout = Поиск приложений, блокирующих файл, превысил срок ожидания.
+status-lock-finding = Поиск приложений, использующих выбранный элемент…
+status-lock-owners-found =
+    { $count ->
+        [one] { $count } приложение использует выбранный элемент.
+        [few] { $count } приложения используют выбранный элемент.
+        [many] { $count } приложений используют выбранный элемент.
+       *[other] { $count } приложения используют выбранный элемент.
+    }
+status-lock-partial-close = Некоторые приложения не закрылись. Ни один процесс не был принудительно завершён.
+status-lock-retry-limit = Достигнут предел повторных попыток. Элемент не удалён.
+status-lock-retrying = Повтор удаления…
+status-lock-unidentified = Windows не смог определить приложение, использующее этот элемент.
+transfer-cancel-operation = Отменить файловую операцию
+transfer-open-location = Открыть расположение передачи

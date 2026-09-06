@@ -199,3 +199,40 @@ dialog-extension-exif = Zmień nazwę na podstawie EXIF
 dialog-extension-7z = Wirtualny folder 7-Zip
 
 dialog-extension-bulk-folder = Masowe tworzenie folderów
+
+dialog-git-hash = Skrót Git
+dialog-release-date-line = Data wydania: { $value }
+dialog-reset = Resetuj
+dialog-reset-prompt = Zresetować { $label }? Usunięty zostanie tylko zapisany stan; bieżące pliki nie ulegną zmianie.
+dialog-reset-session-label = zapisane okna i karty
+dialog-reset-view-label = zapisane ustawienia widoku
+dialog-reset-quick-access-label = przypięcia Szybkiego dostępu
+dialog-reset-all-label = cały zapisany stan Eksploratora
+dialog-permanent-delete-prompt =
+    { $count ->
+        [one] Usunąć trwale { $count } element? Tej operacji nie można cofnąć.
+        [few] Usunąć trwale { $count } elementy? Tej operacji nie można cofnąć.
+        [many] Usunąć trwale { $count } elementów? Tej operacji nie można cofnąć.
+       *[other] Usunąć trwale { $count } elementy? Tej operacji nie można cofnąć.
+    }
+dialog-gdrive-trash-prompt =
+    { $count ->
+        [one] Przenieść { $count } element do kosza Google Drive? Można je odzyskać na drive.google.com przez 30 dni. To nie jest Kosz systemu Windows.
+        [few] Przenieść { $count } elementy do kosza Google Drive? Można je odzyskać na drive.google.com przez 30 dni. To nie jest Kosz systemu Windows.
+        [many] Przenieść { $count } elementów do kosza Google Drive? Można je odzyskać na drive.google.com przez 30 dni. To nie jest Kosz systemu Windows.
+       *[other] Przenieść { $count } elementy do kosza Google Drive? Można je odzyskać na drive.google.com przez 30 dni. To nie jest Kosz systemu Windows.
+    }
+dialog-permanent-delete-aria =
+    { $count ->
+        [one] Usuń trwale { $count } element
+        [few] Usuń trwale { $count } elementy
+        [many] Usuń trwale { $count } elementów
+       *[other] Usuń trwale { $count } elementy
+    }
+dialog-gdrive-trash-aria =
+    { $count ->
+        [one] Przenieś { $count } element do kosza Google Drive
+        [few] Przenieś { $count } elementy do kosza Google Drive
+        [many] Przenieś { $count } elementów do kosza Google Drive
+       *[other] Przenieś { $count } elementy do kosza Google Drive
+    }

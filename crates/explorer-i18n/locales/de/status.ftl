@@ -197,3 +197,26 @@ transfer-download = Quellen-Download
 transfer-cancelling = Wird abgebrochen
 
 transfer-cancel = Abbrechen
+
+status-details-view = Detailansicht
+status-icon-view = Symbolansicht
+status-error = Fehler · 
+status-loading = Wird geladen · 
+status-items-selected = { $count } Elemente — { $selected } ausgewählt
+status-operation-progress = Vorgang { $completed }/{ $total } · { $name }
+status-search-cancelled = Suche abgebrochen · 
+status-search-error = Suchfehler · 
+status-search-fallback = Suche (Dateisystem-Fallback; Index nicht verfügbar) · 
+status-search-indexed = Suche (Index + Fallback) · 
+status-search-partial = Teilweise Suchergebnisse · 
+status-search-results = Suchergebnisse · 
+status-lock-close-cancelled = Das Schließen von Anwendungen wurde abgebrochen.
+status-lock-discovery-timeout = Die Ermittlung der Sperrbesitzer hat das Zeitlimit erreicht.
+status-lock-finding = Anwendungen werden gesucht, die das ausgewählte Element verwenden…
+status-lock-owners-found = { $count } Anwendung(en) verwenden das ausgewählte Element.
+status-lock-partial-close = Einige Anwendungen wurden nicht geschlossen. Es wurde kein Prozess zwangsbeendet.
+status-lock-retry-limit = Das Wiederholungslimit wurde erreicht. Das Element wurde nicht gelöscht.
+status-lock-retrying = Der Löschvorgang wird wiederholt…
+status-lock-unidentified = Windows konnte die Anwendung, die dieses Element verwendet, nicht identifizieren.
+transfer-cancel-operation = Dateioperation abbrechen
+transfer-open-location = Übertragungsort öffnen

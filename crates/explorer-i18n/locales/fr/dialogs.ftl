@@ -195,3 +195,32 @@ dialog-extension-exif = Renommer d’après EXIF
 dialog-extension-7z = Dossier virtuel 7-Zip
 
 dialog-extension-bulk-folder = Générateur de dossiers en bloc
+
+dialog-git-hash = Hash Git
+dialog-release-date-line = Date de publication : { $value }
+dialog-reset = Réinitialiser
+dialog-reset-prompt = Réinitialiser { $label } ? Seul l’état enregistré est supprimé ; les fichiers actuels ne changent pas.
+dialog-reset-session-label = fenêtres et onglets enregistrés
+dialog-reset-view-label = paramètres d’affichage enregistrés
+dialog-reset-quick-access-label = épingles de l’Accès rapide
+dialog-reset-all-label = tout l’état Explorer enregistré
+dialog-permanent-delete-prompt =
+    { $count ->
+        [one] Supprimer définitivement { $count } élément ? Cette action est irréversible.
+       *[other] Supprimer définitivement { $count } éléments ? Cette action est irréversible.
+    }
+dialog-gdrive-trash-prompt =
+    { $count ->
+        [one] Déplacer { $count } élément vers la corbeille Google Drive ? Récupération possible sur drive.google.com pendant 30 jours. Ce n’est pas la Corbeille Windows.
+       *[other] Déplacer { $count } éléments vers la corbeille Google Drive ? Récupération possible sur drive.google.com pendant 30 jours. Ce n’est pas la Corbeille Windows.
+    }
+dialog-permanent-delete-aria =
+    { $count ->
+        [one] Supprimer définitivement { $count } élément
+       *[other] Supprimer définitivement { $count } éléments
+    }
+dialog-gdrive-trash-aria =
+    { $count ->
+        [one] Déplacer { $count } élément vers la corbeille Google Drive
+       *[other] Déplacer { $count } éléments vers la corbeille Google Drive
+    }

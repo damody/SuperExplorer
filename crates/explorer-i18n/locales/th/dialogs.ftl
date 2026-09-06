@@ -195,3 +195,16 @@ dialog-extension-exif = เปลี่ยนชื่อจาก EXIF
 dialog-extension-7z = โฟลเดอร์เสมือน 7-Zip
 
 dialog-extension-bulk-folder = ตัวสร้างโฟลเดอร์จำนวนมาก
+
+dialog-git-hash = แฮช Git
+dialog-release-date-line = วันที่เผยแพร่: { $value }
+dialog-reset = รีเซ็ต
+dialog-reset-prompt = รีเซ็ต { $label } หรือไม่ ระบบจะลบเฉพาะสถานะที่บันทึกไว้ ไฟล์ปัจจุบันไม่เปลี่ยน
+dialog-reset-session-label = หน้าต่างและแท็บที่บันทึกไว้
+dialog-reset-view-label = การตั้งค่ามุมมองที่บันทึกไว้
+dialog-reset-quick-access-label = รายการปักหมุดการเข้าถึงด่วน
+dialog-reset-all-label = สถานะ Explorer ที่บันทึกไว้ทั้งหมด
+dialog-permanent-delete-prompt = ลบ { $count } รายการอย่างถาวรหรือไม่ การกระทำนี้ย้อนกลับไม่ได้
+dialog-gdrive-trash-prompt = ย้าย { $count } รายการไปยังถังขยะ Google Drive หรือไม่ กู้คืนได้ที่ drive.google.com เป็นเวลา 30 วัน นี่ไม่ใช่ถังรีไซเคิลของ Windows
+dialog-permanent-delete-aria = ลบ { $count } รายการอย่างถาวร
+dialog-gdrive-trash-aria = ย้าย { $count } รายการไปยังถังขยะ Google Drive

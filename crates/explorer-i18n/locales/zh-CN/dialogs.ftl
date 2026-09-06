@@ -187,3 +187,16 @@ dialog-extension-exif = Rename from EXIF
 dialog-extension-7z = 7-Zip virtual folder
 
 dialog-extension-bulk-folder = Bulk folder generator
+
+dialog-git-hash = Git 哈希
+dialog-release-date-line = 发布日期：{ $value }
+dialog-reset = 重置
+dialog-reset-prompt = 重置 { $label }？这只会删除已保存的状态，不会更改当前文件。
+dialog-reset-session-label = 已保存的窗口和标签页
+dialog-reset-view-label = 已保存的视图设置
+dialog-reset-quick-access-label = 快速访问固定项
+dialog-reset-all-label = 所有已保存的 Explorer 状态
+dialog-permanent-delete-prompt = 要永久删除 { $count } 个项目吗？此操作无法撤销。
+dialog-gdrive-trash-prompt = 要将 { $count } 个项目移到 Google Drive 回收站吗？可在 drive.google.com 恢复 30 天。这不是 Windows 回收站。
+dialog-permanent-delete-aria = 永久删除 { $count } 个项目
+dialog-gdrive-trash-aria = 将 { $count } 个项目移到 Google Drive 回收站

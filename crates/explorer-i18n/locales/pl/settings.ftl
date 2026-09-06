@@ -107,3 +107,8 @@ settings-cancel = Anuluj
 settings-apply = Zastosuj
 
 settings-close = Zamknij
+
+settings-restore-session = Przy starcie przywracaj poprzednie okna i karty
+settings-reset-session = Resetuj sesję
+settings-reset-view = Resetuj ustawienia widoku
+settings-reset-all-state = Resetuj cały stan Eksploratora

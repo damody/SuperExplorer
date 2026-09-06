@@ -101,6 +101,7 @@ fn strip_isolates(value: &str) -> String {
 fn sample_args() -> FluentArgs<'static> {
     let mut args = FluentArgs::new();
     args.set("count", 2);
+    args.set("selected", 1);
     args.set("pid", 1);
     args.set("folder", "Docs");
     args.set("hint", "hint");

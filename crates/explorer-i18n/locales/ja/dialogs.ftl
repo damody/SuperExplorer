@@ -195,3 +195,20 @@ dialog-extension-exif = EXIF から名前を変更
 dialog-extension-7z = 7-Zip 仮想フォルダー
 
 dialog-extension-bulk-folder = 一括フォルダー作成
+
+dialog-git-hash = Git ハッシュ
+dialog-release-date-line = リリース日: { $value }
+dialog-reset = リセット
+dialog-reset-prompt = { $label } をリセットしますか? 保存された状態のみ削除され、現在のファイルは変更されません。
+dialog-reset-session-label = 保存されたウィンドウとタブ
+dialog-reset-view-label = 保存されたビュー設定
+dialog-reset-quick-access-label = クイック アクセスのピン留め
+dialog-reset-all-label = 保存されたすべての Explorer の状態
+dialog-permanent-delete-prompt =
+    { $count ->
+        [one] { $count } 個の項目を完全に削除しますか? この操作は元に戻せません。
+       *[other] { $count } 個の項目を完全に削除しますか? この操作は元に戻せません。
+    }
+dialog-gdrive-trash-prompt = Google ドライブのゴミ箱に { $count } 個の項目を移動しますか? drive.google.com で 30 日間復元できます。これは Windows のごみ箱ではありません。
+dialog-permanent-delete-aria = { $count } 個の項目を完全に削除
+dialog-gdrive-trash-aria = Google ドライブのゴミ箱に { $count } 個の項目を移動

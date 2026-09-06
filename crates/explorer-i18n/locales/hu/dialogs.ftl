@@ -195,3 +195,16 @@ dialog-extension-exif = Átnevezés EXIF alapján
 dialog-extension-7z = 7-Zip virtuális mappa
 
 dialog-extension-bulk-folder = Tömeges mappagenerátor
+
+dialog-git-hash = Git-kivonat
+dialog-release-date-line = Kiadás dátuma: { $value }
+dialog-reset = Visszaállítás
+dialog-reset-prompt = Visszaállítja: { $label }? Csak a mentett állapotot távolítja el; a jelenlegi fájlok nem változnak.
+dialog-reset-session-label = mentett ablakok és lapok
+dialog-reset-view-label = mentett nézetbeállítások
+dialog-reset-quick-access-label = Gyors elérés kitűzései
+dialog-reset-all-label = minden mentett Explorer-állapot
+dialog-permanent-delete-prompt = { $count } elem végleges törlése? A művelet nem vonható vissza.
+dialog-gdrive-trash-prompt = { $count } elem áthelyezése a Google Drive lomtárába? 30 napig visszaállítható a drive.google.com oldalon. Ez nem a Windows Lomtár.
+dialog-permanent-delete-aria = { $count } elem végleges törlése
+dialog-gdrive-trash-aria = { $count } elem áthelyezése a Google Drive lomtárába

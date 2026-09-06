@@ -107,3 +107,8 @@ settings-cancel = İptal
 settings-apply = Uygula
 
 settings-close = Kapat
+
+settings-restore-session = Başlangıçta önceki pencereleri ve sekmeleri geri yükle
+settings-reset-session = Oturumu sıfırla
+settings-reset-view = Görünüm ayarlarını sıfırla
+settings-reset-all-state = Tüm Explorer durumunu sıfırla

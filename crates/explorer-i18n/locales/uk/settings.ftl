@@ -107,3 +107,8 @@ settings-cancel = Скасувати
 settings-apply = Застосувати
 
 settings-close = Закрити
+
+settings-restore-session = Відновлювати попередні вікна та вкладки під час запуску
+settings-reset-session = Скинути сеанс
+settings-reset-view = Скинути параметри подання
+settings-reset-all-state = Скинути весь стан Explorer

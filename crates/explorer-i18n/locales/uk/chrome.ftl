@@ -209,3 +209,18 @@ chrome-sort-name = Ім’я
 chrome-sort-url = URL
 
 chrome-sort-tags = Теги
+
+nav-recycle-bin = Кошик
+chrome-nav-loading = { $label } (Завантаження…)
+chrome-nav-unavailable-retry = { $label } (Недоступно — розгорніть, щоб повторити)
+chrome-back = Назад
+chrome-forward = Вперед
+chrome-up = Вгору
+chrome-back-history = Журнал «Назад»
+chrome-forward-history = Журнал «Вперед»
+chrome-location = Розташування
+chrome-copy-here = Копіювати сюди
+chrome-move-here = Перемістити сюди
+chrome-create-shortcut-here = Створити ярлик тут
+chrome-cancel-right-drag = Скасувати перетягування правою кнопкою
+chrome-folder-icon = Піктограма папки { $name }

@@ -107,3 +107,8 @@ settings-cancel = Hủy
 settings-apply = Áp dụng
 
 settings-close = Đóng
+
+settings-restore-session = Khôi phục cửa sổ và tab trước khi khởi động
+settings-reset-session = Đặt lại phiên
+settings-reset-view = Đặt lại cài đặt dạng xem
+settings-reset-all-state = Đặt lại toàn bộ trạng thái Explorer

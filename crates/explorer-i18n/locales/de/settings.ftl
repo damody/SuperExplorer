@@ -107,3 +107,8 @@ settings-cancel = Abbrechen
 settings-apply = Übernehmen
 
 settings-close = Schließen
+
+settings-restore-session = Vorherige Fenster und Registerkarten beim Start wiederherstellen
+settings-reset-session = Sitzung zurücksetzen
+settings-reset-view = Ansichtseinstellungen zurücksetzen
+settings-reset-all-state = Gesamten Explorer-Zustand zurücksetzen

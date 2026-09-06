@@ -195,3 +195,16 @@ dialog-extension-exif = Đổi tên từ EXIF
 dialog-extension-7z = Thư mục ảo 7-Zip
 
 dialog-extension-bulk-folder = Trình tạo thư mục hàng loạt
+
+dialog-git-hash = Mã băm Git
+dialog-release-date-line = Ngày phát hành: { $value }
+dialog-reset = Đặt lại
+dialog-reset-prompt = Đặt lại { $label }? Chỉ trạng thái đã lưu bị xóa; tệp hiện tại không đổi.
+dialog-reset-session-label = cửa sổ và tab đã lưu
+dialog-reset-view-label = cài đặt dạng xem đã lưu
+dialog-reset-quick-access-label = ghim Truy cập nhanh
+dialog-reset-all-label = toàn bộ trạng thái Explorer đã lưu
+dialog-permanent-delete-prompt = Xóa vĩnh viễn { $count } mục? Không thể hoàn tác thao tác này.
+dialog-gdrive-trash-prompt = Chuyển { $count } mục vào thùng rác Google Drive? Có thể khôi phục trên drive.google.com trong 30 ngày. Đây không phải Thùng rác Windows.
+dialog-permanent-delete-aria = Xóa vĩnh viễn { $count } mục
+dialog-gdrive-trash-aria = Chuyển { $count } mục vào thùng rác Google Drive

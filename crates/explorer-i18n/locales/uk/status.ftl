@@ -213,3 +213,32 @@ transfer-download = Завантаження з джерела
 transfer-cancelling = Скасування
 
 transfer-cancel = Скасувати
+
+status-details-view = Подання таблиці
+status-icon-view = Подання піктограм
+status-error = Помилка · 
+status-loading = Завантаження · 
+status-items-selected = { $count } елементів — вибрано: { $selected }
+status-operation-progress = Операція { $completed }/{ $total } · { $name }
+status-search-cancelled = Пошук скасовано · 
+status-search-error = Помилка пошуку · 
+status-search-fallback = Пошук (обхідний шлях файлової системи; індекс недоступний) · 
+status-search-indexed = Пошук (індекс + обхідний шлях) · 
+status-search-partial = Часткові результати пошуку · 
+status-search-results = Результати пошуку · 
+status-lock-close-cancelled = Закриття програм скасовано.
+status-lock-discovery-timeout = Пошук власника блокування досяг граничного часу.
+status-lock-finding = Пошук програм, які використовують вибраний елемент…
+status-lock-owners-found =
+    { $count ->
+        [one] { $count } програма використовує вибраний елемент.
+        [few] { $count } програми використовують вибраний елемент.
+        [many] { $count } програм використовують вибраний елемент.
+       *[other] { $count } програми використовують вибраний елемент.
+    }
+status-lock-partial-close = Деякі програми не закрилися. Жоден процес не було завершено примусово.
+status-lock-retry-limit = Досягнуто ліміт повторних спроб. Елемент не видалено.
+status-lock-retrying = Повторне видалення…
+status-lock-unidentified = Windows не зміг визначити програму, яка використовує цей елемент.
+transfer-cancel-operation = Скасувати файлову операцію
+transfer-open-location = Відкрити розташування передавання

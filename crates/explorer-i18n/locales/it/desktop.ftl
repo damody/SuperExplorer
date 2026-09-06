@@ -289,3 +289,18 @@ desktop-touch-keyboard-unavailable = La gestione della tastiera virtuale non è 
 desktop-lower-volume-aria = Abbassa volume
 
 desktop-raise-volume-aria = Alza volume
+
+desktop-taskbar = Barra delle applicazioni
+desktop-personalization-breadcrumb = Personalizzazione  ›  Barra delle applicazioni
+desktop-language-preferences = Preferenze lingua
+desktop-input-profiles-unavailable = Profili di input non disponibili
+desktop-no-wifi-adapter = Nessuna scheda Wi-Fi trovata
+desktop-inbox-surfaces-notice = Alcune superfici inbox di Windows non sono disponibili finché SuperDesktop non le gestisce.
+desktop-setting-unavailable-owned = Questa funzione non è ancora gestita da SuperDesktop
+desktop-context-lock-taskbar = Blocca la barra delle applicazioni
+desktop-context-taskbar-settings = Impostazioni barra delle applicazioni
+desktop-context-task-view = Mostra il pulsante Visualizzazione attività
+desktop-context-show-desktop = Mostra il desktop
+desktop-context-task-manager = Gestione attività
+desktop-context-search = Ricerca: { $mode }
+desktop-context-return-explorer = Torna a Esplora file predefinito

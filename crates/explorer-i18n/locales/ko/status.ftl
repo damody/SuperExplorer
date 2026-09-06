@@ -197,3 +197,26 @@ transfer-download = 원본 다운로드
 transfer-cancelling = 취소 중
 
 transfer-cancel = 취소
+
+status-details-view = 자세히 보기
+status-icon-view = 아이콘 보기
+status-error = 오류 · 
+status-loading = 로드 중 · 
+status-items-selected = { $count }개 항목 — { $selected }개 선택됨
+status-operation-progress = 작업 { $completed }/{ $total } · { $name }
+status-search-cancelled = 검색 취소됨 · 
+status-search-error = 검색 오류 · 
+status-search-fallback = 검색 중(파일 시스템 대체, 인덱스 사용 불가) · 
+status-search-indexed = 검색 중(인덱스 + 대체) · 
+status-search-partial = 일부 검색 결과 · 
+status-search-results = 검색 결과 · 
+status-lock-close-cancelled = 애플리케이션 닫기가 취소되었습니다.
+status-lock-discovery-timeout = 잠금 소유자 검색이 제한 시간에 도달했습니다.
+status-lock-finding = 선택한 항목을 사용하는 애플리케이션을 찾는 중…
+status-lock-owners-found = { $count }개 애플리케이션이 선택한 항목을 사용 중입니다.
+status-lock-partial-close = 일부 애플리케이션이 닫히지 않았습니다. 프로세스를 강제 종료하지 않았습니다.
+status-lock-retry-limit = 다시 시도 한도에 도달했습니다. 항목이 삭제되지 않았습니다.
+status-lock-retrying = 삭제 작업을 다시 시도하는 중…
+status-lock-unidentified = Windows가 이 항목을 사용하는 애플리케이션을 식별하지 못했습니다.
+transfer-cancel-operation = 파일 작업 취소
+transfer-open-location = 전송 위치 열기

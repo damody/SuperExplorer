@@ -213,3 +213,32 @@ transfer-download = Stažení ze zdroje
 transfer-cancelling = Rušení
 
 transfer-cancel = Storno
+
+status-details-view = Zobrazení Podrobnosti
+status-icon-view = Zobrazení Ikony
+status-error = Chyba · 
+status-loading = Načítání · 
+status-items-selected = { $count } položek — vybráno { $selected }
+status-operation-progress = Operace { $completed }/{ $total } · { $name }
+status-search-cancelled = Hledání zrušeno · 
+status-search-error = Chyba hledání · 
+status-search-fallback = Hledání (záloha souborového systému; index není k dispozici) · 
+status-search-indexed = Hledání (index + záloha) · 
+status-search-partial = Částečné výsledky hledání · 
+status-search-results = Výsledky hledání · 
+status-lock-close-cancelled = Zavírání aplikací bylo zrušeno.
+status-lock-discovery-timeout = Zjišťování vlastníka zámku dosáhlo limitu.
+status-lock-finding = Hledání aplikací používajících vybranou položku…
+status-lock-owners-found =
+    { $count ->
+        [one] { $count } aplikace používá vybranou položku.
+        [few] { $count } aplikace používají vybranou položku.
+        [many] { $count } aplikací používá vybranou položku.
+       *[other] { $count } aplikací používá vybranou položku.
+    }
+status-lock-partial-close = Některé aplikace se nezavřely. Žádný proces nebyl násilně ukončen.
+status-lock-retry-limit = Byl dosažen limit opakování. Položka nebyla odstraněna.
+status-lock-retrying = Opakování odstranění…
+status-lock-unidentified = Windows nemohl identifikovat aplikaci používající tuto položku.
+transfer-cancel-operation = Zrušit souborovou operaci
+transfer-open-location = Otevřít umístění přenosu

@@ -289,3 +289,18 @@ desktop-touch-keyboard-unavailable = การเป็นเจ้าของ�
 desktop-lower-volume-aria = ลดระดับเสียง
 
 desktop-raise-volume-aria = เพิ่มระดับเสียง
+
+desktop-taskbar = แถบงาน
+desktop-personalization-breadcrumb = การตั้งค่าส่วนบุคคล  ›  แถบงาน
+desktop-language-preferences = การกำหนดลักษณะภาษา
+desktop-input-profiles-unavailable = โปรไฟล์การป้อนข้อมูลไม่พร้อมใช้งาน
+desktop-no-wifi-adapter = ไม่พบอะแดปเตอร์ Wi-Fi
+desktop-inbox-surfaces-notice = พื้นผิว inbox ของ Windows บางส่วนยังใช้ไม่ได้จนกว่า SuperDesktop จะเป็นเจ้าของ
+desktop-setting-unavailable-owned = SuperDesktop ยังไม่ได้เป็นเจ้าของฟีเจอร์นี้
+desktop-context-lock-taskbar = ล็อกแถบงาน
+desktop-context-taskbar-settings = การตั้งค่าแถบงาน
+desktop-context-task-view = แสดงปุ่มมุมมองงาน
+desktop-context-show-desktop = แสดงเดสก์ท็อป
+desktop-context-task-manager = ตัวจัดการงาน
+desktop-context-search = ค้นหา: { $mode }
+desktop-context-return-explorer = กลับไปยัง Explorer เริ่มต้น

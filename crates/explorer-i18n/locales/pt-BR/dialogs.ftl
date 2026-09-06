@@ -195,3 +195,32 @@ dialog-extension-exif = Renomear a partir de EXIF
 dialog-extension-7z = Pasta virtual 7-Zip
 
 dialog-extension-bulk-folder = Gerador de pastas em lote
+
+dialog-git-hash = Hash Git
+dialog-release-date-line = Data de lançamento: { $value }
+dialog-reset = Redefinir
+dialog-reset-prompt = Redefinir { $label }? Isso remove apenas o estado persistido; os arquivos atuais não mudam.
+dialog-reset-session-label = janelas e guias salvas
+dialog-reset-view-label = configurações de exibição salvas
+dialog-reset-quick-access-label = fixações do Acesso rápido
+dialog-reset-all-label = todo o estado salvo do Explorer
+dialog-permanent-delete-prompt =
+    { $count ->
+        [one] Excluir permanentemente { $count } item? Esta ação não pode ser desfeita.
+       *[other] Excluir permanentemente { $count } itens? Esta ação não pode ser desfeita.
+    }
+dialog-gdrive-trash-prompt =
+    { $count ->
+        [one] Mover { $count } item para a lixeira do Google Drive? É possível recuperá-los em drive.google.com por 30 dias. Isto não é a Lixeira do Windows.
+       *[other] Mover { $count } itens para a lixeira do Google Drive? É possível recuperá-los em drive.google.com por 30 dias. Isto não é a Lixeira do Windows.
+    }
+dialog-permanent-delete-aria =
+    { $count ->
+        [one] Excluir permanentemente { $count } item
+       *[other] Excluir permanentemente { $count } itens
+    }
+dialog-gdrive-trash-aria =
+    { $count ->
+        [one] Mover { $count } item para a lixeira do Google Drive
+       *[other] Mover { $count } itens para a lixeira do Google Drive
+    }

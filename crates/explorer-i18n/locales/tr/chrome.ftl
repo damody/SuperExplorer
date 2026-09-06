@@ -209,3 +209,18 @@ chrome-sort-name = Ad
 chrome-sort-url = URL
 
 chrome-sort-tags = Etiketler
+
+nav-recycle-bin = Geri Dönüşüm Kutusu
+chrome-nav-loading = { $label } (Yükleniyor...)
+chrome-nav-unavailable-retry = { $label } (Kullanılamıyor — yeniden denemek için genişletin)
+chrome-back = Geri
+chrome-forward = İleri
+chrome-up = Yukarı
+chrome-back-history = Geri geçmişi
+chrome-forward-history = İleri geçmişi
+chrome-location = Konum
+chrome-copy-here = Buraya kopyala
+chrome-move-here = Buraya taşı
+chrome-create-shortcut-here = Buraya kısayol oluştur
+chrome-cancel-right-drag = Sağ sürüklemeyi iptal et
+chrome-folder-icon = { $name } klasör simgesi

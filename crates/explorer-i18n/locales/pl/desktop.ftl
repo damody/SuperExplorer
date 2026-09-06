@@ -289,3 +289,18 @@ desktop-touch-keyboard-unavailable = Obsługa klawiatury dotykowej jest niedost�
 desktop-lower-volume-aria = Zmniejsz głośność
 
 desktop-raise-volume-aria = Zwiększ głośność
+
+desktop-taskbar = Pasek zadań
+desktop-personalization-breadcrumb = Personalizacja  ›  Pasek zadań
+desktop-language-preferences = Ustawienia języka
+desktop-input-profiles-unavailable = Profile wprowadzania niedostępne
+desktop-no-wifi-adapter = Nie znaleziono karty Wi-Fi
+desktop-inbox-surfaces-notice = Niektóre wbudowane powierzchnie Windows są niedostępne, dopóki SuperDesktop ich nie przejmie.
+desktop-setting-unavailable-owned = Ta funkcja nie jest jeszcze własnością SuperDesktop
+desktop-context-lock-taskbar = Zablokuj pasek zadań
+desktop-context-taskbar-settings = Ustawienia paska zadań
+desktop-context-task-view = Pokaż przycisk Widok zadań
+desktop-context-show-desktop = Pokaż pulpit
+desktop-context-task-manager = Menedżer zadań
+desktop-context-search = Wyszukiwanie: { $mode }
+desktop-context-return-explorer = Wróć do domyślnego Eksploratora

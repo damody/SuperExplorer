@@ -195,3 +195,32 @@ dialog-extension-exif = Umbenennen anhand von EXIF
 dialog-extension-7z = Virtueller 7-Zip-Ordner
 
 dialog-extension-bulk-folder = Massen-Ordnergenerator
+
+dialog-git-hash = Git-Hash
+dialog-release-date-line = Veröffentlichungsdatum: { $value }
+dialog-reset = Zurücksetzen
+dialog-reset-prompt = { $label } zurücksetzen? Es wird nur der gespeicherte Zustand entfernt; aktuelle Dateien bleiben unverändert.
+dialog-reset-session-label = gespeicherte Fenster und Registerkarten
+dialog-reset-view-label = gespeicherte Ansichtseinstellungen
+dialog-reset-quick-access-label = Schnellzugriff-Anheftungen
+dialog-reset-all-label = gesamter gespeicherter Explorer-Zustand
+dialog-permanent-delete-prompt =
+    { $count ->
+        [one] { $count } Element dauerhaft löschen? Diese Aktion kann nicht rückgängig gemacht werden.
+       *[other] { $count } Elemente dauerhaft löschen? Diese Aktion kann nicht rückgängig gemacht werden.
+    }
+dialog-gdrive-trash-prompt =
+    { $count ->
+        [one] { $count } Element in den Google-Drive-Papierkorb verschieben? Wiederherstellung 30 Tage lang unter drive.google.com. Dies ist nicht der Windows-Papierkorb.
+       *[other] { $count } Elemente in den Google-Drive-Papierkorb verschieben? Wiederherstellung 30 Tage lang unter drive.google.com. Dies ist nicht der Windows-Papierkorb.
+    }
+dialog-permanent-delete-aria =
+    { $count ->
+        [one] { $count } Element dauerhaft löschen
+       *[other] { $count } Elemente dauerhaft löschen
+    }
+dialog-gdrive-trash-aria =
+    { $count ->
+        [one] { $count } Element in den Google-Drive-Papierkorb verschieben
+       *[other] { $count } Elemente in den Google-Drive-Papierkorb verschieben
+    }

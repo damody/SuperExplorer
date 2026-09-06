@@ -197,3 +197,26 @@ transfer-download = Tải xuống từ nguồn
 transfer-cancelling = Đang hủy
 
 transfer-cancel = Hủy
+
+status-details-view = Chế độ xem chi tiết
+status-icon-view = Chế độ xem biểu tượng
+status-error = Lỗi · 
+status-loading = Đang tải · 
+status-items-selected = { $count } mục — đã chọn { $selected }
+status-operation-progress = Thao tác { $completed }/{ $total } · { $name }
+status-search-cancelled = Đã hủy tìm kiếm · 
+status-search-error = Lỗi tìm kiếm · 
+status-search-fallback = Đang tìm (dự phòng hệ thống tệp; không có chỉ mục) · 
+status-search-indexed = Đang tìm (chỉ mục + dự phòng) · 
+status-search-partial = Kết quả tìm kiếm một phần · 
+status-search-results = Kết quả tìm kiếm · 
+status-lock-close-cancelled = Đã hủy đóng ứng dụng.
+status-lock-discovery-timeout = Đã hết hạn tìm ứng dụng đang khóa mục.
+status-lock-finding = Đang tìm ứng dụng đang dùng mục đã chọn…
+status-lock-owners-found = { $count } ứng dụng đang dùng mục đã chọn.
+status-lock-partial-close = Một số ứng dụng không đóng. Không tiến trình nào bị buộc thoát.
+status-lock-retry-limit = Đã đạt giới hạn thử lại. Mục không bị xóa.
+status-lock-retrying = Đang thử lại thao tác xóa…
+status-lock-unidentified = Windows không xác định được ứng dụng đang dùng mục này.
+transfer-cancel-operation = Hủy thao tác tệp
+transfer-open-location = Mở vị trí truyền

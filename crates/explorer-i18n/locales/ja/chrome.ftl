@@ -209,3 +209,18 @@ chrome-sort-name = 名前
 chrome-sort-url = URL
 
 chrome-sort-tags = タグ
+
+nav-recycle-bin = ごみ箱
+chrome-nav-loading = { $label } (読み込み中...)
+chrome-nav-unavailable-retry = { $label } (利用不可 - 展開して再試行)
+chrome-back = 戻る
+chrome-forward = 進む
+chrome-up = 上へ
+chrome-back-history = 戻る履歴
+chrome-forward-history = 進む履歴
+chrome-location = 場所
+chrome-copy-here = ここにコピー
+chrome-move-here = ここに移動
+chrome-create-shortcut-here = ここにショートカットを作成
+chrome-cancel-right-drag = 右ドラッグをキャンセル
+chrome-folder-icon = { $name } のフォルダー アイコン

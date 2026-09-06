@@ -195,3 +195,16 @@ dialog-extension-exif = EXIF’ten yeniden adlandır
 dialog-extension-7z = 7-Zip sanal klasörü
 
 dialog-extension-bulk-folder = Toplu klasör oluşturucu
+
+dialog-git-hash = Git karması
+dialog-release-date-line = Yayın tarihi: { $value }
+dialog-reset = Sıfırla
+dialog-reset-prompt = { $label } sıfırlansın mı? Yalnızca kaydedilmiş durum kaldırılır; geçerli dosyalar değişmez.
+dialog-reset-session-label = kaydedilmiş pencereler ve sekmeler
+dialog-reset-view-label = kaydedilmiş görünüm ayarları
+dialog-reset-quick-access-label = Hızlı erişim sabitlemeleri
+dialog-reset-all-label = kayıtlı tüm Explorer durumu
+dialog-permanent-delete-prompt = { $count } öğe kalıcı olarak silinsin mi? Bu işlem geri alınamaz.
+dialog-gdrive-trash-prompt = { $count } öğe Google Drive çöp kutusuna taşınsın mı? drive.google.com üzerinde 30 gün kurtarılabilir. Bu, Windows Geri Dönüşüm Kutusu değildir.
+dialog-permanent-delete-aria = { $count } öğeyi kalıcı olarak sil
+dialog-gdrive-trash-aria = { $count } öğeyi Google Drive çöp kutusuna taşı

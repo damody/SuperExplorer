@@ -289,3 +289,18 @@ desktop-touch-keyboard-unavailable = Vlastnictví dotykové klávesnice není k 
 desktop-lower-volume-aria = Snížit hlasitost
 
 desktop-raise-volume-aria = Zvýšit hlasitost
+
+desktop-taskbar = Hlavní panel
+desktop-personalization-breadcrumb = Přizpůsobení  ›  Hlavní panel
+desktop-language-preferences = Jazykové předvolby
+desktop-input-profiles-unavailable = Profily zadávání nejsou k dispozici
+desktop-no-wifi-adapter = Nebyl nalezen adaptér Wi-Fi
+desktop-inbox-surfaces-notice = Některá vestavěná rozhraní Windows jsou nedostupná, dokud je SuperDesktop nepřevezme.
+desktop-setting-unavailable-owned = Tuto funkci SuperDesktop zatím nevlastní
+desktop-context-lock-taskbar = Uzamknout hlavní panel
+desktop-context-taskbar-settings = Nastavení hlavního panelu
+desktop-context-task-view = Zobrazit tlačítko Zobrazení úkolů
+desktop-context-show-desktop = Zobrazit plochu
+desktop-context-task-manager = Správce úloh
+desktop-context-search = Hledání: { $mode }
+desktop-context-return-explorer = Vrátit výchozí Průzkumník

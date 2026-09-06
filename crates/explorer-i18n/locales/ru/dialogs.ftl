@@ -199,3 +199,40 @@ dialog-extension-exif = Переименование по EXIF
 dialog-extension-7z = Виртуальная папка 7-Zip
 
 dialog-extension-bulk-folder = Массовое создание папок
+
+dialog-git-hash = Хеш Git
+dialog-release-date-line = Дата выпуска: { $value }
+dialog-reset = Сбросить
+dialog-reset-prompt = Сбросить { $label }? Будет удалено только сохранённое состояние; текущие файлы не изменятся.
+dialog-reset-session-label = сохранённые окна и вкладки
+dialog-reset-view-label = сохранённые параметры представления
+dialog-reset-quick-access-label = закрепления быстрого доступа
+dialog-reset-all-label = всё сохранённое состояние Explorer
+dialog-permanent-delete-prompt =
+    { $count ->
+        [one] Удалить безвозвратно { $count } элемент? Это действие нельзя отменить.
+        [few] Удалить безвозвратно { $count } элемента? Это действие нельзя отменить.
+        [many] Удалить безвозвратно { $count } элементов? Это действие нельзя отменить.
+       *[other] Удалить безвозвратно { $count } элемента? Это действие нельзя отменить.
+    }
+dialog-gdrive-trash-prompt =
+    { $count ->
+        [one] Переместить { $count } элемент в корзину Google Drive? Их можно восстановить на drive.google.com в течение 30 дней. Это не Корзина Windows.
+        [few] Переместить { $count } элемента в корзину Google Drive? Их можно восстановить на drive.google.com в течение 30 дней. Это не Корзина Windows.
+        [many] Переместить { $count } элементов в корзину Google Drive? Их можно восстановить на drive.google.com в течение 30 дней. Это не Корзина Windows.
+       *[other] Переместить { $count } элемента в корзину Google Drive? Их можно восстановить на drive.google.com в течение 30 дней. Это не Корзина Windows.
+    }
+dialog-permanent-delete-aria =
+    { $count ->
+        [one] Удалить безвозвратно { $count } элемент
+        [few] Удалить безвозвратно { $count } элемента
+        [many] Удалить безвозвратно { $count } элементов
+       *[other] Удалить безвозвратно { $count } элемента
+    }
+dialog-gdrive-trash-aria =
+    { $count ->
+        [one] Переместить { $count } элемент в корзину Google Drive
+        [few] Переместить { $count } элемента в корзину Google Drive
+        [many] Переместить { $count } элементов в корзину Google Drive
+       *[other] Переместить { $count } элемента в корзину Google Drive
+    }

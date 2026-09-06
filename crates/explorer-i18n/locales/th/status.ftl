@@ -197,3 +197,26 @@ transfer-download = ดาวน์โหลดแหล่งที่มา
 transfer-cancelling = กำลังยกเลิก
 
 transfer-cancel = ยกเลิก
+
+status-details-view = มุมมองรายละเอียด
+status-icon-view = มุมมองไอคอน
+status-error = ข้อผิดพลาด · 
+status-loading = กำลังโหลด · 
+status-items-selected = { $count } รายการ — เลือก { $selected } รายการ
+status-operation-progress = การดำเนินการ { $completed }/{ $total } · { $name }
+status-search-cancelled = ยกเลิกการค้นหา · 
+status-search-error = ข้อผิดพลาดในการค้นหา · 
+status-search-fallback = กำลังค้นหา (สำรองระบบไฟล์ ไม่มีดัชนี) · 
+status-search-indexed = กำลังค้นหา (ดัชนี + สำรอง) · 
+status-search-partial = ผลลัพธ์การค้นหาบางส่วน · 
+status-search-results = ผลการค้นหา · 
+status-lock-close-cancelled = การปิดแอปพลิเคชันถูกยกเลิก
+status-lock-discovery-timeout = การค้นหาเจ้าของล็อกถึงกำหนดเวลาแล้ว
+status-lock-finding = กำลังค้นหาแอปพลิเคชันที่ใช้รายการที่เลือก…
+status-lock-owners-found = มี { $count } แอปพลิเคชันกำลังใช้รายการที่เลือก
+status-lock-partial-close = แอปพลิเคชันบางตัวไม่ปิด ไม่มีการบังคับสิ้นสุดโพรเซส
+status-lock-retry-limit = ถึงขีดจำกัดการลองใหม่แล้ว ไม่ได้ลบรายการ
+status-lock-retrying = กำลังลองลบอีกครั้ง…
+status-lock-unidentified = Windows ไม่สามารถระบุแอปพลิเคชันที่ใช้รายการนี้ได้
+transfer-cancel-operation = ยกเลิกการดำเนินการไฟล์
+transfer-open-location = เปิดตำแหน่งการถ่ายโอน

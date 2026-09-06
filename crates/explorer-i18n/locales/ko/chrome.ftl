@@ -209,3 +209,18 @@ chrome-sort-name = 이름
 chrome-sort-url = URL
 
 chrome-sort-tags = 태그
+
+nav-recycle-bin = 휴지통
+chrome-nav-loading = { $label } (로드 중...)
+chrome-nav-unavailable-retry = { $label } (사용할 수 없음 - 확장하여 다시 시도)
+chrome-back = 뒤로
+chrome-forward = 앞으로
+chrome-up = 위로
+chrome-back-history = 뒤로 기록
+chrome-forward-history = 앞으로 기록
+chrome-location = 위치
+chrome-copy-here = 여기에 복사
+chrome-move-here = 여기로 이동
+chrome-create-shortcut-here = 여기에 바로 가기 만들기
+chrome-cancel-right-drag = 오른쪽 끌기 취소
+chrome-folder-icon = { $name } 폴더 아이콘

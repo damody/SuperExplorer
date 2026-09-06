@@ -107,3 +107,8 @@ settings-cancel = 取消
 settings-apply = 应用
 
 settings-close = 关闭
+
+settings-restore-session = 启动时还原以前的窗口和标签页
+settings-reset-session = 重置会话
+settings-reset-view = 重置视图设置
+settings-reset-all-state = 重置所有 Explorer 状态

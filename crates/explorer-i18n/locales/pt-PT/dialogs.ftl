@@ -195,3 +195,32 @@ dialog-extension-exif = Mudar o nome a partir de EXIF
 dialog-extension-7z = Pasta virtual 7-Zip
 
 dialog-extension-bulk-folder = Gerador de pastas em lote
+
+dialog-git-hash = Hash Git
+dialog-release-date-line = Data de lançamento: { $value }
+dialog-reset = Repor
+dialog-reset-prompt = Repor { $label }? Isto remove apenas o estado persistido; os ficheiros atuais não são alterados.
+dialog-reset-session-label = janelas e separadores guardados
+dialog-reset-view-label = definições de vista guardadas
+dialog-reset-quick-access-label = afixações do Acesso rápido
+dialog-reset-all-label = todo o estado guardado do Explorer
+dialog-permanent-delete-prompt =
+    { $count ->
+        [one] Eliminar permanentemente { $count } item? Esta ação não pode ser anulada.
+       *[other] Eliminar permanentemente { $count } itens? Esta ação não pode ser anulada.
+    }
+dialog-gdrive-trash-prompt =
+    { $count ->
+        [one] Mover { $count } item para a reciclagem do Google Drive? Pode recuperá-los em drive.google.com durante 30 dias. Isto não é a Reciclagem do Windows.
+       *[other] Mover { $count } itens para a reciclagem do Google Drive? Pode recuperá-los em drive.google.com durante 30 dias. Isto não é a Reciclagem do Windows.
+    }
+dialog-permanent-delete-aria =
+    { $count ->
+        [one] Eliminar permanentemente { $count } item
+       *[other] Eliminar permanentemente { $count } itens
+    }
+dialog-gdrive-trash-aria =
+    { $count ->
+        [one] Mover { $count } item para a reciclagem do Google Drive
+       *[other] Mover { $count } itens para a reciclagem do Google Drive
+    }

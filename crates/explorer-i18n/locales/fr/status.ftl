@@ -197,3 +197,26 @@ transfer-download = Téléchargement depuis la source
 transfer-cancelling = Annulation
 
 transfer-cancel = Annuler
+
+status-details-view = Affichage Détails
+status-icon-view = Affichage Icônes
+status-error = Erreur · 
+status-loading = Chargement · 
+status-items-selected = { $count } éléments — { $selected } sélectionné(s)
+status-operation-progress = Opération { $completed }/{ $total } · { $name }
+status-search-cancelled = Recherche annulée · 
+status-search-error = Erreur de recherche · 
+status-search-fallback = Recherche (secours système de fichiers ; index indisponible) · 
+status-search-indexed = Recherche (index + secours) · 
+status-search-partial = Résultats de recherche partiels · 
+status-search-results = Résultats de recherche · 
+status-lock-close-cancelled = La fermeture des applications a été annulée.
+status-lock-discovery-timeout = La détection du propriétaire du verrou a atteint son délai.
+status-lock-finding = Recherche des applications utilisant l’élément sélectionné…
+status-lock-owners-found = { $count } application(s) utilisent l’élément sélectionné.
+status-lock-partial-close = Certaines applications ne se sont pas fermées. Aucun processus n’a été arrêté de force.
+status-lock-retry-limit = La limite de nouvelles tentatives a été atteinte. L’élément n’a pas été supprimé.
+status-lock-retrying = Nouvel essai de la suppression…
+status-lock-unidentified = Windows n’a pas pu identifier l’application utilisant cet élément.
+transfer-cancel-operation = Annuler l’opération sur les fichiers
+transfer-open-location = Ouvrir l’emplacement du transfert

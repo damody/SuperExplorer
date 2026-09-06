@@ -209,3 +209,18 @@ chrome-sort-name = ชื่อ
 chrome-sort-url = URL
 
 chrome-sort-tags = แท็ก
+
+nav-recycle-bin = ถังรีไซเคิล
+chrome-nav-loading = { $label } (กำลังโหลด...)
+chrome-nav-unavailable-retry = { $label } (ใช้ไม่ได้ - ขยายเพื่อลองอีกครั้ง)
+chrome-back = ย้อนกลับ
+chrome-forward = ไปข้างหน้า
+chrome-up = ขึ้น
+chrome-back-history = ประวัติย้อนกลับ
+chrome-forward-history = ประวัติไปข้างหน้า
+chrome-location = ตำแหน่ง
+chrome-copy-here = คัดลอกมาที่นี่
+chrome-move-here = ย้ายมาที่นี่
+chrome-create-shortcut-here = สร้างทางลัดที่นี่
+chrome-cancel-right-drag = ยกเลิกการลากคลิกขวา
+chrome-folder-icon = ไอคอนโฟลเดอร์ { $name }

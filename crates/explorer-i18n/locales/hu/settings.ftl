@@ -107,3 +107,8 @@ settings-cancel = Mégse
 settings-apply = Alkalmaz
 
 settings-close = Bezárás
+
+settings-restore-session = Előző ablakok és lapok visszaállítása indításkor
+settings-reset-session = Munkamenet visszaállítása
+settings-reset-view = Nézetbeállítások visszaállítása
+settings-reset-all-state = Minden Explorer-állapot visszaállítása

@@ -2,7 +2,7 @@
 
 copy-items = 复制 { $count } 个项目
 
-move-items = 移動 { $count } 个项目
+move-items = 移动 { $count } 个项目
 
 recycle-items = 移至回收站 { $count } 个项目
 
@@ -26,7 +26,7 @@ op-chmod = 更改权限｜{ $path } → { $mode }
 
 op-copy-route = 复制 { $count } 个项目｜{ $source } → { $destination }
 
-op-move-route = 移動 { $count } 个项目｜{ $source } → { $destination }
+op-move-route = 移动 { $count } 个项目｜{ $source } → { $destination }
 
 op-recycle-route = 移至回收站 { $count } 个项目｜{ $source }
 
@@ -165,3 +165,32 @@ transfer-download = 源下载
 transfer-cancelling = 正在取消
 
 transfer-cancel = Cancel
+
+status-details-view = 详细信息视图
+status-icon-view = 图标视图
+status-error = 错误 · 
+status-loading = 正在加载 · 
+status-items-selected = { $count } 个项目 — 已选择 { $selected } 个
+status-operation-progress = 操作 { $completed }/{ $total } · { $name }
+status-search-cancelled = 搜索已取消 · 
+status-search-error = 搜索出错 · 
+status-search-fallback = 正在搜索（文件系统回退；索引不可用） · 
+status-search-indexed = 正在搜索（索引 + 回退） · 
+status-search-partial = 部分搜索结果 · 
+status-search-results = 搜索结果 · 
+status-lock-close-cancelled = 已取消关闭应用程序。
+status-lock-discovery-timeout = 查找锁定占用程序已超时。
+status-lock-finding = 正在查找使用所选项目的应用程序…
+status-lock-owners-found =
+    { $count ->
+        [one] { $count } 个应用程序正在使用所选项目。
+        [few] { $count } 个应用程序正在使用所选项目。
+        [many] { $count } 个应用程序正在使用所选项目。
+       *[other] { $count } 个应用程序正在使用所选项目。
+    }
+status-lock-partial-close = 部分应用程序未能关闭。未强制终止任何进程。
+status-lock-retry-limit = 已达到重试上限。未删除该项目。
+status-lock-retrying = 正在重试删除操作…
+status-lock-unidentified = Windows 无法识别正在使用此项目的应用程序。
+transfer-cancel-operation = 取消文件操作
+transfer-open-location = 打开传输位置

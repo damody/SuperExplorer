@@ -289,3 +289,18 @@ desktop-touch-keyboard-unavailable = 터치 키보드 소유권을 사용할 수
 desktop-lower-volume-aria = 볼륨 낮추기
 
 desktop-raise-volume-aria = 볼륨 높이기
+
+desktop-taskbar = 작업 표시줄
+desktop-personalization-breadcrumb = 개인 설정  ›  작업 표시줄
+desktop-language-preferences = 언어 기본 설정
+desktop-input-profiles-unavailable = 입력 프로필을 사용할 수 없음
+desktop-no-wifi-adapter = Wi-Fi 어댑터를 찾을 수 없음
+desktop-inbox-surfaces-notice = 일부 Windows 기본 화면은 SuperDesktop이 소유하기 전까지 사용할 수 없습니다.
+desktop-setting-unavailable-owned = 이 기능은 아직 SuperDesktop이 소유하지 않음
+desktop-context-lock-taskbar = 작업 표시줄 잠금
+desktop-context-taskbar-settings = 작업 표시줄 설정
+desktop-context-task-view = 작업 보기 단추 표시
+desktop-context-show-desktop = 바탕 화면 표시
+desktop-context-task-manager = 작업 관리자
+desktop-context-search = 검색: { $mode }
+desktop-context-return-explorer = 기본 Explorer로 돌아가기

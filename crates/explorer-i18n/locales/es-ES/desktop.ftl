@@ -289,3 +289,18 @@ desktop-touch-keyboard-unavailable = La propiedad del teclado táctil no está d
 desktop-lower-volume-aria = Bajar el volumen
 
 desktop-raise-volume-aria = Subir el volumen
+
+desktop-taskbar = Barra de tareas
+desktop-personalization-breadcrumb = Personalización  ›  Barra de tareas
+desktop-language-preferences = Preferencias de idioma
+desktop-input-profiles-unavailable = Perfiles de entrada no disponibles
+desktop-no-wifi-adapter = No se encontró adaptador Wi-Fi
+desktop-inbox-surfaces-notice = Algunas superficies incluidas de Windows no están disponibles hasta que SuperDesktop las controle.
+desktop-setting-unavailable-owned = SuperDesktop aún no es propietario de esta función
+desktop-context-lock-taskbar = Bloquear la barra de tareas
+desktop-context-taskbar-settings = Configuración de la barra de tareas
+desktop-context-task-view = Mostrar el botón Vista de tareas
+desktop-context-show-desktop = Mostrar el escritorio
+desktop-context-task-manager = Administrador de tareas
+desktop-context-search = Búsqueda: { $mode }
+desktop-context-return-explorer = Volver al Explorador predeterminado

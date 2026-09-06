@@ -197,3 +197,26 @@ transfer-download = ソースからのダウンロード
 transfer-cancelling = キャンセル中
 
 transfer-cancel = キャンセル
+
+status-details-view = 詳細ビュー
+status-icon-view = アイコン ビュー
+status-error = エラー · 
+status-loading = 読み込み中 · 
+status-items-selected = { $count } 個の項目 — { $selected } 個選択
+status-operation-progress = 操作 { $completed }/{ $total } · { $name }
+status-search-cancelled = 検索がキャンセルされました · 
+status-search-error = 検索エラー · 
+status-search-fallback = 検索中 (ファイルシステム フォールバック、インデックスなし) · 
+status-search-indexed = 検索中 (インデックス + フォールバック) · 
+status-search-partial = 一部の検索結果 · 
+status-search-results = 検索結果 · 
+status-lock-close-cancelled = アプリケーションの終了はキャンセルされました。
+status-lock-discovery-timeout = ロック所有者の検出が期限に達しました。
+status-lock-finding = 選択した項目を使用しているアプリケーションを検索しています…
+status-lock-owners-found = { $count } 個のアプリケーションが選択した項目を使用しています。
+status-lock-partial-close = 一部のアプリケーションは終了しませんでした。プロセスは強制終了されていません。
+status-lock-retry-limit = 再試行の上限に達しました。項目は削除されませんでした。
+status-lock-retrying = 削除操作を再試行しています…
+status-lock-unidentified = Windows はこの項目を使用しているアプリケーションを識別できませんでした。
+transfer-cancel-operation = ファイル操作をキャンセル
+transfer-open-location = 転送場所を開く

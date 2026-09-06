@@ -209,3 +209,18 @@ chrome-sort-name = Név
 chrome-sort-url = URL
 
 chrome-sort-tags = Címkék
+
+nav-recycle-bin = Lomtár
+chrome-nav-loading = { $label } (Betöltés...)
+chrome-nav-unavailable-retry = { $label } (Nem érhető el — bontsa ki az újrapróbáláshoz)
+chrome-back = Vissza
+chrome-forward = Előre
+chrome-up = Fel
+chrome-back-history = Vissza előzmények
+chrome-forward-history = Előre előzmények
+chrome-location = Hely
+chrome-copy-here = Másolás ide
+chrome-move-here = Áthelyezés ide
+chrome-create-shortcut-here = Parancsikon létrehozása ide
+chrome-cancel-right-drag = Jobb gombos húzás megszakítása
+chrome-folder-icon = { $name } mappaikon

@@ -209,3 +209,18 @@ chrome-sort-name = Nome
 chrome-sort-url = URL
 
 chrome-sort-tags = Tag
+
+nav-recycle-bin = Cestino
+chrome-nav-loading = { $label } (Caricamento...)
+chrome-nav-unavailable-retry = { $label } (Non disponibile: espandi per riprovare)
+chrome-back = Indietro
+chrome-forward = Avanti
+chrome-up = Su
+chrome-back-history = Cronologia Indietro
+chrome-forward-history = Cronologia Avanti
+chrome-location = Percorso
+chrome-copy-here = Copia qui
+chrome-move-here = Sposta qui
+chrome-create-shortcut-here = Crea collegamento qui
+chrome-cancel-right-drag = Annulla trascinamento destro
+chrome-folder-icon = Icona cartella { $name }

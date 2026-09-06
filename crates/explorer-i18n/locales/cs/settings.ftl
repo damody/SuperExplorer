@@ -107,3 +107,8 @@ settings-cancel = Storno
 settings-apply = Použít
 
 settings-close = Zavřít
+
+settings-restore-session = Při spuštění obnovit předchozí okna a karty
+settings-reset-session = Resetovat relaci
+settings-reset-view = Resetovat nastavení zobrazení
+settings-reset-all-state = Resetovat veškerý stav Průzkumníka

@@ -197,3 +197,26 @@ transfer-download = Forrásletöltés
 transfer-cancelling = Megszakítás
 
 transfer-cancel = Mégse
+
+status-details-view = Részletek nézet
+status-icon-view = Ikonnézet
+status-error = Hiba · 
+status-loading = Betöltés · 
+status-items-selected = { $count } elem — { $selected } kijelölve
+status-operation-progress = Művelet { $completed }/{ $total } · { $name }
+status-search-cancelled = Keresés megszakítva · 
+status-search-error = Keresési hiba · 
+status-search-fallback = Keresés (fájlrendszer-tartalék; az index nem érhető el) · 
+status-search-indexed = Keresés (index + tartalék) · 
+status-search-partial = Részleges keresési eredmények · 
+status-search-results = Keresési eredmények · 
+status-lock-close-cancelled = Az alkalmazások bezárása megszakítva.
+status-lock-discovery-timeout = A zárolás tulajdonosának felderítése elérte a határidőt.
+status-lock-finding = A kijelölt elemet használó alkalmazások keresése…
+status-lock-owners-found = { $count } alkalmazás használja a kijelölt elemet.
+status-lock-partial-close = Egyes alkalmazások nem záródtak be. Egy folyamatot sem kényszerítettünk le.
+status-lock-retry-limit = Elérte az újrapróbálkozási korlátot. Az elem nem lett törölve.
+status-lock-retrying = A törlési művelet újrapróbálása…
+status-lock-unidentified = A Windows nem tudta azonosítani az elemet használó alkalmazást.
+transfer-cancel-operation = Fájlművelet megszakítása
+transfer-open-location = Átvitel helyének megnyitása

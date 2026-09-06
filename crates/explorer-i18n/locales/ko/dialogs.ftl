@@ -195,3 +195,16 @@ dialog-extension-exif = EXIF에서 이름 바꾸기
 dialog-extension-7z = 7-Zip 가상 폴더
 
 dialog-extension-bulk-folder = 대량 폴더 생성기
+
+dialog-git-hash = Git 해시
+dialog-release-date-line = 출시 날짜: { $value }
+dialog-reset = 다시 설정
+dialog-reset-prompt = { $label }을(를) 다시 설정할까요? 저장된 상태만 제거되며 현재 파일은 변경되지 않습니다.
+dialog-reset-session-label = 저장된 창과 탭
+dialog-reset-view-label = 저장된 보기 설정
+dialog-reset-quick-access-label = 빠른 액세스 고정 항목
+dialog-reset-all-label = 저장된 모든 Explorer 상태
+dialog-permanent-delete-prompt = { $count }개 항목을 영구 삭제할까요? 이 작업은 취소할 수 없습니다.
+dialog-gdrive-trash-prompt = Google 드라이브 휴지통으로 { $count }개 항목을 이동할까요? drive.google.com에서 30일 동안 복구할 수 있습니다. Windows 휴지통이 아닙니다.
+dialog-permanent-delete-aria = { $count }개 항목 영구 삭제
+dialog-gdrive-trash-aria = Google 드라이브 휴지통으로 { $count }개 항목 이동

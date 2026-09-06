@@ -289,3 +289,18 @@ desktop-touch-keyboard-unavailable = Управление сенсорной к�
 desktop-lower-volume-aria = Уменьшить громкость
 
 desktop-raise-volume-aria = Увеличить громкость
+
+desktop-taskbar = Панель задач
+desktop-personalization-breadcrumb = Персонализация  ›  Панель задач
+desktop-language-preferences = Языковые параметры
+desktop-input-profiles-unavailable = Профили ввода недоступны
+desktop-no-wifi-adapter = Адаптер Wi-Fi не найден
+desktop-inbox-surfaces-notice = Некоторые встроенные интерфейсы Windows недоступны, пока SuperDesktop ими не управляет.
+desktop-setting-unavailable-owned = Этой функцией SuperDesktop ещё не управляет
+desktop-context-lock-taskbar = Закрепить панель задач
+desktop-context-taskbar-settings = Параметры панели задач
+desktop-context-task-view = Показать кнопку представления задач
+desktop-context-show-desktop = Показать рабочий стол
+desktop-context-task-manager = Диспетчер задач
+desktop-context-search = Поиск: { $mode }
+desktop-context-return-explorer = Вернуться к Explorer по умолчанию

@@ -209,3 +209,18 @@ chrome-sort-name = Имя
 chrome-sort-url = Адрес
 
 chrome-sort-tags = Теги
+
+nav-recycle-bin = Корзина
+chrome-nav-loading = { $label } (Загрузка…)
+chrome-nav-unavailable-retry = { $label } (Недоступно — разверните, чтобы повторить)
+chrome-back = Назад
+chrome-forward = Вперёд
+chrome-up = Вверх
+chrome-back-history = Журнал «Назад»
+chrome-forward-history = Журнал «Вперёд»
+chrome-location = Расположение
+chrome-copy-here = Копировать сюда
+chrome-move-here = Переместить сюда
+chrome-create-shortcut-here = Создать ярлык здесь
+chrome-cancel-right-drag = Отменить перетаскивание правой кнопкой
+chrome-folder-icon = Значок папки { $name }

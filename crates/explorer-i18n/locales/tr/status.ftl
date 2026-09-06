@@ -197,3 +197,26 @@ transfer-download = Kaynaktan indirme
 transfer-cancelling = İptal ediliyor
 
 transfer-cancel = İptal
+
+status-details-view = Ayrıntılar görünümü
+status-icon-view = Simge görünümü
+status-error = Hata · 
+status-loading = Yükleniyor · 
+status-items-selected = { $count } öğe — { $selected } seçili
+status-operation-progress = İşlem { $completed }/{ $total } · { $name }
+status-search-cancelled = Arama iptal edildi · 
+status-search-error = Arama hatası · 
+status-search-fallback = Aranıyor (dosya sistemi yedek yolu; dizin yok) · 
+status-search-indexed = Aranıyor (dizin + yedek yol) · 
+status-search-partial = Kısmi arama sonuçları · 
+status-search-results = Arama sonuçları · 
+status-lock-close-cancelled = Uygulamaların kapatılması iptal edildi.
+status-lock-discovery-timeout = Kilit sahibi keşfi zaman aşımına ulaştı.
+status-lock-finding = Seçili öğeyi kullanan uygulamalar aranıyor…
+status-lock-owners-found = { $count } uygulama seçili öğeyi kullanıyor.
+status-lock-partial-close = Bazı uygulamalar kapanmadı. Hiçbir işlem zorla sonlandırılmadı.
+status-lock-retry-limit = Yeniden deneme sınırına ulaşıldı. Öğe silinmedi.
+status-lock-retrying = Silme işlemi yeniden deneniyor…
+status-lock-unidentified = Windows bu öğeyi kullanan uygulamayı tanımlayamadı.
+transfer-cancel-operation = Dosya işlemini iptal et
+transfer-open-location = Aktarım konumunu aç

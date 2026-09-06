@@ -289,3 +289,18 @@ desktop-touch-keyboard-unavailable = Chưa quản lý được bàn phím cảm 
 desktop-lower-volume-aria = Giảm âm lượng
 
 desktop-raise-volume-aria = Tăng âm lượng
+
+desktop-taskbar = Thanh tác vụ
+desktop-personalization-breadcrumb = Cá nhân hóa  ›  Thanh tác vụ
+desktop-language-preferences = Tùy chọn ngôn ngữ
+desktop-input-profiles-unavailable = Hồ sơ nhập liệu không khả dụng
+desktop-no-wifi-adapter = Không tìm thấy bộ điều hợp Wi-Fi
+desktop-inbox-surfaces-notice = Một số giao diện inbox của Windows chưa khả dụng cho đến khi SuperDesktop sở hữu chúng.
+desktop-setting-unavailable-owned = SuperDesktop chưa sở hữu tính năng này
+desktop-context-lock-taskbar = Khóa thanh tác vụ
+desktop-context-taskbar-settings = Cài đặt thanh tác vụ
+desktop-context-task-view = Hiện nút Chế độ xem tác vụ
+desktop-context-show-desktop = Hiện màn hình nền
+desktop-context-task-manager = Trình quản lý tác vụ
+desktop-context-search = Tìm kiếm: { $mode }
+desktop-context-return-explorer = Quay lại Explorer mặc định

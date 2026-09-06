@@ -289,3 +289,18 @@ desktop-touch-keyboard-unavailable = Az érintőbillentyűzet tulajdonlása nem 
 desktop-lower-volume-aria = Hangerő csökkentése
 
 desktop-raise-volume-aria = Hangerő növelése
+
+desktop-taskbar = Tálca
+desktop-personalization-breadcrumb = Személyre szabás  ›  Tálca
+desktop-language-preferences = Nyelvi beállítások
+desktop-input-profiles-unavailable = A beviteli profilok nem érhetők el
+desktop-no-wifi-adapter = Nem található Wi-Fi-adapter
+desktop-inbox-surfaces-notice = Egyes Windows beépített felületek addig nem érhetők el, amíg a SuperDesktop nem birtokolja őket.
+desktop-setting-unavailable-owned = Ezt a funkciót a SuperDesktop még nem birtokolja
+desktop-context-lock-taskbar = Tálca zárolása
+desktop-context-taskbar-settings = Tálca beállításai
+desktop-context-task-view = Feladatnézet gomb megjelenítése
+desktop-context-show-desktop = Asztal megjelenítése
+desktop-context-task-manager = Feladatkezelő
+desktop-context-search = Keresés: { $mode }
+desktop-context-return-explorer = Vissza az alapértelmezett Explorerhez

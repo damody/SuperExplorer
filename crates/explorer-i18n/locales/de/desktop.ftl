@@ -289,3 +289,18 @@ desktop-touch-keyboard-unavailable = Bildschirmtastatur-Besitz ist nicht verfüg
 desktop-lower-volume-aria = Lautstärke verringern
 
 desktop-raise-volume-aria = Lautstärke erhöhen
+
+desktop-taskbar = Taskleiste
+desktop-personalization-breadcrumb = Personalisierung  ›  Taskleiste
+desktop-language-preferences = Spracheinstellungen
+desktop-input-profiles-unavailable = Eingabeprofile nicht verfügbar
+desktop-no-wifi-adapter = Kein WLAN-Adapter gefunden
+desktop-inbox-surfaces-notice = Einige Windows-Posteingangsoberflächen sind erst verfügbar, wenn SuperDesktop sie übernimmt.
+desktop-setting-unavailable-owned = Diese Funktion gehört SuperDesktop noch nicht
+desktop-context-lock-taskbar = Taskleiste sperren
+desktop-context-taskbar-settings = Taskleisteneinstellungen
+desktop-context-task-view = Schaltfläche Aufgabenansicht anzeigen
+desktop-context-show-desktop = Desktop anzeigen
+desktop-context-task-manager = Task-Manager
+desktop-context-search = Suche: { $mode }
+desktop-context-return-explorer = Zum Standard-Explorer zurückkehren

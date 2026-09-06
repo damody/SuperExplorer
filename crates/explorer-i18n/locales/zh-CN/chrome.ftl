@@ -209,3 +209,18 @@ chrome-sort-name = 名称
 chrome-sort-url = 网址
 
 chrome-sort-tags = 标签
+
+nav-recycle-bin = 回收站
+chrome-nav-loading = { $label }（正在加载…）
+chrome-nav-unavailable-retry = { $label }（不可用 - 展开以重试）
+chrome-back = 后退
+chrome-forward = 前进
+chrome-up = 向上
+chrome-back-history = 后退历史
+chrome-forward-history = 前进历史
+chrome-location = 位置
+chrome-copy-here = 复制到此处
+chrome-move-here = 移动到此处
+chrome-create-shortcut-here = 在此处创建快捷方式
+chrome-cancel-right-drag = 取消右键拖放
+chrome-folder-icon = { $name } 文件夹图标

@@ -289,3 +289,18 @@ desktop-touch-keyboard-unavailable = Dokunmatik klavye sahipliği kullanılamıy
 desktop-lower-volume-aria = Sesi azalt
 
 desktop-raise-volume-aria = Sesi artır
+
+desktop-taskbar = Görev çubuğu
+desktop-personalization-breadcrumb = Kişiselleştirme  ›  Görev çubuğu
+desktop-language-preferences = Dil tercihleri
+desktop-input-profiles-unavailable = Giriş profilleri kullanılamıyor
+desktop-no-wifi-adapter = Wi-Fi bağdaştırıcısı bulunamadı
+desktop-inbox-surfaces-notice = Bazı Windows gelen kutusu yüzeyleri SuperDesktop bunlara sahip olana kadar kullanılamaz.
+desktop-setting-unavailable-owned = Bu özellik henüz SuperDesktop’a ait değil
+desktop-context-lock-taskbar = Görev çubuğunu kilitle
+desktop-context-taskbar-settings = Görev çubuğu ayarları
+desktop-context-task-view = Görev Görünümü düğmesini göster
+desktop-context-show-desktop = Masaüstünü göster
+desktop-context-task-manager = Görev Yöneticisi
+desktop-context-search = Arama: { $mode }
+desktop-context-return-explorer = Varsayılan Explorer’a dön

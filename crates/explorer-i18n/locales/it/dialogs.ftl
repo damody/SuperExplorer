@@ -195,3 +195,32 @@ dialog-extension-exif = Rinomina da EXIF
 dialog-extension-7z = Cartella virtuale 7-Zip
 
 dialog-extension-bulk-folder = Generatore di cartelle in blocco
+
+dialog-git-hash = Hash Git
+dialog-release-date-line = Data di rilascio: { $value }
+dialog-reset = Reimposta
+dialog-reset-prompt = Reimpostare { $label }? Viene rimosso solo lo stato persistente; i file attuali non cambiano.
+dialog-reset-session-label = finestre e schede salvate
+dialog-reset-view-label = impostazioni di visualizzazione salvate
+dialog-reset-quick-access-label = elementi aggiunti di Accesso rapido
+dialog-reset-all-label = tutto lo stato salvato di Explorer
+dialog-permanent-delete-prompt =
+    { $count ->
+        [one] Eliminare definitivamente { $count } elemento? Questa azione non può essere annullata.
+       *[other] Eliminare definitivamente { $count } elementi? Questa azione non può essere annullata.
+    }
+dialog-gdrive-trash-prompt =
+    { $count ->
+        [one] Spostare { $count } elemento nel Cestino di Google Drive? Recupero su drive.google.com per 30 giorni. Non è il Cestino di Windows.
+       *[other] Spostare { $count } elementi nel Cestino di Google Drive? Recupero su drive.google.com per 30 giorni. Non è il Cestino di Windows.
+    }
+dialog-permanent-delete-aria =
+    { $count ->
+        [one] Elimina definitivamente { $count } elemento
+       *[other] Elimina definitivamente { $count } elementi
+    }
+dialog-gdrive-trash-aria =
+    { $count ->
+        [one] Sposta { $count } elemento nel Cestino di Google Drive
+       *[other] Sposta { $count } elementi nel Cestino di Google Drive
+    }

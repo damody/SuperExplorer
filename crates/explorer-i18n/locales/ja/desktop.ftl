@@ -289,3 +289,18 @@ desktop-touch-keyboard-unavailable = タッチ キーボードの所有は利用
 desktop-lower-volume-aria = 音量を下げる
 
 desktop-raise-volume-aria = 音量を上げる
+
+desktop-taskbar = タスク バー
+desktop-personalization-breadcrumb = 個人用設定  ›  タスク バー
+desktop-language-preferences = 言語の設定
+desktop-input-profiles-unavailable = 入力プロファイルは利用できません
+desktop-no-wifi-adapter = Wi-Fi アダプターが見つかりません
+desktop-inbox-surfaces-notice = 一部の Windows 標準インターフェイスは、SuperDesktop が所有するまで使用できません。
+desktop-setting-unavailable-owned = この機能はまだ SuperDesktop が所有していません
+desktop-context-lock-taskbar = タスク バーをロック
+desktop-context-taskbar-settings = タスク バーの設定
+desktop-context-task-view = タスク ビュー ボタンを表示
+desktop-context-show-desktop = デスクトップを表示
+desktop-context-task-manager = タスク マネージャー
+desktop-context-search = 検索: { $mode }
+desktop-context-return-explorer = 既定の Explorer に戻る
