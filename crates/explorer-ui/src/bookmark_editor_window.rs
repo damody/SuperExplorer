@@ -277,10 +277,10 @@ mod tests {
         assert_eq!(bookmark_editor_height(false), 288.0);
         assert_eq!(bookmark_editor_height(true), 590.0);
         for required in [
-            "新增書籤",
-            "名稱 (N)",
-            "位置 (L)",
-            "儲存時顯示編輯器 (S)",
+            "dialog-new-bookmark",
+            "dialog-name-accelerator",
+            "dialog-location-accelerator",
+            "dialog-show-editor-on-save",
             "bookmark-editor-save",
             "bookmark-editor-cancel",
         ] {

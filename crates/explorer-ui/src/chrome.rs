@@ -17519,7 +17519,7 @@ mod tests {
         assert!(production.contains("OpenExtensionAuthorWebsite"));
         assert!(production.contains("extension-community-"));
         assert!(production.contains("OpenExtensionCommunityWebsite"));
-        assert!(production.contains("Release date："));
+        assert!(production.contains("dialog-release-date-line"));
         assert!(production.contains("extension-command-lua-bulk-folder-button"));
         assert!(production.contains("view-extension-size-map"));
         assert!(
@@ -17710,10 +17710,10 @@ mod tests {
         for required in [
             "more-about",
             "about-dialog",
-            "版本",
-            "編譯日期",
-            "Git hash",
-            "作者",
+            "dialog-version",
+            "dialog-build-date",
+            "dialog-git-hash",
+            "dialog-author",
             "about-ok",
         ] {
             assert!(production.contains(required), "missing {required}");
@@ -18347,7 +18347,7 @@ mod tests {
         for required in [
             "bookmark-name-input",
             "bookmark-payload-input",
-            "資料夾路徑（可編輯）",
+            "dialog-folder-path-editable",
             ".bg(colors.control_fill.to_gpui())",
             ".text_color(input_text)",
             ".caret_color(input_caret.into())",
@@ -18387,7 +18387,7 @@ mod tests {
             .expect("production source");
         for required in [
             "OpenBookmarkToolbarContextMenu",
-            "Bookmark toolbar context menu",
+            "chrome-bookmark-toolbar-context",
             "menu-new-folder-path-bookmark",
             "menu-new-file-path-bookmark",
             "menu-rename-folder-ellipsis",

@@ -415,7 +415,7 @@ mod tests {
         assert!(source.contains("chrome::bookmark_manager("));
         assert!(source.contains("window.remove_window()"));
         assert!(source.contains("size(px(1100.0), px(720.0))"));
-        assert!(source.contains("SharedString::from(\"收藏庫\")"));
+        assert!(source.contains("catalog.t(\"dialog-bookmark-library\")"));
         assert!(source.contains("search_input"));
         assert!(source.contains("root.clear_bookmark_editor_anchor()"));
     }
