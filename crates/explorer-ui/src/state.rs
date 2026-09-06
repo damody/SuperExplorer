@@ -824,6 +824,8 @@ pub struct AppViewState {
     loaded_extension_summary: Option<String>,
     folder_options: Option<FolderOptionsDraft>,
     folder_options_applied_revision: u64,
+    /// Last successful Apply/OK snapshot for multi-window publication.
+    last_applied_folder_options: Option<(FolderOptionsAppliedSnapshotV1, u64)>,
     extensions: Vec<ExtensionOptionV1>,
     restore_previous_session: bool,
     view_show_submenu_open: bool,
@@ -1087,6 +1089,7 @@ impl AppViewState {
             loaded_extension_summary: None,
             folder_options: None,
             folder_options_applied_revision: 0,
+            last_applied_folder_options: None,
             extensions: official_extensions_v1(),
             restore_previous_session: true,
             view_show_submenu_open: false,
@@ -2552,16 +2555,24 @@ impl AppViewState {
             }
             self.folder_options_applied_revision =
                 self.folder_options_applied_revision.saturating_add(1);
+            let revision = self.folder_options_applied_revision;
+            self.last_applied_folder_options = Some((applied.clone(), revision));
             if let Some(draft) = &mut self.folder_options {
                 draft.applied_baseline = applied;
-                draft.applied_revision = self.folder_options_applied_revision;
+                draft.applied_revision = revision;
                 draft.apply_error = None;
             }
-            return FolderOptionsApplyResultV1::Applied {
-                revision: self.folder_options_applied_revision,
-            };
+            return FolderOptionsApplyResultV1::Applied { revision };
         }
         FolderOptionsApplyResultV1::NoDraft
+    }
+
+    /// Snapshot + revision from the most recent successful Apply/OK, if any.
+    #[must_use]
+    pub fn last_applied_folder_options(
+        &self,
+    ) -> Option<&(FolderOptionsAppliedSnapshotV1, u64)> {
+        self.last_applied_folder_options.as_ref()
     }
 
     pub(crate) fn confirm_folder_options(&mut self) -> FolderOptionsApplyResultV1 {
@@ -11150,6 +11161,38 @@ mod tests {
         second_peer.adopt_applied_folder_options(applied, 1);
         assert!(first_peer.view_settings().hidden_items);
         assert!(second_peer.view_settings().hidden_items);
+    }
+
+    #[test]
+    fn one_applied_locale_revision_broadcasts_to_two_live_windows() {
+        let mut owner = AppViewState::default();
+        owner.configure_locale(AppLocale::ZhTw, None, AppLocale::ZhTw);
+        owner.open_folder_options();
+        owner.set_folder_option_locale_choice(super::LocaleChoice::Explicit(AppLocale::Ja));
+        assert_eq!(
+            owner.apply_folder_options(),
+            super::FolderOptionsApplyResultV1::Applied { revision: 1 }
+        );
+        let (applied, revision) = owner
+            .last_applied_folder_options()
+            .cloned()
+            .expect("owner published an applied snapshot");
+        assert_eq!(revision, 1);
+        assert_eq!(applied.locale_choice, super::LocaleChoice::Explicit(AppLocale::Ja));
+
+        let mut first_peer = AppViewState::default();
+        let mut second_peer = AppViewState::default();
+        first_peer.configure_locale(AppLocale::ZhTw, None, AppLocale::ZhTw);
+        second_peer.configure_locale(AppLocale::En, None, AppLocale::En);
+        crate::adopt_applied_folder_options_on_peers(
+            [&mut first_peer, &mut second_peer],
+            applied,
+            revision,
+        );
+        assert_eq!(first_peer.locale(), AppLocale::Ja);
+        assert_eq!(first_peer.locale_preference(), Some(AppLocale::Ja));
+        assert_eq!(second_peer.locale(), AppLocale::Ja);
+        assert_eq!(second_peer.locale_preference(), Some(AppLocale::Ja));
     }
 
     #[test]

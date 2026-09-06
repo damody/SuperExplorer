@@ -5016,6 +5016,13 @@ impl ApplicationLifecycle {
                                 }
                             }
                         }));
+                        root.attach_folder_options_applied_observer(Rc::new(
+                            move |applied, revision, source_id, cx| {
+                                explorer_ui::adopt_applied_folder_options_on_live_explorer_roots(
+                                    cx, applied, revision, source_id,
+                                );
+                            },
+                        ));
                         root.attach_folder_options_window_observer(Rc::new(move |create, snapshot, cx| {
                             let existing = controller.borrow().window;
                             if let Some(existing) = existing {
@@ -6456,6 +6463,50 @@ mod tests {
             lifecycle.begin_open(),
             super::FolderOptionsOpenIntentV1::Create { generation: 3 }
         );
+    }
+
+    #[test]
+    fn folder_options_applied_locale_publishes_to_peer_explorer_states() {
+        use explorer_i18n::AppLocale;
+        use explorer_ui::state::{
+            AppViewState, FolderOptionsAppliedSnapshotV1, LocaleChoice,
+        };
+
+        let applied = FolderOptionsAppliedSnapshotV1 {
+            settings: explorer_model::ViewSettings::default(),
+            restore_previous_session: true,
+            locale_choice: LocaleChoice::Explicit(AppLocale::Ja),
+            extension_enabled: Vec::new(),
+        };
+        let mut first_peer = AppViewState::default();
+        let mut second_peer = AppViewState::default();
+        first_peer.configure_locale(AppLocale::En, None, AppLocale::En);
+        second_peer.configure_locale(AppLocale::Ko, Some(AppLocale::Ko), AppLocale::En);
+        explorer_ui::adopt_applied_folder_options_on_peers(
+            [&mut first_peer, &mut second_peer],
+            applied,
+            1,
+        );
+        assert_eq!(first_peer.locale(), AppLocale::Ja);
+        assert_eq!(first_peer.locale_preference(), Some(AppLocale::Ja));
+        assert_eq!(second_peer.locale(), AppLocale::Ja);
+        assert_eq!(second_peer.locale_preference(), Some(AppLocale::Ja));
+
+        let follow = FolderOptionsAppliedSnapshotV1 {
+            settings: explorer_model::ViewSettings::default(),
+            restore_previous_session: true,
+            locale_choice: LocaleChoice::FollowWindows,
+            extension_enabled: Vec::new(),
+        };
+        explorer_ui::adopt_applied_folder_options_on_peers(
+            [&mut first_peer, &mut second_peer],
+            follow,
+            2,
+        );
+        assert_eq!(first_peer.locale_preference(), None);
+        assert_eq!(first_peer.locale(), AppLocale::En);
+        assert_eq!(second_peer.locale_preference(), None);
+        assert_eq!(second_peer.locale(), AppLocale::En);
     }
 
     #[test]

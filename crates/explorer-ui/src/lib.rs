@@ -903,8 +903,8 @@ fn advance_item_overlay_epoch(
 use explorer_model::{ExplorerService, ExplorerServiceError, WorkspaceModel};
 use gpui::{
     AnyWindowHandle, App, Bounds, ClipboardItem, Context, Focusable, IntoElement, Render,
-    RenderImage, Role, SharedString, Window, WindowBounds, WindowOptions, div, prelude::*, px,
-    size,
+    RenderImage, Role, SharedString, Window, WindowBounds, WindowId, WindowOptions, div,
+    prelude::*, px, size,
 };
 use gpui_elements::editable_text::{EditableTextState, StringStorage, TextChanged};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -923,6 +923,40 @@ pub const INITIAL_WINDOW_HEIGHT: f32 = 720.0;
 pub const MINIMUM_WINDOW_WIDTH: f32 = 640.0;
 pub const MINIMUM_WINDOW_HEIGHT: f32 = 480.0;
 pub const PRODUCT_NAME: &str = "SuperExplorer";
+
+/// Adopts a Folder Options publication into every live `ExplorerRoot` except `source_id`.
+pub fn adopt_applied_folder_options_on_live_explorer_roots(
+    cx: &mut App,
+    applied: state::FolderOptionsAppliedSnapshotV1,
+    revision: u64,
+    source_id: WindowId,
+) {
+    let peers = cx
+        .windows()
+        .into_iter()
+        .filter_map(|handle| handle.downcast::<ExplorerRoot>())
+        .filter(|handle| handle.window_id() != source_id)
+        .collect::<Vec<_>>();
+    for peer in peers {
+        let applied = applied.clone();
+        let _ = peer.update(cx, |root, window, cx| {
+            root.adopt_applied_folder_options(applied, revision);
+            cx.notify();
+            window.refresh();
+        });
+    }
+}
+
+/// Pure multi-window adopt helper for unit tests (no GPUI window graph required).
+pub fn adopt_applied_folder_options_on_peers<'a>(
+    peers: impl IntoIterator<Item = &'a mut AppViewState>,
+    applied: state::FolderOptionsAppliedSnapshotV1,
+    revision: u64,
+) {
+    for peer in peers {
+        peer.adopt_applied_folder_options(applied.clone(), revision);
+    }
+}
 
 /// Projects the native window/taskbar title from the last successfully resolved active location.
 /// Address-bar drafts are deliberately excluded from this projection.
@@ -1118,6 +1152,7 @@ pub struct ExplorerRoot {
     ftp_address_login: Option<SftpAddressLoginState>,
     gdrive_address_login: Option<SftpAddressLoginState>,
     folder_options_window_observer: Option<FolderOptionsWindowObserver>,
+    folder_options_applied_observer: Option<FolderOptionsAppliedObserver>,
     bookmark_editor_window_observer: Option<BookmarkEditorWindowObserver>,
     bookmark_manager_window_observer: Option<BookmarkManagerWindowObserver>,
     bookmark_action_window_observer: Option<BookmarkActionWindowObserver>,
@@ -1247,6 +1282,10 @@ pub type FolderOptionsWindowObserver = std::rc::Rc<
         Option<folder_options_window::FolderOptionsWindowSnapshotV1>,
         &mut gpui::Context<ExplorerRoot>,
     ) -> bool,
+>;
+/// Publishes a successful Folder Options Apply/OK to every other live Explorer root.
+pub type FolderOptionsAppliedObserver = std::rc::Rc<
+    dyn Fn(state::FolderOptionsAppliedSnapshotV1, u64, WindowId, &mut App),
 >;
 pub type BookmarkEditorWindowObserver = std::rc::Rc<
     dyn Fn(
@@ -1613,6 +1652,7 @@ impl ExplorerRoot {
             ftp_address_login: None,
             gdrive_address_login: None,
             folder_options_window_observer: None,
+            folder_options_applied_observer: None,
             bookmark_editor_window_observer: None,
             bookmark_manager_window_observer: None,
             bookmark_action_window_observer: None,
@@ -1809,6 +1849,23 @@ impl ExplorerRoot {
 
     pub fn attach_folder_options_window_observer(&mut self, observer: FolderOptionsWindowObserver) {
         self.folder_options_window_observer = Some(observer);
+    }
+
+    /// Installs the app-owned multi-window publisher for Folder Options Apply/OK.
+    pub fn attach_folder_options_applied_observer(
+        &mut self,
+        observer: FolderOptionsAppliedObserver,
+    ) {
+        self.folder_options_applied_observer = Some(observer);
+    }
+
+    /// Adopts an application-wide Folder Options publication (settings, locale, extensions).
+    pub fn adopt_applied_folder_options(
+        &mut self,
+        applied: state::FolderOptionsAppliedSnapshotV1,
+        revision: u64,
+    ) {
+        self.state.adopt_applied_folder_options(applied, revision);
     }
 
     pub fn attach_transfer_window_observer(&mut self, observer: TransferWindowObserver) {
@@ -2415,6 +2472,22 @@ impl ExplorerRoot {
         self.state
             .folder_options()
             .is_none_or(|draft| draft.apply_error.is_none())
+    }
+
+    fn publish_applied_folder_options_to_live_windows(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((applied, revision)) = self.state.last_applied_folder_options().cloned() else {
+            return;
+        };
+        let source_id = window.window_handle().window_id();
+        if let Some(observer) = self.folder_options_applied_observer.clone() {
+            observer(applied, revision, source_id, cx);
+            return;
+        }
+        adopt_applied_folder_options_on_live_explorer_roots(cx, applied, revision, source_id);
     }
 
     /// Connects the application-owned folder-size provider to the Details UI.
@@ -3572,6 +3645,7 @@ impl ExplorerRoot {
             ftp_address_login: None,
             gdrive_address_login: None,
             folder_options_window_observer: None,
+            folder_options_applied_observer: None,
             bookmark_editor_window_observer: None,
             bookmark_manager_window_observer: None,
             bookmark_action_window_observer: None,
@@ -3684,6 +3758,7 @@ impl ExplorerRoot {
             ftp_address_login: None,
             gdrive_address_login: None,
             folder_options_window_observer: None,
+            folder_options_applied_observer: None,
             bookmark_editor_window_observer: None,
             bookmark_manager_window_observer: None,
             bookmark_action_window_observer: None,
@@ -6836,6 +6911,12 @@ impl ExplorerRoot {
                 }
             });
             let _ = observer(true, snapshot, cx);
+        }
+        if matches!(
+            action,
+            ExplorerAction::ApplyFolderOptions | ExplorerAction::ConfirmFolderOptions
+        ) {
+            self.publish_applied_folder_options_to_live_windows(window, cx);
         }
         if matches!(
             action,
