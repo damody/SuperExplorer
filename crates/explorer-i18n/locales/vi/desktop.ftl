@@ -334,3 +334,13 @@ desktop-resize-taskbar-height = Đổi chiều cao thanh tác vụ
 desktop-notification-area = Khu vực thông báo
 desktop-show-all-tray-icons = Hiện tất cả biểu tượng khay
 desktop-system-status = Trạng thái hệ thống
+
+desktop-muted-volume = Đã tắt tiếng { $volume }%
+desktop-volume-percent = Âm lượng { $volume }%
+desktop-volume-dash = Âm lượng —
+desktop-volume-percent-muted = Âm lượng { $volume } phần trăm, đã tắt tiếng
+desktop-volume-percent-aria = Âm lượng { $volume } phần trăm
+desktop-network-label = Mạng
+desktop-network-dash = Mạng —
+desktop-input-language = Ngôn ngữ nhập { $value }
+desktop-input-language-unavailable = Ngôn ngữ nhập không khả dụng { $reason }

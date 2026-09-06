@@ -189,3 +189,13 @@ desktop-resize-taskbar-height = Resize taskbar height
 desktop-notification-area = Notification area
 desktop-show-all-tray-icons = Show all tray icons
 desktop-system-status = System status
+
+desktop-muted-volume = Muted { $volume }%
+desktop-volume-percent = Volume { $volume }%
+desktop-volume-dash = Volume —
+desktop-volume-percent-muted = Volume { $volume } percent muted
+desktop-volume-percent-aria = Volume { $volume } percent
+desktop-network-label = Network
+desktop-network-dash = Network —
+desktop-input-language = Input language { $value }
+desktop-input-language-unavailable = Input language unavailable { $reason }

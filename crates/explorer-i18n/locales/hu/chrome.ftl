@@ -227,3 +227,8 @@ chrome-folder-icon = { $name } mappaikon
 
 chrome-untitled = Névtelen
 chrome-submit-disabled = Küldés letiltva
+
+chrome-auto-size-column = Oszlop automatikus méretezése
+chrome-auto-size-all-columns = Minden oszlop automatikus méretezése
+chrome-show-proportional-bar = Arányos sáv megjelenítése
+chrome-show-comment-blank-detail = Megjegyzések és üres sorok megjelenítése

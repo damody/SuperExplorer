@@ -227,3 +227,8 @@ chrome-folder-icon = { $name } 폴더 아이콘
 
 chrome-untitled = 제목 없음
 chrome-submit-disabled = 제출 사용 안 함
+
+chrome-auto-size-column = 이 열 너비 자동 조정
+chrome-auto-size-all-columns = 모든 열 너비 자동 조정
+chrome-show-proportional-bar = 비율 막대 표시
+chrome-show-comment-blank-detail = 주석 및 빈 줄 세부 정보 표시

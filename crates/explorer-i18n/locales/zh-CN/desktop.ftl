@@ -90,9 +90,9 @@ desktop-quick-settings = 快速设置状态
 
 desktop-wifi = Wi-Fi
 
-desktop-airplane-unavailable = 飛航模式（不可用）
+desktop-airplane-unavailable = 飞行模式（不可用）
 
-desktop-hotspot-unavailable = 行動熱點（不可用）
+desktop-hotspot-unavailable = 移动热点（不可用）
 
 desktop-calendar-provider-unavailable = 日期時間提供者不可用
 
@@ -334,3 +334,13 @@ desktop-resize-taskbar-height = 调整任务栏高度
 desktop-notification-area = 通知区域
 desktop-show-all-tray-icons = 显示所有系统托盘图标
 desktop-system-status = 系统状态
+
+desktop-muted-volume = 已静音 { $volume }%
+desktop-volume-percent = 音量 { $volume }%
+desktop-volume-dash = 音量 —
+desktop-volume-percent-muted = 音量 { $volume } 百分比，已静音
+desktop-volume-percent-aria = 音量 { $volume } 百分比
+desktop-network-label = 网络
+desktop-network-dash = 网络 —
+desktop-input-language = 输入语言 { $value }
+desktop-input-language-unavailable = 输入语言不可用 { $reason }

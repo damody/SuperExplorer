@@ -227,3 +227,8 @@ chrome-folder-icon = { $name } 文件夹图标
 
 chrome-untitled = 未命名
 chrome-submit-disabled = 无法提交
+
+chrome-auto-size-column = 自动调整此列宽度
+chrome-auto-size-all-columns = 自动调整所有列宽度
+chrome-show-proportional-bar = 显示比例条
+chrome-show-comment-blank-detail = 显示注释与空行明细

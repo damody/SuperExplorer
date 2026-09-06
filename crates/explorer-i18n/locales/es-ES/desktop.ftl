@@ -334,3 +334,13 @@ desktop-resize-taskbar-height = Cambiar alto de la barra de tareas
 desktop-notification-area = Área de notificación
 desktop-show-all-tray-icons = Mostrar todos los iconos de la bandeja
 desktop-system-status = Estado del sistema
+
+desktop-muted-volume = Silenciado { $volume }%
+desktop-volume-percent = Volumen { $volume }%
+desktop-volume-dash = Volumen —
+desktop-volume-percent-muted = Volumen { $volume } por ciento, silenciado
+desktop-volume-percent-aria = Volumen { $volume } por ciento
+desktop-network-label = Red
+desktop-network-dash = Red —
+desktop-input-language = Idioma de entrada { $value }
+desktop-input-language-unavailable = Idioma de entrada no disponible { $reason }

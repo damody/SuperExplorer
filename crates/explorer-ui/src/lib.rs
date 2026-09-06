@@ -82,7 +82,7 @@ fn lua_bookmark_request(
             current_folder,
             timeout_ms: explorer_automation::BOOKMARK_LUA_TIMEOUT_MS,
         })
-        .ok_or("Lua bookmarks require a filesystem folder.")
+        .ok_or("status-lua-bookmark-need-folder")
 }
 
 fn resolve_bookmark_path(path: &str) -> explorer_model::LocationDescriptor {
@@ -103,12 +103,21 @@ fn is_adb_or_sftp_location(location: &explorer_model::LocationDescriptor) -> boo
         if explorer_model::is_remote_provider_id(&remote.provider_id))
 }
 
-fn lua_bookmark_notice(result: explorer_automation::LuaBookmarkResult) -> String {
+fn lua_bookmark_notice(
+    catalog: explorer_i18n::Catalog,
+    result: explorer_automation::LuaBookmarkResult,
+) -> String {
     match result {
-        explorer_automation::LuaBookmarkResult::Completed => "Lua bookmark completed.".to_owned(),
-        explorer_automation::LuaBookmarkResult::TimedOut => "Lua bookmark timed out.".to_owned(),
+        explorer_automation::LuaBookmarkResult::Completed => {
+            catalog.t("status-lua-bookmark-completed")
+        }
+        explorer_automation::LuaBookmarkResult::TimedOut => {
+            catalog.t("status-lua-bookmark-timed-out")
+        }
         explorer_automation::LuaBookmarkResult::Failed(error) => {
-            format!("Lua bookmark failed: {error}")
+            let mut args = explorer_i18n::FluentArgs::new();
+            args.set("error", error);
+            catalog.t_args("status-lua-bookmark-failed", &args)
         }
     }
 }
@@ -2351,7 +2360,7 @@ impl ExplorerRoot {
             .cloned()
         else {
             self.state
-                .set_bookmark_notice("Bookmark is no longer available.");
+                .set_bookmark_notice(self.catalog().t("status-bookmark-unavailable"));
             return false;
         };
         let opened = self
@@ -2365,7 +2374,7 @@ impl ExplorerRoot {
             });
         if !opened {
             self.state
-                .set_bookmark_notice("Unable to open the bookmark delete confirmation window.");
+                .set_bookmark_notice(self.catalog().t("status-bookmark-delete-window-failed"));
         }
         opened
     }
@@ -2436,14 +2445,15 @@ impl ExplorerRoot {
         let draft = self.state.bookmark_editor().cloned();
         if let Some(mutation) = self.state.commit_bookmark_editor() {
             if self.notify_durable_state() {
-                self.state.set_bookmark_notice("Bookmark renamed.");
+                self.state
+                    .set_bookmark_notice(self.catalog().t("status-bookmark-renamed"));
             } else {
                 self.state.rollback_bookmark(mutation);
                 if let Some(draft) = draft {
                     self.state.restore_bookmark_editor(draft);
                 }
                 self.state
-                    .set_bookmark_notice("Unable to rename the bookmark.");
+                    .set_bookmark_notice(self.catalog().t("status-bookmark-rename-failed"));
             }
         }
     }
@@ -4620,7 +4630,7 @@ impl ExplorerRoot {
         if !opened {
             self.state.cancel_bookmark_editor();
             self.state
-                .set_bookmark_notice("Unable to open the bookmark editor window.");
+                .set_bookmark_notice(self.catalog().t("status-bookmark-editor-window-failed"));
         }
     }
 
@@ -4632,7 +4642,7 @@ impl ExplorerRoot {
             .is_some_and(|observer| observer(snapshot, cx));
         if !opened {
             self.state
-                .set_bookmark_notice("Unable to open the bookmark manager window.");
+                .set_bookmark_notice(self.catalog().t("status-bookmark-manager-window-failed"));
         }
     }
 
@@ -4647,7 +4657,7 @@ impl ExplorerRoot {
         if !opened {
             self.state.cancel_bookmark_folder_editor();
             self.state
-                .set_bookmark_notice("Unable to open the bookmark folder editor window.");
+                .set_bookmark_notice(self.catalog().t("status-bookmark-folder-editor-window-failed"));
         }
     }
 
@@ -5715,7 +5725,7 @@ impl ExplorerRoot {
                         explorer_common::ExplorerErrorKind::Availability,
                         "cancel file operation",
                         true,
-                        "無法取消：檔案服務尚未連線。",
+                        self.catalog().t("status-cannot-cancel-disconnected"),
                         "Explorer service is unavailable",
                     ),
                 );
@@ -5753,7 +5763,12 @@ impl ExplorerRoot {
                         explorer_common::ExplorerErrorKind::Availability,
                         "cancel file operation",
                         true,
-                        format!("無法取消檔案操作：{error:?}"),
+                        {
+                            let mut args = explorer_i18n::FluentArgs::new();
+                            args.set("error", format!("{error:?}"));
+                            self.catalog()
+                                .t_args("status-cannot-cancel-operation", &args)
+                        },
                         format!("service endpoint: {error:?}"),
                     ),
                 );
@@ -5787,7 +5802,7 @@ impl ExplorerRoot {
                                     kind,
                                     "submit Explorer command",
                                     true,
-                                    "The operation could not be queued, but Explorer can continue.",
+                                    self.catalog().t("status-operation-queue-failed"),
                                     format!("service endpoint: {error:?}"),
                                 ),
                             ),
@@ -5809,7 +5824,7 @@ impl ExplorerRoot {
                             kind,
                             "submit Explorer command",
                             true,
-                            "無法載入資料夾，請再試一次。",
+                            self.catalog().t("status-cannot-load-folder"),
                             format!("service endpoint: {error:?}"),
                         ),
                     });
@@ -6035,8 +6050,9 @@ impl ExplorerRoot {
             });
             actions.push(action);
         };
+        let catalog = self.catalog();
         push(
-            "自動調整此欄寬度".to_owned(),
+            catalog.t("chrome-auto-size-column"),
             false,
             true,
             ExplorerAction::AutoSizeDetailsColumn {
@@ -6044,7 +6060,7 @@ impl ExplorerRoot {
             },
         );
         push(
-            "自動調整所有欄寬度".to_owned(),
+            catalog.t("chrome-auto-size-all-columns"),
             false,
             true,
             ExplorerAction::AutoSizeAllDetailsColumns,
@@ -6053,7 +6069,7 @@ impl ExplorerRoot {
             && visuals.config.descriptor.id == *target
         {
             push(
-                "顯示比例列".to_owned(),
+                catalog.t("chrome-show-proportional-bar"),
                 visuals.config.folder_size_display.shows_bar(),
                 true,
                 ExplorerAction::ToggleFolderSizeProportionalBar,
@@ -6062,7 +6078,7 @@ impl ExplorerRoot {
         for visuals in &self.code_lines_visuals {
             if visuals.config.descriptor.id == *target {
                 push(
-                    "顯示註解與空白行明細".to_owned(),
+                    catalog.t("chrome-show-comment-blank-detail"),
                     visuals.config.display.shows_detail(),
                     true,
                     ExplorerAction::ToggleCodeLinesDetail,
@@ -6314,7 +6330,7 @@ impl ExplorerRoot {
             if !self.persist_folder_options_draft() {
                 self.state.reject_folder_options_apply(
                     state::FolderOptionsApplyFailureV1::Persistence,
-                    "Unable to save Folder Options. Check the session storage and try again.",
+                    self.catalog().t("status-folder-options-save-failed"),
                 );
                 tracing::warn!(
                     action = action.name(),
@@ -6481,7 +6497,7 @@ impl ExplorerRoot {
                 .and_then(explorer_model::LocationDescriptor::path)
                 .and_then(std::path::Path::file_name)
                 .map_or_else(
-                    || "新書籤".to_owned(),
+                    || self.catalog().t("dialog-new-bookmark-default"),
                     |name| name.to_string_lossy().into_owned(),
                 );
             let target = match kind {
@@ -6513,19 +6529,20 @@ impl ExplorerRoot {
         if action == ExplorerAction::SaveBookmarkEditor {
             let draft = self.state.bookmark_editor().cloned();
             if let Some(mutation) = self.state.commit_bookmark_editor() {
-                self.state.set_bookmark_notice("Bookmark saved.");
+                self.state
+                    .set_bookmark_notice(self.catalog().t("status-bookmark-saved"));
                 if !self.notify_durable_state() {
                     self.state.rollback_bookmark(mutation);
                     if let Some(draft) = draft {
                         self.state.restore_bookmark_editor(draft);
                     }
                     self.state
-                        .set_bookmark_notice("Unable to save the bookmark.");
+                        .set_bookmark_notice(self.catalog().t("status-bookmark-save-failed"));
                 } else {
                 }
             } else {
                 self.state
-                    .set_bookmark_notice("Bookmark name and target are required.");
+                    .set_bookmark_notice(self.catalog().t("status-bookmark-name-required"));
             }
             cx.notify();
         }
@@ -6536,14 +6553,15 @@ impl ExplorerRoot {
         if let ExplorerAction::AddBookmarkFolder { parent_id } = action {
             let mutation = self
                 .state
-                .add_bookmark_folder("新資料夾".to_owned(), parent_id);
+                .add_bookmark_folder(self.catalog().t("dialog-new-folder-default"), parent_id);
             if mutation.changed() {
                 if !self.notify_durable_state() {
                     self.state.rollback_bookmark(mutation);
                     self.state
-                        .set_bookmark_notice("Unable to save the bookmark folder.");
+                        .set_bookmark_notice(self.catalog().t("status-bookmark-folder-save-failed"));
                 } else {
-                    self.state.set_bookmark_notice("Bookmark folder created.");
+                    self.state
+                        .set_bookmark_notice(self.catalog().t("status-bookmark-folder-created"));
                     if let Some(id) = self
                         .state
                         .bookmarks()
@@ -6576,13 +6594,14 @@ impl ExplorerRoot {
                         self.state.restore_bookmark_folder_editor(draft);
                     }
                     self.state
-                        .set_bookmark_notice("Unable to rename the bookmark folder.");
+                        .set_bookmark_notice(self.catalog().t("status-bookmark-folder-rename-failed"));
                 } else {
-                    self.state.set_bookmark_notice("Bookmark folder renamed.");
+                    self.state
+                        .set_bookmark_notice(self.catalog().t("status-bookmark-folder-renamed"));
                 }
             } else {
                 self.state
-                    .set_bookmark_notice("Bookmark folder name is required.");
+                    .set_bookmark_notice(self.catalog().t("status-bookmark-folder-name-required"));
             }
             cx.notify();
         }
@@ -6607,7 +6626,8 @@ impl ExplorerRoot {
             if !opened {
                 self.state.cancel_bookmark_folder_delete();
                 self.state.set_bookmark_notice(
-                    "Unable to open the bookmark folder delete confirmation window.",
+                    self.catalog()
+                        .t("status-bookmark-folder-delete-window-failed"),
                 );
             }
             cx.notify();
@@ -6624,9 +6644,10 @@ impl ExplorerRoot {
                 if !self.notify_durable_state() {
                     self.state.rollback_bookmark(mutation);
                     self.state
-                        .set_bookmark_notice("Unable to remove the bookmark folder.");
+                        .set_bookmark_notice(self.catalog().t("status-bookmark-folder-remove-failed"));
                 } else {
-                    self.state.set_bookmark_notice("Bookmark folder removed.");
+                    self.state
+                        .set_bookmark_notice(self.catalog().t("status-bookmark-folder-removed"));
                 }
                 cx.notify();
             }
@@ -6638,10 +6659,11 @@ impl ExplorerRoot {
                     if !self.notify_durable_state() {
                         self.state.rollback_bookmark(mutation);
                         self.state
-                            .set_bookmark_notice("Unable to remove the bookmark.");
+                            .set_bookmark_notice(self.catalog().t("status-bookmark-remove-failed"));
                     } else {
                         self.state.cancel_bookmark_editor();
-                        self.state.set_bookmark_notice("Bookmark removed.");
+                        self.state
+                            .set_bookmark_notice(self.catalog().t("status-bookmark-removed"));
                     }
                     cx.notify();
                 }
@@ -6659,11 +6681,16 @@ impl ExplorerRoot {
                 Ok(text) => {
                     cx.write_to_clipboard(ClipboardItem::new_string(text));
                     self.state
-                        .set_bookmark_notice("Bookmark backup copied to the clipboard.");
+                        .set_bookmark_notice(self.catalog().t("status-bookmark-backup-copied"));
                 }
                 Err(error) => self
                     .state
-                    .set_bookmark_notice(format!("Unable to back up bookmarks: {error}")),
+                    .set_bookmark_notice({
+                        let mut args = explorer_i18n::FluentArgs::new();
+                        args.set("error", error.to_string());
+                        self.catalog()
+                            .t_args("status-bookmark-backup-failed", &args)
+                    }),
             }
             cx.notify();
         }
@@ -6677,15 +6704,15 @@ impl ExplorerRoot {
                 self.state.configure_bookmarks(bookmarks);
                 if self.notify_durable_state() {
                     self.state
-                        .set_bookmark_notice("Bookmarks imported from the clipboard.");
+                        .set_bookmark_notice(self.catalog().t("status-bookmark-imported"));
                 } else {
                     self.state.configure_bookmarks(previous);
                     self.state
-                        .set_bookmark_notice("Unable to persist imported bookmarks.");
+                        .set_bookmark_notice(self.catalog().t("status-bookmark-import-persist-failed"));
                 }
             } else {
                 self.state
-                    .set_bookmark_notice("Clipboard does not contain a valid bookmark backup.");
+                    .set_bookmark_notice(self.catalog().t("status-bookmark-import-invalid"));
             }
             cx.notify();
         }
@@ -6700,11 +6727,12 @@ impl ExplorerRoot {
         if let ExplorerAction::RemoveBookmark { id } = action {
             let mutation = self.state.remove_bookmark(id);
             if mutation.changed() {
-                self.state.set_bookmark_notice("Bookmark removed.");
+                self.state
+                    .set_bookmark_notice(self.catalog().t("status-bookmark-removed"));
                 if !self.notify_durable_state() {
                     self.state.rollback_bookmark(mutation);
                     self.state
-                        .set_bookmark_notice("Unable to save the bookmark removal.");
+                        .set_bookmark_notice(self.catalog().t("status-bookmark-removal-save-failed"));
                 }
                 cx.notify();
             }
@@ -6712,11 +6740,12 @@ impl ExplorerRoot {
         if let ExplorerAction::MoveBookmark { id, destination } = action {
             let mutation = self.state.reorder_bookmark(id, destination);
             if mutation.changed() {
-                self.state.set_bookmark_notice("Bookmark order updated.");
+                self.state
+                    .set_bookmark_notice(self.catalog().t("status-bookmark-order-updated"));
                 if !self.notify_durable_state() {
                     self.state.rollback_bookmark(mutation);
                     self.state
-                        .set_bookmark_notice("Unable to save the bookmark order.");
+                        .set_bookmark_notice(self.catalog().t("status-bookmark-order-save-failed"));
                 }
                 cx.notify();
             }
@@ -6724,11 +6753,12 @@ impl ExplorerRoot {
         if let ExplorerAction::MoveBookmarkToFolder { id, parent_id } = action {
             let mutation = self.state.move_bookmark_to_folder(id, parent_id);
             if mutation.changed() {
-                self.state.set_bookmark_notice("Bookmark moved.");
+                self.state
+                    .set_bookmark_notice(self.catalog().t("status-bookmark-moved"));
                 if !self.notify_durable_state() {
                     self.state.rollback_bookmark(mutation);
                     self.state
-                        .set_bookmark_notice("Unable to save the bookmark move.");
+                        .set_bookmark_notice(self.catalog().t("status-bookmark-move-save-failed"));
                 }
                 cx.notify();
             }
@@ -6750,7 +6780,7 @@ impl ExplorerRoot {
                     .path()
                     .and_then(std::path::Path::file_name)
                     .map_or_else(
-                        || "Bookmark".to_owned(),
+                        || self.catalog().t("dialog-new-bookmark-default"),
                         |name| name.to_string_lossy().into_owned(),
                     );
                 self.state.begin_new_bookmark_editor(name, target);
@@ -6781,11 +6811,11 @@ impl ExplorerRoot {
                                     .or_else(|| remote.public_authority.clone()),
                                 _ => None,
                             })
-                            .unwrap_or_else(|| "Bookmark".to_owned()),
+                            .unwrap_or_else(|| self.catalog().t("dialog-new-bookmark-default")),
                         explorer_model::BookmarkTarget::FolderPath { path }
                         | explorer_model::BookmarkTarget::FilePath { path } => {
                             std::path::Path::new(path).file_name().map_or_else(
-                                || "Bookmark".to_owned(),
+                                || self.catalog().t("dialog-new-bookmark-default"),
                                 |name| name.to_string_lossy().into_owned(),
                             )
                         }
@@ -6816,7 +6846,7 @@ impl ExplorerRoot {
                             && !location.path().is_some_and(std::path::Path::is_dir)
                         {
                             self.state.set_bookmark_notice(
-                                "Unable to open bookmark: the folder no longer exists.",
+                                self.catalog().t("status-bookmark-folder-missing"),
                             );
                             cx.notify();
                             return;
@@ -6834,7 +6864,7 @@ impl ExplorerRoot {
                             && !location.path().is_some_and(std::path::Path::is_dir)
                         {
                             self.state.set_bookmark_notice(
-                                "Unable to open bookmark: the folder path is unavailable or invalid.",
+                                self.catalog().t("status-bookmark-path-unavailable"),
                             );
                             cx.notify();
                             return;
@@ -6850,11 +6880,18 @@ impl ExplorerRoot {
                         let result = self
                             .bookmark_file_launcher
                             .as_ref()
-                            .ok_or_else(|| "File launcher is unavailable".to_owned())
+                            .ok_or_else(|| {
+                                self.catalog()
+                                    .t("status-bookmark-file-launcher-unavailable")
+                            })
                             .and_then(|launcher| launcher(location));
                         self.state.set_bookmark_notice(match result {
-                            Ok(()) => "Bookmark opened.".to_owned(),
-                            Err(error) => format!("Unable to open bookmark: {error}"),
+                            Ok(()) => self.catalog().t("status-bookmark-opened"),
+                            Err(error) => {
+                                let mut args = explorer_i18n::FluentArgs::new();
+                                args.set("error", error);
+                                self.catalog().t_args("status-bookmark-open-failed", &args)
+                            }
                         });
                         cx.notify();
                     }
@@ -6863,11 +6900,18 @@ impl ExplorerRoot {
                         let result = self
                             .bookmark_file_launcher
                             .as_ref()
-                            .ok_or_else(|| "File launcher is unavailable".to_owned())
+                            .ok_or_else(|| {
+                                self.catalog()
+                                    .t("status-bookmark-file-launcher-unavailable")
+                            })
                             .and_then(|launcher| launcher(location));
                         self.state.set_bookmark_notice(match result {
-                            Ok(()) => "Bookmark opened.".to_owned(),
-                            Err(error) => format!("Unable to open bookmark: {error}"),
+                            Ok(()) => self.catalog().t("status-bookmark-opened"),
+                            Err(error) => {
+                                let mut args = explorer_i18n::FluentArgs::new();
+                                args.set("error", error);
+                                self.catalog().t_args("status-bookmark-open-failed", &args)
+                            }
                         });
                         cx.notify();
                     }
@@ -6879,7 +6923,7 @@ impl ExplorerRoot {
                         let request = match lua_bookmark_request(source, current_folder) {
                             Ok(request) => request,
                             Err(notice) => {
-                                self.state.set_bookmark_notice(notice);
+                                self.state.set_bookmark_notice(self.catalog().t(notice));
                                 cx.notify();
                                 return;
                             }
@@ -6892,7 +6936,10 @@ impl ExplorerRoot {
                                 })
                                 .await;
                             let _ = this.update(cx, |this, cx| {
-                                this.state.set_bookmark_notice(lua_bookmark_notice(result));
+                                this.state.set_bookmark_notice(lua_bookmark_notice(
+                                    this.catalog(),
+                                    result,
+                                ));
                                 cx.notify();
                             });
                         })
@@ -9406,23 +9453,31 @@ mod tests {
     fn lua_bookmark_request_rejects_non_filesystem_locations() {
         assert_eq!(
             lua_bookmark_request("return".into(), None),
-            Err("Lua bookmarks require a filesystem folder.")
+            Err("status-lua-bookmark-need-folder")
         );
     }
 
     #[test]
     fn lua_bookmark_notices_cover_success_exception_and_timeout() {
+        let en = explorer_i18n::Catalog::new(explorer_i18n::AppLocale::En);
+        let strip = |value: String| {
+            value
+                .chars()
+                .filter(|ch| !matches!(*ch, '\u{2066}' | '\u{2067}' | '\u{2068}' | '\u{2069}'))
+                .collect::<String>()
+        };
         assert_eq!(
-            lua_bookmark_notice(explorer_automation::LuaBookmarkResult::Completed),
+            lua_bookmark_notice(en, explorer_automation::LuaBookmarkResult::Completed),
             "Lua bookmark completed."
         );
         assert_eq!(
-            lua_bookmark_notice(explorer_automation::LuaBookmarkResult::TimedOut),
+            lua_bookmark_notice(en, explorer_automation::LuaBookmarkResult::TimedOut),
             "Lua bookmark timed out."
         );
         assert_eq!(
-            lua_bookmark_notice(explorer_automation::LuaBookmarkResult::Failed(
-                "expected failure".into()
+            strip(lua_bookmark_notice(
+                en,
+                explorer_automation::LuaBookmarkResult::Failed("expected failure".into())
             )),
             "Lua bookmark failed: expected failure"
         );

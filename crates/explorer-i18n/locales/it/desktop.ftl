@@ -334,3 +334,13 @@ desktop-resize-taskbar-height = Ridimensiona altezza barra delle applicazioni
 desktop-notification-area = Area di notifica
 desktop-show-all-tray-icons = Mostra tutte le icone del vassoio
 desktop-system-status = Stato del sistema
+
+desktop-muted-volume = Disattivato { $volume }%
+desktop-volume-percent = Volume { $volume }%
+desktop-volume-dash = Volume —
+desktop-volume-percent-muted = Volume { $volume } percento, disattivato
+desktop-volume-percent-aria = Volume { $volume } percento
+desktop-network-label = Rete
+desktop-network-dash = Rete —
+desktop-input-language = Lingua di input { $value }
+desktop-input-language-unavailable = Lingua di input non disponibile { $reason }

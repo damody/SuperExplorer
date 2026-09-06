@@ -1042,7 +1042,12 @@ fn bookmark_bar(
             div()
                 .id(("bookmark-folder", folder.id.as_u128() as u64))
                 .role(Role::Button)
-                .aria_label(format!("Bookmark folder {}", folder.name))
+                .aria_label(t_named(
+                    catalog,
+                    "chrome-bookmark-folder-aria",
+                    "name",
+                    folder.name.clone(),
+                ))
                 .cursor_pointer()
                 .px(px(8.0))
                 .py(px(4.0))
@@ -1452,7 +1457,12 @@ pub(crate) fn bookmark_manager(
             div()
                 .id(("bookmark-folder-row", folder.id.as_u128() as u64))
                 .role(Role::ListItem)
-                .aria_label(format!("Bookmark folder {}", folder.name))
+                .aria_label(t_named(
+                    catalog,
+                    "chrome-bookmark-folder-aria",
+                    "name",
+                    folder.name.clone(),
+                ))
                 .flex()
                 .items_center()
                 .h(px(manager_row_height))
@@ -10170,6 +10180,7 @@ impl RenderOnce for FileViewHost {
                                 visible_index,
                                 layout,
                                 colors,
+                                catalog,
                             ));
                         } else if let Some(descriptor) = row_column_registry.get(&column_id) {
                             ordered_detail_cells.push(unavailable_detail_cell(
@@ -12141,6 +12152,7 @@ fn code_lines_detail_column_cell(
     visible_index: usize,
     layout: crate::layout::LayoutTokens,
     colors: crate::theme::SemanticColors,
+    catalog: Catalog,
 ) -> gpui::AnyElement {
     match column {
         CodeLinesDetailColumn::Ready(visuals, runtime) => {
@@ -12152,6 +12164,7 @@ fn code_lines_detail_column_cell(
                     visible_index,
                     layout,
                     colors,
+                    catalog,
                 )
             } else {
                 code_lines_detail_cell(
@@ -12167,6 +12180,7 @@ fn code_lines_detail_column_cell(
                     visible_index,
                     layout,
                     colors,
+                    catalog,
                 )
             }
         }
@@ -12183,9 +12197,10 @@ fn host_admission_detail_cell(
     visible_index: usize,
     layout: crate::layout::LayoutTokens,
     colors: crate::theme::SemanticColors,
+    catalog: Catalog,
 ) -> gpui::AnyElement {
     let width = f32::from(view_settings.details_column_width(&descriptor.id));
-    let (label, reason, is_limit) = admission_cell_presentation(admission);
+    let (label, reason, is_limit) = admission_cell_presentation(admission, catalog);
     div()
         .id(format!(
             "{}-{visible_index}",
@@ -12213,14 +12228,19 @@ fn host_admission_detail_cell(
                     .into()
                 })
         })
-        .child(label.to_owned())
+        .child(label)
         .into_any_element()
 }
 
 fn admission_cell_presentation(
     admission: crate::code_lines_column::FolderAdmissionStateV1,
-) -> (&'static str, &'static str, bool) {
-    (admission.label(), admission.reason(), admission.is_limit())
+    catalog: Catalog,
+) -> (String, String, bool) {
+    (
+        admission.label(catalog),
+        admission.reason(catalog),
+        admission.is_limit(),
+    )
 }
 
 struct AdmissionLimitTooltip {
@@ -12261,10 +12281,11 @@ fn code_lines_detail_cell(
     visible_index: usize,
     layout: crate::layout::LayoutTokens,
     colors: crate::theme::SemanticColors,
+    catalog: Catalog,
 ) -> gpui::AnyElement {
     let descriptor = &visuals.config.descriptor;
     let value = visuals.values.get(entry_id);
-    let error = visuals.presentation_error_for(entry_id);
+    let error = visuals.presentation_error_for(entry_id, catalog);
     let maximum = visuals.maximum_value();
     let item_id = extension_render_item_id(entry_id);
     let render_generation = extension_render_generation(
@@ -15990,17 +16011,30 @@ mod tests {
     fn code_lines_blocked_cells_share_limit_label_but_keep_distinct_reasons() {
         use crate::code_lines_column::FolderAdmissionStateV1;
 
+        let zh = explorer_i18n::Catalog::new(explorer_i18n::AppLocale::ZhTw);
         assert_eq!(
-            admission_cell_presentation(FolderAdmissionStateV1::Unavailable),
-            ("Limit", "依賴 File Count，因此未啟動", true)
+            admission_cell_presentation(FolderAdmissionStateV1::Unavailable, zh),
+            (
+                "Limit".to_owned(),
+                "依賴 File Count，因此未啟動".to_owned(),
+                true
+            )
         );
         assert_eq!(
-            admission_cell_presentation(FolderAdmissionStateV1::OverLimit),
-            ("Limit", "File Count 超過限制，因此未啟動", true)
+            admission_cell_presentation(FolderAdmissionStateV1::OverLimit, zh),
+            (
+                "Limit".to_owned(),
+                "File Count 超過限制，因此未啟動".to_owned(),
+                true
+            )
         );
         assert_eq!(
-            admission_cell_presentation(FolderAdmissionStateV1::Pending),
-            ("等待 File Count…", "等待 File Count…", false)
+            admission_cell_presentation(FolderAdmissionStateV1::Pending, zh),
+            (
+                "等待 File Count…".to_owned(),
+                "等待 File Count…".to_owned(),
+                false
+            )
         );
     }
 

@@ -334,3 +334,13 @@ desktop-resize-taskbar-height = ปรับความสูงแถบงา
 desktop-notification-area = พื้นที่แจ้งเตือน
 desktop-show-all-tray-icons = แสดงไอคอนถาดระบบทั้งหมด
 desktop-system-status = สถานะระบบ
+
+desktop-muted-volume = ปิดเสียง { $volume }%
+desktop-volume-percent = ระดับเสียง { $volume }%
+desktop-volume-dash = ระดับเสียง —
+desktop-volume-percent-muted = ระดับเสียง { $volume } เปอร์เซ็นต์ ปิดเสียง
+desktop-volume-percent-aria = ระดับเสียง { $volume } เปอร์เซ็นต์
+desktop-network-label = เครือข่าย
+desktop-network-dash = เครือข่าย —
+desktop-input-language = ภาษาป้อนเข้า { $value }
+desktop-input-language-unavailable = ภาษาป้อนเข้าใช้ไม่ได้ { $reason }

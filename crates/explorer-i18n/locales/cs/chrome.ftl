@@ -227,3 +227,8 @@ chrome-folder-icon = Ikona složky { $name }
 
 chrome-untitled = Bez názvu
 chrome-submit-disabled = Odeslání zakázáno
+
+chrome-auto-size-column = Přizpůsobit tento sloupec
+chrome-auto-size-all-columns = Přizpůsobit všechny sloupce
+chrome-show-proportional-bar = Zobrazit poměrný pruh
+chrome-show-comment-blank-detail = Zobrazit komentáře a prázdné řádky

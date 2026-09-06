@@ -227,3 +227,8 @@ chrome-folder-icon = Ordnersymbol { $name }
 
 chrome-untitled = Unbenannt
 chrome-submit-disabled = Senden deaktiviert
+
+chrome-auto-size-column = Diese Spalte automatisch anpassen
+chrome-auto-size-all-columns = Alle Spalten automatisch anpassen
+chrome-show-proportional-bar = Proportionale Leiste anzeigen
+chrome-show-comment-blank-detail = Kommentare und Leerzeilen anzeigen

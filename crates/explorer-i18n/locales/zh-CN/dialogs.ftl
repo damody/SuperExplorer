@@ -154,7 +154,7 @@ dialog-unavailable = 无法获取
 
 dialog-bytes = { $value } 字节
 
-dialog-extension-author-bio = SuperExplorer 與官方範例扩展作者
+dialog-extension-author-bio = SuperExplorer 与官方范例扩展作者
 
 dialog-extension-purpose-folder-size = 显示文件大小并在后台递归计算文件夹总大小。
 

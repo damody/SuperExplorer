@@ -334,3 +334,13 @@ desktop-resize-taskbar-height = Zmień wysokość paska zadań
 desktop-notification-area = Obszar powiadomień
 desktop-show-all-tray-icons = Pokaż wszystkie ikony zasobnika
 desktop-system-status = Stan systemu
+
+desktop-muted-volume = Wyciszono { $volume }%
+desktop-volume-percent = Głośność { $volume }%
+desktop-volume-dash = Głośność —
+desktop-volume-percent-muted = Głośność { $volume } procent, wyciszono
+desktop-volume-percent-aria = Głośność { $volume } procent
+desktop-network-label = Sieć
+desktop-network-dash = Sieć —
+desktop-input-language = Język wprowadzania { $value }
+desktop-input-language-unavailable = Język wprowadzania niedostępny { $reason }

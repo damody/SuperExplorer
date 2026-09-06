@@ -334,3 +334,13 @@ desktop-resize-taskbar-height = Змінити висоту панелі зав�
 desktop-notification-area = Область сповіщень
 desktop-show-all-tray-icons = Показати всі піктограми області сповіщень
 desktop-system-status = Стан системи
+
+desktop-muted-volume = Без звуку { $volume }%
+desktop-volume-percent = Гучність { $volume }%
+desktop-volume-dash = Гучність —
+desktop-volume-percent-muted = Гучність { $volume } відсотків, без звуку
+desktop-volume-percent-aria = Гучність { $volume } відсотків
+desktop-network-label = Мережа
+desktop-network-dash = Мережа —
+desktop-input-language = Мова вводу { $value }
+desktop-input-language-unavailable = Мова вводу недоступна { $reason }

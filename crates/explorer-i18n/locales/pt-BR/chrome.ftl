@@ -227,3 +227,8 @@ chrome-folder-icon = Ícone da pasta { $name }
 
 chrome-untitled = Sem título
 chrome-submit-disabled = Envio desabilitado
+
+chrome-auto-size-column = Ajustar esta coluna
+chrome-auto-size-all-columns = Ajustar todas as colunas
+chrome-show-proportional-bar = Mostrar barra proporcional
+chrome-show-comment-blank-detail = Mostrar comentários e linhas em branco

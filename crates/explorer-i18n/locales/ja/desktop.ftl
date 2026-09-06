@@ -334,3 +334,13 @@ desktop-resize-taskbar-height = タスク バーの高さを変更
 desktop-notification-area = 通知領域
 desktop-show-all-tray-icons = すべてのトレイ アイコンを表示
 desktop-system-status = システム状態
+
+desktop-muted-volume = ミュート { $volume }%
+desktop-volume-percent = 音量 { $volume }%
+desktop-volume-dash = 音量 —
+desktop-volume-percent-muted = 音量 { $volume } パーセント、ミュート
+desktop-volume-percent-aria = 音量 { $volume } パーセント
+desktop-network-label = ネットワーク
+desktop-network-dash = ネットワーク —
+desktop-input-language = 入力言語 { $value }
+desktop-input-language-unavailable = 入力言語は利用できません { $reason }

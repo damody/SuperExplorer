@@ -227,3 +227,8 @@ chrome-folder-icon = Biểu tượng thư mục { $name }
 
 chrome-untitled = Không có tiêu đề
 chrome-submit-disabled = Không thể gửi
+
+chrome-auto-size-column = Tự chỉnh cột này
+chrome-auto-size-all-columns = Tự chỉnh mọi cột
+chrome-show-proportional-bar = Hiện thanh tỷ lệ
+chrome-show-comment-blank-detail = Hiện chú thích và dòng trống

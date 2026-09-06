@@ -227,3 +227,8 @@ chrome-folder-icon = { $name } klasör simgesi
 
 chrome-untitled = Adsız
 chrome-submit-disabled = Gönderme devre dışı
+
+chrome-auto-size-column = Bu sütunu otomatik sığdır
+chrome-auto-size-all-columns = Tüm sütunları otomatik sığdır
+chrome-show-proportional-bar = Oransal çubuğu göster
+chrome-show-comment-blank-detail = Yorum ve boş satır ayrıntısını göster

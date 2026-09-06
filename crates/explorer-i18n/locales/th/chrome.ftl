@@ -227,3 +227,8 @@ chrome-folder-icon = ไอคอนโฟลเดอร์ { $name }
 
 chrome-untitled = ไม่มีชื่อ
 chrome-submit-disabled = ปิดการส่ง
+
+chrome-auto-size-column = ปรับความกว้างคอลัมน์นี้
+chrome-auto-size-all-columns = ปรับความกว้างทุกคอลัมน์
+chrome-show-proportional-bar = แสดงแถบสัดส่วน
+chrome-show-comment-blank-detail = แสดงรายละเอียดความเห็นและบรรทัดว่าง

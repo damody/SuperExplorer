@@ -334,3 +334,13 @@ desktop-resize-taskbar-height = Görev çubuğu yüksekliğini değiştir
 desktop-notification-area = Bildirim alanı
 desktop-show-all-tray-icons = Tüm sistem tepsisi simgelerini göster
 desktop-system-status = Sistem durumu
+
+desktop-muted-volume = Sessiz { $volume }%
+desktop-volume-percent = Ses { $volume }%
+desktop-volume-dash = Ses —
+desktop-volume-percent-muted = Ses yüzde { $volume }, sessiz
+desktop-volume-percent-aria = Ses yüzde { $volume }
+desktop-network-label = Ağ
+desktop-network-dash = Ağ —
+desktop-input-language = Giriş dili { $value }
+desktop-input-language-unavailable = Giriş dili kullanılamıyor { $reason }

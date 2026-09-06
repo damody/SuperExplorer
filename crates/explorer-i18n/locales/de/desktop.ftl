@@ -334,3 +334,13 @@ desktop-resize-taskbar-height = Höhe der Taskleiste ändern
 desktop-notification-area = Infobereich
 desktop-show-all-tray-icons = Alle Infobereichssymbole anzeigen
 desktop-system-status = Systemstatus
+
+desktop-muted-volume = Stumm { $volume }%
+desktop-volume-percent = Lautstärke { $volume }%
+desktop-volume-dash = Lautstärke —
+desktop-volume-percent-muted = Lautstärke { $volume } Prozent, stumm
+desktop-volume-percent-aria = Lautstärke { $volume } Prozent
+desktop-network-label = Netzwerk
+desktop-network-dash = Netzwerk —
+desktop-input-language = Eingabesprache { $value }
+desktop-input-language-unavailable = Eingabesprache nicht verfügbar { $reason }

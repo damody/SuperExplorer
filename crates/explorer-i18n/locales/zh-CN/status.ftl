@@ -102,7 +102,7 @@ apk-failed = 安装 { $name } 到 { $target } 失败：{ $error }
 
 status-no-selection = 未选择任何项目
 
-status-details-unavailable = 無法加载详细信息
+status-details-unavailable = 无法加载详细信息
 
 status-item-count = { $count } 个项目
 
@@ -196,3 +196,45 @@ transfer-cancel-operation = 取消文件操作
 transfer-open-location = 打开传输位置
 
 status-generic-item = 项目
+
+status-operation-queue-failed = 操作无法加入队列，但资源管理器仍可继续。
+status-folder-options-save-failed = 无法保存文件夹选项。请检查会话存储后重试。
+status-bookmark-unavailable = 书签已不可用。
+status-bookmark-delete-window-failed = 无法打开书签删除确认窗口。
+status-bookmark-saved = 书签已保存。
+status-bookmark-save-failed = 无法保存书签。
+status-bookmark-name-required = 必须提供书签名称与目标。
+status-bookmark-renamed = 书签已重命名。
+status-bookmark-rename-failed = 无法重命名书签。
+status-bookmark-editor-window-failed = 无法打开书签编辑窗口。
+status-bookmark-manager-window-failed = 无法打开书签管理器窗口。
+status-bookmark-folder-editor-window-failed = 无法打开书签文件夹编辑窗口。
+status-bookmark-folder-created = 已创建书签文件夹。
+status-bookmark-folder-save-failed = 无法保存书签文件夹。
+status-bookmark-folder-renamed = 书签文件夹已重命名。
+status-bookmark-folder-rename-failed = 无法重命名书签文件夹。
+status-bookmark-folder-name-required = 必须提供书签文件夹名称。
+status-bookmark-folder-removed = 已删除书签文件夹。
+status-bookmark-folder-remove-failed = 无法删除书签文件夹。
+status-bookmark-folder-delete-window-failed = 无法打开书签文件夹删除确认窗口。
+status-bookmark-removed = 已删除书签。
+status-bookmark-remove-failed = 无法删除书签。
+status-bookmark-removal-save-failed = 无法保存书签删除。
+status-bookmark-order-updated = 书签顺序已更新。
+status-bookmark-order-save-failed = 无法保存书签顺序。
+status-bookmark-moved = 书签已移动。
+status-bookmark-move-save-failed = 无法保存书签移动。
+status-bookmark-backup-copied = 书签备份已复制到剪贴板。
+status-bookmark-backup-failed = 无法备份书签：{ $error }
+status-bookmark-imported = 已从剪贴板导入书签。
+status-bookmark-import-persist-failed = 无法保存导入的书签。
+status-bookmark-import-invalid = 剪贴板没有有效的书签备份。
+status-bookmark-folder-missing = 无法打开书签：文件夹已不存在。
+status-bookmark-path-unavailable = 无法打开书签：文件夹路径不可用或无效。
+status-bookmark-opened = 已打开书签。
+status-bookmark-open-failed = 无法打开书签：{ $error }
+status-bookmark-file-launcher-unavailable = 文件启动器不可用
+status-lua-bookmark-need-folder = Lua 书签需要文件系统文件夹。
+status-lua-bookmark-completed = Lua 书签已完成。
+status-lua-bookmark-timed-out = Lua 书签已超时。
+status-lua-bookmark-failed = Lua 书签失败：{ $error }

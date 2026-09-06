@@ -334,3 +334,13 @@ desktop-resize-taskbar-height = Změnit výšku hlavního panelu
 desktop-notification-area = Oznamovací oblast
 desktop-show-all-tray-icons = Zobrazit všechny ikony oznamovací oblasti
 desktop-system-status = Stav systému
+
+desktop-muted-volume = Ztlumeno { $volume } %
+desktop-volume-percent = Hlasitost { $volume } %
+desktop-volume-dash = Hlasitost —
+desktop-volume-percent-muted = Hlasitost { $volume } procent, ztlumeno
+desktop-volume-percent-aria = Hlasitost { $volume } procent
+desktop-network-label = Síť
+desktop-network-dash = Síť —
+desktop-input-language = Vstupní jazyk { $value }
+desktop-input-language-unavailable = Vstupní jazyk není k dispozici { $reason }

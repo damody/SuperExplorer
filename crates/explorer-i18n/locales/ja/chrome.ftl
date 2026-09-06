@@ -227,3 +227,8 @@ chrome-folder-icon = { $name } のフォルダー アイコン
 
 chrome-untitled = 無題
 chrome-submit-disabled = 送信できません
+
+chrome-auto-size-column = この列を自動調整
+chrome-auto-size-all-columns = すべての列を自動調整
+chrome-show-proportional-bar = 比例バーを表示
+chrome-show-comment-blank-detail = コメントと空行の内訳を表示

@@ -189,3 +189,13 @@ desktop-resize-taskbar-height = 調整工作列高度
 desktop-notification-area = 通知區域
 desktop-show-all-tray-icons = 顯示所有系統匣圖示
 desktop-system-status = 系統狀態
+
+desktop-muted-volume = 已靜音 { $volume }%
+desktop-volume-percent = 音量 { $volume }%
+desktop-volume-dash = 音量 —
+desktop-volume-percent-muted = 音量 { $volume } 百分比，已靜音
+desktop-volume-percent-aria = 音量 { $volume } 百分比
+desktop-network-label = 網路
+desktop-network-dash = 網路 —
+desktop-input-language = 輸入語言 { $value }
+desktop-input-language-unavailable = 輸入語言無法使用 { $reason }

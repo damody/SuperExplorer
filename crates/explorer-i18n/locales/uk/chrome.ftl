@@ -227,3 +227,8 @@ chrome-folder-icon = Піктограма папки { $name }
 
 chrome-untitled = Без назви
 chrome-submit-disabled = Надсилання вимкнено
+
+chrome-auto-size-column = Автодобір цієї колонки
+chrome-auto-size-all-columns = Автодобір усіх колонок
+chrome-show-proportional-bar = Показати пропорційну смугу
+chrome-show-comment-blank-detail = Показати коментарі та порожні рядки

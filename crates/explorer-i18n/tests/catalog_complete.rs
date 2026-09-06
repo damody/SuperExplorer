@@ -103,6 +103,8 @@ fn sample_args() -> FluentArgs<'static> {
     args.set("count", 2);
     args.set("selected", 1);
     args.set("action", "Copy");
+    args.set("volume", 50);
+    args.set("reason", "reason");
     args.set("pid", 1);
     args.set("folder", "Docs");
     args.set("hint", "hint");

@@ -94,19 +94,27 @@ pub enum FolderAdmissionStateV1 {
 }
 
 impl FolderAdmissionStateV1 {
-    pub const fn label(self) -> &'static str {
+    pub const fn label_key(self) -> &'static str {
         match self {
-            Self::Pending => "等待 File Count…",
-            Self::Unavailable | Self::OverLimit => "Limit",
+            Self::Pending => "status-waiting-file-count",
+            Self::Unavailable | Self::OverLimit => "status-file-count-pending-label",
         }
     }
 
-    pub const fn reason(self) -> &'static str {
+    pub const fn reason_key(self) -> &'static str {
         match self {
-            Self::Pending => "等待 File Count…",
-            Self::Unavailable => "依賴 File Count，因此未啟動",
-            Self::OverLimit => "File Count 超過限制，因此未啟動",
+            Self::Pending => "status-waiting-file-count",
+            Self::Unavailable => "status-file-count-limit",
+            Self::OverLimit => "status-file-count-over-limit",
         }
+    }
+
+    pub fn label(self, catalog: explorer_i18n::Catalog) -> String {
+        catalog.t(self.label_key())
+    }
+
+    pub fn reason(self, catalog: explorer_i18n::Catalog) -> String {
+        catalog.t(self.reason_key())
     }
 
     pub const fn is_limit(self) -> bool {
@@ -193,11 +201,16 @@ impl CodeLinesColumnVisuals {
         }
     }
 
-    pub fn presentation_error_for(&self, item_id: &ShellItemId) -> Option<&str> {
-        self.errors
-            .get(item_id)
-            .map(String::as_str)
-            .or_else(|| self.admissions.get(item_id).map(|state| state.reason()))
+    pub fn presentation_error_for(
+        &self,
+        item_id: &ShellItemId,
+        catalog: explorer_i18n::Catalog,
+    ) -> Option<String> {
+        self.errors.get(item_id).cloned().or_else(|| {
+            self.admissions
+                .get(item_id)
+                .map(|state| state.reason(catalog))
+        })
     }
 
     pub fn exact_sort_values(&self) -> HashMap<ShellItemId, Option<u64>> {
@@ -304,18 +317,25 @@ mod tests {
             policy.evaluate(facts(999, 4)),
             FolderAdmissionOutcomeV1::OverLimit
         );
-        assert_eq!(FolderAdmissionStateV1::Pending.label(), "等待 File Count…");
-        assert_eq!(FolderAdmissionStateV1::Pending.reason(), "等待 File Count…");
-        assert!(!FolderAdmissionStateV1::Pending.is_limit());
-        assert_eq!(FolderAdmissionStateV1::OverLimit.label(), "Limit");
+        let zh = explorer_i18n::Catalog::new(explorer_i18n::AppLocale::ZhTw);
         assert_eq!(
-            FolderAdmissionStateV1::OverLimit.reason(),
+            FolderAdmissionStateV1::Pending.label(zh),
+            "等待 File Count…"
+        );
+        assert_eq!(
+            FolderAdmissionStateV1::Pending.reason(zh),
+            "等待 File Count…"
+        );
+        assert!(!FolderAdmissionStateV1::Pending.is_limit());
+        assert_eq!(FolderAdmissionStateV1::OverLimit.label(zh), "Limit");
+        assert_eq!(
+            FolderAdmissionStateV1::OverLimit.reason(zh),
             "File Count 超過限制，因此未啟動"
         );
         assert!(FolderAdmissionStateV1::OverLimit.is_limit());
-        assert_eq!(FolderAdmissionStateV1::Unavailable.label(), "Limit");
+        assert_eq!(FolderAdmissionStateV1::Unavailable.label(zh), "Limit");
         assert_eq!(
-            FolderAdmissionStateV1::Unavailable.reason(),
+            FolderAdmissionStateV1::Unavailable.reason(zh),
             "依賴 File Count，因此未啟動"
         );
         assert!(FolderAdmissionStateV1::Unavailable.is_limit());

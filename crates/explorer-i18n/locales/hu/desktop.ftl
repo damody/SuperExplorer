@@ -334,3 +334,13 @@ desktop-resize-taskbar-height = Tálca magasságának módosítása
 desktop-notification-area = Értesítési terület
 desktop-show-all-tray-icons = Összes tálcaikon megjelenítése
 desktop-system-status = Rendszerállapot
+
+desktop-muted-volume = Némítva { $volume }%
+desktop-volume-percent = Hangerő { $volume }%
+desktop-volume-dash = Hangerő —
+desktop-volume-percent-muted = Hangerő { $volume } százalék, némítva
+desktop-volume-percent-aria = Hangerő { $volume } százalék
+desktop-network-label = Hálózat
+desktop-network-dash = Hálózat —
+desktop-input-language = Beviteli nyelv { $value }
+desktop-input-language-unavailable = A beviteli nyelv nem érhető el { $reason }

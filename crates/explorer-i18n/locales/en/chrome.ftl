@@ -124,3 +124,8 @@ chrome-folder-icon = { $name } folder icon
 
 chrome-untitled = Untitled
 chrome-submit-disabled = Submit disabled
+
+chrome-auto-size-column = Auto-fit this column
+chrome-auto-size-all-columns = Auto-fit all columns
+chrome-show-proportional-bar = Show proportional bar
+chrome-show-comment-blank-detail = Show comment and blank-line detail

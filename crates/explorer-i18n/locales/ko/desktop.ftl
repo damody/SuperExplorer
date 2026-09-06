@@ -334,3 +334,13 @@ desktop-resize-taskbar-height = 작업 표시줄 높이 조정
 desktop-notification-area = 알림 영역
 desktop-show-all-tray-icons = 모든 알림 영역 아이콘 표시
 desktop-system-status = 시스템 상태
+
+desktop-muted-volume = 음소거 { $volume }%
+desktop-volume-percent = 볼륨 { $volume }%
+desktop-volume-dash = 볼륨 —
+desktop-volume-percent-muted = 볼륨 { $volume }퍼센트, 음소거
+desktop-volume-percent-aria = 볼륨 { $volume }퍼센트
+desktop-network-label = 네트워크
+desktop-network-dash = 네트워크 —
+desktop-input-language = 입력 언어 { $value }
+desktop-input-language-unavailable = 입력 언어를 사용할 수 없음 { $reason }

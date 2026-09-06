@@ -227,3 +227,8 @@ chrome-folder-icon = Значок папки { $name }
 
 chrome-untitled = Без названия
 chrome-submit-disabled = Отправка недоступна
+
+chrome-auto-size-column = Автоподбор этой колонки
+chrome-auto-size-all-columns = Автоподбор всех колонок
+chrome-show-proportional-bar = Показать пропорциональную полосу
+chrome-show-comment-blank-detail = Показать комментарии и пустые строки
