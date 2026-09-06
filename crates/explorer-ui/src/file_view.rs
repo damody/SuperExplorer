@@ -8,6 +8,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use explorer_i18n::Catalog;
 use explorer_model::{ColumnId, DirectorySnapshot, FileEntry, SortDescriptor, SortDirection};
 
 pub const MAX_STANDARD_REALIZED_ITEMS: usize = 250;
@@ -54,11 +55,15 @@ impl DetailsFilters {
         self.selected.clear();
     }
 
-    pub fn options(snapshot: &DirectorySnapshot, column: &ColumnId) -> Vec<DetailsFilterOption> {
+    pub fn options(
+        snapshot: &DirectorySnapshot,
+        column: &ColumnId,
+        catalog: Catalog,
+    ) -> Vec<DetailsFilterOption> {
         let mut options = snapshot
             .entries()
             .iter()
-            .map(|entry| filter_value(entry, column))
+            .map(|entry| filter_value(entry, column, catalog))
             .collect::<Vec<_>>();
         options.sort_by(|left, right| left.1.cmp(&right.1));
         options.dedup_by(|left, right| left.0 == right.0);
@@ -70,13 +75,13 @@ impl DetailsFilters {
 
     fn matches(&self, entry: &FileEntry) -> bool {
         self.selected.iter().all(|(column, selected)| {
-            let (key, _) = filter_value(entry, column);
+            let (key, _) = filter_value(entry, column, Catalog::new(explorer_i18n::AppLocale::En));
             selected.contains(&key)
         })
     }
 }
 
-fn filter_value(entry: &FileEntry, column: &ColumnId) -> (String, String) {
+fn filter_value(entry: &FileEntry, column: &ColumnId, catalog: Catalog) -> (String, String) {
     match column {
         ColumnId::Name => match entry
             .display_name
@@ -87,55 +92,70 @@ fn filter_value(entry: &FileEntry, column: &ColumnId) -> (String, String) {
             Some('A'..='H') => ("name:a-h".into(), "A–H".into()),
             Some('I'..='P') => ("name:i-p".into(), "I–P".into()),
             Some('Q'..='Z') => ("name:q-z".into(), "Q–Z".into()),
-            _ => ("name:other".into(), "其他".into()),
+            _ => ("name:other".into(), catalog.t("filter-other")),
         },
         ColumnId::Size => match entry.metadata.size_bytes {
-            Some(bytes) if bytes <= 16 * 1024 => ("size:tiny".into(), "極小 (0–16 KB)".into()),
-            Some(bytes) if bytes <= 1024 * 1024 => ("size:small".into(), "小 (16 KB–1 MB)".into()),
+            Some(bytes) if bytes <= 16 * 1024 => ("size:tiny".into(), catalog.t("filter-tiny")),
+            Some(bytes) if bytes <= 1024 * 1024 => ("size:small".into(), catalog.t("filter-small")),
             Some(bytes) if bytes <= 128 * 1024 * 1024 => {
-                ("size:medium".into(), "中 (1–128 MB)".into())
+                ("size:medium".into(), catalog.t("filter-medium"))
             }
-            Some(_) => ("size:large".into(), "大 (>128 MB)".into()),
-            None => ("size:none".into(), "未指定".into()),
+            Some(_) => ("size:large".into(), catalog.t("filter-large")),
+            None => ("size:none".into(), catalog.t("filter-unspecified")),
         },
-        ColumnId::DateModified => date_filter_value(entry.metadata.modified_sort_key),
-        ColumnId::DateCreated => date_filter_value(entry.metadata.created_sort_key),
-        ColumnId::Type => text_filter_value(
-            entry
+        ColumnId::DateModified => date_filter_value(entry.metadata.modified_sort_key, catalog),
+        ColumnId::DateCreated => date_filter_value(entry.metadata.created_sort_key, catalog),
+        ColumnId::Type => {
+            if let Some(display) = entry
                 .metadata
                 .type_display
                 .as_deref()
-                .or(if entry.is_container {
-                    Some("檔案資料夾")
-                } else {
-                    None
-                }),
-            "type",
-        ),
-        ColumnId::Authors => {
-            text_filter_value(entry.metadata.authors_display.as_deref(), "authors")
+                .filter(|value| !value.is_empty())
+            {
+                text_filter_value(Some(display), "type", catalog)
+            } else if entry.is_container {
+                ("type:file-folder".into(), catalog.t("filter-file-folder"))
+            } else {
+                text_filter_value(None, "type", catalog)
+            }
         }
-        ColumnId::Tags => text_filter_value(entry.metadata.tags_display.as_deref(), "tags"),
-        ColumnId::Title => text_filter_value(entry.metadata.title_display.as_deref(), "title"),
+        ColumnId::Authors => text_filter_value(
+            entry.metadata.authors_display.as_deref(),
+            "authors",
+            catalog,
+        ),
+        ColumnId::Tags => {
+            text_filter_value(entry.metadata.tags_display.as_deref(), "tags", catalog)
+        }
+        ColumnId::Title => {
+            text_filter_value(entry.metadata.title_display.as_deref(), "title", catalog)
+        }
         ColumnId::Permissions => text_filter_value(
             Some(explorer_model::format_unix_mode(entry.metadata.unix_mode).as_str()),
             "permissions",
+            catalog,
         ),
-        ColumnId::FileCount | ColumnId::FolderCount | ColumnId::Extension { .. } => {
-            ("extension:unavailable".into(), "無法使用".into())
-        }
+        ColumnId::FileCount | ColumnId::FolderCount | ColumnId::Extension { .. } => (
+            "extension:unavailable".into(),
+            catalog.t("filter-unavailable"),
+        ),
     }
 }
 
-fn text_filter_value(value: Option<&str>, prefix: &str) -> (String, String) {
-    let label = value.filter(|value| !value.is_empty()).unwrap_or("未指定");
-    (
-        format!("{prefix}:{}", label.to_lowercase()),
-        label.to_owned(),
-    )
+fn text_filter_value(value: Option<&str>, prefix: &str, catalog: Catalog) -> (String, String) {
+    match value.filter(|value| !value.is_empty()) {
+        Some(label) => (
+            format!("{prefix}:{}", label.to_lowercase()),
+            label.to_owned(),
+        ),
+        None => (
+            format!("{prefix}:unspecified"),
+            catalog.t("filter-unspecified"),
+        ),
+    }
 }
 
-fn date_filter_value(filetime: Option<u64>) -> (String, String) {
+fn date_filter_value(filetime: Option<u64>, catalog: Catalog) -> (String, String) {
     const WINDOWS_TO_UNIX_SECONDS: u64 = 11_644_473_600;
     const TICKS_PER_SECOND: u64 = 10_000_000;
     let now = SystemTime::now()
@@ -146,13 +166,13 @@ fn date_filter_value(filetime: Option<u64>) -> (String, String) {
         .and_then(|value| value.checked_div(TICKS_PER_SECOND))
         .and_then(|value| value.checked_sub(WINDOWS_TO_UNIX_SECONDS))
     else {
-        return ("date:none".into(), "未指定".into());
+        return ("date:none".into(), catalog.t("filter-unspecified"));
     };
     match now.saturating_sub(seconds) / 86_400 {
-        0 => ("date:today".into(), "今天".into()),
-        1 => ("date:yesterday".into(), "昨天".into()),
-        2..=6 => ("date:this-week".into(), "這星期初".into()),
-        _ => ("date:earlier".into(), "較早".into()),
+        0 => ("date:today".into(), catalog.t("filter-today")),
+        1 => ("date:yesterday".into(), catalog.t("filter-yesterday")),
+        2..=6 => ("date:this-week".into(), catalog.t("filter-this-week")),
+        _ => ("date:earlier".into(), catalog.t("filter-earlier")),
     }
 }
 
@@ -947,7 +967,11 @@ mod tests {
         assert_eq!(presentation.len(), 1);
         assert_eq!(presentation.entry(0).unwrap().1.display_name, "Alpha.txt");
 
-        let name_options = DetailsFilters::options(&snapshot, &ColumnId::Name);
+        let name_options = DetailsFilters::options(
+            &snapshot,
+            &ColumnId::Name,
+            Catalog::new(explorer_i18n::AppLocale::ZhTw),
+        );
         assert!(name_options.iter().any(|option| option.label == "A–H"));
         assert!(name_options.iter().any(|option| option.label == "Q–Z"));
     }

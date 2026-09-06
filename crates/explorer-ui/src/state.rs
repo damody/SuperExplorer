@@ -2569,9 +2569,7 @@ impl AppViewState {
 
     /// Snapshot + revision from the most recent successful Apply/OK, if any.
     #[must_use]
-    pub fn last_applied_folder_options(
-        &self,
-    ) -> Option<&(FolderOptionsAppliedSnapshotV1, u64)> {
+    pub fn last_applied_folder_options(&self) -> Option<&(FolderOptionsAppliedSnapshotV1, u64)> {
         self.last_applied_folder_options.as_ref()
     }
 
@@ -2963,7 +2961,7 @@ impl AppViewState {
             .active_tab()
             .visible_snapshot()
             .map_or_else(Vec::new, |snapshot| {
-                crate::file_view::DetailsFilters::options(snapshot, &column)
+                crate::file_view::DetailsFilters::options(snapshot, &column, self.catalog())
             })
     }
 
@@ -6990,19 +6988,14 @@ mod tests {
         let mut args = explorer_i18n::FluentArgs::new();
         args.set("name", AppLocale::Ja.native_name());
         assert_eq!(
-            strip_isolates(
-                &Catalog::new(AppLocale::En).t_args("language-follow-windows", &args)
-            ),
+            strip_isolates(&Catalog::new(AppLocale::En).t_args("language-follow-windows", &args)),
             "Windows display language (日本語)"
         );
         assert_eq!(
             Catalog::new(AppLocale::En).t("settings-language"),
             "Language"
         );
-        assert_eq!(
-            Catalog::new(AppLocale::ZhTw).t("settings-language"),
-            "語言"
-        );
+        assert_eq!(Catalog::new(AppLocale::ZhTw).t("settings-language"), "語言");
     }
 
     #[test]
@@ -11178,7 +11171,10 @@ mod tests {
             .cloned()
             .expect("owner published an applied snapshot");
         assert_eq!(revision, 1);
-        assert_eq!(applied.locale_choice, super::LocaleChoice::Explicit(AppLocale::Ja));
+        assert_eq!(
+            applied.locale_choice,
+            super::LocaleChoice::Explicit(AppLocale::Ja)
+        );
 
         let mut first_peer = AppViewState::default();
         let mut second_peer = AppViewState::default();

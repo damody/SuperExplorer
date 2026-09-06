@@ -5,6 +5,7 @@ use std::{
     sync::{OnceLock, RwLock},
 };
 
+use explorer_i18n::{Catalog, FluentArgs};
 use explorer_model::{LocationDescriptor, ShellIconKey, ShellIconTheme, SyntheticRoot};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -229,10 +230,10 @@ impl NavigationItem {
         }
     }
 
-    fn phone_root() -> Self {
+    fn phone_root(catalog: Catalog) -> Self {
         Self {
             id: "phones".to_owned(),
-            label: "手機".to_owned(),
+            label: catalog.t("nav-phones"),
             kind: NavigationItemKind::Section,
             icon: Some(NavigationIcon::Phone),
             location: None,
@@ -244,10 +245,10 @@ impl NavigationItem {
         }
     }
 
-    fn sftp_root() -> Self {
+    fn sftp_root(catalog: Catalog) -> Self {
         Self {
             id: "sftp".to_owned(),
-            label: "SFTP".to_owned(),
+            label: catalog.t("nav-sftp"),
             kind: NavigationItemKind::Section,
             icon: Some(NavigationIcon::Server),
             location: None,
@@ -259,10 +260,10 @@ impl NavigationItem {
         }
     }
 
-    fn ftp_root() -> Self {
+    fn ftp_root(catalog: Catalog) -> Self {
         Self {
             id: "ftp".to_owned(),
-            label: "FTP".to_owned(),
+            label: catalog.t("nav-ftp"),
             kind: NavigationItemKind::Section,
             icon: Some(NavigationIcon::Network),
             location: None,
@@ -274,10 +275,10 @@ impl NavigationItem {
         }
     }
 
-    fn gdrive_root() -> Self {
+    fn gdrive_root(catalog: Catalog) -> Self {
         Self {
             id: "gdrive".to_owned(),
-            label: "Google Drive".to_owned(),
+            label: catalog.t("nav-gdrive"),
             kind: NavigationItemKind::Section,
             icon: Some(NavigationIcon::GoogleDrive),
             location: None,
@@ -339,13 +340,14 @@ fn drive_root_display_letter(display_name: &str) -> Option<char> {
         .then(|| char::from(suffix[1]).to_ascii_uppercase())
 }
 
-pub fn windows_navigation_items() -> Vec<NavigationItem> {
-    windows_navigation_items_with_pins(std::iter::empty())
+pub fn windows_navigation_items(catalog: Catalog) -> Vec<NavigationItem> {
+    windows_navigation_items_with_pins(catalog, std::iter::empty())
 }
 
 /// Builds the stable Explorer root tree plus the application-owned Quick Access pins.
 /// Pin descriptors are already privacy-filtered and reconstructible at this boundary.
 pub fn windows_navigation_items_with_pins(
+    catalog: Catalog,
     pins: impl IntoIterator<Item = (String, LocationDescriptor)>,
 ) -> Vec<NavigationItem> {
     let pins = pins.into_iter().collect::<Vec<_>>();
@@ -357,7 +359,7 @@ pub fn windows_navigation_items_with_pins(
     let mut items = vec![
         NavigationItem::location(
             "home",
-            "常用",
+            catalog.t("nav-home"),
             NavigationIcon::Home,
             LocationDescriptor::synthetic(SyntheticRoot::Home),
             0,
@@ -365,14 +367,14 @@ pub fn windows_navigation_items_with_pins(
         ),
         NavigationItem::section(
             "quick-access",
-            "Quick access",
+            catalog.t("nav-quick-access"),
             NavigationIcon::QuickAccess,
             LocationDescriptor::synthetic(SyntheticRoot::QuickAccess),
         )
         .with_availability(quick_access_availability),
         NavigationItem::location(
             "gallery",
-            "圖庫",
+            catalog.t("nav-gallery"),
             NavigationIcon::Gallery,
             LocationDescriptor::ParsingName(
                 "shell:::{e88865ea-0e1c-4e20-9aa6-edcd0212c87c}".into(),
@@ -381,6 +383,7 @@ pub fn windows_navigation_items_with_pins(
             false,
         ),
     ];
+    let onedrive_label = catalog.t("nav-onedrive");
     if let Some(path) = std::env::var_os("OneDrive")
         .map(PathBuf::from)
         .filter(|path| path.is_dir())
@@ -388,7 +391,7 @@ pub fn windows_navigation_items_with_pins(
         items.push(
             NavigationItem::location(
                 "onedrive",
-                "OneDrive - Personal",
+                onedrive_label,
                 NavigationIcon::OneDrive,
                 LocationDescriptor::file_system(path),
                 0,
@@ -399,7 +402,7 @@ pub fn windows_navigation_items_with_pins(
     } else {
         items.push(NavigationItem::unavailable(
             "onedrive",
-            "OneDrive - Personal",
+            onedrive_label,
             NavigationIcon::OneDrive,
         ));
     }
@@ -421,32 +424,47 @@ pub fn windows_navigation_items_with_pins(
         .collect::<Vec<_>>();
     items.append(&mut pinned_locations);
 
-    for (id, label, parsing_name, icon) in [
-        ("desktop", "桌面", "shell:Desktop", NavigationIcon::Desktop),
+    for (id, key, parsing_name, icon) in [
+        (
+            "desktop",
+            "nav-desktop",
+            "shell:Desktop",
+            NavigationIcon::Desktop,
+        ),
         (
             "downloads",
-            "下載",
+            "nav-downloads",
             "shell:Downloads",
             NavigationIcon::Downloads,
         ),
         (
             "documents",
-            "文件",
+            "nav-documents",
             "shell:Personal",
             NavigationIcon::Documents,
         ),
         (
             "pictures",
-            "圖片",
+            "nav-pictures",
             "shell:My Pictures",
             NavigationIcon::Pictures,
         ),
-        ("music", "音樂", "shell:My Music", NavigationIcon::Music),
-        ("videos", "影片", "shell:My Video", NavigationIcon::Videos),
+        (
+            "music",
+            "nav-music",
+            "shell:My Music",
+            NavigationIcon::Music,
+        ),
+        (
+            "videos",
+            "nav-videos",
+            "shell:My Video",
+            NavigationIcon::Videos,
+        ),
     ] {
         items.push(NavigationItem::location(
             id,
-            label,
+            catalog.t(key),
             icon,
             LocationDescriptor::ParsingName(parsing_name.into()),
             0,
@@ -457,7 +475,7 @@ pub fn windows_navigation_items_with_pins(
     items.push(NavigationItem::separator("computer-separator"));
     items.push(NavigationItem::location(
         "libraries",
-        "Libraries",
+        catalog.t("nav-libraries"),
         NavigationIcon::Libraries,
         LocationDescriptor::ParsingName("shell:Libraries".into()),
         0,
@@ -465,17 +483,19 @@ pub fn windows_navigation_items_with_pins(
     ));
     items.push(NavigationItem::section(
         "this-pc",
-        "本機",
+        catalog.t("nav-this-pc"),
         NavigationIcon::Computer,
         LocationDescriptor::ParsingName("shell:MyComputerFolder".into()),
     ));
     for letter in b'C'..=b'Z' {
         let root = PathBuf::from(format!("{}:\\", char::from(letter)));
         if root.is_dir() {
+            let mut args = FluentArgs::new();
+            args.set("letter", char::from(letter).to_string());
             let label = if letter == b'C' {
-                format!("本機磁碟 ({}:)", char::from(letter))
+                catalog.t_args("nav-local-disk", &args)
             } else {
-                format!("新增磁碟區 ({}:)", char::from(letter))
+                catalog.t_args("nav-new-volume", &args)
             };
             items.push(NavigationItem::location(
                 format!("drive-{}", char::from(letter).to_ascii_lowercase()),
@@ -489,14 +509,14 @@ pub fn windows_navigation_items_with_pins(
     }
     items.push(NavigationItem::location(
         "network",
-        "網路",
+        catalog.t("nav-network"),
         NavigationIcon::Network,
         LocationDescriptor::ParsingName("shell:NetworkPlacesFolder".into()),
         0,
         false,
     ));
     items.push(NavigationItem::separator("phones-separator"));
-    items.push(NavigationItem::phone_root());
+    items.push(NavigationItem::phone_root(catalog));
     let devices = ADB_NAVIGATION_DEVICES
         .get_or_init(|| RwLock::new(Vec::new()))
         .read()
@@ -523,7 +543,7 @@ pub fn windows_navigation_items_with_pins(
             },
         });
     }
-    items.push(NavigationItem::sftp_root());
+    items.push(NavigationItem::sftp_root(catalog));
     let profiles = SFTP_NAVIGATION_PROFILES
         .get_or_init(|| RwLock::new(Vec::new()))
         .read()
@@ -550,7 +570,7 @@ pub fn windows_navigation_items_with_pins(
             },
         });
     }
-    items.push(NavigationItem::ftp_root());
+    items.push(NavigationItem::ftp_root(catalog));
     let ftp_profiles = FTP_NAVIGATION_PROFILES
         .get_or_init(|| RwLock::new(Vec::new()))
         .read()
@@ -565,7 +585,9 @@ pub fn windows_navigation_items_with_pins(
         } else if profile.label.contains("尚未連線") {
             profile.label
         } else {
-            format!("{} — 未加密", profile.label)
+            let mut args = FluentArgs::new();
+            args.set("label", profile.label.clone());
+            catalog.t_args("nav-unencrypted", &args)
         };
         items.push(NavigationItem {
             id: format!("ftp-profile-{}", profile.alias),
@@ -584,10 +606,10 @@ pub fn windows_navigation_items_with_pins(
             },
         });
     }
-    items.push(NavigationItem::gdrive_root());
+    items.push(NavigationItem::gdrive_root(catalog));
     items.push(NavigationItem {
         id: "gdrive-connect".to_owned(),
-        label: "連線 Google Drive".to_owned(),
+        label: catalog.t("nav-connect-gdrive"),
         kind: NavigationItemKind::Location,
         icon: Some(NavigationIcon::GoogleDrive),
         icon_location: None,
@@ -624,7 +646,7 @@ pub fn windows_navigation_items_with_pins(
     }
     items.push(NavigationItem::location(
         "recycle-bin",
-        "Recycle Bin",
+        catalog.t("nav-recycle-bin"),
         NavigationIcon::RecycleBin,
         LocationDescriptor::ParsingName("shell:RecycleBinFolder".into()),
         0,
@@ -742,10 +764,15 @@ pub fn view_icon_logical_size_for_settings(settings: &explorer_model::ViewSettin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use explorer_i18n::AppLocale;
+
+    fn zh_tw_catalog() -> Catalog {
+        Catalog::new(AppLocale::ZhTw)
+    }
 
     #[test]
     fn navigation_contract_has_stable_unique_ids_and_explorer_section_order() {
-        let items = windows_navigation_items();
+        let items = windows_navigation_items(zh_tw_catalog());
         let mut ids = std::collections::HashSet::new();
         assert!(items.iter().all(|item| ids.insert(item.id.as_str())));
         let position = |id| items.iter().position(|item| item.id == id).unwrap();
@@ -756,7 +783,7 @@ mod tests {
 
     #[test]
     fn optional_navigation_roots_are_truthful_and_gallery_uses_real_shell_identity() {
-        let items = windows_navigation_items_with_pins(std::iter::empty());
+        let items = windows_navigation_items_with_pins(zh_tw_catalog(), std::iter::empty());
         let quick_access = items
             .iter()
             .find(|item| item.id == "quick-access")
@@ -777,10 +804,13 @@ mod tests {
             ))
         );
 
-        let pinned = windows_navigation_items_with_pins([(
-            "fixture".to_owned(),
-            LocationDescriptor::file_system(r"C:\fixture"),
-        )]);
+        let pinned = windows_navigation_items_with_pins(
+            zh_tw_catalog(),
+            [(
+                "fixture".to_owned(),
+                LocationDescriptor::file_system(r"C:\fixture"),
+            )],
+        );
         assert_eq!(
             pinned
                 .iter()
@@ -828,7 +858,7 @@ mod tests {
             available: true,
             encrypted: false,
         }]);
-        let items = windows_navigation_items();
+        let items = windows_navigation_items(zh_tw_catalog());
         assert!(items.iter().any(|item| item.id == "phones"));
         assert!(items.iter().any(|item| item.id == "sftp"));
         assert!(items.iter().any(|item| item.id == "ftp"));
@@ -933,5 +963,30 @@ mod tests {
         assert_eq!(file_icon_physical_size(168, 128), 224);
         assert_eq!(file_icon_physical_size(192, 512), 1_024);
         assert_eq!(file_icon_physical_size(u16::MAX, u16::MAX), 1_024);
+    }
+
+    #[test]
+    fn navigation_section_titles_follow_catalog_locale() {
+        let label = |items: &[NavigationItem], id: &str| {
+            items
+                .iter()
+                .find(|item| item.id == id)
+                .map(|item| item.label.as_str())
+                .expect(id)
+                .to_owned()
+        };
+        let zh = windows_navigation_items(zh_tw_catalog());
+        assert_eq!(label(&zh, "phones"), "手機");
+        assert_eq!(label(&zh, "sftp"), "SFTP");
+        assert_eq!(label(&zh, "ftp"), "FTP");
+        assert_eq!(label(&zh, "gdrive"), "Google Drive");
+        assert_eq!(label(&zh, "gdrive-connect"), "連線 Google Drive");
+
+        let en = windows_navigation_items(Catalog::new(AppLocale::En));
+        assert_eq!(label(&en, "phones"), "Phones");
+        assert_eq!(label(&en, "sftp"), "SFTP");
+        assert_eq!(label(&en, "ftp"), "FTP");
+        assert_eq!(label(&en, "gdrive"), "Google Drive");
+        assert_eq!(label(&en, "gdrive-connect"), "Connect Google Drive");
     }
 }

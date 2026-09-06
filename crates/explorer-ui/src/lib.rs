@@ -1284,9 +1284,8 @@ pub type FolderOptionsWindowObserver = std::rc::Rc<
     ) -> bool,
 >;
 /// Publishes a successful Folder Options Apply/OK to every other live Explorer root.
-pub type FolderOptionsAppliedObserver = std::rc::Rc<
-    dyn Fn(state::FolderOptionsAppliedSnapshotV1, u64, WindowId, &mut App),
->;
+pub type FolderOptionsAppliedObserver =
+    std::rc::Rc<dyn Fn(state::FolderOptionsAppliedSnapshotV1, u64, WindowId, &mut App)>;
 pub type BookmarkEditorWindowObserver = std::rc::Rc<
     dyn Fn(
         bookmark_editor_window::BookmarkEditorWindowSnapshotV1,
@@ -4672,6 +4671,7 @@ impl ExplorerRoot {
         let generation = tab.generation;
         let allow_prefetch = self.optional_work_allowed(explorer_jobs::QosWorkClass::Prefetch);
         let keys = navigation_pane::windows_navigation_items_with_pins(
+            self.state.catalog(),
             self.state.quick_access_navigation_pins(),
         )
         .into_iter()
@@ -5446,6 +5446,7 @@ impl ExplorerRoot {
             ThemeMode::Dark => explorer_model::ShellIconTheme::Dark,
         };
         let static_locations = navigation_pane::windows_navigation_items_with_pins(
+            self.state.catalog(),
             self.state.quick_access_navigation_pins(),
         )
         .into_iter()

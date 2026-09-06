@@ -27,6 +27,7 @@ fn extension_render_generation(item_id: &explorer_model::ShellItemId, snapshot: 
 }
 
 use abi_stable::std_types::{ROption, RString};
+use explorer_i18n::{Catalog, FluentArgs};
 use explorer_model::{DirectoryState, TabId, TabSearchState};
 use gpui::{
     AccessibleAction, Anchor, AnchoredPositionMode, App, BoxShadow, Context, DispatchPhase,
@@ -197,10 +198,19 @@ fn bookmark_label(
         .into_any_element()
 }
 
-fn bookmark_toolbar_display_name(name: &str, parent_name: Option<&str>) -> String {
+fn bookmark_toolbar_display_name(
+    name: &str,
+    parent_name: Option<&str>,
+    catalog: Catalog,
+) -> String {
     parent_name.map_or_else(
         || name.to_owned(),
-        |parent_name| format!("{name}（{parent_name}）"),
+        |parent_name| {
+            let mut args = FluentArgs::new();
+            args.set("name", name.to_owned());
+            args.set("tool", parent_name.to_owned());
+            catalog.t_args("bookmark-toolbar-tool", &args)
+        },
     )
 }
 
@@ -725,6 +735,7 @@ impl RenderOnce for ExplorerWindow {
                                     self.state.tabs().active_tab().id,
                                     self.state.tabs().active_tab().generation,
                                 ),
+                                self.state.catalog(),
                                 self.on_action.clone(),
                             ))
                             .when_some(self.file_scroll.clone(), |element, handle| {
@@ -807,6 +818,7 @@ impl RenderOnce for ExplorerWindow {
                 |element, menu| {
                     element.child(bookmark_toolbar_context_menu(
                         self.tokens,
+                        self.state.catalog(),
                         menu,
                         f32::from(window.bounds().size.width),
                         f32::from(window.bounds().size.height),
@@ -817,6 +829,7 @@ impl RenderOnce for ExplorerWindow {
             .when_some(self.state.remote_context_menu(), |element, menu| {
                 element.child(remote_context_menu(
                     self.tokens,
+                    self.state.catalog(),
                     menu,
                     f32::from(window.bounds().size.width),
                     f32::from(window.bounds().size.height),
@@ -1054,6 +1067,7 @@ fn bookmark_bar(
                     .parent_id
                     .and_then(|id| state.bookmarks().folder(id))
                     .map(|folder| folder.name.as_str()),
+                state.catalog(),
             );
             let action = ExplorerAction::ActivateBookmark { id };
             let callback = callback.clone();
@@ -1139,7 +1153,7 @@ fn bookmark_bar(
                 .aria_label("Manage bookmarks")
                 .cursor_pointer()
                 .px(px(8.0))
-                .child("管理")
+                .child(state.catalog().t("menu-manage"))
                 .when_some(callback, move |element, callback| {
                     element.on_click(move |_, window, cx| callback(&action, window, cx))
                 })
@@ -1367,6 +1381,7 @@ pub(crate) fn bookmark_manager(
     ui_callback: Option<crate::bookmark_manager_window::BookmarkManagerUiCallback>,
 ) -> impl IntoElement {
     let search_query = search_query.trim().to_lowercase();
+    let catalog = state.catalog();
     let manager_row_height = if ui.compact { 24.0 } else { 32.0 };
     let (input_text, input_selection, input_selection_text, input_caret) =
         editable_input_colors(tokens);
@@ -1658,7 +1673,7 @@ pub(crate) fn bookmark_manager(
                         .rounded(px(4.0))
                         .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
                         .child("⚙")
-                        .child("管理 (O)⌄")
+                        .child(catalog.t("menu-manage-with-accelerator"))
                         .when_some(manage_cb, move |e, cb| {
                             e.on_click(move |_, w, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::ToggleMenu(crate::bookmark_manager_window::BookmarkManagerMenu::Manage), w, cx))
                         }),
@@ -1669,7 +1684,7 @@ pub(crate) fn bookmark_manager(
                         .role(Role::Button)
                         .aria_label("Toggle compact bookmark view")
                         .cursor_pointer()
-                        .child("☷  檢視 (V)⌄")
+                        .child(catalog.t("menu-view-with-accelerator"))
                         .when_some(view_cb, move |e, cb| {
                             e.on_click(move |_, w, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::ToggleMenu(crate::bookmark_manager_window::BookmarkManagerMenu::View), w, cx))
                         }),
@@ -1680,7 +1695,7 @@ pub(crate) fn bookmark_manager(
                         .role(Role::Button)
                         .aria_label("Import and backup bookmarks")
                         .cursor_pointer()
-                        .child("↕  匯入及備份 (I)⌄")
+                        .child(catalog.t("menu-import-backup-with-accelerator"))
                         .when_some(transfer_cb, move |e, cb| {
                             e.on_click(move |_, w, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::ToggleMenu(crate::bookmark_manager_window::BookmarkManagerMenu::Transfer), w, cx))
                         }),
@@ -1705,7 +1720,7 @@ pub(crate) fn bookmark_manager(
                                 text_input("bookmark-manager-search-input")
                                     .state(input)
                                     .multiline(false)
-                                    .placeholder("搜尋書籤")
+                                    .placeholder(catalog.t("search-bookmarks"))
                                     .caret_blink_interval_500ms()
                                     .flex_1()
                                     .h_full()
@@ -1769,7 +1784,7 @@ pub(crate) fn bookmark_manager(
                                     .cursor_pointer()
                                     .px(px(10.0))
                                     .py(px(6.0))
-                                    .child("新增資料夾")
+                                    .child(catalog.t("menu-new-folder"))
                                     .when_some(manage_add_cb, |row, cb| {
                                         row.on_click(move |_, window, cx| {
                                             cb(&ExplorerAction::AddBookmarkFolder { parent_id: manage_parent_id }, window, cx)
@@ -1786,7 +1801,7 @@ pub(crate) fn bookmark_manager(
                                         .cursor_pointer()
                                         .px(px(10.0))
                                         .py(px(6.0))
-                                        .child("編輯書籤")
+                                        .child(catalog.t("menu-edit-bookmark"))
                                         .when_some(manage_edit_cb.clone(), |row, cb| row.on_click(move |_, window, cx| cb(&edit, window, cx))),
                                 )
                                 .child(
@@ -1797,7 +1812,7 @@ pub(crate) fn bookmark_manager(
                                         .px(px(10.0))
                                         .py(px(6.0))
                                         .text_color(tokens.theme.colors.danger.to_gpui())
-                                        .child("刪除書籤")
+                                        .child(catalog.t("menu-delete-bookmark"))
                                         .when_some(manage_remove_cb.clone(), |row, cb| row.on_click(move |_, window, cx| cb(&remove, window, cx))),
                                 )
                             })
@@ -1805,9 +1820,9 @@ pub(crate) fn bookmark_manager(
                                 let edit = ExplorerAction::EditBookmarkFolder { id };
                                 let remove = ExplorerAction::RemoveBookmarkFolder { id };
                                 menu.child(
-                                    div().id("bookmark-manager-command-edit-folder").role(Role::MenuItem).cursor_pointer().px(px(10.0)).py(px(6.0)).child("重新命名資料夾").when_some(manage_edit_cb.clone(), |row, cb| row.on_click(move |_, window, cx| cb(&edit, window, cx))),
+                                    div().id("bookmark-manager-command-edit-folder").role(Role::MenuItem).cursor_pointer().px(px(10.0)).py(px(6.0)).child(catalog.t("menu-rename-folder")).when_some(manage_edit_cb.clone(), |row, cb| row.on_click(move |_, window, cx| cb(&edit, window, cx))),
                                 ).child(
-                                    div().id("bookmark-manager-command-remove-folder").role(Role::MenuItem).cursor_pointer().px(px(10.0)).py(px(6.0)).text_color(tokens.theme.colors.danger.to_gpui()).child("刪除資料夾").when_some(manage_remove_cb.clone(), |row, cb| row.on_click(move |_, window, cx| cb(&remove, window, cx))),
+                                    div().id("bookmark-manager-command-remove-folder").role(Role::MenuItem).cursor_pointer().px(px(10.0)).py(px(6.0)).text_color(tokens.theme.colors.danger.to_gpui()).child(catalog.t("menu-delete-folder")).when_some(manage_remove_cb.clone(), |row, cb| row.on_click(move |_, window, cx| cb(&remove, window, cx))),
                                 )
                             }),
                     )
@@ -1831,9 +1846,9 @@ pub(crate) fn bookmark_manager(
                             .border(px(1.0))
                             .border_color(tokens.theme.colors.divider.to_gpui())
                             .bg(tokens.theme.colors.menu_fill.to_gpui())
-                            .child(bookmark_manager_ui_menu_row("bookmark-manager-sort-name", "依名稱排序", crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::Name), view_name_cb))
-                            .child(bookmark_manager_ui_menu_row("bookmark-manager-sort-location", "依網址排序", crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::Location), view_location_cb))
-                            .child(bookmark_manager_ui_menu_row("bookmark-manager-toggle-density", "切換緊湊檢視", crate::bookmark_manager_window::BookmarkManagerUiAction::ToggleDensity, view_density_cb)),
+                            .child(bookmark_manager_ui_menu_row("bookmark-manager-sort-name", catalog.t("menu-sort-by-name"), crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::Name), view_name_cb))
+                            .child(bookmark_manager_ui_menu_row("bookmark-manager-sort-location", catalog.t("menu-sort-by-url"), crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::Location), view_location_cb))
+                            .child(bookmark_manager_ui_menu_row("bookmark-manager-toggle-density", catalog.t("menu-toggle-compact-view"), crate::bookmark_manager_window::BookmarkManagerUiAction::ToggleDensity, view_density_cb)),
                     )
                     .with_priority(220),
                 )
@@ -1856,10 +1871,10 @@ pub(crate) fn bookmark_manager(
                             .border_color(tokens.theme.colors.divider.to_gpui())
                             .bg(tokens.theme.colors.menu_fill.to_gpui())
                             .child(
-                                div().id("bookmark-manager-import").role(Role::MenuItem).cursor_pointer().px(px(10.0)).py(px(6.0)).child("從剪貼簿匯入").when_some(import_cb, |row, cb| row.on_click(move |_, window, cx| cb(&import, window, cx))),
+                                div().id("bookmark-manager-import").role(Role::MenuItem).cursor_pointer().px(px(10.0)).py(px(6.0)).child(catalog.t("menu-import-from-clipboard")).when_some(import_cb, |row, cb| row.on_click(move |_, window, cx| cb(&import, window, cx))),
                             )
                             .child(
-                                div().id("bookmark-manager-backup").role(Role::MenuItem).cursor_pointer().px(px(10.0)).py(px(6.0)).child("備份到剪貼簿").when_some(backup_cb, |row, cb| row.on_click(move |_, window, cx| cb(&backup, window, cx))),
+                                div().id("bookmark-manager-backup").role(Role::MenuItem).cursor_pointer().px(px(10.0)).py(px(6.0)).child(catalog.t("menu-backup-to-clipboard")).when_some(backup_cb, |row, cb| row.on_click(move |_, window, cx| cb(&backup, window, cx))),
                             ),
                     )
                     .with_priority(220),
@@ -1893,7 +1908,7 @@ pub(crate) fn bookmark_manager(
                                 .flex()
                                 .items_center()
                                 .gap(px(8.0))
-                                .child("⌄  ◷  瀏覽紀錄"),
+                                .child(catalog.t("menu-history")),
                         )
                         .child(
                             div()
@@ -1905,7 +1920,7 @@ pub(crate) fn bookmark_manager(
                                 .flex()
                                 .items_center()
                                 .gap(px(8.0))
-                                .child("   ⇩  下載項目"),
+                                .child(catalog.t("menu-downloads-items")),
                         )
                         .child(
                             div()
@@ -1914,7 +1929,7 @@ pub(crate) fn bookmark_manager(
                                 .flex()
                                 .items_center()
                                 .gap(px(8.0))
-                                .child("▸  ◇  標籤"),
+                                .child(catalog.t("menu-tags")),
                         )
                         .child(
                             div()
@@ -1925,7 +1940,7 @@ pub(crate) fn bookmark_manager(
                                 .gap(px(8.0))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .when(matches!(ui.location, crate::bookmark_manager_window::BookmarkManagerLocation::AllBookmarks), |row| row.bg(tokens.theme.colors.control_pressed.to_gpui()))
-                                .child("⌄  ★  所有書籤")
+                                .child(catalog.t("menu-all-bookmarks"))
                                 .when_some(all_bookmarks_cb, |row, cb| row.on_mouse_down(MouseButton::Left, move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Navigate(crate::bookmark_manager_window::BookmarkManagerLocation::AllBookmarks), window, cx))),
                         )
                         .child(
@@ -1937,7 +1952,7 @@ pub(crate) fn bookmark_manager(
                                 .pl(px(38.0))
                                 .flex()
                                 .items_center()
-                                .child("▸  ▣  書籤工具列")
+                                .child(catalog.t("menu-bookmark-toolbar"))
                                 .when_some(toolbar_bookmarks_cb, |row, cb| row.on_mouse_down(MouseButton::Left, move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Navigate(crate::bookmark_manager_window::BookmarkManagerLocation::Root), window, cx))),
                         )
                         .child(
@@ -1949,7 +1964,7 @@ pub(crate) fn bookmark_manager(
                                 .pl(px(38.0))
                                 .flex()
                                 .items_center()
-                                .child("▸  ▤  書籤選單")
+                                .child(catalog.t("menu-bookmark-menu"))
                                 .when_some(menu_bookmarks_cb, |row, cb| row.on_mouse_down(MouseButton::Left, move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Navigate(crate::bookmark_manager_window::BookmarkManagerLocation::Root), window, cx))),
                         )
                         .child(
@@ -1959,7 +1974,7 @@ pub(crate) fn bookmark_manager(
                                 .flex()
                                 .items_center()
                                 .when(matches!(ui.location, crate::bookmark_manager_window::BookmarkManagerLocation::Root), |row| row.bg(tokens.theme.colors.control_pressed.to_gpui()))
-                                .child("⌄  📁  其他書籤")
+                                .child(catalog.t("menu-other-bookmarks"))
                                 .when_some(root_bookmarks_cb, |row, cb| row.on_mouse_down(MouseButton::Left, move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Navigate(crate::bookmark_manager_window::BookmarkManagerLocation::Root), window, cx))),
                         )
                         .children(folder_rows),
@@ -1980,7 +1995,7 @@ pub(crate) fn bookmark_manager(
                                 .items_center()
                                 .border_b(px(1.0))
                                 .border_color(tokens.theme.colors.divider.to_gpui())
-                                .child(div().w_2_5().px(px(8.0)).cursor_pointer().child("名稱").when_some(column_name_cb, |header, cb| header.on_mouse_down(MouseButton::Left, move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::Name), window, cx))))
+                                .child(div().w_2_5().px(px(8.0)).cursor_pointer().child(catalog.t("chrome-sort-name")).when_some(column_name_cb, |header, cb| header.on_mouse_down(MouseButton::Left, move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::Name), window, cx))))
                                 .child(
                                     div()
                                         .w_1_5()
@@ -1988,7 +2003,7 @@ pub(crate) fn bookmark_manager(
                                         .border_l(px(1.0))
                                         .border_color(tokens.theme.colors.divider.to_gpui())
                                         .cursor_pointer()
-                                        .child("標籤")
+                                        .child(catalog.t("chrome-sort-tags"))
                                         .when_some(column_tags_cb, |header, cb| header.on_mouse_down(MouseButton::Left, move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::Tags), window, cx))),
                                 )
                                 .child(
@@ -1998,7 +2013,7 @@ pub(crate) fn bookmark_manager(
                                         .border_l(px(1.0))
                                         .border_color(tokens.theme.colors.divider.to_gpui())
                                         .cursor_pointer()
-                                        .child("網址")
+                                        .child(catalog.t("chrome-sort-url"))
                                         .when_some(column_location_cb, |header, cb| header.on_mouse_down(MouseButton::Left, move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::Location), window, cx))),
                                 ),
                         )
@@ -2026,7 +2041,7 @@ pub(crate) fn bookmark_manager(
                 .border_color(tokens.theme.colors.divider.to_gpui())
                 .bg(tokens.theme.colors.subtle_surface.to_gpui())
                 .child(
-                    div().w_full().flex().items_center().gap(px(10.0)).child("名稱 (N)").when_some(detail_input, |row, input| {
+                    div().w_full().flex().items_center().gap(px(10.0)).child(catalog.t("dialog-name-accelerator")).when_some(detail_input, |row, input| {
                     row.child(
                         text_input("bookmark-manager-detail-name-input")
                             .state(input)
@@ -2046,7 +2061,7 @@ pub(crate) fn bookmark_manager(
                     )
                 }))
                 .child(
-                    div().w_full().flex().items_center().gap(px(10.0)).child("網址 (L)").when_some(detail_location_input, |row, input| {
+                    div().w_full().flex().items_center().gap(px(10.0)).child(catalog.t("dialog-url-accelerator")).when_some(detail_location_input, |row, input| {
                     row.child(
                         text_input("bookmark-manager-detail-location-input")
                             .state(input)
@@ -2070,7 +2085,7 @@ pub(crate) fn bookmark_manager(
 
 fn bookmark_manager_ui_menu_row(
     id: &'static str,
-    label: &'static str,
+    label: String,
     action: crate::bookmark_manager_window::BookmarkManagerUiAction,
     callback: Option<crate::bookmark_manager_window::BookmarkManagerUiCallback>,
 ) -> impl IntoElement {
@@ -2088,6 +2103,7 @@ fn bookmark_manager_ui_menu_row(
 
 fn bookmark_toolbar_context_menu(
     tokens: UiTokens,
+    catalog: Catalog,
     menu: crate::state::BookmarkToolbarContextMenuState,
     window_width: f32,
     window_height: f32,
@@ -2099,14 +2115,14 @@ fn bookmark_toolbar_context_menu(
     let close_right_cb = callback.clone();
     let mut commands = vec![
         (
-            "新增資料夾",
+            catalog.t("menu-new-folder"),
             ExplorerAction::AddBookmarkFolder {
                 parent_id: menu.parent_id,
             },
             false,
         ),
         (
-            "新增資料夾路徑書籤…",
+            catalog.t("menu-new-folder-path-bookmark"),
             ExplorerAction::AddPathBookmark {
                 parent_id: menu.parent_id,
                 kind: BookmarkPathKind::Folder,
@@ -2114,24 +2130,28 @@ fn bookmark_toolbar_context_menu(
             false,
         ),
         (
-            "新增檔案路徑書籤…",
+            catalog.t("menu-new-file-path-bookmark"),
             ExplorerAction::AddPathBookmark {
                 parent_id: menu.parent_id,
                 kind: BookmarkPathKind::File,
             },
             false,
         ),
-        ("書籤管理員…", ExplorerAction::ToggleBookmarkManager, false),
+        (
+            catalog.t("menu-bookmark-manager"),
+            ExplorerAction::ToggleBookmarkManager,
+            false,
+        ),
     ];
     if let Some(id) = menu.parent_id {
         commands.extend([
             (
-                "重新命名資料夾…",
+                catalog.t("menu-rename-folder-ellipsis"),
                 ExplorerAction::EditBookmarkFolder { id },
                 false,
             ),
             (
-                "刪除資料夾",
+                catalog.t("menu-delete-folder"),
                 ExplorerAction::RemoveBookmarkFolder { id },
                 true,
             ),
@@ -2145,7 +2165,7 @@ fn bookmark_toolbar_context_menu(
             div()
                 .id(format!("bookmark-toolbar-context-command-{index}"))
                 .role(Role::MenuItem)
-                .aria_label(label)
+                .aria_label(label.clone())
                 .cursor_pointer()
                 .px(px(12.0))
                 .py(px(7.0))
@@ -2218,26 +2238,27 @@ fn bookmark_context_menu(
         .iter()
         .find(|bookmark| bookmark.id == menu.id)
         .is_some_and(|bookmark| bookmark.target.is_folder());
+    let catalog = state.catalog();
     let mut commands = vec![(
-        "開啟",
+        catalog.t("menu-open"),
         ExplorerAction::ActivateBookmark { id: menu.id },
         false,
     )];
     if is_folder {
         commands.push((
-            "在新分頁開啟",
+            catalog.t("menu-open-in-new-tab"),
             ExplorerAction::OpenBookmarkInNewTab { id: menu.id },
             false,
         ));
     }
     commands.extend([
         (
-            "編輯名稱與路徑…",
+            catalog.t("menu-edit-name-and-path-ellipsis"),
             ExplorerAction::EditBookmark { id: menu.id },
             false,
         ),
         (
-            "刪除書籤",
+            catalog.t("menu-delete-bookmark"),
             ExplorerAction::RequestRemoveBookmark { id: menu.id },
             true,
         ),
@@ -2250,7 +2271,7 @@ fn bookmark_context_menu(
             div()
                 .id(format!("bookmark-context-command-{index}"))
                 .role(Role::MenuItem)
-                .aria_label(label)
+                .aria_label(label.clone())
                 .cursor_pointer()
                 .px(px(12.0))
                 .py(px(7.0))
@@ -2313,7 +2334,7 @@ enum RemoteMenuPlacement {
 
 #[derive(Clone, Debug, PartialEq)]
 struct RemoteMenuCommand {
-    label: &'static str,
+    label: String,
     action: ExplorerAction,
     icon: Option<ExplorerIcon>,
     placement: RemoteMenuPlacement,
@@ -2321,6 +2342,7 @@ struct RemoteMenuCommand {
 }
 
 fn remote_menu_commands(
+    catalog: Catalog,
     background: bool,
     paste_available: bool,
     item_row_index: Option<usize>,
@@ -2331,7 +2353,7 @@ fn remote_menu_commands(
     let mut commands = Vec::new();
     if background {
         commands.push(RemoteMenuCommand {
-            label: "新增資料夾",
+            label: catalog.t("menu-new-folder"),
             action: ExplorerAction::CreateFolder,
             icon: Some(ExplorerIcon::New),
             placement: RemoteMenuPlacement::Text,
@@ -2339,7 +2361,7 @@ fn remote_menu_commands(
         });
         if allow_create_symlink {
             commands.push(RemoteMenuCommand {
-                label: "新增捷徑",
+                label: catalog.t("menu-new-shortcut"),
                 action: ExplorerAction::CreateRemoteSymlink,
                 icon: Some(ExplorerIcon::Add),
                 placement: RemoteMenuPlacement::Text,
@@ -2347,7 +2369,7 @@ fn remote_menu_commands(
             });
         }
         commands.push(RemoteMenuCommand {
-            label: "內容",
+            label: catalog.t("menu-properties"),
             action: ExplorerAction::ShowRemoteBackgroundProperties,
             icon: Some(ExplorerIcon::Details),
             placement: RemoteMenuPlacement::Text,
@@ -2355,7 +2377,7 @@ fn remote_menu_commands(
         });
         if paste_available {
             commands.push(RemoteMenuCommand {
-                label: "貼上",
+                label: catalog.t("menu-paste"),
                 action: ExplorerAction::Paste,
                 icon: Some(ExplorerIcon::Paste),
                 placement: RemoteMenuPlacement::Text,
@@ -2366,7 +2388,7 @@ fn remote_menu_commands(
     }
 
     commands.push(RemoteMenuCommand {
-        label: "開啟",
+        label: catalog.t("menu-open"),
         action: ExplorerAction::OpenFocused,
         icon: None,
         placement: RemoteMenuPlacement::Text,
@@ -2374,7 +2396,7 @@ fn remote_menu_commands(
     });
     if item_is_container && let Some(row_index) = item_row_index {
         commands.push(RemoteMenuCommand {
-            label: "在新分頁開啟",
+            label: catalog.t("menu-open-in-new-tab"),
             action: ExplorerAction::OpenItem {
                 row_index,
                 new_tab: true,
@@ -2385,7 +2407,7 @@ fn remote_menu_commands(
         });
         if allow_create_symlink {
             commands.push(RemoteMenuCommand {
-                label: "新增捷徑",
+                label: catalog.t("menu-new-shortcut"),
                 action: ExplorerAction::CreateRemoteSymlinkToFolder { row_index },
                 icon: Some(ExplorerIcon::Add),
                 placement: RemoteMenuPlacement::Text,
@@ -2395,39 +2417,39 @@ fn remote_menu_commands(
     }
     commands.extend([
         RemoteMenuCommand {
-            label: "下載到下載資料夾",
+            label: catalog.t("menu-download-to-downloads"),
             action: ExplorerAction::DownloadSelectedToDownloads,
             icon: Some(ExplorerIcon::Add),
             placement: RemoteMenuPlacement::CommandStrip,
             danger: false,
         },
         RemoteMenuCommand {
-            label: "剪下",
+            label: catalog.t("menu-cut"),
             action: ExplorerAction::CutSelected,
             icon: Some(ExplorerIcon::Cut),
             placement: RemoteMenuPlacement::CommandStrip,
             danger: false,
         },
         RemoteMenuCommand {
-            label: "複製",
+            label: catalog.t("menu-copy"),
             action: ExplorerAction::CopySelected,
             icon: Some(ExplorerIcon::Copy),
             placement: RemoteMenuPlacement::CommandStrip,
             danger: false,
         },
         RemoteMenuCommand {
-            label: "重新命名",
+            label: catalog.t("menu-rename"),
             action: ExplorerAction::BeginRenameFocused,
             icon: Some(ExplorerIcon::Rename),
             placement: RemoteMenuPlacement::CommandStrip,
             danger: false,
         },
         RemoteMenuCommand {
-            label: if gdrive_trash {
-                "移到 Google Drive 垃圾桶…"
+            label: catalog.t(if gdrive_trash {
+                "menu-move-to-gdrive-trash"
             } else {
-                "永久刪除…"
-            },
+                "menu-permanent-delete"
+            }),
             action: ExplorerAction::RecycleDeleteSelected,
             icon: Some(ExplorerIcon::Delete),
             placement: RemoteMenuPlacement::CommandStrip,
@@ -2436,7 +2458,7 @@ fn remote_menu_commands(
     ]);
     if paste_available {
         commands.push(RemoteMenuCommand {
-            label: "貼上",
+            label: catalog.t("menu-paste"),
             action: ExplorerAction::Paste,
             icon: Some(ExplorerIcon::Paste),
             placement: RemoteMenuPlacement::Text,
@@ -2445,21 +2467,21 @@ fn remote_menu_commands(
     }
     commands.extend([
         RemoteMenuCommand {
-            label: "複製遠端路徑",
+            label: catalog.t("menu-copy-remote-path"),
             action: ExplorerAction::CopySelectedPaths,
             icon: Some(ExplorerIcon::Copy),
             placement: RemoteMenuPlacement::CommandStrip,
             danger: false,
         },
         RemoteMenuCommand {
-            label: "加入書籤",
+            label: catalog.t("menu-add-bookmark"),
             action: ExplorerAction::AddSelectedToBookmarks,
             icon: Some(ExplorerIcon::Pin),
             placement: RemoteMenuPlacement::CommandStrip,
             danger: false,
         },
         RemoteMenuCommand {
-            label: "內容",
+            label: catalog.t("menu-properties"),
             action: ExplorerAction::ShowPropertiesSelected,
             icon: Some(ExplorerIcon::Details),
             placement: RemoteMenuPlacement::CommandStrip,
@@ -2600,11 +2622,12 @@ fn remote_menu_text_command(
     let action = command.action;
     let icon = command.icon;
     let danger = command.danger;
+    let selector = format!("remote-context-text-{}", action.name());
     div()
         .id(format!("remote-context-text-command-{index}"))
-        .debug_selector(move || format!("remote-context-text-{label}"))
+        .debug_selector(move || selector.clone())
         .role(Role::MenuItem)
-        .aria_label(label)
+        .aria_label(label.clone())
         .focusable()
         .tab_stop(true)
         .h(px(visual.row_height))
@@ -2659,6 +2682,7 @@ fn remote_menu_text_command(
 
 fn remote_context_menu(
     tokens: UiTokens,
+    catalog: Catalog,
     menu: crate::state::RemoteContextMenuState,
     window_width: f32,
     window_height: f32,
@@ -2670,6 +2694,7 @@ fn remote_context_menu(
     let close_right = close.clone();
     let close_right_cb = callback.clone();
     let commands = remote_menu_commands(
+        catalog,
         menu.background,
         menu.paste_available,
         menu.item_row_index,
@@ -3678,7 +3703,7 @@ pub(crate) fn folder_options_window_content(
     on_action: Option<ActionCallback>,
     cache_budget_inputs: Vec<gpui::WeakEntity<EditableTextState>>,
     cache_usage: crate::folder_options_window::CacheUsageSnapshotV1,
-    catalog: explorer_i18n::Catalog,
+    catalog: Catalog,
     windows_negotiated_locale: explorer_model::AppLocale,
 ) -> impl IntoElement {
     use crate::actions::FolderOptionsPage;
@@ -4027,7 +4052,7 @@ fn folder_options_general_page(
     tokens: UiTokens,
     restore_previous_session: bool,
     locale_choice: crate::state::LocaleChoice,
-    catalog: explorer_i18n::Catalog,
+    catalog: Catalog,
     windows_negotiated_locale: explorer_model::AppLocale,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
@@ -4094,11 +4119,11 @@ fn folder_options_general_page(
 fn folder_options_language_picker(
     tokens: UiTokens,
     locale_choice: crate::state::LocaleChoice,
-    catalog: explorer_i18n::Catalog,
+    catalog: Catalog,
     windows_negotiated_locale: explorer_model::AppLocale,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
-    let mut follow_args = explorer_i18n::FluentArgs::new();
+    let mut follow_args = FluentArgs::new();
     follow_args.set("name", windows_negotiated_locale.native_name());
     let follow_label = catalog.t_args("language-follow-windows", &follow_args);
     let language_label = catalog.t("settings-language");
@@ -4126,22 +4151,26 @@ fn folder_options_language_picker(
             tokens,
             on_action.clone(),
         ))
-        .children(explorer_model::AppLocale::ALL.into_iter().map(move |locale| {
-            let selected = matches!(
-                locale_choice,
-                crate::state::LocaleChoice::Explicit(selected) if selected == locale
-            );
-            folder_option_locale_row(
-                SharedString::from(format!("folder-option-locale-{}", locale.bcp47())),
-                locale.native_name().to_owned(),
-                selected,
-                ExplorerAction::SetFolderOptionLocaleChoice(crate::state::LocaleChoice::Explicit(
-                    locale,
-                )),
-                tokens,
-                on_action.clone(),
-            )
-        }))
+        .children(
+            explorer_model::AppLocale::ALL
+                .into_iter()
+                .map(move |locale| {
+                    let selected = matches!(
+                        locale_choice,
+                        crate::state::LocaleChoice::Explicit(selected) if selected == locale
+                    );
+                    folder_option_locale_row(
+                        SharedString::from(format!("folder-option-locale-{}", locale.bcp47())),
+                        locale.native_name().to_owned(),
+                        selected,
+                        ExplorerAction::SetFolderOptionLocaleChoice(
+                            crate::state::LocaleChoice::Explicit(locale),
+                        ),
+                        tokens,
+                        on_action.clone(),
+                    )
+                }),
+        )
 }
 
 fn folder_option_locale_row(
@@ -5126,9 +5155,9 @@ fn preview_side_pane(
         .when(retry_visible, |pane| {
             pane.child(semantic_button(
                 "preview-broker-retry",
-                "重試預覽",
+                state.catalog().t("menu-retry-preview"),
                 None,
-                Some("重試"),
+                Some(state.catalog().t("menu-retry").into()),
                 Some(ExplorerAction::RetryExtensionBroker),
                 state.broker_health() != crate::state::BrokerUiHealth::Retrying,
                 tokens,
@@ -5227,6 +5256,7 @@ impl CommandBar {
 
 impl RenderOnce for CommandBar {
     fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let catalog = self.state.catalog();
         let layout = self.tokens.layout;
         let compact = f32::from(window.bounds().size.width) < layout.compact_window_width.value();
         let selection_count = self.state.tabs().active_tab().selection.len();
@@ -5299,14 +5329,20 @@ impl RenderOnce for CommandBar {
                 "command-new",
                 "Create a new item",
                 Some(ExplorerIcon::New),
-                Some("新增"),
+                Some(catalog.t("menu-new").into()),
                 Some(ExplorerAction::ToggleNewMenu),
                 self.state.active_presentation().can_write,
                 self.tokens,
                 self.on_action.clone(),
                 new_open.then(|| {
-                    new_item_menu(self.tokens, new_items, new_index, self.on_action.clone())
-                        .into_any_element()
+                    new_item_menu(
+                        self.tokens,
+                        catalog,
+                        new_items,
+                        new_index,
+                        self.on_action.clone(),
+                    )
+                    .into_any_element()
                 }),
             ))
             .when(!compact, |element| {
@@ -5376,7 +5412,7 @@ impl RenderOnce for CommandBar {
                 "command-sort",
                 "Sort",
                 Some(ExplorerIcon::Sort),
-                Some("排序"),
+                Some(catalog.t("menu-sort").into()),
                 Some(ExplorerAction::ToggleSortMenu),
                 true,
                 self.tokens,
@@ -5384,6 +5420,7 @@ impl RenderOnce for CommandBar {
                 self.state.sort_menu_open().then(|| {
                     sort_menu(
                         self.tokens,
+                        catalog,
                         &self.state.view_settings(),
                         sort_index,
                         self.on_action.clone(),
@@ -5395,7 +5432,7 @@ impl RenderOnce for CommandBar {
                 "command-view",
                 "View",
                 Some(ExplorerIcon::View),
-                Some("檢視"),
+                Some(catalog.t("menu-view").into()),
                 Some(ExplorerAction::ToggleViewMenu),
                 true,
                 self.tokens,
@@ -5403,6 +5440,7 @@ impl RenderOnce for CommandBar {
                 self.state.view_menu_open().then(|| {
                     view_menu(
                         self.tokens,
+                        catalog,
                         self.state.view_settings(),
                         self.state.view_show_submenu_open(),
                         extension_view,
@@ -5414,7 +5452,7 @@ impl RenderOnce for CommandBar {
             ))
             .child(semantic_button_with_popup(
                 "command-more-menu",
-                "其它",
+                catalog.t("menu-other"),
                 Some(ExplorerIcon::More),
                 None,
                 Some(ExplorerAction::ToggleMoreMenu),
@@ -5424,6 +5462,7 @@ impl RenderOnce for CommandBar {
                 more_open.then(|| {
                     command_more_menu_v2(
                         self.tokens,
+                        catalog,
                         has_selection,
                         more_index,
                         self.on_action.clone(),
@@ -5433,9 +5472,9 @@ impl RenderOnce for CommandBar {
             ))
             .child(semantic_button_with_popup(
                 "command-extensions-menu",
-                "擴充功能",
+                catalog.t("menu-extensions"),
                 Some(ExplorerIcon::Details),
-                Some("擴充功能"),
+                Some(catalog.t("menu-extensions").into()),
                 Some(ExplorerAction::ToggleExtensionsMenu),
                 true,
                 self.tokens,
@@ -5443,6 +5482,7 @@ impl RenderOnce for CommandBar {
                 extensions_open.then(|| {
                     command_extensions_menu(
                         self.tokens,
+                        catalog,
                         tortoise_git_available,
                         loaded_extension_summary,
                         extension_commands,
@@ -5459,7 +5499,7 @@ impl RenderOnce for CommandBar {
                     .relative()
                     .child(semantic_button(
                         "command-transfer-center",
-                        "傳輸",
+                        catalog.t("menu-transfers"),
                         Some(ExplorerIcon::Details),
                         None,
                         Some(ExplorerAction::ToggleTransferPanel),
@@ -5634,6 +5674,7 @@ pub(crate) fn transfer_center_panel(
 )]
 fn new_item_menu(
     tokens: UiTokens,
+    catalog: Catalog,
     items: Vec<explorer_model::ShellNewItemDescriptor>,
     focused_index: usize,
     on_action: Option<ActionCallback>,
@@ -5642,7 +5683,7 @@ fn new_item_menu(
     let menu = div()
         .id("command-new-popup")
         .role(Role::Menu)
-        .aria_label("新增")
+        .aria_label(catalog.t("menu-new"))
         .occlude()
         .min_w(px(tokens.layout.address_min_width.value()))
         .max_h(px(crate::layout::feature::NEW_MENU_MAX_HEIGHT.value()))
@@ -5710,6 +5751,7 @@ fn new_item_menu(
 #[allow(dead_code)]
 fn command_extensions_menu_legacy(
     tokens: UiTokens,
+    catalog: Catalog,
     tortoise_git_available: bool,
     loaded_extension_summary: Option<String>,
     extension_commands: Vec<(&'static str, &'static str)>,
@@ -5720,7 +5762,7 @@ fn command_extensions_menu_legacy(
         .id("command-extensions-popup")
         .role(Role::Menu)
         .occlude()
-        .aria_label("擴充功能")
+        .aria_label(catalog.t("menu-extensions"))
         .min_w(px(tokens.layout.navigation_pane_min_width.value()))
         .p(px(tokens.layout.content_spacing.value()))
         .rounded(px(tokens.layout.corner_radius.value()))
@@ -5772,11 +5814,11 @@ fn command_extensions_menu_legacy(
         )
         .child(command_more_item(
             "extensions-refresh-tortoisegit",
-            if tortoise_git_available {
-                "更新 TortoiseGit 狀態"
+            catalog.t(if tortoise_git_available {
+                "menu-refresh-tortoisegit"
             } else {
-                "沒有可用的擴充功能"
-            },
+                "menu-no-extensions"
+            }),
             ExplorerAction::RefreshTortoiseGitStatus,
             tortoise_git_available,
             false,
@@ -5799,6 +5841,7 @@ fn command_extensions_menu_legacy(
 
 fn command_more_menu_v2(
     tokens: UiTokens,
+    catalog: Catalog,
     has_selection: bool,
     focused_index: usize,
     on_action: Option<ActionCallback>,
@@ -5827,7 +5870,7 @@ fn command_more_menu_v2(
         .id("command-more-popup")
         .role(Role::Menu)
         .occlude()
-        .aria_label("更多命令")
+        .aria_label(catalog.t("menu-more-commands"))
         .w(px(tokens.layout.address_min_width.value()))
         .p(px(tokens.layout.content_spacing.value()))
         .rounded(px(tokens.layout.corner_radius.value()))
@@ -5842,7 +5885,7 @@ fn command_more_menu_v2(
         })
         .child(item(
             "more-undo",
-            "復原",
+            catalog.t("menu-undo"),
             ExplorerAction::UndoCurrentFolder,
             true,
             0,
@@ -5850,7 +5893,7 @@ fn command_more_menu_v2(
         ))
         .child(item(
             "more-compress-zip",
-            "壓縮成 ZIP 檔案",
+            catalog.t("menu-zip"),
             ExplorerAction::CompressSelectedToZip,
             has_selection,
             1,
@@ -5858,7 +5901,7 @@ fn command_more_menu_v2(
         ))
         .child(item(
             "more-add-favorite",
-            "加到我的最愛",
+            catalog.t("menu-add-to-favorites"),
             ExplorerAction::AddSelectedToFavorites,
             has_selection,
             2,
@@ -5866,7 +5909,7 @@ fn command_more_menu_v2(
         ))
         .child(item(
             "more-add-bookmark",
-            "加入書籤",
+            catalog.t("menu-add-bookmark"),
             ExplorerAction::AddSelectedToBookmarks,
             has_selection,
             3,
@@ -5874,7 +5917,7 @@ fn command_more_menu_v2(
         ))
         .child(item(
             "more-copy-path",
-            "複製路徑",
+            catalog.t("menu-copy-path"),
             ExplorerAction::CopySelectedPaths,
             has_selection,
             4,
@@ -5883,7 +5926,7 @@ fn command_more_menu_v2(
         .child(separator())
         .child(item(
             "more-select-all",
-            "全選",
+            catalog.t("menu-select-all"),
             ExplorerAction::SelectAllItems,
             true,
             5,
@@ -5891,7 +5934,7 @@ fn command_more_menu_v2(
         ))
         .child(item(
             "more-select-none",
-            "全部不選",
+            catalog.t("menu-select-none"),
             ExplorerAction::ClearSelection,
             has_selection,
             6,
@@ -5899,7 +5942,7 @@ fn command_more_menu_v2(
         ))
         .child(item(
             "more-invert-selection",
-            "反向選擇",
+            catalog.t("menu-invert-selection"),
             ExplorerAction::InvertSelection,
             true,
             7,
@@ -5908,7 +5951,7 @@ fn command_more_menu_v2(
         .child(separator())
         .child(item(
             "more-options",
-            "選項",
+            catalog.t("menu-options"),
             ExplorerAction::OpenFolderOptions,
             true,
             8,
@@ -5916,7 +5959,7 @@ fn command_more_menu_v2(
         ))
         .child(item(
             "more-about",
-            "關於",
+            catalog.t("menu-about"),
             ExplorerAction::OpenAboutDialog,
             true,
             9,
@@ -5938,6 +5981,7 @@ fn command_more_menu_v2(
 #[allow(dead_code, reason = "retained temporarily for migration coverage")]
 fn command_more_menu(
     tokens: UiTokens,
+    catalog: Catalog,
     has_selection: bool,
     can_write: bool,
     can_paste: bool,
@@ -5949,7 +5993,7 @@ fn command_more_menu(
         .id("command-more-popup")
         .role(Role::Menu)
         .occlude()
-        .aria_label("More commands")
+        .aria_label(catalog.t("menu-more-commands"))
         .min_w(px(tokens.layout.navigation_pane_min_width.value()))
         .p(px(tokens.layout.content_spacing.value()))
         .rounded(px(tokens.layout.corner_radius.value()))
@@ -5963,7 +6007,7 @@ fn command_more_menu(
         })
         .child(command_more_item(
             "more-new-folder",
-            "新增資料夾",
+            catalog.t("menu-new-folder"),
             ExplorerAction::CreateFolder,
             can_write,
             focused_index == 0,
@@ -5973,7 +6017,7 @@ fn command_more_menu(
         ))
         .child(command_more_item(
             "more-cut",
-            "剪下",
+            catalog.t("menu-cut"),
             ExplorerAction::CutSelected,
             has_selection,
             focused_index == 1,
@@ -5983,7 +6027,7 @@ fn command_more_menu(
         ))
         .child(command_more_item(
             "more-copy",
-            "複製",
+            catalog.t("menu-copy"),
             ExplorerAction::CopySelected,
             has_selection,
             focused_index == 2,
@@ -5993,7 +6037,7 @@ fn command_more_menu(
         ))
         .child(command_more_item(
             "more-paste",
-            "貼上",
+            catalog.t("menu-paste"),
             ExplorerAction::Paste,
             can_paste,
             focused_index == 3,
@@ -6003,7 +6047,7 @@ fn command_more_menu(
         ))
         .child(command_more_item(
             "more-delete",
-            "刪除",
+            catalog.t("menu-delete"),
             ExplorerAction::RecycleDeleteSelected,
             has_selection,
             focused_index == 4,
@@ -6026,6 +6070,7 @@ fn command_more_menu(
 
 fn command_extensions_menu(
     tokens: UiTokens,
+    catalog: Catalog,
     tortoise_git_available: bool,
     loaded_extension_summary: Option<String>,
     extension_commands: Vec<(&'static str, &'static str)>,
@@ -6036,7 +6081,7 @@ fn command_extensions_menu(
     let menu = div()
         .id("command-extensions-popup-v2")
         .role(Role::Menu)
-        .aria_label("擴充功能")
+        .aria_label(catalog.t("menu-extensions"))
         .occlude()
         .w(px(400.0))
         .overflow_hidden()
@@ -6099,11 +6144,11 @@ fn command_extensions_menu(
             )
             .child(command_more_item(
                 "extensions-refresh-tortoisegit-v2",
-                if tortoise_git_available {
-                    "更新 TortoiseGit 狀態"
+                catalog.t(if tortoise_git_available {
+                    "menu-refresh-tortoisegit"
                 } else {
-                    "沒有可用的擴充功能"
-                },
+                    "menu-no-extensions"
+                }),
                 ExplorerAction::RefreshTortoiseGitStatus,
                 tortoise_git_available,
                 false,
@@ -6115,6 +6160,7 @@ fn command_extensions_menu(
         .when_some(panel, |menu, panel| {
             menu.child(extension_command_panel(
                 panel,
+                catalog,
                 has_selection,
                 tokens,
                 on_action.clone(),
@@ -6135,6 +6181,7 @@ fn command_extensions_menu(
 
 fn extension_command_panel(
     selected_panel: ExtensionCommandPanel,
+    catalog: Catalog,
     has_selection: bool,
     tokens: UiTokens,
     on_action: Option<ActionCallback>,
@@ -6146,10 +6193,13 @@ fn extension_command_panel(
         .overflow_hidden();
     match selected_panel {
         ExtensionCommandPanel::ExifRename => panel
-            .child(command_panel_heading("Rename from EXIF", tokens))
+            .child(command_panel_heading(
+                catalog.t("menu-exif-heading"),
+                tokens,
+            ))
             .child(command_more_item(
                 "extension-exif-date-time",
-                "依拍攝日期改名（20260805_123456）",
+                catalog.t("menu-exif-datetime"),
                 ExplorerAction::RunExifRenamePreset {
                     preset: ExifRenamePreset::DateTime,
                 },
@@ -6161,7 +6211,7 @@ fn extension_command_panel(
             ))
             .child(command_more_item(
                 "extension-exif-date-original",
-                "拍攝日期 + 原檔名",
+                catalog.t("menu-exif-datetime-original"),
                 ExplorerAction::RunExifRenamePreset {
                     preset: ExifRenamePreset::DateTimeAndOriginal,
                 },
@@ -6173,7 +6223,7 @@ fn extension_command_panel(
             ))
             .child(command_more_item(
                 "extension-command-panel-cancel",
-                "取消",
+                catalog.t("menu-cancel"),
                 ExplorerAction::CloseExtensionCommandPanel,
                 true,
                 false,
@@ -6182,10 +6232,13 @@ fn extension_command_panel(
                 on_action,
             )),
         ExtensionCommandPanel::BulkFolder => panel
-            .child(command_panel_heading("Bulk folder generator", tokens))
+            .child(command_panel_heading(
+                catalog.t("menu-bulk-folder-heading"),
+                tokens,
+            ))
             .child(command_more_item(
                 "extension-bulk-create-10",
-                "建立 10 個資料夾（Folder-001…010）",
+                catalog.t("menu-bulk-create-10"),
                 ExplorerAction::RunBulkFolderPreset { count: 10 },
                 true,
                 false,
@@ -6195,7 +6248,7 @@ fn extension_command_panel(
             ))
             .child(command_more_item(
                 "extension-bulk-create-100",
-                "建立 100 個資料夾（Folder-001…100）",
+                catalog.t("menu-bulk-create-100"),
                 ExplorerAction::RunBulkFolderPreset { count: 100 },
                 true,
                 false,
@@ -6205,7 +6258,7 @@ fn extension_command_panel(
             ))
             .child(command_more_item(
                 "extension-command-panel-cancel",
-                "取消",
+                catalog.t("menu-cancel"),
                 ExplorerAction::CloseExtensionCommandPanel,
                 true,
                 false,
@@ -6216,7 +6269,8 @@ fn extension_command_panel(
     }
 }
 
-fn command_panel_heading(label: &'static str, tokens: UiTokens) -> impl IntoElement {
+fn command_panel_heading(label: impl Into<SharedString>, tokens: UiTokens) -> impl IntoElement {
+    let label = label.into();
     div()
         .id("extension-command-panel-heading")
         .role(Role::MenuItem)
@@ -6239,7 +6293,7 @@ fn command_panel_heading(label: &'static str, tokens: UiTokens) -> impl IntoElem
 
 fn command_more_item(
     id: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     action: ExplorerAction,
     enabled: bool,
     selected: bool,
@@ -6247,10 +6301,11 @@ fn command_more_item(
     tokens: UiTokens,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
+    let label = label.into();
     div()
         .id(id)
         .role(Role::MenuItem)
-        .aria_label(label)
+        .aria_label(label.clone())
         .aria_selected(selected)
         .h(px(tokens.layout.minimum_hit_target.value()))
         .flex()
@@ -6303,6 +6358,7 @@ fn command_more_item(
 
 fn sort_menu(
     tokens: UiTokens,
+    catalog: Catalog,
     settings: &explorer_model::ViewSettings,
     focused_index: usize,
     on_action: Option<ActionCallback>,
@@ -6330,7 +6386,7 @@ fn sort_menu(
         })
         .child(view_menu_item(
             "sort-name".to_owned(),
-            "名稱",
+            catalog.t("column-name"),
             settings.sort.column == explorer_model::ColumnId::Name,
             false,
             focused_index == 0,
@@ -6341,7 +6397,7 @@ fn sort_menu(
         ))
         .child(view_menu_item(
             "sort-date".to_owned(),
-            "修改日期",
+            catalog.t("column-date-modified"),
             settings.sort.column == explorer_model::ColumnId::DateModified,
             false,
             focused_index == 1,
@@ -6352,7 +6408,7 @@ fn sort_menu(
         ))
         .child(view_menu_item(
             "sort-type".to_owned(),
-            "類型",
+            catalog.t("column-type"),
             settings.sort.column == explorer_model::ColumnId::Type,
             false,
             focused_index == 2,
@@ -6363,7 +6419,7 @@ fn sort_menu(
         ))
         .child(view_menu_item(
             "sort-size".to_owned(),
-            "大小",
+            catalog.t("column-size"),
             settings.sort.column == explorer_model::ColumnId::Size,
             false,
             focused_index == 3,
@@ -6375,7 +6431,7 @@ fn sort_menu(
         .child(view_menu_separator(tokens))
         .child(view_menu_item(
             "sort-ascending".to_owned(),
-            "遞增",
+            catalog.t("menu-sort-ascending"),
             settings.sort.direction == explorer_model::SortDirection::Ascending,
             false,
             focused_index == 4,
@@ -6386,7 +6442,7 @@ fn sort_menu(
         ))
         .child(view_menu_item(
             "sort-descending".to_owned(),
-            "遞減",
+            catalog.t("menu-sort-descending"),
             settings.sort.direction == explorer_model::SortDirection::Descending,
             false,
             focused_index == 5,
@@ -6414,6 +6470,7 @@ fn sort_menu(
 )]
 fn view_menu(
     tokens: UiTokens,
+    catalog: Catalog,
     settings: explorer_model::ViewSettings,
     show_submenu: bool,
     extension_view: Option<crate::size_map_view::SizeMapViewConfigV1>,
@@ -6424,14 +6481,26 @@ fn view_menu(
     let colors = tokens.theme.colors;
     let outside_action = on_action.clone();
     let modes = [
-        (explorer_model::ViewMode::ExtraLargeIcons, "超大圖示"),
-        (explorer_model::ViewMode::LargeIcons, "大圖示"),
-        (explorer_model::ViewMode::MediumIcons, "中圖示"),
-        (explorer_model::ViewMode::SmallIcons, "小圖示"),
-        (explorer_model::ViewMode::List, "清單"),
-        (explorer_model::ViewMode::Details, "詳細資料"),
-        (explorer_model::ViewMode::Tiles, "並排"),
-        (explorer_model::ViewMode::Content, "內容"),
+        (
+            explorer_model::ViewMode::ExtraLargeIcons,
+            catalog.t("menu-extra-large-icons"),
+        ),
+        (
+            explorer_model::ViewMode::LargeIcons,
+            catalog.t("menu-large-icons"),
+        ),
+        (
+            explorer_model::ViewMode::MediumIcons,
+            catalog.t("menu-medium-icons"),
+        ),
+        (
+            explorer_model::ViewMode::SmallIcons,
+            catalog.t("menu-small-icons"),
+        ),
+        (explorer_model::ViewMode::List, catalog.t("menu-list")),
+        (explorer_model::ViewMode::Details, catalog.t("menu-details")),
+        (explorer_model::ViewMode::Tiles, catalog.t("menu-tiles")),
+        (explorer_model::ViewMode::Content, catalog.t("menu-content")),
     ];
     let menu = div()
         .id("view-menu")
@@ -6468,7 +6537,7 @@ fn view_menu(
         .child(view_menu_separator(tokens))
         .child(view_menu_item(
             "view-details-pane".to_owned(),
-            "詳細資料窗格",
+            catalog.t("menu-details-pane"),
             settings.details_pane,
             false,
             focused_index == 8,
@@ -6479,7 +6548,7 @@ fn view_menu(
         ))
         .child(view_menu_item(
             "view-preview-pane".to_owned(),
-            "預覽窗格",
+            catalog.t("menu-preview-pane"),
             settings.preview_pane,
             false,
             focused_index == 9,
@@ -6491,7 +6560,7 @@ fn view_menu(
         .child(view_menu_separator(tokens))
         .child(view_menu_item(
             "view-show-submenu".to_owned(),
-            "顯示",
+            catalog.t("menu-show"),
             false,
             true,
             focused_index == 10,
@@ -6522,7 +6591,7 @@ fn view_menu(
                 ))
         })
         .when(show_submenu, |element| {
-            element.child(view_show_submenu(tokens, &settings, on_action))
+            element.child(view_show_submenu(tokens, catalog, &settings, on_action))
         });
     deferred(
         div()
@@ -6542,6 +6611,7 @@ fn view_menu(
 
 fn view_show_submenu(
     tokens: UiTokens,
+    catalog: Catalog,
     settings: &explorer_model::ViewSettings,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
@@ -6567,7 +6637,7 @@ fn view_show_submenu(
         .border_color(colors.divider.to_gpui())
         .child(view_menu_item(
             "view-item-check-boxes".to_owned(),
-            "項目核取方塊",
+            catalog.t("menu-item-checkboxes"),
             settings.item_check_boxes,
             false,
             false,
@@ -6578,7 +6648,7 @@ fn view_show_submenu(
         ))
         .child(view_menu_item(
             "view-file-name-extensions".to_owned(),
-            "檔案副檔名",
+            catalog.t("menu-file-extensions"),
             settings.file_name_extensions,
             false,
             false,
@@ -6589,7 +6659,7 @@ fn view_show_submenu(
         ))
         .child(view_menu_item(
             "view-hidden-items".to_owned(),
-            "隱藏的項目",
+            catalog.t("menu-hidden-items"),
             settings.hidden_items,
             false,
             false,
@@ -6600,7 +6670,7 @@ fn view_show_submenu(
         ))
         .child(view_menu_item(
             "view-compact".to_owned(),
-            "精簡檢視",
+            catalog.t("menu-compact-view"),
             settings.compact_view,
             false,
             false,
@@ -6618,7 +6688,7 @@ fn view_show_submenu(
 )]
 fn view_menu_item(
     id: String,
-    label: &'static str,
+    label: impl Into<SharedString>,
     checked: bool,
     submenu: bool,
     focused: bool,
@@ -6628,6 +6698,7 @@ fn view_menu_item(
     on_action: Option<ActionCallback>,
 ) -> gpui::AnyElement {
     let colors = tokens.theme.colors;
+    let label = label.into();
     // AccessKit's Windows provider currently exposes no InvokePattern for a
     // custom MenuItem. Expose every actionable view choice as a focusable
     // button so built-in and extension views share the same keyboard, UIA and
@@ -6636,7 +6707,7 @@ fn view_menu_item(
         .id(id.clone())
         .debug_selector(move || id.clone())
         .role(Role::Button)
-        .aria_label(label)
+        .aria_label(label.clone())
         .aria_selected(focused)
         .focusable()
         .tab_stop(true)
@@ -6887,6 +6958,7 @@ impl RenderOnce for BreadcrumbAddressEditor {
             let window_width = f32::from(window.bounds().size.width);
             return breadcrumb_browse_field(
                 self.tokens,
+                self.state.catalog(),
                 address,
                 window_width,
                 self.menu_focus,
@@ -6942,6 +7014,7 @@ impl RenderOnce for BreadcrumbAddressEditor {
 
 fn breadcrumb_browse_field(
     tokens: UiTokens,
+    catalog: Catalog,
     address: explorer_model::AddressBarState,
     window_width: f32,
     menu_focus: Option<gpui::FocusHandle>,
@@ -7010,6 +7083,7 @@ fn breadcrumb_browse_field(
         ))
         .child(breadcrumb_root(
             tokens,
+            catalog,
             keyboard_segment_id == Some(explorer_model::BreadcrumbSegmentId(0)),
             active_menu == Some(explorer_model::BreadcrumbSegmentId(0)),
             menu_children.clone(),
@@ -7025,6 +7099,7 @@ fn breadcrumb_browse_field(
         .when(!hidden_ancestry.is_empty(), |element| {
             element.child(breadcrumb_overflow(
                 tokens,
+                catalog,
                 hidden_ancestry,
                 overflow_open,
                 shell_icons.clone(),
@@ -7108,12 +7183,14 @@ fn breadcrumb_browse_field(
                     id,
                     active_menu == Some(id),
                     menu_loading,
+                    catalog,
                     tokens,
                     open,
                 ))
                 .when(active_menu == Some(id), |element| {
                     element.child(breadcrumb_child_overlay(
                         tokens,
+                        catalog,
                         id,
                         children,
                         error,
@@ -7136,14 +7213,20 @@ fn breadcrumb_chevron_button(
     segment_id: explorer_model::BreadcrumbSegmentId,
     expanded: bool,
     busy: bool,
+    catalog: Catalog,
     tokens: UiTokens,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
-    let label = if busy {
-        format!("列出 {segment_name} 的子資料夾，載入中")
-    } else {
-        format!("列出 {segment_name} 的子資料夾")
-    };
+    let mut args = FluentArgs::new();
+    args.set("name", segment_name.to_owned());
+    let label = catalog.t_args(
+        if busy {
+            "chrome-list-subfolders-loading"
+        } else {
+            "chrome-list-subfolders"
+        },
+        &args,
+    );
     div()
         .id(dom_id)
         .role(Role::Button)
@@ -7217,6 +7300,7 @@ fn breadcrumb_ancestry_partition(
 
 fn breadcrumb_overflow(
     tokens: UiTokens,
+    catalog: Catalog,
     hidden: Vec<explorer_model::BreadcrumbSegment>,
     open: bool,
     shell_icons: HashMap<explorer_model::ShellIconKey, Arc<RenderImage>>,
@@ -7238,7 +7322,7 @@ fn breadcrumb_overflow(
             div()
                 .id("breadcrumb-overflow")
                 .role(Role::Button)
-                .aria_label("顯示較舊的路徑層級")
+                .aria_label(catalog.t("chrome-show-older-path-levels"))
                 .aria_expanded(open)
                 .h_full()
                 .w(px(tokens.layout.minimum_hit_target.value()))
@@ -7368,6 +7452,7 @@ fn breadcrumb_overflow(
 
 fn breadcrumb_child_menu(
     tokens: UiTokens,
+    catalog: Catalog,
     segment_id: explorer_model::BreadcrumbSegmentId,
     children: Vec<explorer_model::BreadcrumbMenuItem>,
     error: Option<String>,
@@ -7458,7 +7543,7 @@ fn breadcrumb_child_menu(
                     .px(px(layout.control_padding_horizontal.value()))
                     .py(px(layout.content_spacing.value()))
                     .text_color(colors.text_secondary.to_gpui())
-                    .child("正在列舉子資料夾…"),
+                    .child(catalog.t("chrome-listing-subfolders")),
             )
         })
         .when_some(error, |menu, error| {
@@ -7467,7 +7552,7 @@ fn breadcrumb_child_menu(
                 div()
                     .id("breadcrumb-child-retry")
                     .role(Role::Button)
-                    .aria_label("重試列出子資料夾")
+                    .aria_label(catalog.t("chrome-retry-list-subfolders"))
                     .px(px(layout.control_padding_horizontal.value()))
                     .py(px(layout.content_spacing.value()))
                     .text_color(colors.danger.to_gpui())
@@ -7503,7 +7588,7 @@ fn breadcrumb_child_menu(
                     .px(px(layout.control_padding_horizontal.value()))
                     .py(px(layout.content_spacing.value()))
                     .text_color(colors.text_secondary.to_gpui())
-                    .child("沒有子資料夾"),
+                    .child(catalog.t("chrome-no-subfolders")),
             )
         })
         .children(children.into_iter().enumerate().map(move |(index, child)| {
@@ -7579,6 +7664,7 @@ fn breadcrumb_child_menu(
 
 fn breadcrumb_child_overlay(
     tokens: UiTokens,
+    catalog: Catalog,
     segment_id: explorer_model::BreadcrumbSegmentId,
     children: Vec<explorer_model::BreadcrumbMenuItem>,
     error: Option<String>,
@@ -7599,6 +7685,7 @@ fn breadcrumb_child_overlay(
             .snap_to_window()
             .child(breadcrumb_child_menu(
                 tokens,
+                catalog,
                 segment_id,
                 children,
                 error,
@@ -7617,6 +7704,7 @@ fn breadcrumb_child_overlay(
 
 fn breadcrumb_root(
     tokens: UiTokens,
+    catalog: Catalog,
     keyboard_focused: bool,
     menu_open: bool,
     menu_children: Vec<explorer_model::BreadcrumbMenuItem>,
@@ -7652,7 +7740,7 @@ fn breadcrumb_root(
                 .id("breadcrumb-root-computer")
                 .role(Role::Button)
                 .aria_selected(keyboard_focused)
-                .aria_label("本機")
+                .aria_label(catalog.t("nav-this-pc"))
                 .h_full()
                 .flex()
                 .items_center()
@@ -7692,13 +7780,13 @@ fn breadcrumb_root(
                     generic_shell_icon.clone(),
                     tokens,
                 ))
-                .child("本機"),
+                .child(catalog.t("nav-this-pc")),
         )
         .child(
             div()
                 .id("breadcrumb-root-chevron")
                 .role(Role::Button)
-                .aria_label("列出磁碟機")
+                .aria_label(catalog.t("chrome-list-drives"))
                 .aria_expanded(menu_open)
                 .h_full()
                 .w(px(tokens.layout.minimum_hit_target.value() / 2.0))
@@ -7739,6 +7827,7 @@ fn breadcrumb_root(
         .when(menu_open, |element| {
             element.child(breadcrumb_child_overlay(
                 tokens,
+                catalog,
                 explorer_model::BreadcrumbSegmentId(0),
                 menu_children,
                 menu_error,
@@ -7809,10 +7898,12 @@ impl RenderOnce for SearchBox {
             .as_ref()
             .and_then(gpui::WeakEntity::upgrade)
             .map(|input| input.read(cx).focus_handle(cx));
+        let catalog = self.state.catalog();
         let search_hint = localized_search_placeholder(
             self.state.tabs().active_tab().history.current(),
             &presentation.address_title,
             &self.state.tabs().active_tab().view.address,
+            catalog,
         );
         let visible_text = match &presentation.search {
             TabSearchState::Idle => search_hint.clone(),
@@ -7832,12 +7923,15 @@ impl RenderOnce for SearchBox {
         let show_clear =
             !matches!(presentation.search, TabSearchState::Idle) && !visible_text.is_empty();
         let clear = self.on_action.clone();
+        let mut recent_args = FluentArgs::new();
+        recent_args.set("hint", search_hint.clone());
+        recent_args.set(
+            "count",
+            self.state.tabs().active_tab().search_history.len() as i64,
+        );
         let field = editable_focus_field(
             SEARCH_BOX_ID,
-            format!(
-                "{search_hint}; 最近搜尋 {} 筆",
-                self.state.tabs().active_tab().search_history.len()
-            ),
+            catalog.t_args("search-recent-count", &recent_args),
             visible_text,
             ExplorerAction::FocusSearch,
             self.state.focused_surface() == FocusSurface::Search,
@@ -7871,7 +7965,7 @@ impl RenderOnce for SearchBox {
                     div()
                         .id("search-clear")
                         .role(Role::Button)
-                        .aria_label("清除搜尋")
+                        .aria_label(catalog.t("search-clear"))
                         .absolute()
                         .right(px(0.0))
                         .top(px(0.0))
@@ -7915,6 +8009,7 @@ fn localized_search_placeholder(
     current: Option<&explorer_model::HistoryEntry>,
     address_title: &str,
     address: &explorer_model::AddressBarState,
+    catalog: Catalog,
 ) -> String {
     let committed_path_leaf = current
         .and_then(|entry| entry.location.path())
@@ -7934,7 +8029,9 @@ fn localized_search_placeholder(
         .or(breadcrumb_leaf)
         .or(committed_title)
         .unwrap_or(address_title);
-    format!("搜尋 {folder_name}")
+    let mut args = FluentArgs::new();
+    args.set("folder", folder_name.to_owned());
+    catalog.t_args("search-in", &args)
 }
 
 #[derive(IntoElement)]
@@ -8212,17 +8309,25 @@ impl RenderOnce for NavigationPane {
                 on_action.clone(),
             ))
             .children({
-                let mut items =
-                    windows_navigation_items_with_pins(self.state.quick_access_navigation_pins());
+                let catalog = self.state.catalog();
+                let mut items = windows_navigation_items_with_pins(
+                    catalog,
+                    self.state.quick_access_navigation_pins(),
+                );
                 let mut flattened = Vec::with_capacity(items.len());
                 for mut item in items.drain(..) {
                     if let Some(location) = item.location.as_ref() {
                         item.expanded =
                             item.expanded || self.state.navigation_node_expanded(location);
                         if self.state.navigation_node_loading(location) {
-                            item.label.push_str(" (Loading...)");
+                            item.label =
+                                navigation_status_label(catalog, "chrome-nav-loading", &item.label);
                         } else if self.state.navigation_node_error(location).is_some() {
-                            item.label.push_str(" (Unavailable - expand to retry)");
+                            item.label = navigation_status_label(
+                                catalog,
+                                "chrome-nav-unavailable-retry",
+                                &item.label,
+                            );
                         }
                     }
                     let parent = item.location.clone();
@@ -8371,7 +8476,7 @@ fn bookmark_navigation_rows(
             .aria_label("Favorites; right click to add a bookmark folder")
             .px(px(8.0))
             .py(px(5.0))
-            .child("我的最愛")
+            .child(state.catalog().t("nav-favorites"))
             .when_some(callback.clone(), move |element, cb| {
                 element.on_mouse_down(MouseButton::Right, move |_, window, cx| {
                     cb(&add_root, window, cx);
@@ -8430,6 +8535,12 @@ fn breadcrumb_location_shell_texture(
     navigation_shell_texture(shell_icons, location, theme, dpi)
 }
 
+fn navigation_status_label(catalog: Catalog, key: &str, label: &str) -> String {
+    let mut args = FluentArgs::new();
+    args.set("label", label.to_owned());
+    catalog.t_args(key, &args)
+}
+
 fn append_navigation_descendants(
     output: &mut Vec<NavigationItem>,
     state: &AppViewState,
@@ -8457,9 +8568,10 @@ fn append_navigation_descendants(
         let expanded = state.navigation_node_expanded(&child.location);
         let mut label = child.display_name.clone();
         if state.navigation_node_loading(&child.location) {
-            label.push_str(" (Loading...)");
+            label = navigation_status_label(state.catalog(), "chrome-nav-loading", &label);
         } else if state.navigation_node_error(&child.location).is_some() {
-            label.push_str(" (Unavailable - expand to retry)");
+            label =
+                navigation_status_label(state.catalog(), "chrome-nav-unavailable-retry", &label);
         }
         output.push(NavigationItem::child_container(
             label,
@@ -8792,6 +8904,7 @@ pub struct FileViewHost {
     size_map_runtime: Option<crate::size_map_view::SizeMapRuntimeHandleV1>,
     size_map_context: Option<explorer_model::RequestContext>,
     active_request_context: explorer_model::RequestContext,
+    catalog: Catalog,
     on_action: Option<ActionCallback>,
 }
 
@@ -8842,6 +8955,7 @@ impl FileViewHost {
         size_map_runtime: Option<crate::size_map_view::SizeMapRuntimeHandleV1>,
         size_map_context: Option<explorer_model::RequestContext>,
         active_request_context: explorer_model::RequestContext,
+        catalog: Catalog,
         on_action: Option<ActionCallback>,
     ) -> Self {
         Self {
@@ -8885,6 +8999,7 @@ impl FileViewHost {
             size_map_runtime,
             size_map_context,
             active_request_context,
+            catalog,
             on_action,
         }
     }
@@ -9232,6 +9347,7 @@ impl RenderOnce for FileViewHost {
             })
             .collect::<Vec<_>>();
         code_lines_columns.sort_by(|left, right| left.id().cmp(right.id()));
+        let catalog = self.catalog;
         let size_map_active = self.size_map_active;
         let size_map_visuals = self.size_map_visuals;
         let size_map_runtime = self.size_map_runtime;
@@ -9700,7 +9816,7 @@ impl RenderOnce for FileViewHost {
                             ExplorerIcon::ChevronDown,
                             self.tokens,
                         ))
-                        .child("裝置和磁碟機"),
+                        .child(self.catalog.t("chrome-devices-and-drives")),
                 )
             })
             .when(leading_space > 0, |element| {
@@ -9742,9 +9858,9 @@ impl RenderOnce for FileViewHost {
                 let modified = entry.metadata.modified_display.clone().unwrap_or_default();
                 let type_display = entry.metadata.type_display.clone().unwrap_or_else(|| {
                     if entry.is_container {
-                        "檔案資料夾".to_owned()
+                        catalog.t("chrome-file-folder")
                     } else {
-                        "檔案".to_owned()
+                        catalog.t("chrome-file")
                     }
                 });
                 let size_bytes = crate::folder_size_column::builtin_size_bytes(
@@ -9901,11 +10017,13 @@ impl RenderOnce for FileViewHost {
                 }
                 let drive = entry.metadata.drive.clone();
                 let this_pc_type_display = if drive_view && drive.is_none() && entry.is_container {
-                    "系統資料夾".to_owned()
+                    catalog.t("chrome-system-folder")
                 } else {
                     type_display.clone()
                 };
-                let drive_capacity_text = drive.as_ref().map(this_pc_drive_capacity_text);
+                let drive_capacity_text = drive
+                    .as_ref()
+                    .map(|drive| this_pc_drive_capacity_text(drive, catalog));
                 let drive_total_display = drive
                     .as_ref()
                     .and_then(|drive| drive.total_bytes)
@@ -10506,6 +10624,7 @@ impl RenderOnce for FileViewHost {
                                         let left = if let Some(drive) = drive.as_ref() {
                                             left.child(this_pc_capacity_bar(
                                                 self.tokens,
+                                                catalog,
                                                 drive,
                                                 Some(
                                                     crate::layout::feature::THIS_PC_CONTENT_BAR_WIDTH
@@ -10563,6 +10682,7 @@ impl RenderOnce for FileViewHost {
                                         let status = if let Some(drive) = drive.as_ref() {
                                             status.child(this_pc_capacity_bar(
                                                 self.tokens,
+                                                catalog,
                                                 drive,
                                                 Some(
                                                     crate::layout::feature::THIS_PC_CAPACITY_BAR_WIDTH
@@ -10609,7 +10729,11 @@ impl RenderOnce for FileViewHost {
                                                 .whitespace_nowrap()
                                                 .text_ellipsis()
                                                 .text_color(colors.text_secondary.to_gpui())
-                                                .child(format!("類型: {type_display}")),
+                                                .child({
+                                                    let mut args = FluentArgs::new();
+                                                    args.set("value", type_display.clone());
+                                                    catalog.t_args("chrome-type-label", &args)
+                                                }),
                                         )
                                     })
                                     .into_any_element()
@@ -10647,7 +10771,11 @@ impl RenderOnce for FileViewHost {
                                     div()
                                         .id(format!("this-pc-drive-type-{visible_index}"))
                                         .role(Role::Status)
-                                        .aria_label(format!("磁碟類型：{this_pc_type_display}"))
+                                        .aria_label({
+                                            let mut args = FluentArgs::new();
+                                            args.set("value", this_pc_type_display.clone());
+                                            catalog.t_args("chrome-drive-type", &args)
+                                        })
                                         .w(px(
                                             crate::layout::feature::THIS_PC_DETAILS_TYPE_WIDTH
                                                 .value(),
@@ -10659,7 +10787,11 @@ impl RenderOnce for FileViewHost {
                                     div()
                                         .id(format!("this-pc-drive-total-{visible_index}"))
                                         .role(Role::Status)
-                                        .aria_label(format!("大小總計：{drive_total_display}"))
+                                        .aria_label({
+                                            let mut args = FluentArgs::new();
+                                            args.set("value", drive_total_display.clone());
+                                            catalog.t_args("chrome-drive-total-size", &args)
+                                        })
                                         .w(px(
                                             crate::layout::feature::THIS_PC_DETAILS_TOTAL_WIDTH
                                                 .value(),
@@ -10693,9 +10825,17 @@ impl RenderOnce for FileViewHost {
                                     .flex_col()
                                     .justify_center()
                                     .text_color(colors.text_secondary.to_gpui())
-                                    .child(format!("修改日期: {modified}"))
+                                    .child({
+                                        let mut args = FluentArgs::new();
+                                        args.set("value", modified.clone());
+                                        catalog.t_args("chrome-date-modified-label", &args)
+                                    })
                                     .when(!entry.is_container && !size_display.is_empty(), |row| {
-                                        row.child(format!("大小: {size_display}"))
+                                        row.child({
+                                            let mut args = FluentArgs::new();
+                                            args.set("value", size_display.clone());
+                                            catalog.t_args("chrome-size-label", &args)
+                                        })
                                     }),
                             )
                         },
@@ -10811,6 +10951,7 @@ impl RenderOnce for FileViewHost {
                             .occlude()
                             .child(details_header(
                                 self.tokens,
+                                catalog,
                                 view_settings.clone(),
                                 &column_registry,
                                 drive_view,
@@ -11084,22 +11225,26 @@ pub(crate) const fn this_pc_details_width() -> f32 {
         + crate::layout::feature::THIS_PC_DETAILS_FREE_WIDTH.value()
 }
 
-fn this_pc_drive_capacity_text(drive: &explorer_model::DriveMetadata) -> String {
+fn this_pc_drive_capacity_text(drive: &explorer_model::DriveMetadata, catalog: Catalog) -> String {
     match (drive.available_bytes, drive.total_bytes, drive.availability) {
-        (Some(available), Some(total), explorer_model::DriveAvailability::Available) => format!(
-            "剩餘 {}，共 {}",
-            format_explorer_size(available),
-            format_explorer_size(total)
-        ),
-        (_, _, explorer_model::DriveAvailability::NoMedia) => "沒有媒體".to_owned(),
-        (_, _, explorer_model::DriveAvailability::Disconnected) => "已中斷連線".to_owned(),
-        (_, _, explorer_model::DriveAvailability::AccessDenied) => "拒絕存取".to_owned(),
-        _ => "無法取得容量".to_owned(),
+        (Some(available), Some(total), explorer_model::DriveAvailability::Available) => {
+            let mut args = FluentArgs::new();
+            args.set("free", format_explorer_size(available));
+            args.set("total", format_explorer_size(total));
+            catalog.t_args("status-drive-free-of", &args)
+        }
+        (_, _, explorer_model::DriveAvailability::NoMedia) => catalog.t("status-no-media"),
+        (_, _, explorer_model::DriveAvailability::Disconnected) => catalog.t("status-disconnected"),
+        (_, _, explorer_model::DriveAvailability::AccessDenied) => {
+            catalog.t("status-access-denied")
+        }
+        _ => catalog.t("status-capacity-unavailable"),
     }
 }
 
 fn this_pc_capacity_bar(
     tokens: UiTokens,
+    catalog: Catalog,
     drive: &explorer_model::DriveMetadata,
     width: Option<f32>,
 ) -> gpui::AnyElement {
@@ -11114,7 +11259,7 @@ fn this_pc_capacity_bar(
     div()
         .id("this-pc-capacity-bar")
         .role(Role::Status)
-        .aria_label(this_pc_drive_capacity_text(drive))
+        .aria_label(this_pc_drive_capacity_text(drive, catalog))
         .w(px(width))
         .h(px(
             crate::layout::feature::THIS_PC_CAPACITY_BAR_HEIGHT.value()
@@ -11522,6 +11667,7 @@ pub(crate) fn visible_details_column_ids(
 
 fn details_header(
     tokens: UiTokens,
+    catalog: Catalog,
     settings: explorer_model::ViewSettings,
     registry: &explorer_model::ColumnRegistry,
     this_pc: bool,
@@ -11531,7 +11677,7 @@ fn details_header(
     on_action: Option<ActionCallback>,
 ) -> gpui::AnyElement {
     if this_pc {
-        return this_pc_details_header(tokens);
+        return this_pc_details_header(tokens, catalog);
     }
     let layout = tokens.layout;
     let colors = tokens.theme.colors;
@@ -11549,7 +11695,11 @@ fn details_header(
         .id(DETAILS_HEADER_ID)
         .relative()
         .role(Role::Row)
-        .aria_label(format!("Details columns: {accessible_columns}"))
+        .aria_label({
+            let mut args = FluentArgs::new();
+            args.set("columns", accessible_columns);
+            catalog.t_args("chrome-details-columns-aria", &args)
+        })
         .h(px(layout.details_header_height.value()))
         .flex_none()
         .flex()
@@ -11574,6 +11724,7 @@ fn details_header(
             details_header_column(
                 details_column_selector("details-column", &column),
                 descriptor.display_name,
+                catalog,
                 column.clone(),
                 settings.clone(),
                 filter_menu.clone(),
@@ -12071,14 +12222,14 @@ fn code_lines_detail_cell(
         .into_any_element()
 }
 
-fn this_pc_details_header(tokens: UiTokens) -> gpui::AnyElement {
+fn this_pc_details_header(tokens: UiTokens, catalog: Catalog) -> gpui::AnyElement {
     let layout = tokens.layout;
     let colors = tokens.theme.colors;
-    let column = |id: &'static str, label: &'static str, width: f32| {
+    let column = |id: &'static str, label: String, width: f32| {
         div()
             .id(id)
             .role(Role::Label)
-            .aria_label(label)
+            .aria_label(label.clone())
             .h_full()
             .w(px(width))
             .flex_none()
@@ -12092,7 +12243,7 @@ fn this_pc_details_header(tokens: UiTokens) -> gpui::AnyElement {
     div()
         .id(DETAILS_HEADER_ID)
         .role(Role::Row)
-        .aria_label("本機詳細資料欄位：名稱、類型、大小總計、可用空間")
+        .aria_label(catalog.t("chrome-local-details-columns"))
         .h(px(layout.details_header_height.value()))
         .flex_none()
         .flex()
@@ -12104,22 +12255,22 @@ fn this_pc_details_header(tokens: UiTokens) -> gpui::AnyElement {
         .border_color(colors.divider.to_gpui())
         .child(column(
             "this-pc-column-name",
-            "名稱",
+            catalog.t("column-name"),
             crate::layout::feature::THIS_PC_DETAILS_NAME_WIDTH.value(),
         ))
         .child(column(
             "this-pc-column-type",
-            "類型",
+            catalog.t("column-type"),
             crate::layout::feature::THIS_PC_DETAILS_TYPE_WIDTH.value(),
         ))
         .child(column(
             "this-pc-column-total",
-            "大小總計",
+            catalog.t("column-total-size"),
             crate::layout::feature::THIS_PC_DETAILS_TOTAL_WIDTH.value(),
         ))
         .child(column(
             "this-pc-column-free",
-            "可用空間",
+            catalog.t("column-free-space"),
             crate::layout::feature::THIS_PC_DETAILS_FREE_WIDTH.value(),
         ))
         .into_any_element()
@@ -12311,6 +12462,7 @@ fn details_column_selector(prefix: &str, column: &explorer_model::ColumnId) -> S
 )]
 fn details_filter_menu(
     tokens: UiTokens,
+    catalog: Catalog,
     column: explorer_model::ColumnId,
     column_label: String,
     options: Vec<crate::file_view::DetailsFilterOption>,
@@ -12398,7 +12550,7 @@ fn details_filter_menu(
                                 cx.stop_propagation();
                             })
                         })
-                        .child("清除篩選"),
+                        .child(catalog.t("chrome-clear-filter")),
                 )
             }),
     )
@@ -12411,6 +12563,7 @@ fn details_filter_menu(
 fn details_header_column(
     id: String,
     label: String,
+    catalog: Catalog,
     column: explorer_model::ColumnId,
     settings: explorer_model::ViewSettings,
     filter_menu: Option<explorer_model::ColumnId>,
@@ -12684,6 +12837,7 @@ fn details_header_column(
         .when(filter_open, |element| {
             element.child(details_filter_menu(
                 tokens,
+                catalog,
                 column.clone(),
                 label.clone(),
                 filter_options,
@@ -13347,7 +13501,11 @@ impl RenderOnce for OperationCenter {
                             "operation-cancel",
                             "Cancel file operation",
                             Some(ExplorerIcon::Close),
-                            Some(if cancelling { "正在取消" } else { "Cancel" }),
+                            Some(SharedString::from(if cancelling {
+                                "正在取消"
+                            } else {
+                                "Cancel"
+                            })),
                             (!cancelling).then_some(ExplorerAction::CancelOperation {
                                 request_id: record.id,
                             }),
@@ -13659,9 +13817,9 @@ fn status_view_button(
 
 fn semantic_button(
     id: &'static str,
-    semantic_label: &'static str,
+    semantic_label: impl Into<SharedString>,
     icon: Option<ExplorerIcon>,
-    visible_label: Option<&'static str>,
+    visible_label: Option<SharedString>,
     action: Option<ExplorerAction>,
     enabled: bool,
     tokens: UiTokens,
@@ -13749,7 +13907,7 @@ fn navigation_history_button(
             if enabled { "enabled" } else { "disabled" },
         ))
         .child(navigation_history_icon(id, icon, enabled, tokens))
-        .child(semantic_tooltip(semantic_label))
+        .child(semantic_tooltip(SharedString::from(semantic_label)))
         .when(menu_open, |element| {
             element.child(navigation_history_menu(
                 tokens,
@@ -13874,9 +14032,9 @@ fn navigation_history_menu(
 #[allow(clippy::too_many_arguments)]
 fn semantic_button_with_popup(
     id: &'static str,
-    semantic_label: &'static str,
+    semantic_label: impl Into<SharedString>,
     icon: Option<ExplorerIcon>,
-    visible_label: Option<&'static str>,
+    visible_label: Option<SharedString>,
     action: Option<ExplorerAction>,
     enabled: bool,
     tokens: UiTokens,
@@ -13885,12 +14043,13 @@ fn semantic_button_with_popup(
 ) -> impl IntoElement {
     let layout = tokens.layout;
     let colors = tokens.theme.colors;
+    let semantic_label = semantic_label.into();
     div()
         .id(id)
         .debug_selector(move || id.to_owned())
         .role(Role::Button)
         .relative()
-        .aria_label(semantic_label)
+        .aria_label(semantic_label.clone())
         .h(px(layout.minimum_hit_target.value()))
         .min_w(px(layout.minimum_hit_target.value()))
         .flex()
@@ -13940,7 +14099,7 @@ fn semantic_button_with_popup(
         .when_some(popup, ParentElement::child)
 }
 
-fn semantic_tooltip(label: &'static str) -> impl IntoElement {
+fn semantic_tooltip(label: SharedString) -> impl IntoElement {
     div().absolute().invisible().child(label)
 }
 
@@ -13961,7 +14120,7 @@ fn right_drag_terminal_menu(
             "right-drag-copy",
             "Copy here",
             None,
-            Some("Copy here"),
+            Some(SharedString::from("Copy here")),
             Some(ExplorerAction::ResolveRightDrop {
                 effect: explorer_model::DragEffect::Copy,
             }),
@@ -13973,7 +14132,7 @@ fn right_drag_terminal_menu(
             "right-drag-move",
             "Move here",
             None,
-            Some("Move here"),
+            Some(SharedString::from("Move here")),
             Some(ExplorerAction::ResolveRightDrop {
                 effect: explorer_model::DragEffect::Move,
             }),
@@ -13985,7 +14144,7 @@ fn right_drag_terminal_menu(
             "right-drag-cancel",
             "Cancel right drag",
             None,
-            Some("Cancel"),
+            Some(SharedString::from("Cancel")),
             Some(ExplorerAction::ResolveRightDrop {
                 effect: explorer_model::DragEffect::None,
             }),
@@ -14810,6 +14969,17 @@ mod tests {
     use gpui::WindowControlArea;
     use std::{cmp::Ordering, time::Duration};
 
+    fn strip_isolates(value: &str) -> String {
+        value
+            .chars()
+            .filter(|ch| !matches!(*ch, '\u{2066}' | '\u{2067}' | '\u{2068}' | '\u{2069}'))
+            .collect()
+    }
+
+    fn zh_tw_catalog() -> explorer_i18n::Catalog {
+        explorer_i18n::Catalog::new(explorer_i18n::AppLocale::ZhTw)
+    }
+
     #[test]
     fn apk_install_notice_text_is_truthful_localized_and_has_no_fake_progress() {
         let context = explorer_model::RequestContext::new(
@@ -15118,10 +15288,11 @@ mod tests {
 
     #[test]
     fn remote_item_menu_keeps_commands_in_classic_vertical_order() {
-        let commands = remote_menu_commands(false, false, Some(3), false, true, false);
+        let catalog = explorer_i18n::Catalog::new(explorer_i18n::AppLocale::ZhTw);
+        let commands = remote_menu_commands(catalog, false, false, Some(3), false, true, false);
         let labels = commands
             .iter()
-            .map(|command| command.label)
+            .map(|command| command.label.as_str())
             .collect::<Vec<_>>();
         assert_eq!(
             labels,
@@ -15148,7 +15319,8 @@ mod tests {
 
     #[test]
     fn remote_menu_paste_and_background_membership_are_contextual() {
-        let item = remote_menu_commands(false, true, Some(3), false, true, false);
+        let catalog = explorer_i18n::Catalog::new(explorer_i18n::AppLocale::ZhTw);
+        let item = remote_menu_commands(catalog, false, true, Some(3), false, true, false);
         assert_eq!(
             item.iter()
                 .filter(|command| command.label == "貼上")
@@ -15163,11 +15335,21 @@ mod tests {
             RemoteMenuPlacement::Text
         );
 
-        let background = remote_menu_commands(true, true, None, false, true, false);
+        let en = explorer_i18n::Catalog::new(explorer_i18n::AppLocale::En);
+        let en_item = remote_menu_commands(en, false, true, Some(3), false, true, false);
+        assert_eq!(
+            en_item
+                .iter()
+                .filter(|command| command.label == "Paste")
+                .count(),
+            1
+        );
+
+        let background = remote_menu_commands(catalog, true, true, None, false, true, false);
         assert_eq!(
             background
                 .iter()
-                .map(|command| command.label)
+                .map(|command| command.label.as_str())
                 .collect::<Vec<_>>(),
             ["新增資料夾", "新增捷徑", "內容", "貼上"]
         );
@@ -15189,13 +15371,13 @@ mod tests {
             assert!(background.iter().all(|command| command.label != item_only));
         }
 
-        let ftp_background = remote_menu_commands(true, true, None, false, false, false);
+        let ftp_background = remote_menu_commands(catalog, true, true, None, false, false, false);
         assert!(
             ftp_background
                 .iter()
                 .all(|command| command.label != "新增捷徑")
         );
-        let gdrive_item = remote_menu_commands(false, false, Some(3), false, false, true);
+        let gdrive_item = remote_menu_commands(catalog, false, false, Some(3), false, false, true);
         assert!(
             gdrive_item
                 .iter()
@@ -15210,7 +15392,8 @@ mod tests {
 
     #[test]
     fn remote_folder_menu_adds_real_new_tab_path_and_common_commands() {
-        let commands = remote_menu_commands(false, false, Some(7), true, true, false);
+        let catalog = explorer_i18n::Catalog::new(explorer_i18n::AppLocale::ZhTw);
+        let commands = remote_menu_commands(catalog, false, false, Some(7), true, true, false);
         assert!(commands.iter().any(|command| {
             command.label == "在新分頁開啟"
                 && command.action
@@ -16051,21 +16234,36 @@ mod tests {
         );
         let mut address = explorer_model::AddressBarState::for_entry(&entry);
         assert_eq!(
-            localized_search_placeholder(Some(&entry), "file_explorer_reference", &address),
+            strip_isolates(&localized_search_placeholder(
+                Some(&entry),
+                "file_explorer_reference",
+                &address,
+                zh_tw_catalog(),
+            )),
             "搜尋 file_explorer_reference"
         );
 
         address.enter_editing();
         assert!(address.update_draft(r"C:\temporary-draft".to_owned()));
         assert_eq!(
-            localized_search_placeholder(Some(&entry), r"C:\temporary-draft", &address),
+            strip_isolates(&localized_search_placeholder(
+                Some(&entry),
+                r"C:\temporary-draft",
+                &address,
+                zh_tw_catalog(),
+            )),
             "搜尋 file_explorer_reference",
             "an address draft must not replace the resolved current-folder hint"
         );
 
         address.resolved_ancestry.clear();
         assert_eq!(
-            localized_search_placeholder(Some(&entry), "尚未解析", &address),
+            strip_isolates(&localized_search_placeholder(
+                Some(&entry),
+                "尚未解析",
+                &address,
+                zh_tw_catalog(),
+            )),
             "搜尋 file_explorer_reference"
         );
     }
@@ -16083,7 +16281,12 @@ mod tests {
         let address = explorer_model::AddressBarState::for_entry(&stale_root);
 
         assert_eq!(
-            localized_search_placeholder(Some(&entry), "D:", &address),
+            strip_isolates(&localized_search_placeholder(
+                Some(&entry),
+                "D:",
+                &address,
+                zh_tw_catalog(),
+            )),
             "搜尋 QuarkCloudDrive"
         );
     }
@@ -16096,7 +16299,12 @@ mod tests {
         );
         let drive_address = explorer_model::AddressBarState::for_entry(&drive);
         assert_eq!(
-            localized_search_placeholder(Some(&drive), "D:", &drive_address),
+            strip_isolates(&localized_search_placeholder(
+                Some(&drive),
+                "D:",
+                &drive_address,
+                zh_tw_catalog(),
+            )),
             "搜尋 D:"
         );
 
@@ -16106,7 +16314,12 @@ mod tests {
         );
         let namespace_address = explorer_model::AddressBarState::for_entry(&namespace);
         assert_eq!(
-            localized_search_placeholder(Some(&namespace), "下載", &namespace_address),
+            strip_isolates(&localized_search_placeholder(
+                Some(&namespace),
+                "下載",
+                &namespace_address,
+                zh_tw_catalog(),
+            )),
             "搜尋 下載"
         );
     }
@@ -16459,9 +16672,9 @@ mod tests {
         let source = include_str!("chrome.rs");
         let production = source.split("#[cfg(test)]").next().unwrap();
         for contract in [
-            "修改日期: {modified}",
-            "類型: {type_display}",
-            "大小: {size_display}",
+            "chrome-date-modified-label",
+            "chrome-type-label",
+            "chrome-size-label",
         ] {
             assert!(
                 production.contains(contract),
@@ -16603,14 +16816,14 @@ mod tests {
             total_bytes: Some(2 * 1024 * 1024 * 1024 * 1024),
             available_bytes: Some(631 * 1024 * 1024 * 1024),
         };
-        let capacity = super::this_pc_drive_capacity_text(&drive);
-        assert!(capacity.starts_with("剩餘 631 GB，共 "));
+        let capacity = strip_isolates(&super::this_pc_drive_capacity_text(&drive, zh_tw_catalog()));
+        assert_eq!(capacity, "剩餘 631.0 GB，共 2.0 TB");
 
         let source = include_str!("chrome.rs");
         let production = source.split("#[cfg(test)]").next().unwrap();
         for contract in [
-            "裝置和磁碟機",
-            "本機詳細資料欄位：名稱、類型、大小總計、可用空間",
+            "chrome-devices-and-drives",
+            "chrome-local-details-columns",
             "this-pc-content-status",
             "this-pc-capacity-bar",
             "filesystem_name",
@@ -17184,7 +17397,7 @@ mod tests {
         assert!(production.contains("cx.stop_propagation()"));
         assert!(production.contains("fn breadcrumb_chevron_button("));
         assert!(production.contains(".aria_expanded(expanded)"));
-        assert!(production.contains("列出 {segment_name} 的子資料夾，載入中"));
+        assert!(production.contains("chrome-list-subfolders-loading"));
         assert!(production.contains("breadcrumb_location_id(&location)"));
         assert!(!production.contains("breadcrumb-child-{index}"));
         assert_eq!(production.matches("breadcrumb_shell_icon(").count(), 7);
@@ -17301,16 +17514,24 @@ mod tests {
                 "{popup_id} pointer ownership"
             );
         }
-        for item_builder in ["fn command_more_item(", "fn view_menu_item("] {
-            let start = production
-                .find(item_builder)
-                .expect("shared menu item builder");
-            let local = &production[start..production.len().min(start + 2_200)];
-            assert!(local.contains(".role(Role::MenuItem)"));
-            assert!(local.contains(".hover("));
-            assert!(local.contains("cx.stop_propagation()"));
-            assert!(local.contains("callback(&action, window, cx)"));
-        }
+        let more_item = production
+            .split("fn command_more_item(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("command more item builder");
+        assert!(more_item.contains(".role(Role::MenuItem)"));
+        assert!(more_item.contains(".hover("));
+        assert!(more_item.contains("cx.stop_propagation()"));
+        assert!(more_item.contains("callback(&action, window, cx)"));
+        let view_item = production
+            .split("fn view_menu_item(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("view menu item builder");
+        assert!(view_item.contains(".role(Role::Button)"));
+        assert!(view_item.contains(".hover("));
+        assert!(view_item.contains("cx.stop_propagation()"));
+        assert!(view_item.contains("callback(&action, window, cx)"));
     }
 
     #[test]
@@ -17430,7 +17651,7 @@ mod tests {
             ".role(Role::Status)",
             ".id(\"preview-file-properties\")",
             "format_explorer_size",
-            "\"重試預覽\"",
+            "menu-retry-preview",
             "Some(ExplorerAction::RetryExtensionBroker)",
         ] {
             assert!(
@@ -17589,21 +17810,21 @@ mod tests {
         assert!(manager.contains("destination: sibling_index"));
         for required in [
             "bookmark-manager-toolbar",
-            "管理 (O)⌄",
-            "檢視 (V)⌄",
+            "menu-manage-with-accelerator",
+            "menu-view-with-accelerator",
             "bookmark-manager-import",
             "bookmark-manager-backup",
             "ImportBookmarksFromClipboard",
             "BackupBookmarksToClipboard",
             "bookmark-manager-search-input",
             "bookmark-manager-tree",
-            "所有書籤",
-            "書籤工具列",
-            "其他書籤",
+            "menu-all-bookmarks",
+            "menu-bookmark-toolbar",
+            "menu-other-bookmarks",
             "bookmark-manager-columns",
-            "名稱",
-            "標籤",
-            "網址",
+            "chrome-sort-name",
+            "chrome-sort-tags",
+            "chrome-sort-url",
             "bookmark-manager-details",
         ] {
             assert!(
@@ -17659,11 +17880,19 @@ mod tests {
     #[test]
     fn root_bookmark_toolbar_label_omits_root_directory_suffix() {
         assert_eq!(
-            super::bookmark_toolbar_display_name("portable", None),
+            super::bookmark_toolbar_display_name(
+                "portable",
+                None,
+                explorer_i18n::Catalog::new(explorer_i18n::AppLocale::ZhTw),
+            ),
             "portable"
         );
         assert_eq!(
-            super::bookmark_toolbar_display_name("portable", Some("工具")),
+            strip_isolates(&super::bookmark_toolbar_display_name(
+                "portable",
+                Some("工具"),
+                explorer_i18n::Catalog::new(explorer_i18n::AppLocale::ZhTw),
+            )),
             "portable（工具）"
         );
     }
@@ -17816,10 +18045,10 @@ mod tests {
         for required in [
             "OpenBookmarkToolbarContextMenu",
             "Bookmark toolbar context menu",
-            "新增資料夾路徑書籤…",
-            "新增檔案路徑書籤…",
-            "重新命名資料夾…",
-            "刪除資料夾",
+            "menu-new-folder-path-bookmark",
+            "menu-new-file-path-bookmark",
+            "menu-rename-folder-ellipsis",
+            "menu-delete-folder",
             "ToggleBookmarkManager",
         ] {
             assert!(production.contains(required), "missing {required}");

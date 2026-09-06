@@ -27,6 +27,9 @@ nav-gdrive = Google Drive
 nav-connect-gdrive = Connect Google Drive
 nav-unencrypted = { $label } — Unencrypted
 nav-favorites = Favorites
+nav-recycle-bin = Recycle Bin
+chrome-nav-loading = { $label } (Loading...)
+chrome-nav-unavailable-retry = { $label } (Unavailable - expand to retry)
 
 chrome-new-tab = New tab
 chrome-close-tab = Close tab
