@@ -164,7 +164,7 @@ desktop-month-november = 十一月
 
 desktop-month-december = 十二月
 
-desktop-calendar-heading = { $year }年{ $month }月
+desktop-calendar-heading = { $year }年{ $month }
 
 desktop-close-taskbar-settings = 关闭任务栏设置
 
