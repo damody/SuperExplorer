@@ -41,7 +41,7 @@ fn parse_cache_budget_memory_mb(
 
 /// Modeless window options. `WindowKind::Normal` is intentional: GPUI's
 /// Windows `Dialog` kind disables its owner and would make Explorer modal.
-pub fn folder_options_window_options(cx: &App) -> WindowOptions {
+pub fn folder_options_window_options(cx: &App, title: impl Into<SharedString>) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
@@ -49,7 +49,7 @@ pub fn folder_options_window_options(cx: &App) -> WindowOptions {
             cx,
         ))),
         titlebar: Some(gpui::TitlebarOptions {
-            title: Some(SharedString::from("資料夾選項")),
+            title: Some(title.into()),
             ..Default::default()
         }),
         kind: gpui::WindowKind::Normal,
@@ -67,6 +67,8 @@ pub struct FolderOptionsWindowSnapshotV1 {
     pub draft: FolderOptionsDraft,
     pub extensions: Vec<ExtensionOptionV1>,
     pub cache_usage: CacheUsageSnapshotV1,
+    pub locale: explorer_model::AppLocale,
+    pub windows_negotiated_locale: explorer_model::AppLocale,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -778,6 +780,9 @@ impl Render for FolderOptionsWindow {
         }
         let draft = self.snapshot.draft.clone();
         let extensions = self.snapshot.extensions.clone();
+        let catalog = explorer_i18n::Catalog::new(self.snapshot.locale);
+        let title = catalog.t("dialogs-folder-options");
+        window.set_window_title(&title);
         let page = draft.page;
         let scroll = self.scroll_for_page(page).clone();
         let scrollbar = self.scrollbar(page, scroll.clone(), cx).into_any_element();
@@ -835,6 +840,8 @@ impl Render for FolderOptionsWindow {
                                 draft,
                                 extensions: root.state.extensions().to_vec(),
                                 cache_usage: root.cache_usage_snapshot(this.snapshot.cache_usage),
+                                locale: root.state.locale(),
+                                windows_negotiated_locale: root.state.windows_negotiated_locale(),
                             }),
                     )
                 }) {
@@ -893,7 +900,7 @@ impl Render for FolderOptionsWindow {
             .id("folder-options-window")
             .debug_selector(|| "folder-options-window".to_owned())
             .role(Role::Dialog)
-            .aria_label("資料夾選項")
+            .aria_label(title.clone())
             .size_full()
             .relative()
             .track_focus(&self.focus_handle)
@@ -968,6 +975,8 @@ impl Render for FolderOptionsWindow {
                     .map(gpui::Entity::downgrade)
                     .collect(),
                 self.snapshot.cache_usage,
+                catalog,
+                self.snapshot.windows_negotiated_locale,
             ))
     }
 }
@@ -1009,7 +1018,7 @@ mod tests {
     fn window_options_are_modeless_resizable_and_bounded() {
         let cx = gpui::TestAppContext::single();
         let app = cx.app.borrow();
-        let options = folder_options_window_options(&app);
+        let options = folder_options_window_options(&app, "Folder Options");
         assert_eq!(options.kind, gpui::WindowKind::Normal);
         assert!(options.is_resizable);
         assert_eq!(options.window_min_size, Some(size(px(680.0), px(480.0))));

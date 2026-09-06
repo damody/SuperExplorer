@@ -5,7 +5,7 @@ use std::time::Instant;
 use crate::{
     focus::FocusSurface,
     layout::{LayoutTokens, LogicalPx},
-    state::{AppViewState, CommandKind},
+    state::{AppViewState, CommandKind, LocaleChoice},
     theme::ThemeMode,
 };
 
@@ -396,6 +396,7 @@ pub enum ExplorerAction {
     ClearThumbnailCache,
     ToggleFolderOptionDetailsPane,
     ToggleFolderOptionPreviewPane,
+    SetFolderOptionLocaleChoice(LocaleChoice),
     ToggleRestorePreviousSession,
     ResetSavedSession,
     ResetSavedViewSettings,
@@ -753,6 +754,7 @@ impl ExplorerAction {
             Self::ClearThumbnailCache => "ClearThumbnailCache",
             Self::ToggleFolderOptionDetailsPane => "ToggleFolderOptionDetailsPane",
             Self::ToggleFolderOptionPreviewPane => "ToggleFolderOptionPreviewPane",
+            Self::SetFolderOptionLocaleChoice(_) => "SetFolderOptionLocaleChoice",
             Self::ToggleRestorePreviousSession => "ToggleRestorePreviousSession",
             Self::ResetSavedSession => "ResetSavedSession",
             Self::ResetSavedViewSettings => "ResetSavedViewSettings",
@@ -1495,6 +1497,7 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::ClearThumbnailCache
         | ExplorerAction::ToggleFolderOptionDetailsPane
         | ExplorerAction::ToggleFolderOptionPreviewPane
+        | ExplorerAction::SetFolderOptionLocaleChoice(_)
         | ExplorerAction::ToggleRestorePreviousSession
         | ExplorerAction::ResetSavedSession
         | ExplorerAction::ResetSavedViewSettings
@@ -2170,6 +2173,10 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
                     settings.details_pane = false;
                 }
             });
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::SetFolderOptionLocaleChoice(choice) => {
+            state.set_folder_option_locale_choice(choice);
             FocusSurface::CommandBar
         }
         ExplorerAction::ToggleRestorePreviousSession => {

@@ -4451,6 +4451,10 @@ impl ApplicationLifecycle {
             )
         };
         let windows_locale_tag = crate::locale::windows_display_locale_tag();
+        let windows_negotiated_locale = windows_locale_tag
+            .as_deref()
+            .map(explorer_model::AppLocale::negotiate)
+            .unwrap_or(explorer_model::AppLocale::En);
         let resolved_locale = crate::locale::resolve_app_locale_from_process(
             session_locale,
             windows_locale_tag.as_deref(),
@@ -4590,6 +4594,7 @@ impl ApplicationLifecycle {
                 let restore_preference_for_window = restore_preference;
                 let resolved_locale_for_window = resolved_locale;
                 let session_locale_for_window = session_locale;
+                let windows_negotiated_locale_for_window = windows_negotiated_locale;
                 let quick_access_for_window = quick_access.clone();
                 let bookmarks_for_window = bookmarks.clone();
                 let extension_desired_states_for_window = extension_desired_states.clone();
@@ -4650,6 +4655,7 @@ impl ApplicationLifecycle {
                             restore_preference_for_window,
                             resolved_locale_for_window,
                             session_locale_for_window,
+                            windows_negotiated_locale_for_window,
                             quick_access_for_window,
                             bookmarks_for_window,
                             extension_desired_states_for_window,
@@ -5033,9 +5039,11 @@ impl ApplicationLifecycle {
                                 FolderOptionsOpenIntentV1::Create { generation } => generation,
                                 FolderOptionsOpenIntentV1::Activate { .. } => return true,
                             };
+                            let title = explorer_i18n::Catalog::new(snapshot.locale)
+                                .t("dialogs-folder-options");
                             let options =
                                 explorer_ui::folder_options_window::folder_options_window_options(
-                                    cx,
+                                    cx, title,
                                 );
                             let opened = cx.open_window(options, move |window, cx| {
                                 cx.new(|cx| {
@@ -5612,6 +5620,7 @@ fn create_explorer_root(
     restore_preference: bool,
     resolved_locale: explorer_model::AppLocale,
     session_locale: Option<explorer_model::AppLocale>,
+    windows_negotiated_locale: explorer_model::AppLocale,
     quick_access: Vec<explorer_model::PersistedQuickAccessPin>,
     bookmarks: explorer_model::Bookmarks,
     extension_desired_states: Vec<(String, bool)>,
@@ -5640,7 +5649,7 @@ fn create_explorer_root(
         ),
     };
     root.configure_restore_previous_session(restore_preference);
-    root.configure_locale(resolved_locale, session_locale);
+    root.configure_locale(resolved_locale, session_locale, windows_negotiated_locale);
     root.configure_quick_access(quick_access);
     root.configure_bookmarks(bookmarks);
     root.configure_extension_desired_states(&extension_desired_states);
@@ -5698,6 +5707,7 @@ fn create_focused_explorer_root(
     restore_preference: bool,
     resolved_locale: explorer_model::AppLocale,
     session_locale: Option<explorer_model::AppLocale>,
+    windows_negotiated_locale: explorer_model::AppLocale,
     quick_access: Vec<explorer_model::PersistedQuickAccessPin>,
     bookmarks: explorer_model::Bookmarks,
     extension_desired_states: Vec<(String, bool)>,
@@ -5729,6 +5739,7 @@ fn create_focused_explorer_root(
         restore_preference,
         resolved_locale,
         session_locale,
+        windows_negotiated_locale,
         quick_access,
         bookmarks,
         extension_desired_states,

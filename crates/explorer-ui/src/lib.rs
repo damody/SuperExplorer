@@ -3757,13 +3757,15 @@ impl ExplorerRoot {
         self.state.set_restore_previous_session(enabled);
     }
 
-    /// Applies the resolved live locale and durable session preference before first render.
+    /// Applies the resolved live locale, durable preference, and Windows-negotiated baseline.
     pub fn configure_locale(
         &mut self,
         locale: explorer_model::AppLocale,
         preference: Option<explorer_model::AppLocale>,
+        windows_negotiated: explorer_model::AppLocale,
     ) {
-        self.state.configure_locale(locale, preference);
+        self.state
+            .configure_locale(locale, preference, windows_negotiated);
     }
 
     /// Updates the live catalog locale; callers should `cx.notify()` for a redraw.
@@ -3882,7 +3884,7 @@ impl ExplorerRoot {
             self.state.persisted_quick_access(),
             self.state.bookmarks().clone(),
             self.durable_window_placement,
-            self.state.locale_preference(),
+            draft.locale_choice.to_preference(),
         )
     }
 
@@ -6829,6 +6831,8 @@ impl ExplorerRoot {
                     cache_usage: self.cache_usage_snapshot(
                         folder_options_window::CacheUsageSnapshotV1::default(),
                     ),
+                    locale: self.state.locale(),
+                    windows_negotiated_locale: self.state.windows_negotiated_locale(),
                 }
             });
             let _ = observer(true, snapshot, cx);

@@ -235,11 +235,39 @@ struct NavigationHistoryMenuState {
     focused_index: usize,
 }
 
+/// Folder Options language-picker selection (session preference shape).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LocaleChoice {
+    /// Persist `locale: None` and use the negotiated Windows display language.
+    FollowWindows,
+    /// Persist `locale: Some(locale)` and switch live UI to that catalog.
+    Explicit(AppLocale),
+}
+
+impl LocaleChoice {
+    #[must_use]
+    pub const fn from_preference(preference: Option<AppLocale>) -> Self {
+        match preference {
+            None => Self::FollowWindows,
+            Some(locale) => Self::Explicit(locale),
+        }
+    }
+
+    #[must_use]
+    pub const fn to_preference(self) -> Option<AppLocale> {
+        match self {
+            Self::FollowWindows => None,
+            Self::Explicit(locale) => Some(locale),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FolderOptionsDraft {
     pub page: FolderOptionsPage,
     pub settings: explorer_model::ViewSettings,
     pub restore_previous_session: bool,
+    pub locale_choice: LocaleChoice,
     pub extension_enabled: Vec<bool>,
     pub applied_baseline: FolderOptionsAppliedSnapshotV1,
     pub applied_revision: u64,
@@ -250,6 +278,7 @@ pub struct FolderOptionsDraft {
 pub struct FolderOptionsAppliedSnapshotV1 {
     pub settings: explorer_model::ViewSettings,
     pub restore_previous_session: bool,
+    pub locale_choice: LocaleChoice,
     pub extension_enabled: Vec<bool>,
 }
 
@@ -271,6 +300,7 @@ impl FolderOptionsDraft {
         FolderOptionsAppliedSnapshotV1 {
             settings: self.settings.clone(),
             restore_previous_session: self.restore_previous_session,
+            locale_choice: self.locale_choice,
             extension_enabled: self.extension_enabled.clone(),
         }
     }
@@ -719,6 +749,8 @@ pub struct AppViewState {
     locale: AppLocale,
     /// Session preference written on save. `None` means follow Windows.
     locale_preference: Option<AppLocale>,
+    /// Negotiated Windows display language used by FollowWindows and the picker label.
+    windows_negotiated_locale: AppLocale,
     navigation_pane_width: LogicalPx,
     focus: FocusCoordinator,
     tabs: ExplorerWindowState,
@@ -976,6 +1008,7 @@ impl AppViewState {
             // Test/harness default; production windows call `configure_locale` with negotiation.
             locale: AppLocale::ZhTw,
             locale_preference: None,
+            windows_negotiated_locale: AppLocale::ZhTw,
             navigation_pane_width: LayoutTokens::WINDOWS_11.navigation_pane_default_width,
             focus: FocusCoordinator::default(),
             tabs,
@@ -1683,6 +1716,11 @@ impl AppViewState {
         self.locale_preference
     }
 
+    /// Negotiated Windows display language for FollowWindows.
+    pub const fn windows_negotiated_locale(&self) -> AppLocale {
+        self.windows_negotiated_locale
+    }
+
     /// Live Fluent catalog for the active locale.
     #[must_use]
     pub const fn catalog(&self) -> Catalog {
@@ -1699,10 +1737,29 @@ impl AppViewState {
         self.locale_preference = preference;
     }
 
-    /// Sets both the live locale and the durable preference in one call.
-    pub fn configure_locale(&mut self, locale: AppLocale, preference: Option<AppLocale>) {
+    /// Sets the Windows-negotiated locale used by FollowWindows apply and the picker label.
+    pub fn set_windows_negotiated_locale(&mut self, locale: AppLocale) {
+        self.windows_negotiated_locale = locale;
+    }
+
+    /// Sets the live locale, durable preference, and Windows-negotiated baseline.
+    pub fn configure_locale(
+        &mut self,
+        locale: AppLocale,
+        preference: Option<AppLocale>,
+        windows_negotiated: AppLocale,
+    ) {
         self.locale = locale;
         self.locale_preference = preference;
+        self.windows_negotiated_locale = windows_negotiated;
+    }
+
+    fn apply_locale_choice(&mut self, choice: LocaleChoice) {
+        self.locale_preference = choice.to_preference();
+        self.locale = match choice {
+            LocaleChoice::FollowWindows => self.windows_negotiated_locale,
+            LocaleChoice::Explicit(locale) => locale,
+        };
     }
 
     pub const fn navigation_pane_width(&self) -> LogicalPx {
@@ -2319,9 +2376,11 @@ impl AppViewState {
             .iter()
             .map(|extension| extension.enabled)
             .collect::<Vec<_>>();
+        let locale_choice = LocaleChoice::from_preference(self.locale_preference);
         let applied_baseline = FolderOptionsAppliedSnapshotV1 {
             settings: settings.clone(),
             restore_previous_session: self.restore_previous_session,
+            locale_choice,
             extension_enabled: extension_enabled.clone(),
         };
         self.folder_options = Some(FolderOptionsDraft {
@@ -2332,6 +2391,7 @@ impl AppViewState {
             },
             settings,
             restore_previous_session: self.restore_previous_session,
+            locale_choice,
             extension_enabled,
             applied_baseline,
             applied_revision: self.folder_options_applied_revision,
@@ -2429,6 +2489,12 @@ impl AppViewState {
         }
     }
 
+    pub(crate) fn set_folder_option_locale_choice(&mut self, choice: LocaleChoice) {
+        if let Some(draft) = &mut self.folder_options {
+            draft.locale_choice = choice;
+        }
+    }
+
     pub const fn restore_previous_session(&self) -> bool {
         self.restore_previous_session
     }
@@ -2461,6 +2527,7 @@ impl AppViewState {
             let applied = draft.applied_snapshot();
             self.tabs.active_tab_mut().view.settings = applied.settings.clone();
             self.restore_previous_session = applied.restore_previous_session;
+            self.apply_locale_choice(applied.locale_choice);
             for (extension, enabled) in self
                 .extensions
                 .iter_mut()
@@ -2517,6 +2584,7 @@ impl AppViewState {
         }
         self.tabs.active_tab_mut().view.settings = applied.settings.clone();
         self.restore_previous_session = applied.restore_previous_session;
+        self.apply_locale_choice(applied.locale_choice);
         for (extension, enabled) in self
             .extensions
             .iter_mut()
@@ -2530,6 +2598,7 @@ impl AppViewState {
         {
             draft.settings = applied.settings.clone();
             draft.restore_previous_session = applied.restore_previous_session;
+            draft.locale_choice = applied.locale_choice;
             draft.extension_enabled = applied.extension_enabled.clone();
             draft.applied_baseline = applied;
             draft.applied_revision = revision;
@@ -6816,7 +6885,7 @@ fn navigation_locations_for_operation(request: &FileOperationRequest) -> Vec<Loc
 
 #[cfg(test)]
 mod tests {
-    use explorer_i18n::AppLocale;
+    use explorer_i18n::{AppLocale, Catalog};
 
     use super::{
         AppViewState, CommandKind, DirectoryCacheKey, DirectorySnapshotCache,
@@ -6835,9 +6904,94 @@ mod tests {
         assert_eq!(state.locale(), AppLocale::Ja);
         assert_eq!(state.catalog().locale(), AppLocale::Ja);
 
-        state.configure_locale(AppLocale::Ru, Some(AppLocale::Ru));
+        state.configure_locale(AppLocale::Ru, Some(AppLocale::Ru), AppLocale::Ja);
         assert_eq!(state.locale(), AppLocale::Ru);
         assert_eq!(state.locale_preference(), Some(AppLocale::Ru));
+        assert_eq!(state.windows_negotiated_locale(), AppLocale::Ja);
+    }
+
+    #[test]
+    fn folder_options_locale_choice_dirties_draft_and_apply_writes_preference() {
+        let mut state = AppViewState::default();
+        state.configure_locale(AppLocale::ZhTw, None, AppLocale::ZhTw);
+        state.open_folder_options();
+        assert!(!state.folder_options().unwrap().is_dirty());
+        assert_eq!(
+            state.folder_options().unwrap().locale_choice,
+            super::LocaleChoice::FollowWindows
+        );
+
+        state.set_folder_option_locale_choice(super::LocaleChoice::Explicit(AppLocale::Ja));
+        assert!(state.folder_options().unwrap().is_dirty());
+        assert_eq!(
+            state.apply_folder_options(),
+            super::FolderOptionsApplyResultV1::Applied { revision: 1 }
+        );
+        assert_eq!(state.locale(), AppLocale::Ja);
+        assert_eq!(state.locale_preference(), Some(AppLocale::Ja));
+        assert!(!state.folder_options().unwrap().is_dirty());
+
+        state.set_folder_option_locale_choice(super::LocaleChoice::FollowWindows);
+        assert!(state.folder_options().unwrap().is_dirty());
+        assert_eq!(
+            state.apply_folder_options(),
+            super::FolderOptionsApplyResultV1::Applied { revision: 2 }
+        );
+        assert_eq!(state.locale_preference(), None);
+        assert_eq!(state.locale(), AppLocale::ZhTw);
+        assert!(!state.folder_options().unwrap().is_dirty());
+    }
+
+    #[test]
+    fn folder_options_follow_windows_apply_uses_negotiated_locale() {
+        let mut state = AppViewState::default();
+        state.configure_locale(AppLocale::Ja, Some(AppLocale::Ja), AppLocale::Ko);
+        state.open_folder_options();
+        assert_eq!(
+            state.folder_options().unwrap().locale_choice,
+            super::LocaleChoice::Explicit(AppLocale::Ja)
+        );
+        state.set_folder_option_locale_choice(super::LocaleChoice::FollowWindows);
+        assert_eq!(
+            state.apply_folder_options(),
+            super::FolderOptionsApplyResultV1::Applied { revision: 1 }
+        );
+        assert_eq!(state.locale_preference(), None);
+        assert_eq!(state.locale(), AppLocale::Ko);
+    }
+
+    #[test]
+    fn folder_options_title_keys_cover_english_and_zh_tw() {
+        fn strip_isolates(value: &str) -> String {
+            value
+                .chars()
+                .filter(|ch| !matches!(*ch, '\u{2066}' | '\u{2067}' | '\u{2068}' | '\u{2069}'))
+                .collect()
+        }
+        assert_eq!(
+            Catalog::new(AppLocale::En).t("dialogs-folder-options"),
+            "Folder Options"
+        );
+        assert_eq!(
+            Catalog::new(AppLocale::ZhTw).t("dialogs-folder-options"),
+            "資料夾選項"
+        );
+        let mut args = explorer_i18n::FluentArgs::new();
+        args.set("name", AppLocale::Ja.native_name());
+        assert_eq!(
+            strip_isolates(
+                &Catalog::new(AppLocale::En).t_args("language-follow-windows", &args)
+            ),
+            "Windows display language (日本語)"
+        );
+        assert_eq!(
+            Catalog::new(AppLocale::En).t("settings-language"),
+            "Language"
+        );
+        assert_eq!(
+            Catalog::new(AppLocale::ZhTw).t("settings-language"),
+            "語言"
+        );
     }
 
     #[test]

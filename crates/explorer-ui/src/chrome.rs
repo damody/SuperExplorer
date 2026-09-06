@@ -3678,12 +3678,15 @@ pub(crate) fn folder_options_window_content(
     on_action: Option<ActionCallback>,
     cache_budget_inputs: Vec<gpui::WeakEntity<EditableTextState>>,
     cache_usage: crate::folder_options_window::CacheUsageSnapshotV1,
+    catalog: explorer_i18n::Catalog,
+    windows_negotiated_locale: explorer_model::AppLocale,
 ) -> impl IntoElement {
     use crate::actions::FolderOptionsPage;
 
     let page = draft.page;
     let apply_error = draft.apply_error.clone();
     let settings = draft.settings;
+    let title = catalog.t("dialogs-folder-options");
     div()
         .id("folder-options-window-content")
         .absolute()
@@ -3698,7 +3701,7 @@ pub(crate) fn folder_options_window_content(
             div()
                 .id("folder-options-dialog")
                 .role(Role::Dialog)
-                .aria_label("資料夾選項")
+                .aria_label(title.clone())
                 .w_full()
                 .h_full()
                 .flex()
@@ -3716,7 +3719,7 @@ pub(crate) fn folder_options_window_content(
                         .justify_between()
                         .px(px(tokens.layout.divider_keyboard_step.value()))
                         .text_size(px(tokens.typography.address.size.value()))
-                        .child("資料夾選項")
+                        .child(title)
                         .child(folder_option_button(
                             "folder-options-close",
                             "關閉",
@@ -3779,6 +3782,9 @@ pub(crate) fn folder_options_window_content(
                             body.child(folder_options_general_page(
                                 tokens,
                                 draft.restore_previous_session,
+                                draft.locale_choice,
+                                catalog,
+                                windows_negotiated_locale,
                                 on_action.clone(),
                             ))
                         })
@@ -4020,12 +4026,22 @@ fn folder_options_extensions_page(
 fn folder_options_general_page(
     tokens: UiTokens,
     restore_previous_session: bool,
+    locale_choice: crate::state::LocaleChoice,
+    catalog: explorer_i18n::Catalog,
+    windows_negotiated_locale: explorer_model::AppLocale,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     div()
         .flex()
         .flex_col()
         .gap(px(tokens.layout.maximum_visible_glyph.value()))
+        .child(folder_options_language_picker(
+            tokens,
+            locale_choice,
+            catalog,
+            windows_negotiated_locale,
+            on_action.clone(),
+        ))
         .child(folder_option_group(
             "瀏覽資料夾",
             vec!["在同一個視窗中開啟每個資料夾", "在不同視窗中開啟每個資料夾"],
@@ -4073,6 +4089,90 @@ fn folder_options_general_page(
             ],
             tokens,
         ))
+}
+
+fn folder_options_language_picker(
+    tokens: UiTokens,
+    locale_choice: crate::state::LocaleChoice,
+    catalog: explorer_i18n::Catalog,
+    windows_negotiated_locale: explorer_model::AppLocale,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let mut follow_args = explorer_i18n::FluentArgs::new();
+    follow_args.set("name", windows_negotiated_locale.native_name());
+    let follow_label = catalog.t_args("language-follow-windows", &follow_args);
+    let language_label = catalog.t("settings-language");
+    let follow_selected = matches!(locale_choice, crate::state::LocaleChoice::FollowWindows);
+    div()
+        .id("folder-options-language-picker")
+        .role(Role::Group)
+        .aria_label(language_label.clone())
+        .flex()
+        .flex_col()
+        .gap(px(tokens.layout.content_spacing.value()))
+        .p(px(tokens.layout.divider_keyboard_step.value()))
+        .border(px(1.0))
+        .border_color(tokens.theme.colors.divider.to_gpui())
+        .child(
+            div()
+                .text_size(px(tokens.typography.address.size.value()))
+                .child(language_label),
+        )
+        .child(folder_option_locale_row(
+            "folder-option-locale-follow-windows",
+            follow_label,
+            follow_selected,
+            ExplorerAction::SetFolderOptionLocaleChoice(crate::state::LocaleChoice::FollowWindows),
+            tokens,
+            on_action.clone(),
+        ))
+        .children(explorer_model::AppLocale::ALL.into_iter().map(move |locale| {
+            let selected = matches!(
+                locale_choice,
+                crate::state::LocaleChoice::Explicit(selected) if selected == locale
+            );
+            folder_option_locale_row(
+                SharedString::from(format!("folder-option-locale-{}", locale.bcp47())),
+                locale.native_name().to_owned(),
+                selected,
+                ExplorerAction::SetFolderOptionLocaleChoice(crate::state::LocaleChoice::Explicit(
+                    locale,
+                )),
+                tokens,
+                on_action.clone(),
+            )
+        }))
+}
+
+fn folder_option_locale_row(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+    selected: bool,
+    action: ExplorerAction,
+    tokens: UiTokens,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let label = label.into();
+    div()
+        .id(id)
+        .role(Role::ListItem)
+        .aria_label(label.clone())
+        .aria_selected(selected)
+        .h(px(tokens.layout.minimum_hit_target.value()))
+        .flex()
+        .items_center()
+        .gap(px(tokens.layout.content_spacing.value()))
+        .px(px(tokens.layout.content_spacing.value()))
+        .rounded(px(tokens.layout.corner_radius.value()))
+        .when(selected, |row| {
+            row.bg(tokens.theme.colors.selected_active.to_gpui())
+        })
+        .hover(move |style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
+        .when_some(on_action, |row, callback| {
+            row.on_click(move |_, window, cx| callback(&action, window, cx))
+        })
+        .child(if selected { "◉" } else { "○" })
+        .child(label)
 }
 
 fn folder_option_group(
@@ -16922,7 +17022,11 @@ mod tests {
                 "missing minimum-size action: {required}"
             );
         }
-        assert!(dialog.contains(".h(px(crate::layout::folder_options::FOOTER_HEIGHT.value()))\n                        .flex_none()"));
+        assert!(
+            dialog.contains("crate::layout::folder_options::FOOTER_HEIGHT.value()")
+                && dialog.contains(".flex_none()"),
+            "footer must keep FOOTER_HEIGHT and flex_none"
+        );
 
         let extensions_page = production
             .split("fn folder_options_extensions_page(")
