@@ -1,0 +1,22 @@
+[package]
+name = "explorer-i18n"
+version = "0.1.0"
+description = "Fluent localization catalogs and AppLocale for SuperExplorer/SuperDesktop."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+fluent-bundle.workspace = true
+fluent-templates.workspace = true
+serde.workspace = true
+tracing.workspace = true
+unic-langid.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

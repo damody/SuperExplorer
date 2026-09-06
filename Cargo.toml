@@ -11,6 +11,7 @@ members = [
     "crates/explorer-extension-api",
     "crates/explorer-extension-ui-api",
     "crates/explorer-extension-host",
+    "crates/explorer-i18n",
     "crates/explorer-jobs",
     "crates/explorer-model",
     "crates/explorer-mft",
@@ -39,6 +40,9 @@ chrono-tz = "0.10.4"
 crossbeam-channel = "0.5"
 cron = "0.17.0"
 embed-resource = "3.0"
+fluent-bundle = "0.16"
+fluent-templates = "0.15"
+unic-langid = { version = "0.9", features = ["macros"] }
 abi_stable = { version = "=0.11.3", default-features = false }
 gpui = { path = "vendor/gpui-ce/crates/gpui", version = "=0.2.2", default-features = false }
 gpui_elements = { path = "vendor/gpui-ce/crates/gpui_elements", version = "=0.1.0", default-features = false }
