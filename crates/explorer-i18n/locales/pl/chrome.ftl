@@ -224,3 +224,6 @@ chrome-move-here = Przenieś tutaj
 chrome-create-shortcut-here = Utwórz skrót tutaj
 chrome-cancel-right-drag = Anuluj przeciąganie prawym przyciskiem
 chrome-folder-icon = Ikona folderu { $name }
+
+chrome-untitled = Bez tytułu
+chrome-submit-disabled = Wysyłanie wyłączone

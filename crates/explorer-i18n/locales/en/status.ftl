@@ -137,3 +137,5 @@ status-lock-finding = Finding applications that are using the selected item…
 status-lock-retry-limit = The retry limit was reached. The item was not deleted.
 status-lock-owners-found = { $count } application(s) are using the selected item.
 status-lock-unidentified = Windows could not identify the application using this item.
+
+status-generic-item = item

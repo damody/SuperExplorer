@@ -220,3 +220,5 @@ status-lock-retrying = Đang thử lại thao tác xóa…
 status-lock-unidentified = Windows không xác định được ứng dụng đang dùng mục này.
 transfer-cancel-operation = Hủy thao tác tệp
 transfer-open-location = Mở vị trí truyền
+
+status-generic-item = mục

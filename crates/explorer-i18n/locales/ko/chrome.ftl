@@ -224,3 +224,6 @@ chrome-move-here = 여기로 이동
 chrome-create-shortcut-here = 여기에 바로 가기 만들기
 chrome-cancel-right-drag = 오른쪽 끌기 취소
 chrome-folder-icon = { $name } 폴더 아이콘
+
+chrome-untitled = 제목 없음
+chrome-submit-disabled = 제출 사용 안 함

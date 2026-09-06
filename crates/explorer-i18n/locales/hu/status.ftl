@@ -220,3 +220,5 @@ status-lock-retrying = A törlési művelet újrapróbálása…
 status-lock-unidentified = A Windows nem tudta azonosítani az elemet használó alkalmazást.
 transfer-cancel-operation = Fájlművelet megszakítása
 transfer-open-location = Átvitel helyének megnyitása
+
+status-generic-item = elem

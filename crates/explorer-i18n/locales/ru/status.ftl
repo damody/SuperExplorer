@@ -242,3 +242,5 @@ status-lock-retrying = Повтор удаления…
 status-lock-unidentified = Windows не смог определить приложение, использующее этот элемент.
 transfer-cancel-operation = Отменить файловую операцию
 transfer-open-location = Открыть расположение передачи
+
+status-generic-item = элемент

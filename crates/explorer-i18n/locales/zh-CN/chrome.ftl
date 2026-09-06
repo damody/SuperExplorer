@@ -224,3 +224,6 @@ chrome-move-here = 移动到此处
 chrome-create-shortcut-here = 在此处创建快捷方式
 chrome-cancel-right-drag = 取消右键拖放
 chrome-folder-icon = { $name } 文件夹图标
+
+chrome-untitled = 未命名
+chrome-submit-disabled = 无法提交

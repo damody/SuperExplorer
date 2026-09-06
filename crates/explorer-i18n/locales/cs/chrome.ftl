@@ -224,3 +224,6 @@ chrome-move-here = Přesunout sem
 chrome-create-shortcut-here = Vytvořit zástupce sem
 chrome-cancel-right-drag = Zrušit přetažení pravým tlačítkem
 chrome-folder-icon = Ikona složky { $name }
+
+chrome-untitled = Bez názvu
+chrome-submit-disabled = Odeslání zakázáno

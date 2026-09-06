@@ -220,3 +220,5 @@ status-lock-retrying = A repetir a operação de eliminação…
 status-lock-unidentified = O Windows não conseguiu identificar a aplicação que está a usar este item.
 transfer-cancel-operation = Cancelar operação de ficheiro
 transfer-open-location = Abrir localização da transferência
+
+status-generic-item = item

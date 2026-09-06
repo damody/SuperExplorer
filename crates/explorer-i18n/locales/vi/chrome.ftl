@@ -224,3 +224,6 @@ chrome-move-here = Di chuyển vào đây
 chrome-create-shortcut-here = Tạo lối tắt tại đây
 chrome-cancel-right-drag = Hủy kéo chuột phải
 chrome-folder-icon = Biểu tượng thư mục { $name }
+
+chrome-untitled = Không có tiêu đề
+chrome-submit-disabled = Không thể gửi

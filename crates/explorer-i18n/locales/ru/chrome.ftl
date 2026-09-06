@@ -224,3 +224,6 @@ chrome-move-here = Переместить сюда
 chrome-create-shortcut-here = Создать ярлык здесь
 chrome-cancel-right-drag = Отменить перетаскивание правой кнопкой
 chrome-folder-icon = Значок папки { $name }
+
+chrome-untitled = Без названия
+chrome-submit-disabled = Отправка недоступна

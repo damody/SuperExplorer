@@ -224,3 +224,6 @@ chrome-move-here = Áthelyezés ide
 chrome-create-shortcut-here = Parancsikon létrehozása ide
 chrome-cancel-right-drag = Jobb gombos húzás megszakítása
 chrome-folder-icon = { $name } mappaikon
+
+chrome-untitled = Névtelen
+chrome-submit-disabled = Küldés letiltva

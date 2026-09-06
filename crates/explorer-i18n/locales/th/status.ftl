@@ -220,3 +220,5 @@ status-lock-retrying = กำลังลองลบอีกครั้ง…
 status-lock-unidentified = Windows ไม่สามารถระบุแอปพลิเคชันที่ใช้รายการนี้ได้
 transfer-cancel-operation = ยกเลิกการดำเนินการไฟล์
 transfer-open-location = เปิดตำแหน่งการถ่ายโอน
+
+status-generic-item = รายการ

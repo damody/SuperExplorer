@@ -242,3 +242,5 @@ status-lock-retrying = Opakování odstranění…
 status-lock-unidentified = Windows nemohl identifikovat aplikaci používající tuto položku.
 transfer-cancel-operation = Zrušit souborovou operaci
 transfer-open-location = Otevřít umístění přenosu
+
+status-generic-item = položka

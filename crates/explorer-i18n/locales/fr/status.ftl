@@ -220,3 +220,5 @@ status-lock-retrying = Nouvel essai de la suppression…
 status-lock-unidentified = Windows n’a pas pu identifier l’application utilisant cet élément.
 transfer-cancel-operation = Annuler l’opération sur les fichiers
 transfer-open-location = Ouvrir l’emplacement du transfert
+
+status-generic-item = élément

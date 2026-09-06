@@ -224,3 +224,6 @@ chrome-move-here = ここに移動
 chrome-create-shortcut-here = ここにショートカットを作成
 chrome-cancel-right-drag = 右ドラッグをキャンセル
 chrome-folder-icon = { $name } のフォルダー アイコン
+
+chrome-untitled = 無題
+chrome-submit-disabled = 送信できません

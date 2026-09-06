@@ -220,3 +220,5 @@ status-lock-retrying = Tentando a exclusão novamente…
 status-lock-unidentified = O Windows não conseguiu identificar o aplicativo que está usando este item.
 transfer-cancel-operation = Cancelar operação de arquivo
 transfer-open-location = Abrir local da transferência
+
+status-generic-item = item

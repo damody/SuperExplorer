@@ -121,3 +121,6 @@ chrome-move-here = Move here
 chrome-create-shortcut-here = Create shortcut here
 chrome-cancel-right-drag = Cancel right drag
 chrome-folder-icon = { $name } folder icon
+
+chrome-untitled = Untitled
+chrome-submit-disabled = Submit disabled

@@ -224,3 +224,6 @@ chrome-move-here = Mover aqui
 chrome-create-shortcut-here = Criar atalho aqui
 chrome-cancel-right-drag = Cancelar arrasto com o botão direito
 chrome-folder-icon = Ícone da pasta { $name }
+
+chrome-untitled = Sem título
+chrome-submit-disabled = Envio desabilitado

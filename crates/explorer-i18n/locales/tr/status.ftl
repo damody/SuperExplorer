@@ -220,3 +220,5 @@ status-lock-retrying = Silme işlemi yeniden deneniyor…
 status-lock-unidentified = Windows bu öğeyi kullanan uygulamayı tanımlayamadı.
 transfer-cancel-operation = Dosya işlemini iptal et
 transfer-open-location = Aktarım konumunu aç
+
+status-generic-item = öğe

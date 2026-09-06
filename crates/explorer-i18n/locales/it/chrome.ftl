@@ -224,3 +224,6 @@ chrome-move-here = Sposta qui
 chrome-create-shortcut-here = Crea collegamento qui
 chrome-cancel-right-drag = Annulla trascinamento destro
 chrome-folder-icon = Icona cartella { $name }
+
+chrome-untitled = Senza titolo
+chrome-submit-disabled = Invio disabilitato

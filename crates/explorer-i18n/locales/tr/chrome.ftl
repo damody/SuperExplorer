@@ -224,3 +224,6 @@ chrome-move-here = Buraya taşı
 chrome-create-shortcut-here = Buraya kısayol oluştur
 chrome-cancel-right-drag = Sağ sürüklemeyi iptal et
 chrome-folder-icon = { $name } klasör simgesi
+
+chrome-untitled = Adsız
+chrome-submit-disabled = Gönderme devre dışı

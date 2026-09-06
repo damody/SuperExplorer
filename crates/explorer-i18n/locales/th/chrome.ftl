@@ -224,3 +224,6 @@ chrome-move-here = ย้ายมาที่นี่
 chrome-create-shortcut-here = สร้างทางลัดที่นี่
 chrome-cancel-right-drag = ยกเลิกการลากคลิกขวา
 chrome-folder-icon = ไอคอนโฟลเดอร์ { $name }
+
+chrome-untitled = ไม่มีชื่อ
+chrome-submit-disabled = ปิดการส่ง

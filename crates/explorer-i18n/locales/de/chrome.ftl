@@ -224,3 +224,6 @@ chrome-move-here = Hierher verschieben
 chrome-create-shortcut-here = Verknüpfung hier erstellen
 chrome-cancel-right-drag = Rechtsziehen abbrechen
 chrome-folder-icon = Ordnersymbol { $name }
+
+chrome-untitled = Unbenannt
+chrome-submit-disabled = Senden deaktiviert

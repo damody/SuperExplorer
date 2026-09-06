@@ -194,3 +194,5 @@ status-lock-retrying = 正在重试删除操作…
 status-lock-unidentified = Windows 无法识别正在使用此项目的应用程序。
 transfer-cancel-operation = 取消文件操作
 transfer-open-location = 打开传输位置
+
+status-generic-item = 项目

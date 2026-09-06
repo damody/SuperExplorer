@@ -224,3 +224,6 @@ chrome-move-here = Перемістити сюди
 chrome-create-shortcut-here = Створити ярлик тут
 chrome-cancel-right-drag = Скасувати перетягування правою кнопкою
 chrome-folder-icon = Піктограма папки { $name }
+
+chrome-untitled = Без назви
+chrome-submit-disabled = Надсилання вимкнено

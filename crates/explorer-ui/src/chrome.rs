@@ -3327,6 +3327,7 @@ fn permanent_delete_confirmation_dialog(
 )]
 fn remote_properties_dialog(
     tokens: UiTokens,
+    catalog: Catalog,
     properties: crate::state::RemotePropertiesState,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
@@ -3338,26 +3339,25 @@ fn remote_properties_dialog(
             remote.public_authority.as_deref().unwrap_or("remote"),
             remote.components.join("/")
         ),
-        _ => "無法取得".to_owned(),
+        _ => catalog.t("dialog-unavailable"),
     };
     let type_name = entry.metadata.type_display.clone().unwrap_or_else(|| {
-        if entry.is_container {
-            "遠端資料夾"
+        catalog.t(if entry.is_container {
+            "dialog-remote-folder"
         } else {
-            "遠端檔案"
-        }
-        .to_owned()
+            "dialog-remote-file"
+        })
     });
-    let size = entry
-        .metadata
-        .size_bytes
-        .map_or_else(|| "無法取得".to_owned(), |value| format!("{value} 位元組"));
+    let size = entry.metadata.size_bytes.map_or_else(
+        || catalog.t("dialog-unavailable"),
+        |value| t_named(catalog, "dialog-bytes", "value", value.to_string()),
+    );
     let changed = properties.mode != properties.original_mode;
     let mut grid = div().flex().flex_col().gap(px(4.0));
     for (label, read, write, execute) in [
-        ("擁有者", 0o400, 0o200, 0o100),
-        ("群組", 0o040, 0o020, 0o010),
-        ("其他", 0o004, 0o002, 0o001),
+        (catalog.t("dialog-owner"), 0o400, 0o200, 0o100),
+        (catalog.t("dialog-group"), 0o040, 0o020, 0o010),
+        (catalog.t("dialog-others"), 0o004, 0o002, 0o001),
     ] {
         grid = grid.child(
             div()
@@ -3366,24 +3366,27 @@ fn remote_properties_dialog(
                 .gap(px(12.0))
                 .child(div().w(px(70.0)).child(label))
                 .child(remote_permission_toggle(
-                    "讀取",
+                    catalog.t("dialog-read"),
                     read,
                     properties.mode,
                     tokens,
+                    catalog,
                     on_action.clone(),
                 ))
                 .child(remote_permission_toggle(
-                    "寫入",
+                    catalog.t("dialog-write"),
                     write,
                     properties.mode,
                     tokens,
+                    catalog,
                     on_action.clone(),
                 ))
                 .child(remote_permission_toggle(
-                    "執行",
+                    catalog.t("dialog-execute"),
                     execute,
                     properties.mode,
                     tokens,
+                    catalog,
                     on_action.clone(),
                 )),
         );
@@ -3405,7 +3408,12 @@ fn remote_properties_dialog(
             div()
                 .id("remote-properties-dialog")
                 .role(Role::Dialog)
-                .aria_label(format!("{} 內容", entry.display_name))
+                .aria_label(t_named(
+                    catalog,
+                    "dialog-properties-aria",
+                    "name",
+                    entry.display_name.clone(),
+                ))
                 .w(px(560.0))
                 .p(px(24.0))
                 .flex()
@@ -3418,20 +3426,30 @@ fn remote_properties_dialog(
                 .child(
                     div()
                         .text_size(px(20.0))
-                        .child(format!("{} - 內容", entry.display_name)),
+                        .child(t_named(
+                            catalog,
+                            "dialog-properties",
+                            "name",
+                            entry.display_name.clone(),
+                        )),
                 )
-                .child("一般")
-                .child(format!("檔案類型：{type_name}"))
-                .child(format!("位置：{location}"))
-                .child(format!("大小：{size}"))
+                .child(catalog.t("dialog-general"))
+                .child(t_named(catalog, "dialog-file-type", "value", type_name))
+                .child(t_named(catalog, "dialog-location", "value", location))
+                .child(t_named(catalog, "dialog-size", "value", size))
                 .when_some(entry.metadata.created_display.clone(), |dialog, value| {
-                    dialog.child(format!("建立日期：{value}"))
+                    dialog.child(t_named(catalog, "dialog-date-created", "value", value))
                 })
                 .when_some(entry.metadata.modified_display.clone(), |dialog, value| {
-                    dialog.child(format!("修改日期：{value}"))
+                    dialog.child(t_named(catalog, "dialog-date-modified", "value", value))
                 })
                 .child(div().h(px(1.0)).bg(tokens.theme.colors.divider.to_gpui()))
-                .child(format!("權限：{:04o}", properties.mode))
+                .child(t_named(
+                    catalog,
+                    "dialog-permissions",
+                    "mode",
+                    format!("{:04o}", properties.mode),
+                ))
                 .child(grid)
                 .child(
                     div()
@@ -3440,14 +3458,14 @@ fn remote_properties_dialog(
                         .gap(px(8.0))
                         .child(folder_option_button(
                             "remote-properties-ok",
-                            "確定",
+                            catalog.t("menu-ok"),
                             ExplorerAction::ApplyRemoteProperties,
                             tokens,
                             on_action.clone(),
                         ))
                         .child(folder_option_button(
                             "remote-properties-cancel",
-                            "取消",
+                            catalog.t("menu-cancel"),
                             ExplorerAction::CloseRemoteProperties,
                             tokens,
                             on_action.clone(),
@@ -3455,7 +3473,7 @@ fn remote_properties_dialog(
                         .when(changed, |row| {
                             row.child(folder_option_button(
                                 "remote-properties-apply",
-                                "套用",
+                                catalog.t("menu-apply"),
                                 ExplorerAction::ApplyRemoteProperties,
                                 tokens,
                                 on_action,
@@ -3470,14 +3488,20 @@ fn remote_properties_dialog(
     reason = "superseded by the dedicated native Properties window"
 )]
 fn remote_permission_toggle(
-    label: &'static str,
+    label: String,
     mask: u32,
     mode: u32,
     tokens: UiTokens,
+    catalog: Catalog,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     let checked = mode & mask != 0;
     let action = on_action;
+    let allowed = catalog.t(if checked {
+        "dialog-allowed"
+    } else {
+        "dialog-not-allowed"
+    });
     div()
         .id(format!("remote-permission-{mask:o}"))
         .cursor_pointer()
@@ -3485,10 +3509,7 @@ fn remote_permission_toggle(
         .items_center()
         .gap(px(4.0))
         .px(px(4.0))
-        .aria_label(format!(
-            "{label} {}",
-            if checked { "已允許" } else { "未允許" }
-        ))
+        .aria_label(format!("{label} {allowed}"))
         .when_some(action, move |element, callback| {
             element.on_click(move |_, window, cx| {
                 callback(&ExplorerAction::ToggleRemotePermission { mask }, window, cx);
@@ -7110,7 +7131,12 @@ impl RenderOnce for BreadcrumbAddressEditor {
             .flex_1()
             .child(editable_focus_field(
                 ADDRESS_EDITOR_ID,
-                format!("Address: {}", presentation.address_title),
+                t_named(
+                    self.state.catalog(),
+                    "chrome-address",
+                    "path",
+                    presentation.address_title.clone(),
+                ),
                 presentation.address_title,
                 ExplorerAction::FocusAddress,
                 self.state.focused_surface() == FocusSurface::AddressBar,
@@ -7120,6 +7146,7 @@ impl RenderOnce for BreadcrumbAddressEditor {
                 self.on_action,
                 f32::from(window.bounds().size.width)
                     < self.tokens.layout.compact_window_width.value(),
+                self.state.catalog(),
             ))
             .when_some(error, |element, error| {
                 element.child(
@@ -7186,7 +7213,7 @@ fn breadcrumb_browse_field(
         .debug_selector(|| ADDRESS_EDITOR_ID.to_owned())
         .role(Role::Document)
         .relative()
-        .aria_label(format!("Address: {}", address.draft))
+        .aria_label(t_named(catalog, "chrome-address", "path", address.draft.clone()))
         .min_w(px(layout.address_min_width.value()))
         .h(px(layout.minimum_hit_target.value()))
         .flex_1()
@@ -8071,6 +8098,7 @@ impl RenderOnce for SearchBox {
             input_focus,
             self.on_action,
             compact,
+            catalog,
         );
         div()
             .id("search-box-container")
@@ -13914,8 +13942,8 @@ impl RenderOnce for StatusBar {
                                 .components
                                 .last()
                                 .cloned()
-                                .unwrap_or_else(|| "item".to_owned()),
-                            _ => "item".to_owned(),
+                                .unwrap_or_else(|| catalog.t("status-generic-item")),
+                            _ => catalog.t("status-generic-item"),
                         }
                     }
                     explorer_model::FileOperationKind::Copy { items, .. }
@@ -13927,7 +13955,7 @@ impl RenderOnce for StatusBar {
                         .and_then(|item| item.location.path())
                         .and_then(std::path::Path::file_name)
                         .map_or_else(
-                            || "item".to_owned(),
+                            || catalog.t("status-generic-item"),
                             |name| name.to_string_lossy().into_owned(),
                         ),
                 };
@@ -14506,6 +14534,7 @@ fn editable_focus_field(
     input_focus: Option<gpui::FocusHandle>,
     on_action: Option<ActionCallback>,
     compact: bool,
+    catalog: Catalog,
 ) -> gpui::AnyElement {
     let Some(input) = input else {
         return focus_placeholder(
@@ -14517,9 +14546,11 @@ fn editable_focus_field(
             tokens,
             on_action,
             compact,
+            catalog,
         )
         .into_any_element();
     };
+    let _ = catalog;
     let layout = tokens.layout;
     let colors = tokens.theme.colors;
     let typography = if id == SEARCH_BOX_ID {
@@ -14678,6 +14709,7 @@ fn focus_placeholder(
     tokens: UiTokens,
     on_action: Option<ActionCallback>,
     compact: bool,
+    catalog: Catalog,
 ) -> impl IntoElement {
     let layout = tokens.layout;
     let colors = tokens.theme.colors;
@@ -14718,7 +14750,7 @@ fn focus_placeholder(
         .child(
             div()
                 .text_color(colors.text_disabled.to_gpui())
-                .child("Submit disabled"),
+                .child(catalog.t("chrome-submit-disabled")),
         )
 }
 
@@ -14779,6 +14811,7 @@ impl RenderOnce for WindowChrome {
         let generic_shell_icon = self.shell_icons.iter().find_map(|(key, texture)| {
             is_generic_breadcrumb_folder_icon_key(key).then(|| Arc::clone(texture))
         });
+        let catalog = self.state.catalog();
         let tabs: Vec<_> = self
             .state
             .tabs()
@@ -14787,7 +14820,7 @@ impl RenderOnce for WindowChrome {
             .map(|tab| {
                 let current = tab.history.current();
                 let title = current.map_or_else(
-                    || "Untitled".to_owned(),
+                    || catalog.t("chrome-untitled"),
                     |entry| entry.display_title.clone(),
                 );
                 let shell_icon = current.and_then(|entry| {
@@ -15737,10 +15770,10 @@ mod tests {
             .expect("remote properties renderer");
         for required in [
             "remote-properties-dialog",
-            "檔案類型：",
-            "位置：",
-            "大小：",
-            "權限：{:04o}",
+            "dialog-file-type",
+            "dialog-location",
+            "dialog-size",
+            "dialog-permissions",
             "remote-properties-ok",
             "remote-properties-cancel",
             "remote-properties-apply",

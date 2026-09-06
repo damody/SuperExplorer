@@ -220,3 +220,5 @@ status-lock-retrying = 삭제 작업을 다시 시도하는 중…
 status-lock-unidentified = Windows가 이 항목을 사용하는 애플리케이션을 식별하지 못했습니다.
 transfer-cancel-operation = 파일 작업 취소
 transfer-open-location = 전송 위치 열기
+
+status-generic-item = 항목

@@ -220,3 +220,5 @@ status-lock-retrying = 削除操作を再試行しています…
 status-lock-unidentified = Windows はこの項目を使用しているアプリケーションを識別できませんでした。
 transfer-cancel-operation = ファイル操作をキャンセル
 transfer-open-location = 転送場所を開く
+
+status-generic-item = 項目

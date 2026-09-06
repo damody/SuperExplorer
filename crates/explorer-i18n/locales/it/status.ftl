@@ -220,3 +220,5 @@ status-lock-retrying = Nuovo tentativo dell’eliminazione…
 status-lock-unidentified = Windows non è riuscito a identificare l’applicazione che usa questo elemento.
 transfer-cancel-operation = Annulla operazione sui file
 transfer-open-location = Apri percorso del trasferimento
+
+status-generic-item = elemento
