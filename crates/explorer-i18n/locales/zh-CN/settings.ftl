@@ -30,11 +30,11 @@ settings-advanced = 高级设置：
 
 settings-item-checkboxes = 使用复选框选择项目
 
-settings-hide-extensions = 隐藏已知文件类型的副檔名
+settings-hide-extensions = 隐藏已知文件类型的扩展名
 
 settings-show-hidden = 显示隐藏的文件、文件夹和驱动器
 
-settings-compact-spacing = 減少项目間的空白區域（紧凑视图）
+settings-compact-spacing = 减少项目间的空白区域（紧凑视图）
 
 settings-always-icons = 始终显示图标，不显示缩略图
 
@@ -48,7 +48,7 @@ settings-cache-usage = Cache usage
 
 settings-cache-usage-limits = Cache usage and limits (updates every second)
 
-settings-mft-resources = MFT Service 資源
+settings-mft-resources = MFT Service 资源
 
 settings-mft-resources-help = 由所有 SuperExplorer 进程共享；磁盘索引会保留，内存缓存在 MFT Service 重新启动后重建。
 

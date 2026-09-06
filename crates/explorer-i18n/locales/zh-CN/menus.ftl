@@ -64,7 +64,7 @@ menu-transfers = 传输
 
 menu-refresh-tortoisegit = 刷新 TortoiseGit 状态
 
-menu-no-extensions = 沒有可用的扩展
+menu-no-extensions = 没有可用的扩展
 
 menu-exif-datetime = 按拍摄日期重命名（20260805_123456）
 

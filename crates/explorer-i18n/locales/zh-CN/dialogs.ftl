@@ -18,7 +18,7 @@ dialog-community = 社区：{ $url }
 
 dialog-plugin-safe-mode-title = Plugin Safe Mode
 
-dialog-plugin-safe-mode-body = Plugin Safe Mode 已啟用。勾選要重新啟用的 Plugin，按 Apply 或 OK，然後重新啟動 SuperExplorer。
+dialog-plugin-safe-mode-body = Plugin Safe Mode 已启用。勾选要重新启用的 Plugin，按 Apply 或 OK，然后重新启动 SuperExplorer。
 
 dialog-safe-mode-confirm-title = Safe Mode requires confirmation
 
@@ -38,7 +38,7 @@ dialog-delete-bookmark = 删除书签
 
 dialog-delete-bookmark-prompt = 删除书签「{ $name }」？
 
-dialog-delete-bookmark-note = 這會移除书签，不会删除磁盘上的文件。
+dialog-delete-bookmark-note = 这会移除书签，不会删除磁盘上的文件。
 
 dialog-delete-bookmark-folder = 删除书签文件夹
 
@@ -120,7 +120,7 @@ dialog-new-shortcut-default = 新快捷方式
 
 dialog-shortcut-name-invalid = 快捷方式名称必须是当前文件夹内的一个有效名称。
 
-dialog-shortcut-target-invalid = 请輸入有效的目标路径。
+dialog-shortcut-target-invalid = 请输入有效的目标路径。
 
 dialog-shortcut-window-closed = 主窗口已关闭，无法创建快捷方式。
 
@@ -158,11 +158,11 @@ dialog-extension-author-bio = SuperExplorer 与官方范例扩展作者
 
 dialog-extension-purpose-folder-size = 显示文件大小并在后台递归计算文件夹总大小。
 
-dialog-extension-purpose-size-map = 以面积圖呈現当前文件夹內各项目的空间占用。
+dialog-extension-purpose-size-map = 以面积图呈现当前文件夹内各项目的空间占用。
 
 dialog-extension-purpose-tokei = 使用 Rust 与 tokei 统计文件或文件夹中的代码行数。
 
-dialog-extension-purpose-lua-tokei = 示範以 Lua 扩展統計程式碼行數。
+dialog-extension-purpose-lua-tokei = 示范以 Lua 扩展统计代码行数。
 
 dialog-extension-purpose-lock-owner = 显示当前锁定文件的进程或服务所有者。
 

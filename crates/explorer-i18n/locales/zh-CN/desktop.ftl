@@ -44,7 +44,7 @@ desktop-network-not-present = 未提供网络连接
 
 desktop-network-unavailable = 网络不可用
 
-desktop-status-provider-unavailable = 狀態提供者不可用
+desktop-status-provider-unavailable = 状态提供者不可用
 
 desktop-battery = 电池
 
@@ -56,7 +56,7 @@ desktop-ac-no-battery = 交流电源 · 未检测到电池
 
 desktop-ac-no-battery-device = 交流电源 · 此设备没有电池
 
-desktop-power-unavailable = 電源狀態不可用
+desktop-power-unavailable = 电源状态不可用
 
 desktop-volume-unavailable = 音量不可用
 
@@ -94,13 +94,13 @@ desktop-airplane-unavailable = 飞行模式（不可用）
 
 desktop-hotspot-unavailable = 移动热点（不可用）
 
-desktop-calendar-provider-unavailable = 日期時間提供者不可用
+desktop-calendar-provider-unavailable = 日期时间提供者不可用
 
-desktop-calendar-unavailable = 月曆不可用
+desktop-calendar-unavailable = 日历不可用
 
 desktop-syncing-notifications = 正在同步 Windows 通知
 
-desktop-notification-access-denied = Windows 通知访问被拒绝，请在隐私设居中允许通知访问
+desktop-notification-access-denied = Windows 通知访问被拒绝，请在隐私设置中允许通知访问
 
 desktop-waiting-notification-access = 正在等待 Windows 通知访问权限
 
