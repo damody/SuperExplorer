@@ -5,6 +5,10 @@
 
 pub mod adb;
 pub mod adb_tools;
+pub mod ftp;
+mod ftp_protocol;
+pub mod gdrive;
+mod gdrive_protocol;
 mod provider;
 pub mod sftp;
 mod transfer;
@@ -14,6 +18,9 @@ pub use adb_tools::{
     AdbCandidateRejection, AdbDeviceSnapshot, AdbInstallOutcome, AdbToolInstaller,
     AdbToolProvenance, AdbToolResolver, ResolvedAdbTool,
 };
+pub use explorer_model::RemoteProviderCapabilities;
+pub use ftp::FtpProvider;
+pub use gdrive::GdriveProvider;
 pub use provider::{
     RemoteEntry, RemoteEntryKind, RemoteMetadata, RemoteProvider, RemoteProviderRegistry,
 };

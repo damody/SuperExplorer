@@ -132,6 +132,9 @@ pub struct VirtualLocationDescriptor {
     pub container_identity: [u8; 16],
     pub container_generation: u64,
     pub entry_id: Option<u64>,
+    /// Provider-owned opaque id (Google Drive file id). Older descriptors omit it.
+    #[serde(default)]
+    pub provider_entry_key: Option<String>,
     pub components: Vec<String>,
 }
 
@@ -154,6 +157,8 @@ pub enum FileSystemKind {
     Local,
     Adb,
     Sftp,
+    Ftp,
+    Gdrive,
 }
 
 impl LocationDescriptor {
@@ -186,6 +191,10 @@ impl LocationDescriptor {
             Self::FileSystem(_) => Some(FileSystemKind::Local),
             Self::Virtual(location) if location.provider_id == "adb" => Some(FileSystemKind::Adb),
             Self::Virtual(location) if location.provider_id == "sftp" => Some(FileSystemKind::Sftp),
+            Self::Virtual(location) if location.provider_id == "ftp" => Some(FileSystemKind::Ftp),
+            Self::Virtual(location) if location.provider_id == "gdrive" => {
+                Some(FileSystemKind::Gdrive)
+            }
             _ => None,
         }
     }
@@ -251,6 +260,7 @@ impl LocationDescriptor {
             container_identity,
             container_generation,
             entry_id,
+            provider_entry_key: None,
             components,
         })
         .validated()
@@ -267,6 +277,7 @@ impl LocationDescriptor {
         let mut parent = location.clone();
         parent.components.pop();
         parent.entry_id = None;
+        parent.provider_entry_key = None;
         Some(Self::Virtual(parent))
     }
 

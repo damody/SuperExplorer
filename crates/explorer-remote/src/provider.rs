@@ -3,7 +3,9 @@
 use std::{collections::HashMap, path::Path, sync::Arc};
 
 use anyhow::{Result, bail};
-use explorer_model::{CancellationToken, LocationDescriptor, VirtualLocationDescriptor};
+use explorer_model::{
+    CancellationToken, LocationDescriptor, RemoteProviderCapabilities, VirtualLocationDescriptor,
+};
 
 pub(crate) fn validate_remote_location(
     location: &VirtualLocationDescriptor,
@@ -142,6 +144,9 @@ impl RemoteEntryKind {
 /// cancellation during long transfers and must never call GPUI or Windows Shell APIs.
 pub trait RemoteProvider: Send + Sync {
     fn provider_id(&self) -> &'static str;
+    fn capabilities(&self) -> RemoteProviderCapabilities {
+        RemoteProviderCapabilities::sftp_defaults()
+    }
     fn list(
         &self,
         location: &VirtualLocationDescriptor,
@@ -293,6 +298,7 @@ mod tests {
             container_identity: [3; 16],
             container_generation: 7,
             entry_id: None,
+            provider_entry_key: None,
             components: vec!["sdcard".to_owned(), "Download".to_owned()],
         };
         let metadata = RemoteMetadata {
@@ -319,6 +325,7 @@ mod tests {
             container_identity: [1; 16],
             container_generation: 1,
             entry_id: None,
+            provider_entry_key: None,
             components: Vec::new(),
         };
         assert!(validate_remote_location(&location, "adb", false).is_err());

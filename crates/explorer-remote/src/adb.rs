@@ -1919,6 +1919,7 @@ mod tests {
             container_identity: [9; 16],
             container_generation: 1,
             entry_id: None,
+            provider_entry_key: None,
             components: vec!["data".to_owned()],
         };
         let entry = provider

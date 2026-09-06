@@ -1185,7 +1185,9 @@ impl ColumnFileSystems {
     pub const LOCAL: Self = Self(1);
     pub const ADB: Self = Self(2);
     pub const SFTP: Self = Self(4);
-    pub const REMOTE: Self = Self(Self::ADB.0 | Self::SFTP.0);
+    pub const FTP: Self = Self(8);
+    pub const GDRIVE: Self = Self(16);
+    pub const REMOTE: Self = Self(Self::ADB.0 | Self::SFTP.0 | Self::FTP.0 | Self::GDRIVE.0);
     pub const ALL: Self = Self(Self::LOCAL.0 | Self::REMOTE.0);
 
     #[must_use]
@@ -1202,6 +1204,8 @@ impl ColumnFileSystems {
             crate::FileSystemKind::Local => Self::LOCAL.0,
             crate::FileSystemKind::Adb => Self::ADB.0,
             crate::FileSystemKind::Sftp => Self::SFTP.0,
+            crate::FileSystemKind::Ftp => Self::FTP.0,
+            crate::FileSystemKind::Gdrive => Self::GDRIVE.0,
         };
         self.0 & bit != 0
     }
@@ -2401,6 +2405,7 @@ pub fn location_breadcrumbs(location: &LocationDescriptor) -> Vec<BreadcrumbSegm
             let mut descriptor = virtual_location.clone();
             descriptor.components.truncate(depth);
             descriptor.entry_id = None;
+            descriptor.provider_entry_key = None;
             let descriptor = LocationDescriptor::Virtual(descriptor);
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             descriptor.hash(&mut hasher);
@@ -3640,7 +3645,9 @@ mod tests {
         assert!(ColumnFileSystems::ALL.contains(crate::FileSystemKind::Local));
         assert!(ColumnFileSystems::REMOTE.contains(crate::FileSystemKind::Adb));
         assert!(ColumnFileSystems::REMOTE.contains(crate::FileSystemKind::Sftp));
+        assert!(ColumnFileSystems::REMOTE.contains(crate::FileSystemKind::Ftp));
+        assert!(ColumnFileSystems::REMOTE.contains(crate::FileSystemKind::Gdrive));
         assert!(!ColumnFileSystems::REMOTE.contains(crate::FileSystemKind::Local));
-        assert_eq!(ColumnFileSystems::from_bits(8), None);
+        assert_eq!(ColumnFileSystems::from_bits(32), None);
     }
 }

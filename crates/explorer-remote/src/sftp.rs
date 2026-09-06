@@ -174,7 +174,7 @@ impl SftpProvider {
             .get(&location.container_identity)
             .cloned()
             .context("SFTP profile is not registered")?;
-        if location.public_authority.as_deref() != Some(profile.profile.alias.as_str()) {
+        if location.public_authority.as_deref() != Some(profile.profile.public_identity()) {
             bail!("SFTP location authority does not match the registered profile");
         }
         Ok(profile)

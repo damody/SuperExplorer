@@ -19,7 +19,7 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or(22);
     let password = rpassword::read_password()?;
     let identity = new_remote_container_identity();
-    let mut profile = SftpProfile::new("integration-probe".into(), host, port, username, identity)?;
+    let mut profile = SftpProfile::new(host, port, username, identity)?;
     profile.host_key_fingerprint = Some(fingerprint);
     let provider = SftpProvider::new()?;
     provider.register_profile(profile, password)?;

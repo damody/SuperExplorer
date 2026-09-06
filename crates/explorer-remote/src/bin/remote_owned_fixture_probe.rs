@@ -65,6 +65,7 @@ fn run_adb(serial: &str) -> Result<()> {
         container_identity: identity,
         container_generation: 1,
         entry_id: None,
+        provider_entry_key: None,
         components: vec!["data".to_owned(), "local".to_owned(), "tmp".to_owned()],
     };
     run_fixture(&provider, parent)
@@ -82,6 +83,7 @@ fn run_adb_progress(serial: &str) -> Result<()> {
         container_identity: identity,
         container_generation: 1,
         entry_id: None,
+        provider_entry_key: None,
         components: vec!["sdcard".to_owned(), "Download".to_owned(), unique_name()],
     };
     provider.create_directory(&parent, &cancellation)?;
@@ -136,13 +138,7 @@ fn run_adb_progress(serial: &str) -> Result<()> {
 fn run_sftp(host: &str, username: &str, fingerprint: &str) -> Result<()> {
     let password = rpassword::read_password()?;
     let identity = remote_container_identity(RemoteProviderKind::Sftp, host);
-    let mut profile = SftpProfile::new(
-        host.to_owned(),
-        host.to_owned(),
-        22,
-        username.to_owned(),
-        identity,
-    )?;
+    let mut profile = SftpProfile::new(host.to_owned(), 22, username.to_owned(), identity)?;
     profile.host_key_fingerprint = Some(fingerprint.to_owned());
     let provider = SftpProvider::new()?;
     provider.register_profile(profile, password)?;
@@ -152,6 +148,7 @@ fn run_sftp(host: &str, username: &str, fingerprint: &str) -> Result<()> {
         container_identity: identity,
         container_generation: 1,
         entry_id: None,
+        provider_entry_key: None,
         components: vec!["tmp".to_owned()],
     };
     run_fixture(&provider, parent)
@@ -160,13 +157,7 @@ fn run_sftp(host: &str, username: &str, fingerprint: &str) -> Result<()> {
 fn cleanup_sftp_drag_fixture(host: &str, username: &str, fingerprint: &str) -> Result<()> {
     let password = rpassword::read_password()?;
     let identity = remote_container_identity(RemoteProviderKind::Sftp, host);
-    let mut profile = SftpProfile::new(
-        host.to_owned(),
-        host.to_owned(),
-        22,
-        username.to_owned(),
-        identity,
-    )?;
+    let mut profile = SftpProfile::new(host.to_owned(), 22, username.to_owned(), identity)?;
     profile.host_key_fingerprint = Some(fingerprint.to_owned());
     let provider = SftpProvider::new()?;
     provider.register_profile(profile, password)?;
@@ -176,6 +167,7 @@ fn cleanup_sftp_drag_fixture(host: &str, username: &str, fingerprint: &str) -> R
         container_identity: identity,
         container_generation: 1,
         entry_id: None,
+        provider_entry_key: None,
         components: vec!["home".to_owned(), "linuxuser".to_owned()],
     };
     let cancellation = CancellationToken::new();
@@ -201,13 +193,7 @@ fn registered_sftp_provider(
 ) -> Result<(SftpProvider, [u8; 16])> {
     let password = rpassword::read_password()?;
     let identity = remote_container_identity(RemoteProviderKind::Sftp, host);
-    let mut profile = SftpProfile::new(
-        host.to_owned(),
-        host.to_owned(),
-        22,
-        username.to_owned(),
-        identity,
-    )?;
+    let mut profile = SftpProfile::new(host.to_owned(), 22, username.to_owned(), identity)?;
     profile.host_key_fingerprint = Some(fingerprint.to_owned());
     let provider = SftpProvider::new()?;
     provider.register_profile(profile, password)?;
@@ -227,6 +213,7 @@ fn sftp_external_file_absent(
         container_identity: identity,
         container_generation: 1,
         entry_id: None,
+        provider_entry_key: None,
         components: vec!["home".to_owned(), "linuxuser".to_owned()],
     };
     let entries = provider.list(&parent, &CancellationToken::new())?;
@@ -256,6 +243,7 @@ fn verify_and_cleanup_sftp_external_file(
         container_identity: identity,
         container_generation: 1,
         entry_id: None,
+        provider_entry_key: None,
         components: vec!["home".to_owned(), "linuxuser".to_owned()],
     };
     let remote = child(&parent, name);
@@ -281,6 +269,7 @@ fn run_cross(serial: &str, host: &str, username: &str, fingerprint: &str) -> Res
         container_identity: adb_identity,
         container_generation: 1,
         entry_id: None,
+        provider_entry_key: None,
         components: vec![
             "data".to_owned(),
             "local".to_owned(),
@@ -289,13 +278,7 @@ fn run_cross(serial: &str, host: &str, username: &str, fingerprint: &str) -> Res
         ],
     };
     let sftp_identity = remote_container_identity(RemoteProviderKind::Sftp, host);
-    let mut profile = SftpProfile::new(
-        host.to_owned(),
-        host.to_owned(),
-        22,
-        username.to_owned(),
-        sftp_identity,
-    )?;
+    let mut profile = SftpProfile::new(host.to_owned(), 22, username.to_owned(), sftp_identity)?;
     profile.host_key_fingerprint = Some(fingerprint.to_owned());
     let sftp = Arc::new(SftpProvider::new()?);
     sftp.register_profile(profile, password)?;
@@ -305,6 +288,7 @@ fn run_cross(serial: &str, host: &str, username: &str, fingerprint: &str) -> Res
         container_identity: sftp_identity,
         container_generation: 1,
         entry_id: None,
+        provider_entry_key: None,
         components: vec!["tmp".to_owned(), unique_name()],
     };
     let cancellation = CancellationToken::new();

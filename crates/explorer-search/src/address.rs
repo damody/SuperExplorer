@@ -18,7 +18,7 @@ pub fn parse_address(input: &str) -> Result<LocationDescriptor, AddressParseErro
         return Ok(LocationDescriptor::ParsingName(value.to_owned()));
     }
     if let Some((provider, remainder)) = value.split_once("://") {
-        if matches!(provider.to_ascii_lowercase().as_str(), "adb" | "sftp") {
+        if explorer_model::is_remote_provider_id(&provider.to_ascii_lowercase()) {
             return explorer_model::RemoteAddress::parse(value)
                 .and_then(|address| {
                     address
@@ -112,6 +112,13 @@ mod tests {
                 .unwrap()
         );
         assert!(parse_address("sftp://production/root").is_ok());
+        assert_eq!(
+            parse_address("gdrive://you@gmail.com/Work").unwrap(),
+            explorer_model::RemoteAddress::parse("gdrive://you@gmail.com/Work")
+                .unwrap()
+                .to_deterministic_location(1)
+                .unwrap()
+        );
         assert_eq!(
             parse_address("rust-7z://09090909090909090909090909090909/5/src/nested").unwrap(),
             LocationDescriptor::try_virtual(
