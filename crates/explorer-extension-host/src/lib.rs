@@ -29,6 +29,7 @@ mod lua_registrar;
 mod manifest;
 mod native_lifecycle;
 mod operation_plan;
+mod package_locale;
 mod package_resolver;
 mod package_source;
 mod package_validation;
@@ -123,6 +124,10 @@ pub use native_lifecycle::{
 pub use operation_plan::{
     HostOperationPlanEngineV1, OperationCancellationV1, OperationPlanAuthorityV1,
     OperationPlanErrorV1, identity as operation_file_identity_v1,
+};
+pub use package_locale::{
+    PackageLocaleJsonV1, PackageLocaleResolutionV1, parse_package_locale_json,
+    resolve_package_display_name, resolve_package_locale,
 };
 pub use package_resolver::{
     BlockedPackageV1, PackageResolutionDiagnosticCodeV1, PackageResolutionDiagnosticV1,
