@@ -83,6 +83,9 @@ function Start-UitestExplorer {
         [void]$start.Environment.Remove('EXPLORER_INITIAL_PATH')
     }
     $start.Environment['EXPLORER_LOG_DIR'] = $OutputDirectory
+    if (-not $AdditionalEnvironment.ContainsKey('SUPEREXPLORER_LOCALE')) {
+        $start.Environment['SUPEREXPLORER_LOCALE'] = 'zh-TW'
+    }
     foreach ($name in $AdditionalEnvironment.Keys) {
         $start.Environment[[string]$name] = [string]$AdditionalEnvironment[$name]
     }

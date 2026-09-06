@@ -1,8 +1,9 @@
 //! Deterministic UI behavior harness with no GPUI window or Shell service.
 //!
-//! Default locale is `AppLocale::ZhTw` (via [`AppViewState::default`]) so existing
-//! Chinese assertions can migrate incrementally. Production resolves env > session >
-//! Windows > `En`.
+//! Default locale is `AppLocale::ZhTw` (via [`AppViewState::default`]), matching
+//! headful/uitest `SUPEREXPLORER_LOCALE=zh-TW`. Tests that need another locale
+//! call [`crate::state::AppViewState::configure_locale`]. Production resolves
+//! env > session > Windows > `En`.
 
 use crate::{
     UiTokens,
@@ -57,6 +58,14 @@ mod tests {
         focus::FocusSurface,
         theme::{SemanticColorSlot, ThemeMode, ThemeTokens},
     };
+
+    #[test]
+    fn harness_defaults_to_zh_tw_matching_uitest_locale_pin() {
+        assert_eq!(
+            UiTestHarness::default().state().locale(),
+            explorer_i18n::AppLocale::ZhTw
+        );
+    }
 
     #[test]
     fn disabled_navigation_clicks_and_shortcuts_never_fake_state() {

@@ -800,6 +800,7 @@ fn execute_case(
         .env("EXPLORER_UITEST_RUN_ROOT", output)
         .env("EXPLORER_UITEST_FIXTURE_ROOT", fixtures)
         .env("EXPLORER_UITEST_EVIDENCE_DIR", &evidence)
+        .env("SUPEREXPLORER_LOCALE", "zh-TW")
         .envs(
             case.environment
                 .iter()
