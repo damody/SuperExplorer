@@ -2,17 +2,19 @@
 
 ## Purpose
 
-Allow a user to type `sftp://<host>/` or `sftp://<host>@<username>/` in the
+Allow a user to type `sftp://<host>/` or `sftp://<username>@<host>/` in the
 address bar and complete a secure password login without manually editing a
 profile file. The host is also the stable public profile alias. User-info is an
 input hint only and is removed before the address reaches history, tabs,
-bookmarks, diagnostics, or provider locations.
+bookmarks, diagnostics, or provider locations. The reversed form
+`sftp://<host>@<username>/` was superseded by `standardize-sftp-username-uri`
+and is no longer treated as a username hint for the left-hand host.
 
 ## Address contract
 
 - `sftp://45.32.49.125/` opens the login surface with an empty username unless
   a saved profile supplies one.
-- `sftp://45.32.49.125@root/` opens the same surface with `root` prefilled and
+- `sftp://root@45.32.49.125/` opens the same surface with `root` prefilled and
   immediately canonicalizes the visible/persistable address to
   `sftp://45.32.49.125/`.
 - A port may be entered in the login surface; it defaults to 22 and is not part

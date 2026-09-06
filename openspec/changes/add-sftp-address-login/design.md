@@ -11,7 +11,7 @@ Direct SFTP addresses currently resolve as saved aliases; unsaved hosts fail bec
 ## Decisions
 
 - The host is the stable public alias. This avoids another required name and keeps canonical URIs reconstructable.
-- A dedicated input parser extracts `@username`; core `RemoteAddress` remains user-info-free. Treating user-info as a general URI field was rejected because it could leak into history and logs.
+- A dedicated input parser extracts `username@host`; core `RemoteAddress` remains user-info-free. Treating user-info as a general URI field was rejected because it could leak into history and logs. The reversed `host@username` form was superseded by `standardize-sftp-username-uri`.
 - Windows Credential UI owns the masked username/password buffers for the modal call; UI/model state never owns the password. Prompt persistence is disabled.
 - The application coordinator probes the key, authenticates, writes Credential Manager first, atomically replaces profile JSON, refreshes provider/navigation state, then navigates once.
 - Explicit Login constitutes first-key trust. Changed keys are blocked; silent replacement is rejected.

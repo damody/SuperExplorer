@@ -4,7 +4,7 @@ SFTP currently requires hand-authored profile JSON and a separate credential hel
 
 ## What Changes
 
-- Accept `sftp://host/` and the username-hint form `sftp://host@user/`.
+- Accept `sftp://host/` and the username-hint form `sftp://user@host/`.
 - Canonicalize both to `sftp://host/` before persistence or logging.
 - Add an in-app masked SFTP login surface with first-use host-key trust.
 - Persist profiles automatically and store passwords only in Windows Credential Manager.

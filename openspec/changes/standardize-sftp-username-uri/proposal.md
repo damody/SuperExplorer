@@ -17,11 +17,12 @@ SuperExplorer currently uses the reversed, nonstandard SFTP username form `sftp:
 
 ### Modified Capabilities
 
-None.
+None in `openspec/specs/`. This change supersedes the username-hint scenario in the still-active `add-sftp-address-login` change: `sftp://45.32.49.125@root/` is no longer the accepted hint form.
 
 ## Impact
 
 - `crates/explorer-model/src/remote.rs`: shared SFTP parsing and canonical formatting contract.
 - `crates/explorer-ui/src/lib.rs`: address-bar interception and navigation tests.
-- `crates/explorer-app/src/remote_service.rs`: host-based profile resolution after login prefill.
+- `crates/explorer-app/src/remote_service.rs`: host-based profile resolution after login prefill; no second authority swap.
+- `docs/superpowers/specs/2026-08-26-sftp-address-login-design.md` and `openspec/changes/add-sftp-address-login/specs/sftp-address-login/spec.md`: replace reversed username-hint examples.
 - Existing host-only saved metadata remains compatible; no credential-vault migration or external service change is required.

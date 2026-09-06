@@ -27,4 +27,6 @@ Existing host-only profiles, credentials, bookmarks, and history remain valid. A
 
 ## Verification
 
-Focused tests cover parsing, login prefilling, host-only compatibility, malformed authorities, and secret redaction. A final targeted workspace check is run only after implementation, followed by a user-perspective check of address entry, login, and navigation.
+Focused tests cover parsing, login prefilling, host-only compatibility, malformed authorities, and secret redaction. Error Display/Debug for a rejected password-bearing URI must not contain the password text. A final targeted workspace check is run only after implementation, followed by a user-perspective check of address entry, login, and navigation.
+
+The reversed examples in `docs/superpowers/specs/2026-08-26-sftp-address-login-design.md` and the still-active `add-sftp-address-login` username-hint scenario must be updated to `sftp://username@host/` in the same delivery.

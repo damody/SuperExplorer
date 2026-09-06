@@ -8,7 +8,7 @@ The system SHALL turn an unsaved `sftp://<host>/` address into an in-app login f
 - **THEN** the login surface SHALL open for host `45.32.49.125` with port 22
 
 #### Scenario: Username hint
-- **WHEN** the user submits `sftp://45.32.49.125@root/`
+- **WHEN** the user submits `sftp://root@45.32.49.125/`
 - **THEN** the login surface SHALL prefill `root` and every persistable/display address SHALL be canonicalized to `sftp://45.32.49.125/`
 
 ### Requirement: Secure automatic persistence
