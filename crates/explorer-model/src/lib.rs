@@ -69,6 +69,7 @@ pub use drag_drop::{
     filesystem_drop_destination_is_valid, negotiate_effect, negotiate_filesystem_drop_effect,
 };
 pub use explorer_common::RequestId;
+pub use explorer_i18n::AppLocale;
 pub use file_presentation::{
     RemoteFileIconKind, RemoteFilePresentation, classify_remote_file_name,
 };

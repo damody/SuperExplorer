@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 explorer-common = { path = "../explorer-common" }
+explorer-i18n = { path = "../explorer-i18n" }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

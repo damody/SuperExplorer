@@ -6,7 +6,7 @@ use explorer_common::RoadmapLimits;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ColumnId, ExplorerWindowState, HistoryEntry, LocationDescriptor, OrderedColumnLayout,
+    AppLocale, ColumnId, ExplorerWindowState, HistoryEntry, LocationDescriptor, OrderedColumnLayout,
     SortDescriptor, SortDirection, TabId, ViewMode, ViewSettings,
 };
 
@@ -27,7 +27,7 @@ const fn default_immersive_native_context_menus() -> bool {
 }
 
 /// Current durable session schema.
-pub const SESSION_SCHEMA_VERSION: u16 = 3;
+pub const SESSION_SCHEMA_VERSION: u16 = 4;
 const MAX_PROVENANCE_BYTES: usize = 256;
 const MAX_DISPLAY_TITLE_BYTES: usize = 4 * 1024;
 const MAX_PIN_NAME_BYTES: usize = 4 * 1024;
@@ -404,6 +404,9 @@ pub struct PersistedQuickAccessPin {
 #[serde(deny_unknown_fields)]
 pub struct PersistedSessionPayload {
     pub restore_enabled: bool,
+    /// Explicit UI language. `None` follows the Windows display language.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locale: Option<AppLocale>,
     pub window: PersistedWindowPlacement,
     pub tabs: Vec<PersistedTab>,
     pub active_tab_id: TabId,
@@ -584,6 +587,7 @@ impl PersistedSessionEnvelope {
             .collect::<Result<Vec<_>, SessionValidationError>>()?;
         let payload = PersistedSessionPayload {
             restore_enabled,
+            locale: None,
             window: placement,
             tabs,
             active_tab_id: window.active_tab_id(),
@@ -674,11 +678,23 @@ impl PersistedSessionEnvelope {
             serde_json::from_slice(bytes).map_err(SessionValidationError::json)?;
         match header.schema_version {
             SESSION_SCHEMA_VERSION => Self::decode(bytes, limits).map(|value| (value, false)),
+            3 => {
+                let legacy: LegacySessionV3 =
+                    serde_json::from_slice(bytes).map_err(SessionValidationError::json)?;
+                let migrated = Self::new(
+                    legacy.write_generation.saturating_add(1),
+                    legacy.provenance,
+                    legacy.payload,
+                    limits,
+                )?;
+                Ok((migrated, true))
+            }
             2 => {
                 let legacy: LegacySessionV2 =
                     serde_json::from_slice(bytes).map_err(SessionValidationError::json)?;
                 let payload = PersistedSessionPayload {
                     restore_enabled: legacy.payload.restore_enabled,
+                    locale: None,
                     window: legacy.payload.window,
                     tabs: legacy.payload.tabs,
                     active_tab_id: legacy.payload.active_tab_id,
@@ -1160,6 +1176,18 @@ struct LegacySessionV0 {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LegacySessionV1 {
+    #[serde(rename = "schema_version")]
+    _schema_version: u16,
+    #[serde(rename = "checksum")]
+    _checksum: u64,
+    write_generation: u64,
+    provenance: SessionProvenance,
+    payload: PersistedSessionPayload,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacySessionV3 {
     #[serde(rename = "schema_version")]
     _schema_version: u16,
     #[serde(rename = "checksum")]
@@ -1933,6 +1961,67 @@ mod tests {
         assert!(performed);
         assert!(migrated.payload.bookmarks.entries().is_empty());
         assert_eq!(migrated.schema_version, SESSION_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn locale_some_ru_round_trips() {
+        let base = projected();
+        let mut payload = base.payload.clone();
+        payload.locale = Some(AppLocale::Ru);
+        let envelope = PersistedSessionEnvelope::new(
+            base.write_generation,
+            base.provenance.clone(),
+            payload,
+            RoadmapLimits::default(),
+        )
+        .expect("envelope with locale");
+        let bytes = envelope
+            .encode_pretty(RoadmapLimits::default())
+            .expect("encode");
+        let decoded = PersistedSessionEnvelope::decode(&bytes, RoadmapLimits::default())
+            .expect("decode");
+        assert_eq!(decoded.payload.locale, Some(AppLocale::Ru));
+        assert_eq!(decoded, envelope);
+        assert!(
+            String::from_utf8(bytes)
+                .expect("utf-8")
+                .contains("\"locale\": \"ru\"")
+        );
+    }
+
+    #[test]
+    fn schema_three_without_locale_migrates_to_none() {
+        let envelope = projected();
+        let mut value = serde_json::to_value(&envelope).expect("value");
+        value["schema_version"] = serde_json::json!(3);
+        value["payload"]
+            .as_object_mut()
+            .expect("payload")
+            .remove("locale");
+        let bytes = serde_json::to_vec(&value).expect("bytes");
+        let (migrated, performed) =
+            PersistedSessionEnvelope::decode_or_migrate(&bytes, RoadmapLimits::default())
+                .expect("v3 migration");
+        assert!(performed);
+        assert_eq!(migrated.payload.locale, None);
+        assert_eq!(migrated.schema_version, SESSION_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn unknown_locale_string_is_rejected_like_other_bad_payload_fields() {
+        let envelope = projected();
+        let bytes = envelope
+            .encode_pretty(RoadmapLimits::default())
+            .expect("encode");
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("value");
+        value["payload"]["locale"] = serde_json::json!("klingon");
+        assert!(
+            PersistedSessionEnvelope::decode(
+                &serde_json::to_vec(&value).expect("bytes"),
+                RoadmapLimits::default()
+            )
+            .is_err()
+        );
     }
 
     #[test]

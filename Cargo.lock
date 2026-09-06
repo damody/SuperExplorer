@@ -1942,6 +1942,7 @@ name = "explorer-model"
 version = "0.1.0"
 dependencies = [
  "explorer-common",
+ "explorer-i18n",
  "serde",
  "serde_json",
  "uuid",
