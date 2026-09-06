@@ -70,12 +70,12 @@ impl DirectoryCacheKey {
                 Some(Self::Local(normalized))
             }
             LocationDescriptor::Virtual(location)
-                if matches!(location.provider_id.as_str(), "adb" | "sftp") =>
+                if explorer_model::is_remote_provider_id(&location.provider_id) =>
             {
                 let provider = location.provider_id.to_ascii_lowercase();
                 let authority = location.public_authority.as_ref()?.clone();
                 Some(Self::Virtual {
-                    authority: if provider == "sftp" {
+                    authority: if provider == "sftp" || provider == "ftp" || provider == "gdrive" {
                         authority.to_ascii_lowercase()
                     } else {
                         authority
@@ -217,7 +217,7 @@ fn bookmark_target_for_current_location(
             })
         }
         LocationDescriptor::Virtual(remote)
-            if matches!(remote.provider_id.as_str(), "adb" | "sftp")
+            if explorer_model::is_remote_provider_id(&remote.provider_id)
                 && remote.public_authority.is_some() =>
         {
             Some(explorer_model::BookmarkTarget::Folder {
@@ -679,6 +679,8 @@ pub(crate) struct RemoteContextMenuState {
     pub(crate) paste_available: bool,
     pub(crate) item_row_index: Option<usize>,
     pub(crate) item_is_container: bool,
+    pub(crate) allow_create_symlink: bool,
+    pub(crate) gdrive_trash: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2524,7 +2526,11 @@ impl AppViewState {
         });
         if matches!(
             file_system,
-            Some(explorer_model::FileSystemKind::Adb | explorer_model::FileSystemKind::Sftp)
+            Some(
+                explorer_model::FileSystemKind::Adb
+                    | explorer_model::FileSystemKind::Sftp
+                    | explorer_model::FileSystemKind::Ftp,
+            )
         ) {
             settings
                 .details_layout
@@ -3434,7 +3440,7 @@ impl AppViewState {
         };
         if selected.next().is_some()
             || !matches!(entry.location, LocationDescriptor::Virtual(ref remote)
-                if matches!(remote.provider_id.as_str(), "adb" | "sftp"))
+                if explorer_model::is_remote_provider_id(&remote.provider_id))
         {
             return false;
         }
@@ -5164,7 +5170,7 @@ impl AppViewState {
         let LocationDescriptor::Virtual(remote_parent) = &parent else {
             return None;
         };
-        if !matches!(remote_parent.provider_id.as_str(), "adb" | "sftp")
+        if !explorer_model::is_remote_provider_id(&remote_parent.provider_id)
             || !self.active_presentation().can_write
         {
             return None;
@@ -5406,6 +5412,23 @@ impl AppViewState {
                 explorer_model::ShellContextMenuTarget::Background { .. }
             );
             let item_row_index = (!background).then(|| self.focused_row_index()).flatten();
+            let allow_create_symlink = match &target {
+                explorer_model::ShellContextMenuTarget::Items { parent, .. }
+                | explorer_model::ShellContextMenuTarget::Background { parent } => !matches!(
+                    parent,
+                    LocationDescriptor::Virtual(remote)
+                        if matches!(remote.provider_id.as_str(), "ftp" | "gdrive")
+                ),
+            };
+            let gdrive_trash = match &target {
+                explorer_model::ShellContextMenuTarget::Items { parent, .. }
+                | explorer_model::ShellContextMenuTarget::Background { parent } => {
+                    matches!(
+                        parent,
+                        LocationDescriptor::Virtual(remote) if remote.provider_id == "gdrive"
+                    )
+                }
+            };
             self.remote_context_menu = Some(RemoteContextMenuState {
                 x: client_x.max(0.0),
                 y: client_y.max(0.0),
@@ -5414,6 +5437,8 @@ impl AppViewState {
                 item_row_index,
                 item_is_container: item_row_index
                     .is_some_and(|row| self.presentation_row_is_container(row)),
+                allow_create_symlink,
+                gdrive_trash,
             });
             self.pending_context_hit = None;
             self.pending_context_extended_verbs = false;
@@ -5980,6 +6005,15 @@ impl AppViewState {
             .any(|item| matches!(item.location, LocationDescriptor::Virtual(_)))
     }
 
+    pub(crate) fn selected_items_include_gdrive(&self) -> bool {
+        self.selected_items().iter().any(|item| {
+            matches!(
+                &item.location,
+                LocationDescriptor::Virtual(remote) if remote.provider_id == "gdrive"
+            )
+        })
+    }
+
     pub(crate) fn create_shortcut_selected_request(&self) -> Option<FileOperationRequest> {
         let items = self.selected_items();
         (!items.is_empty()).then_some(FileOperationRequest {
@@ -6065,7 +6099,10 @@ impl AppViewState {
                 item.location.file_system_kind().is_none_or(|kind| {
                     !matches!(
                         kind,
-                        explorer_model::FileSystemKind::Adb | explorer_model::FileSystemKind::Sftp
+                        explorer_model::FileSystemKind::Adb
+                            | explorer_model::FileSystemKind::Sftp
+                            | explorer_model::FileSystemKind::Ftp
+                            | explorer_model::FileSystemKind::Gdrive
                     )
                 })
             })
@@ -6777,6 +6814,7 @@ mod tests {
             container_identity: [generation as u8; 16],
             container_generation: generation,
             entry_id: Some(generation),
+            provider_entry_key: None,
             components: path
                 .iter()
                 .map(|component| (*component).to_owned())
@@ -8913,6 +8951,7 @@ mod tests {
                     container_identity: [7; 16],
                     container_generation: 1,
                     entry_id: None,
+                    provider_entry_key: None,
                     components: vec!["sdcard".to_owned()],
                 },
             ),
@@ -8934,6 +8973,8 @@ mod tests {
                 paste_available: false,
                 item_row_index: None,
                 item_is_container: false,
+                allow_create_symlink: true,
+                gdrive_trash: false,
             })
         );
     }

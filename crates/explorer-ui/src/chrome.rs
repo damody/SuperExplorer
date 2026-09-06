@@ -129,6 +129,8 @@ fn bookmark_icon(target: &explorer_model::BookmarkTarget) -> &'static str {
             match location.file_system_kind() {
                 Some(FileSystemKind::Adb) => "📱",
                 Some(FileSystemKind::Sftp) => "🖥",
+                Some(FileSystemKind::Ftp) => "📡",
+                Some(FileSystemKind::Gdrive) => "☁",
                 Some(FileSystemKind::Local) | None => "🔖",
             }
         }
@@ -144,6 +146,16 @@ fn bookmark_icon(target: &explorer_model::BookmarkTarget) -> &'static str {
                 .is_some_and(|prefix| prefix.eq_ignore_ascii_case("sftp://"))
             {
                 "🖥"
+            } else if path
+                .get(..6)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("ftp://"))
+            {
+                "📡"
+            } else if path
+                .get(..9)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("gdrive://"))
+            {
+                "☁"
             } else {
                 "🔖"
             }
@@ -529,6 +541,7 @@ impl RenderOnce for ExplorerWindow {
         let session_reset_confirmation = self.state.session_reset_confirmation();
         let permanent_delete_count = self.state.permanent_delete_confirmation_count();
         let permanent_delete_focus = self.state.permanent_delete_confirmation_focus();
+        let permanent_delete_is_gdrive = self.state.selected_items_include_gdrive();
         let transfer_panel_dismiss = self
             .state
             .transfer_panel_open()
@@ -824,6 +837,7 @@ impl RenderOnce for ExplorerWindow {
                 element.child(permanent_delete_confirmation_dialog(
                     self.tokens,
                     count,
+                    permanent_delete_is_gdrive,
                     permanent_delete_focus
                         .unwrap_or(crate::actions::PermanentDeleteDialogTarget::Delete),
                     self.on_action.clone(),
@@ -2311,6 +2325,8 @@ fn remote_menu_commands(
     paste_available: bool,
     item_row_index: Option<usize>,
     item_is_container: bool,
+    allow_create_symlink: bool,
+    gdrive_trash: bool,
 ) -> Vec<RemoteMenuCommand> {
     let mut commands = Vec::new();
     if background {
@@ -2321,13 +2337,15 @@ fn remote_menu_commands(
             placement: RemoteMenuPlacement::Text,
             danger: false,
         });
-        commands.push(RemoteMenuCommand {
-            label: "新增捷徑",
-            action: ExplorerAction::CreateRemoteSymlink,
-            icon: Some(ExplorerIcon::Add),
-            placement: RemoteMenuPlacement::Text,
-            danger: false,
-        });
+        if allow_create_symlink {
+            commands.push(RemoteMenuCommand {
+                label: "新增捷徑",
+                action: ExplorerAction::CreateRemoteSymlink,
+                icon: Some(ExplorerIcon::Add),
+                placement: RemoteMenuPlacement::Text,
+                danger: false,
+            });
+        }
         commands.push(RemoteMenuCommand {
             label: "內容",
             action: ExplorerAction::ShowRemoteBackgroundProperties,
@@ -2365,13 +2383,15 @@ fn remote_menu_commands(
             placement: RemoteMenuPlacement::Text,
             danger: false,
         });
-        commands.push(RemoteMenuCommand {
-            label: "新增捷徑",
-            action: ExplorerAction::CreateRemoteSymlinkToFolder { row_index },
-            icon: Some(ExplorerIcon::Add),
-            placement: RemoteMenuPlacement::Text,
-            danger: false,
-        });
+        if allow_create_symlink {
+            commands.push(RemoteMenuCommand {
+                label: "新增捷徑",
+                action: ExplorerAction::CreateRemoteSymlinkToFolder { row_index },
+                icon: Some(ExplorerIcon::Add),
+                placement: RemoteMenuPlacement::Text,
+                danger: false,
+            });
+        }
     }
     commands.extend([
         RemoteMenuCommand {
@@ -2403,7 +2423,11 @@ fn remote_menu_commands(
             danger: false,
         },
         RemoteMenuCommand {
-            label: "永久刪除…",
+            label: if gdrive_trash {
+                "移到 Google Drive 垃圾桶…"
+            } else {
+                "永久刪除…"
+            },
             action: ExplorerAction::RecycleDeleteSelected,
             icon: Some(ExplorerIcon::Delete),
             placement: RemoteMenuPlacement::CommandStrip,
@@ -2650,6 +2674,8 @@ fn remote_context_menu(
         menu.paste_available,
         menu.item_row_index,
         menu.item_is_container,
+        menu.allow_create_symlink,
+        menu.gdrive_trash,
     );
     let primary_count = commands
         .iter()
@@ -3149,10 +3175,23 @@ fn session_reset_confirmation_dialog(
 fn permanent_delete_confirmation_dialog(
     tokens: UiTokens,
     item_count: usize,
+    gdrive_trash: bool,
     focused_target: crate::actions::PermanentDeleteDialogTarget,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     let item_label = if item_count == 1 { "item" } else { "items" };
+    let message = if gdrive_trash {
+        format!(
+            "Move {item_count} {item_label} to Google Drive trash? Recover them at drive.google.com for 30 days. This is not the Windows Recycle Bin."
+        )
+    } else {
+        format!("Permanently delete {item_count} {item_label}? This action cannot be undone.")
+    };
+    let aria = if gdrive_trash {
+        format!("Move {item_count} {item_label} to Google Drive trash")
+    } else {
+        format!("Permanently delete {item_count} {item_label}")
+    };
     div()
         .id("permanent-delete-confirmation-overlay")
         .absolute()
@@ -3170,7 +3209,7 @@ fn permanent_delete_confirmation_dialog(
             div()
                 .id("permanent-delete-confirmation-dialog")
                 .role(Role::Dialog)
-                .aria_label(format!("Permanently delete {item_count} {item_label}"))
+                .aria_label(aria)
                 .w(px(crate::layout::folder_options::DIALOG_WIDTH.value()))
                 .p(px(crate::layout::folder_options::PAGE_PADDING.value()))
                 .flex()
@@ -3180,9 +3219,7 @@ fn permanent_delete_confirmation_dialog(
                 .border(px(1.0))
                 .border_color(tokens.theme.colors.divider.to_gpui())
                 .bg(tokens.theme.colors.menu_fill.to_gpui())
-                .child(format!(
-                    "Permanently delete {item_count} {item_label}? This action cannot be undone."
-                ))
+                .child(message)
                 .child(
                     div()
                         .flex()
@@ -8384,6 +8421,7 @@ fn navigation_item_row(
                         | crate::navigation_pane::NavigationIcon::Folder
                         | crate::navigation_pane::NavigationIcon::Phone
                         | crate::navigation_pane::NavigationIcon::Server
+                        | crate::navigation_pane::NavigationIcon::GoogleDrive
                 )
             ));
     let toggle_location = item.location.clone();
@@ -12814,11 +12852,28 @@ fn operation_request_summary(record: &explorer_model::OperationRecord) -> String
             record.progress.total_items,
             operation_sources_text(items)
         ),
-        Kind::PermanentDelete { items, .. } => format!(
-            "永久刪除 {} 個項目｜{}",
-            record.progress.total_items,
-            operation_sources_text(items)
-        ),
+        Kind::PermanentDelete { items, .. } => {
+            let gdrive = items.iter().any(|item| {
+                matches!(
+                    &item.location,
+                    explorer_model::LocationDescriptor::Virtual(remote)
+                        if remote.provider_id == "gdrive"
+                )
+            });
+            if gdrive {
+                format!(
+                    "移到 Google Drive 垃圾桶 {} 個項目｜{}",
+                    record.progress.total_items,
+                    operation_sources_text(items)
+                )
+            } else {
+                format!(
+                    "永久刪除 {} 個項目｜{}",
+                    record.progress.total_items,
+                    operation_sources_text(items)
+                )
+            }
+        }
         Kind::CreateShortcut { items } => format!(
             "建立捷徑 {} 個項目｜{}",
             record.progress.total_items,
@@ -14690,12 +14745,16 @@ mod tests {
         let sftp = explorer_model::BookmarkTarget::FilePath {
             path: "sftp://host/missing".into(),
         };
+        let gdrive = explorer_model::BookmarkTarget::FolderPath {
+            path: "gdrive://you@gmail.com/Work".into(),
+        };
         let lua = explorer_model::BookmarkTarget::LuaScript {
             source: "return 1".into(),
         };
         assert_eq!(bookmark_icon(&local), "🔖");
         assert_eq!(bookmark_icon(&adb), "📱");
         assert_eq!(bookmark_icon(&sftp), "🖥");
+        assert_eq!(bookmark_icon(&gdrive), "☁");
         assert_eq!(bookmark_icon(&lua), "⚡");
     }
 
@@ -14710,6 +14769,7 @@ mod tests {
             container_identity: [1; 16],
             container_generation: 1,
             entry_id: Some(1),
+            provider_entry_key: None,
             components: components.iter().map(|value| (*value).to_owned()).collect(),
         })
     }
@@ -14958,7 +15018,7 @@ mod tests {
 
     #[test]
     fn remote_item_menu_keeps_commands_in_classic_vertical_order() {
-        let commands = remote_menu_commands(false, false, Some(3), false);
+        let commands = remote_menu_commands(false, false, Some(3), false, true, false);
         let labels = commands
             .iter()
             .map(|command| command.label)
@@ -14988,7 +15048,7 @@ mod tests {
 
     #[test]
     fn remote_menu_paste_and_background_membership_are_contextual() {
-        let item = remote_menu_commands(false, true, Some(3), false);
+        let item = remote_menu_commands(false, true, Some(3), false, true, false);
         assert_eq!(
             item.iter()
                 .filter(|command| command.label == "貼上")
@@ -15003,7 +15063,7 @@ mod tests {
             RemoteMenuPlacement::Text
         );
 
-        let background = remote_menu_commands(true, true, None, false);
+        let background = remote_menu_commands(true, true, None, false, true, false);
         assert_eq!(
             background
                 .iter()
@@ -15028,11 +15088,29 @@ mod tests {
         ] {
             assert!(background.iter().all(|command| command.label != item_only));
         }
+
+        let ftp_background = remote_menu_commands(true, true, None, false, false, false);
+        assert!(
+            ftp_background
+                .iter()
+                .all(|command| command.label != "新增捷徑")
+        );
+        let gdrive_item = remote_menu_commands(false, false, Some(3), false, false, true);
+        assert!(
+            gdrive_item
+                .iter()
+                .any(|command| command.label == "移到 Google Drive 垃圾桶…")
+        );
+        assert!(
+            gdrive_item
+                .iter()
+                .all(|command| command.label != "新增捷徑" && command.label != "永久刪除…")
+        );
     }
 
     #[test]
     fn remote_folder_menu_adds_real_new_tab_path_and_common_commands() {
-        let commands = remote_menu_commands(false, false, Some(7), true);
+        let commands = remote_menu_commands(false, false, Some(7), true, true, false);
         assert!(commands.iter().any(|command| {
             command.label == "在新分頁開啟"
                 && command.action

@@ -28,6 +28,7 @@ pub enum NavigationIcon {
     RecycleBin,
     Phone,
     Server,
+    GoogleDrive,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -45,8 +46,27 @@ pub struct SftpNavigationProfile {
     pub available: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FtpNavigationProfile {
+    pub alias: String,
+    pub label: String,
+    pub container_identity: [u8; 16],
+    pub available: bool,
+    pub encrypted: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GdriveNavigationProfile {
+    pub alias: String,
+    pub label: String,
+    pub container_identity: [u8; 16],
+    pub available: bool,
+}
+
 static ADB_NAVIGATION_DEVICES: OnceLock<RwLock<Vec<AdbNavigationDevice>>> = OnceLock::new();
 static SFTP_NAVIGATION_PROFILES: OnceLock<RwLock<Vec<SftpNavigationProfile>>> = OnceLock::new();
+static FTP_NAVIGATION_PROFILES: OnceLock<RwLock<Vec<FtpNavigationProfile>>> = OnceLock::new();
+static GDRIVE_NAVIGATION_PROFILES: OnceLock<RwLock<Vec<GdriveNavigationProfile>>> = OnceLock::new();
 
 pub fn configure_adb_navigation_devices(devices: Vec<AdbNavigationDevice>) {
     *ADB_NAVIGATION_DEVICES
@@ -57,6 +77,20 @@ pub fn configure_adb_navigation_devices(devices: Vec<AdbNavigationDevice>) {
 
 pub fn configure_sftp_navigation_profiles(profiles: Vec<SftpNavigationProfile>) {
     *SFTP_NAVIGATION_PROFILES
+        .get_or_init(|| RwLock::new(Vec::new()))
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = profiles;
+}
+
+pub fn configure_ftp_navigation_profiles(profiles: Vec<FtpNavigationProfile>) {
+    *FTP_NAVIGATION_PROFILES
+        .get_or_init(|| RwLock::new(Vec::new()))
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = profiles;
+}
+
+pub fn configure_gdrive_navigation_profiles(profiles: Vec<GdriveNavigationProfile>) {
+    *GDRIVE_NAVIGATION_PROFILES
         .get_or_init(|| RwLock::new(Vec::new()))
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = profiles;
@@ -216,6 +250,36 @@ impl NavigationItem {
             label: "SFTP".to_owned(),
             kind: NavigationItemKind::Section,
             icon: Some(NavigationIcon::Server),
+            location: None,
+            icon_location: None,
+            depth: 0,
+            pinned: false,
+            expanded: true,
+            availability: NavigationItemAvailability::Available,
+        }
+    }
+
+    fn ftp_root() -> Self {
+        Self {
+            id: "ftp".to_owned(),
+            label: "FTP".to_owned(),
+            kind: NavigationItemKind::Section,
+            icon: Some(NavigationIcon::Network),
+            location: None,
+            icon_location: None,
+            depth: 0,
+            pinned: false,
+            expanded: true,
+            availability: NavigationItemAvailability::Available,
+        }
+    }
+
+    fn gdrive_root() -> Self {
+        Self {
+            id: "gdrive".to_owned(),
+            label: "Google Drive".to_owned(),
+            kind: NavigationItemKind::Section,
+            icon: Some(NavigationIcon::GoogleDrive),
             location: None,
             icon_location: None,
             depth: 0,
@@ -486,6 +550,78 @@ pub fn windows_navigation_items_with_pins(
             },
         });
     }
+    items.push(NavigationItem::ftp_root());
+    let ftp_profiles = FTP_NAVIGATION_PROFILES
+        .get_or_init(|| RwLock::new(Vec::new()))
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    for profile in ftp_profiles {
+        let location = explorer_model::RemoteAddress::parse(&format!("ftp://{}/", profile.alias))
+            .ok()
+            .and_then(|address| address.to_location(profile.container_identity, 1).ok());
+        let label = if profile.encrypted {
+            profile.label
+        } else if profile.label.contains("尚未連線") {
+            profile.label
+        } else {
+            format!("{} — 未加密", profile.label)
+        };
+        items.push(NavigationItem {
+            id: format!("ftp-profile-{}", profile.alias),
+            label,
+            kind: NavigationItemKind::Location,
+            icon: Some(NavigationIcon::Network),
+            icon_location: None,
+            location: profile.available.then_some(location).flatten(),
+            depth: 1,
+            pinned: false,
+            expanded: false,
+            availability: if profile.available {
+                NavigationItemAvailability::Available
+            } else {
+                NavigationItemAvailability::Unavailable
+            },
+        });
+    }
+    items.push(NavigationItem::gdrive_root());
+    items.push(NavigationItem {
+        id: "gdrive-connect".to_owned(),
+        label: "連線 Google Drive".to_owned(),
+        kind: NavigationItemKind::Location,
+        icon: Some(NavigationIcon::GoogleDrive),
+        icon_location: None,
+        location: Some(LocationDescriptor::ParsingName(
+            explorer_model::GDRIVE_CONNECT_LOCATION.to_owned(),
+        )),
+        depth: 1,
+        pinned: false,
+        expanded: false,
+        availability: NavigationItemAvailability::Available,
+    });
+    let gdrive_profiles = GDRIVE_NAVIGATION_PROFILES
+        .get_or_init(|| RwLock::new(Vec::new()))
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    for profile in gdrive_profiles {
+        let location =
+            explorer_model::RemoteAddress::parse(&format!("gdrive://{}/", profile.alias))
+                .ok()
+                .and_then(|address| address.to_location(profile.container_identity, 1).ok());
+        items.push(NavigationItem {
+            id: format!("gdrive-profile-{}", profile.alias),
+            label: profile.label,
+            kind: NavigationItemKind::Location,
+            icon: Some(NavigationIcon::GoogleDrive),
+            icon_location: None,
+            location,
+            depth: 1,
+            pinned: false,
+            expanded: false,
+            availability: NavigationItemAvailability::Available,
+        });
+    }
     items.push(NavigationItem::location(
         "recycle-bin",
         "Recycle Bin",
@@ -677,15 +813,32 @@ mod tests {
             label: "Pixel (phone-123)".to_owned(),
             available: true,
         }]);
+        let sftp_host = "192.0.2.10";
+        let ftp_host = "192.0.2.11";
         configure_sftp_navigation_profiles(vec![SftpNavigationProfile {
-            alias: "production".to_owned(),
-            label: "production".to_owned(),
+            alias: sftp_host.to_owned(),
+            label: sftp_host.to_owned(),
             container_identity: [9; 16],
             available: true,
+        }]);
+        configure_ftp_navigation_profiles(vec![FtpNavigationProfile {
+            alias: ftp_host.to_owned(),
+            label: ftp_host.to_owned(),
+            container_identity: [8; 16],
+            available: true,
+            encrypted: false,
         }]);
         let items = windows_navigation_items();
         assert!(items.iter().any(|item| item.id == "phones"));
         assert!(items.iter().any(|item| item.id == "sftp"));
+        assert!(items.iter().any(|item| item.id == "ftp"));
+        assert!(
+            items
+                .iter()
+                .any(|item| item.id == format!("ftp-profile-{ftp_host}"))
+        );
+        assert!(items.iter().any(|item| item.id == "gdrive"));
+        assert!(items.iter().any(|item| item.id == "gdrive-connect"));
         let phone = items
             .iter()
             .find(|item| item.id == "phone-phone-123")
@@ -704,7 +857,7 @@ mod tests {
         assert!(
             items
                 .iter()
-                .any(|item| item.id == "sftp-profile-production")
+                .any(|item| item.id == format!("sftp-profile-{sftp_host}"))
         );
     }
 

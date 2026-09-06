@@ -122,11 +122,15 @@ fn remote_child_container(entry: RemoteEntry) -> Option<explorer_model::Breadcru
 pub struct ConfiguredRemoteRuntime {
     pub providers: Arc<RemoteProviderRegistry>,
     sftp: Option<Arc<explorer_remote::SftpProvider>>,
+    ftp: Option<Arc<explorer_remote::FtpProvider>>,
+    gdrive: Option<Arc<explorer_remote::GdriveProvider>>,
 }
 
 pub fn configured_remote_runtime() -> Arc<ConfiguredRemoteRuntime> {
     let mut registry = RemoteProviderRegistry::default();
     let mut sftp_runtime = None;
+    let mut ftp_runtime = None;
+    let mut gdrive_runtime = None;
 
     if let Ok(client) = explorer_remote::AdbClient::discover() {
         let provider = Arc::new(explorer_remote::AdbProvider::new(client));
@@ -158,9 +162,42 @@ pub fn configured_remote_runtime() -> Arc<ConfiguredRemoteRuntime> {
         sftp_runtime = Some(provider);
     }
 
+    if let Ok(provider) = explorer_remote::FtpProvider::new() {
+        let provider = Arc::new(provider);
+        for profile in load_ftp_profiles() {
+            let password = if profile.auth_kind == explorer_model::FtpAuthKind::Anonymous {
+                None
+            } else {
+                explorer_automation_win::load_windows_credential(&profile.credential_target())
+                    .ok()
+                    .flatten()
+            };
+            if profile.auth_kind == explorer_model::FtpAuthKind::Anonymous || password.is_some() {
+                let _ = provider.register_profile(profile, password);
+            }
+        }
+        let _ = registry.register(provider.clone());
+        ftp_runtime = Some(provider);
+    }
+
+    if let Ok(provider) = explorer_remote::GdriveProvider::new() {
+        let provider = Arc::new(provider);
+        for profile in load_gdrive_profiles() {
+            if let Ok(Some(refresh_token)) =
+                explorer_automation_win::load_windows_credential(&profile.credential_target())
+            {
+                let _ = provider.register_profile(profile, refresh_token);
+            }
+        }
+        let _ = registry.register(provider.clone());
+        gdrive_runtime = Some(provider);
+    }
+
     Arc::new(ConfiguredRemoteRuntime {
         providers: Arc::new(registry),
         sftp: sftp_runtime,
+        ftp: ftp_runtime,
+        gdrive: gdrive_runtime,
     })
 }
 
@@ -215,7 +252,7 @@ impl ConfiguredRemoteRuntime {
         let host = parsed.address.authority.clone();
         let saved = load_sftp_profiles()
             .into_iter()
-            .find(|profile| profile.alias == host);
+            .find(|profile| profile.host == host);
         if let Some(profile) = saved.as_ref()
             && profile.host_key_fingerprint.is_some()
             && explorer_automation_win::load_windows_credential(&profile.credential_target())
@@ -259,9 +296,8 @@ impl ConfiguredRemoteRuntime {
             },
             |profile| profile.container_identity,
         );
-        let mut profile =
-            explorer_model::SftpProfile::new(host.clone(), host.clone(), 22, username, identity)
-                .map_err(|error| error.to_string())?;
+        let mut profile = explorer_model::SftpProfile::new(host.clone(), 22, username, identity)
+            .map_err(|error| error.to_string())?;
         profile.host_key_fingerprint = Some(fingerprint);
         provider
             .register_profile(profile.clone(), password.clone())
@@ -298,6 +334,200 @@ impl ConfiguredRemoteRuntime {
         );
         Ok(Some(location))
     }
+
+    pub fn login_ftp_address(&self, input: &str) -> Result<Option<LocationDescriptor>, String> {
+        let parsed =
+            explorer_model::FtpAddressInput::parse(input).map_err(|error| error.to_string())?;
+        let host = parsed.address.authority.clone();
+        let saved = load_ftp_profiles()
+            .into_iter()
+            .find(|profile| profile.host == host);
+        if let Some(profile) = saved.as_ref()
+            && (profile.auth_kind == explorer_model::FtpAuthKind::Anonymous
+                || explorer_automation_win::load_windows_credential(&profile.credential_target())
+                    .ok()
+                    .flatten()
+                    .is_some())
+        {
+            return parsed
+                .address
+                .to_location(profile.container_identity, 1)
+                .map(Some)
+                .map_err(|error| error.to_string());
+        }
+        let suggested_user = parsed
+            .username_hint
+            .or_else(|| saved.as_ref().map(|profile| profile.username.clone()))
+            .unwrap_or_default();
+        let (username, password) = if suggested_user.eq_ignore_ascii_case("anonymous") {
+            ("anonymous".to_owned(), "ftp@localhost".to_owned())
+        } else {
+            let warning = if saved.as_ref().is_none_or(|profile| {
+                profile.security_mode == explorer_model::FtpSecurityMode::Plain
+            }) {
+                format!("Sign in to {host} — 此連線未加密")
+            } else {
+                format!("Sign in to {host}")
+            };
+            match prompt_ftp_login(&host, &suggested_user, &warning)? {
+                Some(values) => values,
+                None => return Ok(None),
+            }
+        };
+        let provider = self
+            .ftp
+            .as_ref()
+            .ok_or_else(|| "FTP runtime is unavailable.".to_owned())?;
+        let identity = saved.as_ref().map_or_else(
+            || {
+                explorer_model::remote_container_identity(
+                    explorer_model::RemoteProviderKind::Ftp,
+                    &host,
+                )
+            },
+            |profile| profile.container_identity,
+        );
+        let anonymous = username.eq_ignore_ascii_case("anonymous");
+        let mut profile = explorer_model::FtpProfile::new(
+            host.clone(),
+            21,
+            if anonymous {
+                "anonymous".to_owned()
+            } else {
+                username
+            },
+            identity,
+        )
+        .map_err(|error| error.to_string())?;
+        profile.auth_kind = if anonymous {
+            explorer_model::FtpAuthKind::Anonymous
+        } else {
+            explorer_model::FtpAuthKind::Password
+        };
+        profile.plain_warning_acknowledged = true;
+        let stored_password = (!anonymous).then_some(password);
+        provider
+            .register_profile(profile.clone(), stored_password.clone())
+            .map_err(|_| "FTP login information is invalid.".to_owned())?;
+        let location = parsed
+            .address
+            .to_location(identity, 1)
+            .map_err(|error| error.to_string())?;
+        let LocationDescriptor::Virtual(remote) = &location else {
+            return Err("FTP address is invalid.".to_owned());
+        };
+        if let Err(error) = provider.list(remote, &explorer_model::CancellationToken::new()) {
+            provider.remove_profile(identity);
+            let detail = error.to_string();
+            if detail.to_ascii_lowercase().contains("authentication") {
+                return Err("FTP authentication failed.".to_owned());
+            }
+            return Err(format!("FTP login succeeded, but listing failed: {detail}"));
+        }
+        if let Some(password) = stored_password {
+            explorer_automation_win::store_windows_credential(
+                &profile.credential_target(),
+                password,
+            )
+            .map_err(|_| "Unable to save the FTP credential.".to_owned())?;
+        }
+        if let Err(error) = persist_ftp_profile(profile.clone()) {
+            if profile.auth_kind == explorer_model::FtpAuthKind::Password {
+                let _ = explorer_automation_win::remove_windows_credential(
+                    &profile.credential_target(),
+                );
+            }
+            return Err(error);
+        }
+        explorer_ui::navigation_pane::configure_ftp_navigation_profiles(
+            configured_ftp_navigation_profiles(),
+        );
+        Ok(Some(location))
+    }
+
+    pub fn login_gdrive_address(&self, input: &str) -> Result<Option<LocationDescriptor>, String> {
+        let trimmed = input.trim();
+        if trimmed.eq_ignore_ascii_case(explorer_model::GDRIVE_CONNECT_LOCATION)
+            || trimmed.eq_ignore_ascii_case("gdrive://")
+            || trimmed.eq_ignore_ascii_case("gdrive:///")
+        {
+            return self.connect_google_drive(None);
+        }
+        let parsed =
+            explorer_model::RemoteAddress::parse(trimmed).map_err(|error| error.to_string())?;
+        if parsed.provider != explorer_model::RemoteProviderKind::Gdrive {
+            return Err("Google Drive address is invalid.".to_owned());
+        }
+        let email = parsed.authority.clone();
+        let saved = load_gdrive_profiles()
+            .into_iter()
+            .find(|profile| profile.alias.eq_ignore_ascii_case(&email));
+        if let Some(profile) = saved.as_ref()
+            && explorer_automation_win::load_windows_credential(&profile.credential_target())
+                .ok()
+                .flatten()
+                .is_some()
+        {
+            if let Some(provider) = &self.gdrive
+                && let Ok(Some(token)) =
+                    explorer_automation_win::load_windows_credential(&profile.credential_target())
+            {
+                let _ = provider.register_profile(profile.clone(), token);
+            }
+            return parsed
+                .to_location(profile.container_identity, 1)
+                .map(Some)
+                .map_err(|error| error.to_string());
+        }
+        let connected = self.connect_google_drive(Some(&email))?;
+        let Some(connected) = connected else {
+            return Ok(None);
+        };
+        if let Some(profile) = saved
+            .as_ref()
+            .filter(|profile| profile.alias.eq_ignore_ascii_case(&email))
+        {
+            return parsed
+                .to_location(profile.container_identity, 1)
+                .map(Some)
+                .map_err(|error| error.to_string());
+        }
+        Ok(Some(connected))
+    }
+
+    pub fn connect_google_drive(
+        &self,
+        login_hint: Option<&str>,
+    ) -> Result<Option<LocationDescriptor>, String> {
+        let provider = self
+            .gdrive
+            .as_ref()
+            .ok_or_else(|| "Google Drive runtime is unavailable.".to_owned())?;
+        let (profile, refresh_token) = provider
+            .connect_account(login_hint)
+            .map_err(|error| error.to_string())?;
+        explorer_automation_win::store_windows_credential(
+            &profile.credential_target(),
+            refresh_token,
+        )
+        .map_err(|_| "Unable to save the Google Drive credential.".to_owned())?;
+        if let Err(error) = persist_gdrive_profile(profile.clone()) {
+            let _ =
+                explorer_automation_win::remove_windows_credential(&profile.credential_target());
+            return Err(error);
+        }
+        explorer_ui::navigation_pane::configure_gdrive_navigation_profiles(
+            configured_gdrive_navigation_profiles(),
+        );
+        explorer_model::RemoteAddress::parse(&format!("gdrive://{}/", profile.alias))
+            .map_err(|error| error.to_string())
+            .and_then(|address| {
+                address
+                    .to_location(profile.container_identity, 1)
+                    .map(Some)
+                    .map_err(|error| error.to_string())
+            })
+    }
 }
 
 fn persist_sftp_profile(profile: explorer_model::SftpProfile) -> Result<(), String> {
@@ -310,7 +540,10 @@ fn persist_sftp_profile(profile: explorer_model::SftpProfile) -> Result<(), Stri
         .map_err(|_| "Unable to create the SFTP profile directory.".to_owned())?;
     let path = directory.join("sftp-profiles.json");
     let mut profiles = load_sftp_profiles();
-    if let Some(existing) = profiles.iter_mut().find(|item| item.alias == profile.alias) {
+    if let Some(existing) = profiles
+        .iter_mut()
+        .find(|item| item.host == profile.host && item.port == profile.port)
+    {
         *existing = profile;
     } else {
         profiles.push(profile);
@@ -320,6 +553,64 @@ fn persist_sftp_profile(profile: explorer_model::SftpProfile) -> Result<(), Stri
     let temporary = directory.join("sftp-profiles.json.tmp");
     std::fs::write(&temporary, bytes)
         .map_err(|_| "Unable to write the SFTP profile.".to_owned())?;
+    replace_profile_file(&temporary, &path)
+}
+
+fn persist_gdrive_profile(profile: explorer_model::GdriveProfile) -> Result<(), String> {
+    let local = std::env::var_os("LOCALAPPDATA")
+        .ok_or_else(|| "LOCALAPPDATA is unavailable.".to_owned())?;
+    let directory = std::path::PathBuf::from(local)
+        .join("RustGpuiExplorer")
+        .join("remote");
+    std::fs::create_dir_all(&directory)
+        .map_err(|_| "Unable to create the Google Drive profile directory.".to_owned())?;
+    let path = directory.join("gdrive-profiles.json");
+    let mut profiles = load_gdrive_profiles();
+    if let Some(existing) = profiles
+        .iter_mut()
+        .find(|item| item.alias.eq_ignore_ascii_case(&profile.alias))
+    {
+        *existing = profile;
+    } else {
+        profiles.push(profile);
+    }
+    let bytes = serde_json::to_vec_pretty(&profiles)
+        .map_err(|_| "Unable to encode the Google Drive profile.".to_owned())?;
+    let temporary = directory.join("gdrive-profiles.json.tmp");
+    std::fs::write(&temporary, bytes)
+        .map_err(|_| "Unable to write the Google Drive profile.".to_owned())?;
+    replace_profile_file(&temporary, &path)
+}
+
+fn persist_ftp_profile(profile: explorer_model::FtpProfile) -> Result<(), String> {
+    let local = std::env::var_os("LOCALAPPDATA")
+        .ok_or_else(|| "LOCALAPPDATA is unavailable.".to_owned())?;
+    let directory = std::path::PathBuf::from(local)
+        .join("RustGpuiExplorer")
+        .join("remote");
+    std::fs::create_dir_all(&directory)
+        .map_err(|_| "Unable to create the FTP profile directory.".to_owned())?;
+    let path = directory.join("ftp-profiles.json");
+    let mut profiles = load_ftp_profiles();
+    if profiles.iter().any(|item| {
+        item.host == profile.host
+            && item.port == profile.port
+            && item.container_identity != profile.container_identity
+    }) {
+        return Err("FTP host profile is already in use.".to_owned());
+    }
+    if let Some(existing) = profiles
+        .iter_mut()
+        .find(|item| item.host == profile.host && item.port == profile.port)
+    {
+        *existing = profile;
+    } else {
+        profiles.push(profile);
+    }
+    let bytes = serde_json::to_vec_pretty(&profiles)
+        .map_err(|_| "Unable to encode the FTP profile.".to_owned())?;
+    let temporary = directory.join("ftp-profiles.json.tmp");
+    std::fs::write(&temporary, bytes).map_err(|_| "Unable to write the FTP profile.".to_owned())?;
     replace_profile_file(&temporary, &path)
 }
 
@@ -365,6 +656,35 @@ fn replace_profile_file(
 
 #[cfg(windows)]
 fn prompt_sftp_login(host: &str, suggested_user: &str) -> Result<Option<(String, String)>, String> {
+    prompt_credential_login(
+        "SuperExplorer SFTP Login",
+        &format!("Sign in to {host}"),
+        &format!("SuperExplorer/SFTP/{host}"),
+        suggested_user,
+    )
+}
+
+#[cfg(windows)]
+fn prompt_ftp_login(
+    _host: &str,
+    suggested_user: &str,
+    message: &str,
+) -> Result<Option<(String, String)>, String> {
+    prompt_credential_login(
+        "SuperExplorer FTP Login",
+        message,
+        &format!("SuperExplorer/FTP/{_host}"),
+        suggested_user,
+    )
+}
+
+#[cfg(windows)]
+fn prompt_credential_login(
+    caption: &str,
+    message: &str,
+    target: &str,
+    suggested_user: &str,
+) -> Result<Option<(String, String)>, String> {
     use windows::{
         Win32::{
             Foundation::{ERROR_CANCELLED, ERROR_SUCCESS},
@@ -383,9 +703,9 @@ fn prompt_sftp_login(host: &str, suggested_user: &str) -> Result<Option<(String,
         buffer.resize(max_chars + 1, 0);
         buffer
     }
-    let caption = wide("SuperExplorer SFTP Login");
-    let message = wide(&format!("Sign in to {host}"));
-    let target = wide(&format!("SuperExplorer/SFTP/{host}"));
+    let caption = wide(caption);
+    let message = wide(message);
+    let target = wide(target);
     let info = CREDUI_INFOW {
         cbSize: size_of::<CREDUI_INFOW>() as u32,
         pszMessageText: PCWSTR(message.as_ptr()),
@@ -451,6 +771,11 @@ fn prompt_sftp_login(_: &str, _: &str) -> Result<Option<(String, String)>, Strin
     Err("SFTP login is available only on Windows.".to_owned())
 }
 
+#[cfg(not(windows))]
+fn prompt_ftp_login(_: &str, _: &str, _: &str) -> Result<Option<(String, String)>, String> {
+    Err("FTP login is available only on Windows.".to_owned())
+}
+
 pub fn discover_adb_navigation_devices() -> Vec<explorer_ui::navigation_pane::AdbNavigationDevice> {
     let Ok(client) = explorer_remote::AdbClient::discover() else {
         return Vec::new();
@@ -483,6 +808,55 @@ pub fn discover_adb_navigation_devices() -> Vec<explorer_ui::navigation_pane::Ad
         .collect()
 }
 
+pub fn configured_ftp_navigation_profiles()
+-> Vec<explorer_ui::navigation_pane::FtpNavigationProfile> {
+    load_ftp_profiles()
+        .into_iter()
+        .map(|profile| {
+            let available = profile.auth_kind == explorer_model::FtpAuthKind::Anonymous
+                || explorer_automation_win::load_windows_credential(&profile.credential_target())
+                    .ok()
+                    .flatten()
+                    .is_some();
+            explorer_ui::navigation_pane::FtpNavigationProfile {
+                alias: profile.public_identity().to_owned(),
+                label: if available {
+                    profile.public_identity().to_owned()
+                } else {
+                    format!("{} — 尚未連線", profile.public_identity())
+                },
+                container_identity: profile.container_identity,
+                available,
+                encrypted: profile.security_mode != explorer_model::FtpSecurityMode::Plain,
+            }
+        })
+        .collect()
+}
+
+pub fn configured_gdrive_navigation_profiles()
+-> Vec<explorer_ui::navigation_pane::GdriveNavigationProfile> {
+    load_gdrive_profiles()
+        .into_iter()
+        .map(|profile| {
+            let available =
+                explorer_automation_win::load_windows_credential(&profile.credential_target())
+                    .ok()
+                    .flatten()
+                    .is_some();
+            explorer_ui::navigation_pane::GdriveNavigationProfile {
+                alias: profile.alias.clone(),
+                label: if available {
+                    profile.alias
+                } else {
+                    format!("{} — 尚未連線", profile.alias)
+                },
+                container_identity: profile.container_identity,
+                available,
+            }
+        })
+        .collect()
+}
+
 pub fn configured_sftp_navigation_profiles()
 -> Vec<explorer_ui::navigation_pane::SftpNavigationProfile> {
     load_sftp_profiles()
@@ -494,11 +868,11 @@ pub fn configured_sftp_navigation_profiles()
                     .flatten()
                     .is_some();
             explorer_ui::navigation_pane::SftpNavigationProfile {
-                alias: profile.alias.clone(),
+                alias: profile.public_identity().to_owned(),
                 label: if available {
-                    profile.alias
+                    profile.public_identity().to_owned()
                 } else {
-                    format!("{} — 尚未連線", profile.alias)
+                    format!("{} — 尚未連線", profile.public_identity())
                 },
                 container_identity: profile.container_identity,
                 available,
@@ -521,18 +895,99 @@ pub fn start_adb_navigation_refresh() {
     });
 }
 
-fn load_sftp_profiles() -> Vec<explorer_model::SftpProfile> {
+fn load_ftp_profiles() -> Vec<explorer_model::FtpProfile> {
+    let Some(path) = remote_profiles_path("ftp-profiles.json") else {
+        return Vec::new();
+    };
+    let raw: Vec<explorer_model::FtpProfile> = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    let collapsed = explorer_model::collapse_ftp_profiles_to_host(raw.clone());
+    if collapsed.profiles != raw {
+        migrate_retired_host_credentials("SuperExplorer/FTP", &collapsed.retired_aliases);
+        let _ = write_remote_profiles(&path, &collapsed.profiles);
+    }
+    collapsed.profiles
+}
+
+fn load_gdrive_profiles() -> Vec<explorer_model::GdriveProfile> {
     let Some(local) = std::env::var_os("LOCALAPPDATA") else {
         return Vec::new();
     };
     let path = std::path::PathBuf::from(local)
         .join("RustGpuiExplorer")
         .join("remote")
-        .join("sftp-profiles.json");
+        .join("gdrive-profiles.json");
     std::fs::read(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default()
+}
+
+fn load_sftp_profiles() -> Vec<explorer_model::SftpProfile> {
+    let Some(path) = remote_profiles_path("sftp-profiles.json") else {
+        return Vec::new();
+    };
+    let raw: Vec<explorer_model::SftpProfile> = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    let collapsed = explorer_model::collapse_sftp_profiles_to_host(raw.clone());
+    if collapsed.profiles != raw {
+        migrate_retired_host_credentials("SuperExplorer/SFTP", &collapsed.retired_aliases);
+        let _ = write_remote_profiles(&path, &collapsed.profiles);
+    }
+    collapsed.profiles
+}
+
+fn remote_profiles_path(file_name: &str) -> Option<std::path::PathBuf> {
+    let local = std::env::var_os("LOCALAPPDATA")?;
+    Some(
+        std::path::PathBuf::from(local)
+            .join("RustGpuiExplorer")
+            .join("remote")
+            .join(file_name),
+    )
+}
+
+fn write_remote_profiles<T: serde::Serialize>(
+    path: &std::path::Path,
+    profiles: &[T],
+) -> Result<(), String> {
+    let directory = path
+        .parent()
+        .ok_or_else(|| "Remote profile path is invalid.".to_owned())?;
+    std::fs::create_dir_all(directory)
+        .map_err(|_| "Unable to create the remote profile directory.".to_owned())?;
+    let bytes = serde_json::to_vec_pretty(profiles)
+        .map_err(|_| "Unable to encode remote profiles.".to_owned())?;
+    let temporary = directory.join(format!(
+        "{}.tmp",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("profiles.json")
+    ));
+    std::fs::write(&temporary, bytes).map_err(|_| "Unable to write remote profiles.".to_owned())?;
+    replace_profile_file(&temporary, path)
+}
+
+fn migrate_retired_host_credentials(prefix: &str, retired: &[(String, String)]) {
+    for (old_alias, new_alias) in retired {
+        let old_target = format!("{prefix}/{old_alias}");
+        let new_target = format!("{prefix}/{new_alias}");
+        let Ok(Some(secret)) = explorer_automation_win::load_windows_credential(&old_target) else {
+            continue;
+        };
+        if explorer_automation_win::load_windows_credential(&new_target)
+            .ok()
+            .flatten()
+            .is_none()
+        {
+            let _ = explorer_automation_win::store_windows_credential(&new_target, secret);
+        }
+        let _ = explorer_automation_win::remove_windows_credential(&old_target);
+    }
 }
 
 #[derive(Clone)]
@@ -680,7 +1135,7 @@ impl RemoteExplorerService {
     }
 
     fn is_remote(location: &LocationDescriptor) -> bool {
-        matches!(location, LocationDescriptor::Virtual(location) if matches!(location.provider_id.as_str(), "adb" | "sftp"))
+        matches!(location, LocationDescriptor::Virtual(location) if explorer_model::is_remote_provider_id(&location.provider_id))
     }
 
     fn invalidate_remote_clipboard_for_local_replacement(
@@ -2497,6 +2952,7 @@ mod tests {
             container_identity: [7; 16],
             container_generation: 1,
             entry_id: None,
+            provider_entry_key: None,
             components: vec!["data".to_owned()],
         })
     }
@@ -2515,6 +2971,7 @@ mod tests {
             container_identity: [8; 16],
             container_generation: 1,
             entry_id: None,
+            provider_entry_key: None,
             components: vec!["incoming".to_owned()],
         })
     }

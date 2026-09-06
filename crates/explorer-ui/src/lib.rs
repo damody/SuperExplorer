@@ -100,7 +100,7 @@ fn resolve_bookmark_path(path: &str) -> explorer_model::LocationDescriptor {
 
 fn is_adb_or_sftp_location(location: &explorer_model::LocationDescriptor) -> bool {
     matches!(location, explorer_model::LocationDescriptor::Virtual(remote)
-        if matches!(remote.provider_id.as_str(), "adb" | "sftp"))
+        if explorer_model::is_remote_provider_id(&remote.provider_id))
 }
 
 fn lua_bookmark_notice(result: explorer_automation::LuaBookmarkResult) -> String {
@@ -1115,6 +1115,8 @@ pub struct ExplorerRoot {
     command_prompt_launcher: Option<CommandPromptLauncher>,
     bookmark_file_launcher: Option<BookmarkFileLauncher>,
     sftp_address_login: Option<SftpAddressLoginState>,
+    ftp_address_login: Option<SftpAddressLoginState>,
+    gdrive_address_login: Option<SftpAddressLoginState>,
     folder_options_window_observer: Option<FolderOptionsWindowObserver>,
     bookmark_editor_window_observer: Option<BookmarkEditorWindowObserver>,
     bookmark_manager_window_observer: Option<BookmarkManagerWindowObserver>,
@@ -1607,6 +1609,8 @@ impl ExplorerRoot {
             command_prompt_launcher: None,
             bookmark_file_launcher: None,
             sftp_address_login: None,
+            ftp_address_login: None,
+            gdrive_address_login: None,
             folder_options_window_observer: None,
             bookmark_editor_window_observer: None,
             bookmark_manager_window_observer: None,
@@ -1665,11 +1669,42 @@ impl ExplorerRoot {
         });
     }
 
+    pub fn attach_ftp_address_login_observer(&mut self, observer: SftpAddressLoginObserver) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.ftp_address_login = Some(SftpAddressLoginState {
+            observer,
+            sender,
+            receiver,
+            next_request: 0,
+            active_request: None,
+        });
+    }
+
+    pub fn attach_gdrive_address_login_observer(&mut self, observer: SftpAddressLoginObserver) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.gdrive_address_login = Some(SftpAddressLoginState {
+            observer,
+            sender,
+            receiver,
+            next_request: 0,
+            active_request: None,
+        });
+    }
+
     fn begin_address_navigation(&mut self, value: &str) -> Option<explorer_model::ExplorerCommand> {
-        if !value.to_ascii_lowercase().starts_with("sftp://") {
+        let scheme = value.to_ascii_lowercase();
+        let login = if scheme.starts_with("sftp://") {
+            self.sftp_address_login.as_mut()
+        } else if scheme.starts_with("ftp://") {
+            self.ftp_address_login.as_mut()
+        } else if scheme.starts_with("gdrive://")
+            || value.eq_ignore_ascii_case(explorer_model::GDRIVE_CONNECT_LOCATION)
+        {
+            self.gdrive_address_login.as_mut()
+        } else {
             return self.state.begin_address_submission(value);
-        }
-        let Some(login) = self.sftp_address_login.as_mut() else {
+        };
+        let Some(login) = login else {
             return self.state.begin_address_submission(value);
         };
         login.next_request = login.next_request.wrapping_add(1);
@@ -1692,6 +1727,60 @@ impl ExplorerRoot {
 
     fn pump_sftp_address_login(&mut self) -> bool {
         let Some(login) = self.sftp_address_login.as_mut() else {
+            return false;
+        };
+        let mut latest = None;
+        while let Ok(result) = login.receiver.try_recv() {
+            latest = Some(result);
+        }
+        let Some((request, result)) = latest else {
+            return false;
+        };
+        if login.active_request != Some(request) {
+            return false;
+        }
+        login.active_request = None;
+        match result {
+            Ok(Some(location)) => {
+                if let Some(command) = self.state.begin_active_navigation(location, false) {
+                    self.submit_command(command);
+                }
+            }
+            Ok(None) => {}
+            Err(error) => self.state.fail_address_submission(error),
+        }
+        true
+    }
+
+    fn pump_ftp_address_login(&mut self) -> bool {
+        let Some(login) = self.ftp_address_login.as_mut() else {
+            return false;
+        };
+        let mut latest = None;
+        while let Ok(result) = login.receiver.try_recv() {
+            latest = Some(result);
+        }
+        let Some((request, result)) = latest else {
+            return false;
+        };
+        if login.active_request != Some(request) {
+            return false;
+        }
+        login.active_request = None;
+        match result {
+            Ok(Some(location)) => {
+                if let Some(command) = self.state.begin_active_navigation(location, false) {
+                    self.submit_command(command);
+                }
+            }
+            Ok(None) => {}
+            Err(error) => self.state.fail_address_submission(error),
+        }
+        true
+    }
+
+    fn pump_gdrive_address_login(&mut self) -> bool {
+        let Some(login) = self.gdrive_address_login.as_mut() else {
             return false;
         };
         let mut latest = None;
@@ -3479,6 +3568,8 @@ impl ExplorerRoot {
             command_prompt_launcher: None,
             bookmark_file_launcher: None,
             sftp_address_login: None,
+            ftp_address_login: None,
+            gdrive_address_login: None,
             folder_options_window_observer: None,
             bookmark_editor_window_observer: None,
             bookmark_manager_window_observer: None,
@@ -3589,6 +3680,8 @@ impl ExplorerRoot {
             command_prompt_launcher: None,
             bookmark_file_launcher: None,
             sftp_address_login: None,
+            ftp_address_login: None,
+            gdrive_address_login: None,
             folder_options_window_observer: None,
             bookmark_editor_window_observer: None,
             bookmark_manager_window_observer: None,
@@ -3809,6 +3902,8 @@ impl ExplorerRoot {
                         let extension_changed =
                             extension_ui_pump_due(this.extension_ui_pump.as_mut(), Instant::now());
                         let sftp_login_changed = this.pump_sftp_address_login();
+                        let ftp_login_changed = this.pump_ftp_address_login();
+                        let gdrive_login_changed = this.pump_gdrive_address_login();
                         let remote_runtime_changed = this.pump_remote_runtime(cx);
                         let visual_column_changed = this.pump_visual_column_runtime();
                         let code_lines_changed = this.pump_code_lines_runtime();
@@ -3819,6 +3914,8 @@ impl ExplorerRoot {
                             this.state.apk_notice_needs_repaint(Instant::now());
                         if extension_changed
                             || sftp_login_changed
+                            || ftp_login_changed
+                            || gdrive_login_changed
                             || remote_runtime_changed
                             || visual_column_changed
                             || code_lines_changed
@@ -7130,7 +7227,15 @@ impl ExplorerRoot {
             ExplorerAction::ActivateBreadcrumbSegment { location }
             | ExplorerAction::ActivateBreadcrumbChild { location }
             | ExplorerAction::ActivateNavigationItem { location } => {
-                self.state.begin_active_navigation(location.clone(), false)
+                if explorer_model::is_gdrive_connect_location(location) {
+                    self.begin_address_navigation(explorer_model::GDRIVE_CONNECT_LOCATION)
+                } else if location.file_system_kind()
+                    == Some(explorer_model::FileSystemKind::Gdrive)
+                {
+                    self.begin_address_navigation(&location.editable_text())
+                } else {
+                    self.state.begin_active_navigation(location.clone(), false)
+                }
             }
             _ => None,
         };
@@ -8210,7 +8315,7 @@ fn is_remote_virtual_location(location: &explorer_model::LocationDescriptor) -> 
     matches!(
         location,
         explorer_model::LocationDescriptor::Virtual(remote)
-            if matches!(remote.provider_id.as_str(), "adb" | "sftp")
+            if explorer_model::is_remote_provider_id(&remote.provider_id)
     )
 }
 
@@ -8238,6 +8343,7 @@ mod remote_file_fallback_icon_tests {
                 container_identity: [7; 16],
                 container_generation: 1,
                 entry_id: Some(1),
+                provider_entry_key: None,
                 public_authority: Some("fixture".to_owned()),
                 components: vec![name.to_owned()],
             }),
@@ -9851,6 +9957,7 @@ mod tests {
                 container_identity: [7; 16],
                 container_generation: 1,
                 entry_id: Some(1),
+                provider_entry_key: None,
                 components: vec!["home".to_owned(), "fixture".to_owned()],
             },
         );
@@ -11915,6 +12022,7 @@ mod tests {
                 container_identity: [9; 16],
                 container_generation: 1,
                 entry_id: Some(1),
+                provider_entry_key: None,
                 components: vec!["sdcard".to_owned()],
             },
         );
@@ -11934,38 +12042,246 @@ mod tests {
         assert!(root.pending_thumbnail_keys.is_empty());
     }
 
-    #[test]
-    fn standard_sftp_username_hint_is_intercepted_and_navigates_to_canonical_host() {
-        let mut root = ExplorerRoot::default();
-        root.attach_sftp_address_login_observer(Arc::new(|input| {
+    fn attach_shared_sftp_address_login_observer(
+        root: &mut ExplorerRoot,
+    ) -> Arc<Mutex<Option<String>>> {
+        let username_hint = Arc::new(Mutex::new(None));
+        let captured_hint = Arc::clone(&username_hint);
+        root.attach_sftp_address_login_observer(Arc::new(move |input| {
             let parsed = explorer_model::SftpAddressInput::parse(input)
                 .map_err(|error| error.to_string())?;
-            assert_eq!(parsed.username_hint.as_deref(), Some("root"));
+            *captured_hint.lock().unwrap() = parsed.username_hint.clone();
             parsed
                 .address
                 .to_deterministic_location(1)
                 .map(Some)
                 .map_err(|error| error.to_string())
         }));
+        username_hint
+    }
+
+    fn recv_sftp_address_login(
+        root: &ExplorerRoot,
+    ) -> Result<Option<explorer_model::LocationDescriptor>, String> {
+        root.sftp_address_login
+            .as_ref()
+            .expect("login state")
+            .receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("background login result")
+            .1
+    }
+
+    fn wait_for_sftp_address_login_pump(root: &mut ExplorerRoot) {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            if root.pump_sftp_address_login() {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "SFTP address login did not complete"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn virtual_sftp_location(
+        location: explorer_model::LocationDescriptor,
+    ) -> explorer_model::VirtualLocationDescriptor {
+        let explorer_model::LocationDescriptor::Virtual(location) = location else {
+            panic!("expected virtual SFTP location");
+        };
+        location
+    }
+
+    #[test]
+    fn standard_sftp_username_hint_is_intercepted_and_navigates_to_canonical_host() {
+        let mut root = ExplorerRoot::default();
+        let username_hint = attach_shared_sftp_address_login_observer(&mut root);
 
         assert!(
             root.begin_address_navigation("sftp://root@45.32.49.125/")
                 .is_none(),
             "SFTP login must not block the GPUI action callback"
         );
-        let (_, result) = root
-            .sftp_address_login
+        let location = recv_sftp_address_login(&root)
+            .expect("login succeeds")
+            .expect("canonical location");
+        let location = virtual_sftp_location(location);
+        assert_eq!(username_hint.lock().unwrap().as_deref(), Some("root"));
+        assert_eq!(location.public_authority.as_deref(), Some("45.32.49.125"));
+        assert!(location.components.is_empty());
+    }
+
+    #[test]
+    fn host_only_sftp_address_still_navigates_without_username_hint() {
+        let mut root = ExplorerRoot::default();
+        let username_hint = attach_shared_sftp_address_login_observer(&mut root);
+
+        assert!(
+            root.begin_address_navigation("sftp://45.32.49.125/home/linuxuser")
+                .is_none()
+        );
+        let location = recv_sftp_address_login(&root)
+            .expect("login succeeds")
+            .expect("canonical location");
+        let location = virtual_sftp_location(location);
+        assert_eq!(username_hint.lock().unwrap().as_deref(), None);
+        assert_eq!(location.public_authority.as_deref(), Some("45.32.49.125"));
+        assert_eq!(
+            location.components,
+            vec!["home".to_owned(), "linuxuser".to_owned()]
+        );
+    }
+
+    #[test]
+    fn reversed_sftp_authority_is_not_inferred_as_host_then_username() {
+        let mut root = ExplorerRoot::default();
+        let username_hint = attach_shared_sftp_address_login_observer(&mut root);
+
+        assert!(
+            root.begin_address_navigation("sftp://45.32.49.125@root/")
+                .is_none()
+        );
+        let location = recv_sftp_address_login(&root)
+            .expect("login succeeds")
+            .expect("canonical location");
+        let location = virtual_sftp_location(location);
+        assert_eq!(
+            username_hint.lock().unwrap().as_deref(),
+            Some("45.32.49.125")
+        );
+        assert_eq!(location.public_authority.as_deref(), Some("root"));
+        assert_ne!(location.public_authority.as_deref(), Some("45.32.49.125"));
+    }
+
+    #[test]
+    fn malformed_sftp_user_info_fails_visibly_without_leaking_secret() {
+        for input in [
+            "sftp://root:secret@45.32.49.125/",
+            "sftp://@45.32.49.125/",
+            "sftp://root@@45.32.49.125/",
+        ] {
+            let mut root = ExplorerRoot::default();
+            attach_shared_sftp_address_login_observer(&mut root);
+
+            assert!(root.begin_address_navigation(input).is_none());
+            wait_for_sftp_address_login_pump(&mut root);
+            let error = root
+                .state
+                .tabs()
+                .active_tab()
+                .view
+                .address
+                .error
+                .as_deref()
+                .expect("visible invalid-address error");
+            assert!(!error.contains("secret"), "{input}: {error}");
+            assert!(!error.contains("root:secret"), "{input}: {error}");
+            assert!(!error.is_empty(), "{input}");
+        }
+    }
+
+    #[test]
+    fn standard_ftp_username_hint_is_intercepted_and_navigates_to_canonical_host() {
+        let mut root = ExplorerRoot::default();
+        let username_hint = Arc::new(Mutex::new(None));
+        let captured_hint = Arc::clone(&username_hint);
+        root.attach_ftp_address_login_observer(Arc::new(move |input| {
+            let parsed =
+                explorer_model::FtpAddressInput::parse(input).map_err(|error| error.to_string())?;
+            *captured_hint.lock().unwrap() = parsed.username_hint.clone();
+            parsed
+                .address
+                .to_deterministic_location(1)
+                .map(Some)
+                .map_err(|error| error.to_string())
+        }));
+        assert!(
+            root.begin_address_navigation("ftp://test@45.32.49.125/")
+                .is_none()
+        );
+        let location = root
+            .ftp_address_login
             .as_ref()
             .expect("login state")
             .receiver
             .recv_timeout(Duration::from_secs(1))
-            .expect("background login result");
-        let location = result.expect("login succeeds").expect("canonical location");
+            .expect("background login result")
+            .1
+            .expect("login succeeds")
+            .expect("canonical location");
         let explorer_model::LocationDescriptor::Virtual(location) = location else {
-            panic!("expected virtual SFTP location");
+            panic!("expected virtual FTP location");
         };
+        assert_eq!(username_hint.lock().unwrap().as_deref(), Some("test"));
         assert_eq!(location.public_authority.as_deref(), Some("45.32.49.125"));
-        assert!(location.components.is_empty());
+        assert_eq!(location.provider_id, "ftp");
+    }
+
+    #[test]
+    fn gdrive_email_address_is_intercepted_and_navigates_to_canonical_account() {
+        let mut root = ExplorerRoot::default();
+        root.attach_gdrive_address_login_observer(Arc::new(|input| {
+            explorer_model::RemoteAddress::parse(input)
+                .map_err(|error| error.to_string())
+                .and_then(|address| {
+                    address
+                        .to_deterministic_location(1)
+                        .map(Some)
+                        .map_err(|error| error.to_string())
+                })
+        }));
+        assert!(
+            root.begin_address_navigation("gdrive://you@gmail.com/Work")
+                .is_none()
+        );
+        let location = root
+            .gdrive_address_login
+            .as_ref()
+            .expect("login state")
+            .receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("background login result")
+            .1
+            .expect("login succeeds")
+            .expect("canonical location");
+        let explorer_model::LocationDescriptor::Virtual(location) = location else {
+            panic!("expected virtual Google Drive location");
+        };
+        assert_eq!(location.provider_id, "gdrive");
+        assert_eq!(location.public_authority.as_deref(), Some("you@gmail.com"));
+        assert_eq!(location.components, vec!["Work".to_owned()]);
+    }
+
+    #[test]
+    fn gdrive_password_bearing_address_fails_without_leaking_secret() {
+        let mut root = ExplorerRoot::default();
+        root.attach_gdrive_address_login_observer(Arc::new(|input| {
+            explorer_model::RemoteAddress::parse(input)
+                .map_err(|error| error.to_string())
+                .and_then(|address| {
+                    address
+                        .to_deterministic_location(1)
+                        .map(Some)
+                        .map_err(|error| error.to_string())
+                })
+        }));
+        assert!(
+            root.begin_address_navigation("gdrive://you:secret@gmail.com/")
+                .is_none()
+        );
+        let error = root
+            .gdrive_address_login
+            .as_ref()
+            .expect("login state")
+            .receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("background login result")
+            .1
+            .expect_err("password-bearing Google Drive URI is rejected");
+        assert!(!error.contains("secret"));
     }
 
     #[test]

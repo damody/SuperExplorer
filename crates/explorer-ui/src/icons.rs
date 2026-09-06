@@ -383,7 +383,7 @@ pub fn navigation_icon(icon: NavigationIcon, tokens: UiTokens) -> impl IntoEleme
             .border(px(1.0))
             .border_color(colors.gallery_border.to_gpui())
             .bg(colors.gallery.to_gpui()),
-        NavigationIcon::OneDrive => div()
+        NavigationIcon::OneDrive | NavigationIcon::GoogleDrive => div()
             .relative()
             .w(px(size * 0.95))
             .h(px(size * 0.7))

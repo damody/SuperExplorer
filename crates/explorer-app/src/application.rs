@@ -4332,6 +4332,12 @@ impl ApplicationLifecycle {
         explorer_ui::navigation_pane::configure_sftp_navigation_profiles(
             crate::remote_service::configured_sftp_navigation_profiles(),
         );
+        explorer_ui::navigation_pane::configure_ftp_navigation_profiles(
+            crate::remote_service::configured_ftp_navigation_profiles(),
+        );
+        explorer_ui::navigation_pane::configure_gdrive_navigation_profiles(
+            crate::remote_service::configured_gdrive_navigation_profiles(),
+        );
         crate::remote_service::start_adb_navigation_refresh();
         let shell_service: Arc<dyn explorer_model::ExplorerService> =
             Arc::new(crate::brokered_service::BrokeredExplorerService::new(
@@ -4695,6 +4701,14 @@ impl ApplicationLifecycle {
                         let runtime = Arc::clone(&sftp_login_runtime);
                         root.attach_sftp_address_login_observer(Arc::new(move |input| {
                             runtime.login_address(input)
+                        }));
+                        let ftp_runtime = Arc::clone(&sftp_login_runtime);
+                        root.attach_ftp_address_login_observer(Arc::new(move |input| {
+                            ftp_runtime.login_ftp_address(input)
+                        }));
+                        let gdrive_runtime = Arc::clone(&sftp_login_runtime);
+                        root.attach_gdrive_address_login_observer(Arc::new(move |input| {
+                            gdrive_runtime.login_gdrive_address(input)
                         }));
                         let symlink_runtime = Arc::clone(&remote_runtime_for_window);
                         let metadata_runtime = Arc::clone(&remote_runtime_for_window);
