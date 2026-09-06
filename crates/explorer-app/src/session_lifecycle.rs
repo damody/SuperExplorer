@@ -8,8 +8,9 @@ use std::{
 
 use explorer_common::RoadmapLimits;
 use explorer_model::{
-    ExplorerWindowState, PersistedQuickAccessPin, PersistedRect, PersistedSessionEnvelope,
-    PersistedWindowPlacement, SessionProvenance, SessionStore, SessionStoreError,
+    AppLocale, ExplorerWindowState, PersistedQuickAccessPin, PersistedRect,
+    PersistedSessionEnvelope, PersistedWindowPlacement, SessionProvenance, SessionStore,
+    SessionStoreError,
 };
 
 use crate::bookmark_store::BookmarkStore;
@@ -62,6 +63,7 @@ impl PendingSnapshot {
                 &runtime.quick_access,
                 &runtime.bookmarks,
                 runtime.restore_enabled,
+                runtime.locale,
                 runtime.write_generation,
                 runtime.provenance.clone(),
                 runtime.limits,
@@ -79,6 +81,7 @@ pub struct RuntimeSessionSnapshot {
     pub quick_access: Vec<PersistedQuickAccessPin>,
     pub bookmarks: explorer_model::Bookmarks,
     pub restore_enabled: bool,
+    pub locale: Option<AppLocale>,
     pub write_generation: u64,
     pub provenance: SessionProvenance,
     pub limits: RoadmapLimits,
@@ -576,6 +579,7 @@ mod tests {
             },
             &[],
             true,
+            None,
             generation,
             SessionProvenance {
                 app_version: "test".to_owned(),

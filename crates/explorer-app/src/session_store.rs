@@ -411,6 +411,7 @@ mod tests {
                 order: 0,
             }],
             true,
+            None,
             generation,
             SessionProvenance {
                 app_version: "test".to_owned(),

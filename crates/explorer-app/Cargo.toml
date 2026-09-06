@@ -29,6 +29,7 @@ uitest-support = ["explorer-extension-host/integration-test-support"]
 abi_stable.workspace = true
 anyhow.workspace = true
 explorer-common = { path = "../explorer-common" }
+explorer-i18n = { path = "../explorer-i18n" }
 explorer-extension-broker = { path = "../explorer-extension-broker" }
 explorer-extension-api = { path = "../explorer-extension-api" }
 explorer-extension-host = { path = "../explorer-extension-host" }

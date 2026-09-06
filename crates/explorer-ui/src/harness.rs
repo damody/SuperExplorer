@@ -1,4 +1,8 @@
 //! Deterministic UI behavior harness with no GPUI window or Shell service.
+//!
+//! Default locale is `AppLocale::ZhTw` (via [`AppViewState::default`]) so existing
+//! Chinese assertions can migrate incrementally. Production resolves env > session >
+//! Windows > `En`.
 
 use crate::{
     UiTokens,

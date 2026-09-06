@@ -64,9 +64,17 @@ fn combined_restore_namespace_thumbnail_broker_preview_and_save_flow() {
         "This PC",
     ));
     window.active_tab_mut().view.settings.preview_pane = true;
-    let first =
-        PersistedSessionEnvelope::project(&window, placement(), &[], true, 1, provenance(), limits)
-            .expect("project initial session");
+    let first = PersistedSessionEnvelope::project(
+        &window,
+        placement(),
+        &[],
+        true,
+        None,
+        1,
+        provenance(),
+        limits,
+    )
+    .expect("project initial session");
     store.save(&first).expect("save initial session");
     let restored = store
         .load()
@@ -124,6 +132,7 @@ fn combined_restore_namespace_thumbnail_broker_preview_and_save_flow() {
         restored.window,
         &restored.quick_access,
         true,
+        None,
         2,
         provenance(),
         limits,

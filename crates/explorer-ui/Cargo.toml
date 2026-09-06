@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 explorer-common = { path = "../explorer-common" }
 explorer-automation = { path = "../explorer-automation" }
+explorer-i18n = { path = "../explorer-i18n" }
 explorer-model = { path = "../explorer-model" }
 explorer-jobs = { path = "../explorer-jobs" }
 explorer-search = { path = "../explorer-search" }

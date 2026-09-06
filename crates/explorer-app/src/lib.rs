@@ -20,6 +20,7 @@ pub mod branding;
 mod brokered_service;
 mod folder_size_service;
 pub mod launch_coordination;
+pub mod locale;
 pub(crate) use explorer_mft::mft_focus;
 #[cfg(windows)]
 pub(crate) use explorer_mft::mft_journal;

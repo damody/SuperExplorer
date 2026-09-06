@@ -1178,6 +1178,7 @@ pub type DurableStateObserver = Arc<
             Vec<explorer_model::PersistedQuickAccessPin>,
             explorer_model::Bookmarks,
             explorer_model::PersistedWindowPlacement,
+            Option<explorer_model::AppLocale>,
         ) -> bool
         + Send
         + Sync,
@@ -3756,6 +3757,30 @@ impl ExplorerRoot {
         self.state.set_restore_previous_session(enabled);
     }
 
+    /// Applies the resolved live locale and durable session preference before first render.
+    pub fn configure_locale(
+        &mut self,
+        locale: explorer_model::AppLocale,
+        preference: Option<explorer_model::AppLocale>,
+    ) {
+        self.state.configure_locale(locale, preference);
+    }
+
+    /// Updates the live catalog locale; callers should `cx.notify()` for a redraw.
+    pub fn set_locale(&mut self, locale: explorer_model::AppLocale) {
+        self.state.set_locale(locale);
+    }
+
+    #[must_use]
+    pub const fn locale(&self) -> explorer_model::AppLocale {
+        self.state.locale()
+    }
+
+    #[must_use]
+    pub const fn catalog(&self) -> explorer_i18n::Catalog {
+        self.state.catalog()
+    }
+
     /// Applies ordered pins loaded by the application-owned session store.
     pub fn configure_quick_access(&mut self, pins: Vec<explorer_model::PersistedQuickAccessPin>) {
         self.state.configure_quick_access(pins);
@@ -3823,6 +3848,7 @@ impl ExplorerRoot {
                 self.state.persisted_quick_access(),
                 self.state.bookmarks().clone(),
                 self.durable_window_placement,
+                self.state.locale_preference(),
             );
         }
         false
@@ -3856,6 +3882,7 @@ impl ExplorerRoot {
             self.state.persisted_quick_access(),
             self.state.bookmarks().clone(),
             self.durable_window_placement,
+            self.state.locale_preference(),
         )
     }
 

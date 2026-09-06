@@ -4436,6 +4436,7 @@ impl ApplicationLifecycle {
             restore_preference,
             quick_access,
             bookmarks,
+            session_locale,
         ) = if visual_fixture.is_none() {
             create_session_persistence(restored_placement)
         } else {
@@ -4446,8 +4447,14 @@ impl ApplicationLifecycle {
                 true,
                 Vec::new(),
                 explorer_model::Bookmarks::default(),
+                None,
             )
         };
+        let windows_locale_tag = crate::locale::windows_display_locale_tag();
+        let resolved_locale = crate::locale::resolve_app_locale_from_process(
+            session_locale,
+            windows_locale_tag.as_deref(),
+        );
         let extension_settings_resources = Arc::clone(&self.resources);
         let extension_settings_observer: explorer_ui::ExtensionSettingsObserver =
             Arc::new(move |updates| {
@@ -4581,6 +4588,8 @@ impl ApplicationLifecycle {
                     extension_settings_observer.clone();
                 let reset_observer_for_window = reset_observer.clone();
                 let restore_preference_for_window = restore_preference;
+                let resolved_locale_for_window = resolved_locale;
+                let session_locale_for_window = session_locale;
                 let quick_access_for_window = quick_access.clone();
                 let bookmarks_for_window = bookmarks.clone();
                 let extension_desired_states_for_window = extension_desired_states.clone();
@@ -4639,6 +4648,8 @@ impl ApplicationLifecycle {
                             Some(extension_settings_observer_for_window),
                             reset_observer_for_window,
                             restore_preference_for_window,
+                            resolved_locale_for_window,
+                            session_locale_for_window,
                             quick_access_for_window,
                             bookmarks_for_window,
                             extension_desired_states_for_window,
@@ -5599,6 +5610,8 @@ fn create_explorer_root(
     extension_settings_observer: Option<explorer_ui::ExtensionSettingsObserver>,
     reset_observer: Option<explorer_ui::SessionResetObserver>,
     restore_preference: bool,
+    resolved_locale: explorer_model::AppLocale,
+    session_locale: Option<explorer_model::AppLocale>,
     quick_access: Vec<explorer_model::PersistedQuickAccessPin>,
     bookmarks: explorer_model::Bookmarks,
     extension_desired_states: Vec<(String, bool)>,
@@ -5627,6 +5640,7 @@ fn create_explorer_root(
         ),
     };
     root.configure_restore_previous_session(restore_preference);
+    root.configure_locale(resolved_locale, session_locale);
     root.configure_quick_access(quick_access);
     root.configure_bookmarks(bookmarks);
     root.configure_extension_desired_states(&extension_desired_states);
@@ -5682,6 +5696,8 @@ fn create_focused_explorer_root(
     extension_settings_observer: Option<explorer_ui::ExtensionSettingsObserver>,
     reset_observer: Option<explorer_ui::SessionResetObserver>,
     restore_preference: bool,
+    resolved_locale: explorer_model::AppLocale,
+    session_locale: Option<explorer_model::AppLocale>,
     quick_access: Vec<explorer_model::PersistedQuickAccessPin>,
     bookmarks: explorer_model::Bookmarks,
     extension_desired_states: Vec<(String, bool)>,
@@ -5711,6 +5727,8 @@ fn create_focused_explorer_root(
         extension_settings_observer,
         reset_observer,
         restore_preference,
+        resolved_locale,
+        session_locale,
         quick_access,
         bookmarks,
         extension_desired_states,
@@ -5984,6 +6002,7 @@ fn create_session_persistence(
     bool,
     Vec<explorer_model::PersistedQuickAccessPin>,
     explorer_model::Bookmarks,
+    Option<explorer_model::AppLocale>,
 ) {
     let limits = RoadmapLimits::default();
     let Ok(store) = crate::session_store::WindowsSessionStore::from_environment(limits) else {
@@ -5994,6 +6013,7 @@ fn create_session_persistence(
             true,
             Vec::new(),
             explorer_model::Bookmarks::default(),
+            None,
         );
     };
     let loaded = store.load().ok().and_then(|outcome| outcome.envelope);
@@ -6008,6 +6028,7 @@ fn create_session_persistence(
         .map_or_else(explorer_model::Bookmarks::default, |envelope| {
             envelope.payload.bookmarks.clone()
         });
+    let session_locale = loaded.as_ref().and_then(|envelope| envelope.payload.locale);
     let bookmark_store = crate::bookmark_store::WindowsBookmarkStore::from_environment(limits).ok();
     let bookmarks = bookmark_store.as_ref().map_or_else(
         || legacy_bookmarks.clone(),
@@ -6037,7 +6058,7 @@ fn create_session_persistence(
     let reset_observer: explorer_ui::SessionResetObserver =
         Arc::new(move |scope| reset_handle.request_reset(scope));
     let observer: explorer_ui::DurableStateObserver = Arc::new(
-        move |window, restore_enabled, quick_access, bookmarks, placement| {
+        move |window, restore_enabled, quick_access, bookmarks, placement, locale| {
             let write_generation = generation.fetch_add(1, Ordering::AcqRel);
             handle.accepted_runtime(
                 crate::session_lifecycle::DurableTransition::ViewSettingsChanged,
@@ -6047,6 +6068,7 @@ fn create_session_persistence(
                     quick_access,
                     bookmarks,
                     restore_enabled,
+                    locale,
                     write_generation,
                     provenance: explorer_model::SessionProvenance {
                         app_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -6065,6 +6087,7 @@ fn create_session_persistence(
         restore_enabled,
         quick_access,
         bookmarks,
+        session_locale,
     )
 }
 

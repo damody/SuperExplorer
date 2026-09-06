@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use explorer_i18n::{AppLocale, Catalog};
 use explorer_model::{
     DeleteLockKind, DirectorySnapshot, DirectoryState, ExplorerCommand, ExplorerEvent,
     ExplorerWindowState, FileOperationKind, FileOperationRequest, HistoryEntry, ItemDescriptor,
@@ -714,6 +715,10 @@ struct PendingNewFolderRename {
 )]
 pub struct AppViewState {
     current_theme: ThemeMode,
+    /// Active UI catalog locale. Harness/uitest default is `ZhTw`; production is negotiated.
+    locale: AppLocale,
+    /// Session preference written on save. `None` means follow Windows.
+    locale_preference: Option<AppLocale>,
     navigation_pane_width: LogicalPx,
     focus: FocusCoordinator,
     tabs: ExplorerWindowState,
@@ -968,6 +973,9 @@ impl AppViewState {
         let tab_focus = HashMap::from([(initial_tab_id, FocusSurface::FileView)]);
         Self {
             current_theme: ThemeMode::Light,
+            // Test/harness default; production windows call `configure_locale` with negotiation.
+            locale: AppLocale::ZhTw,
+            locale_preference: None,
             navigation_pane_width: LayoutTokens::WINDOWS_11.navigation_pane_default_width,
             focus: FocusCoordinator::default(),
             tabs,
@@ -1663,6 +1671,38 @@ impl AppViewState {
 
     pub const fn current_theme(&self) -> ThemeMode {
         self.current_theme
+    }
+
+    /// Active catalog locale used at render time.
+    pub const fn locale(&self) -> AppLocale {
+        self.locale
+    }
+
+    /// Session locale preference (`None` = follow Windows).
+    pub const fn locale_preference(&self) -> Option<AppLocale> {
+        self.locale_preference
+    }
+
+    /// Live Fluent catalog for the active locale.
+    #[must_use]
+    pub const fn catalog(&self) -> Catalog {
+        Catalog::new(self.locale)
+    }
+
+    /// Updates the live catalog locale; visible on the next render without restart.
+    pub fn set_locale(&mut self, locale: AppLocale) {
+        self.locale = locale;
+    }
+
+    /// Updates the preference persisted into `PersistedSessionPayload.locale`.
+    pub fn set_locale_preference(&mut self, preference: Option<AppLocale>) {
+        self.locale_preference = preference;
+    }
+
+    /// Sets both the live locale and the durable preference in one call.
+    pub fn configure_locale(&mut self, locale: AppLocale, preference: Option<AppLocale>) {
+        self.locale = locale;
+        self.locale_preference = preference;
     }
 
     pub const fn navigation_pane_width(&self) -> LogicalPx {
@@ -6776,11 +6816,29 @@ fn navigation_locations_for_operation(request: &FileOperationRequest) -> Vec<Loc
 
 #[cfg(test)]
 mod tests {
+    use explorer_i18n::AppLocale;
+
     use super::{
         AppViewState, CommandKind, DirectoryCacheKey, DirectorySnapshotCache,
         bookmark_target_for_current_location, resolve_details_column_insertion,
         unique_remote_folder_symlink_name,
     };
+
+    #[test]
+    fn harness_default_locale_is_zh_tw_and_set_locale_is_live() {
+        let mut state = AppViewState::default();
+        assert_eq!(state.locale(), AppLocale::ZhTw);
+        assert_eq!(state.locale_preference(), None);
+        assert_eq!(state.catalog().locale(), AppLocale::ZhTw);
+
+        state.set_locale(AppLocale::Ja);
+        assert_eq!(state.locale(), AppLocale::Ja);
+        assert_eq!(state.catalog().locale(), AppLocale::Ja);
+
+        state.configure_locale(AppLocale::Ru, Some(AppLocale::Ru));
+        assert_eq!(state.locale(), AppLocale::Ru);
+        assert_eq!(state.locale_preference(), Some(AppLocale::Ru));
+    }
 
     #[test]
     fn remote_folder_symlink_name_uses_first_free_windows_style_suffix() {
