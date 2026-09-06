@@ -1,109 +1,211 @@
 # SuperExplorer chrome: search, navigation, address, tabs, panes.
 
-search-in = Search { $folder }
-search-bookmarks = Search bookmarks
-search-clear = Clear search
-search-recent-count = { $hint }; { $count } recent searches
+search-in = 搜索 { $folder }
 
-nav-home = Home
+search-bookmarks = 搜索书签
+
+search-clear = 清除搜索
+
+search-recent-count = { $hint }; 最近搜索 { $count } 条
+
+nav-home = 快速访问
+
 nav-quick-access = Quick access
-nav-gallery = Gallery
+
+nav-gallery = 图库
+
 nav-onedrive = OneDrive - Personal
-nav-desktop = Desktop
-nav-downloads = Downloads
-nav-documents = Documents
-nav-pictures = Pictures
-nav-music = Music
-nav-videos = Videos
+
+nav-desktop = 桌面
+
+nav-downloads = 下载
+
+nav-documents = 文档
+
+nav-pictures = 图片
+
+nav-music = 音乐
+
+nav-videos = 视频
+
 nav-libraries = Libraries
-nav-this-pc = This PC
-nav-local-disk = Local Disk ({ $letter }:)
-nav-new-volume = New Volume ({ $letter }:)
-nav-network = Network
-nav-phones = Phones
+
+nav-this-pc = 此电脑
+
+nav-local-disk = 本地磁盘 ({ $letter }:)
+
+nav-new-volume = 新加卷 ({ $letter }:)
+
+nav-network = 网络
+
+nav-phones = 手机
+
 nav-sftp = SFTP
+
 nav-ftp = FTP
+
 nav-gdrive = Google Drive
-nav-connect-gdrive = Connect Google Drive
-nav-unencrypted = { $label } — Unencrypted
-nav-favorites = Favorites
+
+nav-connect-gdrive = 连接 Google Drive
+
+nav-unencrypted = { $label } — 未加密
+
+nav-favorites = 收藏夹
 
 chrome-new-tab = New tab
+
 chrome-close-tab = Close tab
+
 chrome-command-bar = Explorer command bar
+
 chrome-navigation-bar = Explorer navigation bar
+
 chrome-address = Address: { $path }
+
 chrome-go-to = Go to { $name }
-chrome-list-drives = List drives
-chrome-devices-and-drives = Devices and drives
-chrome-show-older-path-levels = Show older path levels
-chrome-listing-subfolders = Listing subfolders…
-chrome-retry-list-subfolders = Retry listing subfolders
-chrome-no-subfolders = No subfolders
-chrome-list-subfolders = List subfolders of { $name }
-chrome-list-subfolders-loading = Listing subfolders of { $name }, loading
+
+chrome-list-drives = 列出驱动器
+
+chrome-devices-and-drives = 设备和驱动器
+
+chrome-show-older-path-levels = 显示较旧的路径层级
+
+chrome-listing-subfolders = 正在枚举子文件夹…
+
+chrome-retry-list-subfolders = 重试列出子文件夹
+
+chrome-no-subfolders = 没有子文件夹
+
+chrome-list-subfolders = 列出 { $name } 的子文件夹
+
+chrome-list-subfolders-loading = 列出 { $name } 的子文件夹，加载中
+
 chrome-resize-nav-pane = Resize navigation pane
-chrome-resize-side-pane = Resize side pane
-chrome-details-pane = Details pane
-chrome-preview-pane = Preview pane
+
+chrome-resize-side-pane = 调整侧边窗格大小
+
+chrome-details-pane = 详细信息窗格
+
+chrome-preview-pane = 预览窗格
+
 chrome-file-view-hscroll = File view horizontal scroll bar
+
 chrome-choose-details-columns = Choose details columns
-chrome-local-details-columns = This PC details columns: Name, Type, Total size, Free space
-chrome-clear-filter = Clear filter
+
+chrome-local-details-columns = 此电脑详细信息列：名称、类型、总大小、可用空间
+
+chrome-clear-filter = 清除筛选
+
 chrome-filter-column = Filter { $column }
+
 chrome-resize-column = Resize { $column } column
+
 chrome-more-bookmarks = More Bookmarks, { $count } items
+
 chrome-add-lua-bookmark = Add Lua bookmark
+
 chrome-manage-bookmarks = Manage bookmarks
+
 chrome-toggle-compact-bookmarks = Toggle compact bookmark view
+
 chrome-import-backup-bookmarks = Import and backup bookmarks
+
 chrome-bookmark-folder-menu = Bookmark folder menu
+
 chrome-bookmark-toolbar-context = Bookmark toolbar context menu
+
 chrome-bookmark-context = Bookmark context menu
+
 chrome-remote-file-context = Remote file context menu
+
 chrome-bookmark-editor = Bookmark editor
+
 chrome-remove-bookmark = Remove bookmark
+
 chrome-cancel-bookmark-edit = Cancel bookmark edit
+
 chrome-save-bookmark = Save bookmark
-chrome-rename-bookmark-folder = Rename bookmark folder
+
+chrome-rename-bookmark-folder = 重命名书签文件夹
+
 chrome-cancel-bookmark-folder-edit = Cancel bookmark folder edit
+
 chrome-save-bookmark-folder = Save bookmark folder
+
 chrome-save-in = Save in { $name }
+
 chrome-confirm-reset = Confirm reset of { $label }
+
 chrome-select-item = Select { $name }
+
 chrome-item-icon = { $name } icon
+
 chrome-rename-item = Rename { $name }
+
 chrome-right-drag-action = Right drag action
+
 chrome-nav-unavailable = Navigation pane; services unavailable
+
 chrome-collapse = Collapse
+
 chrome-expand = Expand
-chrome-this-pc-label = This PC
-chrome-file-folder = File folder
-chrome-file = File
-chrome-system-folder = System folder
-chrome-shared-folder = Shared folder
-chrome-current-folder = Current folder
+
+chrome-this-pc-label = 此电脑
+
+chrome-file-folder = 文件夹
+
+chrome-file = 文件
+
+chrome-system-folder = 系统文件夹
+
+chrome-shared-folder = 共享文件夹
+
+chrome-current-folder = 当前文件夹
+
 chrome-bookmark-folder-aria = Bookmark folder { $name }
+
 chrome-bookmark-aria = { $icon } Bookmark: { $name }
+
 chrome-bookmark-plain-aria = Bookmark { $name }
+
 chrome-favorite-folder-aria = Favorite folder { $name }
+
 chrome-favorite-aria = Favorite { $name }
+
 chrome-favorites-hint = Favorites; right click to add a bookmark folder
+
 chrome-preview-image-loaded = Preview image loaded
+
 chrome-preview-file = Preview file: { $name }
-chrome-preview-file-type-size = Type: { $kind }; Size: { $size }
+
+chrome-preview-file-type-size = 文件类型：{ $kind }；大小：{ $size }
+
 chrome-details-columns-aria = Details columns: { $columns }
+
 chrome-column-unavailable = { $name }: unavailable
+
 chrome-column-value = { $name }: { $value }
+
 chrome-navigation-scrollbar = Navigation pane scroll bar
+
 chrome-file-view-scrollbar = File view scroll bar
-chrome-drive-type = Drive type: { $value }
-chrome-drive-total-size = Total size: { $value }
-chrome-type-label = Type: { $value }
-chrome-size-label = Size: { $value }
-chrome-date-modified-label = Date modified: { $value }
-chrome-new-folder-with-name = New folder | { $name }
-chrome-new-file-with-name = New file
-chrome-sort-name = Name
-chrome-sort-url = URL
-chrome-sort-tags = Tags
+
+chrome-drive-type = 磁盘类型：{ $value }
+
+chrome-drive-total-size = 总大小：{ $value }
+
+chrome-type-label = 类型: { $value }
+
+chrome-size-label = 大小: { $value }
+
+chrome-date-modified-label = 修改日期: { $value }
+
+chrome-new-folder-with-name = 新建文件夹｜{ $name }
+
+chrome-new-file-with-name = 新建文件
+
+chrome-sort-name = 名称
+
+chrome-sort-url = 网址
+
+chrome-sort-tags = 标签

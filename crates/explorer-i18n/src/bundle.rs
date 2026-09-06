@@ -141,7 +141,7 @@ mod tests {
         let catalog = Catalog::new(AppLocale::ZhCn);
         let mut args = FluentArgs::new();
         args.set("folder", "Downloads");
-        assert_eq!(catalog.t_args("search-in", &args), "Search Downloads");
+        assert_eq!(catalog.t_args("search-in", &args), "搜索 Downloads");
     }
 
     #[test]
