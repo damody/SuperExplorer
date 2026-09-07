@@ -398,6 +398,7 @@ pub enum ExplorerAction {
     ToggleFolderOptionPreviewPane,
     SetFolderOptionLocaleChoice(LocaleChoice),
     ToggleFolderOptionsLanguagePicker,
+    SetFolderOptionSearchEngine(explorer_model::SearchEnginePreference),
     ToggleRestorePreviousSession,
     ResetSavedSession,
     ResetSavedViewSettings,
@@ -762,6 +763,7 @@ impl ExplorerAction {
             Self::ToggleFolderOptionPreviewPane => "ToggleFolderOptionPreviewPane",
             Self::SetFolderOptionLocaleChoice(_) => "SetFolderOptionLocaleChoice",
             Self::ToggleFolderOptionsLanguagePicker => "ToggleFolderOptionsLanguagePicker",
+            Self::SetFolderOptionSearchEngine(_) => "SetFolderOptionSearchEngine",
             Self::ToggleRestorePreviousSession => "ToggleRestorePreviousSession",
             Self::ResetSavedSession => "ResetSavedSession",
             Self::ResetSavedViewSettings => "ResetSavedViewSettings",
@@ -1513,6 +1515,7 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::ToggleFolderOptionPreviewPane
         | ExplorerAction::SetFolderOptionLocaleChoice(_)
         | ExplorerAction::ToggleFolderOptionsLanguagePicker
+        | ExplorerAction::SetFolderOptionSearchEngine(_)
         | ExplorerAction::ToggleRestorePreviousSession
         | ExplorerAction::ResetSavedSession
         | ExplorerAction::ResetSavedViewSettings
@@ -2195,6 +2198,10 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             FocusSurface::CommandBar
         }
         ExplorerAction::ToggleFolderOptionsLanguagePicker => FocusSurface::CommandBar,
+        ExplorerAction::SetFolderOptionSearchEngine(engine) => {
+            state.set_folder_option_search_engine(engine);
+            FocusSurface::CommandBar
+        }
         ExplorerAction::ToggleRestorePreviousSession => {
             state.toggle_restore_previous_session();
             FocusSurface::CommandBar

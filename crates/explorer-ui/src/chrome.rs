@@ -53,10 +53,7 @@ fn catalog_message(catalog: Catalog, value: &str) -> String {
     }
 }
 
-fn extension_display_name(
-    catalog: Catalog,
-    extension: &crate::state::ExtensionOptionV1,
-) -> String {
+fn extension_display_name(catalog: Catalog, extension: &crate::state::ExtensionOptionV1) -> String {
     if extension.display_name.starts_with("dialog-extension-") {
         catalog.t(extension.display_name)
     } else {
@@ -1349,11 +1346,11 @@ fn bookmark_bar(
                                     .id(("bookmark-folder-entry", id.as_u128() as u64))
                                     .role(Role::MenuItem)
                                     .aria_label(t_named(
-                    catalog,
-                    "chrome-bookmark-plain-aria",
-                    "name",
-                    bookmark.name.clone(),
-                ))
+                                        catalog,
+                                        "chrome-bookmark-plain-aria",
+                                        "name",
+                                        bookmark.name.clone(),
+                                    ))
                                     .cursor_pointer()
                                     .px(px(8.0))
                                     .py(px(5.0))
@@ -3246,7 +3243,12 @@ fn session_reset_confirmation_dialog(
             div()
                 .id("session-reset-confirmation-dialog")
                 .role(Role::Dialog)
-                .aria_label(t_named(catalog, "chrome-confirm-reset", "label", label.clone()))
+                .aria_label(t_named(
+                    catalog,
+                    "chrome-confirm-reset",
+                    "label",
+                    label.clone(),
+                ))
                 .w(px(crate::layout::folder_options::DIALOG_WIDTH.value()))
                 .p(px(crate::layout::folder_options::PAGE_PADDING.value()))
                 .flex()
@@ -3456,16 +3458,12 @@ fn remote_properties_dialog(
                 .border(px(1.0))
                 .border_color(tokens.theme.colors.divider.to_gpui())
                 .bg(tokens.theme.colors.menu_fill.to_gpui())
-                .child(
-                    div()
-                        .text_size(px(20.0))
-                        .child(t_named(
-                            catalog,
-                            "dialog-properties",
-                            "name",
-                            entry.display_name.clone(),
-                        )),
-                )
+                .child(div().text_size(px(20.0)).child(t_named(
+                    catalog,
+                    "dialog-properties",
+                    "name",
+                    entry.display_name.clone(),
+                )))
                 .child(catalog.t("dialog-general"))
                 .child(t_named(catalog, "dialog-file-type", "value", type_name))
                 .child(t_named(catalog, "dialog-location", "value", location))
@@ -3620,7 +3618,11 @@ fn lock_recovery_dialog(
                         .text_size(px(tokens.typography.command.size.value()))
                         .child(title),
                 )
-                .child(t_count(catalog, "dialog-lock-owner-body", recovery.item_count as i64))
+                .child(t_count(
+                    catalog,
+                    "dialog-lock-owner-body",
+                    recovery.item_count as i64,
+                ))
                 .when(!owners.is_empty(), |dialog| {
                     dialog.child(
                         div()
@@ -3836,6 +3838,8 @@ pub(crate) fn folder_options_window_content(
 
     let page = draft.page;
     let apply_error = draft.apply_error.clone();
+    let search_engine = draft.settings.search_engine;
+    let search_engine_availability = draft.search_engine_availability;
     let settings = draft.settings;
     let title = catalog.t("dialogs-folder-options");
     div()
@@ -3934,6 +3938,8 @@ pub(crate) fn folder_options_window_content(
                                 tokens,
                                 draft.restore_previous_session,
                                 draft.locale_choice,
+                                search_engine,
+                                search_engine_availability,
                                 catalog,
                                 windows_negotiated_locale,
                                 language_picker_open,
@@ -4087,19 +4093,22 @@ fn folder_options_extensions_page(
         .flex()
         .flex_col()
         .gap(px(tokens.layout.maximum_visible_glyph.value()))
-        .when(!enabled.is_empty() && enabled.iter().all(|enabled| !enabled), |page| {
-            page.child(
-                div()
-                    .id("folder-options-extension-safe-mode")
-                    .role(Role::Status)
-                    .aria_label(catalog.t("a11y-plugin-safe-mode"))
-                    .p(px(tokens.layout.control_padding_horizontal.value()))
-                    .border(px(1.0))
-                    .border_color(tokens.theme.colors.divider.to_gpui())
-                    .rounded(px(tokens.layout.corner_radius.value()))
-                    .child(catalog.t("dialog-plugin-safe-mode-body")),
-            )
-        })
+        .when(
+            !enabled.is_empty() && enabled.iter().all(|enabled| !enabled),
+            |page| {
+                page.child(
+                    div()
+                        .id("folder-options-extension-safe-mode")
+                        .role(Role::Status)
+                        .aria_label(catalog.t("a11y-plugin-safe-mode"))
+                        .p(px(tokens.layout.control_padding_horizontal.value()))
+                        .border(px(1.0))
+                        .border_color(tokens.theme.colors.divider.to_gpui())
+                        .rounded(px(tokens.layout.corner_radius.value()))
+                        .child(catalog.t("dialog-plugin-safe-mode-body")),
+                )
+            },
+        )
         .children(extensions.iter().enumerate().map(|(index, extension)| {
             let website_action = ExplorerAction::OpenExtensionAuthorWebsite { index };
             let community_action = ExplorerAction::OpenExtensionCommunityWebsite { index };
@@ -4203,6 +4212,8 @@ fn folder_options_general_page(
     tokens: UiTokens,
     restore_previous_session: bool,
     locale_choice: crate::state::LocaleChoice,
+    search_engine: explorer_model::SearchEnginePreference,
+    search_engine_availability: explorer_model::SearchEngineAvailability,
     catalog: Catalog,
     windows_negotiated_locale: explorer_model::AppLocale,
     language_picker_open: bool,
@@ -4222,6 +4233,13 @@ fn folder_options_general_page(
             language_picker_open,
             language_menu_scroll,
             language_menu_scrollbar,
+            on_action.clone(),
+        ))
+        .child(folder_options_search_engine_group(
+            tokens,
+            search_engine,
+            search_engine_availability,
+            catalog,
             on_action.clone(),
         ))
         .child(folder_option_group(
@@ -4274,6 +4292,116 @@ fn folder_options_general_page(
             ],
             tokens,
         ))
+}
+
+fn folder_options_search_engine_group(
+    tokens: UiTokens,
+    selected: explorer_model::SearchEnginePreference,
+    availability: explorer_model::SearchEngineAvailability,
+    catalog: Catalog,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let label = catalog.t("settings-search-engine");
+    div()
+        .id("folder-options-search-engine")
+        .role(Role::RadioGroup)
+        .aria_label(label.clone())
+        .flex()
+        .flex_col()
+        .gap(px(tokens.layout.content_spacing.value()))
+        .p(px(tokens.layout.divider_keyboard_step.value()))
+        .border(px(1.0))
+        .border_color(tokens.theme.colors.divider.to_gpui())
+        .child(
+            div()
+                .text_size(px(tokens.typography.address.size.value()))
+                .child(label),
+        )
+        .child(folder_option_search_engine_radio(
+            "folder-option-search-engine-everything",
+            catalog.t("settings-search-engine-everything"),
+            catalog.t("settings-search-engine-unsupported-everything"),
+            selected == explorer_model::SearchEnginePreference::Everything,
+            availability
+                .support(explorer_model::SearchEnginePreference::Everything)
+                .is_available(),
+            ExplorerAction::SetFolderOptionSearchEngine(
+                explorer_model::SearchEnginePreference::Everything,
+            ),
+            tokens,
+            on_action.clone(),
+        ))
+        .child(folder_option_search_engine_radio(
+            "folder-option-search-engine-mft",
+            catalog.t("settings-search-engine-mft"),
+            catalog.t("settings-search-engine-unsupported-mft"),
+            selected == explorer_model::SearchEnginePreference::Mft,
+            availability
+                .support(explorer_model::SearchEnginePreference::Mft)
+                .is_available(),
+            ExplorerAction::SetFolderOptionSearchEngine(
+                explorer_model::SearchEnginePreference::Mft,
+            ),
+            tokens,
+            on_action.clone(),
+        ))
+        .child(folder_option_search_engine_radio(
+            "folder-option-search-engine-file-enumeration",
+            catalog.t("settings-search-engine-file-enumeration"),
+            catalog.t("settings-search-engine-unsupported-file-enumeration"),
+            selected == explorer_model::SearchEnginePreference::FileEnumeration,
+            availability
+                .support(explorer_model::SearchEnginePreference::FileEnumeration)
+                .is_available(),
+            ExplorerAction::SetFolderOptionSearchEngine(
+                explorer_model::SearchEnginePreference::FileEnumeration,
+            ),
+            tokens,
+            on_action,
+        ))
+}
+
+fn folder_option_search_engine_radio(
+    id: &'static str,
+    label: impl Into<SharedString>,
+    hint: impl Into<SharedString>,
+    selected: bool,
+    enabled: bool,
+    action: ExplorerAction,
+    tokens: UiTokens,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let label = label.into();
+    let hint = hint.into();
+    div()
+        .id(id)
+        .role(Role::RadioButton)
+        .aria_label(label.clone())
+        .aria_selected(selected)
+        .min_h(px(tokens.layout.minimum_hit_target.value()))
+        .flex()
+        .items_center()
+        .gap(px(tokens.layout.content_spacing.value()))
+        .px(px(tokens.layout.content_spacing.value()))
+        .rounded(px(tokens.layout.corner_radius.value()))
+        .when(enabled, |row| {
+            row.hover(move |style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
+                .when_some(on_action, |row, callback| {
+                    row.on_click(move |_, window, cx| callback(&action, window, cx))
+                })
+        })
+        .when(!enabled, |row| {
+            row.text_color(tokens.theme.colors.divider.to_gpui())
+        })
+        .child(if selected { "◉" } else { "○" })
+        .child(label)
+        .when(!enabled, |row| {
+            row.child(
+                div()
+                    .text_size(px(tokens.typography.status.size.value()))
+                    .child(hint),
+            )
+        })
 }
 
 fn folder_options_language_picker(
@@ -4374,30 +4502,28 @@ fn folder_options_language_picker(
                                 tokens,
                                 on_action.clone(),
                             ))
-                            .children(
-                                explorer_model::AppLocale::ALL
-                                    .into_iter()
-                                    .map(move |locale| {
-                                        let selected = matches!(
-                                            locale_choice,
-                                            crate::state::LocaleChoice::Explicit(selected)
-                                                if selected == locale
-                                        );
-                                        folder_option_locale_row(
-                                            SharedString::from(format!(
-                                                "folder-option-locale-{}",
-                                                locale.bcp47()
-                                            )),
-                                            locale.native_name().to_owned(),
-                                            selected,
-                                            ExplorerAction::SetFolderOptionLocaleChoice(
-                                                crate::state::LocaleChoice::Explicit(locale),
-                                            ),
-                                            tokens,
-                                            on_action.clone(),
-                                        )
-                                    }),
-                            ),
+                            .children(explorer_model::AppLocale::ALL.into_iter().map(
+                                move |locale| {
+                                    let selected = matches!(
+                                        locale_choice,
+                                        crate::state::LocaleChoice::Explicit(selected)
+                                            if selected == locale
+                                    );
+                                    folder_option_locale_row(
+                                        SharedString::from(format!(
+                                            "folder-option-locale-{}",
+                                            locale.bcp47()
+                                        )),
+                                        locale.native_name().to_owned(),
+                                        selected,
+                                        ExplorerAction::SetFolderOptionLocaleChoice(
+                                            crate::state::LocaleChoice::Explicit(locale),
+                                        ),
+                                        tokens,
+                                        on_action.clone(),
+                                    )
+                                },
+                            )),
                     )
                     .child(language_menu_scrollbar),
             )
@@ -7329,7 +7455,12 @@ fn breadcrumb_browse_field(
         .debug_selector(|| ADDRESS_EDITOR_ID.to_owned())
         .role(Role::Document)
         .relative()
-        .aria_label(t_named(catalog, "chrome-address", "path", address.draft.clone()))
+        .aria_label(t_named(
+            catalog,
+            "chrome-address",
+            "path",
+            address.draft.clone(),
+        ))
         .min_w(px(layout.address_min_width.value()))
         .h(px(layout.minimum_hit_target.value()))
         .flex_1()
@@ -13386,10 +13517,7 @@ fn renamed_location_text(item: &explorer_model::ItemDescriptor, new_name: &str) 
     }
 }
 
-fn operation_sources_text(
-    catalog: Catalog,
-    items: &[explorer_model::ItemDescriptor],
-) -> String {
+fn operation_sources_text(catalog: Catalog, items: &[explorer_model::ItemDescriptor]) -> String {
     let Some(first) = items.first() else {
         return catalog.t("clipboard-source");
     };
@@ -13423,10 +13551,7 @@ fn operation_route_summary(
     catalog.t_args(route_key, &args)
 }
 
-fn operation_request_summary(
-    record: &explorer_model::OperationRecord,
-    catalog: Catalog,
-) -> String {
+fn operation_request_summary(record: &explorer_model::OperationRecord, catalog: Catalog) -> String {
     use explorer_model::FileOperationKind as Kind;
     match &record.request.kind {
         Kind::CreateFolder { parent, name } => t_named(
@@ -13524,7 +13649,10 @@ fn operation_request_summary(
     }
 }
 
-fn operation_lifecycle(catalog: Catalog, record: &explorer_model::OperationRecord) -> (String, String, String) {
+fn operation_lifecycle(
+    catalog: Catalog,
+    record: &explorer_model::OperationRecord,
+) -> (String, String, String) {
     match &record.request.kind {
         explorer_model::FileOperationKind::Copy { .. } => (
             catalog.t("op-preparing-copy"),
@@ -13635,10 +13763,7 @@ fn operation_message(record: &explorer_model::OperationRecord, catalog: Catalog)
     }
 }
 
-fn apk_install_notice_message(
-    notice: &crate::state::ApkInstallNotice,
-    catalog: Catalog,
-) -> String {
+fn apk_install_notice_message(notice: &crate::state::ApkInstallNotice, catalog: Catalog) -> String {
     let target = format!("{}（{}）", notice.device_name, notice.serial);
     let mut args = FluentArgs::new();
     args.set("name", notice.apk_name.clone());
@@ -15419,12 +15544,12 @@ mod tests {
         breadcrumb_ancestry_partition, breadcrumb_location_shell_texture, builtin_count_display,
         client_to_screen_point, context_menu_visual_tokens, details_name_column_contains,
         editable_input_colors, file_view_background_context_hit, file_view_local_pointer,
-        format_explorer_size, is_generic_breadcrumb_folder_icon_key,
-        localized_search_placeholder, marquee_content_rect, navigation_item_shell_texture,
-        navigation_shell_texture, new_tab_button_background, operation_display_message,
-        operation_location_text, operation_message, operation_message_opacity,
-        operation_outcome_message, operation_request_summary, remote_context_menu_position,
-        remote_menu_commands, select_file_row_shell_icon, tab_background,
+        format_explorer_size, is_generic_breadcrumb_folder_icon_key, localized_search_placeholder,
+        marquee_content_rect, navigation_item_shell_texture, navigation_shell_texture,
+        new_tab_button_background, operation_display_message, operation_location_text,
+        operation_message, operation_message_opacity, operation_outcome_message,
+        operation_request_summary, remote_context_menu_position, remote_menu_commands,
+        select_file_row_shell_icon, tab_background,
     };
     use crate::{UiTokens, actions::ExplorerAction, theme::ThemeTokens};
     use gpui::WindowControlArea;
@@ -15551,8 +15676,10 @@ mod tests {
         assert!(summary.contains("sftp://45.32.49.125/home/linuxuser"));
         assert!(!summary.contains("password"));
         assert!(strip_isolates(&operation_message(&record, catalog)).contains("｜準備複製 "));
-        assert!(strip_isolates(&operation_display_message(&record, true, catalog))
-            .ends_with("｜正在取消"));
+        assert!(
+            strip_isolates(&operation_display_message(&record, true, catalog))
+                .ends_with("｜正在取消")
+        );
         record
             .update_progress(explorer_model::OperationProgress {
                 completed_items: 0,
@@ -15569,9 +15696,7 @@ mod tests {
             .expect("copy finishes");
         assert!(strip_isolates(&operation_message(&record, catalog)).starts_with("複製完成｜"));
         let en = explorer_i18n::Catalog::new(explorer_i18n::AppLocale::En);
-        assert!(
-            strip_isolates(&operation_request_summary(&record, en)).contains("Copy 2 items")
-        );
+        assert!(strip_isolates(&operation_request_summary(&record, en)).contains("Copy 2 items"));
         let one = explorer_model::FileOperationRequest {
             kind: explorer_model::FileOperationKind::Copy {
                 items: vec![operation_item(
@@ -15582,17 +15707,10 @@ mod tests {
             },
             flags: explorer_model::FileOperationFlags::default(),
         };
-        let one = explorer_model::OperationRecord::queued(
-            explorer_common::RequestId::new(),
-            one,
-            1,
-        );
-        assert!(
-            strip_isolates(&operation_request_summary(&one, en)).contains("Copy 1 item")
-        );
-        assert!(
-            !strip_isolates(&operation_request_summary(&one, en)).contains("Copy 1 items")
-        );
+        let one =
+            explorer_model::OperationRecord::queued(explorer_common::RequestId::new(), one, 1);
+        assert!(strip_isolates(&operation_request_summary(&one, en)).contains("Copy 1 item"));
+        assert!(!strip_isolates(&operation_request_summary(&one, en)).contains("Copy 1 items"));
     }
 
     #[test]
@@ -17809,6 +17927,59 @@ mod tests {
         assert!(picker.contains(".overflow_y_scroll()"));
         assert!(picker.contains(".track_scroll(&language_menu_scroll)"));
         assert!(picker.contains("cx.stop_propagation()"));
+    }
+
+    #[test]
+    fn folder_options_general_page_exposes_single_select_search_engine_radios() {
+        let source = include_str!("chrome.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap();
+        let page = production
+            .split("fn folder_options_general_page(")
+            .nth(1)
+            .expect("general page exists")
+            .split("\nfn ")
+            .next()
+            .expect("general page has a bounded renderer");
+        for required in [
+            "folder_options_search_engine_group",
+            "search_engine_availability",
+        ] {
+            assert!(
+                page.contains(required),
+                "missing search engine group: {required}"
+            );
+        }
+        let group = production
+            .split("fn folder_options_search_engine_group(")
+            .nth(1)
+            .expect("search engine group exists")
+            .split("\nfn folder_options_language_picker(")
+            .next()
+            .expect("search engine group is bounded");
+        for required in [
+            "folder-option-search-engine-everything",
+            "folder-option-search-engine-mft",
+            "folder-option-search-engine-file-enumeration",
+            "Role::RadioGroup",
+            "Role::RadioButton",
+            "SetFolderOptionSearchEngine",
+            "settings-search-engine-unsupported-everything",
+            "settings-search-engine-unsupported-mft",
+            "settings-search-engine-unsupported-file-enumeration",
+        ] {
+            assert!(
+                group.contains(required),
+                "missing search engine radio contract: {required}"
+            );
+        }
+        assert!(
+            group.contains(".when(enabled"),
+            "disabled radios must not be clickable"
+        );
+        assert!(
+            !group.contains("on_click") || group.contains(".when(enabled"),
+            "click handlers stay behind the enabled gate"
+        );
     }
 
     #[test]

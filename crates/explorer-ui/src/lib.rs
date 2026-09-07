@@ -1161,6 +1161,11 @@ pub struct ExplorerRoot {
     ftp_address_login: Option<SftpAddressLoginState>,
     gdrive_address_login: Option<SftpAddressLoginState>,
     folder_options_window_observer: Option<FolderOptionsWindowObserver>,
+    search_engine_probe: Option<
+        std::rc::Rc<
+            dyn Fn(&explorer_model::LocationDescriptor) -> explorer_model::SearchEngineAvailability,
+        >,
+    >,
     folder_options_applied_observer: Option<FolderOptionsAppliedObserver>,
     bookmark_editor_window_observer: Option<BookmarkEditorWindowObserver>,
     bookmark_manager_window_observer: Option<BookmarkManagerWindowObserver>,
@@ -1669,6 +1674,7 @@ impl ExplorerRoot {
             ftp_address_login: None,
             gdrive_address_login: None,
             folder_options_window_observer: None,
+            search_engine_probe: None,
             folder_options_applied_observer: None,
             bookmark_editor_window_observer: None,
             bookmark_manager_window_observer: None,
@@ -1866,6 +1872,37 @@ impl ExplorerRoot {
 
     pub fn attach_folder_options_window_observer(&mut self, observer: FolderOptionsWindowObserver) {
         self.folder_options_window_observer = Some(observer);
+    }
+
+    pub fn attach_search_engine_probe(
+        &mut self,
+        probe: std::rc::Rc<
+            dyn Fn(&explorer_model::LocationDescriptor) -> explorer_model::SearchEngineAvailability,
+        >,
+    ) {
+        self.search_engine_probe = Some(probe);
+    }
+
+    fn refresh_search_engine_availability(&mut self) {
+        let Some(location) = self
+            .state
+            .tabs()
+            .active_tab()
+            .history
+            .current()
+            .map(|entry| entry.location.clone())
+        else {
+            self.state.set_search_engine_availability(
+                explorer_model::SearchEngineAvailability::all_unavailable(),
+            );
+            return;
+        };
+        let availability = if let Some(probe) = &self.search_engine_probe {
+            probe(&location)
+        } else {
+            self.state.search_engine_availability_for_current_location()
+        };
+        self.state.set_search_engine_availability(availability);
     }
 
     /// Installs the app-owned multi-window publisher for Folder Options Apply/OK.
@@ -3703,6 +3740,7 @@ impl ExplorerRoot {
             ftp_address_login: None,
             gdrive_address_login: None,
             folder_options_window_observer: None,
+            search_engine_probe: None,
             folder_options_applied_observer: None,
             bookmark_editor_window_observer: None,
             bookmark_manager_window_observer: None,
@@ -3816,6 +3854,7 @@ impl ExplorerRoot {
             ftp_address_login: None,
             gdrive_address_login: None,
             folder_options_window_observer: None,
+            search_engine_probe: None,
             folder_options_applied_observer: None,
             bookmark_editor_window_observer: None,
             bookmark_manager_window_observer: None,
@@ -6229,6 +6268,9 @@ impl ExplorerRoot {
                 self.handle_action(ExplorerAction::ActivateBookmark { id }, source, window, cx);
             }
             return;
+        }
+        if action == ExplorerAction::OpenFolderOptions {
+            self.refresh_search_engine_availability();
         }
         if action == ExplorerAction::OpenFolderOptions
             && self

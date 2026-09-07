@@ -285,6 +285,7 @@ pub struct FolderOptionsDraft {
     pub restore_previous_session: bool,
     pub locale_choice: LocaleChoice,
     pub extension_enabled: Vec<bool>,
+    pub search_engine_availability: explorer_model::SearchEngineAvailability,
     pub applied_baseline: FolderOptionsAppliedSnapshotV1,
     pub applied_revision: u64,
     pub apply_error: Option<String>,
@@ -846,6 +847,7 @@ pub struct AppViewState {
     tortoise_git_available: bool,
     loaded_extension_summary: Option<String>,
     folder_options: Option<FolderOptionsDraft>,
+    search_engine_availability: explorer_model::SearchEngineAvailability,
     folder_options_applied_revision: u64,
     /// Last successful Apply/OK snapshot for multi-window publication.
     last_applied_folder_options: Option<(FolderOptionsAppliedSnapshotV1, u64)>,
@@ -1113,6 +1115,7 @@ impl AppViewState {
             tortoise_git_available: false,
             loaded_extension_summary: None,
             folder_options: None,
+            search_engine_availability: explorer_model::SearchEngineAvailability::default(),
             folder_options_applied_revision: 0,
             last_applied_folder_options: None,
             extensions: official_extensions_v1(),
@@ -2427,10 +2430,59 @@ impl AppViewState {
             restore_previous_session: self.restore_previous_session,
             locale_choice,
             extension_enabled,
+            search_engine_availability: self.search_engine_availability_for_current_location(),
             applied_baseline,
             applied_revision: self.folder_options_applied_revision,
             apply_error: None,
         });
+    }
+
+    #[must_use]
+    pub fn search_engine_availability(&self) -> explorer_model::SearchEngineAvailability {
+        self.search_engine_availability
+    }
+
+    pub fn set_search_engine_availability(
+        &mut self,
+        availability: explorer_model::SearchEngineAvailability,
+    ) {
+        self.search_engine_availability = availability;
+        if let Some(draft) = &mut self.folder_options {
+            draft.search_engine_availability = availability;
+        }
+    }
+
+    pub(crate) fn search_engine_availability_for_current_location(
+        &self,
+    ) -> explorer_model::SearchEngineAvailability {
+        let has_local_filesystem_path = self
+            .tabs
+            .active_tab()
+            .history
+            .current()
+            .is_some_and(|entry| entry.location.path().is_some());
+        explorer_model::search_engine_availability(explorer_model::SearchEngineFacts {
+            has_local_filesystem_path,
+            everything_available: self.search_engine_availability.everything.is_available(),
+            mft_index_available: self.search_engine_availability.mft.is_available(),
+        })
+    }
+
+    pub(crate) fn set_folder_option_search_engine(
+        &mut self,
+        engine: explorer_model::SearchEnginePreference,
+    ) {
+        let Some(draft) = &mut self.folder_options else {
+            return;
+        };
+        if !draft
+            .search_engine_availability
+            .support(engine)
+            .is_available()
+        {
+            return;
+        }
+        draft.settings.search_engine = engine;
     }
 
     pub fn extensions(&self) -> &[ExtensionOptionV1] {
@@ -2567,6 +2619,15 @@ impl AppViewState {
 
     pub(crate) fn apply_folder_options(&mut self) -> FolderOptionsApplyResultV1 {
         if let Some(draft) = self.folder_options.clone() {
+            if !draft
+                .search_engine_availability
+                .can_apply(draft.settings.search_engine)
+            {
+                return self.reject_folder_options_apply(
+                    FolderOptionsApplyFailureV1::Validation,
+                    self.catalog().t("settings-search-engine-pick-supported"),
+                );
+            }
             let applied = draft.applied_snapshot();
             self.tabs.active_tab_mut().view.settings = applied.settings.clone();
             self.restore_previous_session = applied.restore_previous_session;
@@ -4118,6 +4179,7 @@ impl AppViewState {
             context,
             location,
             input: explorer_model::SearchInput::new(input),
+            engine: self.tabs.active_tab().view.settings.search_engine,
         })
     }
 
@@ -5391,7 +5453,8 @@ impl AppViewState {
             .iter()
             .map(|entry| entry.display_name.as_str())
             .collect::<HashSet<_>>();
-        let name = unique_remote_folder_symlink_name(&entry.display_name, &existing, self.catalog());
+        let name =
+            unique_remote_folder_symlink_name(&entry.display_name, &existing, self.catalog());
         Some((parent, name, entry.display_name))
     }
 
@@ -7065,10 +7128,7 @@ mod tests {
         assert!(!draft.requires_extension_persist());
 
         state.toggle_folder_option_extension(0);
-        assert!(state
-            .folder_options()
-            .unwrap()
-            .requires_extension_persist());
+        assert!(state.folder_options().unwrap().requires_extension_persist());
     }
 
     #[test]
@@ -9998,6 +10058,16 @@ mod tests {
         let first_command = state
             .begin_active_search("報告".to_owned())
             .expect("search starts");
+        assert!(
+            matches!(
+                &first_command,
+                explorer_model::ExplorerCommand::StartSearch {
+                    engine: explorer_model::SearchEnginePreference::Everything,
+                    ..
+                }
+            ),
+            "default search uses Everything"
+        );
         let first_context = first_command.context().expect("search context").clone();
         assert_eq!(state.tabs().active_tab().search_history, ["報告"]);
         state.leave_active_search();
@@ -11208,6 +11278,125 @@ mod tests {
         assert!(!state.view_settings().file_name_extensions);
         assert_eq!(state.view_settings().icon_cache_memory_mb, 1_024);
         assert_eq!(state.view_settings().cache_budgets.mft_lru_mb, 2_048);
+    }
+
+    #[test]
+    fn folder_options_search_engine_is_single_select_and_ignores_disabled_rows() {
+        let mut state = AppViewState::default();
+        state.open_folder_options();
+        let draft = state.folder_options().unwrap();
+        assert_eq!(
+            draft.settings.search_engine,
+            explorer_model::SearchEnginePreference::Everything
+        );
+        assert!(
+            draft
+                .search_engine_availability
+                .support(explorer_model::SearchEnginePreference::Everything)
+                .is_available()
+        );
+
+        state.set_folder_option_search_engine(
+            explorer_model::SearchEnginePreference::FileEnumeration,
+        );
+        assert_eq!(
+            state.folder_options().unwrap().settings.search_engine,
+            explorer_model::SearchEnginePreference::FileEnumeration
+        );
+        assert!(state.folder_options().unwrap().is_dirty());
+        assert_eq!(
+            state.apply_folder_options(),
+            super::FolderOptionsApplyResultV1::Applied { revision: 1 }
+        );
+        assert_eq!(
+            state.view_settings().search_engine,
+            explorer_model::SearchEnginePreference::FileEnumeration
+        );
+
+        state.set_search_engine_availability(explorer_model::SearchEngineAvailability::from_facts(
+            explorer_model::SearchEngineFacts {
+                has_local_filesystem_path: true,
+                everything_available: false,
+                mft_index_available: true,
+            },
+        ));
+        state.set_folder_option_search_engine(explorer_model::SearchEnginePreference::Everything);
+        assert_eq!(
+            state.folder_options().unwrap().settings.search_engine,
+            explorer_model::SearchEnginePreference::FileEnumeration,
+            "disabled Everything cannot be selected"
+        );
+        state.set_folder_option_search_engine(explorer_model::SearchEnginePreference::Mft);
+        assert_eq!(
+            state.folder_options().unwrap().settings.search_engine,
+            explorer_model::SearchEnginePreference::Mft
+        );
+    }
+
+    #[test]
+    fn folder_options_apply_rejects_unsupported_search_engine_when_an_alternative_exists() {
+        let mut state = AppViewState::default();
+        state.open_folder_options();
+        state.set_search_engine_availability(explorer_model::SearchEngineAvailability::from_facts(
+            explorer_model::SearchEngineFacts {
+                has_local_filesystem_path: true,
+                everything_available: false,
+                mft_index_available: false,
+            },
+        ));
+        assert_eq!(
+            state.folder_options().unwrap().settings.search_engine,
+            explorer_model::SearchEnginePreference::Everything
+        );
+        assert_eq!(
+            state.apply_folder_options(),
+            super::FolderOptionsApplyResultV1::Rejected {
+                reason: super::FolderOptionsApplyFailureV1::Validation,
+            }
+        );
+        assert!(
+            state
+                .folder_options()
+                .unwrap()
+                .apply_error
+                .as_ref()
+                .is_some_and(|error| !error.is_empty())
+        );
+        assert_eq!(
+            state.view_settings().search_engine,
+            explorer_model::SearchEnginePreference::Everything
+        );
+
+        state.set_folder_option_search_engine(
+            explorer_model::SearchEnginePreference::FileEnumeration,
+        );
+        assert_eq!(
+            state.apply_folder_options(),
+            super::FolderOptionsApplyResultV1::Applied { revision: 1 }
+        );
+        assert_eq!(
+            state.view_settings().search_engine,
+            explorer_model::SearchEnginePreference::FileEnumeration
+        );
+    }
+
+    #[test]
+    fn folder_options_apply_keeps_unsupported_search_engine_when_none_are_available() {
+        let mut state = AppViewState::default();
+        state.open_folder_options();
+        state.set_search_engine_availability(
+            explorer_model::SearchEngineAvailability::all_unavailable(),
+        );
+        state.update_folder_options(|settings| settings.hidden_items = true);
+        assert_eq!(
+            state.apply_folder_options(),
+            super::FolderOptionsApplyResultV1::Applied { revision: 1 }
+        );
+        assert!(state.view_settings().hidden_items);
+        assert_eq!(
+            state.view_settings().search_engine,
+            explorer_model::SearchEnginePreference::Everything
+        );
     }
 
     #[test]

@@ -202,6 +202,7 @@ fn interaction_first_qos_contention_tab_close_and_shutdown_cancel_active_protoco
             context: search.clone(),
             location: LocationDescriptor::file_system(r"C:\qos-fixture"),
             input: SearchInput::new("held"),
+            engine: explorer_model::SearchEnginePreference::FileEnumeration,
         })
         .expect("queue search");
     service
