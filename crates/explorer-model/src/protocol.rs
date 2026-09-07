@@ -652,6 +652,7 @@ pub enum ExplorerCommand {
         context: RequestContext,
         location: LocationDescriptor,
         input: SearchInput,
+        engine: SearchEnginePreference,
     },
     DataTransfer {
         context: RequestContext,
@@ -783,6 +784,141 @@ pub enum SearchBackend {
     LocalIndex,
     WindowsIndex,
     FileSystemFallback,
+    Mft,
+}
+
+/// User-selected Folder Options search engine. Exactly one engine runs a search.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchEnginePreference {
+    #[default]
+    Everything,
+    Mft,
+    FileEnumeration,
+}
+
+impl SearchEnginePreference {
+    #[must_use]
+    pub const fn as_backend(self) -> SearchBackend {
+        match self {
+            Self::Everything => SearchBackend::Everything,
+            Self::Mft => SearchBackend::Mft,
+            Self::FileEnumeration => SearchBackend::FileSystemFallback,
+        }
+    }
+
+    #[must_use]
+    pub const fn unsupported_hint_id(self) -> &'static str {
+        match self {
+            Self::Everything => "settings-search-engine-unsupported-everything",
+            Self::Mft => "settings-search-engine-unsupported-mft",
+            Self::FileEnumeration => "settings-search-engine-unsupported-file-enumeration",
+        }
+    }
+}
+
+/// Host-probed facts used to decide which Folder Options search radios are enabled.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SearchEngineFacts {
+    pub has_local_filesystem_path: bool,
+    pub everything_available: bool,
+    pub mft_index_available: bool,
+}
+
+impl Default for SearchEngineFacts {
+    fn default() -> Self {
+        Self {
+            has_local_filesystem_path: true,
+            everything_available: true,
+            mft_index_available: true,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchEngineSupport {
+    Available,
+    Unavailable,
+}
+
+impl SearchEngineSupport {
+    #[must_use]
+    pub const fn is_available(self) -> bool {
+        matches!(self, Self::Available)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SearchEngineAvailability {
+    pub everything: SearchEngineSupport,
+    pub mft: SearchEngineSupport,
+    pub file_enumeration: SearchEngineSupport,
+}
+
+impl Default for SearchEngineAvailability {
+    fn default() -> Self {
+        Self::from_facts(SearchEngineFacts::default())
+    }
+}
+
+impl SearchEngineAvailability {
+    #[must_use]
+    pub const fn all_unavailable() -> Self {
+        Self {
+            everything: SearchEngineSupport::Unavailable,
+            mft: SearchEngineSupport::Unavailable,
+            file_enumeration: SearchEngineSupport::Unavailable,
+        }
+    }
+
+    #[must_use]
+    pub const fn from_facts(facts: SearchEngineFacts) -> Self {
+        let local = facts.has_local_filesystem_path;
+        Self {
+            everything: if local && facts.everything_available {
+                SearchEngineSupport::Available
+            } else {
+                SearchEngineSupport::Unavailable
+            },
+            mft: if local && facts.mft_index_available {
+                SearchEngineSupport::Available
+            } else {
+                SearchEngineSupport::Unavailable
+            },
+            file_enumeration: if local {
+                SearchEngineSupport::Available
+            } else {
+                SearchEngineSupport::Unavailable
+            },
+        }
+    }
+
+    #[must_use]
+    pub const fn support(self, engine: SearchEnginePreference) -> SearchEngineSupport {
+        match engine {
+            SearchEnginePreference::Everything => self.everything,
+            SearchEnginePreference::Mft => self.mft,
+            SearchEnginePreference::FileEnumeration => self.file_enumeration,
+        }
+    }
+
+    #[must_use]
+    pub const fn any_available(self) -> bool {
+        self.everything.is_available()
+            || self.mft.is_available()
+            || self.file_enumeration.is_available()
+    }
+
+    /// Apply may keep an unsupported stored preference only when no engine works here.
+    #[must_use]
+    pub const fn can_apply(self, engine: SearchEnginePreference) -> bool {
+        self.support(engine).is_available() || !self.any_available()
+    }
+}
+
+#[must_use]
+pub const fn search_engine_availability(facts: SearchEngineFacts) -> SearchEngineAvailability {
+    SearchEngineAvailability::from_facts(facts)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -117,12 +117,13 @@ pub use protocol::{
     DirectoryDelta, ExplorerCommand, ExplorerEvent, ExplorerService, ExplorerServiceError,
     FileOperationFlags, FileOperationKind, FileOperationRequest, IconInvalidationEpochs,
     ItemDescriptor, LocationMetadata, OpenDisposition, OperationItemOutcome, OperationItemResult,
-    OperationProgress, OperationTerminal, SearchBackend, SearchInput, SearchSourcePhase,
+    OperationProgress, OperationTerminal, SearchBackend, SearchEngineAvailability,
+    SearchEngineFacts, SearchEnginePreference, SearchEngineSupport, SearchInput, SearchSourcePhase,
     SearchSourceStatus, SearchTerminal, ShellContextMenuTarget, ShellIconFallbackReason,
     ShellIconKey, ShellIconPayload, ShellIconPayloadError, ShellIconTheme, ShellNewItemDescriptor,
     ShellNewItemRecipe, ShellNewValidationError, TerminalLedger, TerminalViolation,
     TransferEffects, TransferProgressPhase, base_icon_key, classify_base_icon,
-    normalize_apk_notice_text,
+    normalize_apk_notice_text, search_engine_availability,
 };
 pub use remote::{
     FtpAddressInput, FtpAuthKind, FtpDataMode, FtpEncoding, FtpProfile, FtpProfileError,

@@ -248,6 +248,8 @@ pub struct PersistedViewSettings {
     pub extension_sort: Option<PersistedExtensionSort>,
     pub details_pane_width: u16,
     pub preview_pane_width: u16,
+    #[serde(default)]
+    pub search_engine: crate::SearchEnginePreference,
 }
 
 impl Default for PersistedViewSettings {
@@ -279,6 +281,7 @@ impl Default for PersistedViewSettings {
             extension_sort: None,
             details_pane_width: 320,
             preview_pane_width: 360,
+            search_engine: crate::SearchEnginePreference::Everything,
         }
     }
 }
@@ -1039,6 +1042,7 @@ impl PersistedViewSettings {
             details_layout,
             details_pane_width: self.details_pane_width,
             preview_pane_width: self.preview_pane_width,
+            search_engine: self.search_engine,
         }
     }
 }
@@ -1289,6 +1293,7 @@ impl From<ViewSettings> for PersistedViewSettings {
             extension_sort,
             details_pane_width: settings.details_pane_width,
             preview_pane_width: settings.preview_pane_width,
+            search_engine: settings.search_engine,
         }
     }
 }
@@ -2140,6 +2145,86 @@ mod tests {
         assert_eq!(encoded.cache_budgets.mft_volume_index_mb, 1_024);
         assert!(encoded.cache_budgets.icon_bc7_enabled);
         assert!(!encoded.cache_budgets.thumbnail_bc7_enabled);
+    }
+
+    #[test]
+    fn search_engine_preference_defaults_to_everything_and_round_trips() {
+        assert_eq!(
+            ViewSettings::default().search_engine,
+            crate::SearchEnginePreference::Everything
+        );
+        let persisted = PersistedViewSettings::from(ViewSettings::default());
+        assert_eq!(
+            persisted.search_engine,
+            crate::SearchEnginePreference::Everything
+        );
+        assert_eq!(
+            persisted.to_runtime().search_engine,
+            crate::SearchEnginePreference::Everything
+        );
+
+        let mut legacy = serde_json::to_value(&persisted).expect("serialize settings");
+        legacy
+            .as_object_mut()
+            .expect("settings object")
+            .remove("search_engine");
+        let decoded: PersistedViewSettings =
+            serde_json::from_value(legacy).expect("legacy settings deserialize");
+        assert_eq!(
+            decoded.search_engine,
+            crate::SearchEnginePreference::Everything
+        );
+        assert_eq!(
+            decoded.to_runtime().search_engine,
+            crate::SearchEnginePreference::Everything
+        );
+
+        let mut settings = ViewSettings::default();
+        settings.search_engine = crate::SearchEnginePreference::Mft;
+        let encoded = PersistedViewSettings::from(settings);
+        assert_eq!(encoded.search_engine, crate::SearchEnginePreference::Mft);
+        assert_eq!(
+            encoded.to_runtime().search_engine,
+            crate::SearchEnginePreference::Mft
+        );
+
+        let mut enumeration = ViewSettings::default();
+        enumeration.search_engine = crate::SearchEnginePreference::FileEnumeration;
+        assert_eq!(
+            PersistedViewSettings::from(enumeration)
+                .to_runtime()
+                .search_engine,
+            crate::SearchEnginePreference::FileEnumeration
+        );
+    }
+
+    #[test]
+    fn search_engine_availability_disables_remote_and_blocks_apply_when_alternatives_exist() {
+        let remote = crate::search_engine_availability(crate::SearchEngineFacts {
+            has_local_filesystem_path: false,
+            everything_available: true,
+            mft_index_available: true,
+        });
+        assert!(!remote.any_available());
+        assert!(remote.can_apply(crate::SearchEnginePreference::Everything));
+        assert_eq!(
+            remote.support(crate::SearchEnginePreference::FileEnumeration),
+            crate::SearchEngineSupport::Unavailable
+        );
+
+        let local_without_everything =
+            crate::search_engine_availability(crate::SearchEngineFacts {
+                has_local_filesystem_path: true,
+                everything_available: false,
+                mft_index_available: true,
+            });
+        assert!(!local_without_everything.can_apply(crate::SearchEnginePreference::Everything));
+        assert!(local_without_everything.can_apply(crate::SearchEnginePreference::Mft));
+        assert!(local_without_everything.can_apply(crate::SearchEnginePreference::FileEnumeration));
+        assert_eq!(
+            local_without_everything.support(crate::SearchEnginePreference::Everything),
+            crate::SearchEngineSupport::Unavailable
+        );
     }
 
     #[test]

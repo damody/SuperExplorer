@@ -1904,6 +1904,8 @@ pub struct ViewSettings {
     pub details_layout: OrderedColumnLayout,
     pub details_pane_width: u16,
     pub preview_pane_width: u16,
+    /// Folder Options single-select search engine. Default is Everything.
+    pub search_engine: crate::SearchEnginePreference,
 }
 
 impl Default for ViewSettings {
@@ -1928,6 +1930,7 @@ impl Default for ViewSettings {
             details_layout: OrderedColumnLayout::default(),
             details_pane_width: 293,
             preview_pane_width: 293,
+            search_engine: crate::SearchEnginePreference::Everything,
         }
     }
 }
