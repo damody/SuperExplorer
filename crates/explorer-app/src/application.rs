@@ -26,8 +26,10 @@ use explorer_ui::{
 };
 use gpui::AppContext as _;
 
-use crate::windows_prerequisites::initialize_dpi_awareness;
-use crate::{system_theme::high_contrast_tokens, visual_fixture::VisualFixtureConfig};
+use crate::{
+    system_theme::high_contrast_tokens, visual_fixture::VisualFixtureConfig,
+    windows_prerequisites::initialize_dpi_awareness,
+};
 
 const SHELL_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -4774,11 +4776,20 @@ impl ApplicationLifecycle {
                                             label,
                                             checked,
                                             enabled,
+                                            activation,
                                         } => explorer_shell_win::OwnedPopupMenuEntry::Item(
                                             explorer_shell_win::OwnedPopupMenuItem {
                                                 label,
                                                 checked,
                                                 enabled,
+                                                activation: match activation {
+                                                    explorer_ui::DetailsColumnPopupActivation::Terminal => {
+                                                        explorer_shell_win::OwnedPopupActivation::Terminal
+                                                    }
+                                                    explorer_ui::DetailsColumnPopupActivation::PersistentToggle => {
+                                                        explorer_shell_win::OwnedPopupActivation::PersistentToggle
+                                                    }
+                                                },
                                             },
                                         ),
                                         explorer_ui::DetailsColumnMenuPopupEntry::Separator => {
@@ -4787,33 +4798,88 @@ impl ApplicationLifecycle {
                                     })
                                     .collect::<Vec<_>>();
                                 let owner = details_popup_owner;
+                                let session_id = request.session_id;
+                                let (publisher, event_rx) =
+                                    explorer_shell_win::persistent_popup_session(session_id);
                                 cx.spawn(async move |_this, cx| {
-                                    let selected = cx
-                                        .background_executor()
+                                    let (done_tx, done_rx) = mpsc::sync_channel(1);
+                                    cx.background_executor()
                                         .spawn(async move {
-                                            explorer_shell_win::show_owned_popup_menu(
+                                            let selected = explorer_shell_win::show_owned_popup_menu_with_persistence(
                                                 request.owner_window,
                                                 request.screen_x,
                                                 request.screen_y,
                                                 &entries,
                                                 request.dark,
                                                 request.immersive,
-                                            )
+                                                Some(&publisher),
+                                            );
+                                            let _ = done_tx.send(selected);
                                         })
-                                        .await;
-                                    match selected {
-                                        Ok(Some(index)) => {
-                                            if let Some(action) = actions.get(index).cloned() {
-                                                let _ = owner.update(cx, |root, window, cx| {
-                                                    root.dispatch_details_column_popup_action(
-                                                        action, window, cx,
-                                                    );
-                                                });
-                                            }
+                                        .detach();
+                                    loop {
+                                        while let Ok(event) = event_rx.try_recv() {
+                                            let _ = owner.update(cx, |root, window, cx| {
+                                                root.apply_details_column_popup_event(
+                                                    event.session_id,
+                                                    event.command_index,
+                                                    event.checked,
+                                                    &actions,
+                                                    window,
+                                                    cx,
+                                                );
+                                            });
                                         }
-                                        Ok(None) => {}
-                                        Err(error) => {
-                                            tracing::warn!(%error, "Details column popup failed");
+                                        match done_rx.try_recv() {
+                                            Ok(selected) => {
+                                                while let Ok(event) = event_rx.try_recv() {
+                                                    let _ = owner.update(cx, |root, window, cx| {
+                                                        root.apply_details_column_popup_event(
+                                                            event.session_id,
+                                                            event.command_index,
+                                                            event.checked,
+                                                            &actions,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    });
+                                                }
+                                                match selected {
+                                                    Ok(Some(index)) => {
+                                                        if let Some(action) = actions.get(index).cloned()
+                                                            && !matches!(
+                                                                action,
+                                                                explorer_ui::actions::ExplorerAction::ToggleDetailsColumn(_)
+                                                            )
+                                                        {
+                                                            let _ = owner.update(cx, |root, window, cx| {
+                                                                root.dispatch_details_column_popup_action(
+                                                                    action, window, cx,
+                                                                );
+                                                            });
+                                                        }
+                                                    }
+                                                    Ok(None) => {}
+                                                    Err(error) => {
+                                                        tracing::warn!(%error, "Details column popup failed");
+                                                    }
+                                                }
+                                                let _ = owner.update(cx, |root, _, _| {
+                                                    root.finish_details_column_popup_session(session_id);
+                                                });
+                                                break;
+                                            }
+                                            Err(mpsc::TryRecvError::Empty) => {
+                                                cx.background_executor()
+                                                    .timer(Duration::from_millis(4))
+                                                    .await;
+                                            }
+                                            Err(mpsc::TryRecvError::Disconnected) => {
+                                                let _ = owner.update(cx, |root, _, _| {
+                                                    root.finish_details_column_popup_session(session_id);
+                                                });
+                                                break;
+                                            }
                                         }
                                     }
                                 })
@@ -6479,8 +6545,10 @@ mod tests {
         collections::{HashMap, HashSet},
         fs,
         path::{Path, PathBuf},
-        sync::atomic::{AtomicU64, AtomicUsize, Ordering},
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicU64, AtomicUsize, Ordering},
+        },
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
@@ -6527,9 +6595,7 @@ mod tests {
     #[test]
     fn folder_options_applied_locale_publishes_to_peer_explorer_states() {
         use explorer_i18n::AppLocale;
-        use explorer_ui::state::{
-            AppViewState, FolderOptionsAppliedSnapshotV1, LocaleChoice,
-        };
+        use explorer_ui::state::{AppViewState, FolderOptionsAppliedSnapshotV1, LocaleChoice};
 
         let applied = FolderOptionsAppliedSnapshotV1 {
             settings: explorer_model::ViewSettings::default(),

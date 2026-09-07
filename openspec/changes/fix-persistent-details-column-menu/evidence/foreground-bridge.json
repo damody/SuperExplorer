@@ -1,0 +1,38 @@
+{
+  "2.2.1": {
+    "task_id": "2.2.1",
+    "expected": "Bounded per-popup event bridge passed into the native popup worker",
+    "actual": "persistent_popup_session(session_id) is created in the Details observer and passed to show_owned_popup_menu_with_persistence",
+    "exit_status": 0,
+    "hashes": {
+      "application.rs": "55B17651D670044D7170ACAEF491A985FF01C1A200EC502F4ED3806CA8EF8D59"
+    },
+    "gates": ["G2", "G3", "G4"],
+    "timestamp": "2026-09-07T14:40:00+08:00"
+  },
+  "2.2.2": {
+    "task_id": "2.2.2",
+    "expected": "Pump requested-state events through ExplorerRoot on the foreground context while the popup future remains active",
+    "actual": "Foreground spawn polls the receiver every 4ms and calls apply_details_column_popup_event; headful log shows SetDetailsColumnVisibility during the open popup",
+    "exit_status": 0,
+    "gates": ["G2", "G3", "G4"],
+    "timestamp": "2026-09-07T14:40:00+08:00"
+  },
+  "2.2.3": {
+    "task_id": "2.2.3",
+    "expected": "Drain accepted events before terminal completion; reject disconnected/invalid/stale/closed-owner delivery",
+    "actual": "Observer drains try_recv before applying the terminal command, then finish_details_column_popup_session; stale session_id is ignored by the reducer",
+    "exit_status": 0,
+    "gates": ["G2", "G3", "G4"],
+    "timestamp": "2026-09-07T14:40:00+08:00"
+  },
+  "2.2.4": {
+    "task_id": "2.2.4",
+    "expected": "Concurrency/isolation tests proving the prior GPUI re-entry panic does not recur",
+    "actual": "persistent_popup_publisher_is_send_so_the_worker_never_borrows_gpui passed; popup worker only try_sends, ExplorerRoot applies on the UI context",
+    "exit_status": 0,
+    "command": "cargo test -p explorer-shell-win --locked --offline --lib persistent_popup_publisher_is_send",
+    "gates": ["G2"],
+    "timestamp": "2026-09-07T14:40:00+08:00"
+  }
+}

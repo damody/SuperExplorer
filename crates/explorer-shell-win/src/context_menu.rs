@@ -79,17 +79,86 @@ const CMIC_MASK_UNICODE: u32 = 0x0000_4000;
 const MENU_REPLAY_EXTRA_INFO: usize = 0x5355_5045_524D_454E;
 const PROPERTIES_PLACEMENT_TIMEOUT: Duration = Duration::from_secs(2);
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OwnedPopupActivation {
+    #[default]
+    Terminal,
+    PersistentToggle,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedPopupMenuItem {
     pub label: String,
     pub checked: bool,
     pub enabled: bool,
+    pub activation: OwnedPopupActivation,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OwnedPopupMenuEntry {
     Item(OwnedPopupMenuItem),
     Separator,
+}
+
+const PERSISTENT_POPUP_EVENT_CAPACITY: usize = 64;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PersistentPopupEvent {
+    pub session_id: u64,
+    pub command_index: usize,
+    pub checked: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct PersistentPopupPublisher {
+    session_id: u64,
+    tx: std::sync::mpsc::SyncSender<PersistentPopupEvent>,
+}
+
+impl PersistentPopupPublisher {
+    pub const fn session_id(&self) -> u64 {
+        self.session_id
+    }
+
+    pub fn publish(&self, command_index: usize, checked: bool) -> Result<(), ()> {
+        self.tx
+            .try_send(PersistentPopupEvent {
+                session_id: self.session_id,
+                command_index,
+                checked,
+            })
+            .map_err(|_| ())
+    }
+}
+
+pub fn persistent_popup_session(
+    session_id: u64,
+) -> (
+    PersistentPopupPublisher,
+    std::sync::mpsc::Receiver<PersistentPopupEvent>,
+) {
+    persistent_popup_session_with_capacity(session_id, PERSISTENT_POPUP_EVENT_CAPACITY)
+}
+
+pub(crate) fn persistent_popup_session_with_capacity(
+    session_id: u64,
+    capacity: usize,
+) -> (
+    PersistentPopupPublisher,
+    std::sync::mpsc::Receiver<PersistentPopupEvent>,
+) {
+    let (tx, rx) = std::sync::mpsc::sync_channel(capacity.max(1));
+    (PersistentPopupPublisher { session_id, tx }, rx)
+}
+
+pub fn owned_popup_command_policies(entries: &[OwnedPopupMenuEntry]) -> Vec<OwnedPopupActivation> {
+    entries
+        .iter()
+        .filter_map(|entry| match entry {
+            OwnedPopupMenuEntry::Item(item) => Some(item.activation),
+            OwnedPopupMenuEntry::Separator => None,
+        })
+        .collect()
 }
 
 /// Presents application-owned commands through the same top-level popup renderer used by
@@ -101,6 +170,18 @@ pub fn show_owned_popup_menu(
     entries: &[OwnedPopupMenuEntry],
     dark: bool,
     immersive: bool,
+) -> Result<Option<usize>, ExplorerError> {
+    show_owned_popup_menu_with_persistence(owner_window, x, y, entries, dark, immersive, None)
+}
+
+pub fn show_owned_popup_menu_with_persistence(
+    owner_window: u64,
+    x: i32,
+    y: i32,
+    entries: &[OwnedPopupMenuEntry],
+    dark: bool,
+    immersive: bool,
+    persistence: Option<&PersistentPopupPublisher>,
 ) -> Result<Option<usize>, ExplorerError> {
     let mut point = POINT { x, y };
     // Match filesystem context menus: pointer events can cross a DPI-virtualized test or host
@@ -152,22 +233,34 @@ pub fn show_owned_popup_menu(
     let _ = unsafe { SetForegroundWindow(owner) };
     let dpi = unsafe { GetDpiForWindow(owner) }.max(96);
     let selected = if should_use_owned_popup(immersive, high_contrast_active()) {
-        crate::immersive_popup::present(popup.get(), owner, point, dpi, dark)
-            .map(|presentation| presentation.command)
-            .unwrap_or_else(|reason| {
-                tracing::warn!(?reason, "application-owned popup menu fell back");
-                unsafe {
-                    TrackPopupMenuEx(
-                        popup.get(),
-                        (TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN).0,
-                        point.x,
-                        point.y,
-                        owner,
-                        None,
-                    )
-                }
-                .0
-            })
+        let owned_persistence =
+            persistence.map(|publisher| crate::immersive_popup::OwnedPopupPersistence {
+                policies: owned_popup_command_policies(entries),
+                publisher: publisher.clone(),
+            });
+        crate::immersive_popup::present_with_owned_persistence(
+            popup.get(),
+            owner,
+            point,
+            dpi,
+            dark,
+            owned_persistence,
+        )
+        .map(|presentation| presentation.command)
+        .unwrap_or_else(|reason| {
+            tracing::warn!(?reason, "application-owned popup menu fell back");
+            unsafe {
+                TrackPopupMenuEx(
+                    popup.get(),
+                    (TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN).0,
+                    point.x,
+                    point.y,
+                    owner,
+                    None,
+                )
+            }
+            .0
+        })
     } else {
         unsafe {
             TrackPopupMenuEx(
@@ -2382,6 +2475,110 @@ mod tests {
     };
 
     use super::*;
+
+    fn owned_item(
+        label: &str,
+        checked: bool,
+        enabled: bool,
+        activation: OwnedPopupActivation,
+    ) -> OwnedPopupMenuEntry {
+        OwnedPopupMenuEntry::Item(OwnedPopupMenuItem {
+            label: label.to_owned(),
+            checked,
+            enabled,
+            activation,
+        })
+    }
+
+    #[test]
+    fn owned_popup_command_policies_skip_separators_and_preserve_activation() {
+        let entries = [
+            owned_item(
+                "Auto size this column",
+                false,
+                true,
+                OwnedPopupActivation::Terminal,
+            ),
+            owned_item(
+                "Auto size all columns",
+                false,
+                true,
+                OwnedPopupActivation::Terminal,
+            ),
+            OwnedPopupMenuEntry::Separator,
+            owned_item("Name", true, false, OwnedPopupActivation::PersistentToggle),
+            owned_item("Size", false, true, OwnedPopupActivation::PersistentToggle),
+        ];
+        assert_eq!(
+            owned_popup_command_policies(&entries),
+            [
+                OwnedPopupActivation::Terminal,
+                OwnedPopupActivation::Terminal,
+                OwnedPopupActivation::PersistentToggle,
+                OwnedPopupActivation::PersistentToggle,
+            ]
+        );
+    }
+
+    #[test]
+    fn persistent_popup_events_keep_session_identity_and_ordered_checked_state() {
+        let (publisher, rx) = persistent_popup_session(42);
+        assert_eq!(publisher.session_id(), 42);
+        publisher.publish(3, true).expect("first event");
+        publisher.publish(3, false).expect("second event");
+        assert_eq!(
+            rx.recv().expect("first payload"),
+            PersistentPopupEvent {
+                session_id: 42,
+                command_index: 3,
+                checked: true,
+            }
+        );
+        assert_eq!(
+            rx.recv().expect("second payload"),
+            PersistentPopupEvent {
+                session_id: 42,
+                command_index: 3,
+                checked: false,
+            }
+        );
+    }
+
+    #[test]
+    fn persistent_popup_publisher_is_send_so_the_worker_never_borrows_gpui() {
+        fn assert_send<T: Send>() {}
+        assert_send::<PersistentPopupPublisher>();
+        assert_send::<PersistentPopupEvent>();
+        let (publisher, rx) = persistent_popup_session(5);
+        let worker = std::thread::spawn(move || {
+            publisher.publish(1, true).expect("worker publish");
+        });
+        let event = rx.recv().expect("foreground receive");
+        assert_eq!(
+            event,
+            PersistentPopupEvent {
+                session_id: 5,
+                command_index: 1,
+                checked: true,
+            }
+        );
+        worker.join().expect("worker");
+    }
+
+    #[test]
+    fn persistent_popup_publication_fails_when_the_channel_is_full_or_disconnected() {
+        let (publisher, rx) = persistent_popup_session_with_capacity(7, 1);
+        publisher.publish(1, true).expect("capacity available");
+        assert!(
+            publisher.publish(1, false).is_err(),
+            "a full bridge must fail closed"
+        );
+        drop(rx);
+        assert!(
+            publisher.publish(1, true).is_err(),
+            "a disconnected bridge must fail closed"
+        );
+    }
 
     #[test]
     fn local_qq_apk_is_eligible_only_as_a_single_filesystem_item() {

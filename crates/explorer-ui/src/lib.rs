@@ -1239,12 +1239,20 @@ pub type CommandPromptLauncher =
 pub type BookmarkFileLauncher =
     Arc<dyn Fn(explorer_model::LocationDescriptor) -> Result<(), String> + Send + Sync>;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DetailsColumnPopupActivation {
+    #[default]
+    Terminal,
+    PersistentToggle,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DetailsColumnMenuPopupEntry {
     Item {
         label: String,
         checked: bool,
         enabled: bool,
+        activation: DetailsColumnPopupActivation,
     },
     Separator,
 }
@@ -1256,6 +1264,7 @@ pub struct DetailsColumnMenuPopupRequest {
     pub screen_y: i32,
     pub dark: bool,
     pub immersive: bool,
+    pub session_id: u64,
     pub entries: Vec<DetailsColumnMenuPopupEntry>,
 }
 
@@ -2060,10 +2069,7 @@ impl ExplorerRoot {
         }
         let unavailable = self.catalog().t("dialog-remote-unavailable");
         let in_progress = self.catalog().t("dialog-shortcut-in-progress");
-        let runtime = self
-            .remote_runtime
-            .as_mut()
-            .ok_or(unavailable)?;
+        let runtime = self.remote_runtime.as_mut().ok_or(unavailable)?;
         if runtime.active_symlink.is_some() {
             return Err(in_progress);
         }
@@ -3519,6 +3525,14 @@ impl ExplorerRoot {
         self.handle_action(action, source, window, cx);
     }
 
+    #[doc(hidden)]
+    pub fn details_column_popup_model_for_test(
+        &self,
+        target: &explorer_model::ColumnId,
+    ) -> (Vec<DetailsColumnMenuPopupEntry>, Vec<ExplorerAction>) {
+        self.details_column_popup_model(target)
+    }
+
     pub fn dispatch_details_column_popup_action(
         &mut self,
         action: ExplorerAction,
@@ -3526,6 +3540,37 @@ impl ExplorerRoot {
         cx: &mut Context<Self>,
     ) {
         self.handle_action(action, ActionSource::Mouse, window, cx);
+    }
+
+    pub fn apply_details_column_popup_event(
+        &mut self,
+        session_id: u64,
+        command_index: usize,
+        checked: bool,
+        actions: &[ExplorerAction],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(action) = actions.get(command_index) else {
+            return;
+        };
+        let ExplorerAction::ToggleDetailsColumn(column) = action else {
+            return;
+        };
+        self.handle_action(
+            ExplorerAction::SetDetailsColumnVisibility {
+                column: column.clone(),
+                visible: checked,
+                session_id,
+            },
+            ActionSource::Mouse,
+            window,
+            cx,
+        );
+    }
+
+    pub fn finish_details_column_popup_session(&mut self, session_id: u64) {
+        self.state.end_details_column_popup_session(session_id);
     }
 
     /// Connects deterministic visual data to production read-only Shell assets without replacing
@@ -4661,8 +4706,10 @@ impl ExplorerRoot {
             .is_some_and(|observer| observer(snapshot, cx));
         if !opened {
             self.state.cancel_bookmark_folder_editor();
-            self.state
-                .set_bookmark_notice(self.catalog().t("status-bookmark-folder-editor-window-failed"));
+            self.state.set_bookmark_notice(
+                self.catalog()
+                    .t("status-bookmark-folder-editor-window-failed"),
+            );
         }
     }
 
@@ -6047,11 +6094,16 @@ impl ExplorerRoot {
     ) -> (Vec<DetailsColumnMenuPopupEntry>, Vec<ExplorerAction>) {
         let mut entries = Vec::new();
         let mut actions = Vec::new();
-        let mut push = |label: String, checked: bool, enabled: bool, action: ExplorerAction| {
+        let mut push = |label: String,
+                        checked: bool,
+                        enabled: bool,
+                        activation: DetailsColumnPopupActivation,
+                        action: ExplorerAction| {
             entries.push(DetailsColumnMenuPopupEntry::Item {
                 label,
                 checked,
                 enabled,
+                activation,
             });
             actions.push(action);
         };
@@ -6060,6 +6112,7 @@ impl ExplorerRoot {
             catalog.t("chrome-auto-size-column"),
             false,
             true,
+            DetailsColumnPopupActivation::Terminal,
             ExplorerAction::AutoSizeDetailsColumn {
                 column: target.clone(),
             },
@@ -6068,6 +6121,7 @@ impl ExplorerRoot {
             catalog.t("chrome-auto-size-all-columns"),
             false,
             true,
+            DetailsColumnPopupActivation::Terminal,
             ExplorerAction::AutoSizeAllDetailsColumns,
         );
         if let Some(visuals) = self.folder_size_visuals.as_ref()
@@ -6077,6 +6131,7 @@ impl ExplorerRoot {
                 catalog.t("chrome-show-proportional-bar"),
                 visuals.config.folder_size_display.shows_bar(),
                 true,
+                DetailsColumnPopupActivation::Terminal,
                 ExplorerAction::ToggleFolderSizeProportionalBar,
             );
         }
@@ -6086,6 +6141,7 @@ impl ExplorerRoot {
                     catalog.t("chrome-show-comment-blank-detail"),
                     visuals.config.display.shows_detail(),
                     true,
+                    DetailsColumnPopupActivation::Terminal,
                     ExplorerAction::ToggleCodeLinesDetail,
                 );
             }
@@ -6102,6 +6158,7 @@ impl ExplorerRoot {
                 label: descriptor.display_name.clone(),
                 checked: settings.details_column_visible(&column),
                 enabled: column != explorer_model::ColumnId::Name,
+                activation: DetailsColumnPopupActivation::PersistentToggle,
             });
             actions.push(ExplorerAction::ToggleDetailsColumn(column));
         }
@@ -6428,12 +6485,14 @@ impl ExplorerRoot {
         {
             let (entries, popup_actions) = self.details_column_popup_model(column);
             let settings = self.state.view_settings();
+            let session_id = self.state.begin_details_column_popup_session();
             let request = DetailsColumnMenuPopupRequest {
                 owner_window: *owner_window,
                 screen_x: *screen_x,
                 screen_y: *screen_y,
                 dark: matches!(self.tokens.theme.mode, ThemeMode::Dark),
                 immersive: settings.immersive_native_context_menus,
+                session_id,
                 entries,
             };
             dispatch_action(
@@ -6562,8 +6621,9 @@ impl ExplorerRoot {
             if mutation.changed() {
                 if !self.notify_durable_state() {
                     self.state.rollback_bookmark(mutation);
-                    self.state
-                        .set_bookmark_notice(self.catalog().t("status-bookmark-folder-save-failed"));
+                    self.state.set_bookmark_notice(
+                        self.catalog().t("status-bookmark-folder-save-failed"),
+                    );
                 } else {
                     self.state
                         .set_bookmark_notice(self.catalog().t("status-bookmark-folder-created"));
@@ -6598,8 +6658,9 @@ impl ExplorerRoot {
                     if let Some(draft) = draft {
                         self.state.restore_bookmark_folder_editor(draft);
                     }
-                    self.state
-                        .set_bookmark_notice(self.catalog().t("status-bookmark-folder-rename-failed"));
+                    self.state.set_bookmark_notice(
+                        self.catalog().t("status-bookmark-folder-rename-failed"),
+                    );
                 } else {
                     self.state
                         .set_bookmark_notice(self.catalog().t("status-bookmark-folder-renamed"));
@@ -6648,8 +6709,9 @@ impl ExplorerRoot {
             if mutation.changed() {
                 if !self.notify_durable_state() {
                     self.state.rollback_bookmark(mutation);
-                    self.state
-                        .set_bookmark_notice(self.catalog().t("status-bookmark-folder-remove-failed"));
+                    self.state.set_bookmark_notice(
+                        self.catalog().t("status-bookmark-folder-remove-failed"),
+                    );
                 } else {
                     self.state
                         .set_bookmark_notice(self.catalog().t("status-bookmark-folder-removed"));
@@ -6688,14 +6750,12 @@ impl ExplorerRoot {
                     self.state
                         .set_bookmark_notice(self.catalog().t("status-bookmark-backup-copied"));
                 }
-                Err(error) => self
-                    .state
-                    .set_bookmark_notice({
-                        let mut args = explorer_i18n::FluentArgs::new();
-                        args.set("error", error.to_string());
-                        self.catalog()
-                            .t_args("status-bookmark-backup-failed", &args)
-                    }),
+                Err(error) => self.state.set_bookmark_notice({
+                    let mut args = explorer_i18n::FluentArgs::new();
+                    args.set("error", error.to_string());
+                    self.catalog()
+                        .t_args("status-bookmark-backup-failed", &args)
+                }),
             }
             cx.notify();
         }
@@ -6712,8 +6772,9 @@ impl ExplorerRoot {
                         .set_bookmark_notice(self.catalog().t("status-bookmark-imported"));
                 } else {
                     self.state.configure_bookmarks(previous);
-                    self.state
-                        .set_bookmark_notice(self.catalog().t("status-bookmark-import-persist-failed"));
+                    self.state.set_bookmark_notice(
+                        self.catalog().t("status-bookmark-import-persist-failed"),
+                    );
                 }
             } else {
                 self.state
@@ -6736,8 +6797,9 @@ impl ExplorerRoot {
                     .set_bookmark_notice(self.catalog().t("status-bookmark-removed"));
                 if !self.notify_durable_state() {
                     self.state.rollback_bookmark(mutation);
-                    self.state
-                        .set_bookmark_notice(self.catalog().t("status-bookmark-removal-save-failed"));
+                    self.state.set_bookmark_notice(
+                        self.catalog().t("status-bookmark-removal-save-failed"),
+                    );
                 }
                 cx.notify();
             }
@@ -9440,6 +9502,8 @@ mod tests {
         time::{Duration, Instant},
     };
 
+    use crate::state::AppViewState;
+
     use super::{
         BaseIconCache, DirectoryFactsDemandV1, ENRICHMENT_SERVICE_EVENT_CAPACITY, ExplorerRoot,
         ExtensionUiPumpPortV1, SafeModeOfferV1, UiTokens, VisibleItemIconCache, VisualFixtureState,
@@ -9560,6 +9624,12 @@ mod tests {
         }
     }
 
+    fn hide_details_column_if_visible(state: &mut AppViewState, column: explorer_model::ColumnId) {
+        if state.details_column_visible(column.clone()) {
+            state.toggle_details_column(column);
+        }
+    }
+
     #[test]
     fn directory_facts_requests_follow_visible_count_columns_and_deduplicate() {
         let runtime = Arc::new(RecordingDirectoryFactsRuntimeV1::default());
@@ -9567,6 +9637,8 @@ mod tests {
         seed_active_visual_tab(&mut root.state, "Counts", true, false);
         root.attach_directory_facts_runtime(runtime.clone());
 
+        hide_details_column_if_visible(&mut root.state, explorer_model::ColumnId::FileCount);
+        hide_details_column_if_visible(&mut root.state, explorer_model::ColumnId::FolderCount);
         root.submit_folder_size_requests();
         assert!(runtime.requests.lock().unwrap().is_empty());
 
@@ -9582,10 +9654,8 @@ mod tests {
         root.submit_folder_size_requests();
         assert_eq!(runtime.requests.lock().unwrap().len(), first.len());
 
-        root.state
-            .toggle_details_column(explorer_model::ColumnId::FileCount);
-        root.state
-            .toggle_details_column(explorer_model::ColumnId::FolderCount);
+        hide_details_column_if_visible(&mut root.state, explorer_model::ColumnId::FileCount);
+        hide_details_column_if_visible(&mut root.state, explorer_model::ColumnId::FolderCount);
         root.folder_size_requested.clear();
         root.submit_folder_size_requests();
         assert_eq!(runtime.requests.lock().unwrap().len(), first.len());
@@ -9595,8 +9665,6 @@ mod tests {
     fn restored_visible_count_column_starts_current_folder_requests() {
         let runtime = Arc::new(RecordingDirectoryFactsRuntimeV1::default());
         let mut root = ExplorerRoot::default();
-        root.state
-            .toggle_details_column(explorer_model::ColumnId::FolderCount);
         seed_active_visual_tab(&mut root.state, "Restored Counts", true, false);
         root.attach_directory_facts_runtime(runtime.clone());
 
@@ -9617,6 +9685,8 @@ mod tests {
         let code_lines = Arc::new(RecordingCodeLinesRuntimeV1::default());
         let mut root = ExplorerRoot::default();
         seed_active_visual_tab(&mut root.state, "Hidden Count", true, false);
+        hide_details_column_if_visible(&mut root.state, explorer_model::ColumnId::FileCount);
+        hide_details_column_if_visible(&mut root.state, explorer_model::ColumnId::FolderCount);
         root.attach_directory_facts_runtime(facts.clone());
         root.attach_code_lines_runtime(code_lines.clone());
 
@@ -11035,12 +11105,74 @@ mod tests {
         assert_eq!(epochs.get(&second), None);
     }
     use crate::{
+        DetailsColumnMenuPopupEntry, DetailsColumnPopupActivation,
         actions::{ActionOutcome, ActionSource, ExplorerAction, dispatch_action},
         focus::FocusSurface,
         layout::LayoutTokens,
-        state::AppViewState,
         theme::{SemanticColorSlot, ThemeMode, ThemeTokens},
     };
+
+    #[test]
+    fn details_column_popup_model_classifies_visibility_rows_as_persistent() {
+        let root = ExplorerRoot::default();
+        let (entries, actions) =
+            root.details_column_popup_model_for_test(&explorer_model::ColumnId::Name);
+        let command_entries = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                DetailsColumnMenuPopupEntry::Item {
+                    label,
+                    enabled,
+                    activation,
+                    ..
+                } => Some((label.as_str(), *enabled, *activation)),
+                DetailsColumnMenuPopupEntry::Separator => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            command_entries
+                .iter()
+                .take(2)
+                .all(|(_, _, activation)| *activation == DetailsColumnPopupActivation::Terminal),
+            "auto-size commands stay terminal: {command_entries:?}"
+        );
+        let name = command_entries
+            .iter()
+            .find(|(label, _, _)| *label == "Name")
+            .expect("Name row");
+        assert!(!name.1, "Name remains disabled");
+        assert_eq!(name.2, DetailsColumnPopupActivation::PersistentToggle);
+        let size = command_entries
+            .iter()
+            .find(|(label, _, _)| *label == "Size")
+            .expect("Size row");
+        assert!(size.1);
+        assert_eq!(size.2, DetailsColumnPopupActivation::PersistentToggle);
+        assert_eq!(
+            command_entries.len(),
+            actions.len(),
+            "separators must not consume command indices"
+        );
+        assert!(matches!(
+            actions.first(),
+            Some(ExplorerAction::AutoSizeDetailsColumn { .. })
+        ));
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, ExplorerAction::ToggleDetailsColumn(column) if *column == explorer_model::ColumnId::Size))
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, ExplorerAction::ToggleDetailsColumn(column) if *column == explorer_model::ColumnId::FileCount))
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, ExplorerAction::ToggleDetailsColumn(column) if *column == explorer_model::ColumnId::FolderCount))
+        );
+    }
 
     #[test]
     fn details_column_capture_coordinates_preserve_one_to_one_logical_drag_at_every_dpi() {

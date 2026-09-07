@@ -32,20 +32,28 @@ use windows::{
                 CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW,
                 DestroyWindow, DispatchMessageW, GWLP_USERDATA, GetClientRect, GetCursorPos,
                 GetMenuItemCount, GetMenuItemInfoW, GetMessageW, GetWindowRect,
-                GetWindowThreadProcessId, LWA_ALPHA, MENUITEMINFOW, MFS_DISABLED, MFS_GRAYED,
-                MFT_OWNERDRAW, MFT_SEPARATOR, MIIM_BITMAP, MIIM_FTYPE, MIIM_ID, MIIM_STATE,
-                MIIM_STRING, MIIM_SUBMENU, MSG, NONCLIENTMETRICSW, RegisterClassW,
-                SPI_GETNONCLIENTMETRICS, SW_SHOW, SendMessageW, SetForegroundWindow,
-                SetLayeredWindowAttributes, SetWindowLongPtrW, ShowWindow, TranslateMessage,
-                WM_ACTIVATEAPP, WM_CANCELMODE, WM_CHAR, WM_DESTROY, WM_ERASEBKGND, WM_GETDLGCODE,
-                WM_INITMENUPOPUP, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-                WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT, WM_RBUTTONDOWN, WNDCLASSW, WS_BORDER,
-                WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+                GetWindowThreadProcessId, LWA_ALPHA, MENU_ITEM_STATE, MENUITEMINFOW, MFS_CHECKED,
+                MFS_DISABLED, MFS_GRAYED, MFT_OWNERDRAW, MFT_SEPARATOR, MIIM_BITMAP, MIIM_FTYPE,
+                MIIM_ID, MIIM_STATE, MIIM_STRING, MIIM_SUBMENU, MSG, NONCLIENTMETRICSW,
+                RegisterClassW, SPI_GETNONCLIENTMETRICS, SW_SHOW, SendMessageW,
+                SetForegroundWindow, SetLayeredWindowAttributes, SetMenuItemInfoW,
+                SetWindowLongPtrW, ShowWindow, TranslateMessage, WM_ACTIVATEAPP, WM_CANCELMODE,
+                WM_CHAR, WM_DESTROY, WM_ERASEBKGND, WM_GETDLGCODE, WM_INITMENUPOPUP, WM_KEYDOWN,
+                WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT,
+                WM_RBUTTONDOWN, WNDCLASSW, WS_BORDER, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+                WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
             },
         },
     },
     core::{PCWSTR, PWSTR, w},
 };
+
+use crate::context_menu::{OwnedPopupActivation, PersistentPopupPublisher};
+
+pub(crate) struct OwnedPopupPersistence {
+    pub policies: Vec<OwnedPopupActivation>,
+    pub publisher: PersistentPopupPublisher,
+}
 
 const VISUAL: explorer_model::ContextMenuVisualMetrics =
     explorer_model::WINDOWS_CONTEXT_MENU_VISUAL_METRICS;
@@ -202,6 +210,7 @@ struct Row {
     text: Vec<u16>,
     top: i32,
     height: i32,
+    activation: OwnedPopupActivation,
 }
 
 impl Row {
@@ -211,6 +220,14 @@ impl Row {
 
     fn disabled(&self) -> bool {
         self.state & (MFS_DISABLED.0 | MFS_GRAYED.0) != 0
+    }
+
+    fn checked(&self) -> bool {
+        self.state & MFS_CHECKED.0 != 0
+    }
+
+    fn shows_check_mark(&self) -> bool {
+        self.checked() && (self.bitmap.is_invalid() || (self.bitmap.0 as usize) <= 11)
     }
 }
 
@@ -232,6 +249,7 @@ struct PopupState {
     font: HGDIOBJ,
     font_owned: bool,
     shadows: Vec<HWND>,
+    publisher: Option<PersistentPopupPublisher>,
 }
 
 pub(crate) struct PopupPresentation {
@@ -261,6 +279,17 @@ pub(crate) fn present(
     dpi: u32,
     dark: bool,
 ) -> Result<PopupPresentation, PopupUnsupportedReason> {
+    present_with_owned_persistence(menu, owner, point, dpi, dark, None)
+}
+
+pub(crate) fn present_with_owned_persistence(
+    menu: windows::Win32::UI::WindowsAndMessaging::HMENU,
+    owner: HWND,
+    point: POINT,
+    dpi: u32,
+    dark: bool,
+    persistence: Option<OwnedPopupPersistence>,
+) -> Result<PopupPresentation, PopupUnsupportedReason> {
     tracing::debug!(
         dpi,
         x = point.x,
@@ -268,7 +297,7 @@ pub(crate) fn present(
         "opening application-owned popup"
     );
     let _input_queue = InputQueueAttachment::to_owner(owner);
-    present_level(menu, owner, point, dpi.max(96), dark, 0)
+    present_level(menu, owner, point, dpi.max(96), dark, 0, persistence)
 }
 
 fn present_level(
@@ -278,11 +307,15 @@ fn present_level(
     dpi: u32,
     dark: bool,
     depth: usize,
+    persistence: Option<OwnedPopupPersistence>,
 ) -> Result<PopupPresentation, PopupUnsupportedReason> {
     if menu.is_invalid() || owner.is_invalid() || depth > 16 {
         return Err(PopupUnsupportedReason::InvalidMenu);
     }
-    let (rows, width, content_height) = materialize(menu, dpi)?;
+    let (mut rows, width, content_height) = materialize(menu, dpi)?;
+    if let Some(persistence) = persistence.as_ref() {
+        apply_activation_policies(&mut rows, &persistence.policies);
+    }
     let work = monitor_work_area(point);
     let height = work.map_or(content_height, |work| {
         let shadow_margin = scale(8, dpi);
@@ -320,6 +353,7 @@ fn present_level(
         font,
         font_owned,
         shadows: Vec::new(),
+        publisher: persistence.as_ref().map(|value| value.publisher.clone()),
     });
     let origin = work.map_or_else(
         || clamp_to_monitor(point, width, height),
@@ -413,7 +447,7 @@ fn present_level(
                         .saturating_add(row.top.saturating_sub(state.scroll_y)),
                 };
                 if let Ok(selected) =
-                    present_level(row.submenu, owner, child_point, dpi, dark, depth + 1)
+                    present_level(row.submenu, owner, child_point, dpi, dark, depth + 1, None)
                     && (selected.command > 0 || selected.replacement_point.is_some())
                 {
                     state.result = selected.command;
@@ -552,6 +586,7 @@ fn materialize(
             text,
             top,
             height,
+            activation: OwnedPopupActivation::Terminal,
         });
         top = top.saturating_add(height);
     }
@@ -796,7 +831,7 @@ unsafe extern "system" fn window_proc(
                     move_selection(state, 1);
                     ensure_selection_visible(state);
                 }
-                0x27 | 0x0D => {
+                0x20 | 0x27 | 0x0D => {
                     if let Some(index) = state.selected {
                         activate(state, index);
                     }
@@ -818,18 +853,92 @@ fn dismissal_message(message: u32) -> bool {
 }
 
 fn activate(state: &mut PopupState, index: usize) {
-    let Some(row) = state.rows.get(index) else {
-        return;
+    let (persistent, command_id, has_submenu, next_checked) = {
+        let Some(row) = state.rows.get(index) else {
+            return;
+        };
+        if row.disabled() || row.separator() {
+            return;
+        }
+        (
+            row.activation == OwnedPopupActivation::PersistentToggle && row.submenu.is_invalid(),
+            row.id,
+            !row.submenu.is_invalid(),
+            !row.checked(),
+        )
     };
-    if row.disabled() || row.separator() {
+    state.selected = Some(index);
+    if persistent {
+        let Some(command_index) = command_row_index(&state.rows, index) else {
+            state.result = -1;
+            return;
+        };
+        if !set_row_checked(state, index, next_checked) {
+            state.result = -1;
+            return;
+        }
+        let Some(publisher) = state.publisher.as_ref() else {
+            state.result = -1;
+            return;
+        };
+        if publisher.publish(command_index, next_checked).is_err() {
+            state.result = -1;
+        }
         return;
     }
-    state.selected = Some(index);
-    state.result = if row.submenu.is_invalid() {
-        i32::try_from(row.id).unwrap_or(0)
-    } else {
+    state.result = if has_submenu {
         -(i32::try_from(index).unwrap_or(i32::MAX).saturating_add(2))
+    } else {
+        i32::try_from(command_id).unwrap_or(0)
     };
+}
+
+fn apply_activation_policies(rows: &mut [Row], policies: &[OwnedPopupActivation]) {
+    let mut command_index = 0_usize;
+    for row in rows {
+        if row.separator() {
+            continue;
+        }
+        if let Some(policy) = policies.get(command_index) {
+            row.activation = *policy;
+        }
+        command_index = command_index.saturating_add(1);
+    }
+}
+
+fn command_row_index(rows: &[Row], row_index: usize) -> Option<usize> {
+    let row = rows.get(row_index)?;
+    if row.separator() {
+        return None;
+    }
+    Some(
+        rows[..row_index]
+            .iter()
+            .filter(|candidate| !candidate.separator())
+            .count(),
+    )
+}
+
+fn set_row_checked(state: &mut PopupState, index: usize, checked: bool) -> bool {
+    let Some(row) = state.rows.get_mut(index) else {
+        return false;
+    };
+    if checked {
+        row.state |= MFS_CHECKED.0;
+    } else {
+        row.state &= !MFS_CHECKED.0;
+    }
+    let info = MENUITEMINFOW {
+        cbSize: u32::try_from(size_of::<MENUITEMINFOW>()).unwrap_or(u32::MAX),
+        fMask: MIIM_STATE,
+        fState: MENU_ITEM_STATE(row.state),
+        ..Default::default()
+    };
+    let updated = unsafe { SetMenuItemInfoW(state.menu, row.id, false, &raw const info) }.is_ok();
+    if updated && !state.hwnd.is_invalid() {
+        let _ = unsafe { InvalidateRect(Some(state.hwnd), None, false) };
+    }
+    updated
 }
 
 fn move_selection(state: &mut PopupState, delta: i32) {
@@ -953,6 +1062,22 @@ fn paint(hwnd: HWND, state: &PopupState) {
                 icon,
                 row.disabled(),
             );
+        } else if row.shows_check_mark() {
+            let mut mark: Vec<u16> = "✓".encode_utf16().collect();
+            let mut mark_rect = RECT {
+                left: 0,
+                top: visible_top,
+                right: scale(ICON_SLOT, state.dpi),
+                bottom: visible_top + row.height,
+            };
+            let _ = unsafe {
+                DrawTextW(
+                    dc,
+                    &mut mark,
+                    &raw mut mark_rect,
+                    windows::Win32::Graphics::Gdi::DRAW_TEXT_FORMAT(0x0001 | 0x0004 | 0x0020),
+                )
+            };
         }
         let _ = unsafe {
             SetTextColor(
@@ -1203,7 +1328,10 @@ mod tests {
         assert_eq!(rows[0].id, 7);
         assert_eq!(rows[1].id, 7);
         assert_eq!(rows[0].bitmap, bitmap);
-        assert!(rows[1].state != 0);
+        assert!(rows[1].checked());
+        assert!(!rows[0].checked());
+        assert!(rows[1].shows_check_mark());
+        assert!(!rows[0].shows_check_mark());
         assert_eq!(rows[2].submenu, child);
 
         assert!(unsafe { DestroyMenu(menu) }.is_ok());
@@ -1241,6 +1369,7 @@ mod tests {
                 text: vec![],
                 top: 0,
                 height: 9,
+                activation: OwnedPopupActivation::Terminal,
             },
             Row {
                 id: 2,
@@ -1251,6 +1380,7 @@ mod tests {
                 text: vec![],
                 top: 9,
                 height: 28,
+                activation: OwnedPopupActivation::PersistentToggle,
             },
             Row {
                 id: 3,
@@ -1261,27 +1391,10 @@ mod tests {
                 text: vec![],
                 top: 37,
                 height: 28,
+                activation: OwnedPopupActivation::Terminal,
             },
         ];
-        let mut state = PopupState {
-            menu: Default::default(),
-            rows,
-            owner: Default::default(),
-            dpi: 96,
-            dark: false,
-            width: 296,
-            height: 68,
-            content_height: 68,
-            scroll_y: 0,
-            selected: None,
-            pressed: None,
-            result: 0,
-            replacement_point: None,
-            hwnd: Default::default(),
-            font: Default::default(),
-            font_owned: false,
-            shadows: Vec::new(),
-        };
+        let mut state = test_popup_state(rows);
         move_selection(&mut state, 1);
         assert_eq!(state.selected, Some(2));
         activate(&mut state, 2);
@@ -1307,6 +1420,7 @@ mod tests {
             text: text.encode_utf16().collect(),
             top: 0,
             height: ROW_HEIGHT,
+            activation: OwnedPopupActivation::Terminal,
         };
         let rows = vec![
             row(1, 0, "&Open"),
@@ -1319,6 +1433,181 @@ mod tests {
 
         let duplicate = vec![row(4, 0, "&Open"), row(5, 0, "&Other")];
         assert_eq!(mnemonic_match(&duplicate, Some('o')), None);
+    }
+
+    fn test_popup_state(rows: Vec<Row>) -> PopupState {
+        PopupState {
+            menu: Default::default(),
+            rows,
+            owner: Default::default(),
+            dpi: 96,
+            dark: false,
+            width: 296,
+            height: 68,
+            content_height: 68,
+            scroll_y: 0,
+            selected: None,
+            pressed: None,
+            result: 0,
+            replacement_point: None,
+            hwnd: Default::default(),
+            font: Default::default(),
+            font_owned: false,
+            shadows: Vec::new(),
+            publisher: None,
+        }
+    }
+
+    fn fixture_row(
+        id: u32,
+        state: u32,
+        kind: u32,
+        top: i32,
+        activation: OwnedPopupActivation,
+        text: &str,
+    ) -> Row {
+        Row {
+            id,
+            state,
+            kind,
+            submenu: Default::default(),
+            bitmap: Default::default(),
+            text: text.encode_utf16().collect(),
+            top,
+            height: if kind & MFT_SEPARATOR.0 != 0 {
+                SEPARATOR_HEIGHT
+            } else {
+                ROW_HEIGHT
+            },
+            activation,
+        }
+    }
+
+    #[test]
+    fn persistent_activation_toggles_check_state_without_closing() {
+        let menu = unsafe { CreatePopupMenu() }.expect("popup");
+        unsafe {
+            AppendMenuW(menu, MF_STRING, 1, w!("Auto size this column"))
+                .and_then(|()| AppendMenuW(menu, MF_SEPARATOR, 0, None))
+                .and_then(|()| {
+                    AppendMenuW(menu, MF_STRING | MF_CHECKED | MF_DISABLED, 2, w!("Name"))
+                })
+                .and_then(|()| AppendMenuW(menu, MF_STRING, 3, w!("Size")))
+        }
+        .expect("fixture rows");
+        let (mut rows, _, _) = materialize(menu, 96).expect("materialize");
+        apply_activation_policies(
+            &mut rows,
+            &[
+                OwnedPopupActivation::Terminal,
+                OwnedPopupActivation::PersistentToggle,
+                OwnedPopupActivation::PersistentToggle,
+            ],
+        );
+        let (publisher, rx) = crate::persistent_popup_session(11);
+        let mut state = test_popup_state(rows);
+        state.menu = menu;
+        state.publisher = Some(publisher);
+
+        activate(&mut state, 0);
+        assert_eq!(state.result, 1, "auto-size remains terminal");
+
+        state.result = 0;
+        activate(&mut state, 2);
+        assert_eq!(state.result, 0);
+        assert!(state.rows[2].checked());
+        assert!(rx.try_recv().is_err(), "disabled Name must not publish");
+
+        activate(&mut state, 3);
+        assert_eq!(state.result, 0, "visibility toggle keeps the popup open");
+        assert!(state.rows[3].checked());
+        assert_eq!(
+            rx.try_recv().expect("checked event"),
+            crate::PersistentPopupEvent {
+                session_id: 11,
+                command_index: 2,
+                checked: true,
+            }
+        );
+
+        activate(&mut state, 3);
+        assert_eq!(state.result, 0);
+        assert!(!state.rows[3].checked());
+        assert_eq!(
+            rx.try_recv().expect("unchecked event"),
+            crate::PersistentPopupEvent {
+                session_id: 11,
+                command_index: 2,
+                checked: false,
+            }
+        );
+
+        let mut info = MENUITEMINFOW {
+            cbSize: u32::try_from(size_of::<MENUITEMINFOW>()).unwrap_or(u32::MAX),
+            fMask: MIIM_STATE,
+            ..Default::default()
+        };
+        unsafe { GetMenuItemInfoW(menu, 3, false, &raw mut info) }.expect("read Size state");
+        assert_eq!(info.fState.0 & MFS_CHECKED.0, 0);
+        assert!(unsafe { DestroyMenu(menu) }.is_ok());
+    }
+
+    #[test]
+    fn persistent_activation_preserves_scroll_and_fails_closed_without_a_bridge() {
+        let menu = unsafe { CreatePopupMenu() }.expect("popup");
+        unsafe { AppendMenuW(menu, MF_STRING, 1, w!("Size")) }.expect("row");
+        let (mut rows, _, _) = materialize(menu, 96).expect("materialize");
+        apply_activation_policies(&mut rows, &[OwnedPopupActivation::PersistentToggle]);
+        let mut state = test_popup_state(rows);
+        state.menu = menu;
+        state.scroll_y = 12;
+        activate(&mut state, 0);
+        assert_eq!(state.result, -1);
+        assert_eq!(state.scroll_y, 12);
+        assert!(unsafe { DestroyMenu(menu) }.is_ok());
+    }
+
+    #[test]
+    fn persistent_activation_terminates_when_publication_fails() {
+        let menu = unsafe { CreatePopupMenu() }.expect("popup");
+        unsafe { AppendMenuW(menu, MF_STRING, 1, w!("Size")) }.expect("row");
+        let (mut rows, _, _) = materialize(menu, 96).expect("materialize");
+        apply_activation_policies(&mut rows, &[OwnedPopupActivation::PersistentToggle]);
+        let (publisher, rx) = crate::context_menu::persistent_popup_session_with_capacity(3, 1);
+        publisher.publish(0, false).expect("fill");
+        let mut state = test_popup_state(rows);
+        state.menu = menu;
+        state.publisher = Some(publisher);
+        activate(&mut state, 0);
+        assert_eq!(state.result, -1);
+        drop(rx);
+        assert!(unsafe { DestroyMenu(menu) }.is_ok());
+    }
+
+    #[test]
+    fn command_row_index_skips_separators() {
+        let rows = vec![
+            fixture_row(1, 0, 0, 0, OwnedPopupActivation::Terminal, "Auto"),
+            fixture_row(
+                0,
+                0,
+                MFT_SEPARATOR.0,
+                ROW_HEIGHT,
+                OwnedPopupActivation::Terminal,
+                "",
+            ),
+            fixture_row(
+                2,
+                MFS_CHECKED.0,
+                0,
+                ROW_HEIGHT + SEPARATOR_HEIGHT,
+                OwnedPopupActivation::PersistentToggle,
+                "Name",
+            ),
+        ];
+        assert_eq!(command_row_index(&rows, 0), Some(0));
+        assert_eq!(command_row_index(&rows, 1), None);
+        assert_eq!(command_row_index(&rows, 2), Some(1));
     }
 
     #[test]

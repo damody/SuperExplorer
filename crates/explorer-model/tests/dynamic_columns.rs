@@ -68,7 +68,7 @@ fn stable_ids_and_descriptor_registry_reject_collisions_and_bad_ownership() {
 }
 
 #[test]
-fn directory_count_built_ins_are_stable_default_hidden_aggregate_integers() {
+fn directory_count_built_ins_are_stable_default_visible_aggregate_integers() {
     let registry = ColumnRegistry::built_ins();
     let layout = OrderedColumnLayout::default();
     for (column, stable_id, display_name) in [
@@ -81,7 +81,10 @@ fn directory_count_built_ins_are_stable_default_hidden_aggregate_integers() {
     ] {
         assert_eq!(column.stable_id(), stable_id);
         assert_eq!(ColumnId::parse(stable_id).unwrap(), column);
-        assert!(!layout.visible(&column));
+        assert!(
+            layout.visible(&column),
+            "{display_name} must be visible in the default Details layout"
+        );
         let descriptor = registry.get(&column).expect("built-in descriptor");
         assert_eq!(descriptor.display_name, display_name);
         assert_eq!(descriptor.value_type, ColumnValueType::Integer);
@@ -127,7 +130,7 @@ fn ordered_layout_preserves_width_visibility_and_deterministic_order() {
         .position(|entry| entry.id == ColumnId::Size)
         .unwrap();
     assert!(ext_index < size_index);
-    assert_eq!(layout.visible_registered(&registry).count(), 5);
+    assert_eq!(layout.visible_registered(&registry).count(), 7);
 }
 
 #[test]
@@ -217,14 +220,14 @@ fn package_revoke_hides_but_retains_layout_until_same_id_returns() {
     assert_eq!(registry.unregister_package("org.example.folder-size"), 1);
     assert!(registry.generation() > generation);
     assert_eq!(layout.entry(&id).cloned(), Some(retained.clone()));
-    assert_eq!(layout.visible_registered(&registry).count(), 4);
+    assert_eq!(layout.visible_registered(&registry).count(), 6);
 
     // Re-registering the exact stable ID makes the retained preference effective again.
     registry
         .replace_package("org.example.folder-size", [descriptor])
         .unwrap();
     assert_eq!(layout.entry(&id).cloned(), Some(retained));
-    assert_eq!(layout.visible_registered(&registry).count(), 5);
+    assert_eq!(layout.visible_registered(&registry).count(), 7);
 }
 
 #[test]

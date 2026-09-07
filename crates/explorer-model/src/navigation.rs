@@ -1722,7 +1722,12 @@ impl Default for OrderedColumnLayout {
                 .map(|descriptor| {
                     let visible = matches!(
                         descriptor.id,
-                        ColumnId::Name | ColumnId::DateModified | ColumnId::Type | ColumnId::Size
+                        ColumnId::Name
+                            | ColumnId::DateModified
+                            | ColumnId::Type
+                            | ColumnId::Size
+                            | ColumnId::FileCount
+                            | ColumnId::FolderCount
                     );
                     ColumnLayoutEntry {
                         id: descriptor.id,

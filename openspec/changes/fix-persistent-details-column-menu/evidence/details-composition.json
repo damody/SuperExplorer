@@ -1,0 +1,27 @@
+{
+  "3.1.1": {
+    "task_id": "3.1.1",
+    "expected": "Built-in and dynamic visibility rows are persistent; auto-size and target-specific rows are terminal",
+    "actual": "details_column_popup_model marks AutoSize*/ToggleFolderSizeProportionalBar/ToggleCodeLinesDetail Terminal and every visibility row PersistentToggle",
+    "exit_status": 0,
+    "gates": ["G1", "G3"],
+    "timestamp": "2026-09-07T14:40:00+08:00"
+  },
+  "3.1.2": {
+    "task_id": "3.1.2",
+    "expected": "One command-row index mapping across separators and dynamic registry columns",
+    "actual": "details_column_popup_model_classifies_visibility_rows_as_persistent asserts command_entries.len() == actions.len() and includes FileCount/FolderCount",
+    "exit_status": 0,
+    "gates": ["G1", "G3"],
+    "timestamp": "2026-09-07T14:40:00+08:00"
+  },
+  "3.1.3": {
+    "task_id": "3.1.3",
+    "expected": "Composition tests for built-in, count, folder-size, code-lines, disabled Name, and terminal commands",
+    "actual": "details_column_popup_model_classifies_visibility_rows_as_persistent passed: Name disabled+persistent, Size persistent, first two rows terminal AutoSize",
+    "exit_status": 0,
+    "command": "cargo test -p explorer-ui --locked --offline details_column_popup_model -- --test-threads=1",
+    "gates": ["G1", "G3"],
+    "timestamp": "2026-09-07T14:40:00+08:00"
+  }
+}

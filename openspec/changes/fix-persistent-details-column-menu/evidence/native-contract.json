@@ -1,0 +1,32 @@
+{
+  "1.1.1": {
+    "task_id": "1.1.1",
+    "expected": "OwnedPopupMenuItem carries Terminal or PersistentToggle activation metadata",
+    "actual": "Added OwnedPopupActivation and owned_popup_command_policies(); separators consume no command index",
+    "exit_status": 0,
+    "command": "cargo test -p explorer-shell-win --locked --offline --lib owned_popup_command",
+    "hashes": {
+      "context_menu.rs": "04BB8A72158C1AC54F07530F4363301A037B0252E82B436CCEDF2881886B4A72"
+    },
+    "gates": ["G1", "G3"],
+    "timestamp": "2026-09-07T14:40:00+08:00"
+  },
+  "1.1.2": {
+    "task_id": "1.1.2",
+    "expected": "Bounded persistent-event payload with stable session identity",
+    "actual": "PersistentPopupEvent { session_id, command_index, checked } over a 64-slot sync_channel",
+    "exit_status": 0,
+    "command": "cargo test -p explorer-shell-win --locked --offline --lib persistent_popup",
+    "gates": ["G1", "G3"],
+    "timestamp": "2026-09-07T14:40:00+08:00"
+  },
+  "1.1.3": {
+    "task_id": "1.1.3",
+    "expected": "Contract tests for separators, disabled rows, terminal rows, and ordered checked-state events",
+    "actual": "owned_popup_command_policies_skip_separators_and_preserve_activation and persistent_popup_events_keep_session_identity_and_ordered_checked_state passed",
+    "exit_status": 0,
+    "command": "cargo test -p explorer-shell-win --locked --offline --lib persistent_ -- --test-threads=1",
+    "gates": ["G1", "G3"],
+    "timestamp": "2026-09-07T14:40:00+08:00"
+  }
+}

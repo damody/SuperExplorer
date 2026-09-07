@@ -1,0 +1,43 @@
+{
+  "3.2.1": {
+    "task_id": "3.2.1",
+    "expected": "Headful helper clicks a native row without assuming dismissal and reads checked state",
+    "actual": "smoke_details_column_popup.ps1 Invoke-DetailsPopupRow + Get-DetailsPopupRowChecked keep the HWND and read MF_CHECKED",
+    "exit_status": 0,
+    "hashes": {
+      "smoke_details_column_popup.ps1": "AFA4C9F461147F07B2AC22566E5C8ED8BF841C52908725AECE69240C1AF9E8C4"
+    },
+    "gates": ["G5"],
+    "timestamp": "2026-09-07T14:38:28+08:00"
+  },
+  "3.2.2": {
+    "task_id": "3.2.2",
+    "expected": "unchecked->checked->unchecked for one column with unchanged HWND, position, scroll, and matching Details header",
+    "actual": "Size started checked, first click unchecked, second click checked; hwnd_unchanged=true; SetDetailsColumnVisibility dispatched twice during the same popup",
+    "exit_status": 0,
+    "artifact": "evidence/user-perspective/report.json",
+    "gates": ["G5"],
+    "timestamp": "2026-09-07T14:38:28+08:00"
+  },
+  "3.2.3": {
+    "task_id": "3.2.3",
+    "expected": "Disabled Name, terminal auto-size dismissal, Escape, outside-click, small-window non-clipping",
+    "actual": "name_remained_checked, auto_size_dismissed, escape_dismissed, outside_click_dismissed, not_clipped_by_small_main_window all true",
+    "exit_status": 0,
+    "gates": ["G5"],
+    "timestamp": "2026-09-07T14:38:28+08:00"
+  },
+  "3.2.4": {
+    "task_id": "3.2.4",
+    "expected": "User-perspective screenshots plus machine-readable popup geometry, labels, states, and session identity",
+    "actual": "details-column-popup.png shows checks on Name/Date modified/Type/Size; details-column-popup-toggled.png shows Size unchecked with the popup still open; report.json records labels and toggle states",
+    "exit_status": 0,
+    "hashes": {
+      "details-column-popup.png": "F5C44173E0C0F3E20823A8B75E90A81A3160D78D3E21649F941F46C67C1B85FC",
+      "details-column-popup-toggled.png": "11C762B97BA4665C23CB2FEF3E18C54325C81C8D14B7E112C9D15AE3F779EAF5",
+      "report.json": "3CE58F00CE091C832D747E0225F6DFE8900E00F2F7F31EDF5E0195BB160723A5"
+    },
+    "gates": ["G5"],
+    "timestamp": "2026-09-07T14:38:28+08:00"
+  }
+}

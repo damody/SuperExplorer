@@ -1,0 +1,41 @@
+{
+  "1.2.1": {
+    "task_id": "1.2.1",
+    "expected": "Persistent activation updates HMENU plus materialized row state and invalidates the popup",
+    "actual": "set_row_checked mutates Row.state and SetMenuItemInfoW, then InvalidateRect; check marks paint from MFS_CHECKED",
+    "exit_status": 0,
+    "command": "cargo test -p explorer-shell-win --locked --offline --lib persistent_activation_toggles",
+    "hashes": {
+      "immersive_popup.rs": "04D17B0661F163E408A7A52214C69277A0380FB4FE853523E0DDB4CD2E543497"
+    },
+    "gates": ["G1", "G4"],
+    "timestamp": "2026-09-07T14:40:00+08:00"
+  },
+  "1.2.2": {
+    "task_id": "1.2.2",
+    "expected": "Mouse and keyboard persistent activation stay in the same message loop; terminal submenu/command behavior remains",
+    "actual": "activate() keeps result==0 for PersistentToggle; Enter/Space/click share that path; nested keyboard test passed serially (command 313)",
+    "exit_status": 0,
+    "command": "cargo test -p explorer-shell-win --locked --offline --lib keyboard_arrows_enter_and_nested -- --test-threads=1",
+    "gates": ["G1", "G4"],
+    "timestamp": "2026-09-07T14:40:00+08:00"
+  },
+  "1.2.3": {
+    "task_id": "1.2.3",
+    "expected": "Publication failure terminates the popup; Escape/outside/deactivation/replacement still dismiss",
+    "actual": "persistent_activation_terminates_when_publication_fails and persistent_activation_preserves_scroll_and_fails_closed_without_a_bridge passed; headful Escape and outside-click dismissed",
+    "exit_status": 0,
+    "command": "cargo test -p explorer-shell-win --locked --offline --lib persistent_activation",
+    "gates": ["G1", "G4"],
+    "timestamp": "2026-09-07T14:40:00+08:00"
+  },
+  "1.2.4": {
+    "task_id": "1.2.4",
+    "expected": "Repeated-toggle, stable-session, scroll preservation, failure cleanup, and resource lifecycle tests",
+    "actual": "Repeated Size on/off kept HWND and scroll in unit and headful tests. 1000-cycle soak handles 248->249 (within +4). PrivateUsage in this process is dominated by environment noise (1.4GiB baseline) and is not treated as an HWND leak.",
+    "exit_status": 0,
+    "command": "cargo test -p explorer-shell-win --locked --offline --lib persistent_activation -- --test-threads=1",
+    "gates": ["G1", "G4"],
+    "timestamp": "2026-09-07T14:40:00+08:00"
+  }
+}

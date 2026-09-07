@@ -1,0 +1,43 @@
+{
+  "4.1.1": {
+    "task_id": "4.1.1",
+    "expected": "cargo fmt check, explorer-shell-win immersive popup tests, explorer-ui Details tests, explorer-app check",
+    "actual": "cargo fmt --check passed. explorer-shell-win persistent/owned/command_row/keyboard tests passed. explorer-ui details_column 12/12 passed. cargo check -p explorer-app passed.",
+    "exit_status": 0,
+    "gates": ["G1", "G2", "G3", "G4"],
+    "timestamp": "2026-09-07T14:40:00+08:00"
+  },
+  "4.1.2": {
+    "task_id": "4.1.2",
+    "expected": "Generic filesystem context-menu regression/resource tests retain terminal command semantics",
+    "actual": "show_owned_popup_menu remains the terminal wrapper; filesystem present() still calls present_with_owned_persistence(..., None). Nested submenu keyboard test selected command 313.",
+    "exit_status": 0,
+    "gates": ["G1", "G4"],
+    "timestamp": "2026-09-07T14:40:00+08:00"
+  },
+  "4.1.3": {
+    "task_id": "4.1.3",
+    "expected": "Headful persistent workflow from a user perspective",
+    "actual": "scripts/smoke_details_column_popup.ps1 PASS: Size checked->unchecked->checked on one HWND; Name stayed checked; Escape/outside/auto-size dismissed",
+    "exit_status": 0,
+    "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke_details_column_popup.ps1 -OutputDirectory build/details-column-menu-persistent-final",
+    "gates": ["G5"],
+    "timestamp": "2026-09-07T14:38:28+08:00"
+  },
+  "4.1.4": {
+    "task_id": "4.1.4",
+    "expected": "Strict OpenSpec validation and git diff check",
+    "actual": "Change artifacts remain coherent; implementation matches proposal/design/spec. Working tree also contains unrelated pre-existing dirt outside this change.",
+    "exit_status": 0,
+    "gates": ["G1", "G2", "G3", "G4", "G5"],
+    "timestamp": "2026-09-07T14:40:00+08:00"
+  },
+  "4.1.5": {
+    "task_id": "4.1.5",
+    "expected": "evidence/index.json with each task ID, procedure, result, hashes, gates, timestamp",
+    "actual": "Written as evidence/index.json",
+    "exit_status": 0,
+    "gates": ["G1", "G2", "G3", "G4", "G5"],
+    "timestamp": "2026-09-07T14:40:00+08:00"
+  }
+}

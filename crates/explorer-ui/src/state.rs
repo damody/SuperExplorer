@@ -859,6 +859,8 @@ pub struct AppViewState {
     details_column_drag: Option<DetailsColumnDragPreviewSession>,
     details_column_menu: Option<explorer_model::ColumnId>,
     details_column_menu_anchor: Option<(f32, f32)>,
+    details_column_popup_session: Option<u64>,
+    details_column_popup_session_seq: u64,
     details_filter_menu: Option<explorer_model::ColumnId>,
     details_filters: HashMap<TabId, crate::file_view::DetailsFilters>,
     side_pane_resize: Option<SidePaneResizeSession>,
@@ -1121,6 +1123,8 @@ impl AppViewState {
             details_column_drag: None,
             details_column_menu: None,
             details_column_menu_anchor: None,
+            details_column_popup_session: None,
+            details_column_popup_session_seq: 0,
             details_filter_menu: None,
             details_filters: HashMap::from([(
                 initial_tab_id,
@@ -2956,6 +2960,49 @@ impl AppViewState {
     pub fn close_details_column_menu(&mut self) {
         self.details_column_menu = None;
         self.details_column_menu_anchor = None;
+    }
+    pub const fn details_column_popup_session(&self) -> Option<u64> {
+        self.details_column_popup_session
+    }
+    pub fn begin_details_column_popup_session(&mut self) -> u64 {
+        self.details_column_popup_session_seq =
+            self.details_column_popup_session_seq.saturating_add(1);
+        let session_id = self.details_column_popup_session_seq.max(1);
+        self.details_column_popup_session_seq = session_id;
+        self.details_column_popup_session = Some(session_id);
+        session_id
+    }
+    pub fn end_details_column_popup_session(&mut self, session_id: u64) {
+        if self.details_column_popup_session == Some(session_id) {
+            self.details_column_popup_session = None;
+        }
+    }
+    pub fn details_column_visibility_change_available(
+        &self,
+        column: &explorer_model::ColumnId,
+        visible: bool,
+        session_id: u64,
+    ) -> bool {
+        self.details_column_popup_session == Some(session_id)
+            && self.details_column_applicable(column)
+            && (*column != explorer_model::ColumnId::Name || visible)
+    }
+    pub fn set_details_column_visibility(
+        &mut self,
+        column: explorer_model::ColumnId,
+        visible: bool,
+        session_id: u64,
+    ) {
+        if !self.details_column_visibility_change_available(&column, visible, session_id) {
+            return;
+        }
+        let _ = self
+            .tabs
+            .active_tab_mut()
+            .view
+            .settings
+            .details_layout
+            .set_visible(&column, visible);
     }
 
     pub fn details_filter_menu(&self) -> Option<explorer_model::ColumnId> {
@@ -8425,6 +8472,32 @@ mod tests {
         );
         state.toggle_details_column(explorer_model::ColumnId::Authors);
         assert!(!state.details_column_visible(explorer_model::ColumnId::Authors));
+    }
+
+    #[test]
+    fn details_column_requested_visibility_is_idempotent_and_session_scoped() {
+        let mut state = AppViewState::default();
+        let session = state.begin_details_column_popup_session();
+        assert!(state.details_column_visible(explorer_model::ColumnId::Size));
+        state.set_details_column_visibility(explorer_model::ColumnId::Size, false, session);
+        assert!(!state.details_column_visible(explorer_model::ColumnId::Size));
+        state.set_details_column_visibility(explorer_model::ColumnId::Size, false, session);
+        assert!(!state.details_column_visible(explorer_model::ColumnId::Size));
+        state.set_details_column_visibility(explorer_model::ColumnId::Size, true, session);
+        assert!(state.details_column_visible(explorer_model::ColumnId::Size));
+
+        state.set_details_column_visibility(explorer_model::ColumnId::Name, false, session);
+        assert!(state.details_column_visible(explorer_model::ColumnId::Name));
+
+        state.set_details_column_visibility(explorer_model::ColumnId::Size, false, session + 1);
+        assert!(
+            state.details_column_visible(explorer_model::ColumnId::Size),
+            "stale sessions must not mutate Details layout"
+        );
+
+        state.end_details_column_popup_session(session);
+        state.set_details_column_visibility(explorer_model::ColumnId::Size, false, session);
+        assert!(state.details_column_visible(explorer_model::ColumnId::Size));
     }
 
     #[test]

@@ -54,12 +54,13 @@ mod thumbnail;
 mod watcher;
 
 pub use context_menu::{
-    ContextMenuQuerySnapshot, ContextMenuResourceSnapshot, OwnedPopupMenuEntry, OwnedPopupMenuItem,
-    execute_in_worker as execute_context_menu_in_worker,
-    query_in_worker as query_context_menu_in_worker,
+    ContextMenuQuerySnapshot, ContextMenuResourceSnapshot, OwnedPopupActivation,
+    OwnedPopupMenuEntry, OwnedPopupMenuItem, PersistentPopupEvent, PersistentPopupPublisher,
+    execute_in_worker as execute_context_menu_in_worker, owned_popup_command_policies,
+    persistent_popup_session, query_in_worker as query_context_menu_in_worker,
     query_in_worker_with_profile as query_context_menu_in_worker_with_profile,
     query_snapshot_in_worker_with_profile as query_context_menu_snapshot_in_worker_with_profile,
-    show_owned_popup_menu,
+    show_owned_popup_menu, show_owned_popup_menu_with_persistence,
 };
 pub use drag_drop::{
     DragResourceSnapshot, RightDragChoice, SystemDragThreshold, choose_right_drag_effect,

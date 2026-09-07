@@ -537,6 +537,11 @@ pub enum ExplorerAction {
         column: explorer_model::ColumnId,
     },
     ToggleDetailsColumn(explorer_model::ColumnId),
+    SetDetailsColumnVisibility {
+        column: explorer_model::ColumnId,
+        visible: bool,
+        session_id: u64,
+    },
     ToggleFolderSizeProportionalBar,
     ToggleCodeLinesDetail,
     AutoSizeAllDetailsColumns,
@@ -814,6 +819,7 @@ impl ExplorerAction {
             Self::ToggleDetailsFilter { .. } => "ToggleDetailsFilter",
             Self::ClearDetailsFilter { .. } => "ClearDetailsFilter",
             Self::ToggleDetailsColumn(_) => "ToggleDetailsColumn",
+            Self::SetDetailsColumnVisibility { .. } => "SetDetailsColumnVisibility",
             Self::ToggleFolderSizeProportionalBar => "ToggleFolderSizeProportionalBar",
             Self::ToggleCodeLinesDetail => "ToggleCodeLinesDetail",
             Self::AutoSizeAllDetailsColumns => "AutoSizeAllDetailsColumns",
@@ -1158,6 +1164,7 @@ pub fn dispatch_action(
         &action,
         ExplorerAction::OpenDetailsColumnMenu { .. }
             | ExplorerAction::ToggleDetailsColumn(_)
+            | ExplorerAction::SetDetailsColumnVisibility { .. }
             | ExplorerAction::AutoSizeDetailsColumn { .. }
             | ExplorerAction::AutoSizeAllDetailsColumns
     );
@@ -1433,6 +1440,11 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
                 && !state.operation_is_cancelling(*request_id)
         }
         ExplorerAction::ToggleDetailsColumn(explorer_model::ColumnId::Name) => false,
+        ExplorerAction::SetDetailsColumnVisibility {
+            column,
+            visible,
+            session_id,
+        } => state.details_column_visibility_change_available(column, *visible, *session_id),
         ExplorerAction::EndDetailsColumnResize => state.details_column_resize_active(),
         ExplorerAction::SetColumnId(column) => state.sort_column_supported(column.clone()),
         ExplorerAction::ToggleSortMenu
@@ -2336,6 +2348,14 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             state.toggle_details_column(column);
             FocusSurface::FileView
         }
+        ExplorerAction::SetDetailsColumnVisibility {
+            column,
+            visible,
+            session_id,
+        } => {
+            state.set_details_column_visibility(column, visible, session_id);
+            FocusSurface::FileView
+        }
         ExplorerAction::ToggleFolderSizeProportionalBar => FocusSurface::FileView,
         ExplorerAction::ToggleCodeLinesDetail => FocusSurface::FileView,
         ExplorerAction::AutoSizeAllDetailsColumns => {
@@ -2633,6 +2653,56 @@ mod tests {
         assert_eq!(name.outcome, ActionOutcome::Disabled);
         assert!(state.details_column_visible(explorer_model::ColumnId::Name));
         assert!(state.details_column_menu().is_some());
+
+        let session = state.begin_details_column_popup_session();
+        let hide = dispatch_action(
+            &mut state,
+            ExplorerAction::SetDetailsColumnVisibility {
+                column: explorer_model::ColumnId::Size,
+                visible: false,
+                session_id: session,
+            },
+            ActionSource::Mouse,
+        );
+        assert_eq!(hide.handled_surface, FocusSurface::FileView);
+        assert!(!state.details_column_visible(explorer_model::ColumnId::Size));
+        let hide_again = dispatch_action(
+            &mut state,
+            ExplorerAction::SetDetailsColumnVisibility {
+                column: explorer_model::ColumnId::Size,
+                visible: false,
+                session_id: session,
+            },
+            ActionSource::Mouse,
+        );
+        assert_eq!(hide_again.handled_surface, FocusSurface::FileView);
+        assert!(!state.details_column_visible(explorer_model::ColumnId::Size));
+        let stale = dispatch_action(
+            &mut state,
+            ExplorerAction::SetDetailsColumnVisibility {
+                column: explorer_model::ColumnId::Size,
+                visible: true,
+                session_id: session + 1,
+            },
+            ActionSource::Mouse,
+        );
+        assert_eq!(stale.outcome, ActionOutcome::Disabled);
+        assert!(!state.details_column_visible(explorer_model::ColumnId::Size));
+        let hide_name = dispatch_action(
+            &mut state,
+            ExplorerAction::SetDetailsColumnVisibility {
+                column: explorer_model::ColumnId::Name,
+                visible: false,
+                session_id: session,
+            },
+            ActionSource::Mouse,
+        );
+        assert_eq!(hide_name.outcome, ActionOutcome::Disabled);
+        assert!(state.details_column_visible(explorer_model::ColumnId::Name));
+        assert_eq!(
+            state.details_column_menu(),
+            Some(explorer_model::ColumnId::Size)
+        );
 
         dispatch_action(
             &mut state,
