@@ -611,6 +611,7 @@ struct SearchJob {
     context: explorer_model::RequestContext,
     location: LocationDescriptor,
     input: explorer_model::SearchInput,
+    engine: explorer_model::SearchEnginePreference,
     worker_guard: IsolatedWorkerGuard,
 }
 
@@ -1319,6 +1320,7 @@ impl StaRuntime {
         context: explorer_model::RequestContext,
         location: LocationDescriptor,
         input: explorer_model::SearchInput,
+        engine: explorer_model::SearchEnginePreference,
     ) -> Result<(), ExplorerError> {
         let Some(worker_guard) = reserve_worker(
             &ACTIVE_SEARCH_WORKERS,
@@ -1345,6 +1347,7 @@ impl StaRuntime {
                 context,
                 location,
                 input,
+                engine,
                 worker_guard,
             })
             .map_err(|error| {
@@ -1539,8 +1542,11 @@ fn process_command(
         }
         ExplorerCommand::Cancel { .. } => Ok(()),
         ExplorerCommand::StartSearch {
-            location, input, ..
-        } => runtime.enqueue_search(context.clone(), location.clone(), input.clone()),
+            location,
+            input,
+            engine,
+            ..
+        } => runtime.enqueue_search(context.clone(), location.clone(), input.clone(), *engine),
         ExplorerCommand::LoadShellIcon { key, .. } => {
             let event = if context.cancellation.is_cancelled() {
                 ExplorerEvent::ShellIconFailed {
@@ -1971,6 +1977,7 @@ fn search_worker_loop(
             context,
             location,
             input,
+            engine,
             worker_guard: _worker_guard,
         } = job;
         #[cfg(test)]
@@ -2004,7 +2011,7 @@ fn search_worker_loop(
                 })
                 .and_then(|_apartment| {
                     crate::search::execute_with_terminals(
-                        &context, &location, &input, &events, &terminals,
+                        &context, &location, &input, engine, &events, &terminals,
                     )
                 })
         }))
@@ -3741,6 +3748,7 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
             context: context.clone(),
             location: LocationDescriptor::file_system(r"C:\definitely-missing-search-fixture"),
             input: explorer_model::SearchInput::new("held"),
+            engine: explorer_model::SearchEnginePreference::FileEnumeration,
         })
         .expect("submit held search");
         started_rx
@@ -3803,6 +3811,7 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
             context,
             location: LocationDescriptor::file_system(r"C:\held-search-join"),
             input: explorer_model::SearchInput::new("held"),
+            engine: explorer_model::SearchEnginePreference::FileEnumeration,
         })
         .expect("submit held search");
         started_rx
@@ -4993,6 +5002,7 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
             context,
             location: LocationDescriptor::file_system(r"C:\definitely-missing-shutdown-fixture"),
             input: explorer_model::SearchInput::new("shutdown"),
+            engine: explorer_model::SearchEnginePreference::FileEnumeration,
         })
         .expect("register active request");
         sta.shutdown();
@@ -5934,6 +5944,7 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
             context: first,
             location: location.clone(),
             input: explorer_model::SearchInput::new("name:never"),
+            engine: explorer_model::SearchEnginePreference::FileEnumeration,
         })
         .expect("submit first search");
         let second = window
@@ -5944,6 +5955,7 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
             context: second.clone(),
             location,
             input: explorer_model::SearchInput::new("專案 type:txt size:>10KB"),
+            engine: explorer_model::SearchEnginePreference::FileEnumeration,
         })
         .expect("submit replacement search");
 
@@ -6026,6 +6038,7 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
                 context,
                 location,
                 input: explorer_model::SearchInput::new(input),
+                engine: explorer_model::SearchEnginePreference::FileEnumeration,
             })
             .expect("submit per-tab search");
         }
@@ -6065,6 +6078,7 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
             context: replaced.clone(),
             location: location_b.clone(),
             input: explorer_model::SearchInput::new("name:never"),
+            engine: explorer_model::SearchEnginePreference::FileEnumeration,
         })
         .expect("submit replaced search");
         let replacement = window
@@ -6077,6 +6091,7 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
             context: replacement.clone(),
             location: location_b.clone(),
             input: explorer_model::SearchInput::new("beta"),
+            engine: explorer_model::SearchEnginePreference::FileEnumeration,
         })
         .expect("submit replacement search");
         let replacement_deadline = Instant::now() + Duration::from_secs(10);
@@ -6109,6 +6124,7 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
             context: cancelled.clone(),
             location: location_b.clone(),
             input: explorer_model::SearchInput::new("beta"),
+            engine: explorer_model::SearchEnginePreference::FileEnumeration,
         })
         .expect("submit navigation-cancelled search");
         drive_window_location(&sta, &mut window, tab_b, location_partial.clone(), false);
@@ -6123,6 +6139,7 @@ $ok=[Windows.Forms.Clipboard]::ContainsFileDropList() -and [Windows.Forms.Clipbo
             context: partial_context.clone(),
             location: location_partial,
             input: explorer_model::SearchInput::new("name:never"),
+            engine: explorer_model::SearchEnginePreference::FileEnumeration,
         })
         .expect("submit partial search");
         let partial_deadline = Instant::now() + Duration::from_secs(10);

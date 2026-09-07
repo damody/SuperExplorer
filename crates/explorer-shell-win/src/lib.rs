@@ -48,6 +48,7 @@ mod preview;
 mod process_current_directory;
 mod restart_manager;
 mod search;
+pub use search::probe_search_engine_availability;
 mod shell_new;
 mod sta;
 mod thumbnail;

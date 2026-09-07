@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 explorer-common = { path = "../explorer-common" }
 explorer-model = { path = "../explorer-model" }
+explorer-mft = { path = "../explorer-mft" }
 explorer-search = { path = "../explorer-search" }
 thiserror.workspace = true
 tracing.workspace = true

@@ -5122,6 +5122,9 @@ impl ApplicationLifecycle {
                                 );
                             },
                         ));
+                        root.attach_search_engine_probe(Rc::new(|location| {
+                            explorer_shell_win::probe_search_engine_availability(location)
+                        }));
                         root.attach_folder_options_window_observer(Rc::new(move |create, snapshot, cx| {
                             let existing = controller.borrow().window;
                             if let Some(existing) = existing {

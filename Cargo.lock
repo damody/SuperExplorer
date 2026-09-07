@@ -1991,6 +1991,7 @@ name = "explorer-shell-win"
 version = "0.1.0"
 dependencies = [
  "explorer-common",
+ "explorer-mft",
  "explorer-model",
  "explorer-remote",
  "explorer-search",
