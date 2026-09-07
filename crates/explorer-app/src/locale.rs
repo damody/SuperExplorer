@@ -1,6 +1,10 @@
 //! Windows display-language detection and startup locale resolution.
 
+use std::sync::Mutex;
+
 use explorer_i18n::{AppLocale, Catalog};
+
+static PROCESS_SESSION_LOCALE: Mutex<Option<AppLocale>> = Mutex::new(None);
 
 /// Process override used by uitest and fixtures. Invalid values are ignored.
 pub const LOCALE_ENV_VAR: &str = "SUPEREXPLORER_LOCALE";
@@ -42,11 +46,25 @@ pub fn resolve_app_locale_from_process(
     resolve_app_locale(env_override.as_deref(), session_locale, windows_tag)
 }
 
+/// Records the durable session locale preference for out-of-window prompts.
+pub fn publish_session_locale(preference: Option<AppLocale>) {
+    if let Ok(mut slot) = PROCESS_SESSION_LOCALE.lock() {
+        *slot = preference;
+    }
+}
+
+fn published_session_locale() -> Option<AppLocale> {
+    PROCESS_SESSION_LOCALE
+        .lock()
+        .ok()
+        .and_then(|slot| *slot)
+}
+
 /// Catalog for app-owned prompts that run outside a live Explorer window.
 #[must_use]
 pub fn live_catalog() -> Catalog {
     Catalog::new(resolve_app_locale_from_process(
-        None,
+        published_session_locale(),
         windows_display_locale_tag().as_deref(),
     ))
 }
@@ -134,5 +152,13 @@ mod tests {
             resolve_app_locale(Some("   "), None, None),
             AppLocale::En
         );
+    }
+
+    #[test]
+    fn published_session_locale_is_used_as_live_catalog_preference() {
+        super::publish_session_locale(Some(AppLocale::Ru));
+        assert_eq!(super::published_session_locale(), Some(AppLocale::Ru));
+        super::publish_session_locale(None);
+        assert_eq!(super::published_session_locale(), None);
     }
 }

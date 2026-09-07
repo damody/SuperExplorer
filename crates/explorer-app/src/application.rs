@@ -4462,6 +4462,7 @@ impl ApplicationLifecycle {
             session_locale,
             windows_locale_tag.as_deref(),
         );
+        crate::locale::publish_session_locale(session_locale);
         let extension_desired_states = extension_desired_states
             .into_iter()
             .map(|(package_id, enabled)| {
@@ -6134,6 +6135,7 @@ fn create_session_persistence(
         Arc::new(move |scope| reset_handle.request_reset(scope));
     let observer: explorer_ui::DurableStateObserver = Arc::new(
         move |window, restore_enabled, quick_access, bookmarks, placement, locale| {
+            crate::locale::publish_session_locale(locale);
             let write_generation = generation.fetch_add(1, Ordering::AcqRel);
             handle.accepted_runtime(
                 crate::session_lifecycle::DurableTransition::ViewSettingsChanged,
