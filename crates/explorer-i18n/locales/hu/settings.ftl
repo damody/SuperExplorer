@@ -3,6 +3,7 @@
 language-label = Nyelv
 
 language-follow-windows = Windows megjelenítési nyelve ({ $name })
+language-auto = Automatikus ({ $name })
 
 settings-language = Nyelv
 

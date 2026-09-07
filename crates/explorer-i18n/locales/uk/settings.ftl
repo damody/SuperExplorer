@@ -3,6 +3,7 @@
 language-label = Мова
 
 language-follow-windows = Мова інтерфейсу Windows ({ $name })
+language-auto = Авто ({ $name })
 
 settings-language = Мова
 

@@ -3,6 +3,7 @@
 language-label = ภาษา
 
 language-follow-windows = ภาษาที่แสดงของ Windows ({ $name })
+language-auto = อัตโนมัติ ({ $name })
 
 settings-language = ภาษา
 

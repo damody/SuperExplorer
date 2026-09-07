@@ -324,6 +324,13 @@ impl FolderOptionsDraft {
     pub fn is_dirty(&self) -> bool {
         self.applied_snapshot() != self.applied_baseline
     }
+
+    /// Extension desired-state is only written when the user changed plugin
+    /// enablement. Locale and view settings persist independently.
+    #[must_use]
+    pub fn requires_extension_persist(&self) -> bool {
+        self.extension_enabled != self.applied_baseline.extension_enabled
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -6995,6 +7002,25 @@ mod tests {
     }
 
     #[test]
+    fn locale_only_folder_options_change_does_not_require_extension_persist() {
+        let mut state = AppViewState::default();
+        state.open_folder_options();
+        let draft = state.folder_options().unwrap();
+        assert!(!draft.requires_extension_persist());
+
+        state.set_folder_option_locale_choice(super::LocaleChoice::Explicit(AppLocale::Ja));
+        let draft = state.folder_options().unwrap();
+        assert!(draft.is_dirty());
+        assert!(!draft.requires_extension_persist());
+
+        state.toggle_folder_option_extension(0);
+        assert!(state
+            .folder_options()
+            .unwrap()
+            .requires_extension_persist());
+    }
+
+    #[test]
     fn folder_options_follow_windows_apply_uses_negotiated_locale() {
         let mut state = AppViewState::default();
         state.configure_locale(AppLocale::Ja, Some(AppLocale::Ja), AppLocale::Ko);
@@ -7033,6 +7059,14 @@ mod tests {
         assert_eq!(
             strip_isolates(&Catalog::new(AppLocale::En).t_args("language-follow-windows", &args)),
             "Windows display language (日本語)"
+        );
+        assert_eq!(
+            strip_isolates(&Catalog::new(AppLocale::En).t_args("language-auto", &args)),
+            "Auto (日本語)"
+        );
+        assert_eq!(
+            strip_isolates(&Catalog::new(AppLocale::ZhTw).t_args("language-auto", &args)),
+            "自動（日本語）"
         );
         assert_eq!(
             Catalog::new(AppLocale::En).t("settings-language"),

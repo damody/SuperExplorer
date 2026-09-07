@@ -3,6 +3,7 @@
 language-label = 语言
 
 language-follow-windows = Windows 显示语言（{ $name }）
+language-auto = 自动（{ $name }）
 
 settings-language = 语言
 

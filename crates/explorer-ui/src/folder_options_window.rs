@@ -465,6 +465,30 @@ fn terminate_drag(slot: &mut Option<ScrollbarDragV1>) -> bool {
     slot.take().is_some()
 }
 
+fn update_scroll_handle_drag(
+    handle: &ScrollHandle,
+    pointer_y: Pixels,
+    grab_offset_y: f32,
+    minimum_thumb: f32,
+) -> bool {
+    let bounds = handle.bounds();
+    let viewport = f32::from(bounds.size.height).max(0.0);
+    let maximum = f32::from(handle.max_offset().y).max(0.0);
+    let pointer_local_y = f32::from(pointer_y - bounds.top());
+    let Some(target) = crate::interaction::scrollbar_target_offset(
+        viewport,
+        maximum,
+        minimum_thumb,
+        pointer_local_y,
+        grab_offset_y,
+    ) else {
+        return false;
+    };
+    let offset = handle.offset();
+    handle.set_offset(point(offset.x, px(-target)));
+    true
+}
+
 /// Root entity for the independent Folder Options native window.
 pub struct FolderOptionsWindow {
     tokens: UiTokens,
@@ -478,6 +502,9 @@ pub struct FolderOptionsWindow {
     cache_budget_inputs: Vec<gpui::Entity<EditableTextState>>,
     cache_budget_input_baseline: explorer_model::CacheBudgetSettingsV1,
     cache_usage_sampler: Arc<CacheUsageSamplerV1>,
+    language_picker_open: bool,
+    language_menu_scroll: ScrollHandle,
+    language_menu_drag: Option<f32>,
     _keystroke_subscription: Subscription,
 }
 
@@ -588,6 +615,9 @@ impl FolderOptionsWindow {
             cache_budget_inputs,
             cache_budget_input_baseline,
             cache_usage_sampler,
+            language_picker_open: false,
+            language_menu_scroll: ScrollHandle::new(),
+            language_menu_drag: None,
             _keystroke_subscription: keystroke_subscription,
         }
     }
@@ -602,9 +632,18 @@ impl FolderOptionsWindow {
 
     fn stop_drag(&mut self) {
         terminate_drag(&mut self.scrollbar_drag);
+        self.language_menu_drag = None;
     }
 
     fn update_drag(&mut self, pointer_y: Pixels) -> bool {
+        if let Some(grab_offset_y) = self.language_menu_drag {
+            return update_scroll_handle_drag(
+                &self.language_menu_scroll,
+                pointer_y,
+                grab_offset_y,
+                self.tokens.layout.minimum_hit_target.value(),
+            );
+        }
         let Some(drag) = self.scrollbar_drag else {
             return false;
         };
@@ -767,6 +806,101 @@ impl FolderOptionsWindow {
                     }),
             )
     }
+
+    fn language_menu_scrollbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = self.tokens.theme.colors;
+        let handle = self.language_menu_scroll.clone();
+        let bounds = handle.bounds();
+        let viewport = f32::from(bounds.size.height).max(0.0);
+        let maximum = f32::from(handle.max_offset().y).max(0.0);
+        let current = (-f32::from(handle.offset().y)).clamp(0.0, maximum);
+        let minimum_thumb = self.tokens.layout.minimum_hit_target.value();
+        let track_width = self.tokens.layout.content_spacing.value() * 1.5;
+        let thumb_width = (track_width - self.tokens.layout.focus_stroke.value() * 2.0).max(8.0);
+        let thumb_height =
+            crate::interaction::scrollbar_thumb_height(viewport, maximum, minimum_thumb)
+                .unwrap_or(viewport.max(1.0));
+        let thumb_top = if maximum > 0.0 {
+            current / maximum * (viewport - thumb_height).max(0.0)
+        } else {
+            0.0
+        };
+        let click_handle = handle.clone();
+        div()
+            .id("folder-options-language-menu-scrollbar")
+            .debug_selector(|| "folder-options-language-menu-scrollbar".to_owned())
+            .role(Role::ScrollBar)
+            .aria_label(
+                explorer_i18n::Catalog::new(self.snapshot.locale).t("a11y-folder-options-scrollbar"),
+            )
+            .aria_numeric_value(f64::from(current))
+            .aria_min_numeric_value(0.0)
+            .aria_max_numeric_value(f64::from(maximum))
+            .absolute()
+            .top_0()
+            .right_0()
+            .bottom_0()
+            .w(px(track_width))
+            .bg(colors.surface.to_gpui())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    let bounds = click_handle.bounds();
+                    let viewport = f32::from(bounds.size.height).max(0.0);
+                    let maximum = f32::from(click_handle.max_offset().y).max(0.0);
+                    if viewport <= 0.0 {
+                        cx.stop_propagation();
+                        return;
+                    }
+                    let current = (-f32::from(click_handle.offset().y)).clamp(0.0, maximum);
+                    let thumb_height = crate::interaction::scrollbar_thumb_height(
+                        viewport,
+                        maximum,
+                        minimum_thumb,
+                    )
+                    .unwrap_or(viewport);
+                    let thumb_top = if maximum > 0.0 {
+                        current / maximum * (viewport - thumb_height).max(0.0)
+                    } else {
+                        0.0
+                    };
+                    let pointer = f32::from(event.position.y - bounds.top());
+                    if maximum > 0.0 && pointer >= thumb_top && pointer <= thumb_top + thumb_height
+                    {
+                        this.language_menu_drag = Some(pointer - thumb_top);
+                    } else if maximum > 0.0 {
+                        let target = if pointer < thumb_top {
+                            current - viewport
+                        } else {
+                            current + viewport
+                        }
+                        .clamp(0.0, maximum);
+                        let offset = click_handle.offset();
+                        click_handle.set_offset(point(offset.x, px(-target)));
+                    }
+                    cx.stop_propagation();
+                    cx.notify();
+                    window.refresh();
+                }),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top(px(thumb_top))
+                    .right(px((track_width - thumb_width) / 2.0))
+                    .w(px(thumb_width))
+                    .h(px(thumb_height))
+                    .rounded(px(self.tokens.layout.corner_radius.value()))
+                    .bg(if maximum > 0.0 {
+                        colors.text_disabled.to_gpui()
+                    } else {
+                        colors.divider.to_gpui()
+                    })
+                    .when(maximum > 0.0, |thumb| {
+                        thumb.hover(|style| style.bg(colors.text_secondary.to_gpui()))
+                    }),
+            )
+    }
 }
 
 impl Focusable for FolderOptionsWindow {
@@ -791,6 +925,26 @@ impl Render for FolderOptionsWindow {
         let owner = self.owner;
         let on_action: ActionCallback = Rc::new(cx.listener(
             move |this, action: &ExplorerAction, window, cx| {
+                if matches!(action, ExplorerAction::ToggleFolderOptionsLanguagePicker) {
+                    this.language_picker_open = !this.language_picker_open;
+                    this.language_menu_drag = None;
+                    if this.language_picker_open {
+                        let offset = this.language_menu_scroll.offset();
+                        this.language_menu_scroll
+                            .set_offset(point(offset.x, px(0.0)));
+                    }
+                    cx.notify();
+                    window.refresh();
+                    return;
+                }
+                if matches!(
+                    action,
+                    ExplorerAction::SetFolderOptionLocaleChoice(_)
+                        | ExplorerAction::SetFolderOptionsPage(_)
+                ) {
+                    this.language_picker_open = false;
+                    this.language_menu_drag = None;
+                }
                 let close = matches!(
                     action,
                     ExplorerAction::CloseFolderOptions | ExplorerAction::ConfirmFolderOptions
@@ -916,7 +1070,8 @@ impl Render for FolderOptionsWindow {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
-                    if this.scrollbar_drag.take().is_some() {
+                    if this.scrollbar_drag.take().is_some() || this.language_menu_drag.take().is_some()
+                    {
                         cx.stop_propagation();
                         cx.notify();
                     }
@@ -925,7 +1080,8 @@ impl Render for FolderOptionsWindow {
             .on_mouse_up_out(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
-                    if this.scrollbar_drag.take().is_some() {
+                    if this.scrollbar_drag.take().is_some() || this.language_menu_drag.take().is_some()
+                    {
                         cx.stop_propagation();
                         cx.notify();
                     }
@@ -979,6 +1135,9 @@ impl Render for FolderOptionsWindow {
                 self.snapshot.cache_usage,
                 catalog,
                 self.snapshot.windows_negotiated_locale,
+                self.language_picker_open,
+                self.language_menu_scroll.clone(),
+                self.language_menu_scrollbar(cx).into_any_element(),
             ))
     }
 }
@@ -986,6 +1145,14 @@ impl Render for FolderOptionsWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn language_menu_exposes_a_dedicated_scrollbar() {
+        let source = include_str!("folder_options_window.rs");
+        assert!(source.contains("folder-options-language-menu-scrollbar"));
+        assert!(source.contains("language_menu_scroll"));
+        assert!(source.contains("language_menu_drag"));
+    }
 
     #[test]
     fn cache_budget_input_accepts_arbitrary_values_and_clamps_per_row() {

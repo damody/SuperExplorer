@@ -2,6 +2,7 @@
 
 language-label = Language
 language-follow-windows = Windows display language ({ $name })
+language-auto = Auto ({ $name })
 settings-language = Language
 settings-general = General
 settings-view = View

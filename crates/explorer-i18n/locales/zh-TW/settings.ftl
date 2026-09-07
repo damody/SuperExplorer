@@ -2,6 +2,7 @@
 
 language-label = 語言
 language-follow-windows = Windows 顯示語言（{ $name }）
+language-auto = 自動（{ $name }）
 settings-language = 語言
 settings-general = 一般
 settings-view = 檢視

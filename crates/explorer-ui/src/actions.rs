@@ -397,6 +397,7 @@ pub enum ExplorerAction {
     ToggleFolderOptionDetailsPane,
     ToggleFolderOptionPreviewPane,
     SetFolderOptionLocaleChoice(LocaleChoice),
+    ToggleFolderOptionsLanguagePicker,
     ToggleRestorePreviousSession,
     ResetSavedSession,
     ResetSavedViewSettings,
@@ -755,6 +756,7 @@ impl ExplorerAction {
             Self::ToggleFolderOptionDetailsPane => "ToggleFolderOptionDetailsPane",
             Self::ToggleFolderOptionPreviewPane => "ToggleFolderOptionPreviewPane",
             Self::SetFolderOptionLocaleChoice(_) => "SetFolderOptionLocaleChoice",
+            Self::ToggleFolderOptionsLanguagePicker => "ToggleFolderOptionsLanguagePicker",
             Self::ToggleRestorePreviousSession => "ToggleRestorePreviousSession",
             Self::ResetSavedSession => "ResetSavedSession",
             Self::ResetSavedViewSettings => "ResetSavedViewSettings",
@@ -1498,6 +1500,7 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::ToggleFolderOptionDetailsPane
         | ExplorerAction::ToggleFolderOptionPreviewPane
         | ExplorerAction::SetFolderOptionLocaleChoice(_)
+        | ExplorerAction::ToggleFolderOptionsLanguagePicker
         | ExplorerAction::ToggleRestorePreviousSession
         | ExplorerAction::ResetSavedSession
         | ExplorerAction::ResetSavedViewSettings
@@ -2179,6 +2182,7 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             state.set_folder_option_locale_choice(choice);
             FocusSurface::CommandBar
         }
+        ExplorerAction::ToggleFolderOptionsLanguagePicker => FocusSurface::CommandBar,
         ExplorerAction::ToggleRestorePreviousSession => {
             state.toggle_restore_previous_session();
             FocusSurface::CommandBar

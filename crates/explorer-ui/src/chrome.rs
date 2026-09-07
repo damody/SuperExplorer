@@ -3828,6 +3828,9 @@ pub(crate) fn folder_options_window_content(
     cache_usage: crate::folder_options_window::CacheUsageSnapshotV1,
     catalog: Catalog,
     windows_negotiated_locale: explorer_model::AppLocale,
+    language_picker_open: bool,
+    language_menu_scroll: gpui::ScrollHandle,
+    language_menu_scrollbar: gpui::AnyElement,
 ) -> impl IntoElement {
     use crate::actions::FolderOptionsPage;
 
@@ -3933,6 +3936,9 @@ pub(crate) fn folder_options_window_content(
                                 draft.locale_choice,
                                 catalog,
                                 windows_negotiated_locale,
+                                language_picker_open,
+                                language_menu_scroll,
+                                language_menu_scrollbar,
                                 on_action.clone(),
                             ))
                         })
@@ -4199,6 +4205,9 @@ fn folder_options_general_page(
     locale_choice: crate::state::LocaleChoice,
     catalog: Catalog,
     windows_negotiated_locale: explorer_model::AppLocale,
+    language_picker_open: bool,
+    language_menu_scroll: gpui::ScrollHandle,
+    language_menu_scrollbar: gpui::AnyElement,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     div()
@@ -4210,6 +4219,9 @@ fn folder_options_general_page(
             locale_choice,
             catalog,
             windows_negotiated_locale,
+            language_picker_open,
+            language_menu_scroll,
+            language_menu_scrollbar,
             on_action.clone(),
         ))
         .child(folder_option_group(
@@ -4269,13 +4281,21 @@ fn folder_options_language_picker(
     locale_choice: crate::state::LocaleChoice,
     catalog: Catalog,
     windows_negotiated_locale: explorer_model::AppLocale,
+    picker_open: bool,
+    language_menu_scroll: gpui::ScrollHandle,
+    language_menu_scrollbar: gpui::AnyElement,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     let mut follow_args = FluentArgs::new();
     follow_args.set("name", windows_negotiated_locale.native_name());
     let follow_label = catalog.t_args("language-follow-windows", &follow_args);
+    let auto_label = catalog.t_args("language-auto", &follow_args);
     let language_label = catalog.t("settings-language");
     let follow_selected = matches!(locale_choice, crate::state::LocaleChoice::FollowWindows);
+    let current_label = match locale_choice {
+        crate::state::LocaleChoice::FollowWindows => auto_label.clone(),
+        crate::state::LocaleChoice::Explicit(locale) => locale.native_name().to_owned(),
+    };
     div()
         .id("folder-options-language-picker")
         .role(Role::Group)
@@ -4291,34 +4311,97 @@ fn folder_options_language_picker(
                 .text_size(px(tokens.typography.address.size.value()))
                 .child(language_label),
         )
-        .child(folder_option_locale_row(
-            "folder-option-locale-follow-windows",
-            follow_label,
-            follow_selected,
-            ExplorerAction::SetFolderOptionLocaleChoice(crate::state::LocaleChoice::FollowWindows),
-            tokens,
-            on_action.clone(),
-        ))
-        .children(
-            explorer_model::AppLocale::ALL
-                .into_iter()
-                .map(move |locale| {
-                    let selected = matches!(
-                        locale_choice,
-                        crate::state::LocaleChoice::Explicit(selected) if selected == locale
-                    );
-                    folder_option_locale_row(
-                        SharedString::from(format!("folder-option-locale-{}", locale.bcp47())),
-                        locale.native_name().to_owned(),
-                        selected,
-                        ExplorerAction::SetFolderOptionLocaleChoice(
-                            crate::state::LocaleChoice::Explicit(locale),
-                        ),
-                        tokens,
-                        on_action.clone(),
-                    )
-                }),
+        .child(
+            div()
+                .id("folder-options-language-combo")
+                .role(Role::Button)
+                .aria_label(current_label.clone())
+                .h(px(tokens.layout.minimum_hit_target.value()))
+                .flex()
+                .items_center()
+                .justify_between()
+                .px(px(tokens.layout.content_spacing.value()))
+                .rounded(px(tokens.layout.corner_radius.value()))
+                .border(px(1.0))
+                .border_color(tokens.theme.colors.divider.to_gpui())
+                .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
+                .when_some(on_action.clone(), |row, callback| {
+                    row.on_click(move |_, window, cx| {
+                        callback(
+                            &ExplorerAction::ToggleFolderOptionsLanguagePicker,
+                            window,
+                            cx,
+                        )
+                    })
+                })
+                .child(current_label)
+                .child(if picker_open { "▴" } else { "▾" }),
         )
+        .when(picker_open, |picker| {
+            let menu_height = tokens.layout.minimum_hit_target.value() * 10.0;
+            let track_width = tokens.layout.content_spacing.value() * 1.5;
+            picker.child(
+                div()
+                    .id("folder-options-language-menu")
+                    .role(Role::List)
+                    .relative()
+                    .flex_none()
+                    .h(px(menu_height))
+                    .border(px(1.0))
+                    .border_color(tokens.theme.colors.divider.to_gpui())
+                    .child(
+                        div()
+                            .id("folder-options-language-menu-list")
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left_0()
+                            .right(px(track_width))
+                            .overflow_y_scroll()
+                            .track_scroll(&language_menu_scroll)
+                            .on_scroll_wheel(|_, window, cx| {
+                                cx.stop_propagation();
+                                window.refresh();
+                                cx.refresh_windows();
+                            })
+                            .child(folder_option_locale_row(
+                                "folder-option-locale-follow-windows",
+                                follow_label,
+                                follow_selected,
+                                ExplorerAction::SetFolderOptionLocaleChoice(
+                                    crate::state::LocaleChoice::FollowWindows,
+                                ),
+                                tokens,
+                                on_action.clone(),
+                            ))
+                            .children(
+                                explorer_model::AppLocale::ALL
+                                    .into_iter()
+                                    .map(move |locale| {
+                                        let selected = matches!(
+                                            locale_choice,
+                                            crate::state::LocaleChoice::Explicit(selected)
+                                                if selected == locale
+                                        );
+                                        folder_option_locale_row(
+                                            SharedString::from(format!(
+                                                "folder-option-locale-{}",
+                                                locale.bcp47()
+                                            )),
+                                            locale.native_name().to_owned(),
+                                            selected,
+                                            ExplorerAction::SetFolderOptionLocaleChoice(
+                                                crate::state::LocaleChoice::Explicit(locale),
+                                            ),
+                                            tokens,
+                                            on_action.clone(),
+                                        )
+                                    }),
+                            ),
+                    )
+                    .child(language_menu_scrollbar),
+            )
+        })
 }
 
 fn folder_option_locale_row(
@@ -17656,6 +17739,40 @@ mod tests {
             .next()
             .expect("extensions page has a bounded renderer");
         assert!(!extensions_page.contains(".overflow_y_scroll()"));
+    }
+
+    #[test]
+    fn folder_options_language_picker_is_a_combo_defaulting_to_follow_windows() {
+        let source = include_str!("chrome.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap();
+        let picker = production
+            .split("fn folder_options_language_picker(")
+            .nth(1)
+            .expect("language picker exists")
+            .split("\nfn ")
+            .next()
+            .expect("language picker has a bounded renderer");
+        for required in [
+            "folder-options-language-combo",
+            "folder-options-language-menu",
+            "folder-option-locale-follow-windows",
+            "language-auto",
+            "language-follow-windows",
+            "LocaleChoice::FollowWindows",
+            "AppLocale::ALL",
+            "ToggleFolderOptionsLanguagePicker",
+            "folder-options-language-menu-list",
+            "language_menu_scrollbar",
+        ] {
+            assert!(
+                picker.contains(required),
+                "missing language picker contract: {required}"
+            );
+        }
+        assert!(picker.contains(".when(picker_open"));
+        assert!(picker.contains(".overflow_y_scroll()"));
+        assert!(picker.contains(".track_scroll(&language_menu_scroll)"));
+        assert!(picker.contains("cx.stop_propagation()"));
     }
 
     #[test]

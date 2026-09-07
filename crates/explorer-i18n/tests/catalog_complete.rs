@@ -66,6 +66,7 @@ fn every_locale_matches_english_message_id_set() {
     assert!(expected.contains("menu-copy"));
     assert!(expected.contains("file-size-unit-kb"));
     assert!(expected.contains("language-follow-windows"));
+    assert!(expected.contains("language-auto"));
 
     for locale in AppLocale::ALL {
         let dir = locales_root().join(locale.bcp47());

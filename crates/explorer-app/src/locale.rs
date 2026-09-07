@@ -139,6 +139,15 @@ mod tests {
     }
 
     #[test]
+    fn unmatched_or_missing_windows_tag_falls_back_to_english() {
+        assert_eq!(
+            resolve_app_locale(None, None, Some("xx-YY")),
+            AppLocale::En
+        );
+        assert_eq!(resolve_app_locale(None, None, None), AppLocale::En);
+    }
+
+    #[test]
     fn invalid_env_is_ignored() {
         assert_eq!(
             resolve_app_locale(Some("klingon"), Some(AppLocale::Ru), Some("ja")),

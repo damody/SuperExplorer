@@ -3954,7 +3954,9 @@ impl ExplorerRoot {
         let Some(draft) = self.state.folder_options() else {
             return false;
         };
-        if let Some(extension_observer) = &self.extension_settings_observer {
+        if draft.requires_extension_persist()
+            && let Some(extension_observer) = &self.extension_settings_observer
+        {
             let desired = self
                 .state
                 .extensions()
