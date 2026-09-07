@@ -8,15 +8,55 @@ A Windows 11 file explorer written in Rust with [GPUI-CE](https://github.com/gpu
 
 > This project is under active development. It is Windows-only and is not a drop-in replacement for every Windows Explorer shell feature.
 
-## Highlights
+## Features
 
-- Tabbed folder navigation with Back, Forward, Up, address-bar, and search workflows.
-- Real folder enumeration, file-system watching, sorting, and multiple view layouts.
-- Native file operations, including create, rename, copy, move, delete, conflict handling, cancellation, and undo journaling.
-- Windows clipboard, OLE drag-and-drop, shell icons, overlays, and native context-menu integration.
-- Improved Windows drag-and-drop behavior with tighter OLE state transitions and lower interaction jitter in high-frequency pointer input.
-- Indexed-search probing with a bounded file-system fallback.
+### Navigation and views
+
+- Tabbed folder navigation with Back, Forward, Up, address bar, breadcrumbs, and search.
+- Real folder enumeration, file-system watching, sorting, filtering, and Details / icon / thumbnail layouts.
+- Session restore for tabs, pins, view settings, and window placement.
 - Light, dark, and high-contrast themes; DPI-aware layout; keyboard navigation; IME input; and UI Automation semantics.
+
+### Details columns
+
+- Built-in columns for Name, Date modified, Type, Size, Date created, Authors, Tags, Title, File Count, Folder Count, and Permissions.
+- File Count and Folder Count are visible by default on a fresh Details layout. Existing saved layouts keep their previous visibility.
+- Header right-click opens a Windows 11-style column chooser: visible columns show a check mark, enabled rows can be toggled repeatedly without closing the menu, and Name stays checked and locked. Auto-size commands still dismiss the menu.
+- Column reorder, resize, auto-size, and per-tab persistence.
+
+### File operations
+
+- Native create, rename, copy, move, delete, conflict handling, cancellation, and undo journaling.
+- Windows clipboard interoperability and OLE drag-and-drop with Explorer, including copy/move across volumes and remote providers.
+- Multi-transfer center with progress, speed, and cancellation.
+- Process lock-owner detection and recovery when a file or folder is in use.
+
+### Remote filesystems
+
+- ADB (Android), SFTP, FTP, and Google Drive browsing with address-bar login where required.
+- Cross-provider copy/move, remote properties and permissions, and symlink / shortcut creation where the provider supports it.
+- Local APK install onto a connected Android device, with status notices.
+
+### Search, metadata, and performance
+
+- Indexed-search probing (including Everything when available) with a bounded file-system fallback.
+- MFT-backed folder size, File Count, and Folder Count for local NTFS volumes, shared across windows through the MFT service.
+- Shell icons, overlays, BC7 icon/thumbnail caches, and a Preview pane with trusted rasters or Windows Preview Handlers.
+
+### Bookmarks, automation, and extensions
+
+- Bookmark toolbar and manager for folders, files, and Lua commands.
+- Extensible plugin platform (Rust DLL and Lua packages) for extra columns, views, and commands, including folder-size bars, Size Map, Code Lines, 7-Zip virtual folders, and lock-owner columns.
+- Folder Options window for view preferences, language, extension enablement, cache budgets, and scoped session reset.
+
+### Shell integration
+
+- Native immersive context menus for local files, with the same visual style for application-owned popups.
+- Namespace roots such as This PC, Quick Access, Libraries, ZIP, Recycle Bin, and Network where the Shell exposes them.
+- Windows 11-inspired chrome, taskbar/start integration through SuperDesktop when installed, and an NSIS installer.
+
+### Validation
+
 - Automated unit, integration, architecture, visual, accessibility, lifecycle, and Windows interop validation scripts.
 
 ## Requirements
@@ -102,16 +142,22 @@ See [Explorer UITest](docs/UITEST.md), [Manual Tests](docs/MANUAL_TESTS.md), and
 
 | Path | Responsibility |
 | --- | --- |
-| `crates/explorer-app` | Application startup, Windows prerequisites, and GPUI composition root |
+| `crates/explorer-app` | Application startup, Windows prerequisites, MFT service, and GPUI composition root |
 | `crates/explorer-common` | Shared diagnostics and error types |
+| `crates/explorer-i18n` | Embedded Fluent catalogs and locale negotiation |
 | `crates/explorer-jobs` | Background job coordination |
 | `crates/explorer-model` | Navigation, operations, window, and domain models |
+| `crates/explorer-mft` | NTFS MFT index and folder-aggregate queries |
+| `crates/explorer-remote` | ADB, SFTP, FTP, and Google Drive providers |
 | `crates/explorer-search` | Query parsing and search engine |
-| `crates/explorer-shell-win` | Native Windows Shell, clipboard, OLE, icons, and file operations |
+| `crates/explorer-shell-win` | Native Windows Shell, clipboard, OLE, immersive popups, icons, and file operations |
 | `crates/explorer-ui` | GPUI interface, state, layout, themes, and interaction |
+| `crates/explorer-extension-host` | Plugin loading, package validation, and contribution runtime |
+| `crates/explorer-extension-broker` | Isolated broker/worker for Shell providers and Preview Handlers |
 | `crates/explorer-test-support` | Shared test fixtures and helpers |
 | `crates/explorer-uitest` | Manifest-driven OpenSpec coverage and regression runner |
 | `vendor/gpui-ce` | Pinned GPUI-CE Git submodule |
+| `SuperDesktop` | Optional desktop-shell companion (submodule; not modified by ordinary app commits) |
 | `scripts` | Build, smoke-test, interop, accessibility, and visual-validation scripts |
 | `docs` | Status, evidence, testing guides, and implementation notes |
 
@@ -126,9 +172,10 @@ See [Explorer UITest](docs/UITEST.md), [Manual Tests](docs/MANUAL_TESTS.md), and
 ## Known Limitations
 
 - The application currently targets Windows only.
-- The implementation is file-system-first; full Shell namespace support, thumbnail and preview handlers, and brokered third-party extensions remain future hardening work.
-- Some OLE drag-and-drop, mixed-DPI, Narrator, and Explorer-to-app scenarios require manual validation on a real interactive Windows desktop.
-- Search availability and behavior depend on Windows Search configuration; the application uses a bounded fallback when indexed search is unavailable.
+- Preview Handler rendering, cloud availability, Network discovery, and third-party namespace/handler behavior depend on the installed Windows environment.
+- Some OLE drag-and-drop, mixed-DPI, Narrator, and Explorer-to-app scenarios still need manual validation on a real interactive Windows desktop.
+- Search availability and behavior depend on Windows Search / Everything configuration; the application uses a bounded fallback when indexed search is unavailable.
+- Saved Details layouts keep their previous column visibility; File Count and Folder Count default to visible only on a fresh layout.
 
 See [Final Handoff](docs/FINAL_HANDOFF.md) for the detailed validation state and remaining gaps.
 

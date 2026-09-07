@@ -8,16 +8,56 @@
 
 > 本專案仍在積極開發中，僅支援 Windows，尚未涵蓋 Windows 檔案總管的所有 Shell 功能。
 
-## 功能特色
+## 功能
 
-- 支援分頁資料夾瀏覽，以及上一頁、下一頁、上一層、位址列與搜尋操作。
-- 實際資料夾列舉、檔案系統監看、排序與多種檢視版面。
-- 原生檔案操作，包括建立、重新命名、複製、移動、刪除、衝突處理、取消與復原日誌。
-- 整合 Windows 剪貼簿、OLE 拖放、Shell 圖示、覆疊圖示與原生快顯功能表。
-- 優先探測索引搜尋，無法使用時改用有界限的檔案系統搜尋。
-- 支援淺色、深色與高對比主題、DPI 感知版面、鍵盤導覽、輸入法及 UI Automation 語意。
+### 瀏覽與檢視
+
+- 支援分頁資料夾瀏覽，以及上一頁、下一頁、上一層、位址列、階層連結與搜尋。
+- 實際資料夾列舉、檔案系統監看、排序、篩選，以及詳細資料／圖示／縮圖版面。
+- 可還原分頁、釘選、檢視設定與視窗位置。
+- 淺色、深色與高對比主題、DPI 感知版面、鍵盤導覽、輸入法及 UI Automation 語意。
+
+### 詳細資料欄位
+
+- 內建欄位包含名稱、修改日期、類型、大小、建立日期、作者、標籤、標題、File Count、Folder Count 與權限。
+- 全新詳細資料版面預設顯示 File Count 與 Folder Count；既有已儲存版面維持原本的顯示狀態。
+- 欄位標題右鍵開啟 Windows 11 風格欄位選單：已顯示欄位會出現勾選，可連續勾選／取消而不關閉選單，Name 維持勾選且鎖定。自動調整欄寬仍會關閉選單。
+- 支援欄位重排、調整寬度、自動調整與依分頁保存。
+
+### 檔案操作
+
+- 原生建立、重新命名、複製、移動、刪除、衝突處理、取消與復原日誌。
+- Windows 剪貼簿互通與對檔案總管的 OLE 拖放，包含跨磁碟與遠端提供者的複製／移動。
+- 多筆傳輸中心，顯示進度、速度與取消。
+- 檔案或資料夾被占用時可偵測鎖定行程並提供解除方式。
+
+### 遠端檔案系統
+
+- 支援 ADB（Android）、SFTP、FTP 與 Google 雲端硬碟瀏覽，必要時由位址列登入。
+- 跨提供者複製／移動、遠端內容與權限，以及提供者支援的符號連結／捷徑。
+- 可將本機 APK 安裝到已連線的 Android 裝置，並顯示狀態通知。
+
+### 搜尋、中繼資料與效能
+
+- 優先探測索引搜尋（包含可用時的 Everything），無法使用時改用有界限的檔案系統搜尋。
+- 本機 NTFS 透過 MFT 服務提供資料夾大小、File Count 與 Folder Count，並在視窗間共用。
+- Shell 圖示、覆疊圖示、BC7 圖示／縮圖快取，以及預覽窗格（可信點陣或 Windows Preview Handler）。
+
+### 書籤、自動化與擴充
+
+- 書籤工具列與管理員，可指向資料夾、檔案或 Lua 指令。
+- 可擴充外掛平台（Rust DLL 與 Lua 套件）可提供額外欄位、檢視與指令，例如資料夾大小長條、Size Map、程式碼行數、7-Zip 虛擬資料夾與鎖定行程欄。
+- 資料夾選項視窗可設定檢視偏好、語言、擴充啟用、快取預算與範圍化工作階段重設。
+
+### Shell 整合
+
+- 本機檔案使用沉浸式原生快顯功能表，應用程式自有彈出選單採相同視覺風格。
+- 支援此電腦、快速存取、文件庫、ZIP、資源回收筒與網路上的芳鄰等 Shell 命名空間根（視系統是否提供）。
+- Windows 11 風格介面；安裝 SuperDesktop 時可整合工作列／開始功能表，並提供 NSIS 安裝程式。
+
+### 驗證
+
 - 提供單元、整合、架構、視覺、協助工具、生命週期與 Windows 互通性驗證腳本。
-- 強化 Windows 拖放行為，修正 OLE 拖放狀態轉換，降低高頻指標輸入時的互動抖動。
 
 ## 系統需求
 
@@ -93,15 +133,22 @@ Windows 圖形介面與視覺檢查需要互動式桌面工作階段。常用進
 
 | 路徑 | 職責 |
 | --- | --- |
-| `crates/explorer-app` | 應用程式啟動、Windows 前置需求與 GPUI 組合根節點 |
+| `crates/explorer-app` | 應用程式啟動、Windows 前置需求、MFT 服務與 GPUI 組合根節點 |
 | `crates/explorer-common` | 共用診斷與錯誤型別 |
+| `crates/explorer-i18n` | 內嵌 Fluent 目錄與語系協商 |
 | `crates/explorer-jobs` | 背景工作協調 |
 | `crates/explorer-model` | 導覽、操作、視窗與領域模型 |
+| `crates/explorer-mft` | NTFS MFT 索引與資料夾彙總查詢 |
+| `crates/explorer-remote` | ADB、SFTP、FTP 與 Google 雲端硬碟提供者 |
 | `crates/explorer-search` | 查詢剖析與搜尋引擎 |
-| `crates/explorer-shell-win` | 原生 Windows Shell、剪貼簿、OLE、圖示與檔案操作 |
+| `crates/explorer-shell-win` | 原生 Windows Shell、剪貼簿、OLE、沉浸式彈出選單、圖示與檔案操作 |
 | `crates/explorer-ui` | GPUI 介面、狀態、版面、主題與互動 |
+| `crates/explorer-extension-host` | 外掛載入、套件驗證與貢獻執行階段 |
+| `crates/explorer-extension-broker` | 隔離 Broker／Worker，承載 Shell 提供者與 Preview Handler |
 | `crates/explorer-test-support` | 共用測試固定資料與輔助工具 |
+| `crates/explorer-uitest` | 依 OpenSpec 清單驅動的涵蓋率與迴歸執行器 |
 | `vendor/gpui-ce` | 固定版本的 GPUI-CE Git submodule |
+| `SuperDesktop` | 可選的桌面殼層伴隨專案（submodule；一般應用程式提交不會改動） |
 | `scripts` | 建置、冒煙測試、互通性、協助工具與視覺驗證腳本 |
 | `docs` | 狀態、證據、測試指南與實作說明 |
 
@@ -116,9 +163,10 @@ Windows 圖形介面與視覺檢查需要互動式桌面工作階段。常用進
 ## 已知限制
 
 - 應用程式目前僅支援 Windows。
-- 現階段以檔案系統為主；完整 Shell 命名空間、縮圖與預覽處理常式，以及由 Broker 隔離的第三方擴充仍屬後續強化項目。
-- 部分 OLE 拖放、混合 DPI、朗讀程式與 Explorer 到應用程式的情境，需要在實際的互動式 Windows 桌面手動驗證。
-- 搜尋可用性與行為取決於 Windows Search 設定；索引搜尋無法使用時，應用程式會採用有界限的後備搜尋。
+- Preview Handler 繪製、雲端可用性、網路上的芳鄰探索，以及第三方命名空間／處理常式行為，取決於已安裝的 Windows 環境。
+- 部分 OLE 拖放、混合 DPI、朗讀程式與 Explorer 到應用程式的情境，仍需在實際的互動式 Windows 桌面手動驗證。
+- 搜尋可用性與行為取決於 Windows Search／Everything 設定；索引搜尋無法使用時，應用程式會採用有界限的後備搜尋。
+- 已儲存的詳細資料版面會保留先前的欄位顯示狀態；File Count 與 Folder Count 僅在全新版面預設顯示。
 
 詳細驗證狀態與剩餘缺口請參閱[最終交接文件](docs/FINAL_HANDOFF.md)。
 
