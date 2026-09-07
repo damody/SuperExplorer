@@ -988,6 +988,27 @@ impl MftSqliteStoreV1 {
         load_index_from_connection(&self.connection)
     }
 
+    /// Read-only filename search load. Identity/journal matching is the service's job;
+    /// search only needs reconstructed names from the admitted store.
+    pub fn load_index_read_only_for_search(
+        path: &Path,
+        fixed_root: &Path,
+    ) -> Result<MftIndexV1, String> {
+        validate_store_path(path, fixed_root)?;
+        if !path.is_file() {
+            return Err("MFT SQLite store is unavailable".to_owned());
+        }
+        let connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|error| error.to_string())?;
+        connection
+            .busy_timeout(BUSY_TIMEOUT)
+            .map_err(|error| error.to_string())?;
+        load_index_from_connection(&connection)
+    }
+
     pub fn canonical_members(path: &Path) -> [PathBuf; 3] {
         [
             path.to_path_buf(),

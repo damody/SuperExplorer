@@ -465,6 +465,34 @@ impl MftIndexV1 {
         Ok(affected)
     }
 
+    /// Rebuilds the NTFS path for one record by walking parent references to the volume root.
+    pub fn reconstructed_path(
+        &self,
+        reference: u64,
+        volume_root: &Path,
+    ) -> Option<std::path::PathBuf> {
+        let mut names = Vec::new();
+        let mut current = reference;
+        for _ in 0..1_024 {
+            let entry = self.entries.get(&current)?;
+            if entry.reference == entry.parent_reference
+                || !self.entries.contains_key(&entry.parent_reference)
+            {
+                break;
+            }
+            if !entry.name.is_empty() && entry.name != "." {
+                names.push(entry.name.clone());
+            }
+            current = entry.parent_reference;
+        }
+        names.reverse();
+        let mut path = volume_root.to_path_buf();
+        for name in names {
+            path.push(name);
+        }
+        Some(path)
+    }
+
     pub fn ancestor_references(&self, reference: u64) -> Vec<u64> {
         let mut ancestors = Vec::new();
         let mut current = reference;
@@ -1510,6 +1538,51 @@ mod tests {
         let restored = read_index(&path).unwrap();
         std::fs::remove_file(path).unwrap();
         assert_eq!(restored.entries.get(&42), Some(&entry));
+    }
+
+    #[test]
+    fn reconstructed_path_walks_parent_names_and_skips_volume_root() {
+        let root = MftEntryV1 {
+            reference: 5,
+            parent_reference: 5,
+            name: String::new(),
+            logical_bytes: 0,
+            allocated_bytes: 0,
+            is_directory: true,
+        };
+        let users = MftEntryV1 {
+            reference: 12,
+            parent_reference: 5,
+            name: "Users".to_owned(),
+            logical_bytes: 0,
+            allocated_bytes: 0,
+            is_directory: true,
+        };
+        let file = MftEntryV1 {
+            reference: 34,
+            parent_reference: 12,
+            name: "報告.txt".to_owned(),
+            logical_bytes: 8,
+            allocated_bytes: 4096,
+            is_directory: false,
+        };
+        let index = MftIndexV1::from_entries(BTreeMap::from([
+            (root.reference, root),
+            (users.reference, users),
+            (file.reference, file),
+        ]));
+        assert_eq!(
+            index
+                .reconstructed_path(34, Path::new(r"C:\"))
+                .expect("path"),
+            Path::new(r"C:\Users\報告.txt")
+        );
+        assert_eq!(
+            index
+                .reconstructed_path(5, Path::new(r"C:\"))
+                .expect("root"),
+            Path::new(r"C:\")
+        );
     }
 
     #[test]
