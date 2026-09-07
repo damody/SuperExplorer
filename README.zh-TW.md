@@ -8,6 +8,8 @@
 
 > 本專案仍在積極開發中，僅支援 Windows，尚未涵蓋 Windows 檔案總管的所有 Shell 功能。
 
+![SuperExplorer 以詳細資料檢視瀏覽資料夾](docs/images/superexplorer-window.png)
+
 ## 功能
 
 ### 瀏覽與檢視

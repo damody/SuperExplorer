@@ -8,6 +8,8 @@ A Windows 11 file explorer written in Rust with [GPUI-CE](https://github.com/gpu
 
 > This project is under active development. It is Windows-only and is not a drop-in replacement for every Windows Explorer shell feature.
 
+![SuperExplorer browsing a folder in Details view](docs/images/superexplorer-window.png)
+
 ## Features
 
 ### Navigation and views

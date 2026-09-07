@@ -6,6 +6,8 @@
 
 > 本项目仍在积极开发中，仅支持 Windows，尚未覆盖 Windows 文件资源管理器的全部 Shell 功能。
 
+![SuperExplorer 以详细信息视图浏览文件夹](docs/images/superexplorer-window.png)
+
 ## 功能亮点
 
 - 支持多标签页文件夹导航，以及后退、前进、向上、地址栏和搜索操作。
