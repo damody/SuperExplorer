@@ -13,6 +13,7 @@ menu-open-in-new-tab = Megnyitás új lapon
 menu-rename = Átnevezés
 
 menu-delete = Törlés
+menu-share = Megosztás
 
 menu-properties = Tulajdonságok
 

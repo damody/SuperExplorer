@@ -13,6 +13,7 @@ menu-open-in-new-tab = Apri in una nuova scheda
 menu-rename = Rinomina
 
 menu-delete = Elimina
+menu-share = Condividi
 
 menu-properties = Proprietà
 

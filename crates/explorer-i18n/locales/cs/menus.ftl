@@ -13,6 +13,7 @@ menu-open-in-new-tab = Otevřít na nové kartě
 menu-rename = Přejmenovat
 
 menu-delete = Odstranit
+menu-share = Sdílet
 
 menu-properties = Vlastnosti
 

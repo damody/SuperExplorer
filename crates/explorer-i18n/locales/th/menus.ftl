@@ -13,6 +13,7 @@ menu-open-in-new-tab = เปิดในแท็บใหม่
 menu-rename = เปลี่ยนชื่อ
 
 menu-delete = ลบ
+menu-share = แชร์
 
 menu-properties = คุณสมบัติ
 

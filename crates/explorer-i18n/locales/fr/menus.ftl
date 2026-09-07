@@ -13,6 +13,7 @@ menu-open-in-new-tab = Ouvrir dans un nouvel onglet
 menu-rename = Renommer
 
 menu-delete = Supprimer
+menu-share = Partager
 
 menu-properties = Propriétés
 

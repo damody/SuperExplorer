@@ -13,6 +13,7 @@ menu-open-in-new-tab = Mở trong tab mới
 menu-rename = Đổi tên
 
 menu-delete = Xóa
+menu-share = Chia sẻ
 
 menu-properties = Thuộc tính
 

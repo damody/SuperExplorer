@@ -7,6 +7,7 @@ menu-open = Open
 menu-open-in-new-tab = Open in new tab
 menu-rename = Rename
 menu-delete = Delete
+menu-share = Share
 menu-properties = Properties
 menu-new-folder = New folder
 menu-new-shortcut = New shortcut

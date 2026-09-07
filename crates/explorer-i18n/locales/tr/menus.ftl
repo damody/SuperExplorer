@@ -13,6 +13,7 @@ menu-open-in-new-tab = Yeni sekmede aç
 menu-rename = Yeniden adlandır
 
 menu-delete = Sil
+menu-share = Paylaş
 
 menu-properties = Özellikler
 

@@ -5592,7 +5592,7 @@ impl RenderOnce for CommandBar {
             )
             .child(semantic_button_with_popup(
                 "command-new",
-                "Create a new item",
+                catalog.t("menu-new"),
                 Some(ExplorerIcon::New),
                 Some(catalog.t("menu-new").into()),
                 Some(ExplorerAction::ToggleNewMenu),
@@ -5614,7 +5614,7 @@ impl RenderOnce for CommandBar {
                 element
                     .child(semantic_button(
                         "command-cut",
-                        "Cut selected items",
+                        catalog.t("menu-cut"),
                         Some(ExplorerIcon::Cut),
                         None,
                         Some(ExplorerAction::CutSelected),
@@ -5624,7 +5624,7 @@ impl RenderOnce for CommandBar {
                     ))
                     .child(semantic_button(
                         "command-copy",
-                        "Copy selected items",
+                        catalog.t("menu-copy"),
                         Some(ExplorerIcon::Copy),
                         None,
                         Some(ExplorerAction::CopySelected),
@@ -5634,7 +5634,7 @@ impl RenderOnce for CommandBar {
                     ))
                     .child(semantic_button(
                         "command-paste",
-                        "Paste clipboard items",
+                        catalog.t("menu-paste"),
                         Some(ExplorerIcon::Paste),
                         None,
                         Some(ExplorerAction::Paste),
@@ -5644,7 +5644,7 @@ impl RenderOnce for CommandBar {
                     ))
                     .child(semantic_button(
                         "command-rename",
-                        "Rename selected item",
+                        catalog.t("menu-rename"),
                         Some(ExplorerIcon::Rename),
                         None,
                         Some(ExplorerAction::BeginRenameFocused),
@@ -5654,7 +5654,7 @@ impl RenderOnce for CommandBar {
                     ))
                     .child(semantic_button(
                         "command-share",
-                        "Share selected items",
+                        catalog.t("menu-share"),
                         Some(ExplorerIcon::Share),
                         None,
                         Some(ExplorerAction::ShareSelected),
@@ -5664,7 +5664,7 @@ impl RenderOnce for CommandBar {
                     ))
                     .child(semantic_button(
                         "command-delete",
-                        "Move selected items to the Recycle Bin",
+                        catalog.t("menu-delete"),
                         Some(ExplorerIcon::Delete),
                         None,
                         Some(ExplorerAction::RecycleDeleteSelected),
@@ -5675,7 +5675,7 @@ impl RenderOnce for CommandBar {
             })
             .child(semantic_button_with_popup(
                 "command-sort",
-                "Sort",
+                catalog.t("menu-sort"),
                 Some(ExplorerIcon::Sort),
                 Some(catalog.t("menu-sort").into()),
                 Some(ExplorerAction::ToggleSortMenu),
@@ -5695,7 +5695,7 @@ impl RenderOnce for CommandBar {
             ))
             .child(semantic_button_with_popup(
                 "command-view",
-                "View",
+                catalog.t("menu-view"),
                 Some(ExplorerIcon::View),
                 Some(catalog.t("menu-view").into()),
                 Some(ExplorerAction::ToggleViewMenu),
@@ -7145,7 +7145,7 @@ impl RenderOnce for NavigationBar {
             ))
             .child(semantic_button(
                 "navigation-up",
-                "Up",
+                self.state.catalog().t("chrome-up"),
                 Some(ExplorerIcon::Up),
                 None,
                 Some(ExplorerAction::Up),
@@ -7155,7 +7155,7 @@ impl RenderOnce for NavigationBar {
             ))
             .child(semantic_button(
                 "navigation-refresh",
-                "Refresh",
+                self.state.catalog().t("desktop-menu-refresh"),
                 Some(ExplorerIcon::Refresh),
                 None,
                 Some(ExplorerAction::Refresh),
@@ -12343,6 +12343,30 @@ fn admission_cell_presentation(
     )
 }
 
+struct HoverTooltip {
+    label: SharedString,
+    colors: crate::theme::SemanticColors,
+    layout: crate::layout::LayoutTokens,
+    text_size: f32,
+}
+
+impl Render for HoverTooltip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("hover-tooltip")
+            .px(px(self.layout.control_padding_horizontal.value()))
+            .py(px(self.layout.content_spacing.value() / 2.0))
+            .rounded(px(self.layout.corner_radius.value()))
+            .border_1()
+            .border_color(self.colors.divider.to_gpui())
+            .bg(self.colors.menu_fill.to_gpui())
+            .text_size(px(self.text_size))
+            .text_color(self.colors.text_primary.to_gpui())
+            .shadow_md()
+            .child(self.label.clone())
+    }
+}
+
 struct AdmissionLimitTooltip {
     reason: SharedString,
     colors: crate::theme::SemanticColors,
@@ -14308,7 +14332,18 @@ fn navigation_history_button(
             if enabled { "enabled" } else { "disabled" },
         ))
         .child(navigation_history_icon(id, icon, enabled, tokens))
-        .child(semantic_tooltip(semantic_label))
+        .tooltip({
+            let label = semantic_label.clone();
+            move |_, cx| {
+                cx.new(|_| HoverTooltip {
+                    label: label.clone(),
+                    colors,
+                    layout: tokens.layout,
+                    text_size: tokens.typography.tooltip.size.value(),
+                })
+                .into()
+            }
+        })
         .when(menu_open, |element| {
             element.child(navigation_history_menu(
                 tokens,
@@ -14498,12 +14533,19 @@ fn semantic_button_with_popup(
                 })
                 .when_some(visible_label, ParentElement::child),
         )
-        .child(semantic_tooltip(semantic_label))
+        .tooltip({
+            let label = semantic_label.clone();
+            move |_, cx| {
+                cx.new(|_| HoverTooltip {
+                    label: label.clone(),
+                    colors,
+                    layout,
+                    text_size: tokens.typography.tooltip.size.value(),
+                })
+                .into()
+            }
+        })
         .when_some(popup, ParentElement::child)
-}
-
-fn semantic_tooltip(label: SharedString) -> impl IntoElement {
-    div().absolute().invisible().child(label)
 }
 
 fn right_drag_terminal_menu(
@@ -17938,6 +17980,10 @@ mod tests {
         assert!(production.contains("fn sort_menu("));
         assert!(production.contains("fn view_menu("));
         assert!(production.contains("fn semantic_button_with_popup("));
+        assert!(production.contains("catalog.t(\"menu-cut\")"));
+        assert!(production.contains("catalog.t(\"menu-share\")"));
+        assert!(production.contains(".tooltip({"));
+        assert!(production.contains("struct HoverTooltip"));
         assert!(production.contains("self.state.sort_menu_open().then(||"));
         assert!(production.contains("self.state.view_menu_open().then(||"));
         assert!(production.contains(".debug_selector(|| \"sort-menu\".to_owned())"));

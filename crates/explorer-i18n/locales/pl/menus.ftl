@@ -13,6 +13,7 @@ menu-open-in-new-tab = Otwórz w nowej karcie
 menu-rename = Zmień nazwę
 
 menu-delete = Usuń
+menu-share = Udostępnij
 
 menu-properties = Właściwości
 

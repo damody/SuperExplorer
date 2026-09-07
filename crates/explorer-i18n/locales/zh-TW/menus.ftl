@@ -7,6 +7,7 @@ menu-open = 開啟
 menu-open-in-new-tab = 在新分頁開啟
 menu-rename = 重新命名
 menu-delete = 刪除
+menu-share = 分享
 menu-properties = 內容
 menu-new-folder = 新增資料夾
 menu-new-shortcut = 新增捷徑

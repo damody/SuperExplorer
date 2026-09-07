@@ -13,6 +13,7 @@ menu-open-in-new-tab = 新しいタブで開く
 menu-rename = 名前の変更
 
 menu-delete = 削除
+menu-share = 共有
 
 menu-properties = プロパティ
 

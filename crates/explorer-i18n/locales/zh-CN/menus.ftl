@@ -13,6 +13,7 @@ menu-open-in-new-tab = 在新标签页中打开
 menu-rename = 重命名
 
 menu-delete = 删除
+menu-share = 分享
 
 menu-properties = 属性
 

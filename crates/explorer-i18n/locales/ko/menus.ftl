@@ -13,6 +13,7 @@ menu-open-in-new-tab = 새 탭에서 열기
 menu-rename = 이름 바꾸기
 
 menu-delete = 삭제
+menu-share = 공유
 
 menu-properties = 속성
 
