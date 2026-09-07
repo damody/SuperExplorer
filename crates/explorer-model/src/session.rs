@@ -6,8 +6,8 @@ use explorer_common::RoadmapLimits;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AppLocale, ColumnId, ExplorerWindowState, HistoryEntry, LocationDescriptor, OrderedColumnLayout,
-    SortDescriptor, SortDirection, TabId, ViewMode, ViewSettings,
+    AppLocale, ColumnId, ExplorerWindowState, HistoryEntry, LocationDescriptor,
+    OrderedColumnLayout, SortDescriptor, SortDirection, TabId, ViewMode, ViewSettings,
 };
 
 const fn default_icon_cache_memory_mb() -> u16 {
@@ -1984,8 +1984,8 @@ mod tests {
         let bytes = envelope
             .encode_pretty(RoadmapLimits::default())
             .expect("encode");
-        let decoded = PersistedSessionEnvelope::decode(&bytes, RoadmapLimits::default())
-            .expect("decode");
+        let decoded =
+            PersistedSessionEnvelope::decode(&bytes, RoadmapLimits::default()).expect("decode");
         assert_eq!(decoded.payload.locale, Some(AppLocale::Ru));
         assert_eq!(decoded, envelope);
         assert!(

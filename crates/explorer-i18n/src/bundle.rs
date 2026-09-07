@@ -1,11 +1,10 @@
 //! Embedded Fluent catalogs and lookup helpers.
 
-use std::borrow::Cow;
-use std::collections::HashMap;
+use std::{borrow::Cow, collections::HashMap};
 
 use fluent_bundle::{FluentArgs, FluentValue};
 use fluent_templates::Loader;
-use unic_langid::{langid, LanguageIdentifier};
+use unic_langid::{LanguageIdentifier, langid};
 
 use crate::locale::AppLocale;
 
@@ -104,9 +103,7 @@ fn language_id(locale: AppLocale) -> LanguageIdentifier {
     }
 }
 
-fn fluent_args_to_map<'a>(
-    args: &'a FluentArgs<'_>,
-) -> HashMap<Cow<'static, str>, FluentValue<'a>> {
+fn fluent_args_to_map<'a>(args: &'a FluentArgs<'_>) -> HashMap<Cow<'static, str>, FluentValue<'a>> {
     args.iter()
         .map(|(key, value)| (Cow::Owned(key.to_owned()), value.clone()))
         .collect()
@@ -122,7 +119,10 @@ mod tests {
     #[test]
     fn missing_key_returns_key_not_panic() {
         let catalog = Catalog::new(AppLocale::En);
-        assert_eq!(catalog.t("definitely-missing-key"), "definitely-missing-key");
+        assert_eq!(
+            catalog.t("definitely-missing-key"),
+            "definitely-missing-key"
+        );
 
         let zh = Catalog::new(AppLocale::ZhTw);
         assert_eq!(zh.t("definitely-missing-key"), "definitely-missing-key");

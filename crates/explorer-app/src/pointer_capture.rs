@@ -10,10 +10,12 @@ use explorer_ui::PointerCaptureSession;
 use windows::Win32::{
     Foundation::{HWND, POINT},
     Graphics::Gdi::ScreenToClient,
-    UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, GetCapture, ReleaseCapture, SetCapture, VK_RBUTTON,
+    UI::{
+        Input::KeyboardAndMouse::{
+            GetAsyncKeyState, GetCapture, ReleaseCapture, SetCapture, VK_RBUTTON,
+        },
+        WindowsAndMessaging::GetCursorPos,
     },
-    UI::WindowsAndMessaging::GetCursorPos,
 };
 
 pub(crate) struct NativePointerCapture {

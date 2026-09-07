@@ -59,10 +59,7 @@ fn applicable_commands(target: &explorer_model::BookmarkTarget) -> Vec<BookmarkA
     commands
 }
 
-pub fn bookmark_action_window_options(
-    cx: &App,
-    title: impl Into<SharedString>,
-) -> WindowOptions {
+pub fn bookmark_action_window_options(cx: &App, title: impl Into<SharedString>) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
@@ -185,11 +182,7 @@ impl Render for BookmarkActionWindow {
                     } else {
                         colors.control_fill.to_gpui()
                     })
-                    .child(format!(
-                        "{} {}",
-                        if active { "●" } else { "○" },
-                        label
-                    ))
+                    .child(format!("{} {}", if active { "●" } else { "○" }, label))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, window, cx| {

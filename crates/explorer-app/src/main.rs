@@ -12,8 +12,10 @@
 #[cfg(not(windows))]
 compile_error!("explorer-app supports Windows targets only");
 
-use explorer_app::application::ApplicationLifecycle;
-use explorer_app::launch_coordination::{LaunchKind, LaunchSession};
+use explorer_app::{
+    application::ApplicationLifecycle,
+    launch_coordination::{LaunchKind, LaunchSession},
+};
 use explorer_common::{
     AppBuildInfo, DiagnosticsConfig, DiagnosticsSession, ErrorSeverity, initialize_diagnostics,
     install_panic_hook,

@@ -33,9 +33,9 @@ use ring::rand::{SecureRandom as _, SystemRandom};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
-use crate::{ContributionKindV1, NativeDispatchLeaseV1, ValidatedContributionSetV1};
 use crate::{
-    ExtensionValueRowV1, UiInvalidationBatcherV1,
+    ContributionKindV1, ExtensionValueRowV1, NativeDispatchLeaseV1, UiInvalidationBatcherV1,
+    ValidatedContributionSetV1,
     extension_job_ui_bridge::{ExtensionJobUiReadySignalV1, RuntimeReadySignalSinkV1},
     extension_result_cache::{
         ExtensionResultCacheAdmissionV1, ExtensionResultCacheConfigV1,

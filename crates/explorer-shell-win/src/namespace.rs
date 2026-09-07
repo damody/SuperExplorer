@@ -9,19 +9,25 @@ use explorer_model::{
     LocationDescriptor, NamespaceCapabilities, NamespaceItem, PropertyKey, PropertyValue,
     ShellIdentity, ShellItemId,
 };
-use windows::Win32::{
-    Foundation::PROPERTYKEY,
-    System::Com::{
-        CoTaskMemFree,
-        StructuredStorage::{PropVariantToFileTime, PropVariantToStringAlloc, PropVariantToUInt64},
+use windows::{
+    Win32::{
+        Foundation::PROPERTYKEY,
+        System::{
+            Com::{
+                CoTaskMemFree,
+                StructuredStorage::{
+                    PropVariantToFileTime, PropVariantToStringAlloc, PropVariantToUInt64,
+                },
+            },
+            SystemServices::{
+                SFGAO_BROWSABLE, SFGAO_CANCOPY, SFGAO_CANDELETE, SFGAO_CANMOVE, SFGAO_CANRENAME,
+                SFGAO_DROPTARGET, SFGAO_FLAGS, SFGAO_FOLDER, SFGAO_HASPROPSHEET,
+            },
+        },
+        UI::Shell::{IShellItem2, SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_NORMALDISPLAY},
     },
-    System::SystemServices::{
-        SFGAO_BROWSABLE, SFGAO_CANCOPY, SFGAO_CANDELETE, SFGAO_CANMOVE, SFGAO_CANRENAME,
-        SFGAO_DROPTARGET, SFGAO_FLAGS, SFGAO_FOLDER, SFGAO_HASPROPSHEET,
-    },
-    UI::Shell::{IShellItem2, SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_NORMALDISPLAY},
+    core::Interface as _,
 };
-use windows::core::Interface as _;
 
 const PROPERTY_FORMAT: windows::core::GUID =
     windows::core::GUID::from_u128(0xb725f130_47ef_101a_a5f1_02608c9eebac);

@@ -103,9 +103,7 @@ pub fn resolve_package_locale<'a>(
 ///
 /// Returns a serde error when the document is not an object with a string
 /// `display_name`.
-pub fn parse_package_locale_json(
-    bytes: &[u8],
-) -> Result<PackageLocaleJsonV1, serde_json::Error> {
+pub fn parse_package_locale_json(bytes: &[u8]) -> Result<PackageLocaleJsonV1, serde_json::Error> {
     serde_json::from_slice(bytes)
 }
 
@@ -341,10 +339,7 @@ mod tests {
             locales,
             locale_bytes,
         );
-        assert_eq!(
-            chrome.display_name(AppLocale::ZhTw),
-            "資料夾大小圖"
-        );
+        assert_eq!(chrome.display_name(AppLocale::ZhTw), "資料夾大小圖");
         assert_eq!(chrome.display_name(AppLocale::En), "Folder Size Map");
         assert_eq!(chrome.display_name(AppLocale::Ja), "Folder Size Map");
     }

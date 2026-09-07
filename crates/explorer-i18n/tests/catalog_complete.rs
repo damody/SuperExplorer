@@ -1,8 +1,6 @@
 //! Completeness and plural spot checks for every `AppLocale` catalog.
 
-use std::collections::BTreeSet;
-use std::fs;
-use std::path::Path;
+use std::{collections::BTreeSet, fs, path::Path};
 
 use explorer_i18n::{AppLocale, Catalog, FluentArgs};
 
@@ -172,11 +170,7 @@ fn catalog_lookup_is_non_empty_and_not_the_key() {
         let catalog = Catalog::new(locale);
         for id in &ids {
             let value = strip_isolates(&catalog.t_args(id, &args));
-            assert!(
-                !value.is_empty(),
-                "{} {id} resolved empty",
-                locale.bcp47()
-            );
+            assert!(!value.is_empty(), "{} {id} resolved empty", locale.bcp47());
             assert_ne!(
                 value,
                 *id,

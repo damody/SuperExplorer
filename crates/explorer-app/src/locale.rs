@@ -18,7 +18,10 @@ pub fn resolve_app_locale(
     session_locale: Option<AppLocale>,
     windows_tag: Option<&str>,
 ) -> AppLocale {
-    if let Some(raw) = env_override.map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(raw) = env_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         match AppLocale::from_bcp47(raw) {
             Some(locale) => return locale,
             None => tracing::warn!(
@@ -54,10 +57,7 @@ pub fn publish_session_locale(preference: Option<AppLocale>) {
 }
 
 fn published_session_locale() -> Option<AppLocale> {
-    PROCESS_SESSION_LOCALE
-        .lock()
-        .ok()
-        .and_then(|slot| *slot)
+    PROCESS_SESSION_LOCALE.lock().ok().and_then(|slot| *slot)
 }
 
 /// Catalog for app-owned prompts that run outside a live Explorer window.
@@ -101,11 +101,7 @@ fn windows_display_locale_tag_impl() -> Option<String> {
     }
     let len = usize::try_from(written).ok()?.saturating_sub(1);
     let tag = String::from_utf16(&buffer[..len]).ok()?;
-    if tag.is_empty() {
-        None
-    } else {
-        Some(tag)
-    }
+    if tag.is_empty() { None } else { Some(tag) }
 }
 
 #[cfg(test)]
@@ -140,10 +136,7 @@ mod tests {
 
     #[test]
     fn unmatched_or_missing_windows_tag_falls_back_to_english() {
-        assert_eq!(
-            resolve_app_locale(None, None, Some("xx-YY")),
-            AppLocale::En
-        );
+        assert_eq!(resolve_app_locale(None, None, Some("xx-YY")), AppLocale::En);
         assert_eq!(resolve_app_locale(None, None, None), AppLocale::En);
     }
 
@@ -157,10 +150,7 @@ mod tests {
             resolve_app_locale(Some("not-a-locale"), None, Some("ja")),
             AppLocale::Ja
         );
-        assert_eq!(
-            resolve_app_locale(Some("   "), None, None),
-            AppLocale::En
-        );
+        assert_eq!(resolve_app_locale(Some("   "), None, None), AppLocale::En);
     }
 
     #[test]

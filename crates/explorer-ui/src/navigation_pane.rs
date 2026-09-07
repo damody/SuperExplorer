@@ -560,9 +560,7 @@ pub fn windows_navigation_items_with_pins(
             .and_then(|address| address.to_deterministic_location(1).ok());
         let label = match device.state {
             AdbNavigationState::Ready => device.label,
-            AdbNavigationState::Offline => {
-                nav_status_label(catalog, device.label, "nav-offline")
-            }
+            AdbNavigationState::Offline => nav_status_label(catalog, device.label, "nav-offline"),
             AdbNavigationState::Unauthorized => {
                 nav_status_label(catalog, device.label, "nav-unauthorized")
             }

@@ -22,10 +22,7 @@ pub struct BookmarkDeleteWindowSnapshotV1 {
     pub bookmark: explorer_model::Bookmark,
 }
 
-pub fn bookmark_delete_window_options(
-    cx: &App,
-    title: impl Into<SharedString>,
-) -> WindowOptions {
+pub fn bookmark_delete_window_options(cx: &App, title: impl Into<SharedString>) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,

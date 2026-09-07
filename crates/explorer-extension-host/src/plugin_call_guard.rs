@@ -892,8 +892,7 @@ fn delete_marker_file(marker: &MarkerFileV1) -> io::Result<()> {
 #[cfg(windows)]
 #[allow(unsafe_code)]
 fn delete_file_handle(file: &File) -> io::Result<()> {
-    use std::mem::size_of;
-    use std::os::windows::io::AsRawHandle as _;
+    use std::{mem::size_of, os::windows::io::AsRawHandle as _};
 
     #[repr(C)]
     struct FileDispositionInfo {
@@ -1106,8 +1105,10 @@ enum NamespaceOwnerStateV1 {
 #[cfg(windows)]
 #[allow(unsafe_code)]
 fn namespace_owner_state(namespace: &Path) -> Result<NamespaceOwnerStateV1, ()> {
-    use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
-    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _};
+    use std::os::windows::{
+        fs::{MetadataExt as _, OpenOptionsExt as _},
+        io::{AsRawHandle as _, FromRawHandle as _},
+    };
 
     const GENERIC_READ: u32 = 0x8000_0000;
     const GENERIC_READ_WRITE_DELETE: u32 = 0xc001_0000;
@@ -1404,7 +1405,10 @@ fn open_evidence_source(path: &Path) -> io::Result<File> {
 #[cfg(windows)]
 #[allow(unsafe_code)]
 fn rename_handle_to_path(source: &File, destination: &Path) -> io::Result<()> {
-    use std::{mem::size_of, os::windows::ffi::OsStrExt as _, os::windows::io::AsRawHandle as _};
+    use std::{
+        mem::size_of,
+        os::windows::{ffi::OsStrExt as _, io::AsRawHandle as _},
+    };
 
     #[repr(C)]
     struct FileRenameInfoLayout {

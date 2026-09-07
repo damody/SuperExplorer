@@ -194,7 +194,12 @@ impl Render for BookmarkEditorWindow {
         div()
             .id("bookmark-editor-window")
             .role(gpui::Role::Dialog)
-            .aria_label(self.snapshot.state.catalog().t("a11y-bookmark-editor-window"))
+            .aria_label(
+                self.snapshot
+                    .state
+                    .catalog()
+                    .t("a11y-bookmark-editor-window"),
+            )
             .size_full()
             .track_focus(&self.focus_handle)
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {

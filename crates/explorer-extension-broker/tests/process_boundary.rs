@@ -142,11 +142,13 @@ fn controlled(mode: &str) -> Vec<u8> {
     reason = "enumerating visible top-level windows for owned helper PIDs requires Win32 callbacks"
 )]
 fn visible_top_level_window_count(process_id: u32) -> usize {
-    use windows::Win32::{
-        Foundation::{HWND, LPARAM},
-        UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, IsWindowVisible},
+    use windows::{
+        Win32::{
+            Foundation::{HWND, LPARAM},
+            UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, IsWindowVisible},
+        },
+        core::BOOL,
     };
-    use windows::core::BOOL;
 
     unsafe extern "system" fn inspect(hwnd: HWND, parameter: LPARAM) -> BOOL {
         let query = unsafe { &mut *(parameter.0 as *mut (u32, usize)) };
@@ -174,11 +176,13 @@ fn visible_top_level_window_count(process_id: u32) -> usize {
     reason = "the headful regression identifies the visible Shell popup owned by its disposable worker"
 )]
 fn visible_window_thread(process_id: u32) -> Option<u32> {
-    use windows::Win32::{
-        Foundation::{HWND, LPARAM},
-        UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, IsWindowVisible},
+    use windows::{
+        Win32::{
+            Foundation::{HWND, LPARAM},
+            UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, IsWindowVisible},
+        },
+        core::BOOL,
     };
-    use windows::core::BOOL;
 
     unsafe extern "system" fn inspect(hwnd: HWND, parameter: LPARAM) -> BOOL {
         let query = unsafe { &mut *(parameter.0 as *mut (u32, u32)) };
@@ -558,14 +562,16 @@ fn real_preview_lookup_and_initialization_stay_in_disposable_worker() {
 fn persistent_preview_session_attaches_resizes_focuses_and_unloads_by_generation() {
     let _process_boundary = isolate_real_process_boundary();
     use explorer_extension_protocol::PreviewMessage;
-    use windows::Win32::UI::{
-        HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext},
-        WindowsAndMessaging::{
-            CreateWindowExW, DestroyWindow, DispatchMessageW, GetMessageW, MSG, PostMessageW,
-            TranslateMessage, WINDOW_EX_STYLE, WM_APP, WS_OVERLAPPED,
+    use windows::{
+        Win32::UI::{
+            HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext},
+            WindowsAndMessaging::{
+                CreateWindowExW, DestroyWindow, DispatchMessageW, GetMessageW, MSG, PostMessageW,
+                TranslateMessage, WINDOW_EX_STYLE, WM_APP, WS_OVERLAPPED,
+            },
         },
+        core::w,
     };
-    use windows::core::w;
 
     let fixture = tempfile::Builder::new()
         .suffix(".txt")

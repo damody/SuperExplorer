@@ -2,13 +2,15 @@
 
 use crate::mft_persistence::LifecycleBarrierV1;
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 #[cfg(windows)]
 use std::os::windows::ffi::OsStrExt as _;
 #[cfg(windows)]
 use std::os::windows::{fs::OpenOptionsExt as _, io::AsRawHandle as _};
-use std::path::{Path, PathBuf};
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{Read as _, Seek as _, SeekFrom, Write as _},
+    path::{Path, PathBuf},
+};
 #[cfg(windows)]
 use windows::{
     Win32::Storage::FileSystem::{MOVE_FILE_FLAGS, MoveFileExW},

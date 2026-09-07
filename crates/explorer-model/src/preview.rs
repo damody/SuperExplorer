@@ -1,7 +1,6 @@
 //! Pure preview-pane eligibility and lifecycle contracts.
 
-use std::fmt;
-use std::time::Duration;
+use std::{fmt, time::Duration};
 
 use crate::{Generation, LocationDescriptor, ShellItemId, TabId};
 

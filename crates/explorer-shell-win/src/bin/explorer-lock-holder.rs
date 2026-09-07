@@ -7,8 +7,12 @@
 
 #[cfg(windows)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    use std::{fs::OpenOptions, io::Write as _, os::windows::fs::OpenOptionsExt as _};
+    use std::{
+        fs::OpenOptions,
+        io::Write as _,
+        os::windows::fs::OpenOptionsExt as _,
+        sync::atomic::{AtomicU32, Ordering},
+    };
     use windows::{
         Win32::{
             Foundation::{HWND, LPARAM, LRESULT, WPARAM},

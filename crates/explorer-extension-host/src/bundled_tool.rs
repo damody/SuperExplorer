@@ -10,8 +10,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Seek, SeekFrom},
     mem::{size_of, size_of_val},
-    os::windows::fs::OpenOptionsExt,
-    os::windows::{ffi::OsStrExt, io::FromRawHandle},
+    os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::FromRawHandle},
     path::{Path, PathBuf},
     sync::Arc,
     thread,
@@ -21,12 +20,12 @@ use windows::{
     Win32::{
         Foundation::{CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, WAIT_OBJECT_0, WAIT_TIMEOUT},
         Security::SECURITY_ATTRIBUTES,
-        System::JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-            SetInformationJobObject, TerminateJobObject,
-        },
         System::{
+            JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+                SetInformationJobObject, TerminateJobObject,
+            },
             Pipes::CreatePipe,
             Threading::{
                 CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, GetExitCodeProcess,

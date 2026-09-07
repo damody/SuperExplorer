@@ -733,7 +733,8 @@ impl FolderOptionsWindow {
             .debug_selector(|| "folder-options-scrollbar".to_owned())
             .role(Role::ScrollBar)
             .aria_label(
-                explorer_i18n::Catalog::new(self.snapshot.locale).t("a11y-folder-options-scrollbar"),
+                explorer_i18n::Catalog::new(self.snapshot.locale)
+                    .t("a11y-folder-options-scrollbar"),
             )
             .aria_numeric_value(f64::from(current))
             .aria_min_numeric_value(0.0)
@@ -831,7 +832,8 @@ impl FolderOptionsWindow {
             .debug_selector(|| "folder-options-language-menu-scrollbar".to_owned())
             .role(Role::ScrollBar)
             .aria_label(
-                explorer_i18n::Catalog::new(self.snapshot.locale).t("a11y-folder-options-scrollbar"),
+                explorer_i18n::Catalog::new(self.snapshot.locale)
+                    .t("a11y-folder-options-scrollbar"),
             )
             .aria_numeric_value(f64::from(current))
             .aria_min_numeric_value(0.0)
@@ -1070,7 +1072,8 @@ impl Render for FolderOptionsWindow {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
-                    if this.scrollbar_drag.take().is_some() || this.language_menu_drag.take().is_some()
+                    if this.scrollbar_drag.take().is_some()
+                        || this.language_menu_drag.take().is_some()
                     {
                         cx.stop_propagation();
                         cx.notify();
@@ -1080,7 +1083,8 @@ impl Render for FolderOptionsWindow {
             .on_mouse_up_out(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
-                    if this.scrollbar_drag.take().is_some() || this.language_menu_drag.take().is_some()
+                    if this.scrollbar_drag.take().is_some()
+                        || this.language_menu_drag.take().is_some()
                     {
                         cx.stop_propagation();
                         cx.notify();

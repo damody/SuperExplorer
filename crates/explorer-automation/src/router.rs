@@ -1,7 +1,9 @@
 //! Bounded subscription matching and handler dispatch queues.
 
-use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::{
+    collections::{HashMap, VecDeque},
+    path::PathBuf,
+};
 
 use crate::{
     AutomationError, AutomationErrorKind, AutomationEvent, AutomationResult, AutomationTaskId,

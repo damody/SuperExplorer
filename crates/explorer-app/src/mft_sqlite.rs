@@ -1,9 +1,9 @@
 //! Crash-consistent per-volume SQLite persistence for the MFT service.
 
-use std::time::Duration;
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use rusqlite::{
@@ -11,10 +11,11 @@ use rusqlite::{
     params,
 };
 
-use crate::mft_journal::{MftChangeKindV2, MftChangeV2, PENDING_CHANGE_LIMIT, VolumeIdentityV2};
-use crate::mft_persistence::JournalCursorV1;
-use crate::mft_persistence::LifecycleBarrierV1;
-use crate::mft_size_map::{MftAggregateV1, MftEntryV1, MftIndexV1};
+use crate::{
+    mft_journal::{MftChangeKindV2, MftChangeV2, PENDING_CHANGE_LIMIT, VolumeIdentityV2},
+    mft_persistence::{JournalCursorV1, LifecycleBarrierV1},
+    mft_size_map::{MftAggregateV1, MftEntryV1, MftIndexV1},
+};
 
 const SCHEMA_VERSION: i64 = 1;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -1898,8 +1899,7 @@ fn file_bytes(path: &Path) -> u64 {
 mod tests {
     use super::*;
     use crate::mft_size_map::MftEntryV1;
-    use std::cell::Cell;
-    use std::collections::BTreeMap;
+    use std::{cell::Cell, collections::BTreeMap};
     use tempfile::TempDir;
 
     fn identity() -> StoreIdentityV1 {

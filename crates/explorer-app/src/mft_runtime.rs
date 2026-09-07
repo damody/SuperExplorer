@@ -2,9 +2,11 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use crate::mft_journal::{MftChangeKindV2, MftChangeV2, PENDING_BYTE_LIMIT, PENDING_CHANGE_LIMIT};
-use crate::mft_persistence::{JournalCursorV1, PendingBatchV1, capture_coalesced_batch};
-use crate::mft_size_map::MftIndexV1;
+use crate::{
+    mft_journal::{MftChangeKindV2, MftChangeV2, PENDING_BYTE_LIMIT, PENDING_CHANGE_LIMIT},
+    mft_persistence::{JournalCursorV1, PendingBatchV1, capture_coalesced_batch},
+    mft_size_map::MftIndexV1,
+};
 
 #[derive(Debug)]
 pub struct VolumeMemoryRuntimeV1 {

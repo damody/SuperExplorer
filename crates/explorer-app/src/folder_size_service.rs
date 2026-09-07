@@ -1265,8 +1265,10 @@ fn service_volume_letter(root: &Path) -> Result<char, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering},
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     fn fixture_root(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(

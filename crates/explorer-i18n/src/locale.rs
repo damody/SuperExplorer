@@ -188,10 +188,7 @@ fn negotiate_alias(normalized: &str) -> Option<AppLocale> {
                 .any(|part| matches!(*part, "hant" | "hk" | "mo"))
             {
                 Some(AppLocale::ZhTw)
-            } else if rest
-                .iter()
-                .any(|part| matches!(*part, "hans" | "sg"))
-            {
+            } else if rest.iter().any(|part| matches!(*part, "hans" | "sg")) {
                 Some(AppLocale::ZhCn)
             } else {
                 None
@@ -215,9 +212,9 @@ fn negotiate_alias(normalized: &str) -> Option<AppLocale> {
 
 fn unique_primary(normalized: &str) -> Option<AppLocale> {
     let primary = primary_subtag(normalized);
-    let mut matches = AppLocale::ALL.into_iter().filter(|locale| {
-        primary_subtag(&normalize_tag(locale.bcp47())) == primary
-    });
+    let mut matches = AppLocale::ALL
+        .into_iter()
+        .filter(|locale| primary_subtag(&normalize_tag(locale.bcp47())) == primary);
     match (matches.next(), matches.next()) {
         (Some(only), None) => Some(only),
         _ => None,

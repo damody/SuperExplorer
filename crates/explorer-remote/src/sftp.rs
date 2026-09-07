@@ -18,8 +18,10 @@ use russh::{
     client::{self, Config, Handle, Handler},
     keys::ssh_key::{HashAlg, PublicKey},
 };
-use russh_sftp::client::{SftpSession, error::Error as SftpError};
-use russh_sftp::protocol::StatusCode;
+use russh_sftp::{
+    client::{SftpSession, error::Error as SftpError},
+    protocol::StatusCode,
+};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     runtime::{Builder, Runtime},

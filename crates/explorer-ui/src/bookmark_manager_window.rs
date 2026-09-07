@@ -178,10 +178,7 @@ impl BookmarkManagerUiState {
     }
 }
 
-pub fn bookmark_manager_window_options(
-    cx: &App,
-    title: impl Into<SharedString>,
-) -> WindowOptions {
+pub fn bookmark_manager_window_options(cx: &App, title: impl Into<SharedString>) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,

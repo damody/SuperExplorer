@@ -1,9 +1,11 @@
 //! Deterministic policy and state models for foreground-gated MFT durability.
 
-use std::collections::HashMap;
-use std::hash::Hash;
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    hash::Hash,
+    sync::atomic::{AtomicU8, Ordering},
+    time::Duration,
+};
 
 pub(crate) const PERSISTENCE_INTERVAL: Duration = Duration::from_secs(10 * 60);
 

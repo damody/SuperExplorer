@@ -7,10 +7,10 @@ use explorer_mft::{
     mft_sqlite,
 };
 
-use std::os::windows::ffi::OsStrExt as _;
 use std::{
     collections::{HashMap, HashSet},
     ffi::c_void,
+    os::windows::ffi::OsStrExt as _,
     path::PathBuf,
     sync::{
         Arc, Condvar, Mutex, OnceLock, RwLock,
