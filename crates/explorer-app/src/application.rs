@@ -4353,7 +4353,7 @@ impl ApplicationLifecycle {
                 Arc::clone(&remote_runtime.providers),
             ));
         let shutdown_resources = Arc::clone(&self.resources);
-        let mut installed_package_ids = {
+        let (mut installed_package_ids, extension_chrome) = {
             let resources = self
                 .resources
                 .lock()
@@ -4362,10 +4362,13 @@ impl ApplicationLifecycle {
                 .extension_host
                 .as_ref()
                 .map(|host| {
-                    host.discovered_package_ids()
-                        .iter()
-                        .cloned()
-                        .collect::<std::collections::BTreeSet<_>>()
+                    (
+                        host.discovered_package_ids()
+                            .iter()
+                            .cloned()
+                            .collect::<std::collections::BTreeSet<_>>(),
+                        host.discovered_package_chrome().to_vec(),
+                    )
                 })
                 .unwrap_or_default()
         };
@@ -4459,6 +4462,23 @@ impl ApplicationLifecycle {
             session_locale,
             windows_locale_tag.as_deref(),
         );
+        let extension_desired_states = extension_desired_states
+            .into_iter()
+            .map(|(package_id, enabled)| {
+                let display_name = if OFFICIAL_PLUGIN_PACKAGE_IDS
+                    .iter()
+                    .any(|official| *official == package_id.as_str())
+                {
+                    None
+                } else {
+                    extension_chrome
+                        .iter()
+                        .find(|chrome| chrome.package_id() == package_id)
+                        .map(|chrome| chrome.display_name(resolved_locale))
+                };
+                (package_id, enabled, display_name)
+            })
+            .collect::<Vec<_>>();
         let extension_settings_resources = Arc::clone(&self.resources);
         let extension_settings_observer: explorer_ui::ExtensionSettingsObserver =
             Arc::new(move |updates| {
@@ -5667,7 +5687,7 @@ fn create_explorer_root(
     windows_negotiated_locale: explorer_model::AppLocale,
     quick_access: Vec<explorer_model::PersistedQuickAccessPin>,
     bookmarks: explorer_model::Bookmarks,
-    extension_desired_states: Vec<(String, bool)>,
+    extension_desired_states: Vec<(String, bool, Option<String>)>,
     broker_health: explorer_ui::state::BrokerUiHealth,
     broker_retry: explorer_ui::BrokerRetryObserver,
     visual_column_runtime: Option<explorer_ui::folder_size_column::VisualColumnRuntimeHandleV1>,
@@ -5754,7 +5774,7 @@ fn create_focused_explorer_root(
     windows_negotiated_locale: explorer_model::AppLocale,
     quick_access: Vec<explorer_model::PersistedQuickAccessPin>,
     bookmarks: explorer_model::Bookmarks,
-    extension_desired_states: Vec<(String, bool)>,
+    extension_desired_states: Vec<(String, bool, Option<String>)>,
     broker_health: explorer_ui::state::BrokerUiHealth,
     broker_retry: explorer_ui::BrokerRetryObserver,
     safe_mode_offers: Vec<explorer_ui::SafeModeOfferV1>,

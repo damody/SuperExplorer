@@ -40,6 +40,29 @@ fn t_named(catalog: Catalog, key: &str, name: &str, value: impl Into<String>) ->
     args.set(name, value.into());
     catalog.t_args(key, &args)
 }
+
+fn catalog_message(catalog: Catalog, value: &str) -> String {
+    if value
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && value.contains('-')
+    {
+        catalog.t(value)
+    } else {
+        value.to_owned()
+    }
+}
+
+fn extension_display_name(
+    catalog: Catalog,
+    extension: &crate::state::ExtensionOptionV1,
+) -> String {
+    if extension.display_name.starts_with("dialog-extension-") {
+        catalog.t(extension.display_name)
+    } else {
+        extension.display_name.to_owned()
+    }
+}
 use explorer_model::{DirectoryState, TabId, TabSearchState};
 use gpui::{
     AccessibleAction, Anchor, AnchoredPositionMode, App, BoxShadow, Context, DispatchPhase,
@@ -4080,7 +4103,7 @@ fn folder_options_extensions_page(
                     extension.package_id
                 )))
                 .role(Role::ListItem)
-                .aria_label(catalog.t(extension.display_name))
+                .aria_label(extension_display_name(catalog, extension))
                 .flex()
                 .flex_col()
                 .p(px(tokens.layout.control_padding_horizontal.value()))
@@ -4092,7 +4115,7 @@ fn folder_options_extensions_page(
                         "folder-option-extension-toggle-{}",
                         extension.package_id
                     )),
-                    catalog.t(extension.display_name),
+                    extension_display_name(catalog, extension),
                     enabled.get(index).copied().unwrap_or(false),
                     ExplorerAction::ToggleFolderOptionExtension { index },
                     tokens,
@@ -13435,9 +13458,11 @@ fn operation_message(record: &explorer_model::OperationRecord, catalog: Catalog)
                 catalog.locale(),
             );
             let speed = record.bytes_per_second().map_or_else(String::new, |value| {
-                format!(
-                    "｜{}",
-                    crate::formatting::format_transfer_speed(value, catalog.locale())
+                t_named(
+                    catalog,
+                    "op-speed-prefix",
+                    "speed",
+                    crate::formatting::format_transfer_speed(value, catalog.locale()),
                 )
             });
             let mut args = FluentArgs::new();
@@ -13523,7 +13548,7 @@ fn apk_install_notice_message(
         explorer_model::ApkInstallStatus::Cancelled => catalog.t_args("apk-cancelled", &args),
         explorer_model::ApkInstallStatus::TimedOut => catalog.t_args("apk-timeout", &args),
         explorer_model::ApkInstallStatus::Failed { message } => {
-            args.set("error", message.clone());
+            args.set("error", catalog_message(catalog, message));
             catalog.t_args("apk-failed", &args)
         }
     }
@@ -13622,10 +13647,13 @@ fn operation_outcome_message(
             let native = error.native_code.map_or_else(String::new, |code| {
                 t_named(catalog, "op-error-code", "code", code.to_string())
             });
-            format!(
-                "{status}｜{route}｜{}｜{}{native}",
-                error.operation, error.user_message
-            )
+            let mut args = FluentArgs::new();
+            args.set("status", status);
+            args.set("route", route);
+            args.set("operation", catalog_message(catalog, &error.operation));
+            args.set("detail", catalog_message(catalog, &error.user_message));
+            args.set("native", native);
+            catalog.t_args("op-failure-detail", &args)
         }
     }
 }
@@ -15567,7 +15595,7 @@ mod tests {
     fn operation_failure_row_includes_source_target_stage_code_and_reason() {
         let error = explorer_common::ExplorerError::new(
             explorer_common::ExplorerErrorKind::Availability,
-            "目的地上傳",
+            "transfer-upload",
             true,
             "adb push failed: device offline",
             "remote transfer failed",
@@ -15589,6 +15617,14 @@ mod tests {
             strip_isolates(&operation_outcome_message(zh_tw_catalog(), &outcome, true)),
             r"失敗｜C:\Downloads\report.zip → adb://emulator-5554/sdcard/Download/report.zip｜目的地上傳｜adb push failed: device offline｜錯誤碼 17"
         );
+        let en = strip_isolates(&operation_outcome_message(
+            explorer_i18n::Catalog::new(explorer_i18n::AppLocale::En),
+            &outcome,
+            true,
+        ));
+        assert!(en.contains("Failed | "));
+        assert!(en.contains("Destination upload"));
+        assert!(!en.contains('｜'));
     }
 
     #[test]
@@ -15604,7 +15640,7 @@ mod tests {
             result: explorer_model::OperationItemResult::Failed(
                 explorer_common::ExplorerError::new(
                     explorer_common::ExplorerErrorKind::Availability,
-                    "來源下載",
+                    "transfer-download",
                     true,
                     reason,
                     "remote transfer failed",
@@ -15618,7 +15654,7 @@ mod tests {
         );
         let missing = operation_outcome_message(
             zh_tw_catalog(),
-            &make_outcome(93, "b.txt", "未提供底層錯誤"),
+            &make_outcome(93, "b.txt", "transfer-no-diagnostic"),
             true,
         );
         assert!(denied.contains("sftp://45.32.49.125/home/linuxuser/a.txt"));
@@ -15626,6 +15662,7 @@ mod tests {
         assert!(denied.contains("permission denied"));
         assert!(missing.contains("b.txt"));
         assert!(missing.contains("未提供底層錯誤"));
+        assert!(!missing.contains("transfer-no-diagnostic"));
         assert_ne!(denied, missing);
         assert!(include_str!("chrome.rs").contains(".take(5)"));
     }

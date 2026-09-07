@@ -208,3 +208,6 @@ dialog-permanent-delete-prompt = { $count } elem végleges törlése? A művelet
 dialog-gdrive-trash-prompt = { $count } elem áthelyezése a Google Drive lomtárába? 30 napig visszaállítható a drive.google.com oldalon. Ez nem a Windows Lomtár.
 dialog-permanent-delete-aria = { $count } elem végleges törlése
 dialog-gdrive-trash-aria = { $count } elem áthelyezése a Google Drive lomtárába
+
+ftp-sign-in = Bejelentkezés ide: { $host }
+ftp-sign-in-unencrypted = Bejelentkezés ide: { $host } — Ez a kapcsolat nincs titkosítva

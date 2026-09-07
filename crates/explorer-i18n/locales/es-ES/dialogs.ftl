@@ -224,3 +224,6 @@ dialog-gdrive-trash-aria =
         [one] Mover { $count } elemento a la papelera de Google Drive
        *[other] Mover { $count } elementos a la papelera de Google Drive
     }
+
+ftp-sign-in = Iniciar sesión en { $host }
+ftp-sign-in-unencrypted = Iniciar sesión en { $host } — Esta conexión no está cifrada

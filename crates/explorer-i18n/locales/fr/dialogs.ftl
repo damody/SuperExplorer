@@ -224,3 +224,6 @@ dialog-gdrive-trash-aria =
         [one] Déplacer { $count } élément vers la corbeille Google Drive
        *[other] Déplacer { $count } éléments vers la corbeille Google Drive
     }
+
+ftp-sign-in = Se connecter à { $host }
+ftp-sign-in-unencrypted = Se connecter à { $host } — Cette connexion n’est pas chiffrée

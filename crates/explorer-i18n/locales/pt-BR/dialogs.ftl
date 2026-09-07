@@ -224,3 +224,6 @@ dialog-gdrive-trash-aria =
         [one] Mover { $count } item para a lixeira do Google Drive
        *[other] Mover { $count } itens para a lixeira do Google Drive
     }
+
+ftp-sign-in = Entrar em { $host }
+ftp-sign-in-unencrypted = Entrar em { $host } — Esta conexão não está criptografada

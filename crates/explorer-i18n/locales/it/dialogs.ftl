@@ -224,3 +224,6 @@ dialog-gdrive-trash-aria =
         [one] Sposta { $count } elemento nel Cestino di Google Drive
        *[other] Sposta { $count } elementi nel Cestino di Google Drive
     }
+
+ftp-sign-in = Accedi a { $host }
+ftp-sign-in-unencrypted = Accedi a { $host } — Questa connessione non è crittografata

@@ -2422,8 +2422,11 @@ impl AppViewState {
         &self.extensions
     }
 
-    pub fn configure_extension_desired_states(&mut self, states: &[(String, bool)]) {
-        for (package_id, enabled) in states {
+    pub fn configure_extension_desired_states(
+        &mut self,
+        states: &[(String, bool, Option<String>)],
+    ) {
+        for (package_id, enabled, display_name) in states {
             if let Some(extension) = self
                 .extensions
                 .iter_mut()
@@ -2432,9 +2435,15 @@ impl AppViewState {
                 extension.enabled = *enabled;
             } else {
                 let package_id = Box::leak(package_id.clone().into_boxed_str());
+                let display_name = display_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(|name| Box::leak(name.to_owned().into_boxed_str()) as &str)
+                    .unwrap_or(package_id);
                 self.extensions.push(ExtensionOptionV1 {
                     package_id,
-                    display_name: package_id,
+                    display_name,
                     author_name: "Unknown",
                     author_bio: "Locally installed Plugin",
                     author_website: "",

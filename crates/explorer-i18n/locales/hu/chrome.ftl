@@ -50,6 +50,10 @@ nav-connect-gdrive = Google Drive csatlakoztatása
 
 nav-unencrypted = { $label } — Titkosítatlan
 
+nav-not-connected = { $label } — Nincs kapcsolat
+nav-offline = { $label } — Offline
+nav-unauthorized = { $label } — Nincs jogosultság
+nav-unavailable = { $label } — Nem érhető el
 nav-favorites = Kedvencek
 
 chrome-new-tab = Új lap

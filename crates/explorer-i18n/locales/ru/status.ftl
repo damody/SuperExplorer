@@ -66,17 +66,17 @@ op-rename = Переименовать | { $from } → { $to }
 
 op-chmod = Изменить права | { $path } → { $mode }
 
-op-copy-route = Копировать { $count } элементов | { $source } → { $destination }
+op-copy-route = { $action } | { $source } → { $destination }
 
-op-move-route = Переместить { $count } элементов | { $source } → { $destination }
+op-move-route = { $action } | { $source } → { $destination }
 
-op-recycle-route = В корзину { $count } элементов | { $source }
+op-recycle-route = { $action } | { $source }
 
-op-permanent-delete-route = Удалить безвозвратно { $count } элементов | { $source }
+op-permanent-delete-route = { $action } | { $source }
 
-op-gdrive-trash-route = В корзину Google Drive { $count } элементов | { $source }
+op-gdrive-trash-route = { $action } | { $source }
 
-op-shortcut-route = Создать ярлык { $count } элементов | { $source }
+op-shortcut-route = { $action } | { $source }
 
 op-preparing-copy = Подготовка копирования
 
@@ -128,6 +128,8 @@ op-failed-status = Сбой
 
 op-error-code =  | Код ошибки { $code }
 
+op-speed-prefix =  | { $speed }
+op-failure-detail = { $status } | { $route } | { $operation } | { $detail }{ $native }
 op-no-destination = Назначение не указано
 
 op-no-source = Источник не указан
@@ -142,6 +144,7 @@ apk-timeout = Истекло время установки { $name } на { $tar
 
 apk-failed = Сбой установки { $name } на { $target }: { $error }
 
+apk-check-device = Проверьте подключение устройства и APK, затем повторите попытку
 status-no-selection = Ничего не выбрано
 
 status-details-unavailable = Не удалось загрузить сведения
@@ -210,6 +213,11 @@ transfer-upload = Отправка в назначение
 
 transfer-download = Скачивание из источника
 
+transfer-conflict-inspection = Проверка конфликтов назначения
+transfer-local-copy = Локальное копирование
+transfer-source-delete = Удаление источника после перемещения
+transfer-provider-panic = Ошибка поставщика передачи
+transfer-no-diagnostic = Подробности ошибки не предоставлены
 transfer-cancelling = Отмена
 
 transfer-cancel = Отмена

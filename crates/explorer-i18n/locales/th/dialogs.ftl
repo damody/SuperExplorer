@@ -208,3 +208,6 @@ dialog-permanent-delete-prompt = ลบ { $count } รายการอย่�
 dialog-gdrive-trash-prompt = ย้าย { $count } รายการไปยังถังขยะ Google Drive หรือไม่ กู้คืนได้ที่ drive.google.com เป็นเวลา 30 วัน นี่ไม่ใช่ถังรีไซเคิลของ Windows
 dialog-permanent-delete-aria = ลบ { $count } รายการอย่างถาวร
 dialog-gdrive-trash-aria = ย้าย { $count } รายการไปยังถังขยะ Google Drive
+
+ftp-sign-in = ลงชื่อเข้าใช้ { $host }
+ftp-sign-in-unencrypted = ลงชื่อเข้าใช้ { $host } — การเชื่อมต่อนี้ไม่ได้เข้ารหัส

@@ -130,3 +130,6 @@ dialog-gdrive-trash-aria =
         [one] Move { $count } item to Google Drive trash
        *[other] Move { $count } items to Google Drive trash
     }
+
+ftp-sign-in = Sign in to { $host }
+ftp-sign-in-unencrypted = Sign in to { $host } — This connection is not encrypted

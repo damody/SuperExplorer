@@ -52,17 +52,17 @@ op-rename = Átnevezés | { $from } → { $to }
 
 op-chmod = Jogosultságok módosítása | { $path } → { $mode }
 
-op-copy-route = { $count } elem másolása | { $source } → { $destination }
+op-copy-route = { $action } | { $source } → { $destination }
 
-op-move-route = { $count } elem áthelyezése | { $source } → { $destination }
+op-move-route = { $action } | { $source } → { $destination }
 
-op-recycle-route = Lomtár { $count } elem | { $source }
+op-recycle-route = { $action } | { $source }
 
-op-permanent-delete-route = Végleges törlés { $count } elem | { $source }
+op-permanent-delete-route = { $action } | { $source }
 
-op-gdrive-trash-route = Google Drive lomtár { $count } elem | { $source }
+op-gdrive-trash-route = { $action } | { $source }
 
-op-shortcut-route = Parancsikon { $count } elem | { $source }
+op-shortcut-route = { $action } | { $source }
 
 op-preparing-copy = Másolás előkészítése
 
@@ -114,6 +114,8 @@ op-failed-status = Sikertelen
 
 op-error-code =  | Hibakód { $code }
 
+op-speed-prefix =  | { $speed }
+op-failure-detail = { $status } | { $route } | { $operation } | { $detail }{ $native }
 op-no-destination = Nincs megadva cél
 
 op-no-source = Nincs megadva forrás
@@ -128,6 +130,7 @@ apk-timeout = { $name } telepítése ide: { $target } túllépte az időkorláto
 
 apk-failed = { $name } telepítése ide: { $target } sikertelen: { $error }
 
+apk-check-device = Ellenőrizze az eszközkapcsolatot és az APK-t, majd próbálja újra
 status-no-selection = Nincs kijelölt elem
 
 status-details-unavailable = A részletek nem tölthetők be
@@ -194,6 +197,11 @@ transfer-upload = Célfeltöltés
 
 transfer-download = Forrásletöltés
 
+transfer-conflict-inspection = Célütközés-ellenőrzés
+transfer-local-copy = Helyi másolás
+transfer-source-delete = Forrás törlése áthelyezés után
+transfer-provider-panic = Átviteli szolgáltató hibája
+transfer-no-diagnostic = Nincs megadva alapul szolgáló hiba
 transfer-cancelling = Megszakítás
 
 transfer-cancel = Mégse

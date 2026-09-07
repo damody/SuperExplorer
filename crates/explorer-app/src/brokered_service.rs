@@ -496,7 +496,7 @@ fn execute_adb_context_action(
                         explorer_model::ApkInstallStatus::TimedOut
                     }
                     Err(_) => explorer_model::ApkInstallStatus::Failed {
-                        message: "請檢查裝置連線與 APK 後再試一次".to_owned(),
+                        message: crate::locale::live_catalog().t("apk-check-device"),
                     },
                 };
                 let _ = install_events.send(ExplorerEvent::ApkInstallStatus {

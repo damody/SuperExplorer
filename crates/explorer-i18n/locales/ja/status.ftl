@@ -52,17 +52,17 @@ op-rename = 名前の変更 | { $from } → { $to }
 
 op-chmod = アクセス許可の変更 | { $path } → { $mode }
 
-op-copy-route = { $count } 個の項目をコピー | { $source } → { $destination }
+op-copy-route = { $action } | { $source } → { $destination }
 
-op-move-route = { $count } 個の項目を移動 | { $source } → { $destination }
+op-move-route = { $action } | { $source } → { $destination }
 
-op-recycle-route = ごみ箱 { $count } 個 | { $source }
+op-recycle-route = { $action } | { $source }
 
-op-permanent-delete-route = { $count } 個を完全に削除 | { $source }
+op-permanent-delete-route = { $action } | { $source }
 
-op-gdrive-trash-route = Google ドライブのゴミ箱 { $count } 個 | { $source }
+op-gdrive-trash-route = { $action } | { $source }
 
-op-shortcut-route = ショートカット { $count } 個 | { $source }
+op-shortcut-route = { $action } | { $source }
 
 op-preparing-copy = コピーの準備中
 
@@ -114,6 +114,8 @@ op-failed-status = 失敗
 
 op-error-code =  | エラー コード { $code }
 
+op-speed-prefix =  | { $speed }
+op-failure-detail = { $status } | { $route } | { $operation } | { $detail }{ $native }
 op-no-destination = 宛先が指定されていません
 
 op-no-source = ソースが指定されていません
@@ -128,6 +130,7 @@ apk-timeout = { $name } の { $target } へのインストールがタイムア�
 
 apk-failed = { $name } の { $target } へのインストールに失敗しました: { $error }
 
+apk-check-device = デバイス接続と APK を確認してから再試行してください
 status-no-selection = 項目が選択されていません
 
 status-details-unavailable = 詳細を読み込めませんでした
@@ -194,6 +197,11 @@ transfer-upload = 宛先へのアップロード
 
 transfer-download = ソースからのダウンロード
 
+transfer-conflict-inspection = コピー先の競合チェック
+transfer-local-copy = ローカル コピー
+transfer-source-delete = 移動後にソースを削除
+transfer-provider-panic = 転送プロバイダー エラー
+transfer-no-diagnostic = 詳細なエラーは提供されていません
 transfer-cancelling = キャンセル中
 
 transfer-cancel = キャンセル

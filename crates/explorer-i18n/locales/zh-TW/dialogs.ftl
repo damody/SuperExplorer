@@ -102,7 +102,10 @@ dialog-reset-session-label = 已儲存的視窗與分頁
 dialog-reset-view-label = 已儲存的檢視設定
 dialog-reset-quick-access-label = 快速存取釘選項目
 dialog-reset-all-label = 所有已儲存的 Explorer 狀態
-dialog-permanent-delete-prompt = Permanently delete { $count } items? This action cannot be undone.
-dialog-gdrive-trash-prompt = Move { $count } items to Google Drive trash? Recover them at drive.google.com for 30 days. This is not the Windows Recycle Bin.
-dialog-permanent-delete-aria = Permanently delete { $count } items
-dialog-gdrive-trash-aria = Move { $count } items to Google Drive trash
+dialog-permanent-delete-prompt = 要永久刪除 { $count } 個項目嗎？此動作無法復原。
+dialog-gdrive-trash-prompt = 要將 { $count } 個項目移到 Google Drive 垃圾桶嗎？可在 drive.google.com 還原 30 天。這不是 Windows 資源回收筒。
+dialog-permanent-delete-aria = 永久刪除 { $count } 個項目
+dialog-gdrive-trash-aria = 將 { $count } 個項目移到 Google Drive 垃圾桶
+
+ftp-sign-in = 登入 { $host }
+ftp-sign-in-unencrypted = 登入 { $host } — 此連線未加密

@@ -32,11 +32,20 @@ pub enum NavigationIcon {
     GoogleDrive,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdbNavigationState {
+    Ready,
+    Offline,
+    Unauthorized,
+    Unavailable,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdbNavigationDevice {
     pub serial: String,
     pub label: String,
     pub available: bool,
+    pub state: AdbNavigationState,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -95,6 +104,29 @@ pub fn configure_gdrive_navigation_profiles(profiles: Vec<GdriveNavigationProfil
         .get_or_init(|| RwLock::new(Vec::new()))
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = profiles;
+}
+
+fn nav_status_label(catalog: Catalog, label: String, key: &str) -> String {
+    let mut args = FluentArgs::new();
+    args.set("label", label);
+    catalog.t_args(key, &args)
+}
+
+fn connected_profile_label(catalog: Catalog, label: String, available: bool) -> String {
+    if available {
+        label
+    } else {
+        nav_status_label(catalog, label, "nav-not-connected")
+    }
+}
+
+fn ftp_profile_label(catalog: Catalog, profile: &FtpNavigationProfile) -> String {
+    let label = connected_profile_label(catalog, profile.label.clone(), profile.available);
+    if profile.encrypted || !profile.available {
+        label
+    } else {
+        nav_status_label(catalog, label, "nav-unencrypted")
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -526,9 +558,21 @@ pub fn windows_navigation_items_with_pins(
         let location = explorer_model::RemoteAddress::parse(&format!("adb://{}/", device.serial))
             .ok()
             .and_then(|address| address.to_deterministic_location(1).ok());
+        let label = match device.state {
+            AdbNavigationState::Ready => device.label,
+            AdbNavigationState::Offline => {
+                nav_status_label(catalog, device.label, "nav-offline")
+            }
+            AdbNavigationState::Unauthorized => {
+                nav_status_label(catalog, device.label, "nav-unauthorized")
+            }
+            AdbNavigationState::Unavailable => {
+                nav_status_label(catalog, device.label, "nav-unavailable")
+            }
+        };
         items.push(NavigationItem {
             id: format!("phone-{}", device.serial),
-            label: device.label,
+            label,
             kind: NavigationItemKind::Location,
             icon: Some(NavigationIcon::Phone),
             icon_location: None,
@@ -555,7 +599,7 @@ pub fn windows_navigation_items_with_pins(
             .and_then(|address| address.to_location(profile.container_identity, 1).ok());
         items.push(NavigationItem {
             id: format!("sftp-profile-{}", profile.alias),
-            label: profile.label,
+            label: connected_profile_label(catalog, profile.label, profile.available),
             kind: NavigationItemKind::Location,
             icon: Some(NavigationIcon::Server),
             icon_location: None,
@@ -580,15 +624,7 @@ pub fn windows_navigation_items_with_pins(
         let location = explorer_model::RemoteAddress::parse(&format!("ftp://{}/", profile.alias))
             .ok()
             .and_then(|address| address.to_location(profile.container_identity, 1).ok());
-        let label = if profile.encrypted {
-            profile.label
-        } else if profile.label.contains("尚未連線") {
-            profile.label
-        } else {
-            let mut args = FluentArgs::new();
-            args.set("label", profile.label.clone());
-            catalog.t_args("nav-unencrypted", &args)
-        };
+        let label = ftp_profile_label(catalog, &profile);
         items.push(NavigationItem {
             id: format!("ftp-profile-{}", profile.alias),
             label,
@@ -633,15 +669,19 @@ pub fn windows_navigation_items_with_pins(
                 .and_then(|address| address.to_location(profile.container_identity, 1).ok());
         items.push(NavigationItem {
             id: format!("gdrive-profile-{}", profile.alias),
-            label: profile.label,
+            label: connected_profile_label(catalog, profile.label, profile.available),
             kind: NavigationItemKind::Location,
             icon: Some(NavigationIcon::GoogleDrive),
             icon_location: None,
-            location,
+            location: profile.available.then_some(location).flatten(),
             depth: 1,
             pinned: false,
             expanded: false,
-            availability: NavigationItemAvailability::Available,
+            availability: if profile.available {
+                NavigationItemAvailability::Available
+            } else {
+                NavigationItemAvailability::Unavailable
+            },
         });
     }
     items.push(NavigationItem::location(
@@ -842,6 +882,7 @@ mod tests {
             serial: "phone-123".to_owned(),
             label: "Pixel (phone-123)".to_owned(),
             available: true,
+            state: AdbNavigationState::Ready,
         }]);
         let sftp_host = "192.0.2.10";
         let ftp_host = "192.0.2.11";
@@ -889,6 +930,43 @@ mod tests {
                 .iter()
                 .any(|item| item.id == format!("sftp-profile-{sftp_host}"))
         );
+        let ftp_row = items
+            .iter()
+            .find(|item| item.id == format!("ftp-profile-{ftp_host}"))
+            .expect("ftp row");
+        assert!(ftp_row.label.contains("未加密"));
+        configure_ftp_navigation_profiles(vec![FtpNavigationProfile {
+            alias: ftp_host.to_owned(),
+            label: ftp_host.to_owned(),
+            container_identity: [8; 16],
+            available: false,
+            encrypted: false,
+        }]);
+        configure_adb_navigation_devices(vec![AdbNavigationDevice {
+            serial: "phone-123".to_owned(),
+            label: "Pixel (phone-123)".to_owned(),
+            available: false,
+            state: AdbNavigationState::Offline,
+        }]);
+        let disconnected = windows_navigation_items(zh_tw_catalog());
+        let ftp_disconnected = disconnected
+            .iter()
+            .find(|item| item.id == format!("ftp-profile-{ftp_host}"))
+            .expect("disconnected ftp");
+        assert!(ftp_disconnected.label.contains("尚未連線"));
+        assert!(!ftp_disconnected.label.contains("未加密"));
+        let phone_offline = disconnected
+            .iter()
+            .find(|item| item.id == "phone-phone-123")
+            .expect("offline phone");
+        assert!(phone_offline.label.contains("離線"));
+        let en = windows_navigation_items(Catalog::new(AppLocale::En));
+        let ftp_en = en
+            .iter()
+            .find(|item| item.id == format!("ftp-profile-{ftp_host}"))
+            .expect("ftp en");
+        assert!(ftp_en.label.contains("Not connected"));
+        assert!(!ftp_en.label.contains("尚未連線"));
     }
 
     #[test]

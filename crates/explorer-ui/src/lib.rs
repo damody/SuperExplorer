@@ -3831,7 +3831,10 @@ impl ExplorerRoot {
         self.extension_settings_observer = Some(observer);
     }
 
-    pub fn configure_extension_desired_states(&mut self, states: &[(String, bool)]) {
+    pub fn configure_extension_desired_states(
+        &mut self,
+        states: &[(String, bool, Option<String>)],
+    ) {
         self.state.configure_extension_desired_states(states);
     }
 

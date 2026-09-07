@@ -200,3 +200,6 @@ dialog-permanent-delete-prompt = 要永久删除 { $count } 个项目吗？此�
 dialog-gdrive-trash-prompt = 要将 { $count } 个项目移到 Google Drive 回收站吗？可在 drive.google.com 恢复 30 天。这不是 Windows 回收站。
 dialog-permanent-delete-aria = 永久删除 { $count } 个项目
 dialog-gdrive-trash-aria = 将 { $count } 个项目移到 Google Drive 回收站
+
+ftp-sign-in = 登录 { $host }
+ftp-sign-in-unencrypted = 登录 { $host } — 此连接未加密

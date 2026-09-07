@@ -50,6 +50,10 @@ nav-connect-gdrive = Kết nối Google Drive
 
 nav-unencrypted = { $label } — Chưa mã hóa
 
+nav-not-connected = { $label } — Chưa kết nối
+nav-offline = { $label } — Ngoại tuyến
+nav-unauthorized = { $label } — Chưa được cấp quyền
+nav-unavailable = { $label } — Không khả dụng
 nav-favorites = Yêu thích
 
 chrome-new-tab = Tab mới

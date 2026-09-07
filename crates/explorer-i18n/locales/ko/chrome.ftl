@@ -50,6 +50,10 @@ nav-connect-gdrive = Google Drive 연결
 
 nav-unencrypted = { $label } — 암호화되지 않음
 
+nav-not-connected = { $label } — 연결되지 않음
+nav-offline = { $label } — 오프라인
+nav-unauthorized = { $label } — 권한 없음
+nav-unavailable = { $label } — 사용할 수 없음
 nav-favorites = 즐겨찾기
 
 chrome-new-tab = 새 탭

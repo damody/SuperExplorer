@@ -66,17 +66,17 @@ op-rename = Zmień nazwę | { $from } → { $to }
 
 op-chmod = Zmień uprawnienia | { $path } → { $mode }
 
-op-copy-route = Kopiuj { $count } elementów | { $source } → { $destination }
+op-copy-route = { $action } | { $source } → { $destination }
 
-op-move-route = Przenieś { $count } elementów | { $source } → { $destination }
+op-move-route = { $action } | { $source } → { $destination }
 
-op-recycle-route = Do Kosza { $count } elementów | { $source }
+op-recycle-route = { $action } | { $source }
 
-op-permanent-delete-route = Usuń trwale { $count } elementów | { $source }
+op-permanent-delete-route = { $action } | { $source }
 
-op-gdrive-trash-route = Kosz Google Drive { $count } elementów | { $source }
+op-gdrive-trash-route = { $action } | { $source }
 
-op-shortcut-route = Utwórz skrót { $count } elementów | { $source }
+op-shortcut-route = { $action } | { $source }
 
 op-preparing-copy = Przygotowywanie kopiowania
 
@@ -128,6 +128,8 @@ op-failed-status = Niepowodzenie
 
 op-error-code =  | Kod błędu { $code }
 
+op-speed-prefix =  | { $speed }
+op-failure-detail = { $status } | { $route } | { $operation } | { $detail }{ $native }
 op-no-destination = Nie podano miejsca docelowego
 
 op-no-source = Nie podano źródła
@@ -142,6 +144,7 @@ apk-timeout = Przekroczono limit czasu instalacji { $name } na { $target }
 
 apk-failed = Niepowodzenie instalacji { $name } na { $target }: { $error }
 
+apk-check-device = Sprawdź połączenie urządzenia i plik APK, a następnie spróbuj ponownie
 status-no-selection = Nie zaznaczono żadnych elementów
 
 status-details-unavailable = Nie można wczytać szczegółów
@@ -210,6 +213,11 @@ transfer-upload = Wysyłanie do miejsca docelowego
 
 transfer-download = Pobieranie ze źródła
 
+transfer-conflict-inspection = Sprawdzanie konfliktów w miejscu docelowym
+transfer-local-copy = Kopiowanie lokalne
+transfer-source-delete = Usuń źródło po przeniesieniu
+transfer-provider-panic = Błąd dostawcy transferu
+transfer-no-diagnostic = Nie podano błędu źródłowego
 transfer-cancelling = Anulowanie
 
 transfer-cancel = Anuluj

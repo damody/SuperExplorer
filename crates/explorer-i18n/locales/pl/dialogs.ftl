@@ -236,3 +236,6 @@ dialog-gdrive-trash-aria =
         [many] Przenieś { $count } elementów do kosza Google Drive
        *[other] Przenieś { $count } elementy do kosza Google Drive
     }
+
+ftp-sign-in = Zaloguj się do { $host }
+ftp-sign-in-unencrypted = Zaloguj się do { $host } — To połączenie nie jest szyfrowane

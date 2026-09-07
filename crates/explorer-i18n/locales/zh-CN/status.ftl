@@ -24,17 +24,17 @@ op-rename = 重命名｜{ $from } → { $to }
 
 op-chmod = 更改权限｜{ $path } → { $mode }
 
-op-copy-route = 复制 { $count } 个项目｜{ $source } → { $destination }
+op-copy-route = { $action }｜{ $source } → { $destination }
 
-op-move-route = 移动 { $count } 个项目｜{ $source } → { $destination }
+op-move-route = { $action }｜{ $source } → { $destination }
 
-op-recycle-route = 移至回收站 { $count } 个项目｜{ $source }
+op-recycle-route = { $action }｜{ $source }
 
-op-permanent-delete-route = 永久删除 { $count } 个项目｜{ $source }
+op-permanent-delete-route = { $action }｜{ $source }
 
-op-gdrive-trash-route = 移到 Google Drive 回收站 { $count } 个项目｜{ $source }
+op-gdrive-trash-route = { $action }｜{ $source }
 
-op-shortcut-route = 创建快捷方式 { $count } 个项目｜{ $source }
+op-shortcut-route = { $action }｜{ $source }
 
 op-preparing-copy = 准备复制
 
@@ -86,6 +86,8 @@ op-failed-status = 失败
 
 op-error-code = ｜错误代码 { $code }
 
+op-speed-prefix = ｜{ $speed }
+op-failure-detail = { $status }｜{ $route }｜{ $operation }｜{ $detail }{ $native }
 op-no-destination = 未提供目标位置
 
 op-no-source = 未提供源
@@ -100,6 +102,7 @@ apk-timeout = 安装 { $name } 到 { $target } 超时
 
 apk-failed = 安装 { $name } 到 { $target } 失败：{ $error }
 
+apk-check-device = 请检查设备连接和 APK 后再试一次
 status-no-selection = 未选择任何项目
 
 status-details-unavailable = 无法加载详细信息
@@ -162,9 +165,14 @@ transfer-upload = 目标上传
 
 transfer-download = 源下载
 
+transfer-conflict-inspection = 目标冲突检查
+transfer-local-copy = 本地复制
+transfer-source-delete = 移动后删除源
+transfer-provider-panic = 传输提供程序异常
+transfer-no-diagnostic = 未提供底层错误
 transfer-cancelling = 正在取消
 
-transfer-cancel = Cancel
+transfer-cancel = 取消
 
 status-details-view = 详细信息视图
 status-icon-view = 图标视图

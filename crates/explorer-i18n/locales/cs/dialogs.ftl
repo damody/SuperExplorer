@@ -236,3 +236,6 @@ dialog-gdrive-trash-aria =
         [many] Přesunout { $count } položek do koše Google Drive
        *[other] Přesunout { $count } položek do koše Google Drive
     }
+
+ftp-sign-in = Přihlásit se k { $host }
+ftp-sign-in-unencrypted = Přihlásit se k { $host } — Toto připojení není šifrované

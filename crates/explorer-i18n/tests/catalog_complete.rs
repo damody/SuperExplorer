@@ -149,6 +149,17 @@ fn sample_args() -> FluentArgs<'static> {
     args.set("first", "a.txt");
     args.set("month", "January");
     args.set("year", 2026);
+    args.set("day", 1);
+    args.set("hour-12", "03");
+    args.set("hour-24", "15");
+    args.set("minute", "30");
+    args.set("second", "23");
+    args.set("period", "PM");
+    args.set("host", "ftp.example");
+    args.set("detail", "detail");
+    args.set("operation", "copy");
+    args.set("status", "failed");
+    args.set("native", "");
     args
 }
 

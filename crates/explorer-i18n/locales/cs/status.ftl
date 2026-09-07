@@ -66,17 +66,17 @@ op-rename = Přejmenovat | { $from } → { $to }
 
 op-chmod = Změnit oprávnění | { $path } → { $mode }
 
-op-copy-route = Kopírovat { $count } položek | { $source } → { $destination }
+op-copy-route = { $action } | { $source } → { $destination }
 
-op-move-route = Přesunout { $count } položek | { $source } → { $destination }
+op-move-route = { $action } | { $source } → { $destination }
 
-op-recycle-route = Do koše { $count } položek | { $source }
+op-recycle-route = { $action } | { $source }
 
-op-permanent-delete-route = Odstranit trvale { $count } položek | { $source }
+op-permanent-delete-route = { $action } | { $source }
 
-op-gdrive-trash-route = Koš Google Drive { $count } položek | { $source }
+op-gdrive-trash-route = { $action } | { $source }
 
-op-shortcut-route = Vytvořit zástupce { $count } položek | { $source }
+op-shortcut-route = { $action } | { $source }
 
 op-preparing-copy = Příprava kopírování
 
@@ -128,6 +128,8 @@ op-failed-status = Selhalo
 
 op-error-code =  | Kód chyby { $code }
 
+op-speed-prefix =  | { $speed }
+op-failure-detail = { $status } | { $route } | { $operation } | { $detail }{ $native }
 op-no-destination = Cíl není zadán
 
 op-no-source = Zdroj není zadán
@@ -142,6 +144,7 @@ apk-timeout = Vypršel časový limit instalace { $name } na { $target }
 
 apk-failed = Instalace { $name } na { $target } selhala: { $error }
 
+apk-check-device = Zkontrolujte připojení zařízení a APK a zkuste to znovu
 status-no-selection = Nevybrány žádné položky
 
 status-details-unavailable = Podrobnosti se nepodařilo načíst
@@ -210,6 +213,11 @@ transfer-upload = Nahrání do cíle
 
 transfer-download = Stažení ze zdroje
 
+transfer-conflict-inspection = Kontrola konfliktů cíle
+transfer-local-copy = Místní kopírování
+transfer-source-delete = Po přesunutí odstranit zdroj
+transfer-provider-panic = Chyba poskytovatele přenosu
+transfer-no-diagnostic = Nebyla poskytnuta podkladová chyba
 transfer-cancelling = Rušení
 
 transfer-cancel = Storno

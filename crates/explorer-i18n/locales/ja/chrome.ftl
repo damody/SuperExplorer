@@ -50,6 +50,10 @@ nav-connect-gdrive = Google ドライブに接続
 
 nav-unencrypted = { $label } — 暗号化なし
 
+nav-not-connected = { $label } — 未接続
+nav-offline = { $label } — オフライン
+nav-unauthorized = { $label } — 未承認
+nav-unavailable = { $label } — 利用できません
 nav-favorites = お気に入り
 
 chrome-new-tab = 新しいタブ

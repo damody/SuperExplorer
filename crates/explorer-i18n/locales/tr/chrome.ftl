@@ -50,6 +50,10 @@ nav-connect-gdrive = Google Drive’a bağlan
 
 nav-unencrypted = { $label } — Şifrelenmemiş
 
+nav-not-connected = { $label } — Bağlı değil
+nav-offline = { $label } — Çevrimdışı
+nav-unauthorized = { $label } — Yetkisiz
+nav-unavailable = { $label } — Kullanılamıyor
 nav-favorites = Sık kullanılanlar
 
 chrome-new-tab = Yeni sekme

@@ -212,3 +212,6 @@ dialog-permanent-delete-prompt =
 dialog-gdrive-trash-prompt = Google ドライブのゴミ箱に { $count } 個の項目を移動しますか? drive.google.com で 30 日間復元できます。これは Windows のごみ箱ではありません。
 dialog-permanent-delete-aria = { $count } 個の項目を完全に削除
 dialog-gdrive-trash-aria = Google ドライブのゴミ箱に { $count } 個の項目を移動
+
+ftp-sign-in = { $host } にサインイン
+ftp-sign-in-unencrypted = { $host } にサインイン — この接続は暗号化されていません

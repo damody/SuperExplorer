@@ -236,3 +236,6 @@ dialog-gdrive-trash-aria =
         [many] Переместить { $count } элементов в корзину Google Drive
        *[other] Переместить { $count } элемента в корзину Google Drive
     }
+
+ftp-sign-in = Вход на { $host }
+ftp-sign-in-unencrypted = Вход на { $host } — это подключение не зашифровано

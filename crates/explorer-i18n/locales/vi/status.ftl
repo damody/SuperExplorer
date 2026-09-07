@@ -52,17 +52,17 @@ op-rename = Đổi tên | { $from } → { $to }
 
 op-chmod = Đổi quyền | { $path } → { $mode }
 
-op-copy-route = Sao chép { $count } mục | { $source } → { $destination }
+op-copy-route = { $action } | { $source } → { $destination }
 
-op-move-route = Di chuyển { $count } mục | { $source } → { $destination }
+op-move-route = { $action } | { $source } → { $destination }
 
-op-recycle-route = Thùng rác { $count } mục | { $source }
+op-recycle-route = { $action } | { $source }
 
-op-permanent-delete-route = Xóa vĩnh viễn { $count } mục | { $source }
+op-permanent-delete-route = { $action } | { $source }
 
-op-gdrive-trash-route = Thùng rác Google Drive { $count } mục | { $source }
+op-gdrive-trash-route = { $action } | { $source }
 
-op-shortcut-route = Tạo lối tắt { $count } mục | { $source }
+op-shortcut-route = { $action } | { $source }
 
 op-preparing-copy = Đang chuẩn bị sao chép
 
@@ -114,6 +114,8 @@ op-failed-status = Thất bại
 
 op-error-code =  | Mã lỗi { $code }
 
+op-speed-prefix =  | { $speed }
+op-failure-detail = { $status } | { $route } | { $operation } | { $detail }{ $native }
 op-no-destination = Chưa có đích
 
 op-no-source = Chưa có nguồn
@@ -128,6 +130,7 @@ apk-timeout = Hết thời gian cài { $name } vào { $target }
 
 apk-failed = Cài { $name } vào { $target } thất bại: { $error }
 
+apk-check-device = Hãy kiểm tra kết nối thiết bị và APK rồi thử lại
 status-no-selection = Chưa chọn mục nào
 
 status-details-unavailable = Không tải được chi tiết
@@ -194,6 +197,11 @@ transfer-upload = Tải lên đích
 
 transfer-download = Tải xuống từ nguồn
 
+transfer-conflict-inspection = Kiểm tra xung đột đích
+transfer-local-copy = Sao chép cục bộ
+transfer-source-delete = Xóa nguồn sau khi di chuyển
+transfer-provider-panic = Lỗi nhà cung cấp truyền
+transfer-no-diagnostic = Không có lỗi cơ sở được cung cấp
 transfer-cancelling = Đang hủy
 
 transfer-cancel = Hủy

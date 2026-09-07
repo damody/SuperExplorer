@@ -52,17 +52,17 @@ op-rename = Mudar o nome | { $from } → { $to }
 
 op-chmod = Alterar permissões | { $path } → { $mode }
 
-op-copy-route = Copiar { $count } itens | { $source } → { $destination }
+op-copy-route = { $action } | { $source } → { $destination }
 
-op-move-route = Mover { $count } itens | { $source } → { $destination }
+op-move-route = { $action } | { $source } → { $destination }
 
-op-recycle-route = Reciclar { $count } itens | { $source }
+op-recycle-route = { $action } | { $source }
 
-op-permanent-delete-route = Eliminar definitivamente { $count } itens | { $source }
+op-permanent-delete-route = { $action } | { $source }
 
-op-gdrive-trash-route = Reciclagem do Google Drive { $count } itens | { $source }
+op-gdrive-trash-route = { $action } | { $source }
 
-op-shortcut-route = Criar atalho { $count } itens | { $source }
+op-shortcut-route = { $action } | { $source }
 
 op-preparing-copy = A preparar a cópia
 
@@ -114,6 +114,8 @@ op-failed-status = Falha
 
 op-error-code =  | Código de erro { $code }
 
+op-speed-prefix =  | { $speed }
+op-failure-detail = { $status } | { $route } | { $operation } | { $detail }{ $native }
 op-no-destination = Destino não fornecido
 
 op-no-source = Origem não fornecida
@@ -128,6 +130,7 @@ apk-timeout = A instalação de { $name } em { $target } expirou
 
 apk-failed = Falha ao instalar { $name } em { $target }: { $error }
 
+apk-check-device = Verifique a ligação do dispositivo e o APK e tente novamente
 status-no-selection = Nenhum item selecionado
 
 status-details-unavailable = Não foi possível carregar os detalhes
@@ -194,6 +197,11 @@ transfer-upload = Carregamento no destino
 
 transfer-download = Transferência da origem
 
+transfer-conflict-inspection = Verificação de conflito de destino
+transfer-local-copy = Cópia local
+transfer-source-delete = Eliminar origem após mover
+transfer-provider-panic = Erro do fornecedor de transferência
+transfer-no-diagnostic = Não foi fornecido um erro subjacente
 transfer-cancelling = A cancelar
 
 transfer-cancel = Cancelar

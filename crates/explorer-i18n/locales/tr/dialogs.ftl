@@ -208,3 +208,6 @@ dialog-permanent-delete-prompt = { $count } öğe kalıcı olarak silinsin mi? B
 dialog-gdrive-trash-prompt = { $count } öğe Google Drive çöp kutusuna taşınsın mı? drive.google.com üzerinde 30 gün kurtarılabilir. Bu, Windows Geri Dönüşüm Kutusu değildir.
 dialog-permanent-delete-aria = { $count } öğeyi kalıcı olarak sil
 dialog-gdrive-trash-aria = { $count } öğeyi Google Drive çöp kutusuna taşı
+
+ftp-sign-in = { $host } oturum aç
+ftp-sign-in-unencrypted = { $host } oturum aç — Bu bağlantı şifrelenmemiş

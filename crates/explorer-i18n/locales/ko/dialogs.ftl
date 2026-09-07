@@ -208,3 +208,6 @@ dialog-permanent-delete-prompt = { $count }개 항목을 영구 삭제할까요?
 dialog-gdrive-trash-prompt = Google 드라이브 휴지통으로 { $count }개 항목을 이동할까요? drive.google.com에서 30일 동안 복구할 수 있습니다. Windows 휴지통이 아닙니다.
 dialog-permanent-delete-aria = { $count }개 항목 영구 삭제
 dialog-gdrive-trash-aria = Google 드라이브 휴지통으로 { $count }개 항목 이동
+
+ftp-sign-in = { $host }에 로그인
+ftp-sign-in-unencrypted = { $host }에 로그인 — 이 연결은 암호화되지 않음

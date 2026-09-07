@@ -224,3 +224,6 @@ dialog-gdrive-trash-aria =
         [one] { $count } Element in den Google-Drive-Papierkorb verschieben
        *[other] { $count } Elemente in den Google-Drive-Papierkorb verschieben
     }
+
+ftp-sign-in = Bei { $host } anmelden
+ftp-sign-in-unencrypted = Bei { $host } anmelden — Diese Verbindung ist nicht verschlüsselt

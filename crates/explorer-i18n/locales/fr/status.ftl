@@ -52,17 +52,17 @@ op-rename = Renommer | { $from } → { $to }
 
 op-chmod = Modifier les autorisations | { $path } → { $mode }
 
-op-copy-route = Copier { $count } éléments | { $source } → { $destination }
+op-copy-route = { $action } | { $source } → { $destination }
 
-op-move-route = Déplacer { $count } éléments | { $source } → { $destination }
+op-move-route = { $action } | { $source } → { $destination }
 
-op-recycle-route = Corbeille { $count } éléments | { $source }
+op-recycle-route = { $action } | { $source }
 
-op-permanent-delete-route = Supprimer définitivement { $count } éléments | { $source }
+op-permanent-delete-route = { $action } | { $source }
 
-op-gdrive-trash-route = Corbeille Google Drive { $count } éléments | { $source }
+op-gdrive-trash-route = { $action } | { $source }
 
-op-shortcut-route = Créer un raccourci { $count } éléments | { $source }
+op-shortcut-route = { $action } | { $source }
 
 op-preparing-copy = Préparation de la copie
 
@@ -114,6 +114,8 @@ op-failed-status = Échec
 
 op-error-code =  | Code d’erreur { $code }
 
+op-speed-prefix =  | { $speed }
+op-failure-detail = { $status } | { $route } | { $operation } | { $detail }{ $native }
 op-no-destination = Destination non fournie
 
 op-no-source = Source non fournie
@@ -128,6 +130,7 @@ apk-timeout = Délai d’installation de { $name } sur { $target } dépassé
 
 apk-failed = Échec de l’installation de { $name } sur { $target } : { $error }
 
+apk-check-device = Vérifiez la connexion de l’appareil et l’APK, puis réessayez
 status-no-selection = Aucun élément sélectionné
 
 status-details-unavailable = Impossible de charger les détails
@@ -194,6 +197,11 @@ transfer-upload = Chargement vers la destination
 
 transfer-download = Téléchargement depuis la source
 
+transfer-conflict-inspection = Vérification des conflits de destination
+transfer-local-copy = Copie locale
+transfer-source-delete = Supprimer la source après le déplacement
+transfer-provider-panic = Erreur du fournisseur de transfert
+transfer-no-diagnostic = Aucune erreur sous-jacente fournie
 transfer-cancelling = Annulation
 
 transfer-cancel = Annuler

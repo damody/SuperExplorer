@@ -46,12 +46,12 @@ pub enum TransferStage {
 impl TransferStage {
     pub const fn user_label(self) -> &'static str {
         match self {
-            Self::ConflictInspection => "目的地衝突檢查",
-            Self::LocalCopy => "本機複製",
-            Self::SourceDownload => "來源下載",
-            Self::DestinationUpload => "目的地上傳",
-            Self::SourceDelete => "移動後刪除來源",
-            Self::ProviderPanic => "傳輸提供者異常",
+            Self::ConflictInspection => "transfer-conflict-inspection",
+            Self::LocalCopy => "transfer-local-copy",
+            Self::SourceDownload => "transfer-download",
+            Self::DestinationUpload => "transfer-upload",
+            Self::SourceDelete => "transfer-source-delete",
+            Self::ProviderPanic => "transfer-provider-panic",
         }
     }
 }
@@ -93,7 +93,7 @@ static PROCESS_STAGING_BYTES: AtomicU64 = AtomicU64::new(0);
 pub fn sanitize_transfer_diagnostic(diagnostic: &str) -> String {
     let trimmed = diagnostic.trim();
     if trimmed.is_empty() {
-        return "未提供底層錯誤".to_owned();
+        return "transfer-no-diagnostic".to_owned();
     }
     let mut sanitized = redact_uri_userinfo(trimmed);
     for key in ["password", "passwd", "token", "secret"] {
@@ -119,8 +119,8 @@ fn redact_uri_userinfo(value: &str) -> String {
             continue;
         };
         let userinfo_end = authority_start + relative_at;
-        output.replace_range(authority_start..userinfo_end, "[已隱藏]");
-        search_from = authority_start + "[已隱藏]@".len();
+        output.replace_range(authority_start..userinfo_end, "[redacted]");
+        search_from = authority_start + "[redacted]@".len();
     }
     output
 }
@@ -149,8 +149,8 @@ fn redact_assignment_values(value: &str, key: &str) -> String {
         let value_end = output[value_start..]
             .find([',', ';', ' ', '\t', '\r', '\n'])
             .map_or(output.len(), |offset| value_start + offset);
-        output.replace_range(value_start..value_end, "[已隱藏]");
-        search_from = value_start + "[已隱藏]".len();
+        output.replace_range(value_start..value_end, "[redacted]");
+        search_from = value_start + "[redacted]".len();
     }
     output
 }
@@ -1308,7 +1308,7 @@ mod tests {
         };
         assert_eq!(stage, TransferStage::DestinationUpload);
         assert!(diagnostic.contains("sftp upload denied"));
-        assert!(diagnostic.contains("password=[已隱藏]"));
+        assert!(diagnostic.contains("password=[redacted]"));
         assert!(!diagnostic.contains("should-not-leak"));
     }
 
@@ -1333,12 +1333,12 @@ mod tests {
 
     #[test]
     fn diagnostic_sanitizer_redacts_uri_userinfo_and_empty_reason() {
-        assert_eq!(sanitize_transfer_diagnostic("  "), "未提供底層錯誤");
+        assert_eq!(sanitize_transfer_diagnostic("  "), "transfer-no-diagnostic");
         let sanitized = sanitize_transfer_diagnostic(
             "connect sftp://root:secret@example.test/home token=abc123 refused",
         );
-        assert!(sanitized.contains("sftp://[已隱藏]@example.test/home"));
-        assert!(sanitized.contains("token=[已隱藏]"));
+        assert!(sanitized.contains("sftp://[redacted]@example.test/home"));
+        assert!(sanitized.contains("token=[redacted]"));
         assert!(!sanitized.contains("root:secret"));
         assert!(!sanitized.contains("abc123"));
     }

@@ -52,17 +52,17 @@ op-rename = เปลี่ยนชื่อ | { $from } → { $to }
 
 op-chmod = เปลี่ยนสิทธิ์ | { $path } → { $mode }
 
-op-copy-route = คัดลอก { $count } รายการ | { $source } → { $destination }
+op-copy-route = { $action } | { $source } → { $destination }
 
-op-move-route = ย้าย { $count } รายการ | { $source } → { $destination }
+op-move-route = { $action } | { $source } → { $destination }
 
-op-recycle-route = ถังรีไซเคิล { $count } รายการ | { $source }
+op-recycle-route = { $action } | { $source }
 
-op-permanent-delete-route = ลบถาวร { $count } รายการ | { $source }
+op-permanent-delete-route = { $action } | { $source }
 
-op-gdrive-trash-route = ถังขยะ Google Drive { $count } รายการ | { $source }
+op-gdrive-trash-route = { $action } | { $source }
 
-op-shortcut-route = ทางลัด { $count } รายการ | { $source }
+op-shortcut-route = { $action } | { $source }
 
 op-preparing-copy = กำลังเตรียมคัดลอก
 
@@ -114,6 +114,8 @@ op-failed-status = ล้มเหลว
 
 op-error-code =  | รหัสข้อผิดพลาด { $code }
 
+op-speed-prefix =  | { $speed }
+op-failure-detail = { $status } | { $route } | { $operation } | { $detail }{ $native }
 op-no-destination = ไม่ได้ระบุปลายทาง
 
 op-no-source = ไม่ได้ระบุแหล่งที่มา
@@ -128,6 +130,7 @@ apk-timeout = หมดเวลาติดตั้ง { $name } ไปยั�
 
 apk-failed = ติดตั้ง { $name } ไปยัง { $target } ไม่สำเร็จ: { $error }
 
+apk-check-device = ตรวจสอบการเชื่อมต่ออุปกรณ์และ APK แล้วลองอีกครั้ง
 status-no-selection = ไม่ได้เลือกรายการ
 
 status-details-unavailable = ไม่สามารถโหลดรายละเอียด
@@ -194,6 +197,11 @@ transfer-upload = อัปโหลดปลายทาง
 
 transfer-download = ดาวน์โหลดแหล่งที่มา
 
+transfer-conflict-inspection = ตรวจสอบความขัดแย้งของปลายทาง
+transfer-local-copy = คัดลอกในเครื่อง
+transfer-source-delete = ลบต้นทางหลังย้าย
+transfer-provider-panic = ข้อผิดพลาดของผู้ให้บริการถ่ายโอน
+transfer-no-diagnostic = ไม่ได้ระบุข้อผิดพลาดพื้นฐาน
 transfer-cancelling = กำลังยกเลิก
 
 transfer-cancel = ยกเลิก

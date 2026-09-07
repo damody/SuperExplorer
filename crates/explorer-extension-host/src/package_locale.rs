@@ -5,6 +5,8 @@
 //! `en` / `en-US` → manifest display-name fallback. An empty `locales` array
 //! does not fail package load; callers use the manifest display name instead.
 
+use std::collections::BTreeMap;
+
 use explorer_i18n::AppLocale;
 use serde::Deserialize;
 
@@ -17,6 +19,45 @@ pub enum PackageLocaleResolutionV1<'a> {
     File(&'a LocaleResourceV1),
     /// No locale file matched; use the package manifest display-name fallback.
     ManifestDisplayName,
+}
+
+/// Locale JSON bytes captured at package admit for Folder Options chrome.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiscoveredPackageChromeV1 {
+    package_id: String,
+    locales: Vec<LocaleResourceV1>,
+    locale_bytes: BTreeMap<String, Vec<u8>>,
+}
+
+impl DiscoveredPackageChromeV1 {
+    pub(crate) fn from_parts(
+        package_id: String,
+        locales: Vec<LocaleResourceV1>,
+        locale_bytes: BTreeMap<String, Vec<u8>>,
+    ) -> Self {
+        Self {
+            package_id,
+            locales,
+            locale_bytes,
+        }
+    }
+
+    /// Package identity used as the manifest display-name fallback.
+    #[must_use]
+    pub fn package_id(&self) -> &str {
+        &self.package_id
+    }
+
+    /// Resolves the package display name for `app_locale`.
+    #[must_use]
+    pub fn display_name(&self, app_locale: AppLocale) -> String {
+        resolve_package_display_name(
+            app_locale,
+            &self.locales,
+            |resource| self.locale_bytes.get(&resource.path).cloned(),
+            &self.package_id,
+        )
+    }
 }
 
 /// Subset of plugin locale JSON the host reads for package chrome.
@@ -188,8 +229,8 @@ fn is_hans_like(normalized: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        PackageLocaleResolutionV1, parse_package_locale_json, resolve_package_display_name,
-        resolve_package_locale,
+        DiscoveredPackageChromeV1, PackageLocaleResolutionV1, parse_package_locale_json,
+        resolve_package_display_name, resolve_package_locale,
     };
     use crate::LocaleResourceV1;
     use explorer_i18n::AppLocale;
@@ -281,6 +322,31 @@ mod tests {
                 panic!("expected zh-HK via negotiate aliases")
             }
         }
+    }
+
+    #[test]
+    fn discovered_chrome_follows_app_locale() {
+        let locales = en_zh_locales();
+        let mut locale_bytes = std::collections::BTreeMap::new();
+        locale_bytes.insert(
+            "locales/zh-TW.json".to_owned(),
+            r#"{"display_name":"資料夾大小圖"}"#.as_bytes().to_vec(),
+        );
+        locale_bytes.insert(
+            "locales/en-US.json".to_owned(),
+            r#"{"display_name":"Folder Size Map"}"#.as_bytes().to_vec(),
+        );
+        let chrome = DiscoveredPackageChromeV1::from_parts(
+            "third-party.size-map".to_owned(),
+            locales,
+            locale_bytes,
+        );
+        assert_eq!(
+            chrome.display_name(AppLocale::ZhTw),
+            "資料夾大小圖"
+        );
+        assert_eq!(chrome.display_name(AppLocale::En), "Folder Size Map");
+        assert_eq!(chrome.display_name(AppLocale::Ja), "Folder Size Map");
     }
 
     #[test]

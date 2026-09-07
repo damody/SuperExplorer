@@ -52,17 +52,17 @@ op-rename = Umbenennen | { $from } → { $to }
 
 op-chmod = Berechtigungen ändern | { $path } → { $mode }
 
-op-copy-route = { $count } Elemente kopieren | { $source } → { $destination }
+op-copy-route = { $action } | { $source } → { $destination }
 
-op-move-route = { $count } Elemente verschieben | { $source } → { $destination }
+op-move-route = { $action } | { $source } → { $destination }
 
-op-recycle-route = { $count } Elemente in den Papierkorb | { $source }
+op-recycle-route = { $action } | { $source }
 
-op-permanent-delete-route = { $count } Elemente endgültig löschen | { $source }
+op-permanent-delete-route = { $action } | { $source }
 
-op-gdrive-trash-route = Google-Drive-Papierkorb { $count } Elemente | { $source }
+op-gdrive-trash-route = { $action } | { $source }
 
-op-shortcut-route = Verknüpfung { $count } Elemente | { $source }
+op-shortcut-route = { $action } | { $source }
 
 op-preparing-copy = Kopieren wird vorbereitet
 
@@ -114,6 +114,8 @@ op-failed-status = Fehler
 
 op-error-code =  | Fehlercode { $code }
 
+op-speed-prefix =  | { $speed }
+op-failure-detail = { $status } | { $route } | { $operation } | { $detail }{ $native }
 op-no-destination = Ziel nicht angegeben
 
 op-no-source = Quelle nicht angegeben
@@ -128,6 +130,7 @@ apk-timeout = Zeitüberschreitung bei der Installation von { $name } auf { $targ
 
 apk-failed = Installation von { $name } auf { $target } fehlgeschlagen: { $error }
 
+apk-check-device = Geräteverbindung und APK prüfen und erneut versuchen
 status-no-selection = Keine Elemente ausgewählt
 
 status-details-unavailable = Details konnten nicht geladen werden
@@ -194,6 +197,11 @@ transfer-upload = Zielupload
 
 transfer-download = Quellen-Download
 
+transfer-conflict-inspection = Zielkonfliktprüfung
+transfer-local-copy = Lokales Kopieren
+transfer-source-delete = Quelle nach dem Verschieben löschen
+transfer-provider-panic = Übertragungsanbieterfehler
+transfer-no-diagnostic = Kein zugrunde liegender Fehler angegeben
 transfer-cancelling = Wird abgebrochen
 
 transfer-cancel = Abbrechen

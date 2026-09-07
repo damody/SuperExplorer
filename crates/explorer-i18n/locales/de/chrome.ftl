@@ -50,6 +50,10 @@ nav-connect-gdrive = Google Drive verbinden
 
 nav-unencrypted = { $label } — Unverschlüsselt
 
+nav-not-connected = { $label } — Nicht verbunden
+nav-offline = { $label } — Offline
+nav-unauthorized = { $label } — Nicht autorisiert
+nav-unavailable = { $label } — Nicht verfügbar
 nav-favorites = Favoriten
 
 chrome-new-tab = Neue Registerkarte

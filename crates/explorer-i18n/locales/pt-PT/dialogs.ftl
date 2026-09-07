@@ -224,3 +224,6 @@ dialog-gdrive-trash-aria =
         [one] Mover { $count } item para a reciclagem do Google Drive
        *[other] Mover { $count } itens para a reciclagem do Google Drive
     }
+
+ftp-sign-in = Iniciar sessão em { $host }
+ftp-sign-in-unencrypted = Iniciar sessão em { $host } — Esta ligação não está encriptada

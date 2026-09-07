@@ -52,17 +52,17 @@ op-rename = Yeniden adlandır | { $from } → { $to }
 
 op-chmod = İzinleri değiştir | { $path } → { $mode }
 
-op-copy-route = { $count } öğeyi kopyala | { $source } → { $destination }
+op-copy-route = { $action } | { $source } → { $destination }
 
-op-move-route = { $count } öğeyi taşı | { $source } → { $destination }
+op-move-route = { $action } | { $source } → { $destination }
 
-op-recycle-route = Geri Dönüşüm Kutusu { $count } öğe | { $source }
+op-recycle-route = { $action } | { $source }
 
-op-permanent-delete-route = Kalıcı sil { $count } öğe | { $source }
+op-permanent-delete-route = { $action } | { $source }
 
-op-gdrive-trash-route = Google Drive çöp kutusu { $count } öğe | { $source }
+op-gdrive-trash-route = { $action } | { $source }
 
-op-shortcut-route = Kısayol { $count } öğe | { $source }
+op-shortcut-route = { $action } | { $source }
 
 op-preparing-copy = Kopyalama hazırlanıyor
 
@@ -114,6 +114,8 @@ op-failed-status = Başarısız
 
 op-error-code =  | Hata kodu { $code }
 
+op-speed-prefix =  | { $speed }
+op-failure-detail = { $status } | { $route } | { $operation } | { $detail }{ $native }
 op-no-destination = Hedef sağlanmadı
 
 op-no-source = Kaynak sağlanmadı
@@ -128,6 +130,7 @@ apk-timeout = { $name } öğesinin { $target } konumuna yüklenmesi zaman aşım
 
 apk-failed = { $name } öğesinin { $target } konumuna yüklenmesi başarısız: { $error }
 
+apk-check-device = Cihaz bağlantısını ve APK’yı kontrol edip yeniden deneyin
 status-no-selection = Hiçbir öğe seçilmedi
 
 status-details-unavailable = Ayrıntılar yüklenemedi
@@ -194,6 +197,11 @@ transfer-upload = Hedefe karşıya yükleme
 
 transfer-download = Kaynaktan indirme
 
+transfer-conflict-inspection = Hedef çakışma denetimi
+transfer-local-copy = Yerel kopyalama
+transfer-source-delete = Taşıdıktan sonra kaynağı sil
+transfer-provider-panic = Aktarım sağlayıcısı hatası
+transfer-no-diagnostic = Altta yatan hata sağlanmadı
 transfer-cancelling = İptal ediliyor
 
 transfer-cancel = İptal

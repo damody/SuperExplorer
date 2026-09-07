@@ -1,6 +1,6 @@
 //! Windows display-language detection and startup locale resolution.
 
-use explorer_i18n::AppLocale;
+use explorer_i18n::{AppLocale, Catalog};
 
 /// Process override used by uitest and fixtures. Invalid values are ignored.
 pub const LOCALE_ENV_VAR: &str = "SUPEREXPLORER_LOCALE";
@@ -40,6 +40,15 @@ pub fn resolve_app_locale_from_process(
 ) -> AppLocale {
     let env_override = std::env::var(LOCALE_ENV_VAR).ok();
     resolve_app_locale(env_override.as_deref(), session_locale, windows_tag)
+}
+
+/// Catalog for app-owned prompts that run outside a live Explorer window.
+#[must_use]
+pub fn live_catalog() -> Catalog {
+    Catalog::new(resolve_app_locale_from_process(
+        None,
+        windows_display_locale_tag().as_deref(),
+    ))
 }
 
 /// Returns the Windows user-default locale name (`GetUserDefaultLocaleName`), if available.

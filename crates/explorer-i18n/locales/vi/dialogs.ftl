@@ -208,3 +208,6 @@ dialog-permanent-delete-prompt = Xóa vĩnh viễn { $count } mục? Không th�
 dialog-gdrive-trash-prompt = Chuyển { $count } mục vào thùng rác Google Drive? Có thể khôi phục trên drive.google.com trong 30 ngày. Đây không phải Thùng rác Windows.
 dialog-permanent-delete-aria = Xóa vĩnh viễn { $count } mục
 dialog-gdrive-trash-aria = Chuyển { $count } mục vào thùng rác Google Drive
+
+ftp-sign-in = Đăng nhập vào { $host }
+ftp-sign-in-unencrypted = Đăng nhập vào { $host } — Kết nối này chưa được mã hóa

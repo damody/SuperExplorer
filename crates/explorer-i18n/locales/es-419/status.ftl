@@ -52,17 +52,17 @@ op-rename = Cambiar nombre | { $from } → { $to }
 
 op-chmod = Cambiar permisos | { $path } → { $mode }
 
-op-copy-route = Copiar { $count } elementos | { $source } → { $destination }
+op-copy-route = { $action } | { $source } → { $destination }
 
-op-move-route = Mover { $count } elementos | { $source } → { $destination }
+op-move-route = { $action } | { $source } → { $destination }
 
-op-recycle-route = Papelera { $count } elementos | { $source }
+op-recycle-route = { $action } | { $source }
 
-op-permanent-delete-route = Eliminar de forma permanente { $count } elementos | { $source }
+op-permanent-delete-route = { $action } | { $source }
 
-op-gdrive-trash-route = Papelera de Google Drive { $count } elementos | { $source }
+op-gdrive-trash-route = { $action } | { $source }
 
-op-shortcut-route = Crear acceso directo { $count } elementos | { $source }
+op-shortcut-route = { $action } | { $source }
 
 op-preparing-copy = Preparando la copia
 
@@ -114,6 +114,8 @@ op-failed-status = Error
 
 op-error-code =  | Código de error { $code }
 
+op-speed-prefix =  | { $speed }
+op-failure-detail = { $status } | { $route } | { $operation } | { $detail }{ $native }
 op-no-destination = Destino no proporcionado
 
 op-no-source = Origen no proporcionado
@@ -128,6 +130,7 @@ apk-timeout = Se agotó el tiempo de instalación de { $name } en { $target }
 
 apk-failed = Error al instalar { $name } en { $target }: { $error }
 
+apk-check-device = Revisa la conexión del dispositivo y el APK y vuelve a intentarlo
 status-no-selection = No hay elementos seleccionados
 
 status-details-unavailable = No se pudieron cargar los detalles
@@ -194,6 +197,11 @@ transfer-upload = Carga en destino
 
 transfer-download = Descarga de origen
 
+transfer-conflict-inspection = Comprobación de conflictos de destino
+transfer-local-copy = Copia local
+transfer-source-delete = Eliminar el origen después de mover
+transfer-provider-panic = Error del proveedor de transferencia
+transfer-no-diagnostic = No se proporcionó un error subyacente
 transfer-cancelling = Cancelando
 
 transfer-cancel = Cancelar

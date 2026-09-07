@@ -362,12 +362,17 @@ impl ConfiguredRemoteRuntime {
         let (username, password) = if suggested_user.eq_ignore_ascii_case("anonymous") {
             ("anonymous".to_owned(), "ftp@localhost".to_owned())
         } else {
-            let warning = if saved.as_ref().is_none_or(|profile| {
-                profile.security_mode == explorer_model::FtpSecurityMode::Plain
-            }) {
-                format!("Sign in to {host} — 此連線未加密")
-            } else {
-                format!("Sign in to {host}")
+            let warning = {
+                let catalog = crate::locale::live_catalog();
+                let mut args = explorer_i18n::FluentArgs::new();
+                args.set("host", host.clone());
+                if saved.as_ref().is_none_or(|profile| {
+                    profile.security_mode == explorer_model::FtpSecurityMode::Plain
+                }) {
+                    catalog.t_args("ftp-sign-in-unencrypted", &args)
+                } else {
+                    catalog.t_args("ftp-sign-in", &args)
+                }
             };
             match prompt_ftp_login(&host, &suggested_user, &warning)? {
                 Some(values) => values,
@@ -793,16 +798,25 @@ pub fn discover_adb_navigation_devices() -> Vec<explorer_ui::navigation_pane::Ad
             } else {
                 format!("{base} ({})", device.serial)
             };
-            let label = match device.state {
-                explorer_remote::AdbDeviceState::Offline => format!("{label} — 離線"),
-                explorer_remote::AdbDeviceState::Unauthorized => format!("{label} — 未授權"),
-                explorer_remote::AdbDeviceState::Other => format!("{label} — 無法使用"),
-                explorer_remote::AdbDeviceState::Device => label,
+            let state = match device.state {
+                explorer_remote::AdbDeviceState::Device => {
+                    explorer_ui::navigation_pane::AdbNavigationState::Ready
+                }
+                explorer_remote::AdbDeviceState::Offline => {
+                    explorer_ui::navigation_pane::AdbNavigationState::Offline
+                }
+                explorer_remote::AdbDeviceState::Unauthorized => {
+                    explorer_ui::navigation_pane::AdbNavigationState::Unauthorized
+                }
+                explorer_remote::AdbDeviceState::Other => {
+                    explorer_ui::navigation_pane::AdbNavigationState::Unavailable
+                }
             };
             explorer_ui::navigation_pane::AdbNavigationDevice {
                 serial: device.serial,
                 label,
                 available,
+                state,
             }
         })
         .collect()
@@ -820,11 +834,7 @@ pub fn configured_ftp_navigation_profiles()
                     .is_some();
             explorer_ui::navigation_pane::FtpNavigationProfile {
                 alias: profile.public_identity().to_owned(),
-                label: if available {
-                    profile.public_identity().to_owned()
-                } else {
-                    format!("{} — 尚未連線", profile.public_identity())
-                },
+                label: profile.public_identity().to_owned(),
                 container_identity: profile.container_identity,
                 available,
                 encrypted: profile.security_mode != explorer_model::FtpSecurityMode::Plain,
@@ -845,11 +855,7 @@ pub fn configured_gdrive_navigation_profiles()
                     .is_some();
             explorer_ui::navigation_pane::GdriveNavigationProfile {
                 alias: profile.alias.clone(),
-                label: if available {
-                    profile.alias
-                } else {
-                    format!("{} — 尚未連線", profile.alias)
-                },
+                label: profile.alias,
                 container_identity: profile.container_identity,
                 available,
             }
@@ -869,11 +875,7 @@ pub fn configured_sftp_navigation_profiles()
                     .is_some();
             explorer_ui::navigation_pane::SftpNavigationProfile {
                 alias: profile.public_identity().to_owned(),
-                label: if available {
-                    profile.public_identity().to_owned()
-                } else {
-                    format!("{} — 尚未連線", profile.public_identity())
-                },
+                label: profile.public_identity().to_owned(),
                 container_identity: profile.container_identity,
                 available,
             }
@@ -3426,7 +3428,7 @@ mod tests {
         };
         assert_eq!(item.location, remote_location());
         assert_eq!(*destination, virtual_destination("archive"));
-        assert_eq!(error.operation, "目的地上傳");
+        assert_eq!(error.operation, "transfer-upload");
         assert!(error.user_message.contains("fixture upload failure"));
         assert!(
             !error

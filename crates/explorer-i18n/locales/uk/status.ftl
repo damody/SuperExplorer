@@ -66,17 +66,17 @@ op-rename = Перейменувати | { $from } → { $to }
 
 op-chmod = Змінити права | { $path } → { $mode }
 
-op-copy-route = Копіювати { $count } елементів | { $source } → { $destination }
+op-copy-route = { $action } | { $source } → { $destination }
 
-op-move-route = Перемістити { $count } елементів | { $source } → { $destination }
+op-move-route = { $action } | { $source } → { $destination }
 
-op-recycle-route = До кошика { $count } елементів | { $source }
+op-recycle-route = { $action } | { $source }
 
-op-permanent-delete-route = Видалити остаточно { $count } елементів | { $source }
+op-permanent-delete-route = { $action } | { $source }
 
-op-gdrive-trash-route = Кошик Google Drive { $count } елементів | { $source }
+op-gdrive-trash-route = { $action } | { $source }
 
-op-shortcut-route = Створити ярлик { $count } елементів | { $source }
+op-shortcut-route = { $action } | { $source }
 
 op-preparing-copy = Підготовка копіювання
 
@@ -128,6 +128,8 @@ op-failed-status = Збій
 
 op-error-code =  | Код помилки { $code }
 
+op-speed-prefix =  | { $speed }
+op-failure-detail = { $status } | { $route } | { $operation } | { $detail }{ $native }
 op-no-destination = Призначення не вказано
 
 op-no-source = Джерело не вказано
@@ -142,6 +144,7 @@ apk-timeout = Час інсталяції { $name } на { $target } минув
 
 apk-failed = Збій інсталяції { $name } на { $target }: { $error }
 
+apk-check-device = Перевірте з’єднання пристрою та APK, потім повторіть спробу
 status-no-selection = Нічого не вибрано
 
 status-details-unavailable = Не вдалося завантажити відомості
@@ -210,6 +213,11 @@ transfer-upload = Надсилання до призначення
 
 transfer-download = Завантаження з джерела
 
+transfer-conflict-inspection = Перевірка конфліктів призначення
+transfer-local-copy = Локальне копіювання
+transfer-source-delete = Видалення джерела після переміщення
+transfer-provider-panic = Помилка постачальника передавання
+transfer-no-diagnostic = Докладну помилку не надано
 transfer-cancelling = Скасування
 
 transfer-cancel = Скасувати

@@ -52,17 +52,17 @@ op-rename = 이름 바꾸기 | { $from } → { $to }
 
 op-chmod = 사용 권한 변경 | { $path } → { $mode }
 
-op-copy-route = 항목 { $count }개 복사 | { $source } → { $destination }
+op-copy-route = { $action } | { $source } → { $destination }
 
-op-move-route = 항목 { $count }개 이동 | { $source } → { $destination }
+op-move-route = { $action } | { $source } → { $destination }
 
-op-recycle-route = 휴지통 { $count }개 | { $source }
+op-recycle-route = { $action } | { $source }
 
-op-permanent-delete-route = 영구 삭제 { $count }개 | { $source }
+op-permanent-delete-route = { $action } | { $source }
 
-op-gdrive-trash-route = Google Drive 휴지통 { $count }개 | { $source }
+op-gdrive-trash-route = { $action } | { $source }
 
-op-shortcut-route = 바로 가기 { $count }개 | { $source }
+op-shortcut-route = { $action } | { $source }
 
 op-preparing-copy = 복사 준비 중
 
@@ -114,6 +114,8 @@ op-failed-status = 실패
 
 op-error-code =  | 오류 코드 { $code }
 
+op-speed-prefix =  | { $speed }
+op-failure-detail = { $status } | { $route } | { $operation } | { $detail }{ $native }
 op-no-destination = 대상을 제공하지 않음
 
 op-no-source = 원본을 제공하지 않음
@@ -128,6 +130,7 @@ apk-timeout = { $name }을(를) { $target }에 설치하는 시간이 초과됨
 
 apk-failed = { $name }을(를) { $target }에 설치하지 못함: { $error }
 
+apk-check-device = 장치 연결과 APK를 확인한 후 다시 시도하세요
 status-no-selection = 선택한 항목 없음
 
 status-details-unavailable = 세부 정보를 로드할 수 없음
@@ -194,6 +197,11 @@ transfer-upload = 대상 업로드
 
 transfer-download = 원본 다운로드
 
+transfer-conflict-inspection = 대상 충돌 확인
+transfer-local-copy = 로컬 복사
+transfer-source-delete = 이동 후 원본 삭제
+transfer-provider-panic = 전송 공급자 오류
+transfer-no-diagnostic = 내부 오류가 제공되지 않음
 transfer-cancelling = 취소 중
 
 transfer-cancel = 취소

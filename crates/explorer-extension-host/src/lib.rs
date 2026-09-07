@@ -126,8 +126,8 @@ pub use operation_plan::{
     OperationPlanErrorV1, identity as operation_file_identity_v1,
 };
 pub use package_locale::{
-    PackageLocaleJsonV1, PackageLocaleResolutionV1, parse_package_locale_json,
-    resolve_package_display_name, resolve_package_locale,
+    DiscoveredPackageChromeV1, PackageLocaleJsonV1, PackageLocaleResolutionV1,
+    parse_package_locale_json, resolve_package_display_name, resolve_package_locale,
 };
 pub use package_resolver::{
     BlockedPackageV1, PackageResolutionDiagnosticCodeV1, PackageResolutionDiagnosticV1,
@@ -682,6 +682,33 @@ impl std::fmt::Debug for FeatureStateRuntimeV1 {
     }
 }
 
+fn collect_discovered_package_chrome(
+    validated: &[PackageValidationResultV1],
+) -> Vec<DiscoveredPackageChromeV1> {
+    use std::collections::BTreeMap;
+    validated
+        .iter()
+        .map(|package| {
+            let locales = package.manifest().locales.clone();
+            let mut locale_bytes = BTreeMap::new();
+            if let Ok(guard) = package.activation_guard() {
+                for locale in &locales {
+                    if let Some(path) = guard.runtime_payload_path(&locale.path)
+                        && let Ok(bytes) = std::fs::read(path)
+                    {
+                        locale_bytes.insert(locale.path.clone(), bytes);
+                    }
+                }
+            }
+            DiscoveredPackageChromeV1::from_parts(
+                package.manifest().package.id.clone(),
+                locales,
+                locale_bytes,
+            )
+        })
+        .collect()
+}
+
 #[derive(Debug)]
 struct ExtensionHostRuntimeV1 {
     local_developer: Option<LocalDeveloperRuntimeV1>,
@@ -689,6 +716,7 @@ struct ExtensionHostRuntimeV1 {
     native_lifecycle: Option<NativeExtensionLifecycleV1>,
     startup_admissions: Vec<NativeStartupAdmissionV1>,
     discovered_package_ids: Vec<String>,
+    discovered_package_chrome: Vec<DiscoveredPackageChromeV1>,
     startup_diagnostics: Vec<ExtensionStartupDiagnosticV1>,
     startup_plugin_dlls: Vec<PathBuf>,
     _startup_plugin_guards: Vec<SealedPackageActivationGuardV1>,
@@ -968,6 +996,7 @@ impl ExtensionHost {
             .collect::<Vec<_>>();
         discovered_package_ids.sort();
         discovered_package_ids.dedup();
+        let discovered_package_chrome = collect_discovered_package_chrome(&validated);
         for blocked in resolution.blocked_packages() {
             push_startup_diagnostic(
                 &mut startup_diagnostics,
@@ -1072,6 +1101,7 @@ impl ExtensionHost {
             native_lifecycle: Some(lifecycle),
             startup_admissions: admissions,
             discovered_package_ids,
+            discovered_package_chrome,
             startup_diagnostics,
             startup_plugin_dlls,
             _startup_plugin_guards: startup_plugin_guards,
@@ -1108,6 +1138,14 @@ impl ExtensionHost {
         self.runtime
             .as_ref()
             .map_or(&[], |runtime| runtime.discovered_package_ids.as_slice())
+    }
+
+    /// Locale JSON captured at admit for third-party package chrome.
+    #[must_use]
+    pub fn discovered_package_chrome(&self) -> &[DiscoveredPackageChromeV1] {
+        self.runtime
+            .as_ref()
+            .map_or(&[], |runtime| runtime.discovered_package_chrome.as_slice())
     }
 
     /// Returns immutable native payloads admitted from validated packages for

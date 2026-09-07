@@ -236,3 +236,6 @@ dialog-gdrive-trash-aria =
         [many] Перемістити { $count } елементів до кошика Google Drive
        *[other] Перемістити { $count } елементи до кошика Google Drive
     }
+
+ftp-sign-in = Вхід на { $host }
+ftp-sign-in-unencrypted = Вхід на { $host } — це підключення не зашифровано
