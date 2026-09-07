@@ -41,7 +41,7 @@ A Windows 11 file explorer written in Rust with [GPUI-CE](https://github.com/gpu
 
 ### Search, metadata, and performance
 
-- Indexed-search probing (including Everything when available) with a bounded file-system fallback.
+- Folder Options → General lets you pick exactly one search engine: Everything, MFT, or file enumeration. Unsupported engines stay visible but disabled, with a hint; search never silently falls back to another engine.
 - MFT-backed folder size, File Count, and Folder Count for local NTFS volumes, shared across windows through the MFT service.
 - Shell icons, overlays, BC7 icon/thumbnail caches, and a Preview pane with trusted rasters or Windows Preview Handlers.
 
@@ -49,7 +49,7 @@ A Windows 11 file explorer written in Rust with [GPUI-CE](https://github.com/gpu
 
 - Bookmark toolbar and manager for folders, files, and Lua commands.
 - Extensible plugin platform (Rust DLL and Lua packages) for extra columns, views, and commands, including folder-size bars, Size Map, Code Lines, 7-Zip virtual folders, and lock-owner columns.
-- Folder Options window for view preferences, language, extension enablement, cache budgets, and scoped session reset.
+- Folder Options window for search engine, view preferences, language, extension enablement, cache budgets, and scoped session reset.
 
 ### Shell integration
 
@@ -176,7 +176,7 @@ See [Explorer UITest](docs/UITEST.md), [Manual Tests](docs/MANUAL_TESTS.md), and
 - The application currently targets Windows only.
 - Preview Handler rendering, cloud availability, Network discovery, and third-party namespace/handler behavior depend on the installed Windows environment.
 - Some OLE drag-and-drop, mixed-DPI, Narrator, and Explorer-to-app scenarios still need manual validation on a real interactive Windows desktop.
-- Search availability and behavior depend on Windows Search / Everything configuration; the application uses a bounded fallback when indexed search is unavailable.
+- Search uses the engine selected in Folder Options. Everything needs the packaged SDK and IPC; MFT needs a local NTFS volume with a SuperExplorer MFT index; file enumeration needs a local folder. Remote locations cannot use these engines.
 - Saved Details layouts keep their previous column visibility; File Count and Folder Count default to visible only on a fresh layout.
 
 See [Final Handoff](docs/FINAL_HANDOFF.md) for the detailed validation state and remaining gaps.
