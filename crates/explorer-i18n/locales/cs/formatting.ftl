@@ -73,6 +73,7 @@ filter-earlier = Dříve
 filter-file-folder = Složka souborů
 
 type-file-folder = Složka souborů
+type-file-ext = Soubor { $ext }
 
 shortcut-suffix = { $base } - Zástupce
 

@@ -73,6 +73,7 @@ filter-earlier = Ранее
 filter-file-folder = Папка с файлами
 
 type-file-folder = Папка с файлами
+type-file-ext = Файл { $ext }
 
 shortcut-suffix = { $base } - Ярлык
 

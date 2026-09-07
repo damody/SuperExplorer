@@ -73,6 +73,7 @@ filter-earlier = Korábban
 filter-file-folder = Fájlmappa
 
 type-file-folder = Fájlmappa
+type-file-ext = { $ext } fájl
 
 shortcut-suffix = { $base } - Parancsikon
 

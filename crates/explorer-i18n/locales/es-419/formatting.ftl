@@ -73,6 +73,7 @@ filter-earlier = Anterior
 filter-file-folder = Carpeta de archivos
 
 type-file-folder = Carpeta de archivos
+type-file-ext = Archivo { $ext }
 
 shortcut-suffix = { $base } - Acceso directo
 

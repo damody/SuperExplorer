@@ -73,6 +73,7 @@ filter-earlier = 이전
 filter-file-folder = 파일 폴더
 
 type-file-folder = 파일 폴더
+type-file-ext = { $ext } 파일
 
 shortcut-suffix = { $base } - 바로 가기
 

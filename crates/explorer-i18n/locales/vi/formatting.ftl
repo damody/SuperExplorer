@@ -73,6 +73,7 @@ filter-earlier = Sớm hơn
 filter-file-folder = Thư mục tệp
 
 type-file-folder = Thư mục tệp
+type-file-ext = Tệp { $ext }
 
 shortcut-suffix = { $base } - Lối tắt
 

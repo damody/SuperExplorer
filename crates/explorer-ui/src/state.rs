@@ -1786,6 +1786,10 @@ impl AppViewState {
             LocaleChoice::FollowWindows => self.windows_negotiated_locale,
             LocaleChoice::Explicit(locale) => locale,
         };
+        self.presentation_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 
     pub const fn navigation_pane_width(&self) -> LogicalPx {

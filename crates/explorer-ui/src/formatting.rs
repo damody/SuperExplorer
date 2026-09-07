@@ -1,4 +1,5 @@
 use explorer_i18n::{AppLocale, Catalog, FluentArgs};
+use explorer_model::FileEntry;
 
 const UNIT_KEYS: [&str; 4] = [
     "file-size-unit-kb",
@@ -86,6 +87,55 @@ pub fn format_transfer_speed(bytes_per_second: f64, locale: AppLocale) -> String
     fluent_file_size(&catalog, number, SPEED_UNIT_KEYS[unit])
 }
 
+/// Details Type column and filter label for the active UI catalog.
+///
+/// Shell `SHGetFileInfo` type names follow the Windows display language, so
+/// live app-locale switching must not reuse that stored string.
+pub(crate) fn localized_entry_type(entry: &FileEntry, catalog: Catalog) -> String {
+    if entry.is_container {
+        return catalog.t("type-file-folder");
+    }
+    if !matches!(
+        entry.location,
+        explorer_model::LocationDescriptor::FileSystem(_)
+    ) {
+        return entry
+            .metadata
+            .type_display
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .map_or_else(|| catalog.t("chrome-file"), str::to_owned);
+    }
+    match file_extension_label(&entry.display_name) {
+        Some(ext) => {
+            let mut args = FluentArgs::new();
+            args.set("ext", ext);
+            catalog.t_args("type-file-ext", &args)
+        }
+        None => catalog.t("chrome-file"),
+    }
+}
+
+fn file_extension_label(name: &str) -> Option<String> {
+    let ext = std::path::Path::new(name)
+        .extension()?
+        .to_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    Some(ext.to_ascii_uppercase())
+}
+
+/// Stable Type-filter key that does not change when the UI catalog changes.
+pub(crate) fn type_filter_key(entry: &FileEntry) -> String {
+    if entry.is_container {
+        return "type:file-folder".to_owned();
+    }
+    match file_extension_label(&entry.display_name) {
+        Some(ext) => format!("type:ext:{}", ext.to_ascii_lowercase()),
+        None => "type:file".to_owned(),
+    }
+}
+
 fn fluent_file_size(catalog: &Catalog, value: String, unit_key: &str) -> String {
     let mut args = FluentArgs::new();
     args.set("value", value);
@@ -95,7 +145,7 @@ fn fluent_file_size(catalog: &Catalog, value: String, unit_key: &str) -> String 
 
 #[cfg(test)]
 mod tests {
-    use explorer_i18n::AppLocale;
+    use explorer_i18n::{AppLocale, Catalog};
 
     use super::format_file_size;
 
@@ -104,6 +154,52 @@ mod tests {
             .chars()
             .filter(|ch| !matches!(*ch, '\u{2066}' | '\u{2067}' | '\u{2068}' | '\u{2069}'))
             .collect()
+    }
+
+    #[test]
+    fn localized_entry_type_follows_catalog_not_shell_type_name() {
+        let mut folder = explorer_model::FileEntry {
+            id: explorer_model::ShellItemId::from_provider_bytes(1u64.to_le_bytes()).unwrap(),
+            display_name: "docs".to_owned(),
+            location: explorer_model::LocationDescriptor::file_system(r"C:\docs"),
+            is_container: true,
+            metadata: explorer_model::FileEntryMetadata {
+                type_display: Some("檔案資料夾".to_owned()),
+                ..explorer_model::FileEntryMetadata::default()
+            },
+        };
+        assert_eq!(
+            strip_isolates(&super::localized_entry_type(
+                &folder,
+                Catalog::new(AppLocale::En)
+            )),
+            "File folder"
+        );
+        assert_eq!(
+            strip_isolates(&super::localized_entry_type(
+                &folder,
+                Catalog::new(AppLocale::ZhTw)
+            )),
+            "檔案資料夾"
+        );
+        folder.is_container = false;
+        folder.display_name = "notes.json".to_owned();
+        folder.metadata.type_display = Some("JSON 來源檔案".to_owned());
+        assert_eq!(
+            strip_isolates(&super::localized_entry_type(
+                &folder,
+                Catalog::new(AppLocale::En)
+            )),
+            "JSON File"
+        );
+        assert_eq!(
+            strip_isolates(&super::localized_entry_type(
+                &folder,
+                Catalog::new(AppLocale::ZhTw)
+            )),
+            "JSON 檔案"
+        );
+        assert_eq!(super::type_filter_key(&folder), "type:ext:json");
     }
 
     #[test]

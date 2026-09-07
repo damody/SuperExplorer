@@ -73,6 +73,7 @@ filter-earlier = Anteriores
 filter-file-folder = Pasta de arquivos
 
 type-file-folder = Pasta de arquivos
+type-file-ext = Arquivo { $ext }
 
 shortcut-suffix = { $base } - Atalho
 

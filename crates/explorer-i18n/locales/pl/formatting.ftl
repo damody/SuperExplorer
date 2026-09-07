@@ -73,6 +73,7 @@ filter-earlier = Wcześniej
 filter-file-folder = Folder plików
 
 type-file-folder = Folder plików
+type-file-ext = Plik { $ext }
 
 shortcut-suffix = { $base } - Skrót
 

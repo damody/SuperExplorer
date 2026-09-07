@@ -105,20 +105,10 @@ fn filter_value(entry: &FileEntry, column: &ColumnId, catalog: Catalog) -> (Stri
         },
         ColumnId::DateModified => date_filter_value(entry.metadata.modified_sort_key, catalog),
         ColumnId::DateCreated => date_filter_value(entry.metadata.created_sort_key, catalog),
-        ColumnId::Type => {
-            if let Some(display) = entry
-                .metadata
-                .type_display
-                .as_deref()
-                .filter(|value| !value.is_empty())
-            {
-                text_filter_value(Some(display), "type", catalog)
-            } else if entry.is_container {
-                ("type:file-folder".into(), catalog.t("filter-file-folder"))
-            } else {
-                text_filter_value(None, "type", catalog)
-            }
-        }
+        ColumnId::Type => (
+            crate::formatting::type_filter_key(entry),
+            crate::formatting::localized_entry_type(entry, catalog),
+        ),
         ColumnId::Authors => text_filter_value(
             entry.metadata.authors_display.as_deref(),
             "authors",
@@ -974,6 +964,33 @@ mod tests {
         );
         assert!(name_options.iter().any(|option| option.label == "A–H"));
         assert!(name_options.iter().any(|option| option.label == "Q–Z"));
+
+        let type_en = DetailsFilters::options(
+            &snapshot,
+            &ColumnId::Type,
+            Catalog::new(explorer_i18n::AppLocale::En),
+        );
+        assert!(
+            type_en
+                .iter()
+                .any(|option| option.key == "type:ext:txt" && option.label.contains("TXT"))
+        );
+        let type_zh = DetailsFilters::options(
+            &snapshot,
+            &ColumnId::Type,
+            Catalog::new(explorer_i18n::AppLocale::ZhTw),
+        );
+        assert!(type_zh.iter().any(|option| option.key == "type:ext:txt"));
+        assert_ne!(
+            type_en
+                .iter()
+                .find(|option| option.key == "type:ext:txt")
+                .map(|option| option.label.as_str()),
+            type_zh
+                .iter()
+                .find(|option| option.key == "type:ext:txt")
+                .map(|option| option.label.as_str())
+        );
     }
 
     #[test]

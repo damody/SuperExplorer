@@ -73,6 +73,7 @@ filter-earlier = 更早
 filter-file-folder = 文件夹
 
 type-file-folder = 文件夹
+type-file-ext = { $ext } 文件
 
 shortcut-suffix = { $base } - 快捷方式
 

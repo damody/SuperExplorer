@@ -73,6 +73,7 @@ filter-earlier = Daha önce
 filter-file-folder = Dosya klasörü
 
 type-file-folder = Dosya klasörü
+type-file-ext = { $ext } Dosyası
 
 shortcut-suffix = { $base } - Kısayol
 

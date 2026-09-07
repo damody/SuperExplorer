@@ -37,6 +37,7 @@ filter-this-week = 這星期初
 filter-earlier = 較早
 filter-file-folder = 檔案資料夾
 type-file-folder = 檔案資料夾
+type-file-ext = { $ext } 檔案
 shortcut-suffix = { $base } - 捷徑
 shortcut-suffix-n = { $base } - 捷徑 ({ $ordinal })
 bookmark-toolbar-tool = { $name }（{ $tool }）

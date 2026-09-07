@@ -73,6 +73,7 @@ filter-earlier = Früher
 filter-file-folder = Dateiordner
 
 type-file-folder = Dateiordner
+type-file-ext = { $ext }-Datei
 
 shortcut-suffix = { $base } - Verknüpfung
 

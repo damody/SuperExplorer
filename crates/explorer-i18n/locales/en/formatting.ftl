@@ -37,6 +37,7 @@ filter-this-week = Earlier this week
 filter-earlier = Earlier
 filter-file-folder = File folder
 type-file-folder = File folder
+type-file-ext = { $ext } File
 shortcut-suffix = { $base } - Shortcut
 shortcut-suffix-n = { $base } - Shortcut ({ $ordinal })
 bookmark-toolbar-tool = { $name } ({ $tool })

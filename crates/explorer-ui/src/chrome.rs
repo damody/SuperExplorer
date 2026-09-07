@@ -5271,8 +5271,8 @@ fn details_side_pane(tokens: UiTokens, state: &AppViewState) -> impl IntoElement
         .and_then(|entry| entry.metadata.modified_display.as_deref())
         .unwrap_or("");
     let kind = selected
-        .and_then(|entry| entry.metadata.type_display.as_deref())
-        .unwrap_or("");
+        .map(|entry| crate::formatting::localized_entry_type(entry, catalog))
+        .unwrap_or_default();
     let size = selected
         .and_then(|entry| entry.metadata.size_bytes)
         .map(|bytes| format_explorer_size(bytes, catalog))
@@ -5327,8 +5327,8 @@ fn preview_side_pane(
     let has_texture = preview_texture.is_some();
     let broker_message = state.broker_health().message();
     let selected_kind = selected
-        .and_then(|entry| entry.metadata.type_display.as_deref())
-        .unwrap_or("");
+        .map(|entry| crate::formatting::localized_entry_type(entry, catalog))
+        .unwrap_or_default();
     let selected_size = selected
         .and_then(|entry| entry.metadata.size_bytes)
         .map(|bytes| format_explorer_size(bytes, catalog))
@@ -5383,7 +5383,7 @@ fn preview_side_pane(
                     .role(Role::Label)
                     .aria_label({
                         let mut args = FluentArgs::new();
-                        args.set("kind", selected_kind);
+                        args.set("kind", selected_kind.clone());
                         args.set("size", selected_size.clone());
                         catalog.t_args("chrome-preview-file-type-size", &args)
                     })
@@ -10138,13 +10138,7 @@ impl RenderOnce for FileViewHost {
                 let context_item_id = entry.id.clone();
                 let kind = if entry.is_container { "Folder" } else { "File" };
                 let modified = entry.metadata.modified_display.clone().unwrap_or_default();
-                let type_display = entry.metadata.type_display.clone().unwrap_or_else(|| {
-                    if entry.is_container {
-                        catalog.t("chrome-file-folder")
-                    } else {
-                        catalog.t("chrome-file")
-                    }
-                });
+                let type_display = crate::formatting::localized_entry_type(&entry, catalog);
                 let size_bytes = crate::folder_size_column::builtin_size_bytes(
                     entry.is_container,
                     entry.metadata.size_bytes,

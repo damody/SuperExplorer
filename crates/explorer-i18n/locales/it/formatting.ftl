@@ -73,6 +73,7 @@ filter-earlier = Prima
 filter-file-folder = Cartella di file
 
 type-file-folder = Cartella di file
+type-file-ext = File { $ext }
 
 shortcut-suffix = { $base } - Collegamento
 
