@@ -7,9 +7,8 @@ use std::{
     ffi::c_void,
     ptr,
     sync::{
-        Arc, Mutex, OnceLock,
         atomic::{AtomicU64, AtomicUsize, Ordering},
-        mpsc,
+        mpsc, Arc, Mutex, OnceLock,
     },
     time::{Duration, Instant},
 };
@@ -21,8 +20,8 @@ use crate::mft_persistence::{FocusLeaseRegistryV1, MonotonicMillis};
 use windows::Win32::{
     Foundation::{CloseHandle as WinCloseHandle, HANDLE, WAIT_OBJECT_0},
     System::{
-        IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
         Threading::{CreateEventW, WaitForSingleObject},
+        IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
     },
 };
 
@@ -35,6 +34,10 @@ pub(crate) const MAX_FOCUS_CONNECTIONS: usize = 32;
 const FOCUS_LEASE_TTL: Duration = Duration::from_secs(15);
 #[cfg(windows)]
 const FRAME_DEADLINE: Duration = Duration::from_secs(5);
+#[cfg(windows)]
+const CLIENT_HEARTBEAT: Duration = Duration::from_secs(5);
+#[cfg(windows)]
+const SERVER_NEXT_FRAME_DEADLINE: Duration = FOCUS_LEASE_TTL;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u16)]
@@ -115,12 +118,27 @@ pub fn authorize_focus_client(
     if client.session_id != active_session_id || client.user_sid != active_user_sid {
         return Err("focus client is outside the active interactive identity");
     }
-    if client.image_path != protected_image_path
+    if !same_protected_image_path(&client.image_path, protected_image_path)
         || client.image_file_identity != protected_image_file_identity
     {
         return Err("focus client is not the protected installed image");
     }
     Ok((u64::from(client.process_id) << 32) ^ client.process_creation_100ns)
+}
+
+pub fn same_protected_image_path(left: &Path, right: &Path) -> bool {
+    normalize_protected_image_path(left) == normalize_protected_image_path(right)
+}
+
+fn normalize_protected_image_path(path: &Path) -> String {
+    let mut text = path.to_string_lossy().replace('/', "\\");
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        text = format!(r"\\{rest}");
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        text = rest.to_string();
+    }
+    text.make_ascii_uppercase();
+    text
 }
 
 #[cfg(windows)]
@@ -187,6 +205,12 @@ unsafe extern "system" {
         template: isize,
     ) -> isize;
     fn WaitNamedPipeW(name: *const u16, timeout: u32) -> i32;
+    fn SetNamedPipeHandleState(
+        pipe: isize,
+        mode: *mut u32,
+        max_collection: *mut u32,
+        collect_timeout: *mut u32,
+    ) -> i32;
 }
 
 #[cfg(windows)]
@@ -242,7 +266,7 @@ fn focus_reporter_worker(receiver: mpsc::Receiver<ReporterCommandV1>) {
     let mut pipe = None::<OwnedHandle>;
     let mut sequence = 0_u64;
     loop {
-        match receiver.recv_timeout(Duration::from_secs(5)) {
+        match receiver.recv_timeout(CLIENT_HEARTBEAT) {
             Ok(ReporterCommandV1::Focus(id, value)) => {
                 if value {
                     focused.insert(id);
@@ -311,8 +335,9 @@ fn focus_reporter_worker(receiver: mpsc::Receiver<ReporterCommandV1>) {
     unsafe_code,
     reason = "opening the focus lease named pipe requires Win32 handle APIs"
 )]
-// SAFETY: The pipe name remains NUL-terminated and live for both calls; the
-// returned sentinel is checked before ownership is transferred to OwnedHandle.
+// SAFETY: The pipe name remains NUL-terminated and live for WaitNamedPipeW and
+// CreateFileW. A failed mode switch closes the raw handle before ownership is
+// transferred; a successful handle is wrapped in OwnedHandle exactly once.
 fn connect_focus_pipe() -> Result<OwnedHandle, String> {
     let name = wide(FOCUS_PIPE_NAME);
     let _ = unsafe { WaitNamedPipeW(name.as_ptr(), 250) };
@@ -332,6 +357,14 @@ fn connect_focus_pipe() -> Result<OwnedHandle, String> {
         return Err(format!("focus lease pipe unavailable ({})", unsafe {
             GetLastError()
         }));
+    }
+    let mut mode = 0x0000_0002_u32;
+    if unsafe { SetNamedPipeHandleState(handle, &raw mut mode, ptr::null_mut(), ptr::null_mut()) }
+        == 0
+    {
+        let error = unsafe { GetLastError() };
+        let _ = unsafe { CloseHandle(handle) };
+        return Err(format!("focus lease pipe mode rejected ({error})"));
     }
     Ok(OwnedHandle(handle))
 }
@@ -521,9 +554,13 @@ fn handle_focus_connection(
     leases: &Arc<Mutex<FocusLeaseRegistryV1>>,
     now: &dyn Fn() -> MonotonicMillis,
 ) {
-    let Ok((owner, process_handle)) = authorize(pipe.0) else {
-        let _ = unsafe { DisconnectNamedPipe(pipe.0) };
-        return;
+    let (owner, process_handle) = match authorize(pipe.0) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::debug!(%error, "MFT focus lease authorization rejected");
+            let _ = unsafe { DisconnectNamedPipe(pipe.0) };
+            return;
+        }
     };
     // Holding this query/synchronize handle for the entire connection prevents
     // a PID from being recycled underneath an accepted lease owner.
@@ -531,7 +568,14 @@ fn handle_focus_connection(
     let mut last_sequence = 0_u64;
     while !stopped() {
         let mut bytes = [0_u8; FOCUS_FRAME_BYTES];
-        if read_frame_with_deadline(pipe.0, &mut bytes, stopped).is_err() {
+        if read_frame_until(
+            pipe.0,
+            &mut bytes,
+            stopped,
+            Instant::now() + SERVER_NEXT_FRAME_DEADLINE,
+        )
+        .is_err()
+        {
             break;
         }
         let Ok(frame) = FocusFrameV1::decode(&bytes) else {
@@ -561,18 +605,27 @@ fn handle_focus_connection(
 }
 
 #[cfg(windows)]
+fn read_frame_with_deadline(
+    handle: isize,
+    bytes: &mut [u8],
+    stopped: &dyn Fn() -> bool,
+) -> Result<(), String> {
+    read_frame_until(handle, bytes, stopped, Instant::now() + FRAME_DEADLINE)
+}
+
+#[cfg(windows)]
 #[expect(
     unsafe_code,
     reason = "focus frame reads require submitting a raw buffer to Win32 ReadFile"
 )]
 // SAFETY: Each closure invocation exposes only the remaining initialized slice
 // capacity and keeps the slice and OVERLAPPED storage live until completion.
-fn read_frame_with_deadline(
+fn read_frame_until(
     handle: isize,
     bytes: &mut [u8],
     stopped: &dyn Fn() -> bool,
+    deadline: Instant,
 ) -> Result<(), String> {
-    let deadline = Instant::now() + FRAME_DEADLINE;
     let mut offset = 0;
     while offset < bytes.len() {
         if stopped() || Instant::now() >= deadline {
@@ -808,6 +861,18 @@ mod tests {
         assert!(authorize_focus_client(&wrong, 3, &[1, 2, 3], &expected.image_path, 77).is_err());
     }
 
+    #[test]
+    fn authorization_accepts_installed_image_paths_that_differ_only_by_windows_normalization() {
+        let expected = identity();
+        let mut client = expected.clone();
+        client.image_path = PathBuf::from(r"c:\program files\superexplorer\superexplorer.exe");
+        assert!(authorize_focus_client(&client, 3, &[1, 2, 3], &expected.image_path, 77).is_ok());
+        client.image_path = PathBuf::from(r"\\?\C:\Program Files\SuperExplorer\SuperExplorer.exe");
+        assert!(authorize_focus_client(&client, 3, &[1, 2, 3], &expected.image_path, 77).is_ok());
+        client.image_path = PathBuf::from(r"C:/Program Files/SuperExplorer/SuperExplorer.exe");
+        assert!(authorize_focus_client(&client, 3, &[1, 2, 3], &expected.image_path, 77).is_ok());
+    }
+
     #[cfg(windows)]
     #[test]
     fn stalled_partial_client_is_canceled_and_server_stop_is_bounded() {
@@ -845,5 +910,14 @@ mod tests {
         assert_eq!(FOCUS_FRAME_BYTES, 32);
         assert!(MAX_FOCUS_CONNECTIONS <= 32);
         assert!(FOCUS_LEASE_TTL <= Duration::from_secs(15));
+        assert!(
+            CLIENT_HEARTBEAT < FOCUS_LEASE_TTL,
+            "heartbeats must arrive before the lease expires"
+        );
+        assert!(
+            SERVER_NEXT_FRAME_DEADLINE > CLIENT_HEARTBEAT,
+            "the server must wait longer than the client heartbeat or it disconnects the focused pipe"
+        );
+        assert!(SERVER_NEXT_FRAME_DEADLINE <= FOCUS_LEASE_TTL);
     }
 }

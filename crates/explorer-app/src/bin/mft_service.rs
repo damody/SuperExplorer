@@ -297,7 +297,7 @@ fn authorize_focus_pipe(pipe: isize) -> Result<(u64, isize), String> {
     if creation < protected.service_creation_100ns {
         return Err("focus process predates the protected service image epoch".to_owned());
     }
-    if image != protected.path {
+    if !mft_focus::same_protected_image_path(&image, &protected.path) {
         return Err("focus process is not the installed SuperExplorer image".to_owned());
     }
     let image_identity = mft_size_map::file_reference_number(&image)?;
