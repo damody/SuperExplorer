@@ -1122,8 +1122,36 @@ pub struct ActionTrace {
     pub outcome: ActionOutcome,
 }
 
-fn action_dispatches_at_info(action: &ExplorerAction) -> bool {
-    !matches!(action, ExplorerAction::UpdateFileDrag { .. })
+fn action_dispatches_at_info(action: &ExplorerAction, outcome: ActionOutcome) -> bool {
+    if matches!(action, ExplorerAction::UpdateFileDrag { .. }) {
+        return false;
+    }
+    if outcome == ActionOutcome::Disabled && is_high_frequency_pointer_action(action) {
+        return false;
+    }
+    true
+}
+
+fn is_high_frequency_pointer_action(action: &ExplorerAction) -> bool {
+    matches!(
+        action,
+        ExplorerAction::UpdateMarquee { .. }
+            | ExplorerAction::EndMarquee
+            | ExplorerAction::UpdateFileDrag { .. }
+            | ExplorerAction::CancelFileDrag
+            | ExplorerAction::UpdateExternalDrag { .. }
+            | ExplorerAction::UpdateDetailsColumnResize { .. }
+            | ExplorerAction::EndDetailsColumnResize
+            | ExplorerAction::UpdateDetailsColumnDragPreview { .. }
+            | ExplorerAction::CommitDetailsColumnDrag
+            | ExplorerAction::CancelDetailsColumnDrag
+            | ExplorerAction::UpdateSidePaneResize { .. }
+            | ExplorerAction::EndSidePaneResize
+            | ExplorerAction::UpdateScrollbarDrag { .. }
+            | ExplorerAction::EndScrollbarDrag { .. }
+            | ExplorerAction::UpdateNavigationPaneResize { .. }
+            | ExplorerAction::EndNavigationPaneResize
+    )
 }
 
 pub fn dispatch_action(
@@ -1132,7 +1160,8 @@ pub fn dispatch_action(
     source: ActionSource,
 ) -> ActionTrace {
     let action_name = action.name();
-    let dispatches_at_info = action_dispatches_at_info(&action);
+    let always_trace = matches!(action, ExplorerAction::UpdateFileDrag { .. });
+    let high_frequency = is_high_frequency_pointer_action(&action);
     let available = action_available(state, &action);
     let synchronize_command_popup_focus = matches!(
         &action,
@@ -1255,6 +1284,8 @@ pub fn dispatch_action(
     } else {
         ActionOutcome::Disabled
     };
+    let dispatches_at_info =
+        !always_trace && !(outcome == ActionOutcome::Disabled && high_frequency);
     let trace = ActionTrace {
         action_name,
         source,
@@ -1279,6 +1310,14 @@ pub fn dispatch_action(
         );
     }
     trace
+}
+
+fn drag_pointer_session_active(state: &AppViewState) -> bool {
+    matches!(
+        state.drag_session().state(),
+        explorer_model::DragSessionState::Candidate { .. }
+            | explorer_model::DragSessionState::Dragging { .. }
+    )
 }
 
 #[allow(
@@ -1409,9 +1448,10 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
             !state.tabs().active_tab().selection.is_empty() && state.active_presentation().can_write
         }
         ExplorerAction::BeginContextItemGesture { .. } => true,
-        ExplorerAction::BeginFileDrag { .. }
-        | ExplorerAction::UpdateFileDrag { .. }
-        | ExplorerAction::CancelFileDrag => !state.tabs().active_tab().selection.is_empty(),
+        ExplorerAction::BeginFileDrag { .. } => !state.tabs().active_tab().selection.is_empty(),
+        ExplorerAction::UpdateFileDrag { .. } | ExplorerAction::CancelFileDrag => {
+            drag_pointer_session_active(state)
+        }
         ExplorerAction::CopySelected => {
             state.selected_namespace_command_enabled(explorer_model::NamespaceCommand::Copy)
         }
@@ -2561,18 +2601,62 @@ mod tests {
     #[test]
     fn only_file_drag_pointer_updates_bypass_info_dispatch_logging() {
         let pointer_update = ExplorerAction::UpdateFileDrag { x: 1.0, y: 2.0 };
-        assert!(!action_dispatches_at_info(&pointer_update));
-        assert!(action_dispatches_at_info(&ExplorerAction::BeginFileDrag {
-            x: 1.0,
-            y: 2.0,
-            button: explorer_model::DragButton::Left,
-        }));
-        assert!(action_dispatches_at_info(&ExplorerAction::CancelFileDrag));
-        assert!(action_dispatches_at_info(&ExplorerAction::Refresh));
+        assert!(!action_dispatches_at_info(
+            &pointer_update,
+            ActionOutcome::Disabled
+        ));
+        assert!(!action_dispatches_at_info(
+            &pointer_update,
+            ActionOutcome::Handled
+        ));
+        assert!(action_dispatches_at_info(
+            &ExplorerAction::BeginFileDrag {
+                x: 1.0,
+                y: 2.0,
+                button: explorer_model::DragButton::Left,
+            },
+            ActionOutcome::Handled
+        ));
+        assert!(action_dispatches_at_info(
+            &ExplorerAction::CancelFileDrag,
+            ActionOutcome::Handled
+        ));
+        assert!(!action_dispatches_at_info(
+            &ExplorerAction::CancelFileDrag,
+            ActionOutcome::Disabled
+        ));
+        assert!(!action_dispatches_at_info(
+            &ExplorerAction::EndDetailsColumnResize,
+            ActionOutcome::Disabled
+        ));
+        assert!(action_dispatches_at_info(
+            &ExplorerAction::Refresh,
+            ActionOutcome::Handled
+        ));
 
         let mut state = writable_state();
         let trace = dispatch_action(&mut state, pointer_update, ActionSource::Mouse);
         assert_eq!(trace.outcome, ActionOutcome::Disabled);
+        let idle_cancel = dispatch_action(
+            &mut state,
+            ExplorerAction::CancelFileDrag,
+            ActionSource::Mouse,
+        );
+        assert_eq!(idle_cancel.outcome, ActionOutcome::Disabled);
+        assert!(!action_dispatches_at_info(
+            &ExplorerAction::CancelFileDrag,
+            idle_cancel.outcome
+        ));
+        let idle_resize = dispatch_action(
+            &mut state,
+            ExplorerAction::EndDetailsColumnResize,
+            ActionSource::Mouse,
+        );
+        assert_eq!(idle_resize.outcome, ActionOutcome::Disabled);
+        assert!(!action_dispatches_at_info(
+            &ExplorerAction::EndDetailsColumnResize,
+            idle_resize.outcome
+        ));
     }
 
     fn writable_state() -> AppViewState {
