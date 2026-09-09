@@ -38,6 +38,7 @@ nav-new-volume = Nový svazek ({ $letter }:)
 
 nav-network = Síť
 
+nav-linux = Linux
 nav-phones = Telefony
 
 nav-sftp = SFTP
@@ -213,6 +214,11 @@ chrome-sort-name = Název
 chrome-sort-url = Adresa
 
 chrome-sort-tags = Tagy
+chrome-sort-last-visited = Last visited
+chrome-sort-visit-count = Visit count
+chrome-sort-date-added = Date added
+chrome-sort-date-modified = Date modified
+chrome-sort-date = Date
 
 nav-recycle-bin = Koš
 chrome-nav-loading = { $label } (Načítání...)

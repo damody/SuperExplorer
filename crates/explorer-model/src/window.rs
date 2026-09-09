@@ -269,10 +269,14 @@ impl ExplorerWindowState {
             search: tab.search.clone(),
             can_go_back: tab.history.can_go_back(),
             can_go_forward: tab.history.can_go_forward(),
-            can_go_up: current
-                .and_then(|entry| entry.location.path())
-                .and_then(std::path::Path::parent)
-                .is_some(),
+            can_go_up: current.is_some_and(|entry| {
+                entry.location.favorites_folder_id().is_some()
+                    || entry
+                        .location
+                        .path()
+                        .and_then(std::path::Path::parent)
+                        .is_some()
+            }),
             can_write: tab.location_can_write,
         }
     }

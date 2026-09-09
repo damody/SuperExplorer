@@ -107,6 +107,10 @@ dialog-name-accelerator = Nom (N)
 dialog-location-accelerator = Emplacement (L)
 
 dialog-url-accelerator = URL (L)
+dialog-path-accelerator = Path (U)
+dialog-tags-accelerator = Tags (T)
+dialog-tags-placeholder = Comma-separated tags
+dialog-tags-hint = Use tags to search and organize bookmarks
 
 dialog-show-editor-on-save = Afficher l’éditeur lors de l’enregistrement (S)
 

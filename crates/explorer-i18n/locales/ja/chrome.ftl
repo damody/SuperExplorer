@@ -38,6 +38,7 @@ nav-new-volume = 新しいボリューム ({ $letter }:)
 
 nav-network = ネットワーク
 
+nav-linux = Linux
 nav-phones = スマホ
 
 nav-sftp = SFTP
@@ -213,6 +214,11 @@ chrome-sort-name = 名前
 chrome-sort-url = URL
 
 chrome-sort-tags = タグ
+chrome-sort-last-visited = Last visited
+chrome-sort-visit-count = Visit count
+chrome-sort-date-added = Date added
+chrome-sort-date-modified = Date modified
+chrome-sort-date = Date
 
 nav-recycle-bin = ごみ箱
 chrome-nav-loading = { $label } (読み込み中...)

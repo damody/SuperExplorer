@@ -111,6 +111,10 @@ dialog-name-accelerator = Název (N)
 dialog-location-accelerator = Umístění (L)
 
 dialog-url-accelerator = Adresa (L)
+dialog-path-accelerator = Path (U)
+dialog-tags-accelerator = Tags (T)
+dialog-tags-placeholder = Comma-separated tags
+dialog-tags-hint = Use tags to search and organize bookmarks
 
 dialog-show-editor-on-save = Zobrazit editor při ukládání (S)
 

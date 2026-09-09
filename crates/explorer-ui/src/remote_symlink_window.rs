@@ -7,7 +7,7 @@ use gpui::{
 };
 use gpui_elements::editable_text::{EditableTextState, StringStorage, text_input};
 
-use crate::{ExplorerRoot, UiTokens};
+use crate::{ExplorerRoot, UiTokens, chrome::center_single_line_text_input};
 
 fn owner_catalog(owner: WindowHandle<ExplorerRoot>, cx: &mut App) -> Catalog {
     owner
@@ -228,31 +228,41 @@ impl Render for RemoteSymlinkWindow {
             .child(div().text_size(px(22.0)).child(title))
             .child(catalog.t("dialog-shortcut-name"))
             .child(
-                text_input("remote-symlink-name-input")
-                    .aria_label(catalog.t("a11y-shortcut-name"))
-                    .state(gpui::Entity::downgrade(&self.name_input))
-                    .multiline(false)
-                    .caret_blink_interval_500ms()
-                    .w_full()
-                    .h(px(38.0))
-                    .px(px(9.0))
-                    .bg(colors.control_fill.to_gpui())
-                    .border_1()
-                    .border_color(colors.focus.to_gpui()),
+                center_single_line_text_input(
+                    text_input("remote-symlink-name-input")
+                        .aria_label(catalog.t("a11y-shortcut-name"))
+                        .state(gpui::Entity::downgrade(&self.name_input))
+                        .multiline(false)
+                        .caret_blink_interval_500ms()
+                        .w_full()
+                        .px(px(9.0)),
+                    38.0,
+                    1.0,
+                    self.tokens.typography.address.size.value(),
+                    self.tokens.typography.address.line_height.value(),
+                )
+                .bg(colors.control_fill.to_gpui())
+                .border_1()
+                .border_color(colors.focus.to_gpui()),
             )
             .child(catalog.t("dialog-shortcut-target"))
             .child(
-                text_input("remote-symlink-target-input")
-                    .aria_label(catalog.t("a11y-shortcut-target"))
-                    .state(gpui::Entity::downgrade(&self.target_input))
-                    .multiline(false)
-                    .caret_blink_interval_500ms()
-                    .w_full()
-                    .h(px(38.0))
-                    .px(px(9.0))
-                    .bg(colors.control_fill.to_gpui())
-                    .border_1()
-                    .border_color(colors.focus.to_gpui()),
+                center_single_line_text_input(
+                    text_input("remote-symlink-target-input")
+                        .aria_label(catalog.t("a11y-shortcut-target"))
+                        .state(gpui::Entity::downgrade(&self.target_input))
+                        .multiline(false)
+                        .caret_blink_interval_500ms()
+                        .w_full()
+                        .px(px(9.0)),
+                    38.0,
+                    1.0,
+                    self.tokens.typography.address.size.value(),
+                    self.tokens.typography.address.line_height.value(),
+                )
+                .bg(colors.control_fill.to_gpui())
+                .border_1()
+                .border_color(colors.focus.to_gpui()),
             )
             .when_some(self.error.clone(), |view, error| {
                 view.child(
@@ -314,5 +324,24 @@ mod tests {
         for target in ["missing", "../missing target", "/absolute/missing"] {
             assert!(validate_remote_symlink_input("link", target).is_ok());
         }
+    }
+
+    #[test]
+    fn shortcut_inputs_use_centered_single_line_metrics() {
+        let source = include_str!("remote_symlink_window.rs");
+        let compact = source
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        assert!(
+            compact.contains(
+                "center_single_line_text_input(text_input(\"remote-symlink-name-input\")"
+            )
+        );
+        assert!(
+            compact.contains(
+                "center_single_line_text_input(text_input(\"remote-symlink-target-input\")"
+            )
+        );
     }
 }

@@ -51,6 +51,7 @@ menu-about = 关于
 
 menu-new = 新建
 
+menu-sort-with-accelerator = Sort (S)
 menu-sort = 排序
 
 menu-view = 查看
@@ -133,21 +134,39 @@ menu-new-bookmark = 新建书签
 
 menu-manage = 管理
 
-menu-manage-with-accelerator = 管理 (O)⌄
+menu-manage-with-accelerator = 管理 (O)
 
-menu-view-with-accelerator = ☷  查看 (V)⌄
+menu-view-with-accelerator = 查看 (V)
 
-menu-import-backup-with-accelerator = ↕  导入和备份 (I)⌄
+menu-import-backup-with-accelerator = 导入和备份 (I)
 
 menu-history = ⌄  ◷  浏览记录
+history-library = 浏览记录
+history-today = 今天
+history-yesterday = 昨天
+history-last-7-days = 最近 7 天
+history-this-month = 这个月
+history-month = {$month}月
+history-older = 6 个月前
+run-log-library = 运行记录
+run-log-missing = 文件已删除或移动
+run-log-opens = 已打开 { $count } 次
+weekday-sun = 星期日
+weekday-mon = 星期一
+weekday-tue = 星期二
+weekday-wed = 星期三
+weekday-thu = 星期四
+weekday-fri = 星期五
+weekday-sat = 星期六
 
-menu-downloads-items = ⇩  下载项目
+
+menu-downloads-items =⇩  运行记录
 
 menu-tags = ▸  ◇  标签
 
 menu-all-bookmarks = ⌄  ★  所有书签
 
-menu-bookmark-toolbar = ▸  ▣  书签工具栏
+menu-bookmark-toolbar = ⌄  ▣  书签工具栏
 
 menu-bookmark-menu = ▸  ▤  书签菜单
 
@@ -200,3 +219,30 @@ menu-close-apps-and-retry = 关闭进程并重试
 menu-exif-heading = Rename from EXIF
 
 menu-bulk-folder-heading = Bulk folder generator
+menu-new-bookmark-ellipsis = New bookmark… (B)
+menu-new-folder-ellipsis = New folder… (O)
+menu-new-separator = New separator (S)
+menu-redo = Redo
+menu-show-columns = Show columns (C)
+menu-sort-none = Unsorted
+menu-sort-by-tags = Sort by tags (T)
+menu-sort-by-last-visited = Sort by last visited (V)
+menu-sort-by-visit-count = Sort by visit count (C)
+menu-sort-by-date-added = Sort by date added (E)
+menu-sort-by-date-modified = Sort by last modified (M)
+menu-sort-az = A → Z
+menu-sort-za = Z → A
+menu-backup-ellipsis = Backup… (B)
+menu-restore = Restore (R)
+menu-import-html = Import bookmarks from HTML… (I)
+menu-export-html = Export bookmarks to HTML… (E)
+menu-import-other-browsers = Import data from another browser… (A)
+menu-choose-file = Choose file… (C)
+menu-shortcut-ctrl-z = Ctrl+Z
+menu-shortcut-ctrl-y = Ctrl+Y
+menu-shortcut-ctrl-x = Ctrl+X
+menu-shortcut-ctrl-c = Ctrl+C
+menu-shortcut-ctrl-v = Ctrl+V
+menu-shortcut-del = Del
+menu-shortcut-ctrl-a = Ctrl+A
+menu-shortcut-ctrl-w = Ctrl+W

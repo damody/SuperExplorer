@@ -38,6 +38,7 @@ nav-new-volume = 新加卷 ({ $letter }:)
 
 nav-network = 网络
 
+nav-linux = Linux
 nav-phones = 手机
 
 nav-sftp = SFTP
@@ -213,6 +214,11 @@ chrome-sort-name = 名称
 chrome-sort-url = 网址
 
 chrome-sort-tags = 标签
+chrome-sort-last-visited = 上次浏览时间
+chrome-sort-visit-count = 浏览次数
+chrome-sort-date-added = 添加日期
+chrome-sort-date-modified = 上次修改时间
+chrome-sort-date = 日期
 
 nav-recycle-bin = 回收站
 chrome-nav-loading = { $label }（正在加载…）

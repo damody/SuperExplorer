@@ -38,6 +38,7 @@ nav-new-volume = โวลุ่มใหม่ ({ $letter }:)
 
 nav-network = เครือข่าย
 
+nav-linux = Linux
 nav-phones = โทรศัพท์
 
 nav-sftp = SFTP
@@ -213,6 +214,11 @@ chrome-sort-name = ชื่อ
 chrome-sort-url = URL
 
 chrome-sort-tags = แท็ก
+chrome-sort-last-visited = Last visited
+chrome-sort-visit-count = Visit count
+chrome-sort-date-added = Date added
+chrome-sort-date-modified = Date modified
+chrome-sort-date = Date
 
 nav-recycle-bin = ถังรีไซเคิล
 chrome-nav-loading = { $label } (กำลังโหลด...)

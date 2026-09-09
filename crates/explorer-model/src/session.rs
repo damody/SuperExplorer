@@ -894,6 +894,7 @@ impl PersistedSessionEnvelope {
                 crate::BookmarkTarget::LuaScript { source } => {
                     validate_text(source, &format!("bookmarks[{index}].source"), 256 * 1024)?;
                 }
+                crate::BookmarkTarget::Separator => {}
             }
         }
         Ok(())

@@ -111,6 +111,10 @@ dialog-name-accelerator = Имя (N)
 dialog-location-accelerator = Расположение (L)
 
 dialog-url-accelerator = Адрес (L)
+dialog-path-accelerator = Path (U)
+dialog-tags-accelerator = Tags (T)
+dialog-tags-placeholder = Comma-separated tags
+dialog-tags-hint = Use tags to search and organize bookmarks
 
 dialog-show-editor-on-save = Показывать редактор при сохранении (S)
 

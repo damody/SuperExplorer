@@ -295,6 +295,12 @@ pub enum ExplorerAction {
     ActivateBookmark {
         id: explorer_model::BookmarkId,
     },
+    LaunchRunRecord {
+        index: usize,
+    },
+    RevealRunRecord {
+        index: usize,
+    },
     OpenBookmarkInNewTab {
         id: explorer_model::BookmarkId,
     },
@@ -344,8 +350,23 @@ pub enum ExplorerAction {
     ToggleBookmarkManager,
     ImportBookmarksFromClipboard,
     BackupBookmarksToClipboard,
+    AddBookmarkSeparator {
+        parent_id: Option<explorer_model::BookmarkFolderId>,
+    },
+    UndoBookmarkChange,
+    RedoBookmarkChange,
+    ExportBookmarksHtml,
+    ImportBookmarksHtml,
+    BackupBookmarksToDisk,
+    RestoreBookmarksBackup {
+        path: String,
+    },
+    ImportBookmarksFromBrowsers,
     ToggleBookmarkOverflow,
     ToggleBookmarkFolderMenu {
+        id: explorer_model::BookmarkFolderId,
+    },
+    ToggleBookmarkFolderExpanded {
         id: explorer_model::BookmarkFolderId,
     },
     RemoveBookmark {
@@ -705,6 +726,8 @@ impl ExplorerAction {
             Self::AddSelectedToBookmarks => "AddSelectedToBookmarks",
             Self::ToggleCurrentFolderBookmark { .. } => "ToggleCurrentFolderBookmark",
             Self::ActivateBookmark { .. } => "ActivateBookmark",
+            Self::LaunchRunRecord { .. } => "LaunchRunRecord",
+            Self::RevealRunRecord { .. } => "RevealRunRecord",
             Self::OpenBookmarkInNewTab { .. } => "OpenBookmarkInNewTab",
             Self::OpenBookmarkContextMenu { .. } => "OpenBookmarkContextMenu",
             Self::CloseBookmarkContextMenu => "CloseBookmarkContextMenu",
@@ -729,8 +752,17 @@ impl ExplorerAction {
             Self::ToggleBookmarkManager => "ToggleBookmarkManager",
             Self::ImportBookmarksFromClipboard => "ImportBookmarksFromClipboard",
             Self::BackupBookmarksToClipboard => "BackupBookmarksToClipboard",
+            Self::AddBookmarkSeparator { .. } => "AddBookmarkSeparator",
+            Self::UndoBookmarkChange => "UndoBookmarkChange",
+            Self::RedoBookmarkChange => "RedoBookmarkChange",
+            Self::ExportBookmarksHtml => "ExportBookmarksHtml",
+            Self::ImportBookmarksHtml => "ImportBookmarksHtml",
+            Self::BackupBookmarksToDisk => "BackupBookmarksToDisk",
+            Self::RestoreBookmarksBackup { .. } => "RestoreBookmarksBackup",
+            Self::ImportBookmarksFromBrowsers => "ImportBookmarksFromBrowsers",
             Self::ToggleBookmarkOverflow => "ToggleBookmarkOverflow",
             Self::ToggleBookmarkFolderMenu { .. } => "ToggleBookmarkFolderMenu",
+            Self::ToggleBookmarkFolderExpanded { .. } => "ToggleBookmarkFolderExpanded",
             Self::RemoveBookmark { .. } => "RemoveBookmark",
             Self::MoveBookmark { .. } => "MoveBookmark",
             Self::MoveBookmarkToFolder { .. } => "MoveBookmarkToFolder",
@@ -1546,6 +1578,8 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         }
         ExplorerAction::ToggleTheme => availability.is_enabled(CommandKind::ToggleTheme),
         ExplorerAction::ActivateBookmark { .. }
+        | ExplorerAction::LaunchRunRecord { .. }
+        | ExplorerAction::RevealRunRecord { .. }
         | ExplorerAction::OpenBookmarkInNewTab { .. }
         | ExplorerAction::OpenBookmarkContextMenu { .. }
         | ExplorerAction::CloseBookmarkContextMenu
@@ -1570,8 +1604,17 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::ToggleBookmarkManager
         | ExplorerAction::ImportBookmarksFromClipboard
         | ExplorerAction::BackupBookmarksToClipboard
+        | ExplorerAction::AddBookmarkSeparator { .. }
+        | ExplorerAction::UndoBookmarkChange
+        | ExplorerAction::RedoBookmarkChange
+        | ExplorerAction::ExportBookmarksHtml
+        | ExplorerAction::ImportBookmarksHtml
+        | ExplorerAction::BackupBookmarksToDisk
+        | ExplorerAction::RestoreBookmarksBackup { .. }
+        | ExplorerAction::ImportBookmarksFromBrowsers
         | ExplorerAction::ToggleBookmarkOverflow
         | ExplorerAction::ToggleBookmarkFolderMenu { .. }
+        | ExplorerAction::ToggleBookmarkFolderExpanded { .. }
         | ExplorerAction::RemoveBookmark { .. }
         | ExplorerAction::MoveBookmark { .. }
         | ExplorerAction::MoveBookmarkToFolder { .. } => true,
@@ -2034,6 +2077,8 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             FocusSurface::CommandBar
         }
         ExplorerAction::ActivateBookmark { .. }
+        | ExplorerAction::LaunchRunRecord { .. }
+        | ExplorerAction::RevealRunRecord { .. }
         | ExplorerAction::OpenBookmarkInNewTab { .. }
         | ExplorerAction::OpenBookmarkContextMenu { .. }
         | ExplorerAction::CloseBookmarkContextMenu
@@ -2058,11 +2103,23 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         | ExplorerAction::ToggleBookmarkManager
         | ExplorerAction::ImportBookmarksFromClipboard
         | ExplorerAction::BackupBookmarksToClipboard
+        | ExplorerAction::AddBookmarkSeparator { .. }
+        | ExplorerAction::UndoBookmarkChange
+        | ExplorerAction::RedoBookmarkChange
+        | ExplorerAction::ExportBookmarksHtml
+        | ExplorerAction::ImportBookmarksHtml
+        | ExplorerAction::BackupBookmarksToDisk
+        | ExplorerAction::RestoreBookmarksBackup { .. }
+        | ExplorerAction::ImportBookmarksFromBrowsers
         | ExplorerAction::ToggleBookmarkOverflow
         | ExplorerAction::ToggleBookmarkFolderMenu { .. }
         | ExplorerAction::RemoveBookmark { .. }
         | ExplorerAction::MoveBookmark { .. }
         | ExplorerAction::MoveBookmarkToFolder { .. } => FocusSurface::CommandBar,
+        ExplorerAction::ToggleBookmarkFolderExpanded { .. } => {
+            state.focus(FocusSurface::NavigationPane);
+            FocusSurface::NavigationPane
+        }
         ExplorerAction::OpenAboutDialog => {
             state.open_about_dialog();
             FocusSurface::CommandBar

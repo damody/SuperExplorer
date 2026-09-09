@@ -375,6 +375,15 @@ impl RecentItems {
             .collect()
     }
 
+    pub fn entries(&self) -> &[RecentNamespaceItem] {
+        &self.entries
+    }
+
+    pub fn replace_entries(&mut self, entries: Vec<RecentNamespaceItem>) {
+        self.entries = entries;
+        self.entries.truncate(self.capacity);
+    }
+
     pub fn clear(&mut self) {
         self.entries.clear();
     }

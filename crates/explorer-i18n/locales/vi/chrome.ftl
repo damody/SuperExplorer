@@ -38,6 +38,7 @@ nav-new-volume = Volume mới ({ $letter }:)
 
 nav-network = Mạng
 
+nav-linux = Linux
 nav-phones = Điện thoại
 
 nav-sftp = SFTP
@@ -213,6 +214,11 @@ chrome-sort-name = Tên
 chrome-sort-url = URL
 
 chrome-sort-tags = Thẻ
+chrome-sort-last-visited = Last visited
+chrome-sort-visit-count = Visit count
+chrome-sort-date-added = Date added
+chrome-sort-date-modified = Date modified
+chrome-sort-date = Date
 
 nav-recycle-bin = Thùng rác
 chrome-nav-loading = { $label } (Đang tải...)

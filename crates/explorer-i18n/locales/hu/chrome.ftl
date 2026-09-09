@@ -38,6 +38,7 @@ nav-new-volume = Új kötet ({ $letter }:)
 
 nav-network = Hálózat
 
+nav-linux = Linux
 nav-phones = Telefonok
 
 nav-sftp = SFTP
@@ -213,6 +214,11 @@ chrome-sort-name = Név
 chrome-sort-url = URL
 
 chrome-sort-tags = Címkék
+chrome-sort-last-visited = Last visited
+chrome-sort-visit-count = Visit count
+chrome-sort-date-added = Date added
+chrome-sort-date-modified = Date modified
+chrome-sort-date = Date
 
 nav-recycle-bin = Lomtár
 chrome-nav-loading = { $label } (Betöltés...)

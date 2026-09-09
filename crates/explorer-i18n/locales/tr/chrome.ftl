@@ -38,6 +38,7 @@ nav-new-volume = Yeni Birim ({ $letter }:)
 
 nav-network = Ağ
 
+nav-linux = Linux
 nav-phones = Telefonlar
 
 nav-sftp = SFTP
@@ -213,6 +214,11 @@ chrome-sort-name = Ad
 chrome-sort-url = URL
 
 chrome-sort-tags = Etiketler
+chrome-sort-last-visited = Last visited
+chrome-sort-visit-count = Visit count
+chrome-sort-date-added = Date added
+chrome-sort-date-modified = Date modified
+chrome-sort-date = Date
 
 nav-recycle-bin = Geri Dönüşüm Kutusu
 chrome-nav-loading = { $label } (Yükleniyor...)

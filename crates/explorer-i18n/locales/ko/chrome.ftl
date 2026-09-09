@@ -38,6 +38,7 @@ nav-new-volume = 새 볼륨 ({ $letter }:)
 
 nav-network = 네트워크
 
+nav-linux = Linux
 nav-phones = 휴대폰
 
 nav-sftp = SFTP
@@ -213,6 +214,11 @@ chrome-sort-name = 이름
 chrome-sort-url = URL
 
 chrome-sort-tags = 태그
+chrome-sort-last-visited = Last visited
+chrome-sort-visit-count = Visit count
+chrome-sort-date-added = Date added
+chrome-sort-date-modified = Date modified
+chrome-sort-date = Date
 
 nav-recycle-bin = 휴지통
 chrome-nav-loading = { $label } (로드 중...)

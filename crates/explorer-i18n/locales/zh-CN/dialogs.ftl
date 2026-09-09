@@ -99,6 +99,10 @@ dialog-name-accelerator = 名称 (N)
 dialog-location-accelerator = 位置 (L)
 
 dialog-url-accelerator = 网址 (L)
+dialog-path-accelerator = 路径 (U)
+dialog-tags-accelerator = 标签 (T)
+dialog-tags-placeholder = 用逗号分隔每个标签
+dialog-tags-hint = 使用标签搜索和整理书签
 
 dialog-show-editor-on-save = 保存时显示编辑器 (S)
 

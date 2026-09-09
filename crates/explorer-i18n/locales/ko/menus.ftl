@@ -51,6 +51,7 @@ menu-about = 정보
 
 menu-new = 새로 만들기
 
+menu-sort-with-accelerator = Sort (S)
 menu-sort = 정렬
 
 menu-view = 보기
@@ -133,21 +134,39 @@ menu-new-bookmark = 새 책갈피
 
 menu-manage = 구성
 
-menu-manage-with-accelerator = 구성 (O)⌄
+menu-manage-with-accelerator = 구성 (O)
 
-menu-view-with-accelerator = ☷  보기 (V)⌄
+menu-view-with-accelerator = 보기 (V)
 
-menu-import-backup-with-accelerator = ↕  가져오기 및 백업 (I)⌄
+menu-import-backup-with-accelerator = 가져오기 및 백업 (I)
 
 menu-history = ⌄  ◷  기록
+history-library = History
+history-today = Today
+history-yesterday = Yesterday
+history-last-7-days = Last 7 days
+history-this-month = This month
+history-month = {$month}
+history-older = Older than 6 months
+run-log-library = 실행 기록
+run-log-missing = 파일이 이동되었거나 없습니다
+run-log-opens = { $count }번 열림
+weekday-sun = 일요일
+weekday-mon = 월요일
+weekday-tue = 화요일
+weekday-wed = 수요일
+weekday-thu = 목요일
+weekday-fri = 금요일
+weekday-sat = 토요일
 
-menu-downloads-items =    ⇩  다운로드
+
+menu-downloads-items =   ⇩  실행 기록
 
 menu-tags = ▸  ◇  태그
 
 menu-all-bookmarks = ⌄  ★  모든 책갈피
 
-menu-bookmark-toolbar = ▸  ▣  책갈피 도구 모음
+menu-bookmark-toolbar = ⌄  ▣  책갈피 도구 모음
 
 menu-bookmark-menu = ▸  ▤  책갈피 메뉴
 
@@ -200,3 +219,30 @@ menu-close-apps-and-retry = 프로그램 닫고 다시 시도
 menu-exif-heading = EXIF에서 이름 바꾸기
 
 menu-bulk-folder-heading = 대량 폴더 생성기
+menu-new-bookmark-ellipsis = New bookmark… (B)
+menu-new-folder-ellipsis = New folder… (O)
+menu-new-separator = New separator (S)
+menu-redo = Redo
+menu-show-columns = Show columns (C)
+menu-sort-none = Unsorted
+menu-sort-by-tags = Sort by tags (T)
+menu-sort-by-last-visited = Sort by last visited (V)
+menu-sort-by-visit-count = Sort by visit count (C)
+menu-sort-by-date-added = Sort by date added (E)
+menu-sort-by-date-modified = Sort by last modified (M)
+menu-sort-az = A → Z
+menu-sort-za = Z → A
+menu-backup-ellipsis = Backup… (B)
+menu-restore = Restore (R)
+menu-import-html = Import bookmarks from HTML… (I)
+menu-export-html = Export bookmarks to HTML… (E)
+menu-import-other-browsers = Import data from another browser… (A)
+menu-choose-file = Choose file… (C)
+menu-shortcut-ctrl-z = Ctrl+Z
+menu-shortcut-ctrl-y = Ctrl+Y
+menu-shortcut-ctrl-x = Ctrl+X
+menu-shortcut-ctrl-c = Ctrl+C
+menu-shortcut-ctrl-v = Ctrl+V
+menu-shortcut-del = Del
+menu-shortcut-ctrl-a = Ctrl+A
+menu-shortcut-ctrl-w = Ctrl+W

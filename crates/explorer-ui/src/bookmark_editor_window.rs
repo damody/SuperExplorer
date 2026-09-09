@@ -27,7 +27,7 @@ fn bookmark_editor_width(display_width: f32) -> f32 {
 }
 
 const fn bookmark_editor_height(multiline_payload: bool) -> f32 {
-    if multiline_payload { 590.0 } else { 288.0 }
+    if multiline_payload { 680.0 } else { 520.0 }
 }
 
 pub fn bookmark_editor_window_options(
@@ -61,9 +61,12 @@ pub fn bookmark_editor_window_options(
     );
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
-        titlebar: None,
+        titlebar: Some(gpui::TitlebarOptions {
+            title: Some("bookmark-editor".into()),
+            ..Default::default()
+        }),
         kind: gpui::WindowKind::Normal,
-        is_resizable: false,
+        is_resizable: true,
         window_min_size: Some(size(px(420.0), px(height))),
         ..Default::default()
     }
@@ -75,6 +78,7 @@ pub struct BookmarkEditorWindow {
     snapshot: BookmarkEditorWindowSnapshotV1,
     name_input: gpui::Entity<EditableTextState>,
     payload_input: gpui::Entity<EditableTextState>,
+    tags_input: gpui::Entity<EditableTextState>,
     focus_handle: FocusHandle,
     was_active: bool,
 }
@@ -101,6 +105,7 @@ impl BookmarkEditorWindow {
         let name_input = cx.new(|cx| EditableTextState::new(StringStorage::from(editor.name), cx));
         name_input.update(cx, EditableTextState::select_document);
         let payload_input = cx.new(|cx| EditableTextState::new(StringStorage::from(payload), cx));
+        let tags_input = cx.new(|cx| EditableTextState::new(StringStorage::from(editor.tags), cx));
         let name_for_focus = name_input.clone();
         window.defer(cx, move |window, cx| {
             name_for_focus.read(cx).focus_handle(cx).focus(window, cx);
@@ -125,6 +130,7 @@ impl BookmarkEditorWindow {
             snapshot,
             name_input,
             payload_input,
+            tags_input,
             focus_handle,
             was_active: false,
         }
@@ -141,15 +147,15 @@ impl BookmarkEditorWindow {
         let input_values = (action == ExplorerAction::SaveBookmarkEditor).then(|| {
             (
                 self.name_input.read(cx).as_str().to_owned(),
-                Some(self.payload_input.read(cx).as_str().to_owned()),
+                self.payload_input.read(cx).as_str().to_owned(),
+                self.tags_input.read(cx).as_str().to_owned(),
             )
         });
         match owner.update(cx, |root, owner_window, cx| {
-            if let Some((name, payload)) = input_values {
+            if let Some((name, payload, tags)) = input_values {
                 root.update_bookmark_editor_name_from_window(name);
-                if let Some(payload) = payload {
-                    root.update_bookmark_editor_payload_from_window(payload);
-                }
+                root.update_bookmark_editor_payload_from_window(payload);
+                root.update_bookmark_editor_tags_from_window(tags);
             }
             root.dispatch_bookmark_editor_action(action, source, owner_window, cx);
             root.bookmark_editor_window_snapshot()
@@ -191,6 +197,18 @@ impl Render for BookmarkEditorWindow {
             Rc::new(cx.listener(|this, action: &ExplorerAction, window, cx| {
                 this.dispatch(action.clone(), ActionSource::Mouse, window, cx);
             }));
+        let catalog = self.snapshot.state.catalog();
+        let title = if self
+            .snapshot
+            .state
+            .bookmark_editor()
+            .is_some_and(|editor| editor.id.is_none())
+        {
+            catalog.t("dialog-new-bookmark")
+        } else {
+            catalog.t("dialog-edit-bookmark")
+        };
+        window.set_window_title(&title);
         div()
             .id("bookmark-editor-window")
             .role(gpui::Role::Dialog)
@@ -230,6 +248,7 @@ impl Render for BookmarkEditorWindow {
                 &self.snapshot.state,
                 Some(gpui::Entity::downgrade(&self.name_input)),
                 Some(gpui::Entity::downgrade(&self.payload_input)),
+                Some(gpui::Entity::downgrade(&self.tags_input)),
                 Some(on_action),
             ))
     }
@@ -256,8 +275,8 @@ mod tests {
         assert!(source.contains("window.remove_window()"));
         assert!(source.contains("editor.target.editable_payload()"));
         assert!(source.contains("bookmark_editor_width"));
-        assert!(source.contains("is_resizable: false"));
-        assert!(source.contains("titlebar: None"));
+        assert!(source.contains("is_resizable: true"));
+        assert!(source.contains("TitlebarOptions"));
         assert_eq!(bookmark_editor_width(1920.0), 540.0);
         assert_eq!(bookmark_editor_width(800.0), 540.0);
     }
@@ -279,15 +298,20 @@ mod tests {
         assert!(!production.contains("anchor.unwrap_or((0, 0))"));
         assert!(window.contains("WindowBounds::Windowed(bounds)"));
         assert!(window.contains(".min(f32::from(work.right()) - width)"));
-        assert_eq!(bookmark_editor_height(false), 288.0);
-        assert_eq!(bookmark_editor_height(true), 590.0);
+        assert_eq!(bookmark_editor_height(false), 520.0);
+        assert_eq!(bookmark_editor_height(true), 680.0);
+        assert!(window.contains("dialog-new-bookmark"));
+        assert!(window.contains("dialog-edit-bookmark"));
+        assert!(window.contains("set_window_title"));
         for required in [
-            "dialog-new-bookmark",
             "dialog-name-accelerator",
+            "dialog-path-accelerator",
+            "dialog-tags-accelerator",
             "dialog-location-accelerator",
-            "dialog-show-editor-on-save",
             "bookmark-editor-save",
             "bookmark-editor-cancel",
+            "bookmark-payload-input",
+            "bookmark-tags-input",
         ] {
             assert!(chrome.contains(required), "missing {required}");
         }

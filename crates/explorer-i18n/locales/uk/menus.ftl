@@ -51,6 +51,7 @@ menu-about = Про програму
 
 menu-new = Створити
 
+menu-sort-with-accelerator = Sort (S)
 menu-sort = Сортування
 
 menu-view = Вигляд
@@ -133,21 +134,39 @@ menu-new-bookmark = Нова закладка
 
 menu-manage = Упорядкувати
 
-menu-manage-with-accelerator = Упорядкувати (O)⌄
+menu-manage-with-accelerator = Упорядкувати (O)
 
-menu-view-with-accelerator = ☷  Вигляд (V)⌄
+menu-view-with-accelerator = Вигляд (V)
 
-menu-import-backup-with-accelerator = ↕  Імпорт і резервне копіювання (I)⌄
+menu-import-backup-with-accelerator = Імпорт і резервне копіювання (I)
 
 menu-history = ⌄  ◷  Журнал
+history-library = History
+history-today = Today
+history-yesterday = Yesterday
+history-last-7-days = Last 7 days
+history-this-month = This month
+history-month = {$month}
+history-older = Older than 6 months
+run-log-library = Журнал запуску
+run-log-missing = Файл переміщено або відсутній
+run-log-opens = Відкрито { $count } разів
+weekday-sun = неділя
+weekday-mon = понеділок
+weekday-tue = вівторок
+weekday-wed = середа
+weekday-thu = четвер
+weekday-fri = п’ятниця
+weekday-sat = субота
 
-menu-downloads-items =    ⇩  Завантаження
+
+menu-downloads-items =   ⇩  Журнал запуску
 
 menu-tags = ▸  ◇  Теги
 
 menu-all-bookmarks = ⌄  ★  Усі закладки
 
-menu-bookmark-toolbar = ▸  ▣  Панель закладок
+menu-bookmark-toolbar = ⌄  ▣  Панель закладок
 
 menu-bookmark-menu = ▸  ▤  Меню закладок
 
@@ -200,3 +219,30 @@ menu-close-apps-and-retry = Закрити програми й повторит�
 menu-exif-heading = Перейменування за EXIF
 
 menu-bulk-folder-heading = Масове створення папок
+menu-new-bookmark-ellipsis = New bookmark… (B)
+menu-new-folder-ellipsis = New folder… (O)
+menu-new-separator = New separator (S)
+menu-redo = Redo
+menu-show-columns = Show columns (C)
+menu-sort-none = Unsorted
+menu-sort-by-tags = Sort by tags (T)
+menu-sort-by-last-visited = Sort by last visited (V)
+menu-sort-by-visit-count = Sort by visit count (C)
+menu-sort-by-date-added = Sort by date added (E)
+menu-sort-by-date-modified = Sort by last modified (M)
+menu-sort-az = A → Z
+menu-sort-za = Z → A
+menu-backup-ellipsis = Backup… (B)
+menu-restore = Restore (R)
+menu-import-html = Import bookmarks from HTML… (I)
+menu-export-html = Export bookmarks to HTML… (E)
+menu-import-other-browsers = Import data from another browser… (A)
+menu-choose-file = Choose file… (C)
+menu-shortcut-ctrl-z = Ctrl+Z
+menu-shortcut-ctrl-y = Ctrl+Y
+menu-shortcut-ctrl-x = Ctrl+X
+menu-shortcut-ctrl-c = Ctrl+C
+menu-shortcut-ctrl-v = Ctrl+V
+menu-shortcut-del = Del
+menu-shortcut-ctrl-a = Ctrl+A
+menu-shortcut-ctrl-w = Ctrl+W

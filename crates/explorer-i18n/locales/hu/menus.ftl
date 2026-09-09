@@ -51,6 +51,7 @@ menu-about = Névjegy
 
 menu-new = Új
 
+menu-sort-with-accelerator = Sort (S)
 menu-sort = Rendezés
 
 menu-view = Nézet
@@ -133,21 +134,39 @@ menu-new-bookmark = Új könyvjelző
 
 menu-manage = Rendezés
 
-menu-manage-with-accelerator = Rendezés (O)⌄
+menu-manage-with-accelerator = Rendezés (O)
 
-menu-view-with-accelerator = ☷  Nézet (V)⌄
+menu-view-with-accelerator = Nézet (V)
 
-menu-import-backup-with-accelerator = ↕  Importálás és biztonsági mentés (I)⌄
+menu-import-backup-with-accelerator = Importálás és biztonsági mentés (I)
 
 menu-history = ⌄  ◷  Előzmények
+history-library = History
+history-today = Today
+history-yesterday = Yesterday
+history-last-7-days = Last 7 days
+history-this-month = This month
+history-month = {$month}
+history-older = Older than 6 months
+run-log-library = Futtatási napló
+run-log-missing = A fájl áthelyezve vagy hiányzik
+run-log-opens = { $count } alkalommal megnyitva
+weekday-sun = vasárnap
+weekday-mon = hétfő
+weekday-tue = kedd
+weekday-wed = szerda
+weekday-thu = csütörtök
+weekday-fri = péntek
+weekday-sat = szombat
 
-menu-downloads-items =    ⇩  Letöltések
+
+menu-downloads-items =   ⇩  Futtatási napló
 
 menu-tags = ▸  ◇  Címkék
 
 menu-all-bookmarks = ⌄  ★  Összes könyvjelző
 
-menu-bookmark-toolbar = ▸  ▣  Könyvjelzők eszköztár
+menu-bookmark-toolbar = ⌄  ▣  Könyvjelzők eszköztár
 
 menu-bookmark-menu = ▸  ▤  Könyvjelző menü
 
@@ -200,3 +219,30 @@ menu-close-apps-and-retry = Programok bezárása és újrapróbálás
 menu-exif-heading = Átnevezés EXIF alapján
 
 menu-bulk-folder-heading = Tömeges mappagenerátor
+menu-new-bookmark-ellipsis = New bookmark… (B)
+menu-new-folder-ellipsis = New folder… (O)
+menu-new-separator = New separator (S)
+menu-redo = Redo
+menu-show-columns = Show columns (C)
+menu-sort-none = Unsorted
+menu-sort-by-tags = Sort by tags (T)
+menu-sort-by-last-visited = Sort by last visited (V)
+menu-sort-by-visit-count = Sort by visit count (C)
+menu-sort-by-date-added = Sort by date added (E)
+menu-sort-by-date-modified = Sort by last modified (M)
+menu-sort-az = A → Z
+menu-sort-za = Z → A
+menu-backup-ellipsis = Backup… (B)
+menu-restore = Restore (R)
+menu-import-html = Import bookmarks from HTML… (I)
+menu-export-html = Export bookmarks to HTML… (E)
+menu-import-other-browsers = Import data from another browser… (A)
+menu-choose-file = Choose file… (C)
+menu-shortcut-ctrl-z = Ctrl+Z
+menu-shortcut-ctrl-y = Ctrl+Y
+menu-shortcut-ctrl-x = Ctrl+X
+menu-shortcut-ctrl-c = Ctrl+C
+menu-shortcut-ctrl-v = Ctrl+V
+menu-shortcut-del = Del
+menu-shortcut-ctrl-a = Ctrl+A
+menu-shortcut-ctrl-w = Ctrl+W

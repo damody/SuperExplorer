@@ -107,6 +107,10 @@ dialog-name-accelerator = 이름 (N)
 dialog-location-accelerator = 위치 (L)
 
 dialog-url-accelerator = URL (L)
+dialog-path-accelerator = Path (U)
+dialog-tags-accelerator = Tags (T)
+dialog-tags-placeholder = Comma-separated tags
+dialog-tags-hint = Use tags to search and organize bookmarks
 
 dialog-show-editor-on-save = 저장 시 편집기 표시 (S)
 

@@ -1199,9 +1199,11 @@ pub struct ExplorerRoot {
         bool,
     )>,
     folder_size_context: Option<explorer_model::RequestContext>,
+    folder_size_location: Option<explorer_model::LocationDescriptor>,
     folder_size_display_override: Option<folder_size_column::FolderSizeDisplayMode>,
     code_lines_runtimes: Vec<code_lines_column::CodeLinesRuntimeHandleV1>,
     code_lines_visuals: Vec<code_lines_column::CodeLinesColumnVisuals>,
+    code_lines_location: Option<explorer_model::LocationDescriptor>,
     code_lines_requested: HashSet<(
         explorer_model::ColumnId,
         explorer_model::TabId,
@@ -1322,8 +1324,51 @@ pub type BookmarkManagerWindowObserver = std::rc::Rc<
     ) -> bool,
 >;
 
+#[cfg(test)]
 fn parse_bookmark_backup(text: &str) -> Result<explorer_model::Bookmarks, serde_json::Error> {
     serde_json::from_str(text)
+}
+
+fn load_bookmarks_from_text(text: &str) -> Option<explorer_model::Bookmarks> {
+    serde_json::from_str(text)
+        .ok()
+        .or_else(|| explorer_model::Bookmarks::from_netscape_html(text).ok())
+        .or_else(|| explorer_model::Bookmarks::from_chromium_json(text).ok())
+}
+
+fn bookmark_stamp() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_secs())
+        .unwrap_or(0);
+    format!("{now}")
+}
+
+fn save_bookmark_history(bookmarks: &explorer_model::Bookmarks) -> Result<(), String> {
+    let dir =
+        chrome::bookmark_history_dir().ok_or_else(|| "LOCALAPPDATA is unavailable".to_owned())?;
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let path = dir.join(format!("bookmarks-{}.json", bookmark_stamp()));
+    let text = serde_json::to_string_pretty(bookmarks).map_err(|error| error.to_string())?;
+    std::fs::write(path, text).map_err(|error| error.to_string())
+}
+
+fn import_bookmarks_from_installed_browsers() -> Option<explorer_model::Bookmarks> {
+    let local = std::env::var_os("LOCALAPPDATA")?;
+    let local = std::path::PathBuf::from(local);
+    for relative in [
+        "Google\\Chrome\\User Data\\Default\\Bookmarks",
+        "Microsoft\\Edge\\User Data\\Default\\Bookmarks",
+        "Chromium\\User Data\\Default\\Bookmarks",
+    ] {
+        let path = local.join(relative);
+        if let Ok(text) = std::fs::read_to_string(&path)
+            && let Ok(bookmarks) = explorer_model::Bookmarks::from_chromium_json(&text)
+        {
+            return Some(bookmarks);
+        }
+    }
+    None
 }
 pub type BookmarkActionWindowObserver = std::rc::Rc<
     dyn Fn(
@@ -1699,9 +1744,11 @@ impl ExplorerRoot {
             folder_size_visuals: None,
             folder_size_requested: HashSet::new(),
             folder_size_context: None,
+            folder_size_location: None,
             folder_size_display_override: None,
             code_lines_runtimes: Vec::new(),
             code_lines_visuals: Vec::new(),
+            code_lines_location: None,
             code_lines_requested: HashSet::new(),
             code_lines_display_override: None,
             size_map_runtime: None,
@@ -2472,8 +2519,40 @@ impl ExplorerRoot {
         self.state.update_bookmark_editor_payload(value);
     }
 
+    pub fn update_bookmark_editor_tags_from_window(&mut self, value: String) {
+        self.state.update_bookmark_editor_tags(value);
+    }
+
     pub fn clear_bookmark_editor_anchor(&mut self) {
         self.bookmark_editor_anchor = None;
+    }
+
+    fn import_bookmarks_from_path(
+        &mut self,
+        path: &std::path::Path,
+        success_key: &str,
+        cx: &mut Context<Self>,
+    ) {
+        match std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| load_bookmarks_from_text(&text))
+        {
+            Some(bookmarks) => {
+                self.state.push_bookmark_undo();
+                self.state.configure_bookmarks(bookmarks);
+                if self.notify_durable_state() {
+                    self.state
+                        .set_bookmark_notice(self.catalog().t(success_key));
+                } else {
+                    self.state
+                        .set_bookmark_notice(self.catalog().t("status-bookmark-import-invalid"));
+                }
+            }
+            None => self
+                .state
+                .set_bookmark_notice(self.catalog().t("status-bookmark-import-invalid")),
+        }
+        cx.notify();
     }
 
     pub fn update_bookmark_from_manager(
@@ -2572,6 +2651,7 @@ impl ExplorerRoot {
         self.folder_size_visuals = Some(folder_size_column::FolderSizeColumnVisuals::new(config));
         self.folder_size_requested.clear();
         self.folder_size_context = None;
+        self.folder_size_location = None;
     }
 
     /// Connects the application-owned MFT aggregate worker without exposing
@@ -2588,6 +2668,7 @@ impl ExplorerRoot {
         ));
         self.folder_size_requested.clear();
         self.folder_size_context = None;
+        self.folder_size_location = None;
     }
 
     /// Connects the one Rust tokei batch-column example to production Details.
@@ -2614,26 +2695,14 @@ impl ExplorerRoot {
             .position(|visuals| visuals.config.descriptor.id == column_id)
         {
             self.code_lines_runtimes[index] = runtime;
-            self.code_lines_visuals[index] = code_lines_column::CodeLinesColumnVisuals {
-                config,
-                context: None,
-                values: HashMap::new(),
-                errors: HashMap::new(),
-                admissions: HashMap::new(),
-            };
+            self.code_lines_visuals[index] = code_lines_column::CodeLinesColumnVisuals::new(config);
             self.code_lines_requested
                 .retain(|(requested_column, _, _, _)| requested_column != &column_id);
             return;
         }
         self.code_lines_runtimes.push(runtime);
         self.code_lines_visuals
-            .push(code_lines_column::CodeLinesColumnVisuals {
-                config,
-                context: None,
-                values: HashMap::new(),
-                errors: HashMap::new(),
-                admissions: HashMap::new(),
-            });
+            .push(code_lines_column::CodeLinesColumnVisuals::new(config));
     }
 
     /// Connects the application-owned Size Map adapter. A malformed or
@@ -2837,21 +2906,61 @@ impl ExplorerRoot {
         let Some(runtime) = self.visual_column_runtime.clone() else {
             return;
         };
-        let (tab_id, generation, entries) = {
+        let (tab_id, generation, entries, location) = {
             let tab = self.state.tabs().active_tab();
             let Some(snapshot) = tab.visible_snapshot() else {
                 return;
             };
-            (tab.id, tab.generation, snapshot.entries().to_vec())
+            (
+                tab.id,
+                tab.generation,
+                snapshot.entries().to_vec(),
+                tab.history.current().map(|entry| entry.location.clone()),
+            )
         };
         let context_is_current = self
             .folder_size_context
             .as_ref()
             .is_some_and(|context| context.tab_id == tab_id && context.generation == generation);
         if !context_is_current {
-            self.cancel_active_folder_size_context();
+            let same_directory = match (self.folder_size_location.as_ref(), location.as_ref()) {
+                (Some(previous), Some(current)) => {
+                    folder_size_column::directory_identity_key(previous)
+                        == folder_size_column::directory_identity_key(current)
+                }
+                (None, None) => true,
+                _ => false,
+            };
+            if same_directory {
+                self.folder_size_requested = self
+                    .folder_size_requested
+                    .drain()
+                    .map(
+                        |(
+                            requested_tab,
+                            requested_generation,
+                            item_id,
+                            require_directory_facts,
+                        )| {
+                            if requested_tab == tab_id {
+                                (requested_tab, generation, item_id, require_directory_facts)
+                            } else {
+                                (
+                                    requested_tab,
+                                    requested_generation,
+                                    item_id,
+                                    require_directory_facts,
+                                )
+                            }
+                        },
+                    )
+                    .collect();
+            } else {
+                self.cancel_active_folder_size_context();
+            }
             self.folder_size_context =
                 Some(explorer_model::RequestContext::new(tab_id, generation));
+            self.folder_size_location = location;
         }
         let request_context = self
             .folder_size_context
@@ -2865,6 +2974,8 @@ impl ExplorerRoot {
         }
         if let Some(visuals) = self.folder_size_visuals.as_mut() {
             visuals.begin_context(&request_context);
+            visuals.activate_location(self.folder_size_location.as_ref());
+            visuals.hydrate_items(entries.iter().map(|entry| entry.id.clone()));
         }
         let visuals = self.folder_size_visuals.as_ref();
         let requests = entries
@@ -2911,6 +3022,9 @@ impl ExplorerRoot {
     }
 
     fn cancel_active_folder_size_context(&mut self) {
+        if let Some(visuals) = self.folder_size_visuals.as_mut() {
+            visuals.store_current_directory();
+        }
         let Some(context) = self.folder_size_context.take() else {
             return;
         };
@@ -2921,6 +3035,24 @@ impl ExplorerRoot {
             .retain(|(tab_id, generation, _, _)| {
                 *tab_id != context.tab_id || *generation != context.generation
             });
+        self.folder_size_location = None;
+    }
+
+    fn invalidate_background_columns_for_user_refresh(&mut self) {
+        self.cancel_active_folder_size_context();
+        self.folder_size_requested.clear();
+        if let Some(visuals) = self.folder_size_visuals.as_mut() {
+            visuals.clear_values();
+        }
+        self.cancel_active_code_lines_context();
+        for visuals in &mut self.code_lines_visuals {
+            visuals.clear_directory_cache();
+            visuals.values.clear();
+            visuals.errors.clear();
+            visuals.admissions.clear();
+            visuals.context = None;
+        }
+        self.code_lines_location = None;
     }
 
     fn cancel_active_code_lines_context(&mut self) {
@@ -2934,6 +3066,7 @@ impl ExplorerRoot {
             }
         }
         self.code_lines_requested.clear();
+        self.code_lines_location = None;
     }
 
     fn pump_visual_column_runtime(&mut self) -> bool {
@@ -2988,6 +3121,13 @@ impl ExplorerRoot {
         if visuals.begin_context(&current_context) {
             changed = true;
         }
+        let location = active_tab
+            .history
+            .current()
+            .map(|entry| entry.location.clone());
+        if visuals.activate_location(location.as_ref()) {
+            changed = true;
+        }
         visuals.retain_snapshots(&live_snapshots);
         let visible_ids = self
             .state
@@ -3006,6 +3146,9 @@ impl ExplorerRoot {
         visuals
             .values
             .retain(|item_id, _| visible_ids.contains(item_id));
+        if visuals.hydrate_items(visible_ids.iter().cloned()) {
+            changed = true;
+        }
         if visuals.values.len() != previous_value_count {
             changed = true;
         }
@@ -3095,6 +3238,15 @@ impl ExplorerRoot {
                         continue;
                     }
                 }
+                if self.code_lines_visuals[index]
+                    .values
+                    .contains_key(&entry.id)
+                    || self.code_lines_visuals[index]
+                        .errors
+                        .contains_key(&entry.id)
+                {
+                    continue;
+                }
                 if self.code_lines_requested.insert((
                     column_id.clone(),
                     tab_id,
@@ -3118,19 +3270,71 @@ impl ExplorerRoot {
     /// still enforces the same context on accepted results; this only removes
     /// already-painted values before the next render snapshot is built.
     fn begin_code_lines_contexts(&mut self, context: explorer_model::RequestContext) -> bool {
+        let location = self
+            .state
+            .tabs()
+            .active_tab()
+            .history
+            .current()
+            .map(|entry| entry.location.clone());
+        let visible_item_ids = self
+            .state
+            .tabs()
+            .active_tab()
+            .visible_snapshot()
+            .map(|snapshot| {
+                snapshot
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let same_directory = match (self.code_lines_location.as_ref(), location.as_ref()) {
+            (Some(previous), Some(current)) => {
+                folder_size_column::directory_identity_key(previous)
+                    == folder_size_column::directory_identity_key(current)
+            }
+            (None, None) => true,
+            _ => false,
+        };
         let mut changed = false;
+        if same_directory {
+            self.code_lines_requested = self
+                .code_lines_requested
+                .drain()
+                .map(|(column_id, tab_id, generation, item_id)| {
+                    if tab_id == context.tab_id {
+                        (column_id, tab_id, context.generation, item_id)
+                    } else {
+                        (column_id, tab_id, generation, item_id)
+                    }
+                })
+                .collect();
+        } else {
+            for visuals in &mut self.code_lines_visuals {
+                visuals.store_current_directory();
+            }
+            self.cancel_active_code_lines_context();
+        }
         for visuals in &mut self.code_lines_visuals {
             if visuals.begin_context(context.clone()) {
                 self.state.set_code_lines_sort_values(
                     visuals.config.descriptor.id.clone(),
-                    HashMap::new(),
+                    visuals.exact_sort_values(),
                 );
                 changed = true;
             }
+            if visuals.activate_location(location.as_ref()) {
+                self.state.set_code_lines_sort_values(
+                    visuals.config.descriptor.id.clone(),
+                    visuals.exact_sort_values(),
+                );
+                changed = true;
+            }
+            changed |= visuals.hydrate_items(visible_item_ids.iter().cloned());
         }
-        self.code_lines_requested.retain(|(_, tab, generation, _)| {
-            *tab == context.tab_id && *generation == context.generation
-        });
+        self.code_lines_location = location;
         changed
     }
 
@@ -3210,26 +3414,29 @@ impl ExplorerRoot {
             let old_errors = visuals.errors.len();
             visuals.values.retain(|id, _| visible_ids.contains(id));
             visuals.errors.retain(|id, _| visible_ids.contains(id));
+            changed |= visuals.hydrate_items(visible_ids.iter().cloned());
             changed |= visuals.values.len() != old_values || visuals.errors.len() != old_errors;
             if visuals.config != config {
                 visuals.config = config;
                 changed = true;
             }
-            for result in results.into_iter().filter(|result| {
-                result.context.tab_id == current_context.tab_id
-                    && result.context.generation == current_context.generation
-            }) {
+            for result in results
+                .into_iter()
+                .filter(|result| result.context.tab_id == current_context.tab_id)
+            {
                 if let Some(value) = result.value {
                     visuals.errors.remove(&result.item_id);
+                    visuals.remember_value(result.item_id.clone(), value.clone());
                     if visuals.values.insert(result.item_id, value.clone()) != Some(value) {
                         changed = true;
                     }
                 } else {
                     visuals.values.remove(&result.item_id);
-                    if let Some(error) = result.error
-                        && visuals.errors.insert(result.item_id, error.clone()) != Some(error)
-                    {
-                        changed = true;
+                    if let Some(error) = result.error {
+                        visuals.remember_error(result.item_id.clone(), error.clone());
+                        if visuals.errors.insert(result.item_id, error.clone()) != Some(error) {
+                            changed = true;
+                        }
                     }
                 }
             }
@@ -3765,9 +3972,11 @@ impl ExplorerRoot {
             folder_size_visuals: None,
             folder_size_requested: HashSet::new(),
             folder_size_context: None,
+            folder_size_location: None,
             folder_size_display_override: None,
             code_lines_runtimes: Vec::new(),
             code_lines_visuals: Vec::new(),
+            code_lines_location: None,
             code_lines_requested: HashSet::new(),
             code_lines_display_override: None,
             size_map_runtime: None,
@@ -3879,9 +4088,11 @@ impl ExplorerRoot {
             folder_size_visuals: None,
             folder_size_requested: HashSet::new(),
             folder_size_context: None,
+            folder_size_location: None,
             folder_size_display_override: None,
             code_lines_runtimes: Vec::new(),
             code_lines_visuals: Vec::new(),
+            code_lines_location: None,
             code_lines_requested: HashSet::new(),
             code_lines_display_override: None,
             size_map_runtime: None,
@@ -4271,22 +4482,7 @@ impl ExplorerRoot {
                             } = &event
                                 && let Some(texture) = shell_icon_texture(payload)
                             {
-                                if let Some(base_key) = this.pending_base_icons.remove(&payload.key)
-                                {
-                                    this.base_icons.insert(
-                                        base_key,
-                                        texture,
-                                        icon_payload_hash(payload),
-                                    );
-                                } else if let Some(base_key) =
-                                    this.pending_visible_bases.remove(&payload.key)
-                                    && this.base_icons.hashes.get(&base_key)
-                                        == Some(&icon_payload_hash(payload))
-                                {
-                                    this.remember_negative_icon(payload.key.clone());
-                                } else {
-                                    this.shell_icons.insert(&payload.key, texture);
-                                }
+                                this.remember_loaded_shell_texture(payload, texture);
                             }
                             if let explorer_model::ExplorerEvent::ShellIconLoaded {
                                 payload, ..
@@ -4764,6 +4960,26 @@ impl ExplorerRoot {
             return;
         };
         self.submit_command(command);
+    }
+
+    fn remember_loaded_shell_texture(
+        &mut self,
+        payload: &explorer_model::ShellIconPayload,
+        texture: Arc<RenderImage>,
+    ) {
+        if let Some(base_key) = self.pending_base_icons.remove(&payload.key) {
+            self.base_icons
+                .insert(base_key, Arc::clone(&texture), icon_payload_hash(payload));
+            if !navigation_pane::is_generic_breadcrumb_folder_icon_key(&payload.key) {
+                return;
+            }
+        } else if let Some(base_key) = self.pending_visible_bases.remove(&payload.key)
+            && self.base_icons.hashes.get(&base_key) == Some(&icon_payload_hash(payload))
+        {
+            self.remember_negative_icon(payload.key.clone());
+            return;
+        }
+        self.shell_icons.insert(&payload.key, texture);
     }
 
     fn submit_navigation_icon_loads(&mut self) {
@@ -5577,6 +5793,17 @@ impl ExplorerRoot {
         );
         if let Some(texture) = self.shell_icons.get(&generic_breadcrumb_key) {
             snapshot.textures.insert(generic_breadcrumb_key, texture);
+        } else {
+            let folder_base = explorer_model::BaseIconKey {
+                class: explorer_model::BaseIconClass::Folder,
+                size_bucket: generic_breadcrumb_key.size_bucket,
+                dpi: generic_breadcrumb_key.dpi,
+                theme: generic_breadcrumb_key.theme,
+                association_epoch: generic_breadcrumb_key.association_generation,
+            };
+            if let Some(texture) = self.base_icons.get_compatible(&folder_base) {
+                snapshot.textures.insert(generic_breadcrumb_key, texture);
+            }
         }
         for location in self.state.navigation_icon_locations() {
             if let Some((key, texture)) = self.shell_icons.get_compatible_navigation_icon(
@@ -5776,37 +6003,51 @@ impl ExplorerRoot {
         let is_cancellation = cancel_request_id.is_some();
         if let explorer_model::ExplorerCommand::Navigate { context, location }
         | explorer_model::ExplorerCommand::Refresh { context, location } = &command
-            && let Some(root) = location.synthetic_root()
         {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |value| value.as_secs());
-            let entries = self.state.synthetic_root_entries(root, now);
-            let title = match root {
-                explorer_model::SyntheticRoot::Home => "Home",
-                explorer_model::SyntheticRoot::QuickAccess => "Quick access",
+            let listing = if let Some(root) = location.synthetic_root() {
+                let title = match root {
+                    explorer_model::SyntheticRoot::Home => "Home".to_owned(),
+                    explorer_model::SyntheticRoot::QuickAccess => "Quick access".to_owned(),
+                    explorer_model::SyntheticRoot::Favorites => self.catalog().t("nav-favorites"),
+                };
+                Some((self.state.synthetic_root_entries(root, now), title, false))
+            } else {
+                location.favorites_folder_id().map(|folder_id| {
+                    let title = self
+                        .state
+                        .bookmarks()
+                        .folder(folder_id)
+                        .map(|folder| folder.name.clone())
+                        .unwrap_or_else(|| self.catalog().t("nav-favorites"));
+                    (self.state.favorites_entries(Some(folder_id)), title, true)
+                })
             };
-            for event in [
-                explorer_model::ExplorerEvent::LocationResolved {
-                    context: context.clone(),
-                    metadata: explorer_model::LocationMetadata {
-                        descriptor: location.clone(),
-                        display_title: title.to_owned(),
-                        can_go_up: false,
-                        can_write: false,
+            if let Some((entries, title, can_go_up)) = listing {
+                for event in [
+                    explorer_model::ExplorerEvent::LocationResolved {
+                        context: context.clone(),
+                        metadata: explorer_model::LocationMetadata {
+                            descriptor: location.clone(),
+                            display_title: title,
+                            can_go_up,
+                            can_write: false,
+                        },
                     },
-                },
-                explorer_model::ExplorerEvent::DirectoryBatch {
-                    context: context.clone(),
-                    entries,
-                },
-                explorer_model::ExplorerEvent::DirectoryFinished {
-                    context: context.clone(),
-                },
-            ] {
-                let _ = self.state.apply_service_event(event);
+                    explorer_model::ExplorerEvent::DirectoryBatch {
+                        context: context.clone(),
+                        entries,
+                    },
+                    explorer_model::ExplorerEvent::DirectoryFinished {
+                        context: context.clone(),
+                    },
+                ] {
+                    let _ = self.state.apply_service_event(event);
+                }
+                return true;
             }
-            return true;
         }
         let Some(service) = &self.service else {
             if let Some(request_id) = cancel_request_id {
@@ -6785,6 +7026,130 @@ impl ExplorerRoot {
             self.present_bookmark_manager_window(cx);
             cx.notify();
         }
+        if let ExplorerAction::AddBookmarkSeparator { parent_id } = action {
+            self.state.push_bookmark_undo();
+            let mutation = self.state.add_bookmark_separator(parent_id);
+            if mutation.changed() && self.notify_durable_state() {
+                self.state
+                    .set_bookmark_notice(self.catalog().t("status-bookmark-separator-added"));
+            }
+            cx.notify();
+        }
+        if action == ExplorerAction::UndoBookmarkChange {
+            if self.state.undo_bookmarks() && self.notify_durable_state() {
+                self.state
+                    .set_bookmark_notice(self.catalog().t("status-bookmark-undone"));
+            } else {
+                self.state
+                    .set_bookmark_notice(self.catalog().t("status-bookmark-nothing-to-undo"));
+            }
+            cx.notify();
+        }
+        if action == ExplorerAction::RedoBookmarkChange {
+            if self.state.redo_bookmarks() && self.notify_durable_state() {
+                self.state
+                    .set_bookmark_notice(self.catalog().t("status-bookmark-redone"));
+            } else {
+                self.state
+                    .set_bookmark_notice(self.catalog().t("status-bookmark-nothing-to-redo"));
+            }
+            cx.notify();
+        }
+        if action == ExplorerAction::ExportBookmarksHtml {
+            let html = self.state.bookmarks().to_netscape_html();
+            let dir = chrome::bookmark_history_dir()
+                .or_else(|| std::env::var_os("USERPROFILE").map(std::path::PathBuf::from))
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            let receiver = cx.prompt_for_new_path(&dir, Some("bookmarks.html"));
+            cx.spawn(async move |this, cx| {
+                let picked = receiver.await.ok().and_then(Result::ok).flatten();
+                let Some(path) = picked else {
+                    return;
+                };
+                let _ = this.update(cx, |this, cx| {
+                    match std::fs::write(&path, &html) {
+                        Ok(()) => this
+                            .state
+                            .set_bookmark_notice(this.catalog().t("status-bookmark-html-exported")),
+                        Err(error) => this.state.set_bookmark_notice({
+                            let mut args = explorer_i18n::FluentArgs::new();
+                            args.set("error", error.to_string());
+                            this.catalog()
+                                .t_args("status-bookmark-backup-failed", &args)
+                        }),
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+        if action == ExplorerAction::ImportBookmarksHtml {
+            let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: Some(self.catalog().t("menu-import-html").into()),
+            });
+            cx.spawn(async move |this, cx| {
+                let picked = receiver.await.ok().and_then(Result::ok).flatten();
+                let Some(path) = picked.and_then(|paths| paths.into_iter().next()) else {
+                    return;
+                };
+                let _ = this.update(cx, |this, cx| {
+                    this.import_bookmarks_from_path(&path, "status-bookmark-html-imported", cx);
+                });
+            })
+            .detach();
+        }
+        if action == ExplorerAction::BackupBookmarksToDisk {
+            match save_bookmark_history(self.state.bookmarks()) {
+                Ok(()) => self
+                    .state
+                    .set_bookmark_notice(self.catalog().t("status-bookmark-backup-saved")),
+                Err(error) => self.state.set_bookmark_notice({
+                    let mut args = explorer_i18n::FluentArgs::new();
+                    args.set("error", error);
+                    self.catalog()
+                        .t_args("status-bookmark-backup-failed", &args)
+                }),
+            }
+            cx.notify();
+        }
+        if let ExplorerAction::RestoreBookmarksBackup { path } = &action {
+            match std::fs::read_to_string(path)
+                .ok()
+                .and_then(|text| load_bookmarks_from_text(&text))
+            {
+                Some(bookmarks) => {
+                    self.state.push_bookmark_undo();
+                    self.state.configure_bookmarks(bookmarks);
+                    if self.notify_durable_state() {
+                        self.state.set_bookmark_notice(
+                            self.catalog().t("status-bookmark-backup-restored"),
+                        );
+                    }
+                }
+                None => self
+                    .state
+                    .set_bookmark_notice(self.catalog().t("status-bookmark-import-invalid")),
+            }
+            cx.notify();
+        }
+        if action == ExplorerAction::ImportBookmarksFromBrowsers {
+            let imported = import_bookmarks_from_installed_browsers();
+            if let Some(bookmarks) = imported {
+                self.state.push_bookmark_undo();
+                self.state.configure_bookmarks(bookmarks);
+                if self.notify_durable_state() {
+                    self.state
+                        .set_bookmark_notice(self.catalog().t("status-bookmark-browser-imported"));
+                }
+            } else {
+                self.state
+                    .set_bookmark_notice(self.catalog().t("status-bookmark-import-invalid"));
+            }
+            cx.notify();
+        }
         if action == ExplorerAction::BackupBookmarksToClipboard {
             match serde_json::to_string_pretty(self.state.bookmarks()) {
                 Ok(text) => {
@@ -6802,27 +7167,22 @@ impl ExplorerRoot {
             cx.notify();
         }
         if action == ExplorerAction::ImportBookmarksFromClipboard {
-            let imported = cx
-                .read_from_clipboard()
-                .and_then(|item| item.text())
-                .and_then(|text| parse_bookmark_backup(&text).ok());
-            if let Some(bookmarks) = imported {
-                let previous = self.state.bookmarks().clone();
-                self.state.configure_bookmarks(bookmarks);
-                if self.notify_durable_state() {
-                    self.state
-                        .set_bookmark_notice(self.catalog().t("status-bookmark-imported"));
-                } else {
-                    self.state.configure_bookmarks(previous);
-                    self.state.set_bookmark_notice(
-                        self.catalog().t("status-bookmark-import-persist-failed"),
-                    );
-                }
-            } else {
-                self.state
-                    .set_bookmark_notice(self.catalog().t("status-bookmark-import-invalid"));
-            }
-            cx.notify();
+            let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: Some(self.catalog().t("menu-choose-file").into()),
+            });
+            cx.spawn(async move |this, cx| {
+                let picked = receiver.await.ok().and_then(Result::ok).flatten();
+                let Some(path) = picked.and_then(|paths| paths.into_iter().next()) else {
+                    return;
+                };
+                let _ = this.update(cx, |this, cx| {
+                    this.import_bookmarks_from_path(&path, "status-bookmark-imported", cx);
+                });
+            })
+            .detach();
         }
         if action == ExplorerAction::ToggleBookmarkOverflow {
             self.state.toggle_bookmark_overflow();
@@ -6830,6 +7190,10 @@ impl ExplorerRoot {
         }
         if let ExplorerAction::ToggleBookmarkFolderMenu { id } = action {
             self.state.toggle_bookmark_folder_menu(id);
+            cx.notify();
+        }
+        if let ExplorerAction::ToggleBookmarkFolderExpanded { id } = action {
+            self.state.toggle_bookmark_folder_expanded(id);
             cx.notify();
         }
         if let ExplorerAction::RemoveBookmark { id } = action {
@@ -6928,7 +7292,8 @@ impl ExplorerRoot {
                                 |name| name.to_string_lossy().into_owned(),
                             )
                         }
-                        explorer_model::BookmarkTarget::LuaScript { .. } => unreachable!(),
+                        explorer_model::BookmarkTarget::LuaScript { .. }
+                        | explorer_model::BookmarkTarget::Separator => unreachable!(),
                     };
                     self.state.begin_new_bookmark_editor(name, target);
                 }
@@ -6940,6 +7305,7 @@ impl ExplorerRoot {
         }
         if let ExplorerAction::ActivateBookmark { id } = action {
             self.state.dismiss_bookmark_browse_menus();
+            let _ = self.state.bookmarks_record_visit(id);
             cx.notify();
             let bookmark = self
                 .state
@@ -6986,6 +7352,17 @@ impl ExplorerRoot {
                         );
                     }
                     explorer_model::BookmarkTarget::File { location } => {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |value| value.as_secs());
+                        let (size_bytes, type_display) = state::run_record_fs_details(&location);
+                        let _ = self.state.record_run(
+                            bookmark.name.clone(),
+                            location.clone(),
+                            size_bytes,
+                            type_display,
+                            now,
+                        );
                         let result = self
                             .bookmark_file_launcher
                             .as_ref()
@@ -7006,6 +7383,17 @@ impl ExplorerRoot {
                     }
                     explorer_model::BookmarkTarget::FilePath { path } => {
                         let location = resolve_bookmark_path(&path);
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |value| value.as_secs());
+                        let (size_bytes, type_display) = state::run_record_fs_details(&location);
+                        let _ = self.state.record_run(
+                            bookmark.name.clone(),
+                            location.clone(),
+                            size_bytes,
+                            type_display,
+                            now,
+                        );
                         let result = self
                             .bookmark_file_launcher
                             .as_ref()
@@ -7054,8 +7442,59 @@ impl ExplorerRoot {
                         })
                         .detach();
                     }
+                    explorer_model::BookmarkTarget::Separator => {}
                 }
             }
+        }
+        if let ExplorerAction::LaunchRunRecord { index } = action {
+            if let Some(record) = self.state.run_log().get(index).cloned() {
+                if state::run_record_can_launch(&record.location) {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |value| value.as_secs());
+                    let _ = self.state.record_run(
+                        record.display_name.clone(),
+                        record.location.clone(),
+                        record.size_bytes,
+                        record.type_display.clone(),
+                        now,
+                    );
+                    let result = self
+                        .bookmark_file_launcher
+                        .as_ref()
+                        .ok_or_else(|| {
+                            self.catalog()
+                                .t("status-bookmark-file-launcher-unavailable")
+                        })
+                        .and_then(|launcher| launcher(record.location));
+                    self.state.set_bookmark_notice(match result {
+                        Ok(()) => self.catalog().t("status-run-log-opened"),
+                        Err(error) => {
+                            let mut args = explorer_i18n::FluentArgs::new();
+                            args.set("error", error);
+                            self.catalog().t_args("status-run-log-open-failed", &args)
+                        }
+                    });
+                } else {
+                    self.state
+                        .set_bookmark_notice(self.catalog().t("status-run-log-missing"));
+                }
+                cx.notify();
+            }
+        }
+        if let ExplorerAction::RevealRunRecord { index } = action
+            && let Some(parent) = self
+                .state
+                .run_log()
+                .get(index)
+                .and_then(|record| state::run_record_parent_location(&record.location))
+        {
+            self.handle_action(
+                ExplorerAction::ActivateNavigationItem { location: parent },
+                source,
+                window,
+                cx,
+            );
         }
         if action == ExplorerAction::OpenFolderOptions
             && let Some(observer) = self.folder_options_window_observer.clone()
@@ -7494,12 +7933,25 @@ impl ExplorerRoot {
                         runtime.invalidate_directory_cache(&directory);
                     }
                 }
+                self.invalidate_background_columns_for_user_refresh();
                 self.state.begin_refresh_navigation()
             }
             ExplorerAction::SubmitAddress(value) => self.begin_address_navigation(value),
             ExplorerAction::ActivateBreadcrumbSegment { location }
             | ExplorerAction::ActivateBreadcrumbChild { location }
             | ExplorerAction::ActivateNavigationItem { location } => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |value| value.as_secs());
+                let display = location
+                    .path()
+                    .and_then(|path| path.file_name())
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| location.editable_text());
+                let _ = self
+                    .state
+                    .record_recent_location(location.clone(), display, now);
                 if explorer_model::is_gdrive_connect_location(location) {
                     self.begin_address_navigation(explorer_model::GDRIVE_CONNECT_LOCATION)
                 } else if location.file_system_kind()
@@ -7553,10 +8005,15 @@ impl ExplorerRoot {
             self.submit_offscreen_file_icon_loads(&context, &entries);
         }
         if let ExplorerAction::OpenItem { row_index, new_tab } = action {
+            if let Some(id) = self.state.lua_bookmark_id_for_row(row_index) {
+                self.handle_action(ExplorerAction::ActivateBookmark { id }, source, window, cx);
+                return;
+            }
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |value| value.as_secs());
             let _ = self.state.record_recent_row(row_index, now);
+            let _ = self.state.record_run_from_row(row_index, now);
             if let Some(command) = self.state.open_row_command(row_index, new_tab) {
                 self.submit_command(command);
             }
@@ -7567,22 +8024,43 @@ impl ExplorerRoot {
             is_container,
             new_tab,
         } = &action
-            && let Some(command) = self.state.open_extension_view_item_command(
+        {
+            if !*is_container {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |value| value.as_secs());
+                let display = location
+                    .path()
+                    .and_then(|path| path.file_name())
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| location.editable_text());
+                let (size_bytes, type_display) = state::run_record_fs_details(location);
+                let _ =
+                    self.state
+                        .record_run(display, location.clone(), size_bytes, type_display, now);
+            }
+            if let Some(command) = self.state.open_extension_view_item_command(
                 item_id.clone(),
                 location.clone(),
                 *is_container,
                 *new_tab,
-            )
-        {
-            self.submit_command(command);
+            ) {
+                self.submit_command(command);
+            }
         }
         if action == ExplorerAction::OpenFocused
             && let Some(row_index) = self.state.focused_row_index()
         {
+            if let Some(id) = self.state.lua_bookmark_id_for_row(row_index) {
+                self.handle_action(ExplorerAction::ActivateBookmark { id }, source, window, cx);
+                return;
+            }
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |value| value.as_secs());
             let _ = self.state.record_recent_row(row_index, now);
+            let _ = self.state.record_run_from_row(row_index, now);
             if let Some(command) = self.state.open_row_command(row_index, false) {
                 self.submit_command(command);
             }
@@ -9597,6 +10075,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingDirectoryFactsRuntimeV1 {
         requests: Mutex<Vec<super::folder_size_column::FolderSizeRequestV1>>,
+        cancels: Mutex<Vec<explorer_model::RequestContext>>,
     }
 
     impl super::folder_size_column::VisualColumnRuntimePortV1 for RecordingDirectoryFactsRuntimeV1 {
@@ -9611,7 +10090,9 @@ mod tests {
             self.requests.lock().unwrap().extend(requests);
         }
 
-        fn cancel_folder_size_context(&self, _: &explorer_model::RequestContext) {}
+        fn cancel_folder_size_context(&self, context: &explorer_model::RequestContext) {
+            self.cancels.lock().unwrap().push(context.clone());
+        }
 
         fn invalidate_directory_cache(&self, _: &std::path::Path) {}
 
@@ -9633,6 +10114,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingCodeLinesRuntimeV1 {
         requests: Mutex<Vec<super::code_lines_column::CodeLinesRequestV1>>,
+        cancels: Mutex<Vec<explorer_model::RequestContext>>,
     }
 
     impl super::code_lines_column::CodeLinesRuntimePortV1 for RecordingCodeLinesRuntimeV1 {
@@ -9647,7 +10129,9 @@ mod tests {
             self.requests.lock().unwrap().extend(requests);
         }
 
-        fn cancel_code_lines_context(&self, _: &explorer_model::RequestContext) {}
+        fn cancel_code_lines_context(&self, context: &explorer_model::RequestContext) {
+            self.cancels.lock().unwrap().push(context.clone());
+        }
 
         fn invalidate_directory_cache(&self, _: &std::path::Path) {}
 
@@ -9701,6 +10185,192 @@ mod tests {
         root.folder_size_requested.clear();
         root.submit_folder_size_requests();
         assert_eq!(runtime.requests.lock().unwrap().len(), first.len());
+    }
+
+    fn insert_completed_folder_aggregates(root: &mut ExplorerRoot) {
+        let tab = root.state.tabs().active_tab();
+        let context = explorer_model::RequestContext::new(tab.id, tab.generation);
+        let entries = tab
+            .visible_snapshot()
+            .expect("seeded directory")
+            .entries()
+            .iter()
+            .filter(|entry| entry.is_container)
+            .cloned()
+            .collect::<Vec<_>>();
+        let visuals = root
+            .folder_size_visuals
+            .as_mut()
+            .expect("directory facts visuals");
+        visuals.begin_context(&context);
+        for (index, entry) in entries.into_iter().enumerate() {
+            visuals.insert_result(super::folder_size_column::FolderSizeResultV1 {
+                context: context.clone(),
+                item_id: entry.id,
+                exact_bytes: Some(100 * (index as u64 + 1)),
+                directory_facts: Some(super::folder_size_column::DirectoryFactsV1 {
+                    mft_generation: 1,
+                    file_count: index as u64 + 1,
+                    folder_count: 1,
+                }),
+                partial: false,
+                error: None,
+            });
+        }
+    }
+
+    #[test]
+    fn watcher_refresh_keeps_folder_aggregates_and_does_not_resubmit() {
+        let runtime = Arc::new(RecordingDirectoryFactsRuntimeV1::default());
+        let mut root = ExplorerRoot::default();
+        seed_active_visual_tab(&mut root.state, "Profile", true, false);
+        root.attach_directory_facts_runtime(runtime.clone());
+        root.submit_folder_size_requests();
+        insert_completed_folder_aggregates(&mut root);
+        let first = runtime.requests.lock().unwrap().len();
+        assert!(first > 0);
+
+        let tab = root.state.tabs().active_tab();
+        let event = explorer_model::ExplorerEvent::DirectoryChanged {
+            tab_id: tab.id,
+            generation: tab.generation,
+            changes: vec![explorer_model::DirectoryDelta::Overflow],
+        };
+        assert!(
+            root.state
+                .watcher_recovery_command(&event)
+                .is_some_and(|command| matches!(
+                    command,
+                    explorer_model::ExplorerCommand::Refresh { .. }
+                ))
+        );
+
+        root.submit_folder_size_requests();
+        assert!(
+            runtime.cancels.lock().unwrap().is_empty(),
+            "in-flight profile walks must survive a watcher generation bump"
+        );
+        assert_eq!(runtime.requests.lock().unwrap().len(), first);
+        let visuals = root.folder_size_visuals.as_ref().unwrap();
+        let containers = root
+            .state
+            .tabs()
+            .active_tab()
+            .visible_snapshot()
+            .unwrap()
+            .entries()
+            .iter()
+            .filter(|entry| entry.is_container)
+            .count();
+        assert_eq!(visuals.values.len(), containers);
+        assert!(
+            visuals
+                .values
+                .values()
+                .all(|value| value.exact_bytes.is_some())
+        );
+    }
+
+    #[test]
+    fn user_refresh_clears_folder_aggregates_and_resubmits() {
+        let runtime = Arc::new(RecordingDirectoryFactsRuntimeV1::default());
+        let mut root = ExplorerRoot::default();
+        seed_active_visual_tab(&mut root.state, "Profile", true, false);
+        root.attach_directory_facts_runtime(runtime.clone());
+        root.submit_folder_size_requests();
+        insert_completed_folder_aggregates(&mut root);
+
+        root.invalidate_background_columns_for_user_refresh();
+        assert!(
+            root.state
+                .begin_refresh_navigation()
+                .is_some_and(|command| matches!(
+                    command,
+                    explorer_model::ExplorerCommand::Refresh { .. }
+                ))
+        );
+        root.submit_folder_size_requests();
+
+        assert_eq!(runtime.cancels.lock().unwrap().len(), 1);
+        assert!(runtime.requests.lock().unwrap().len() > 2);
+        assert!(
+            root.folder_size_visuals
+                .as_ref()
+                .is_some_and(|visuals| visuals.values.is_empty())
+        );
+    }
+
+    fn open_seeded_directory(state: &mut AppViewState, title: &str, path: &str, id_base: u8) {
+        let location = explorer_model::LocationDescriptor::file_system(path);
+        let Some(command) = state.begin_active_navigation(location.clone(), false) else {
+            return;
+        };
+        let Some(context) = command.context().cloned() else {
+            return;
+        };
+        let _ = state.apply_service_event(explorer_model::ExplorerEvent::LocationResolved {
+            context: context.clone(),
+            metadata: explorer_model::LocationMetadata {
+                descriptor: location,
+                display_title: title.to_owned(),
+                can_go_up: true,
+                can_write: true,
+            },
+        });
+        let entries = super::visual_entries(title)
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, mut entry)| {
+                let identity = id_base.saturating_add(u8::try_from(index).ok()?);
+                entry.id = explorer_model::ShellItemId::from_provider_bytes([identity])?;
+                Some(entry)
+            })
+            .collect();
+        let _ = state.apply_service_event(explorer_model::ExplorerEvent::DirectoryBatch {
+            context: context.clone(),
+            entries,
+        });
+        let _ =
+            state.apply_service_event(explorer_model::ExplorerEvent::DirectoryFinished { context });
+    }
+
+    #[test]
+    fn returning_to_a_folder_reuses_cached_extension_column_values() {
+        let runtime = Arc::new(RecordingDirectoryFactsRuntimeV1::default());
+        let mut root = ExplorerRoot::default();
+        seed_active_visual_tab(&mut root.state, "Home", true, false);
+        root.attach_directory_facts_runtime(runtime.clone());
+        root.submit_folder_size_requests();
+        insert_completed_folder_aggregates(&mut root);
+        let home_values = root.folder_size_visuals.as_ref().unwrap().values.clone();
+        let first = runtime.requests.lock().unwrap().len();
+        assert!(!home_values.is_empty());
+
+        open_seeded_directory(&mut root.state, "Other", r"C:\Temp", 20);
+        root.submit_folder_size_requests();
+        assert_eq!(runtime.cancels.lock().unwrap().len(), 1);
+        assert!(
+            root.folder_size_visuals
+                .as_ref()
+                .is_some_and(|visuals| !home_values
+                    .iter()
+                    .any(|(id, value)| visuals.values.get(id) == Some(value))),
+            "the other folder must not keep the previous directory's aggregates"
+        );
+        let after_other = runtime.requests.lock().unwrap().len();
+        assert!(after_other >= first);
+
+        open_seeded_directory(&mut root.state, "Home", r"C:\VisualFixture", 1);
+        root.submit_folder_size_requests();
+        let visuals = root.folder_size_visuals.as_ref().unwrap();
+        for (id, value) in &home_values {
+            assert_eq!(visuals.values.get(id), Some(value));
+        }
+        assert_eq!(
+            runtime.requests.lock().unwrap().len(),
+            after_other,
+            "returning to a cached folder must not remeasure extension columns"
+        );
     }
 
     #[test]
@@ -10087,32 +10757,61 @@ mod tests {
         );
         let item =
             explorer_model::ShellItemId::from_provider_bytes([0x63]).expect("fixture identity");
-        root.code_lines_visuals = vec![super::code_lines_column::CodeLinesColumnVisuals {
-            config: super::code_lines_column::CodeLinesColumnConfigV1::default(),
-            context: Some(previous.clone()),
-            values: std::collections::HashMap::from([(
-                item.clone(),
-                super::code_lines_column::CodeLinesValueV1 {
-                    language: "Rust".to_owned(),
-                    code: 12,
-                    comments: 1,
-                    blanks: 1,
-                    total: 14,
-                },
-            )]),
-            errors: std::collections::HashMap::from([(item.clone(), "old error".to_owned())]),
-            admissions: std::collections::HashMap::new(),
-        }];
+        root.code_lines_location = tab.history.current().map(|entry| entry.location.clone());
+        let mut code_lines = super::code_lines_column::CodeLinesColumnVisuals::new(
+            super::code_lines_column::CodeLinesColumnConfigV1::default(),
+        );
+        code_lines.context = Some(previous.clone());
+        code_lines.values = std::collections::HashMap::from([(
+            item.clone(),
+            super::code_lines_column::CodeLinesValueV1 {
+                language: "Rust".to_owned(),
+                code: 12,
+                comments: 1,
+                blanks: 1,
+                total: 14,
+            },
+        )]);
+        code_lines.errors =
+            std::collections::HashMap::from([(item.clone(), "old error".to_owned())]);
+        root.code_lines_visuals = vec![code_lines];
         let column_id = root.code_lines_visuals[0].config.descriptor.id.clone();
-        root.code_lines_requested
-            .insert((column_id, previous.tab_id, previous.generation, item));
+        root.code_lines_requested.insert((
+            column_id.clone(),
+            previous.tab_id,
+            previous.generation,
+            item.clone(),
+        ));
 
         assert!(root.begin_code_lines_contexts(current.clone()));
         let visuals = &root.code_lines_visuals[0];
         assert_eq!(visuals.context.as_ref(), Some(&current));
-        assert!(visuals.values.is_empty());
-        assert!(visuals.errors.is_empty());
-        assert!(root.code_lines_requested.is_empty());
+        assert_eq!(visuals.values.get(&item).map(|value| value.code), Some(12));
+        assert_eq!(
+            root.code_lines_requested.iter().next(),
+            Some(&(column_id, current.tab_id, current.generation, item.clone()))
+        );
+
+        let other = explorer_model::LocationDescriptor::file_system(r"C:\other");
+        root.code_lines_visuals[0].activate_location(Some(&other));
+        assert!(root.code_lines_visuals[0].values.is_empty());
+        assert!(root.code_lines_visuals[0].errors.is_empty());
+        let home = root
+            .state
+            .tabs()
+            .active_tab()
+            .history
+            .current()
+            .map(|entry| entry.location.clone())
+            .expect("seeded location");
+        root.code_lines_visuals[0].activate_location(Some(&home));
+        assert_eq!(
+            root.code_lines_visuals[0]
+                .values
+                .get(&item)
+                .map(|value| value.code),
+            Some(12)
+        );
     }
 
     #[test]
@@ -10156,7 +10855,7 @@ mod tests {
         );
         visuals.context = Some(result.context.clone());
         visuals.values.insert(
-            result.item_id,
+            result.item_id.clone(),
             super::folder_size_column::FolderSizeValueV1 {
                 exact_bytes: Some(42),
                 directory_facts: None,
@@ -10166,7 +10865,11 @@ mod tests {
             },
         );
         assert!(visuals.begin_context(&current));
-        assert!(visuals.values.is_empty());
+        assert_eq!(
+            visuals.value_for(&result.item_id),
+            Some(42),
+            "same-tab generation bumps keep measured aggregates so watcher refresh does not flash"
+        );
         assert!(!visuals.begin_context(&current));
     }
 
@@ -12958,6 +13661,104 @@ mod tests {
     }
 
     #[test]
+    fn details_folder_shared_base_request_collides_with_navigation_generic_folder() {
+        let theme = explorer_model::ShellIconTheme::Light;
+        let dpi = 96;
+        let association = 1;
+        let generic =
+            crate::navigation_pane::generic_breadcrumb_folder_icon_key(theme, dpi, association);
+        let entry = explorer_model::FileEntry {
+            id: explorer_model::ShellItemId::from_provider_bytes([0x24]).expect("identity"),
+            location: explorer_model::LocationDescriptor::file_system(r"C:\Users\Public"),
+            display_name: "Public".to_owned(),
+            is_container: true,
+            metadata: explorer_model::FileEntryMetadata::default(),
+        };
+        let mut request = crate::navigation_pane::file_icon_key_for_size(&entry, theme, dpi, 20);
+        request.item_id = None;
+        request.location = explorer_model::LocationDescriptor::file_system(
+            crate::navigation_pane::GENERIC_SHELL_FOLDER_ICON_PATH,
+        );
+        request.association_generation = association;
+        request.overlay_generation = 0;
+        assert_eq!(
+            request, generic,
+            "Details 20px folder bases reuse the navigation generic folder key"
+        );
+    }
+
+    #[test]
+    fn navigation_snapshot_keeps_generic_folder_when_shared_base_consumed() {
+        let mut root = ExplorerRoot::default();
+        let generic_key = crate::navigation_pane::generic_breadcrumb_folder_icon_key(
+            explorer_model::ShellIconTheme::Light,
+            root.shell_icon_dpi,
+            root.icon_epochs.association(),
+        );
+        let texture = Arc::new(gpui::RenderImage::new(smallvec::SmallVec::<
+            [image::Frame; 1],
+        >::new()));
+        let base_key = explorer_model::BaseIconKey {
+            class: explorer_model::BaseIconClass::Folder,
+            size_bucket: generic_key.size_bucket,
+            dpi: generic_key.dpi,
+            theme: generic_key.theme,
+            association_epoch: generic_key.association_generation,
+        };
+        root.base_icons.insert(base_key, Arc::clone(&texture), 41);
+        assert!(
+            root.shell_icons.get(&generic_key).is_none(),
+            "the colliding Details-view base request stored pixels only in the shared folder cache"
+        );
+
+        let snapshot = root.navigation_icon_snapshot(&[]);
+        let captured = snapshot
+            .textures
+            .get(&generic_key)
+            .expect("WSL distro Folder rows still receive the generic Shell folder");
+        assert!(Arc::ptr_eq(captured, &texture));
+    }
+
+    #[test]
+    fn shared_base_load_also_publishes_generic_folder_to_shell_icons() {
+        let mut root = ExplorerRoot::default();
+        let generic_key = crate::navigation_pane::generic_breadcrumb_folder_icon_key(
+            explorer_model::ShellIconTheme::Light,
+            root.shell_icon_dpi,
+            root.icon_epochs.association(),
+        );
+        let base_key = explorer_model::BaseIconKey {
+            class: explorer_model::BaseIconClass::Folder,
+            size_bucket: generic_key.size_bucket,
+            dpi: generic_key.dpi,
+            theme: generic_key.theme,
+            association_epoch: generic_key.association_generation,
+        };
+        root.pending_base_icons
+            .insert(generic_key.clone(), base_key.clone());
+        let payload = explorer_model::ShellIconPayload::new(
+            generic_key.clone(),
+            1,
+            1,
+            4,
+            vec![9, 8, 7, 6],
+            None,
+        )
+        .expect("valid payload");
+        let texture = Arc::new(gpui::RenderImage::new(smallvec::SmallVec::<
+            [image::Frame; 1],
+        >::new()));
+        root.remember_loaded_shell_texture(&payload, Arc::clone(&texture));
+
+        assert!(root.base_icons.entries.contains_key(&base_key));
+        let published = root
+            .shell_icons
+            .get(&generic_key)
+            .expect("generic folder remains visible to the navigation pane");
+        assert!(Arc::ptr_eq(&published, &texture));
+    }
+
+    #[test]
     fn navigation_context_regression_reconciles_and_retries_dynamic_icons() {
         let service = Arc::new(RecordingService::default());
         let mut root = ExplorerRoot {
@@ -13129,6 +13930,125 @@ mod tests {
             tab.visible_snapshot().map(|value| value.entries().len()),
             Some(1)
         );
+    }
+
+    #[test]
+    fn synthetic_favorites_navigation_lists_folders_then_bookmarks() {
+        let mut root = ExplorerRoot::new(UiTokens::default());
+        let mut bookmarks = explorer_model::Bookmarks::default();
+        assert!(bookmarks.begin_add_folder("super".into(), None).changed());
+        let folder_id = bookmarks.folders()[0].id;
+        assert!(
+            bookmarks
+                .begin_add_folder("nested".into(), Some(folder_id))
+                .changed()
+        );
+        assert!(
+            bookmarks
+                .begin_add(
+                    "portable".into(),
+                    explorer_model::BookmarkTarget::FolderPath {
+                        path: r"C:\portable".into(),
+                    },
+                )
+                .changed()
+        );
+        assert!(
+            bookmarks
+                .begin_add(
+                    "script".into(),
+                    explorer_model::BookmarkTarget::LuaScript {
+                        source: "return 1".into(),
+                    },
+                )
+                .changed()
+        );
+        root.state.configure_bookmarks(bookmarks);
+        let command = root
+            .state
+            .begin_active_navigation(
+                explorer_model::LocationDescriptor::synthetic(
+                    explorer_model::SyntheticRoot::Favorites,
+                ),
+                false,
+            )
+            .expect("favorites navigation");
+        assert!(root.submit_command(command));
+        let tab = root.state.tabs().active_tab();
+        assert_eq!(
+            tab.history.current().map(|entry| entry.location.clone()),
+            Some(explorer_model::LocationDescriptor::synthetic(
+                explorer_model::SyntheticRoot::Favorites
+            ))
+        );
+        let snapshot = tab.visible_snapshot().expect("favorites snapshot");
+        let names: Vec<_> = snapshot
+            .entries()
+            .iter()
+            .map(|entry| entry.display_name.as_str())
+            .collect();
+        assert_eq!(names, ["super", "portable", "script"]);
+        assert!(snapshot.entries()[0].is_container);
+        assert!(snapshot.entries()[1].is_container);
+        assert!(!snapshot.entries()[2].is_container);
+        assert_eq!(
+            snapshot.entries()[2].location.lua_bookmark_id(),
+            Some(
+                root.state
+                    .bookmarks()
+                    .entries()
+                    .iter()
+                    .find(|bookmark| bookmark.name == "script")
+                    .expect("lua bookmark")
+                    .id
+            )
+        );
+
+        let nested = explorer_model::LocationDescriptor::favorites_folder(folder_id);
+        let command = root
+            .state
+            .begin_active_navigation(nested.clone(), false)
+            .expect("nested favorites navigation");
+        assert!(root.submit_command(command));
+        let tab = root.state.tabs().active_tab();
+        assert_eq!(
+            tab.history.current().map(|entry| entry.location.clone()),
+            Some(nested)
+        );
+        let nested_names: Vec<_> = tab
+            .visible_snapshot()
+            .expect("nested snapshot")
+            .entries()
+            .iter()
+            .map(|entry| entry.display_name.as_str())
+            .collect();
+        assert_eq!(nested_names, ["nested"]);
+        assert!(root.state.active_presentation().can_go_up);
+    }
+
+    #[test]
+    fn open_item_dispatches_lua_bookmarks_instead_of_shell_open() {
+        let source = include_str!("lib.rs");
+        let open_item = source
+            .split("if let ExplorerAction::OpenItem { row_index, new_tab } = action")
+            .nth(1)
+            .expect("OpenItem handler");
+        let handler = open_item
+            .split("if let ExplorerAction::OpenExtensionViewItem")
+            .next()
+            .expect("OpenItem body");
+        assert!(handler.contains("lua_bookmark_id_for_row"));
+        assert!(handler.contains("ActivateBookmark"));
+        let open_focused = source
+            .split("if action == ExplorerAction::OpenFocused")
+            .nth(1)
+            .expect("OpenFocused handler");
+        let focused = open_focused
+            .split("if action == ExplorerAction::CreateFolder")
+            .next()
+            .expect("OpenFocused body");
+        assert!(focused.contains("lua_bookmark_id_for_row"));
+        assert!(focused.contains("ActivateBookmark"));
     }
 
     #[test]

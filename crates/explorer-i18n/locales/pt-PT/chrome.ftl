@@ -38,6 +38,7 @@ nav-new-volume = Novo volume ({ $letter }:)
 
 nav-network = Rede
 
+nav-linux = Linux
 nav-phones = Telefones
 
 nav-sftp = SFTP
@@ -213,6 +214,11 @@ chrome-sort-name = Nome
 chrome-sort-url = URL
 
 chrome-sort-tags = Etiquetas
+chrome-sort-last-visited = Last visited
+chrome-sort-visit-count = Visit count
+chrome-sort-date-added = Date added
+chrome-sort-date-modified = Date modified
+chrome-sort-date = Date
 
 nav-recycle-bin = Reciclagem
 chrome-nav-loading = { $label } (A carregar...)

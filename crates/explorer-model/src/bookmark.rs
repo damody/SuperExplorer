@@ -7,6 +7,13 @@ use uuid::Uuid;
 
 use crate::LocationDescriptor;
 
+fn bookmark_now_epoch() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_secs())
+        .unwrap_or(0)
+}
+
 pub type BookmarkId = Uuid;
 pub type BookmarkFolderId = Uuid;
 
@@ -18,6 +25,7 @@ pub enum BookmarkTarget {
     FolderPath { path: String },
     FilePath { path: String },
     LuaScript { source: String },
+    Separator,
 }
 
 impl BookmarkTarget {
@@ -26,6 +34,7 @@ impl BookmarkTarget {
             Self::Folder { location } | Self::File { location } => location.editable_text(),
             Self::FolderPath { path } | Self::FilePath { path } => path.clone(),
             Self::LuaScript { source } => source.clone(),
+            Self::Separator => String::new(),
         }
     }
 
@@ -34,6 +43,7 @@ impl BookmarkTarget {
             Self::Folder { .. } | Self::FolderPath { .. } => Self::FolderPath { path: payload },
             Self::File { .. } | Self::FilePath { .. } => Self::FilePath { path: payload },
             Self::LuaScript { .. } => Self::LuaScript { source: payload },
+            Self::Separator => Self::Separator,
         }
     }
 
@@ -68,6 +78,16 @@ pub struct Bookmark {
     #[serde(default)]
     pub parent_id: Option<BookmarkFolderId>,
     pub target: BookmarkTarget,
+    #[serde(default)]
+    pub tags: String,
+    #[serde(default)]
+    pub added_epoch_seconds: u64,
+    #[serde(default)]
+    pub modified_epoch_seconds: u64,
+    #[serde(default)]
+    pub visited_epoch_seconds: u64,
+    #[serde(default)]
+    pub visit_count: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -240,15 +260,43 @@ impl Bookmarks {
         if !self.valid_parent(parent_id) {
             return BookmarkMutation::new(previous, false);
         }
+        let now = bookmark_now_epoch();
         self.entries.push(Bookmark {
             id: Uuid::new_v4(),
             name,
             order: self.next_order(parent_id),
             parent_id,
             target,
+            tags: String::new(),
+            added_epoch_seconds: now,
+            modified_epoch_seconds: now,
+            visited_epoch_seconds: 0,
+            visit_count: 0,
         });
         self.legacy_encoding = false;
         BookmarkMutation::new(previous, true)
+    }
+
+    pub fn begin_add_separator(&mut self, parent_id: Option<BookmarkFolderId>) -> BookmarkMutation {
+        self.begin_add_to(String::new(), BookmarkTarget::Separator, parent_id)
+    }
+
+    pub fn record_visit(&mut self, id: BookmarkId) -> BookmarkMutation {
+        let previous = self.clone();
+        let now = bookmark_now_epoch();
+        let changed = self
+            .entries
+            .iter_mut()
+            .find(|item| item.id == id)
+            .is_some_and(|item| {
+                item.visit_count = item.visit_count.saturating_add(1);
+                item.visited_epoch_seconds = now;
+                true
+            });
+        if changed {
+            self.legacy_encoding = false;
+        }
+        BookmarkMutation::new(previous, changed)
     }
 
     pub fn begin_add_folder(
@@ -327,6 +375,7 @@ impl Bookmarks {
                     item.name = name;
                     item.target = target;
                     item.parent_id = parent_id;
+                    item.modified_epoch_seconds = bookmark_now_epoch();
                     true
                 }
             });
@@ -335,6 +384,21 @@ impl Bookmarks {
             self.normalize_orders();
         }
         BookmarkMutation::new(previous, changed)
+    }
+
+    pub fn set_entry_tags(&mut self, id: BookmarkId, tags: String) -> bool {
+        self.entries
+            .iter_mut()
+            .find(|item| item.id == id)
+            .is_some_and(|item| {
+                if item.tags == tags {
+                    false
+                } else {
+                    item.tags = tags;
+                    item.modified_epoch_seconds = bookmark_now_epoch();
+                    true
+                }
+            })
     }
 
     pub fn begin_remove(&mut self, id: BookmarkId) -> BookmarkMutation {
@@ -554,11 +618,411 @@ impl Bookmarks {
         self.entries
             .sort_by_key(|item| (item.parent_id, item.order, item.id));
     }
+
+    pub fn to_netscape_html(&self) -> String {
+        let mut out = String::from(
+            "<!DOCTYPE NETSCAPE-Bookmark-file-1>\n\
+             <META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html; charset=UTF-8\">\n\
+             <TITLE>Bookmarks</TITLE>\n\
+             <H1>Bookmarks</H1>\n\
+             <DL><p>\n",
+        );
+        write_netscape_children(&mut out, self, None, 1);
+        out.push_str("</DL><p>\n");
+        out
+    }
+
+    pub fn from_netscape_html(html: &str) -> Result<Self, String> {
+        if !html.to_ascii_uppercase().contains("NETSCAPE-BOOKMARK-FILE")
+            && !html.to_ascii_lowercase().contains("<dt>")
+        {
+            return Err("not a Netscape bookmark file".to_owned());
+        }
+        let mut bookmarks = Self::default();
+        parse_netscape_html(&mut bookmarks, html, None)?;
+        Ok(bookmarks)
+    }
+
+    pub fn from_chromium_json(json: &str) -> Result<Self, String> {
+        let value: serde_json::Value =
+            serde_json::from_str(json).map_err(|error| error.to_string())?;
+        let roots = value
+            .get("roots")
+            .ok_or_else(|| "missing Chromium roots".to_owned())?;
+        let mut bookmarks = Self::default();
+        for key in ["bookmark_bar", "other", "synced"] {
+            if let Some(node) = roots.get(key) {
+                import_chromium_node(&mut bookmarks, node, None)?;
+            }
+        }
+        if bookmarks.entries.is_empty() && bookmarks.folders.is_empty() {
+            return Err("no Chromium bookmarks found".to_owned());
+        }
+        Ok(bookmarks)
+    }
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn write_netscape_children(
+    out: &mut String,
+    bookmarks: &Bookmarks,
+    parent: Option<BookmarkFolderId>,
+    depth: usize,
+) {
+    let indent = "    ".repeat(depth);
+    let mut folders: Vec<_> = bookmarks.child_folders(parent).collect();
+    folders.sort_by_key(|folder| folder.order);
+    let mut entries: Vec<_> = bookmarks.child_entries(parent).collect();
+    entries.sort_by_key(|entry| entry.order);
+    let mut items: Vec<(u32, bool, usize)> = folders
+        .iter()
+        .enumerate()
+        .map(|(index, folder)| (folder.order, true, index))
+        .chain(
+            entries
+                .iter()
+                .enumerate()
+                .map(|(index, entry)| (entry.order, false, index)),
+        )
+        .collect();
+    items.sort_by_key(|item| (item.0, item.1, item.2));
+    for (_, is_folder, index) in items {
+        if is_folder {
+            let folder = folders[index];
+            out.push_str(&indent);
+            out.push_str("<DT><H3>");
+            out.push_str(&html_escape(&folder.name));
+            out.push_str("</H3>\n");
+            out.push_str(&indent);
+            out.push_str("<DL><p>\n");
+            write_netscape_children(out, bookmarks, Some(folder.id), depth + 1);
+            out.push_str(&indent);
+            out.push_str("</DL><p>\n");
+        } else {
+            let entry = entries[index];
+            out.push_str(&indent);
+            if matches!(entry.target, BookmarkTarget::Separator) {
+                out.push_str("<DT><HR>\n");
+            } else {
+                out.push_str("<DT><A HREF=\"");
+                out.push_str(&html_escape(&entry.target.editable_payload()));
+                out.push_str("\">");
+                out.push_str(&html_escape(&entry.name));
+                out.push_str("</A>\n");
+            }
+        }
+    }
+}
+
+fn parse_netscape_html(
+    bookmarks: &mut Bookmarks,
+    html: &str,
+    parent: Option<BookmarkFolderId>,
+) -> Result<(), String> {
+    let mut i = 0;
+    let upper = html.to_ascii_uppercase();
+    while i < html.len() {
+        let remaining = &upper[i..];
+        let href_pos = remaining.find("HREF=\"");
+        let h3_pos = remaining.find("<H3");
+        let hr_pos = remaining.find("<HR");
+        let dl_pos = remaining.find("<DL");
+        let next = [href_pos, h3_pos, hr_pos, dl_pos]
+            .into_iter()
+            .flatten()
+            .min();
+        let Some(rel) = next else {
+            break;
+        };
+        if Some(rel) == dl_pos && i > 0 {
+            let inner = extract_dl_after(&html[i + rel..]).unwrap_or_default();
+            parse_netscape_html(bookmarks, &inner, parent)?;
+            i += rel
+                + skip_first_dl(&html[i + rel..])
+                    .map(|after| html[i + rel..].len() - after.len())
+                    .unwrap_or(4);
+            continue;
+        }
+        if Some(rel) == href_pos {
+            let raw = &html[i + rel + 6..];
+            if let Some(end) = raw.find('"') {
+                let href = html_unescape(&raw[..end]);
+                let after = &raw[end + 1..];
+                if let Some(gt) = after.find('>') {
+                    let name_src = &after[gt + 1..];
+                    if let Some(close) = name_src.find("</A>").or_else(|| name_src.find("</a>")) {
+                        let name = strip_tags(&name_src[..close]);
+                        let _ = bookmarks.begin_add_to(
+                            name,
+                            BookmarkTarget::FolderPath { path: href },
+                            parent,
+                        );
+                        i += rel + 6 + end + 1 + gt + 1 + close + 4;
+                        continue;
+                    }
+                }
+            }
+            i += rel + 6;
+            continue;
+        }
+        if Some(rel) == hr_pos {
+            let _ = bookmarks.begin_add_separator(parent);
+            i += rel + 3;
+            continue;
+        }
+        if Some(rel) == h3_pos {
+            if let Some(name) = extract_between(&html[i + rel..], "<H3", "</H3>")
+                .or_else(|| extract_between(&html[i + rel..], "<h3", "</h3>"))
+            {
+                let folder_name = strip_tags(&name);
+                let _ = bookmarks.begin_add_folder(folder_name.clone(), parent);
+                let folder_id = bookmarks
+                    .folders()
+                    .iter()
+                    .rev()
+                    .find(|folder| folder.name == folder_name && folder.parent_id == parent)
+                    .map(|folder| folder.id);
+                let after_h3 = html[i + rel..]
+                    .find("</H3>")
+                    .or_else(|| html[i + rel..].find("</h3>"))
+                    .map(|value| i + rel + value + 5)
+                    .unwrap_or(i + rel + 4);
+                let search = html.get(after_h3..).unwrap_or("");
+                if let Some(inner) = extract_dl_after(search) {
+                    parse_netscape_html(bookmarks, &inner, folder_id)?;
+                    i = after_h3
+                        + skip_first_dl(search)
+                            .map(|after| search.len() - after.len())
+                            .unwrap_or(0);
+                    continue;
+                }
+                i = after_h3;
+                continue;
+            }
+        }
+        i += rel + 1;
+    }
+    Ok(())
+}
+
+fn skip_first_dl(input: &str) -> Option<&str> {
+    let start = input.to_ascii_uppercase().find("<DL")?;
+    let after = input.get(start..)?;
+    let mut depth = 0;
+    let mut i = 0;
+    while i + 4 < after.len() {
+        let slice = after[i..].to_ascii_uppercase();
+        if slice.starts_with("<DL") {
+            depth += 1;
+            i += 3;
+        } else if slice.starts_with("</DL") {
+            depth -= 1;
+            if depth == 0 {
+                let close = after[i..].find('>').unwrap_or(4);
+                return after.get(i + close + 1..);
+            }
+            i += 4;
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+fn extract_between(input: &str, start: &str, end: &str) -> Option<String> {
+    let from = input.find(start)? + start.len();
+    let after = input.get(from..)?;
+    let close = after.find('>')? + 1;
+    let body = after.get(close..)?;
+    let to = body.find(end)?;
+    Some(body[..to].to_owned())
+}
+
+fn extract_dl_after(input: &str) -> Option<String> {
+    let upper = input.to_ascii_uppercase();
+    let start = upper.find("<DL")?;
+    let after = input.get(start..)?;
+    let inner_start = after.find('>')? + 1;
+    let mut depth = 1;
+    let bytes = after.as_bytes();
+    let mut i = inner_start;
+    while i + 4 < after.len() {
+        if after[i..].to_ascii_uppercase().starts_with("<DL") {
+            depth += 1;
+            i += 3;
+        } else if after[i..].to_ascii_uppercase().starts_with("</DL") {
+            depth -= 1;
+            if depth == 0 {
+                return Some(after[inner_start..i].to_owned());
+            }
+            i += 4;
+        } else {
+            i += 1;
+        }
+    }
+    let _ = bytes;
+    None
+}
+
+fn strip_tags(value: &str) -> String {
+    let mut out = String::new();
+    let mut skipping = false;
+    for ch in value.chars() {
+        match ch {
+            '<' => skipping = true,
+            '>' => skipping = false,
+            _ if !skipping => out.push(ch),
+            _ => {}
+        }
+    }
+    html_unescape(out.trim())
+}
+
+fn html_unescape(value: &str) -> String {
+    value
+        .replace("&quot;", "\"")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
+fn import_chromium_node(
+    bookmarks: &mut Bookmarks,
+    node: &serde_json::Value,
+    parent: Option<BookmarkFolderId>,
+) -> Result<(), String> {
+    let kind = node
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("folder");
+    match kind {
+        "url" => {
+            let name = node
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("Bookmark")
+                .to_owned();
+            let url = node
+                .get("url")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            if !url.is_empty() {
+                let _ =
+                    bookmarks.begin_add_to(name, BookmarkTarget::FolderPath { path: url }, parent);
+            }
+        }
+        _ => {
+            let name = node
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("Folder")
+                .to_owned();
+            let folder_id = if parent.is_none()
+                && matches!(
+                    name.as_str(),
+                    "Bookmarks bar" | "Other bookmarks" | "Mobile bookmarks" | ""
+                ) {
+                parent
+            } else if name.is_empty() {
+                parent
+            } else {
+                let _ = bookmarks.begin_add_folder(name.clone(), parent);
+                bookmarks
+                    .child_folders(parent)
+                    .find(|folder| folder.name == name)
+                    .map(|folder| folder.id)
+                    .or(parent)
+            };
+            if let Some(children) = node.get("children").and_then(serde_json::Value::as_array) {
+                for child in children {
+                    import_chromium_node(bookmarks, child, folder_id)?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn netscape_html_round_trips_folders_bookmarks_and_separators() {
+        let mut value = Bookmarks::default();
+        value.begin_add(
+            "portable".into(),
+            BookmarkTarget::FolderPath {
+                path: r"C:\portable".into(),
+            },
+        );
+        value.begin_add_folder("super".into(), None);
+        let folder = value.folders()[0].id;
+        value.begin_add_separator(None);
+        value.begin_add_to(
+            "nested".into(),
+            BookmarkTarget::FolderPath {
+                path: r"D:\nested".into(),
+            },
+            Some(folder),
+        );
+        let html = value.to_netscape_html();
+        assert!(html.contains("NETSCAPE-Bookmark-file-1"), "{html}");
+        assert!(html.contains("<HR>"), "{html}");
+        assert!(html.contains("C:\\portable"), "{html}");
+        let decoded = Bookmarks::from_netscape_html(&html).expect("parse html");
+        let names: Vec<_> = decoded
+            .entries()
+            .iter()
+            .map(|item| (item.name.as_str(), item.target.editable_payload()))
+            .collect();
+        assert!(
+            names.iter().any(|(name, _)| *name == "portable"),
+            "html={html}\nparsed={names:?}"
+        );
+        assert!(decoded.folders().iter().any(|item| item.name == "super"));
+        assert!(
+            decoded
+                .entries()
+                .iter()
+                .any(|item| matches!(item.target, BookmarkTarget::Separator))
+        );
+        assert!(
+            decoded
+                .entries()
+                .iter()
+                .any(|item| item.name == "nested" && item.parent_id.is_some())
+        );
+    }
+
+    #[test]
+    fn chromium_json_imports_url_nodes() {
+        let json = r#"{
+            "roots": {
+                "bookmark_bar": {
+                    "type": "folder",
+                    "name": "Bookmarks bar",
+                    "children": [
+                        {"type": "url", "name": "Example", "url": "https://example.com"}
+                    ]
+                }
+            }
+        }"#;
+        let imported = Bookmarks::from_chromium_json(json).expect("chromium json");
+        assert_eq!(imported.entries()[0].name, "Example");
+        assert_eq!(
+            imported.entries()[0].target.editable_payload(),
+            "https://example.com"
+        );
+    }
 
     #[test]
     fn bookmark_moves_between_root_and_folder_with_rollback() {

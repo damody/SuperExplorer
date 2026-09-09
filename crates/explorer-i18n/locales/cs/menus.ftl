@@ -51,6 +51,7 @@ menu-about = O aplikaci
 
 menu-new = Nový
 
+menu-sort-with-accelerator = Sort (S)
 menu-sort = Seřadit
 
 menu-view = Zobrazení
@@ -133,21 +134,39 @@ menu-new-bookmark = Nová záložka
 
 menu-manage = Uspořádat
 
-menu-manage-with-accelerator = Uspořádat (O)⌄
+menu-manage-with-accelerator = Uspořádat (O)
 
-menu-view-with-accelerator = ☷  Zobrazení (V)⌄
+menu-view-with-accelerator = Zobrazení (V)
 
-menu-import-backup-with-accelerator = ↕  Importovat a zálohovat (I)⌄
+menu-import-backup-with-accelerator = Importovat a zálohovat (I)
 
 menu-history = ⌄  ◷  Historie
+history-library = History
+history-today = Today
+history-yesterday = Yesterday
+history-last-7-days = Last 7 days
+history-this-month = This month
+history-month = {$month}
+history-older = Older than 6 months
+run-log-library = Záznam spuštění
+run-log-missing = Soubor byl přesunut nebo chybí
+run-log-opens = Otevřeno { $count }krát
+weekday-sun = neděle
+weekday-mon = pondělí
+weekday-tue = úterý
+weekday-wed = středa
+weekday-thu = čtvrtek
+weekday-fri = pátek
+weekday-sat = sobota
 
-menu-downloads-items =    ⇩  Stažené soubory
+
+menu-downloads-items =   ⇩  Záznam spuštění
 
 menu-tags = ▸  ◇  Tagy
 
 menu-all-bookmarks = ⌄  ★  Všechny záložky
 
-menu-bookmark-toolbar = ▸  ▣  Lišta záložek
+menu-bookmark-toolbar = ⌄  ▣  Lišta záložek
 
 menu-bookmark-menu = ▸  ▤  Nabídka záložek
 
@@ -200,3 +219,30 @@ menu-close-apps-and-retry = Zavřít programy a zkusit znovu
 menu-exif-heading = Přejmenovat podle EXIF
 
 menu-bulk-folder-heading = Hromadný generátor složek
+menu-new-bookmark-ellipsis = New bookmark… (B)
+menu-new-folder-ellipsis = New folder… (O)
+menu-new-separator = New separator (S)
+menu-redo = Redo
+menu-show-columns = Show columns (C)
+menu-sort-none = Unsorted
+menu-sort-by-tags = Sort by tags (T)
+menu-sort-by-last-visited = Sort by last visited (V)
+menu-sort-by-visit-count = Sort by visit count (C)
+menu-sort-by-date-added = Sort by date added (E)
+menu-sort-by-date-modified = Sort by last modified (M)
+menu-sort-az = A → Z
+menu-sort-za = Z → A
+menu-backup-ellipsis = Backup… (B)
+menu-restore = Restore (R)
+menu-import-html = Import bookmarks from HTML… (I)
+menu-export-html = Export bookmarks to HTML… (E)
+menu-import-other-browsers = Import data from another browser… (A)
+menu-choose-file = Choose file… (C)
+menu-shortcut-ctrl-z = Ctrl+Z
+menu-shortcut-ctrl-y = Ctrl+Y
+menu-shortcut-ctrl-x = Ctrl+X
+menu-shortcut-ctrl-c = Ctrl+C
+menu-shortcut-ctrl-v = Ctrl+V
+menu-shortcut-del = Del
+menu-shortcut-ctrl-a = Ctrl+A
+menu-shortcut-ctrl-w = Ctrl+W

@@ -51,6 +51,7 @@ menu-about = Acerca de
 
 menu-new = Nuevo
 
+menu-sort-with-accelerator = Sort (S)
 menu-sort = Ordenar
 
 menu-view = Vista
@@ -133,21 +134,39 @@ menu-new-bookmark = Nuevo marcador
 
 menu-manage = Organizar
 
-menu-manage-with-accelerator = Organizar (O)⌄
+menu-manage-with-accelerator = Organizar (O)
 
-menu-view-with-accelerator = ☷  Vista (V)⌄
+menu-view-with-accelerator = Vista (V)
 
-menu-import-backup-with-accelerator = ↕  Importar y copia de seguridad (I)⌄
+menu-import-backup-with-accelerator = Importar y copia de seguridad (I)
 
 menu-history = ⌄  ◷  Historial
+history-library = History
+history-today = Today
+history-yesterday = Yesterday
+history-last-7-days = Last 7 days
+history-this-month = This month
+history-month = {$month}
+history-older = Older than 6 months
+run-log-library = Registro de ejecución
+run-log-missing = El archivo se movió o falta
+run-log-opens = Abierto { $count } veces
+weekday-sun = domingo
+weekday-mon = lunes
+weekday-tue = martes
+weekday-wed = miércoles
+weekday-thu = jueves
+weekday-fri = viernes
+weekday-sat = sábado
 
-menu-downloads-items =    ⇩  Descargas
+
+menu-downloads-items =   ⇩  Registro de ejecución
 
 menu-tags = ▸  ◇  Etiquetas
 
 menu-all-bookmarks = ⌄  ★  Todos los marcadores
 
-menu-bookmark-toolbar = ▸  ▣  Barra de marcadores
+menu-bookmark-toolbar = ⌄  ▣  Barra de marcadores
 
 menu-bookmark-menu = ▸  ▤  Menú de marcadores
 
@@ -200,3 +219,30 @@ menu-close-apps-and-retry = Cerrar programas y reintentar
 menu-exif-heading = Cambiar nombre desde EXIF
 
 menu-bulk-folder-heading = Generador de carpetas por lotes
+menu-new-bookmark-ellipsis = New bookmark… (B)
+menu-new-folder-ellipsis = New folder… (O)
+menu-new-separator = New separator (S)
+menu-redo = Redo
+menu-show-columns = Show columns (C)
+menu-sort-none = Unsorted
+menu-sort-by-tags = Sort by tags (T)
+menu-sort-by-last-visited = Sort by last visited (V)
+menu-sort-by-visit-count = Sort by visit count (C)
+menu-sort-by-date-added = Sort by date added (E)
+menu-sort-by-date-modified = Sort by last modified (M)
+menu-sort-az = A → Z
+menu-sort-za = Z → A
+menu-backup-ellipsis = Backup… (B)
+menu-restore = Restore (R)
+menu-import-html = Import bookmarks from HTML… (I)
+menu-export-html = Export bookmarks to HTML… (E)
+menu-import-other-browsers = Import data from another browser… (A)
+menu-choose-file = Choose file… (C)
+menu-shortcut-ctrl-z = Ctrl+Z
+menu-shortcut-ctrl-y = Ctrl+Y
+menu-shortcut-ctrl-x = Ctrl+X
+menu-shortcut-ctrl-c = Ctrl+C
+menu-shortcut-ctrl-v = Ctrl+V
+menu-shortcut-del = Del
+menu-shortcut-ctrl-a = Ctrl+A
+menu-shortcut-ctrl-w = Ctrl+W

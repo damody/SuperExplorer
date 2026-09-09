@@ -38,6 +38,7 @@ nav-new-volume = Новий том ({ $letter }:)
 
 nav-network = Мережа
 
+nav-linux = Linux
 nav-phones = Телефони
 
 nav-sftp = SFTP
@@ -213,6 +214,11 @@ chrome-sort-name = Ім’я
 chrome-sort-url = URL
 
 chrome-sort-tags = Теги
+chrome-sort-last-visited = Last visited
+chrome-sort-visit-count = Visit count
+chrome-sort-date-added = Date added
+chrome-sort-date-modified = Date modified
+chrome-sort-date = Date
 
 nav-recycle-bin = Кошик
 chrome-nav-loading = { $label } (Завантаження…)

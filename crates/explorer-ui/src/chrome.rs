@@ -67,7 +67,7 @@ use gpui::{
     Render, RenderImage, RenderOnce, Role, SharedString, Window, WindowControlArea, anchored,
     canvas, deferred, div, hsla, img, point, prelude::*, px, relative, svg,
 };
-use gpui_elements::editable_text::{EditableTextState, text_input};
+use gpui_elements::editable_text::{EditableTextElement, EditableTextState, text_input};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::{
@@ -85,7 +85,7 @@ use crate::{
         is_generic_breadcrumb_folder_icon_key, is_selected, shell_icon_key,
         windows_navigation_items_with_pins,
     },
-    state::{AppViewState, CommandKind, LockRecoveryPhase, LockRecoveryUiState},
+    state::{AppViewState, CommandKind, LockRecoveryPhase, LockRecoveryUiState, RunRecord},
     typography::TypographyStyle,
 };
 
@@ -158,13 +158,14 @@ fn bookmark_icon(target: &explorer_model::BookmarkTarget) -> &'static str {
     use explorer_model::{BookmarkTarget, FileSystemKind};
     match target {
         BookmarkTarget::LuaScript { .. } => "⚡",
+        BookmarkTarget::Separator => "─",
         BookmarkTarget::Folder { location } | BookmarkTarget::File { location } => {
             match location.file_system_kind() {
                 Some(FileSystemKind::Adb) => "📱",
                 Some(FileSystemKind::Sftp) => "🖥",
                 Some(FileSystemKind::Ftp) => "📡",
                 Some(FileSystemKind::Gdrive) => "☁",
-                Some(FileSystemKind::Local) | None => "🔖",
+                Some(FileSystemKind::Local) | Some(FileSystemKind::Wsl) | None => "🔖",
             }
         }
         BookmarkTarget::FolderPath { path } | BookmarkTarget::FilePath { path } => {
@@ -225,8 +226,18 @@ fn bookmark_label(
         .flex()
         .items_center()
         .gap(px(6.0))
+        .min_w(px(0.0))
+        .overflow_hidden()
         .child(bookmark_icon_element(target))
-        .child(label.into())
+        .child(
+            div()
+                .min_w(px(0.0))
+                .flex_1()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(label.into()),
+        )
         .into_any_element()
 }
 
@@ -1449,7 +1460,7 @@ pub(crate) fn bookmark_manager(
 ) -> impl IntoElement {
     let search_query = search_query.trim().to_lowercase();
     let catalog = state.catalog();
-    let manager_row_height = if ui.compact { 24.0 } else { 32.0 };
+    let manager_row_height = 32.0;
     let (input_text, input_selection, input_selection_text, input_caret) =
         editable_input_colors(tokens);
     let folder_rows = state
@@ -1486,7 +1497,7 @@ pub(crate) fn bookmark_manager(
                 .flex()
                 .items_center()
                 .h(px(manager_row_height))
-                .pl(px(28.0 + depth as f32 * 20.0))
+                .pl(px(58.0 + depth as f32 * 20.0))
                 .pr(px(8.0))
                 .gap(px(7.0))
                 .cursor_pointer()
@@ -1537,6 +1548,9 @@ pub(crate) fn bookmark_manager(
             crate::bookmark_manager_window::BookmarkManagerLocation::Folder(id) => {
                 bookmark.parent_id == Some(id)
             }
+            crate::bookmark_manager_window::BookmarkManagerLocation::History
+            | crate::bookmark_manager_window::BookmarkManagerLocation::HistoryBucket(_)
+            | crate::bookmark_manager_window::BookmarkManagerLocation::RunLog => false,
         })
         .filter(|bookmark| {
             search_query.is_empty()
@@ -1550,146 +1564,275 @@ pub(crate) fn bookmark_manager(
         .collect::<Vec<_>>();
     presented_bookmarks.sort_by(|left, right| {
         let ordering = match ui.sort_column {
+            crate::bookmark_manager_window::BookmarkManagerSortColumn::None => {
+                left.order.cmp(&right.order)
+            }
             crate::bookmark_manager_window::BookmarkManagerSortColumn::Name => {
                 left.name.to_lowercase().cmp(&right.name.to_lowercase())
             }
             crate::bookmark_manager_window::BookmarkManagerSortColumn::Tags => {
-                std::cmp::Ordering::Equal
+                left.tags.to_lowercase().cmp(&right.tags.to_lowercase())
             }
             crate::bookmark_manager_window::BookmarkManagerSortColumn::Location => left
                 .target
                 .editable_payload()
                 .to_lowercase()
                 .cmp(&right.target.editable_payload().to_lowercase()),
+            crate::bookmark_manager_window::BookmarkManagerSortColumn::LastVisited => {
+                left.visited_epoch_seconds.cmp(&right.visited_epoch_seconds)
+            }
+            crate::bookmark_manager_window::BookmarkManagerSortColumn::VisitCount => {
+                left.visit_count.cmp(&right.visit_count)
+            }
+            crate::bookmark_manager_window::BookmarkManagerSortColumn::DateAdded => {
+                left.added_epoch_seconds.cmp(&right.added_epoch_seconds)
+            }
+            crate::bookmark_manager_window::BookmarkManagerSortColumn::DateModified => left
+                .modified_epoch_seconds
+                .cmp(&right.modified_epoch_seconds),
         };
         ordering.then_with(|| left.order.cmp(&right.order))
     });
     if ui.descending {
         presented_bookmarks.reverse();
     }
-    let rows = presented_bookmarks
-        .into_iter()
-        .map(|bookmark| {
-            let sibling_index = state
-                .bookmarks()
-                .child_entries(bookmark.parent_id)
-                .position(|entry| entry.id == bookmark.id)
-                .unwrap_or(0);
-            let id = bookmark.id;
-            let edit = ExplorerAction::EditBookmark { id };
-            let drag_label = bookmark.name.clone();
-            let location = bookmark.target.editable_payload();
-            let drop_cb = callback.clone();
-            let edit_cb = callback.clone();
-            let context_cb = callback.clone();
-            let select_cb = ui_callback.clone();
-            let select =
-                crate::bookmark_manager_window::BookmarkManagerUiAction::SelectBookmark(id);
-            let selected = ui.selected_bookmark == Some(id);
-            div()
-                .id(("bookmark-row", id.as_u128() as u64))
-                .role(Role::ListItem)
-                .aria_label(t_named(
-                    catalog,
-                    "chrome-bookmark-plain-aria",
-                    "name",
-                    bookmark.name.clone(),
-                ))
-                .flex()
-                .items_center()
-                .h(px(manager_row_height))
-                .px(px(8.0))
-                .cursor_move()
-                .border_b(px(1.0))
-                .border_color(tokens.theme.colors.divider.to_gpui())
-                .when(selected, |row| {
-                    row.bg(tokens.theme.colors.file_row_selected_active.to_gpui())
-                        .text_color(tokens.theme.colors.file_row_selected_text.to_gpui())
-                })
-                .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
-                .on_drag(
-                    BookmarkDrag {
-                        id,
-                        label: drag_label,
-                    },
-                    |drag, _, _, cx| {
-                        cx.new(|_| BookmarkDragPreview {
-                            label: drag.label.clone(),
+    let now_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |value| value.as_secs());
+    let rows = match ui.location {
+        crate::bookmark_manager_window::BookmarkManagerLocation::History => {
+            bookmark_manager_history_bucket_rows(
+                tokens,
+                catalog,
+                state.recent_visits(),
+                &search_query,
+                now_epoch,
+                ui,
+                ui_callback.clone(),
+            )
+        }
+        crate::bookmark_manager_window::BookmarkManagerLocation::HistoryBucket(bucket) => {
+            bookmark_manager_history_visit_rows(
+                tokens,
+                state.recent_visits(),
+                &search_query,
+                now_epoch,
+                bucket,
+                ui,
+                ui_callback.clone(),
+                callback.clone(),
+            )
+        }
+        crate::bookmark_manager_window::BookmarkManagerLocation::RunLog => {
+            bookmark_manager_run_log_rows(
+                tokens,
+                catalog,
+                state.run_log(),
+                &search_query,
+                ui,
+                ui_callback.clone(),
+                callback.clone(),
+            )
+        }
+        _ => presented_bookmarks
+            .into_iter()
+            .map(|bookmark| {
+                let sibling_index = state
+                    .bookmarks()
+                    .child_entries(bookmark.parent_id)
+                    .position(|entry| entry.id == bookmark.id)
+                    .unwrap_or(0);
+                let id = bookmark.id;
+                let edit = ExplorerAction::EditBookmark { id };
+                let drag_label = bookmark.name.clone();
+                let location = bookmark.target.editable_payload();
+                let drop_cb = callback.clone();
+                let edit_cb = callback.clone();
+                let context_cb = callback.clone();
+                let select_cb = ui_callback.clone();
+                let select =
+                    crate::bookmark_manager_window::BookmarkManagerUiAction::SelectBookmark(id);
+                let selected = ui.selected_bookmark == Some(id);
+                div()
+                    .id(("bookmark-row", id.as_u128() as u64))
+                    .role(Role::ListItem)
+                    .aria_label(t_named(
+                        catalog,
+                        "chrome-bookmark-plain-aria",
+                        "name",
+                        bookmark.name.clone(),
+                    ))
+                    .flex()
+                    .items_center()
+                    .h(px(manager_row_height))
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .px(px(8.0))
+                    .cursor_move()
+                    .border_b(px(1.0))
+                    .border_color(tokens.theme.colors.divider.to_gpui())
+                    .when(selected, |row| {
+                        row.bg(tokens.theme.colors.file_row_selected_active.to_gpui())
+                            .text_color(tokens.theme.colors.file_row_selected_text.to_gpui())
+                    })
+                    .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
+                    .on_drag(
+                        BookmarkDrag {
+                            id,
+                            label: drag_label,
+                        },
+                        |drag, _, _, cx| {
+                            cx.new(|_| BookmarkDragPreview {
+                                label: drag.label.clone(),
+                            })
+                        },
+                    )
+                    .when_some(drop_cb, move |element, cb| {
+                        element.on_drop(move |drag: &BookmarkDrag, window, cx| {
+                            cb(
+                                &ExplorerAction::MoveBookmark {
+                                    id: drag.id,
+                                    destination: sibling_index,
+                                },
+                                window,
+                                cx,
+                            );
+                            cx.stop_propagation();
                         })
-                    },
-                )
-                .when_some(drop_cb, move |element, cb| {
-                    element.on_drop(move |drag: &BookmarkDrag, window, cx| {
-                        cb(
-                            &ExplorerAction::MoveBookmark {
-                                id: drag.id,
-                                destination: sibling_index,
+                    })
+                    .when_some(context_cb, move |element, cb| {
+                        element.on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                            cx.stop_propagation();
+                            cb(
+                                &ExplorerAction::OpenBookmarkContextMenu {
+                                    id,
+                                    x: f32::from(event.position.x),
+                                    y: f32::from(event.position.y),
+                                },
+                                window,
+                                cx,
+                            );
+                        })
+                    })
+                    .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                    .when_some(select_cb, move |element, cb| {
+                        element.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                            cb(&select, window, cx)
+                        })
+                    })
+                    .when(ui.columns.name, |row| {
+                        row.child(
+                            div()
+                                .w(px(220.0))
+                                .flex_none()
+                                .min_w(px(0.0))
+                                .overflow_hidden()
+                                .px(px(8.0))
+                                .child(bookmark_label(&bookmark.target, bookmark.name.clone())),
+                        )
+                    })
+                    .when(ui.columns.tags, |row| {
+                        row.child(bookmark_manager_list_column(bookmark.tags.clone(), false))
+                    })
+                    .when(ui.columns.location, |row| {
+                        row.child(bookmark_manager_list_column(location, true))
+                    })
+                    .when(ui.columns.last_visited, |row| {
+                        row.child(bookmark_manager_list_column(
+                            format_bookmark_timestamp(bookmark.visited_epoch_seconds),
+                            false,
+                        ))
+                    })
+                    .when(ui.columns.visit_count, |row| {
+                        row.child(bookmark_manager_list_column(
+                            if bookmark.visit_count == 0 {
+                                String::new()
+                            } else {
+                                bookmark.visit_count.to_string()
                             },
-                            window,
-                            cx,
-                        );
-                        cx.stop_propagation();
+                            false,
+                        ))
                     })
-                })
-                .when_some(context_cb, move |element, cb| {
-                    element.on_mouse_down(MouseButton::Right, move |event, window, cx| {
-                        cx.stop_propagation();
-                        cb(
-                            &ExplorerAction::OpenBookmarkContextMenu {
-                                id,
-                                x: f32::from(event.position.x),
-                                y: f32::from(event.position.y),
-                            },
-                            window,
-                            cx,
-                        );
+                    .when(ui.columns.date_added, |row| {
+                        row.child(bookmark_manager_list_column(
+                            format_bookmark_timestamp(bookmark.added_epoch_seconds),
+                            false,
+                        ))
                     })
-                })
-                .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                .when_some(select_cb, move |element, cb| {
-                    element.on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                        cb(&select, window, cx)
+                    .when(ui.columns.date_modified, |row| {
+                        row.child(bookmark_manager_list_column(
+                            format_bookmark_timestamp(bookmark.modified_epoch_seconds),
+                            false,
+                        ))
                     })
-                })
-                .child(
-                    div()
-                        .w_2_5()
-                        .overflow_hidden()
-                        .child(bookmark_label(&bookmark.target, bookmark.name.clone())),
-                )
-                .child(div().w_1_5().child(""))
-                .child(div().flex_1().overflow_hidden().child(location))
-                .when_some(edit_cb, move |element, cb| {
-                    element.on_click(move |event, window, cx| {
-                        if event.click_count() == 2 {
-                            cb(&edit, window, cx);
-                        }
+                    .when_some(edit_cb, move |element, cb| {
+                        element.on_click(move |event, window, cx| {
+                            if event.click_count() == 2 {
+                                cb(&edit, window, cx);
+                            }
+                        })
                     })
-                })
-        })
-        .collect::<Vec<_>>();
+                    .into_any_element()
+            })
+            .collect::<Vec<_>>(),
+    };
     let back_cb = ui_callback.clone();
     let forward_cb = ui_callback.clone();
     let manage_cb = ui_callback.clone();
     let view_cb = ui_callback.clone();
     let can_back = ui.history_index > 0;
     let can_forward = ui.history_index + 1 < ui.history.len();
-    let import = ExplorerAction::ImportBookmarksFromClipboard;
-    let import_cb = callback.clone();
-    let backup = ExplorerAction::BackupBookmarksToClipboard;
-    let backup_cb = callback.clone();
     let transfer_cb = ui_callback.clone();
     let manage_add_cb = callback.clone();
     let manage_parent_id = ui.selected_folder;
-    let manage_edit_cb = callback.clone();
-    let manage_remove_cb = callback.clone();
-    let view_name_cb = ui_callback.clone();
-    let view_location_cb = ui_callback.clone();
-    let view_density_cb = ui_callback.clone();
+    let manage_new_bookmark_cb = callback.clone();
+    let manage_separator_cb = callback.clone();
+    let manage_undo_cb = callback.clone();
+    let manage_redo_cb = callback.clone();
+    let manage_cut_cb = ui_callback.clone();
+    let manage_copy_cb = ui_callback.clone();
+    let manage_paste_cb = ui_callback.clone();
+    let manage_delete_cb = callback.clone();
+    let manage_select_all_cb = ui_callback.clone();
+    let manage_close_cb = callback.clone();
+    let can_undo = state.can_undo_bookmarks();
+    let can_redo = state.can_redo_bookmarks();
+    let has_selection = ui.selected_bookmark.is_some() || ui.selected_folder.is_some();
+    let _view_density_cb = ui_callback.clone();
+    let view_columns_cb = ui_callback.clone();
+    let view_sort_cb = ui_callback.clone();
+    let sort_none_cb = ui_callback.clone();
+    let sort_name_cb = ui_callback.clone();
+    let sort_tags_cb = ui_callback.clone();
+    let sort_url_cb = ui_callback.clone();
+    let sort_visited_cb = ui_callback.clone();
+    let sort_count_cb = ui_callback.clone();
+    let sort_added_cb = ui_callback.clone();
+    let sort_modified_cb = ui_callback.clone();
+    let sort_az_cb = ui_callback.clone();
+    let sort_za_cb = ui_callback.clone();
+    let column_name_toggle_cb = ui_callback.clone();
+    let column_tags_toggle_cb = ui_callback.clone();
+    let column_url_toggle_cb = ui_callback.clone();
+    let column_visited_toggle_cb = ui_callback.clone();
+    let column_count_toggle_cb = ui_callback.clone();
+    let column_added_toggle_cb = ui_callback.clone();
+    let column_modified_toggle_cb = ui_callback.clone();
+    let column_visited_header_cb = ui_callback.clone();
+    let column_count_header_cb = ui_callback.clone();
+    let column_added_header_cb = ui_callback.clone();
+    let column_modified_header_cb = ui_callback.clone();
+    let restore_submenu_cb = ui_callback.clone();
+    let export_html_cb = callback.clone();
+    let import_html_cb = callback.clone();
+    let import_browsers_cb = callback.clone();
+    let backup_disk_cb = callback.clone();
+    let restore_choose_cb = callback.clone();
     let all_bookmarks_cb = ui_callback.clone();
-    let root_bookmarks_cb = ui_callback.clone();
+    let history_nav_cb = ui_callback.clone();
+    let history_toggle_cb = ui_callback.clone();
+    let run_log_nav_cb = ui_callback.clone();
     let toolbar_bookmarks_cb = ui_callback.clone();
-    let menu_bookmarks_cb = ui_callback.clone();
     let column_name_cb = ui_callback.clone();
     let column_tags_cb = ui_callback.clone();
     let column_location_cb = ui_callback.clone();
@@ -1737,46 +1880,39 @@ pub(crate) fn bookmark_manager(
                         .child("›")
                         .when_some(forward_cb, |button, cb| button.on_click(move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Forward, window, cx))),
                 )
-                .child(
-                    div()
-                        .id("bookmark-manager-manage-menu")
-                        .role(Role::Button)
-                        .cursor_pointer()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .px(px(6.0))
-                        .py(px(5.0))
-                        .rounded(px(4.0))
-                        .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
-                        .child("⚙")
-                        .child(catalog.t("menu-manage-with-accelerator"))
-                        .when_some(manage_cb, move |e, cb| {
-                            e.on_click(move |_, w, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::ToggleMenu(crate::bookmark_manager_window::BookmarkManagerMenu::Manage), w, cx))
-                        }),
-                )
-                .child(
-                    div()
-                        .id("bookmark-manager-view-toggle")
-                        .role(Role::Button)
-                        .aria_label(catalog.t("chrome-toggle-compact-bookmarks"))
-                        .cursor_pointer()
-                        .child(catalog.t("menu-view-with-accelerator"))
-                        .when_some(view_cb, move |e, cb| {
-                            e.on_click(move |_, w, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::ToggleMenu(crate::bookmark_manager_window::BookmarkManagerMenu::View), w, cx))
-                        }),
-                )
-                .child(
-                    div()
-                        .id("bookmark-manager-transfer-menu")
-                        .role(Role::Button)
-                        .aria_label(catalog.t("chrome-import-backup-bookmarks"))
-                        .cursor_pointer()
-                        .child(catalog.t("menu-import-backup-with-accelerator"))
-                        .when_some(transfer_cb, move |e, cb| {
-                            e.on_click(move |_, w, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::ToggleMenu(crate::bookmark_manager_window::BookmarkManagerMenu::Transfer), w, cx))
-                        }),
-                )
+                .child(bookmark_manager_toolbar_menu_button(
+                    "bookmark-manager-manage-menu",
+                    ExplorerIcon::Details,
+                    catalog.t("menu-manage-with-accelerator"),
+                    ui.open_menu == Some(crate::bookmark_manager_window::BookmarkManagerMenu::Manage),
+                    tokens,
+                    crate::bookmark_manager_window::BookmarkManagerUiAction::ToggleMenu(
+                        crate::bookmark_manager_window::BookmarkManagerMenu::Manage,
+                    ),
+                    manage_cb,
+                ))
+                .child(bookmark_manager_toolbar_menu_button(
+                    "bookmark-manager-view-toggle",
+                    ExplorerIcon::View,
+                    catalog.t("menu-view-with-accelerator"),
+                    ui.open_menu == Some(crate::bookmark_manager_window::BookmarkManagerMenu::View),
+                    tokens,
+                    crate::bookmark_manager_window::BookmarkManagerUiAction::ToggleMenu(
+                        crate::bookmark_manager_window::BookmarkManagerMenu::View,
+                    ),
+                    view_cb,
+                ))
+                .child(bookmark_manager_toolbar_menu_button(
+                    "bookmark-manager-transfer-menu",
+                    ExplorerIcon::Sort,
+                    catalog.t("menu-import-backup-with-accelerator"),
+                    ui.open_menu == Some(crate::bookmark_manager_window::BookmarkManagerMenu::Transfer),
+                    tokens,
+                    crate::bookmark_manager_window::BookmarkManagerUiAction::ToggleMenu(
+                        crate::bookmark_manager_window::BookmarkManagerMenu::Transfer,
+                    ),
+                    transfer_cb,
+                ))
                 .child(div().flex_1())
                 .child(
                     div()
@@ -1794,19 +1930,23 @@ pub(crate) fn bookmark_manager(
                         .child("⌕")
                         .when_some(search_input, |search, input| {
                             search.child(
-                                text_input("bookmark-manager-search-input")
-                                    .state(input)
-                                    .multiline(false)
-                                    .placeholder(catalog.t("search-bookmarks"))
-                                    .caret_blink_interval_500ms()
-                                    .flex_1()
-                                    .h_full()
-                                    .px(px(2.0))
-                                    .text_size(px(14.0))
-                                    .text_color(input_text)
-                                    .selection_color(input_selection.into())
-                                    .selection_text_color(input_selection_text.into())
-                                    .caret_color(input_caret.into()),
+                                center_single_line_text_input(
+                                    text_input("bookmark-manager-search-input")
+                                        .state(input)
+                                        .multiline(false)
+                                        .placeholder(catalog.t("search-bookmarks"))
+                                        .caret_blink_interval_500ms()
+                                        .flex_1()
+                                        .px(px(2.0)),
+                                    34.0,
+                                    1.0,
+                                    14.0,
+                                    tokens.typography.address.line_height.value(),
+                                )
+                                .text_color(input_text)
+                                .selection_color(input_selection.into())
+                                .selection_text_color(input_selection_text.into())
+                                .caret_color(input_caret.into()),
                             )
                         }),
                 ),
@@ -1841,67 +1981,26 @@ pub(crate) fn bookmark_manager(
         .when(
             ui.open_menu == Some(crate::bookmark_manager_window::BookmarkManagerMenu::Manage),
             |element| {
+                let delete_action = ui.selected_bookmark.map(|id| ExplorerAction::RequestRemoveBookmark { id })
+                    .or_else(|| ui.selected_folder.map(|id| ExplorerAction::RemoveBookmarkFolder { id }));
                 element.child(
                     deferred(
-                        div()
-                            .id("bookmark-manager-manage-popup")
-                            .absolute()
-                            .top(px(48.0))
-                            .left(px(70.0))
-                            .w(px(230.0))
-                            .p(px(6.0))
-                            .rounded(px(6.0))
-                            .border(px(1.0))
-                            .border_color(tokens.theme.colors.divider.to_gpui())
-                            .bg(tokens.theme.colors.menu_fill.to_gpui())
-                            .child(
-                                div()
-                                    .id("bookmark-manager-command-add-folder")
-                                    .role(Role::MenuItem)
-                                    .cursor_pointer()
-                                    .px(px(10.0))
-                                    .py(px(6.0))
-                                    .child(catalog.t("menu-new-folder"))
-                                    .when_some(manage_add_cb, |row, cb| {
-                                        row.on_click(move |_, window, cx| {
-                                            cb(&ExplorerAction::AddBookmarkFolder { parent_id: manage_parent_id }, window, cx)
-                                        })
-                                    }),
-                            )
-                            .when_some(ui.selected_bookmark, |menu, id| {
-                                let edit = ExplorerAction::EditBookmark { id };
-                                let remove = ExplorerAction::RequestRemoveBookmark { id };
-                                menu.child(
-                                    div()
-                                        .id("bookmark-manager-command-edit")
-                                        .role(Role::MenuItem)
-                                        .cursor_pointer()
-                                        .px(px(10.0))
-                                        .py(px(6.0))
-                                        .child(catalog.t("menu-edit-bookmark"))
-                                        .when_some(manage_edit_cb.clone(), |row, cb| row.on_click(move |_, window, cx| cb(&edit, window, cx))),
-                                )
-                                .child(
-                                    div()
-                                        .id("bookmark-manager-command-remove")
-                                        .role(Role::MenuItem)
-                                        .cursor_pointer()
-                                        .px(px(10.0))
-                                        .py(px(6.0))
-                                        .text_color(tokens.theme.colors.danger.to_gpui())
-                                        .child(catalog.t("menu-delete-bookmark"))
-                                        .when_some(manage_remove_cb.clone(), |row, cb| row.on_click(move |_, window, cx| cb(&remove, window, cx))),
-                                )
-                            })
-                            .when_some(ui.selected_folder, |menu, id| {
-                                let edit = ExplorerAction::EditBookmarkFolder { id };
-                                let remove = ExplorerAction::RemoveBookmarkFolder { id };
-                                menu.child(
-                                    div().id("bookmark-manager-command-edit-folder").role(Role::MenuItem).cursor_pointer().px(px(10.0)).py(px(6.0)).child(catalog.t("menu-rename-folder")).when_some(manage_edit_cb.clone(), |row, cb| row.on_click(move |_, window, cx| cb(&edit, window, cx))),
-                                ).child(
-                                    div().id("bookmark-manager-command-remove-folder").role(Role::MenuItem).cursor_pointer().px(px(10.0)).py(px(6.0)).text_color(tokens.theme.colors.danger.to_gpui()).child(catalog.t("menu-delete-folder")).when_some(manage_remove_cb.clone(), |row, cb| row.on_click(move |_, window, cx| cb(&remove, window, cx))),
-                                )
-                            }),
+                        bookmark_manager_popup("bookmark-manager-manage-popup", 48.0, 70.0, 280.0, tokens)
+                            .child(bookmark_manager_command_row("bookmark-manager-command-add", catalog.t("menu-new-bookmark-ellipsis"), None, true, ExplorerAction::AddPathBookmark { parent_id: manage_parent_id, kind: BookmarkPathKind::Folder }, manage_new_bookmark_cb))
+                            .child(bookmark_manager_command_row("bookmark-manager-command-add-folder", catalog.t("menu-new-folder-ellipsis"), None, true, ExplorerAction::AddBookmarkFolder { parent_id: manage_parent_id }, manage_add_cb))
+                            .child(bookmark_manager_command_row("bookmark-manager-command-add-separator", catalog.t("menu-new-separator"), None, true, ExplorerAction::AddBookmarkSeparator { parent_id: manage_parent_id }, manage_separator_cb))
+                            .child(bookmark_manager_menu_divider())
+                            .child(bookmark_manager_command_row("bookmark-manager-command-undo", catalog.t("menu-undo"), Some(catalog.t("menu-shortcut-ctrl-z")), can_undo, ExplorerAction::UndoBookmarkChange, manage_undo_cb))
+                            .child(bookmark_manager_command_row("bookmark-manager-command-redo", catalog.t("menu-redo"), Some(catalog.t("menu-shortcut-ctrl-y")), can_redo, ExplorerAction::RedoBookmarkChange, manage_redo_cb))
+                            .child(bookmark_manager_menu_divider())
+                            .child(bookmark_manager_ui_command_row("bookmark-manager-command-cut", catalog.t("menu-cut"), Some(catalog.t("menu-shortcut-ctrl-x")), has_selection, crate::bookmark_manager_window::BookmarkManagerUiAction::CutSelection, manage_cut_cb))
+                            .child(bookmark_manager_ui_command_row("bookmark-manager-command-copy", catalog.t("menu-copy"), Some(catalog.t("menu-shortcut-ctrl-c")), has_selection, crate::bookmark_manager_window::BookmarkManagerUiAction::CopySelection, manage_copy_cb))
+                            .child(bookmark_manager_ui_command_row("bookmark-manager-command-paste", catalog.t("menu-paste"), Some(catalog.t("menu-shortcut-ctrl-v")), true, crate::bookmark_manager_window::BookmarkManagerUiAction::PasteSelection, manage_paste_cb))
+                            .child(bookmark_manager_command_row("bookmark-manager-command-remove", catalog.t("menu-delete"), Some(catalog.t("menu-shortcut-del")), delete_action.is_some(), delete_action.unwrap_or(ExplorerAction::CloseWindow), manage_delete_cb))
+                            .child(bookmark_manager_menu_divider())
+                            .child(bookmark_manager_ui_command_row("bookmark-manager-command-select-all", catalog.t("menu-select-all"), Some(catalog.t("menu-shortcut-ctrl-a")), true, crate::bookmark_manager_window::BookmarkManagerUiAction::SelectAll, manage_select_all_cb))
+                            .child(bookmark_manager_menu_divider())
+                            .child(bookmark_manager_command_row("bookmark-manager-command-close", catalog.t("menu-close"), Some(catalog.t("menu-shortcut-ctrl-w")), true, ExplorerAction::ToggleBookmarkManager, manage_close_cb)),
                     )
                     .with_priority(220),
                 )
@@ -1912,22 +2011,67 @@ pub(crate) fn bookmark_manager(
             |element| {
                 element.child(
                     deferred(
-                        div()
-                            .id("bookmark-manager-view-popup")
-                            .absolute()
-                            .top(px(48.0))
-                            .left(px(190.0))
-                            .w(px(210.0))
-                            .p(px(6.0))
-                            .rounded(px(6.0))
-                            .border(px(1.0))
-                            .border_color(tokens.theme.colors.divider.to_gpui())
-                            .bg(tokens.theme.colors.menu_fill.to_gpui())
-                            .child(bookmark_manager_ui_menu_row("bookmark-manager-sort-name", catalog.t("menu-sort-by-name"), crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::Name), view_name_cb))
-                            .child(bookmark_manager_ui_menu_row("bookmark-manager-sort-location", catalog.t("menu-sort-by-url"), crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::Location), view_location_cb))
-                            .child(bookmark_manager_ui_menu_row("bookmark-manager-toggle-density", catalog.t("menu-toggle-compact-view"), crate::bookmark_manager_window::BookmarkManagerUiAction::ToggleDensity, view_density_cb)),
+                        bookmark_manager_popup("bookmark-manager-view-popup", 48.0, 190.0, 200.0, tokens)
+                            .child(bookmark_manager_submenu_row(
+                                "bookmark-manager-show-columns",
+                                catalog.t("menu-show-columns"),
+                                ui.submenu == Some(crate::bookmark_manager_window::BookmarkManagerSubmenu::Columns),
+                                crate::bookmark_manager_window::BookmarkManagerUiAction::OpenSubmenu(crate::bookmark_manager_window::BookmarkManagerSubmenu::Columns),
+                                view_columns_cb,
+                            ))
+                            .child(bookmark_manager_submenu_row(
+                                "bookmark-manager-sort-menu",
+                                catalog.t("menu-sort-with-accelerator"),
+                                ui.submenu == Some(crate::bookmark_manager_window::BookmarkManagerSubmenu::Sort),
+                                crate::bookmark_manager_window::BookmarkManagerUiAction::OpenSubmenu(crate::bookmark_manager_window::BookmarkManagerSubmenu::Sort),
+                                view_sort_cb,
+                            )),
                     )
                     .with_priority(220),
+                )
+            },
+        )
+        .when(
+            ui.open_menu == Some(crate::bookmark_manager_window::BookmarkManagerMenu::View)
+                && ui.submenu == Some(crate::bookmark_manager_window::BookmarkManagerSubmenu::Columns),
+            |element| {
+                element.child(
+                    deferred(
+                        bookmark_manager_popup("bookmark-manager-columns-popup", 48.0, 392.0, 200.0, tokens)
+                            .child(bookmark_manager_checked_row("bookmark-manager-column-name", catalog.t("chrome-sort-name"), ui.columns.name, Some((crate::bookmark_manager_window::BookmarkManagerUiAction::ToggleColumnName, column_name_toggle_cb))))
+                            .child(bookmark_manager_checked_row("bookmark-manager-column-tags", catalog.t("chrome-sort-tags"), ui.columns.tags, Some((crate::bookmark_manager_window::BookmarkManagerUiAction::ToggleColumnTags, column_tags_toggle_cb))))
+                            .child(bookmark_manager_checked_row("bookmark-manager-column-url", catalog.t("chrome-sort-url"), ui.columns.location, Some((crate::bookmark_manager_window::BookmarkManagerUiAction::ToggleColumnLocation, column_url_toggle_cb))))
+                            .child(bookmark_manager_checked_row("bookmark-manager-column-visited", catalog.t("chrome-sort-last-visited"), ui.columns.last_visited, Some((crate::bookmark_manager_window::BookmarkManagerUiAction::ToggleColumnLastVisited, column_visited_toggle_cb))))
+                            .child(bookmark_manager_checked_row("bookmark-manager-column-count", catalog.t("chrome-sort-visit-count"), ui.columns.visit_count, Some((crate::bookmark_manager_window::BookmarkManagerUiAction::ToggleColumnVisitCount, column_count_toggle_cb))))
+                            .child(bookmark_manager_checked_row("bookmark-manager-column-added", catalog.t("chrome-sort-date-added"), ui.columns.date_added, Some((crate::bookmark_manager_window::BookmarkManagerUiAction::ToggleColumnDateAdded, column_added_toggle_cb))))
+                            .child(bookmark_manager_checked_row("bookmark-manager-column-modified", catalog.t("chrome-sort-date-modified"), ui.columns.date_modified, Some((crate::bookmark_manager_window::BookmarkManagerUiAction::ToggleColumnDateModified, column_modified_toggle_cb)))),
+                    )
+                    .with_priority(230),
+                )
+            },
+        )
+        .when(
+            ui.open_menu == Some(crate::bookmark_manager_window::BookmarkManagerMenu::View)
+                && ui.submenu == Some(crate::bookmark_manager_window::BookmarkManagerSubmenu::Sort),
+            |element| {
+                element.child(
+                    deferred(
+                        bookmark_manager_popup("bookmark-manager-sort-popup", 76.0, 392.0, 220.0, tokens)
+                            .max_h(px(420.0))
+                            .overflow_y_scroll()
+                            .child(bookmark_manager_checked_row("bookmark-manager-sort-none", catalog.t("menu-sort-none"), ui.sort_column == crate::bookmark_manager_window::BookmarkManagerSortColumn::None, Some((crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::None), sort_none_cb))))
+                            .child(bookmark_manager_checked_row("bookmark-manager-sort-name", catalog.t("chrome-sort-name"), ui.sort_column == crate::bookmark_manager_window::BookmarkManagerSortColumn::Name, Some((crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::Name), sort_name_cb))))
+                            .child(bookmark_manager_checked_row("bookmark-manager-sort-tags", catalog.t("chrome-sort-tags"), ui.sort_column == crate::bookmark_manager_window::BookmarkManagerSortColumn::Tags, Some((crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::Tags), sort_tags_cb))))
+                            .child(bookmark_manager_checked_row("bookmark-manager-sort-location", catalog.t("chrome-sort-url"), ui.sort_column == crate::bookmark_manager_window::BookmarkManagerSortColumn::Location, Some((crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::Location), sort_url_cb))))
+                            .child(bookmark_manager_checked_row("bookmark-manager-sort-visited", catalog.t("chrome-sort-last-visited"), ui.sort_column == crate::bookmark_manager_window::BookmarkManagerSortColumn::LastVisited, Some((crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::LastVisited), sort_visited_cb))))
+                            .child(bookmark_manager_checked_row("bookmark-manager-sort-count", catalog.t("chrome-sort-visit-count"), ui.sort_column == crate::bookmark_manager_window::BookmarkManagerSortColumn::VisitCount, Some((crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::VisitCount), sort_count_cb))))
+                            .child(bookmark_manager_checked_row("bookmark-manager-sort-added", catalog.t("chrome-sort-date-added"), ui.sort_column == crate::bookmark_manager_window::BookmarkManagerSortColumn::DateAdded, Some((crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::DateAdded), sort_added_cb))))
+                            .child(bookmark_manager_checked_row("bookmark-manager-sort-modified", catalog.t("chrome-sort-date-modified"), ui.sort_column == crate::bookmark_manager_window::BookmarkManagerSortColumn::DateModified, Some((crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::DateModified), sort_modified_cb))))
+                            .child(bookmark_manager_menu_divider())
+                            .child(bookmark_manager_checked_row("bookmark-manager-sort-az", catalog.t("menu-sort-az"), !ui.descending && ui.sort_column != crate::bookmark_manager_window::BookmarkManagerSortColumn::None, Some((crate::bookmark_manager_window::BookmarkManagerUiAction::SetSortDescending(false), sort_az_cb))))
+                            .child(bookmark_manager_checked_row("bookmark-manager-sort-za", catalog.t("menu-sort-za"), ui.descending, Some((crate::bookmark_manager_window::BookmarkManagerUiAction::SetSortDescending(true), sort_za_cb)))),
+                    )
+                    .with_priority(230),
                 )
             },
         )
@@ -1936,26 +2080,73 @@ pub(crate) fn bookmark_manager(
             |element| {
                 element.child(
                     deferred(
-                        div()
-                            .id("bookmark-manager-transfer-popup")
-                            .absolute()
-                            .top(px(48.0))
-                            .left(px(300.0))
-                            .w(px(260.0))
-                            .p(px(6.0))
-                            .rounded(px(6.0))
-                            .border(px(1.0))
-                            .border_color(tokens.theme.colors.divider.to_gpui())
-                            .bg(tokens.theme.colors.menu_fill.to_gpui())
-                            .child(
-                                div().id("bookmark-manager-import").role(Role::MenuItem).cursor_pointer().px(px(10.0)).py(px(6.0)).child(catalog.t("menu-import-from-clipboard")).when_some(import_cb, |row, cb| row.on_click(move |_, window, cx| cb(&import, window, cx))),
-                            )
-                            .child(
-                                div().id("bookmark-manager-backup").role(Role::MenuItem).cursor_pointer().px(px(10.0)).py(px(6.0)).child(catalog.t("menu-backup-to-clipboard")).when_some(backup_cb, |row, cb| row.on_click(move |_, window, cx| cb(&backup, window, cx))),
-                            ),
+                        bookmark_manager_popup("bookmark-manager-transfer-popup", 48.0, 300.0, 280.0, tokens)
+                            .child(bookmark_manager_command_row("bookmark-manager-backup", catalog.t("menu-backup-ellipsis"), None, true, ExplorerAction::BackupBookmarksToDisk, backup_disk_cb))
+                            .child(bookmark_manager_submenu_row(
+                                "bookmark-manager-restore",
+                                catalog.t("menu-restore"),
+                                ui.submenu == Some(crate::bookmark_manager_window::BookmarkManagerSubmenu::Restore),
+                                crate::bookmark_manager_window::BookmarkManagerUiAction::OpenSubmenu(crate::bookmark_manager_window::BookmarkManagerSubmenu::Restore),
+                                restore_submenu_cb,
+                            ))
+                            .child(bookmark_manager_menu_divider())
+                            .child(bookmark_manager_command_row("bookmark-manager-import-html", catalog.t("menu-import-html"), None, true, ExplorerAction::ImportBookmarksHtml, import_html_cb))
+                            .child(bookmark_manager_command_row("bookmark-manager-export-html", catalog.t("menu-export-html"), None, true, ExplorerAction::ExportBookmarksHtml, export_html_cb))
+                            .child(bookmark_manager_menu_divider())
+                            .child(bookmark_manager_command_row("bookmark-manager-import-browsers", catalog.t("menu-import-other-browsers"), None, true, ExplorerAction::ImportBookmarksFromBrowsers, import_browsers_cb)),
                     )
                     .with_priority(220),
                 )
+            },
+        )
+        .when(
+            ui.open_menu == Some(crate::bookmark_manager_window::BookmarkManagerMenu::Transfer)
+                && ui.submenu == Some(crate::bookmark_manager_window::BookmarkManagerSubmenu::Restore),
+            |element| {
+                let backups = list_bookmark_history_backups();
+                let mut restore_menu = bookmark_manager_popup(
+                    "bookmark-manager-restore-popup",
+                    72.0,
+                    582.0,
+                    320.0,
+                    tokens,
+                )
+                .max_h(px(360.0))
+                .overflow_y_scroll();
+                for (index, backup) in backups.into_iter().enumerate() {
+                    let restore = ExplorerAction::RestoreBookmarksBackup {
+                        path: backup.path.clone(),
+                    };
+                    let cb = callback.clone();
+                    restore_menu = restore_menu.child(
+                        div()
+                            .id(("bookmark-manager-restore-item", index))
+                            .role(Role::MenuItem)
+                            .aria_label(backup.label.clone())
+                            .cursor_pointer()
+                            .px(px(10.0))
+                            .py(px(6.0))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(backup.label)
+                            .when_some(cb, move |row, cb| {
+                                row.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                    cx.stop_propagation();
+                                    cb(&restore, window, cx)
+                                })
+                            }),
+                    );
+                }
+                restore_menu = restore_menu
+                    .child(bookmark_manager_menu_divider())
+                    .child(bookmark_manager_command_row(
+                        "bookmark-manager-choose-file",
+                        catalog.t("menu-choose-file"),
+                        None,
+                        true,
+                        ExplorerAction::ImportBookmarksFromClipboard,
+                        restore_choose_cb,
+                    ));
+                element.child(deferred(restore_menu).with_priority(230))
             },
         )
         .child(
@@ -1977,27 +2168,135 @@ pub(crate) fn bookmark_manager(
                         .bg(tokens.theme.colors.subtle_surface.to_gpui())
                         .child(
                             div()
-                                .id("bookmark-manager-all-bookmarks")
+                                .id("bookmark-manager-history")
                                 .role(Role::Button)
+                                .aria_label(catalog.t("menu-history"))
                                 .cursor_pointer()
                                 .h(px(32.0))
                                 .px(px(12.0))
                                 .flex()
                                 .items_center()
                                 .gap(px(8.0))
-                                .child(catalog.t("menu-history")),
+                                .when(
+                                    matches!(
+                                        ui.location,
+                                        crate::bookmark_manager_window::BookmarkManagerLocation::History
+                                            | crate::bookmark_manager_window::BookmarkManagerLocation::HistoryBucket(_)
+                                    ),
+                                    |row| row.bg(tokens.theme.colors.control_pressed.to_gpui()),
+                                )
+                                .child(
+                                    div()
+                                        .id("bookmark-manager-history-toggle")
+                                        .role(Role::Button)
+                                        .child(if ui.history_expanded { "⌄" } else { "▸" })
+                                        .when_some(history_toggle_cb, |arrow, cb| {
+                                            arrow.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                                cx.stop_propagation();
+                                                cb(
+                                                    &crate::bookmark_manager_window::BookmarkManagerUiAction::ToggleHistoryExpanded,
+                                                    window,
+                                                    cx,
+                                                )
+                                            })
+                                        }),
+                                )
+                                .child("◷")
+                                .child(catalog.t("history-library"))
+                                .when_some(history_nav_cb, |row, cb| {
+                                    row.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                        cb(
+                                            &crate::bookmark_manager_window::BookmarkManagerUiAction::Navigate(
+                                                crate::bookmark_manager_window::BookmarkManagerLocation::History,
+                                            ),
+                                            window,
+                                            cx,
+                                        )
+                                    })
+                                }),
                         )
+                        .children(ui.history_expanded.then(|| {
+                            let visits = state.recent_visits();
+                            crate::bookmark_manager_window::history_bucket_order(now_epoch)
+                                .into_iter()
+                                .filter(|bucket| {
+                                    visits.iter().any(|visit| {
+                                        crate::bookmark_manager_window::history_bucket_for(
+                                            visit.last_opened_epoch_seconds,
+                                            now_epoch,
+                                        ) == *bucket
+                                    })
+                                })
+                                .map(|bucket| {
+                                    let select_cb = ui_callback.clone();
+                                    let selected = matches!(
+                                        ui.location,
+                                        crate::bookmark_manager_window::BookmarkManagerLocation::HistoryBucket(selected)
+                                            if selected == bucket
+                                    );
+                                    let label = history_bucket_label(catalog, bucket);
+                                    div()
+                                        .id(format!("bookmark-manager-history-tree-{bucket:?}"))
+                                        .role(Role::Button)
+                                        .aria_label(label.clone())
+                                        .cursor_pointer()
+                                        .h(px(32.0))
+                                        .pl(px(38.0))
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.0))
+                                        .when(selected, |row| {
+                                            row.bg(tokens.theme.colors.control_pressed.to_gpui())
+                                        })
+                                        .child("◷")
+                                        .child(label)
+                                        .when_some(select_cb, move |row, cb| {
+                                            row.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                                cb(
+                                                    &crate::bookmark_manager_window::BookmarkManagerUiAction::Navigate(
+                                                        crate::bookmark_manager_window::BookmarkManagerLocation::HistoryBucket(
+                                                            bucket,
+                                                        ),
+                                                    ),
+                                                    window,
+                                                    cx,
+                                                )
+                                            })
+                                        })
+                                })
+                                .collect::<Vec<_>>()
+                        }).into_iter().flatten())
                         .child(
                             div()
-                                .id("bookmark-manager-toolbar-bookmarks")
+                                .id("bookmark-manager-run-log")
                                 .role(Role::Button)
+                                .aria_label(catalog.t("run-log-library"))
                                 .cursor_pointer()
                                 .h(px(32.0))
                                 .px(px(12.0))
                                 .flex()
                                 .items_center()
                                 .gap(px(8.0))
-                                .child(catalog.t("menu-downloads-items")),
+                                .when(
+                                    matches!(
+                                        ui.location,
+                                        crate::bookmark_manager_window::BookmarkManagerLocation::RunLog
+                                    ),
+                                    |row| row.bg(tokens.theme.colors.control_pressed.to_gpui()),
+                                )
+                                .child("⇩")
+                                .child(catalog.t("run-log-library"))
+                                .when_some(run_log_nav_cb, |row, cb| {
+                                    row.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                        cb(
+                                            &crate::bookmark_manager_window::BookmarkManagerUiAction::Navigate(
+                                                crate::bookmark_manager_window::BookmarkManagerLocation::RunLog,
+                                            ),
+                                            window,
+                                            cx,
+                                        )
+                                    })
+                                }),
                         )
                         .child(
                             div()
@@ -2010,12 +2309,15 @@ pub(crate) fn bookmark_manager(
                         )
                         .child(
                             div()
+                                .id("bookmark-manager-all-bookmarks")
+                                .role(Role::Button)
                                 .h(px(32.0))
                                 .px(px(12.0))
                                 .flex()
                                 .items_center()
                                 .gap(px(8.0))
                                 .font_weight(FontWeight::SEMIBOLD)
+                                .cursor_pointer()
                                 .when(matches!(ui.location, crate::bookmark_manager_window::BookmarkManagerLocation::AllBookmarks), |row| row.bg(tokens.theme.colors.control_pressed.to_gpui()))
                                 .child(catalog.t("menu-all-bookmarks"))
                                 .when_some(all_bookmarks_cb, |row, cb| row.on_mouse_down(MouseButton::Left, move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Navigate(crate::bookmark_manager_window::BookmarkManagerLocation::AllBookmarks), window, cx))),
@@ -2024,35 +2326,15 @@ pub(crate) fn bookmark_manager(
                             div()
                                 .id("bookmark-manager-root-bookmarks")
                                 .role(Role::Button)
+                                .aria_label(catalog.t("menu-bookmark-toolbar"))
                                 .cursor_pointer()
-                                .h(px(32.0))
-                                .pl(px(38.0))
-                                .flex()
-                                .items_center()
-                                .child(catalog.t("menu-bookmark-toolbar"))
-                                .when_some(toolbar_bookmarks_cb, |row, cb| row.on_mouse_down(MouseButton::Left, move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Navigate(crate::bookmark_manager_window::BookmarkManagerLocation::Root), window, cx))),
-                        )
-                        .child(
-                            div()
-                                .id("bookmark-manager-menu-bookmarks")
-                                .role(Role::Button)
-                                .cursor_pointer()
-                                .h(px(32.0))
-                                .pl(px(38.0))
-                                .flex()
-                                .items_center()
-                                .child(catalog.t("menu-bookmark-menu"))
-                                .when_some(menu_bookmarks_cb, |row, cb| row.on_mouse_down(MouseButton::Left, move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Navigate(crate::bookmark_manager_window::BookmarkManagerLocation::Root), window, cx))),
-                        )
-                        .child(
-                            div()
                                 .h(px(32.0))
                                 .pl(px(38.0))
                                 .flex()
                                 .items_center()
                                 .when(matches!(ui.location, crate::bookmark_manager_window::BookmarkManagerLocation::Root), |row| row.bg(tokens.theme.colors.control_pressed.to_gpui()))
-                                .child(catalog.t("menu-other-bookmarks"))
-                                .when_some(root_bookmarks_cb, |row, cb| row.on_mouse_down(MouseButton::Left, move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Navigate(crate::bookmark_manager_window::BookmarkManagerLocation::Root), window, cx))),
+                                .child(catalog.t("menu-bookmark-toolbar"))
+                                .when_some(toolbar_bookmarks_cb, |row, cb| row.on_mouse_down(MouseButton::Left, move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Navigate(crate::bookmark_manager_window::BookmarkManagerLocation::Root), window, cx))),
                         )
                         .children(folder_rows),
                 )
@@ -2066,39 +2348,56 @@ pub(crate) fn bookmark_manager(
                         .child(
                             div()
                                 .id("bookmark-manager-columns")
-                                .h(px(32.0))
+                                .when(
+                                    !matches!(
+                                        ui.location,
+                                        crate::bookmark_manager_window::BookmarkManagerLocation::RunLog
+                                    ),
+                                    |header| header.h(px(32.0)),
+                                )
                                 .flex_none()
                                 .flex()
                                 .items_center()
+                                .min_w(px(0.0))
+                                .overflow_hidden()
                                 .border_b(px(1.0))
                                 .border_color(tokens.theme.colors.divider.to_gpui())
-                                .child(div().w_2_5().px(px(8.0)).cursor_pointer().child(catalog.t("chrome-sort-name")).when_some(column_name_cb, |header, cb| header.on_mouse_down(MouseButton::Left, move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::Name), window, cx))))
-                                .child(
-                                    div()
-                                        .w_1_5()
-                                        .px(px(8.0))
-                                        .border_l(px(1.0))
-                                        .border_color(tokens.theme.colors.divider.to_gpui())
-                                        .cursor_pointer()
-                                        .child(catalog.t("chrome-sort-tags"))
-                                        .when_some(column_tags_cb, |header, cb| header.on_mouse_down(MouseButton::Left, move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::Tags), window, cx))),
+                                .when(
+                                    matches!(
+                                        ui.location,
+                                        crate::bookmark_manager_window::BookmarkManagerLocation::RunLog
+                                    ),
+                                    |header| header.h(px(0.0)).border_b(px(0.0)),
                                 )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .px(px(8.0))
-                                        .border_l(px(1.0))
-                                        .border_color(tokens.theme.colors.divider.to_gpui())
-                                        .cursor_pointer()
-                                        .child(catalog.t("chrome-sort-url"))
-                                        .when_some(column_location_cb, |header, cb| header.on_mouse_down(MouseButton::Left, move |_, window, cx| cb(&crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(crate::bookmark_manager_window::BookmarkManagerSortColumn::Location), window, cx))),
-                                ),
+                                .when(ui.columns.name, |header| {
+                                    header.child(bookmark_manager_column_header(catalog.t("chrome-sort-name"), Some(220.0), true, crate::bookmark_manager_window::BookmarkManagerSortColumn::Name, column_name_cb, tokens))
+                                })
+                                .when(ui.columns.tags, |header| {
+                                    header.child(bookmark_manager_column_header(catalog.t("chrome-sort-tags"), Some(128.0), !ui.columns.name, crate::bookmark_manager_window::BookmarkManagerSortColumn::Tags, column_tags_cb, tokens))
+                                })
+                                .when(ui.columns.location, |header| {
+                                    header.child(bookmark_manager_column_header(catalog.t("chrome-sort-url"), None, false, crate::bookmark_manager_window::BookmarkManagerSortColumn::Location, column_location_cb, tokens))
+                                })
+                                .when(ui.columns.last_visited, |header| {
+                                    header.child(bookmark_manager_column_header(catalog.t("chrome-sort-last-visited"), Some(128.0), false, crate::bookmark_manager_window::BookmarkManagerSortColumn::LastVisited, column_visited_header_cb, tokens))
+                                })
+                                .when(ui.columns.visit_count, |header| {
+                                    header.child(bookmark_manager_column_header(catalog.t("chrome-sort-visit-count"), Some(128.0), false, crate::bookmark_manager_window::BookmarkManagerSortColumn::VisitCount, column_count_header_cb, tokens))
+                                })
+                                .when(ui.columns.date_added, |header| {
+                                    header.child(bookmark_manager_column_header(catalog.t("chrome-sort-date"), Some(128.0), false, crate::bookmark_manager_window::BookmarkManagerSortColumn::DateAdded, column_added_header_cb, tokens))
+                                })
+                                .when(ui.columns.date_modified, |header| {
+                                    header.child(bookmark_manager_column_header(catalog.t("chrome-sort-date-modified"), Some(128.0), false, crate::bookmark_manager_window::BookmarkManagerSortColumn::DateModified, column_modified_header_cb, tokens))
+                                }),
                         )
                         .child(
                             div()
                                 .id("bookmark-manager-list")
                                 .flex_1()
+                                .min_w(px(0.0))
                                 .min_h_0()
+                                .overflow_x_hidden()
                                 .overflow_y_scroll()
                                 .children(rows),
                         ),
@@ -2107,75 +2406,793 @@ pub(crate) fn bookmark_manager(
         .child(
             div()
                 .id("bookmark-manager-details")
-                .h(px(96.0))
+                .h(px(72.0))
                 .flex_none()
                 .flex()
                 .flex_col()
                 .justify_center()
-                .gap(px(10.0))
-                .px(px(10.0))
+                .gap(px(6.0))
+                .px(px(12.0))
                 .border_t(px(1.0))
                 .border_color(tokens.theme.colors.divider.to_gpui())
                 .bg(tokens.theme.colors.subtle_surface.to_gpui())
                 .child(
-                    div().w_full().flex().items_center().gap(px(10.0)).child(catalog.t("dialog-name-accelerator")).when_some(detail_input, |row, input| {
+                    div().w_full().h(px(28.0)).flex().items_center().gap(px(8.0)).child(
+                        div().w(px(72.0)).flex_none().text_size(px(12.0)).child(catalog.t("dialog-name-accelerator"))
+                    ).when_some(detail_input, |row, input| {
                     row.child(
-                        text_input("bookmark-manager-detail-name-input")
-                            .state(input)
-                            .multiline(false)
-                            .caret_blink_interval_500ms()
-                            .flex_1()
-                            .h(px(34.0))
-                            .px(px(10.0))
-                            .rounded(px(15.0))
-                            .border(px(1.0))
-                            .border_color(tokens.theme.colors.divider.to_gpui())
-                            .bg(tokens.theme.colors.surface.to_gpui())
-                            .text_color(input_text)
-                            .selection_color(input_selection.into())
-                            .selection_text_color(input_selection_text.into())
-                            .caret_color(input_caret.into()),
+                        center_single_line_text_input(
+                            text_input("bookmark-manager-detail-name-input")
+                                .state(input)
+                                .multiline(false)
+                                .caret_blink_interval_500ms()
+                                .flex_1()
+                                .px(px(10.0)),
+                            28.0,
+                            1.0,
+                            13.0,
+                            18.0,
+                        )
+                        .rounded(px(14.0))
+                        .border(px(1.0))
+                        .border_color(tokens.theme.colors.divider.to_gpui())
+                        .bg(tokens.theme.colors.surface.to_gpui())
+                        .text_color(input_text)
+                        .selection_color(input_selection.into())
+                        .selection_text_color(input_selection_text.into())
+                        .caret_color(input_caret.into()),
                     )
                 }))
                 .child(
-                    div().w_full().flex().items_center().gap(px(10.0)).child(catalog.t("dialog-url-accelerator")).when_some(detail_location_input, |row, input| {
+                    div().w_full().h(px(28.0)).flex().items_center().gap(px(8.0)).child(
+                        div().w(px(72.0)).flex_none().text_size(px(12.0)).child(catalog.t("dialog-url-accelerator"))
+                    ).when_some(detail_location_input, |row, input| {
                     row.child(
-                        text_input("bookmark-manager-detail-location-input")
-                            .state(input)
-                            .multiline(false)
-                            .caret_blink_interval_500ms()
-                            .flex_1()
-                            .h(px(34.0))
-                            .px(px(10.0))
-                            .rounded(px(15.0))
-                            .border(px(1.0))
-                            .border_color(tokens.theme.colors.divider.to_gpui())
-                            .bg(tokens.theme.colors.surface.to_gpui())
-                            .text_color(input_text)
-                            .selection_color(input_selection.into())
-                            .selection_text_color(input_selection_text.into())
-                            .caret_color(input_caret.into()),
+                        center_single_line_text_input(
+                            text_input("bookmark-manager-detail-location-input")
+                                .state(input)
+                                .multiline(false)
+                                .caret_blink_interval_500ms()
+                                .flex_1()
+                                .px(px(10.0)),
+                            28.0,
+                            1.0,
+                            13.0,
+                            18.0,
+                        )
+                        .rounded(px(14.0))
+                        .border(px(1.0))
+                        .border_color(tokens.theme.colors.divider.to_gpui())
+                        .bg(tokens.theme.colors.surface.to_gpui())
+                        .text_color(input_text)
+                        .selection_color(input_selection.into())
+                        .selection_text_color(input_selection_text.into())
+                        .caret_color(input_caret.into()),
                     )
                 })),
         )
 }
 
-fn bookmark_manager_ui_menu_row(
+fn bookmark_manager_popup(
+    id: &'static str,
+    top: f32,
+    left: f32,
+    width: f32,
+    tokens: UiTokens,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .role(Role::Menu)
+        .absolute()
+        .top(px(top))
+        .left(px(left))
+        .w(px(width))
+        .p(px(4.0))
+        .rounded(px(6.0))
+        .border(px(1.0))
+        .border_color(tokens.theme.colors.divider.to_gpui())
+        .bg(tokens.theme.colors.menu_fill.to_gpui())
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+}
+
+fn bookmark_manager_toolbar_menu_button(
+    id: &'static str,
+    icon: ExplorerIcon,
+    label: String,
+    open: bool,
+    tokens: UiTokens,
+    action: crate::bookmark_manager_window::BookmarkManagerUiAction,
+    callback: Option<crate::bookmark_manager_window::BookmarkManagerUiCallback>,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .role(Role::Button)
+        .aria_label(label.clone())
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .h(px(32.0))
+        .px(px(8.0))
+        .py(px(5.0))
+        .rounded(px(4.0))
+        .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
+        .when(open, |button| {
+            button.bg(tokens.theme.colors.control_hover.to_gpui())
+        })
+        .child(chrome_icon(format!("{id}-icon"), icon, tokens))
+        .child(label)
+        .when_some(callback, move |button, cb| {
+            button.on_click(move |_, window, cx| cb(&action, window, cx))
+        })
+}
+
+fn history_bucket_label(
+    catalog: Catalog,
+    bucket: crate::bookmark_manager_window::HistoryBucket,
+) -> String {
+    match bucket {
+        crate::bookmark_manager_window::HistoryBucket::Today => catalog.t("history-today"),
+        crate::bookmark_manager_window::HistoryBucket::Yesterday => catalog.t("history-yesterday"),
+        crate::bookmark_manager_window::HistoryBucket::Last7Days => {
+            catalog.t("history-last-7-days")
+        }
+        crate::bookmark_manager_window::HistoryBucket::ThisMonth => catalog.t("history-this-month"),
+        crate::bookmark_manager_window::HistoryBucket::Month { month, .. } => {
+            t_named(catalog, "history-month", "month", month.to_string())
+        }
+        crate::bookmark_manager_window::HistoryBucket::Older => catalog.t("history-older"),
+    }
+}
+
+fn bookmark_manager_history_bucket_rows(
+    tokens: UiTokens,
+    catalog: Catalog,
+    visits: &[explorer_model::RecentNamespaceItem],
+    search_query: &str,
+    now_epoch: u64,
+    ui: &crate::bookmark_manager_window::BookmarkManagerUiState,
+    ui_callback: Option<crate::bookmark_manager_window::BookmarkManagerUiCallback>,
+) -> Vec<gpui::AnyElement> {
+    crate::bookmark_manager_window::history_bucket_order(now_epoch)
+        .into_iter()
+        .filter(|bucket| {
+            visits.iter().any(|visit| {
+                crate::bookmark_manager_window::history_bucket_for(
+                    visit.last_opened_epoch_seconds,
+                    now_epoch,
+                ) == *bucket
+                    && (search_query.is_empty()
+                        || visit
+                            .identity
+                            .display_name
+                            .to_lowercase()
+                            .contains(search_query)
+                        || visit
+                            .identity
+                            .descriptor
+                            .editable_text()
+                            .to_lowercase()
+                            .contains(search_query))
+            })
+        })
+        .map(|bucket| {
+            let select_cb = ui_callback.clone();
+            let selected = matches!(
+                ui.location,
+                crate::bookmark_manager_window::BookmarkManagerLocation::HistoryBucket(selected)
+                    if selected == bucket
+            );
+            let label = history_bucket_label(catalog, bucket);
+            div()
+                .id(format!("bookmark-history-bucket-{bucket:?}"))
+                .role(Role::ListItem)
+                .aria_label(label.clone())
+                .flex()
+                .items_center()
+                .h(px(32.0))
+                .px(px(8.0))
+                .gap(px(8.0))
+                .cursor_pointer()
+                .when(selected, |row| {
+                    row.bg(tokens.theme.colors.file_row_selected_active.to_gpui())
+                })
+                .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
+                .child("◷")
+                .child(
+                    div()
+                        .min_w(px(0.0))
+                        .flex_1()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(label),
+                )
+                .when_some(select_cb, move |row, cb| {
+                    row.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                        cb(
+                            &crate::bookmark_manager_window::BookmarkManagerUiAction::Navigate(
+                                crate::bookmark_manager_window::BookmarkManagerLocation::HistoryBucket(
+                                    bucket,
+                                ),
+                            ),
+                            window,
+                            cx,
+                        )
+                    })
+                })
+                .into_any_element()
+        })
+        .collect()
+}
+
+fn bookmark_manager_history_visit_rows(
+    tokens: UiTokens,
+    visits: &[explorer_model::RecentNamespaceItem],
+    search_query: &str,
+    now_epoch: u64,
+    bucket: crate::bookmark_manager_window::HistoryBucket,
+    ui: &crate::bookmark_manager_window::BookmarkManagerUiState,
+    ui_callback: Option<crate::bookmark_manager_window::BookmarkManagerUiCallback>,
+    callback: Option<ActionCallback>,
+) -> Vec<gpui::AnyElement> {
+    visits
+        .iter()
+        .enumerate()
+        .filter(|(_, visit)| {
+            crate::bookmark_manager_window::history_bucket_for(
+                visit.last_opened_epoch_seconds,
+                now_epoch,
+            ) == bucket
+                && (search_query.is_empty()
+                    || visit
+                        .identity
+                        .display_name
+                        .to_lowercase()
+                        .contains(search_query)
+                    || visit
+                        .identity
+                        .descriptor
+                        .editable_text()
+                        .to_lowercase()
+                        .contains(search_query))
+        })
+        .map(|(index, visit)| {
+            let select_cb = ui_callback.clone();
+            let open_cb = callback.clone();
+            let location = visit.identity.descriptor.clone();
+            let selected = ui.selected_history == Some(index);
+            div()
+                .id(("bookmark-history-visit", index as u64))
+                .role(Role::ListItem)
+                .aria_label(visit.identity.display_name.clone())
+                .flex()
+                .items_center()
+                .h(px(32.0))
+                .min_w(px(0.0))
+                .overflow_hidden()
+                .px(px(8.0))
+                .cursor_pointer()
+                .when(selected, |row| {
+                    row.bg(tokens.theme.colors.file_row_selected_active.to_gpui())
+                })
+                .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
+                .child(bookmark_manager_list_column(
+                    visit.identity.display_name.clone(),
+                    false,
+                ))
+                .when(ui.columns.location, |row| {
+                    row.child(bookmark_manager_list_column(
+                        visit.identity.descriptor.editable_text(),
+                        true,
+                    ))
+                })
+                .when(ui.columns.date_added, |row| {
+                    row.child(bookmark_manager_list_column(
+                        format_bookmark_timestamp(visit.last_opened_epoch_seconds),
+                        false,
+                    ))
+                })
+                .when_some(select_cb, move |row, cb| {
+                    row.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                        cb(
+                            &crate::bookmark_manager_window::BookmarkManagerUiAction::SelectHistory(
+                                index,
+                            ),
+                            window,
+                            cx,
+                        )
+                    })
+                })
+                .when_some(open_cb, move |row, cb| {
+                    row.on_click(move |event, window, cx| {
+                        if event.click_count() == 2 {
+                            cb(
+                                &ExplorerAction::ActivateNavigationItem {
+                                    location: location.clone(),
+                                },
+                                window,
+                                cx,
+                            );
+                        }
+                    })
+                })
+                .into_any_element()
+        })
+        .collect()
+}
+
+fn bookmark_manager_run_log_rows(
+    tokens: UiTokens,
+    catalog: Catalog,
+    records: &[RunRecord],
+    search_query: &str,
+    ui: &crate::bookmark_manager_window::BookmarkManagerUiState,
+    ui_callback: Option<crate::bookmark_manager_window::BookmarkManagerUiCallback>,
+    callback: Option<ActionCallback>,
+) -> Vec<gpui::AnyElement> {
+    records
+        .iter()
+        .enumerate()
+        .filter(|(_, record)| {
+            search_query.is_empty()
+                || record.display_name.to_lowercase().contains(search_query)
+                || record
+                    .location
+                    .editable_text()
+                    .to_lowercase()
+                    .contains(search_query)
+        })
+        .map(|(index, record)| {
+            let select_cb = ui_callback.clone();
+            let open_cb = callback.clone();
+            let reveal_cb = callback.clone();
+            let missing = !crate::state::run_record_can_launch(&record.location);
+            let parent = crate::state::run_record_parent_location(&record.location);
+            let selected = ui.selected_run_log == Some(index);
+            let title_color = if missing {
+                tokens.theme.colors.text_disabled.to_gpui()
+            } else {
+                tokens.theme.colors.text_primary.to_gpui()
+            };
+            let subtitle = run_log_subtitle(catalog, record, missing);
+            let path = record.location.editable_text();
+            let opens = t_count(catalog, "run-log-opens", record.open_count.max(1) as i64);
+            let detail = if path.trim().is_empty() {
+                opens
+            } else {
+                format!("{path} · {opens}")
+            };
+            div()
+                .id(("bookmark-run-log", index as u64))
+                .role(Role::ListItem)
+                .aria_label(record.display_name.clone())
+                .flex()
+                .items_center()
+                .h(px(64.0))
+                .min_w(px(0.0))
+                .overflow_hidden()
+                .px(px(12.0))
+                .gap(px(10.0))
+                .cursor_pointer()
+                .when(selected, |row| {
+                    row.bg(tokens.theme.colors.file_row_selected_inactive.to_gpui())
+                })
+                .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
+                .child(chrome_icon(
+                    format!("bookmark-run-log-icon-{index}"),
+                    ExplorerIcon::Details,
+                    tokens,
+                ))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .flex()
+                        .flex_col()
+                        .justify_center()
+                        .gap(px(2.0))
+                        .child(
+                            div()
+                                .min_w(px(0.0))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .text_size(px(13.0))
+                                .text_color(title_color)
+                                .child(record.display_name.clone()),
+                        )
+                        .child(
+                            div()
+                                .min_w(px(0.0))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .text_size(px(12.0))
+                                .text_color(tokens.theme.colors.text_secondary.to_gpui())
+                                .child(subtitle),
+                        )
+                        .child(
+                            div()
+                                .min_w(px(0.0))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .text_size(px(11.0))
+                                .text_color(tokens.theme.colors.text_disabled.to_gpui())
+                                .child(detail),
+                        ),
+                )
+                .when_some(parent, |row, _parent| {
+                    row.child(
+                        div()
+                            .id(("bookmark-run-log-reveal", index as u64))
+                            .role(Role::Button)
+                            .aria_label(catalog.t("menu-open"))
+                            .cursor_pointer()
+                            .flex_none()
+                            .w(px(28.0))
+                            .h(px(28.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child("📁")
+                            .when_some(reveal_cb, move |button, cb| {
+                                button.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                    cx.stop_propagation();
+                                    cb(&ExplorerAction::RevealRunRecord { index }, window, cx);
+                                })
+                            }),
+                    )
+                })
+                .when_some(select_cb, move |row, cb| {
+                    row.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                        cb(
+                            &crate::bookmark_manager_window::BookmarkManagerUiAction::SelectRunLog(
+                                index,
+                            ),
+                            window,
+                            cx,
+                        )
+                    })
+                })
+                .when_some(open_cb, move |row, cb| {
+                    row.on_click(move |event, window, cx| {
+                        if event.click_count() == 2 {
+                            cb(&ExplorerAction::LaunchRunRecord { index }, window, cx);
+                        }
+                    })
+                })
+                .into_any_element()
+        })
+        .collect()
+}
+
+fn run_log_subtitle(catalog: Catalog, record: &RunRecord, missing: bool) -> String {
+    let weekday = catalog.t(crate::bookmark_manager_window::weekday_key(
+        record.opened_epoch_seconds,
+    ));
+    let size = record
+        .size_bytes
+        .map(|bytes| crate::format_file_size(bytes, catalog.locale()))
+        .unwrap_or_else(|| "—".to_owned());
+    let middle = if missing {
+        catalog.t("run-log-missing")
+    } else {
+        record
+            .type_display
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| record.location.editable_text())
+    };
+    format!("{size} — {middle} — {weekday}")
+}
+
+fn bookmark_manager_list_column(text: impl Into<SharedString>, grow: bool) -> impl IntoElement {
+    div()
+        .min_w(px(0.0))
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .text_ellipsis()
+        .px(px(8.0))
+        .when(grow, |cell| cell.flex_1())
+        .when(!grow, |cell| cell.w(px(128.0)).flex_none())
+        .child(text.into())
+}
+
+fn bookmark_manager_column_header(
+    label: String,
+    width_px: Option<f32>,
+    first: bool,
+    sort: crate::bookmark_manager_window::BookmarkManagerSortColumn,
+    callback: Option<crate::bookmark_manager_window::BookmarkManagerUiCallback>,
+    tokens: UiTokens,
+) -> impl IntoElement {
+    div()
+        .min_w(px(0.0))
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .text_ellipsis()
+        .px(px(8.0))
+        .when(!first, |header| {
+            header
+                .border_l(px(1.0))
+                .border_color(tokens.theme.colors.divider.to_gpui())
+        })
+        .cursor_pointer()
+        .when_some(width_px, |header, width| header.w(px(width)).flex_none())
+        .when(width_px.is_none(), |header| header.flex_1())
+        .child(label)
+        .when_some(callback, move |header, cb| {
+            header.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                cb(
+                    &crate::bookmark_manager_window::BookmarkManagerUiAction::Sort(sort),
+                    window,
+                    cx,
+                )
+            })
+        })
+}
+
+fn format_bookmark_timestamp(epoch_seconds: u64) -> String {
+    if epoch_seconds == 0 {
+        return String::new();
+    }
+    const SECONDS_PER_DAY: u64 = 86_400;
+    let mut day_index = epoch_seconds / SECONDS_PER_DAY;
+    let mut year = 1970u64;
+    loop {
+        let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+        let days_in_year = if leap { 366 } else { 365 };
+        if day_index < days_in_year {
+            break;
+        }
+        day_index -= days_in_year;
+        year += 1;
+        if year > 9999 {
+            return String::new();
+        }
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let month_days = [
+        31u64,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut month = 1u64;
+    for days in month_days {
+        if day_index < days {
+            break;
+        }
+        day_index -= days;
+        month += 1;
+    }
+    format!("{year}/{month:02}/{:02}", day_index + 1)
+}
+
+fn bookmark_manager_menu_divider() -> impl IntoElement {
+    div()
+        .h(px(1.0))
+        .w_full()
+        .my(px(4.0))
+        .bg(hsla(0.0, 0.0, 0.8, 1.0))
+}
+
+fn bookmark_manager_command_row(
     id: &'static str,
     label: String,
+    shortcut: Option<String>,
+    enabled: bool,
+    action: ExplorerAction,
+    callback: Option<ActionCallback>,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .role(Role::MenuItem)
+        .aria_label(label.clone())
+        .h(px(28.0))
+        .px(px(10.0))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(16.0))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .when(enabled, |row| {
+            row.cursor_pointer()
+                .hover(|style| style.bg(hsla(0.58, 0.55, 0.72, 1.0)))
+        })
+        .when(!enabled, |row| row.opacity(0.45))
+        .child(label)
+        .when_some(shortcut, |row, shortcut| {
+            row.child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(hsla(0.0, 0.0, 0.45, 1.0))
+                    .child(shortcut),
+            )
+        })
+        .when(enabled, |row| {
+            row.when_some(callback, move |row, cb| {
+                row.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    cx.stop_propagation();
+                    cb(&action, window, cx)
+                })
+            })
+        })
+}
+
+fn bookmark_manager_ui_command_row(
+    id: &'static str,
+    label: String,
+    shortcut: Option<String>,
+    enabled: bool,
     action: crate::bookmark_manager_window::BookmarkManagerUiAction,
     callback: Option<crate::bookmark_manager_window::BookmarkManagerUiCallback>,
 ) -> impl IntoElement {
     div()
         .id(id)
         .role(Role::MenuItem)
-        .cursor_pointer()
+        .aria_label(label.clone())
+        .h(px(28.0))
         .px(px(10.0))
-        .py(px(6.0))
-        .child(label)
-        .when_some(callback, move |row, cb| {
-            row.on_click(move |_, window, cx| cb(&action, window, cx))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(16.0))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .when(enabled, |row| {
+            row.cursor_pointer()
+                .hover(|style| style.bg(hsla(0.58, 0.55, 0.72, 1.0)))
         })
+        .when(!enabled, |row| row.opacity(0.45))
+        .child(label)
+        .when_some(shortcut, |row, shortcut| {
+            row.child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(hsla(0.0, 0.0, 0.45, 1.0))
+                    .child(shortcut),
+            )
+        })
+        .when(enabled, |row| {
+            row.when_some(callback, move |row, cb| {
+                row.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    cx.stop_propagation();
+                    cb(&action, window, cx)
+                })
+            })
+        })
+}
+
+fn bookmark_manager_submenu_row(
+    id: &'static str,
+    label: String,
+    open: bool,
+    action: crate::bookmark_manager_window::BookmarkManagerUiAction,
+    callback: Option<crate::bookmark_manager_window::BookmarkManagerUiCallback>,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .role(Role::MenuItem)
+        .aria_label(label.clone())
+        .h(px(28.0))
+        .px(px(10.0))
+        .flex()
+        .items_center()
+        .justify_between()
+        .cursor_pointer()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .when(open, |row| row.bg(hsla(0.58, 0.55, 0.72, 1.0)))
+        .hover(|style| style.bg(hsla(0.58, 0.55, 0.72, 1.0)))
+        .child(label)
+        .child(">")
+        .when_some(callback, move |row, cb| {
+            let hover_cb = cb.clone();
+            let hover_action = action;
+            row.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                cx.stop_propagation();
+                cb(&action, window, cx)
+            })
+            .on_mouse_move(move |_, window, cx| hover_cb(&hover_action, window, cx))
+        })
+}
+
+fn bookmark_manager_checked_row(
+    id: &'static str,
+    label: String,
+    checked: bool,
+    action: Option<(
+        crate::bookmark_manager_window::BookmarkManagerUiAction,
+        Option<crate::bookmark_manager_window::BookmarkManagerUiCallback>,
+    )>,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .role(Role::MenuItem)
+        .aria_label(label.clone())
+        .h(px(28.0))
+        .px(px(10.0))
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .cursor_pointer()
+        .hover(|style| style.bg(hsla(0.58, 0.55, 0.72, 1.0)))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(div().w(px(14.0)).child(if checked { "✓" } else { "" }))
+        .child(label)
+        .when_some(action, |row, (action, callback)| {
+            row.when_some(callback, move |row, cb| {
+                row.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    cx.stop_propagation();
+                    cb(&action, window, cx)
+                })
+            })
+        })
+}
+
+struct BookmarkHistoryBackup {
+    path: String,
+    label: String,
+}
+
+pub(crate) fn bookmark_history_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("LOCALAPPDATA")
+        .map(|root| std::path::PathBuf::from(root).join("RustGpuiExplorer\\bookmarks\\v1\\history"))
+}
+
+fn list_bookmark_history_backups() -> Vec<BookmarkHistoryBackup> {
+    let Some(dir) = bookmark_history_dir() else {
+        return Vec::new();
+    };
+    let mut items: Vec<(u64, BookmarkHistoryBackup)> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let meta = entry.metadata().ok();
+        let modified = meta
+            .as_ref()
+            .and_then(|value| value.modified().ok())
+            .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|value| value.as_secs())
+            .unwrap_or(0);
+        let size = meta.as_ref().map(|value| value.len()).unwrap_or(0);
+        let count = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<explorer_model::Bookmarks>(&text).ok())
+            .map(|bookmarks| bookmarks.entries().len() + bookmarks.folders().len())
+            .unwrap_or(0);
+        items.push((
+            modified,
+            BookmarkHistoryBackup {
+                path: path.to_string_lossy().into_owned(),
+                label: format!(
+                    "{} ({} KB - {} items)",
+                    path.file_stem()
+                        .map(|value| value.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "backup".to_owned()),
+                    size / 1024,
+                    count
+                ),
+            },
+        ));
+    }
+    items.sort_by(|left, right| right.0.cmp(&left.0));
+    items.into_iter().map(|item| item.1).collect()
 }
 
 fn bookmark_toolbar_context_menu(
@@ -2890,6 +3907,7 @@ pub(crate) fn bookmark_editor(
     state: &AppViewState,
     name_input: Option<gpui::WeakEntity<EditableTextState>>,
     payload_input: Option<gpui::WeakEntity<EditableTextState>>,
+    tags_input: Option<gpui::WeakEntity<EditableTextState>>,
     callback: Option<ActionCallback>,
 ) -> impl IntoElement {
     let catalog = state.catalog();
@@ -2900,12 +3918,8 @@ pub(crate) fn bookmark_editor(
         editable_input_colors(tokens);
     let payload_label = match &editor.target {
         explorer_model::BookmarkTarget::LuaScript { .. } => catalog.t("dialog-lua-source"),
-        explorer_model::BookmarkTarget::Folder { .. }
-        | explorer_model::BookmarkTarget::FolderPath { .. } => {
-            catalog.t("dialog-folder-path-editable")
-        }
-        explorer_model::BookmarkTarget::File { .. }
-        | explorer_model::BookmarkTarget::FilePath { .. } => catalog.t("dialog-file-path-editable"),
+        explorer_model::BookmarkTarget::Separator => catalog.t("menu-new-separator"),
+        _ => catalog.t("dialog-path-accelerator"),
     };
     let payload_is_multiline = matches!(
         &editor.target,
@@ -2957,8 +3971,7 @@ pub(crate) fn bookmark_editor(
         .absolute()
         .inset_0()
         .flex()
-        .items_center()
-        .justify_center()
+        .flex_col()
         .bg(tokens.theme.colors.surface.to_gpui())
         .when_some(overlay_cancel_cb, move |element, cb| {
             element.on_mouse_down(MouseButton::Left, move |_, window, cx| {
@@ -2971,102 +3984,145 @@ pub(crate) fn bookmark_editor(
                 .role(Role::Dialog)
                 .aria_label(catalog.t("chrome-bookmark-editor"))
                 .w_full()
-                .p(px(20.0))
+                .flex_1()
+                .p(px(16.0))
+                .pt(px(20.0))
                 .flex()
                 .flex_col()
-                .gap(px(9.0))
+                .gap(px(8.0))
                 .font_family(tokens.typography.family.primary)
                 .text_size(px(tokens.typography.file_row.size.value()))
                 .line_height(px(tokens.typography.file_row.line_height.value()))
                 .rounded(px(8.0))
                 .bg(tokens.theme.colors.surface.to_gpui())
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(
-                    div()
-                        .text_size(px(20.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_center()
-                        .child(if is_new {
-                            catalog.t("dialog-new-bookmark")
-                        } else {
-                            catalog.t("dialog-edit-bookmark")
-                        }),
-                )
-                .child(div().h(px(1.0)).bg(colors.divider.to_gpui()))
                 .child(catalog.t("dialog-name-accelerator"))
                 .when_some(name_input, |e, input| {
                     e.child(
-                        text_input("bookmark-name-input")
-                            .state(input)
-                            .multiline(false)
-                            .caret_blink_interval_500ms()
-                            .w_full()
-                            .h(px(32.0))
-                            .px(px(8.0))
-                            .font_family(tokens.typography.family.primary)
-                            .text_size(px(16.0))
-                            .line_height(px(tokens.typography.address.line_height.value()))
-                            .bg(colors.control_fill.to_gpui())
-                            .text_color(input_text)
-                            .selection_color(input_selection.into())
-                            .selection_text_color(input_selection_text.into())
-                            .caret_color(input_caret.into())
-                            .rounded(px(4.0))
-                            .border(px(1.0))
-                            .border_color(colors.focus.to_gpui()),
-                    )
-                })
-                .when(payload_is_multiline, |e| e.child(payload_label))
-                .when(payload_is_multiline, |e| {
-                    e.when_some(payload_input, |e, input| {
-                        e.child(
-                            text_input("bookmark-payload-input")
+                        center_single_line_text_input(
+                            text_input("bookmark-name-input")
                                 .state(input)
-                                .multiline(payload_is_multiline)
+                                .multiline(false)
                                 .caret_blink_interval_500ms()
                                 .w_full()
-                                .h(px(payload_height))
                                 .px(px(8.0))
+                                .font_family(tokens.typography.family.primary),
+                            32.0,
+                            1.0,
+                            16.0,
+                            tokens.typography.address.line_height.value(),
+                        )
+                        .bg(colors.control_fill.to_gpui())
+                        .text_color(input_text)
+                        .selection_color(input_selection.into())
+                        .selection_text_color(input_selection_text.into())
+                        .caret_color(input_caret.into())
+                        .rounded(px(4.0))
+                        .border(px(1.0))
+                        .border_color(colors.focus.to_gpui()),
+                    )
+                })
+                .when(
+                    !matches!(editor.target, explorer_model::BookmarkTarget::Separator),
+                    |e| {
+                        e.child(payload_label).when_some(payload_input, |e, input| {
+                            e.child(if payload_is_multiline {
+                                text_input("bookmark-payload-input")
+                                    .state(input)
+                                    .multiline(true)
+                                    .caret_blink_interval_500ms()
+                                    .w_full()
+                                    .h(px(payload_height))
+                                    .px(px(8.0))
+                                    .py(px(6.0))
+                                    .font_family(tokens.typography.family.primary)
+                                    .text_size(px(16.0))
+                                    .line_height(px(tokens.typography.address.line_height.value()))
+                                    .bg(colors.control_fill.to_gpui())
+                                    .text_color(input_text)
+                                    .selection_color(input_selection.into())
+                                    .selection_text_color(input_selection_text.into())
+                                    .caret_color(input_caret.into())
+                                    .rounded(px(4.0))
+                                    .border(px(1.0))
+                                    .border_color(colors.focus.to_gpui())
+                                    .into_any_element()
+                            } else {
+                                center_single_line_text_input(
+                                    text_input("bookmark-payload-input")
+                                        .state(input)
+                                        .multiline(false)
+                                        .caret_blink_interval_500ms()
+                                        .w_full()
+                                        .px(px(8.0))
+                                        .font_family(tokens.typography.family.primary),
+                                    payload_height,
+                                    1.0,
+                                    16.0,
+                                    tokens.typography.address.line_height.value(),
+                                )
                                 .bg(colors.control_fill.to_gpui())
                                 .text_color(input_text)
                                 .selection_color(input_selection.into())
                                 .selection_text_color(input_selection_text.into())
                                 .caret_color(input_caret.into())
+                                .rounded(px(4.0))
                                 .border(px(1.0))
-                                .border_color(colors.focus.to_gpui()),
+                                .border_color(colors.focus.to_gpui())
+                                .into_any_element()
+                            })
+                        })
+                    },
+                )
+                .child(catalog.t("dialog-tags-accelerator"))
+                .when_some(tags_input, |e, input| {
+                    e.child(
+                        center_single_line_text_input(
+                            text_input("bookmark-tags-input")
+                                .state(input)
+                                .multiline(false)
+                                .placeholder(catalog.t("dialog-tags-placeholder"))
+                                .caret_blink_interval_500ms()
+                                .w_full()
+                                .px(px(8.0))
+                                .font_family(tokens.typography.family.primary),
+                            32.0,
+                            1.0,
+                            16.0,
+                            tokens.typography.address.line_height.value(),
                         )
-                    })
+                        .bg(colors.control_fill.to_gpui())
+                        .text_color(input_text)
+                        .selection_color(input_selection.into())
+                        .selection_text_color(input_selection_text.into())
+                        .caret_color(input_caret.into())
+                        .rounded(px(4.0))
+                        .border(px(1.0))
+                        .border_color(colors.divider.to_gpui()),
+                    )
                 })
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(colors.text_secondary.to_gpui())
+                        .child(catalog.t("dialog-tags-hint")),
+                )
                 .child(catalog.t("dialog-location-accelerator"))
                 .child(
                     div()
                         .id("bookmark-destination-picker")
                         .role(Role::List)
-                        .max_h(px(110.0))
+                        .max_h(px(96.0))
                         .overflow_y_scroll()
                         .flex()
                         .flex_col()
                         .gap(px(4.0))
                         .p(px(8.0))
-                        .rounded(px(12.0))
+                        .rounded(px(8.0))
                         .bg(colors.control_fill.to_gpui())
                         .children(destination_rows),
                 )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .child(
-                            div()
-                                .w(px(18.0))
-                                .h(px(18.0))
-                                .rounded(px(3.0))
-                                .bg(colors.accent.to_gpui())
-                                .child(div().size_full()),
-                        )
-                        .child(catalog.t("dialog-show-editor-on-save")),
-                )
+                .child(div().flex_1())
                 .child(
                     div()
                         .flex()
@@ -3159,20 +4215,25 @@ pub(crate) fn bookmark_folder_editor(
                 .child(catalog.t("dialog-rename-bookmark-folder"))
                 .when_some(input, |element, input| {
                     element.child(
-                        text_input("bookmark-folder-name-input")
-                            .state(input)
-                            .multiline(false)
-                            .caret_blink_interval_500ms()
-                            .w_full()
-                            .h(px(34.0))
-                            .px(px(8.0))
-                            .bg(colors.control_fill.to_gpui())
-                            .text_color(text)
-                            .selection_color(selection.into())
-                            .selection_text_color(selection_text.into())
-                            .caret_color(caret.into())
-                            .border(px(1.0))
-                            .border_color(colors.focus.to_gpui()),
+                        center_single_line_text_input(
+                            text_input("bookmark-folder-name-input")
+                                .state(input)
+                                .multiline(false)
+                                .caret_blink_interval_500ms()
+                                .w_full()
+                                .px(px(8.0)),
+                            34.0,
+                            1.0,
+                            tokens.typography.address.size.value(),
+                            tokens.typography.address.line_height.value(),
+                        )
+                        .bg(colors.control_fill.to_gpui())
+                        .text_color(text)
+                        .selection_color(selection.into())
+                        .selection_text_color(selection_text.into())
+                        .caret_color(caret.into())
+                        .border(px(1.0))
+                        .border_color(colors.focus.to_gpui()),
                     )
                 })
                 .child(
@@ -4868,15 +5929,26 @@ fn cache_budget_controls(
                                                 .w(px(112.0))
                                                 .h(px(tokens.layout.minimum_hit_target.value()))
                                                 .child(
-                                                    text_input(SharedString::from(format!(
-                                                        "cache-budget-editor-{:?}",
-                                                        descriptor.id
-                                                    )))
-                                                    .state(input.clone())
-                                                    .multiline(false)
-                                                    .w_full()
-                                                    .h_full()
-                                                    .px(px(tokens.layout.content_spacing.value()))
+                                                    center_single_line_text_input(
+                                                        text_input(SharedString::from(format!(
+                                                            "cache-budget-editor-{:?}",
+                                                            descriptor.id
+                                                        )))
+                                                        .state(input.clone())
+                                                        .multiline(false)
+                                                        .w_full()
+                                                        .px(px(
+                                                            tokens.layout.content_spacing.value()
+                                                        )),
+                                                        tokens.layout.minimum_hit_target.value(),
+                                                        1.0,
+                                                        tokens.typography.file_row.size.value(),
+                                                        tokens
+                                                            .typography
+                                                            .file_row
+                                                            .line_height
+                                                            .value(),
+                                                    )
                                                     .border(px(1.0))
                                                     .border_color(
                                                         tokens.theme.colors.divider.to_gpui(),
@@ -8738,7 +9810,7 @@ impl RenderOnce for NavigationPane {
                     }
                     let parent = item.location.clone();
                     let depth = item.depth;
-                    let suppress_static_drive_roots = item.id == "this-pc";
+                    let suppress_static_drive_roots = item.id == "this-pc" || item.id == "linux";
                     flattened.push(item);
                     if let Some(parent) = parent
                         && self.state.navigation_node_expanded(&parent)
@@ -8785,51 +9857,52 @@ fn bookmark_navigation_rows(
         state: &AppViewState,
         tokens: UiTokens,
         callback: &Option<ActionCallback>,
+        current: Option<&explorer_model::LocationDescriptor>,
         parent: Option<explorer_model::BookmarkFolderId>,
         depth: u8,
     ) {
         for folder in state.bookmarks().child_folders(parent) {
             let id = folder.id;
             let expanded = state.bookmark_folder_expanded(id);
-            let open = ExplorerAction::ToggleBookmarkFolderMenu { id };
+            let location = explorer_model::LocationDescriptor::favorites_folder(id);
+            let selected = current == Some(&location);
+            let activate = ExplorerAction::ActivateNavigationItem {
+                location: location.clone(),
+            };
+            let toggle = ExplorerAction::ToggleBookmarkFolderExpanded { id };
             let left_cb = callback.clone();
+            let toggle_cb = callback.clone();
             let right_cb = callback.clone();
-            output.push(
-                div()
-                    .id(("favorite-folder-nav", id.as_u128() as u64))
-                    .role(Role::Button)
-                    .aria_label(format!("Favorite folder {}", folder.name))
-                    .cursor_pointer()
-                    .pl(px(8.0 + f32::from(depth) * 14.0))
-                    .pr(px(8.0))
-                    .py(px(5.0))
-                    .rounded(px(4.0))
-                    .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
-                    .child(format!(
-                        "{} 📁 {}",
-                        if expanded { "▾" } else { "▸" },
-                        folder.name
-                    ))
-                    .when_some(left_cb, {
-                        let open = open.clone();
-                        move |element, cb| {
-                            element.on_click(move |_, window, cx| cb(&open, window, cx))
-                        }
-                    })
-                    .when_some(right_cb, move |element, cb| {
-                        element.on_mouse_down(MouseButton::Right, move |_, window, cx| {
-                            cb(&open, window, cx);
-                            cx.stop_propagation();
-                        })
-                    })
-                    .into_any_element(),
-            );
+            output.push(favorites_tree_row(
+                ("favorite-folder-nav", id.as_u128() as u64),
+                format!("Favorite folder {}", folder.name),
+                folder.name.clone(),
+                depth,
+                expanded,
+                selected,
+                true,
+                Some(crate::navigation_pane::NavigationIcon::Folder),
+                None,
+                tokens,
+                state.catalog(),
+                left_cb,
+                Some(activate),
+                toggle_cb,
+                Some(toggle),
+                right_cb,
+                Some(ExplorerAction::OpenBookmarkToolbarContextMenu {
+                    parent_id: Some(id),
+                    x: 0.0,
+                    y: 0.0,
+                }),
+            ));
             if expanded {
                 visit(
                     output,
                     state,
                     tokens,
                     callback,
+                    current,
                     Some(id),
                     depth.saturating_add(1),
                 );
@@ -8840,60 +9913,195 @@ fn bookmark_navigation_rows(
             let callback = callback.clone();
             let context_callback = callback.clone();
             let id = bookmark.id;
-            output.push(
-                div()
-                    .id(("favorite-bookmark-nav", bookmark.id.as_u128() as u64))
-                    .role(Role::Button)
-                    .aria_label(format!("Favorite {}", bookmark.name))
-                    .cursor_pointer()
-                    .pl(px(22.0 + f32::from(depth) * 14.0))
-                    .pr(px(8.0))
-                    .py(px(5.0))
-                    .rounded(px(4.0))
-                    .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
-                    .child(bookmark_label(&bookmark.target, bookmark.name.clone()))
-                    .when_some(callback, move |element, cb| {
-                        element.on_click(move |_, window, cx| cb(&action, window, cx))
-                    })
-                    .when_some(context_callback, move |element, cb| {
-                        element.on_mouse_down(MouseButton::Right, move |event, window, cx| {
-                            cx.stop_propagation();
-                            cb(
-                                &ExplorerAction::OpenBookmarkContextMenu {
-                                    id,
-                                    x: f32::from(event.position.x),
-                                    y: f32::from(event.position.y),
-                                },
-                                window,
-                                cx,
-                            );
-                        })
-                    })
-                    .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                    .into_any_element(),
-            );
+            let location = crate::state::bookmark_entry_location(bookmark);
+            let selected = current == Some(&location);
+            output.push(favorites_tree_row(
+                ("favorite-bookmark-nav", bookmark.id.as_u128() as u64),
+                format!("Favorite {}", bookmark.name),
+                bookmark.name.clone(),
+                depth,
+                false,
+                selected,
+                false,
+                None,
+                Some(bookmark_label(&bookmark.target, bookmark.name.clone())),
+                tokens,
+                state.catalog(),
+                callback,
+                Some(action),
+                None,
+                None,
+                context_callback,
+                Some(ExplorerAction::OpenBookmarkContextMenu { id, x: 0.0, y: 0.0 }),
+            ));
         }
     }
 
+    let favorites_root =
+        explorer_model::LocationDescriptor::synthetic(explorer_model::SyntheticRoot::Favorites);
+    let current = state
+        .tabs()
+        .active_tab()
+        .history
+        .current()
+        .map(|entry| entry.location.clone());
+    let expanded = state.favorites_nav_expanded();
+    let selected = current.as_ref() == Some(&favorites_root);
     let add_root = ExplorerAction::AddBookmarkFolder { parent_id: None };
-    let mut output = vec![
-        div()
-            .id("favorites-tree-heading")
-            .role(Role::Heading)
-            .aria_label(state.catalog().t("chrome-favorites-hint"))
-            .px(px(8.0))
-            .py(px(5.0))
-            .child(state.catalog().t("nav-favorites"))
-            .when_some(callback.clone(), move |element, cb| {
-                element.on_mouse_down(MouseButton::Right, move |_, window, cx| {
-                    cb(&add_root, window, cx);
-                    cx.stop_propagation();
-                })
-            })
-            .into_any_element(),
-    ];
-    visit(&mut output, state, tokens, &callback, None, 0);
+    let activate = ExplorerAction::ActivateNavigationItem {
+        location: favorites_root.clone(),
+    };
+    let toggle = ExplorerAction::ToggleNavigationNode {
+        location: favorites_root,
+    };
+    let mut output = vec![favorites_tree_row(
+        "favorites-tree-heading",
+        state.catalog().t("chrome-favorites-hint"),
+        state.catalog().t("nav-favorites"),
+        0,
+        expanded,
+        selected,
+        true,
+        Some(crate::navigation_pane::NavigationIcon::Favorites),
+        None,
+        tokens,
+        state.catalog(),
+        callback.clone(),
+        Some(activate),
+        callback.clone(),
+        Some(toggle),
+        callback.clone(),
+        Some(add_root),
+    )];
+    if expanded {
+        visit(
+            &mut output,
+            state,
+            tokens,
+            &callback,
+            current.as_ref(),
+            None,
+            1,
+        );
+    }
     output
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "favorites rows share one chrome contract for parent, folder, and bookmark hits"
+)]
+fn favorites_tree_row(
+    id: impl Into<gpui::ElementId>,
+    aria_label: String,
+    label: impl Into<SharedString>,
+    depth: u8,
+    expanded: bool,
+    selected: bool,
+    has_chevron: bool,
+    icon: Option<crate::navigation_pane::NavigationIcon>,
+    label_element: Option<gpui::AnyElement>,
+    tokens: UiTokens,
+    catalog: Catalog,
+    click_cb: Option<ActionCallback>,
+    click_action: Option<ExplorerAction>,
+    toggle_cb: Option<ActionCallback>,
+    toggle_action: Option<ExplorerAction>,
+    right_cb: Option<ActionCallback>,
+    right_action: Option<ExplorerAction>,
+) -> gpui::AnyElement {
+    let colors = tokens.theme.colors;
+    let layout = tokens.layout;
+    let chevron_id = format!("favorites-chevron-{aria_label}");
+    div()
+        .id(id)
+        .role(Role::Button)
+        .aria_label(aria_label)
+        .cursor_pointer()
+        .h(px(layout.navigation_row_height.value()))
+        .w_full()
+        .flex_none()
+        .flex()
+        .items_center()
+        .rounded(px(3.0))
+        .pl(px(f32::from(depth) * 17.0))
+        .pr(px(5.0))
+        .hover(move |style| style.bg(colors.row_hover.to_gpui()))
+        .when(selected, |element| {
+            element.bg(colors.subtle_surface.to_gpui())
+        })
+        .child(
+            div()
+                .id(chevron_id.clone())
+                .w(px(layout.navigation_icon_size.value()))
+                .h(px(layout.navigation_icon_size.value()))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(colors.text_secondary.to_gpui())
+                .when(has_chevron, |element| {
+                    element
+                        .role(Role::Button)
+                        .aria_label(if expanded {
+                            catalog.t("chrome-collapse")
+                        } else {
+                            catalog.t("chrome-expand")
+                        })
+                        .aria_expanded(expanded)
+                        .hover(move |style| style.bg(colors.control_hover.to_gpui()))
+                        .when_some(
+                            toggle_cb.zip(toggle_action),
+                            |element, (callback, action)| {
+                                element.on_click(move |_, window, cx| {
+                                    cx.stop_propagation();
+                                    callback(&action, window, cx);
+                                })
+                            },
+                        )
+                        .child(chrome_icon(
+                            chevron_id,
+                            if expanded {
+                                ExplorerIcon::ChevronDown
+                            } else {
+                                ExplorerIcon::Chevron
+                            },
+                            tokens,
+                        ))
+                }),
+        )
+        .when_some(icon, |element, icon| {
+            element.child(navigation_icon(icon, tokens))
+        })
+        .child(label_element.unwrap_or_else(|| {
+            div()
+                .ml(px(8.0))
+                .flex_1()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .child(label.into())
+                .into_any_element()
+        }))
+        .when_some(click_cb.zip(click_action), |element, (callback, action)| {
+            element.on_click(move |_, window, cx| callback(&action, window, cx))
+        })
+        .when_some(right_cb.zip(right_action), |element, (callback, action)| {
+            element.on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                cx.stop_propagation();
+                let mut action = action.clone();
+                match &mut action {
+                    ExplorerAction::OpenBookmarkToolbarContextMenu { x, y, .. }
+                    | ExplorerAction::OpenBookmarkContextMenu { x, y, .. } => {
+                        *x = f32::from(event.position.x);
+                        *y = f32::from(event.position.y);
+                    }
+                    _ => {}
+                }
+                callback(&action, window, cx);
+            })
+        })
+        .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+        .into_any_element()
 }
 
 fn navigation_item_shell_texture(
@@ -10989,6 +12197,21 @@ impl RenderOnce for FileViewHost {
                                             .state(input)
                                             .multiline(false)
                                             .caret_blink_interval_500ms()
+                                            .caret_height(px(self
+                                                .tokens
+                                                .typography
+                                                .file_row
+                                                .line_height
+                                                .value()))
+                                            .caret_top_offset(px(((self
+                                                .tokens
+                                                .typography
+                                                .file_row
+                                                .line_height
+                                                .value()
+                                                - self.tokens.typography.file_row.size.value())
+                                                / 2.0)
+                                                .max(0.0)))
                                             .w_full()
                                             .h(px(rename_metrics.line_height))
                                             .px(px(layout.focus_stroke.value() * 2.0))
@@ -14955,6 +16178,31 @@ struct EditableSelectionMetrics {
     vertical_padding: f32,
 }
 
+pub(crate) fn center_single_line_text_input(
+    field: EditableTextElement,
+    container_height: f32,
+    border_width: f32,
+    text_size: f32,
+    minimum_line_height: f32,
+) -> EditableTextElement {
+    let metrics = editable_selection_metrics(
+        container_height,
+        border_width,
+        minimum_line_height,
+        border_width.max(1.0) / 2.0,
+    );
+    let caret_offset = ((minimum_line_height - text_size) / 2.0).max(0.0);
+    field
+        .caret_height(px(minimum_line_height.min(metrics.line_height)))
+        .caret_top_offset(px(caret_offset))
+        .h(px(metrics.line_height))
+        .flex_none()
+        .overflow_hidden()
+        .text_size(px(text_size))
+        .line_height(px(metrics.line_height))
+        .py(px(metrics.vertical_padding))
+}
+
 fn editable_selection_metrics(
     container_height: f32,
     border_width: f32,
@@ -16770,11 +18018,46 @@ mod tests {
             .split("#[cfg(test)]")
             .next()
             .expect("production source precedes tests");
-        assert_eq!(production.matches("editable_selection_metrics(").count(), 3);
+        assert_eq!(production.matches("editable_selection_metrics(").count(), 4);
         assert!(production.contains(".h(px(selection_metrics.line_height))"));
         assert!(production.contains(".line_height(px(selection_metrics.line_height))"));
         assert!(production.contains(".h(px(rename_metrics.line_height))"));
         assert!(production.contains(".line_height(px(rename_metrics.line_height))"));
+        assert!(production.contains("fn center_single_line_text_input("));
+    }
+
+    #[test]
+    fn remaining_dialog_inputs_use_centered_single_line_metrics() {
+        let production = include_str!("chrome.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source precedes tests");
+        let compact = production
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        for id in [
+            "bookmark-name-input",
+            "bookmark-tags-input",
+            "bookmark-folder-name-input",
+            "bookmark-manager-search-input",
+            "bookmark-manager-detail-name-input",
+            "bookmark-manager-detail-location-input",
+        ] {
+            assert!(
+                compact.contains(&format!(
+                    "center_single_line_text_input(text_input(\"{id}\")"
+                )),
+                "{id} must use centered single-line input metrics"
+            );
+        }
+        assert!(compact.contains(
+            "center_single_line_text_input(text_input(SharedString::from(format!(\"cache-budget-editor-{:?}\""
+        ));
+        assert!(
+            compact
+                .contains("center_single_line_text_input(text_input(\"bookmark-payload-input\")")
+        );
     }
 
     #[test]
@@ -18504,6 +19787,12 @@ mod tests {
     }
 
     #[test]
+    fn bookmark_timestamp_formats_unix_days() {
+        assert_eq!(super::format_bookmark_timestamp(0), "");
+        assert_eq!(super::format_bookmark_timestamp(86_400), "1970/01/02");
+    }
+
+    #[test]
     fn bookmark_overflow_preserves_the_order_partition() {
         assert_eq!(super::bookmark_visible_count(5, 420.0), 2);
         let ordered = ["first", "second", "third", "fourth", "fifth"];
@@ -18554,15 +19843,32 @@ mod tests {
             "bookmark-manager-toolbar",
             "menu-manage-with-accelerator",
             "menu-view-with-accelerator",
-            "bookmark-manager-import",
+            "bookmark-manager-import-html",
+            "bookmark-manager-export-html",
             "bookmark-manager-backup",
-            "ImportBookmarksFromClipboard",
-            "BackupBookmarksToClipboard",
+            "ImportBookmarksHtml",
+            "ExportBookmarksHtml",
+            "BackupBookmarksToDisk",
+            "menu-new-bookmark-ellipsis",
+            "menu-new-separator",
+            "menu-sort-none",
+            "menu-sort-with-accelerator",
+            "chrome-sort-last-visited",
+            "chrome-sort-visit-count",
+            "chrome-sort-date-added",
+            "chrome-sort-date-modified",
+            "chrome-sort-date",
+            "ExplorerIcon::View",
+            "bookmark_manager_toolbar_menu_button",
+            "bookmark_manager_popup",
+            "ToggleColumnName",
+            "text_ellipsis()",
+            "whitespace_nowrap()",
+            "menu-import-html",
             "bookmark-manager-search-input",
             "bookmark-manager-tree",
             "menu-all-bookmarks",
             "menu-bookmark-toolbar",
-            "menu-other-bookmarks",
             "bookmark-manager-columns",
             "chrome-sort-name",
             "chrome-sort-tags",
@@ -18574,16 +19880,28 @@ mod tests {
                 "missing Firefox library UI: {required}"
             );
         }
+        assert!(
+            !manager.contains(".child(\"☰\")"),
+            "View must use a Fluent icon instead of a leftover hamburger glyph"
+        );
         for interactive in [
             "bookmark-manager-back",
             "bookmark-manager-forward",
             "bookmark-manager-manage-menu",
             "bookmark-manager-view-toggle",
+            "bookmark-manager-column-visited",
+            "bookmark-manager-column-added",
+            "bookmark-manager-column-name",
             "bookmark-manager-transfer-menu",
+            "bookmark-manager-history",
+            "history-library",
+            "bookmark-manager-run-log",
+            "run-log-library",
             "bookmark-manager-all-bookmarks",
             "bookmark-manager-root-bookmarks",
             "bookmark-manager-detail-name-input",
             "bookmark-manager-detail-location-input",
+            "center_single_line_text_input",
             "bookmark-manager-menu-dismiss-overlay",
         ] {
             let control = manager
@@ -18599,8 +19917,11 @@ mod tests {
             "BookmarkManagerUiAction::SelectBookmark",
             "BookmarkManagerUiAction::ToggleMenu",
             "BookmarkManagerUiAction::Sort",
-            "BookmarkManagerUiAction::ToggleDensity",
             "BookmarkManagerUiAction::DismissMenu",
+            "BookmarkManagerUiAction::OpenSubmenu",
+            "BookmarkManagerUiAction::SelectAll",
+            "BookmarkManagerUiAction::SelectRunLog",
+            "ExplorerAction::LaunchRunRecord",
         ] {
             assert!(
                 manager.contains(action),
@@ -18746,7 +20067,8 @@ mod tests {
         for required in [
             "bookmark-name-input",
             "bookmark-payload-input",
-            "dialog-folder-path-editable",
+            "dialog-path-accelerator",
+            "bookmark-tags-input",
             ".bg(colors.control_fill.to_gpui())",
             ".text_color(input_text)",
             ".caret_color(input_caret.into())",
@@ -18773,7 +20095,7 @@ mod tests {
             .split("#[cfg(test)]")
             .next()
             .expect("production source");
-        assert_eq!(production.matches("OpenBookmarkContextMenu").count(), 5);
+        assert_eq!(production.matches("OpenBookmarkContextMenu").count(), 6);
         assert!(production.contains("bookmark-context-overlay"));
         assert!(production.contains("fn bookmark_context_menu("));
     }
@@ -18795,6 +20117,26 @@ mod tests {
         ] {
             assert!(production.contains(required), "missing {required}");
         }
+    }
+
+    #[test]
+    fn left_nav_favorite_folder_does_not_toggle_toolbar_folder_menu() {
+        let production = include_str!("chrome.rs")
+            .split("fn bookmark_navigation_rows")
+            .nth(1)
+            .and_then(|source| source.split("fn navigation_item_shell_texture").next())
+            .expect("bookmark_navigation_rows");
+        assert!(production.contains("ToggleBookmarkFolderExpanded"));
+        assert!(production.contains("ActivateNavigationItem"));
+        assert!(production.contains("favorites_nav_expanded"));
+        assert!(production.contains("ToggleNavigationNode"));
+        assert!(
+            !production.contains("ToggleBookmarkFolderMenu"),
+            "left-nav favorites must not open the bookmark toolbar dropdown"
+        );
+        assert!(production.contains("OpenBookmarkToolbarContextMenu"));
+        assert!(production.contains("favorites-tree-heading"));
+        assert!(production.contains("favorite-folder-nav"));
     }
 
     #[test]

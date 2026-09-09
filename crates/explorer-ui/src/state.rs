@@ -38,6 +38,34 @@ fn strip_fluent_isolates(value: String) -> String {
         .collect()
 }
 
+fn resolve_bookmark_path(path: &str) -> LocationDescriptor {
+    explorer_model::RemoteAddress::parse(path)
+        .ok()
+        .and_then(|address| address.to_deterministic_location(1).ok())
+        .unwrap_or_else(|| {
+            if path.starts_with("shell:") {
+                LocationDescriptor::ParsingName(path.to_owned())
+            } else {
+                LocationDescriptor::file_system(path)
+            }
+        })
+}
+
+pub(crate) fn bookmark_entry_location(bookmark: &explorer_model::Bookmark) -> LocationDescriptor {
+    match &bookmark.target {
+        explorer_model::BookmarkTarget::Folder { location }
+        | explorer_model::BookmarkTarget::File { location } => location.clone(),
+        explorer_model::BookmarkTarget::FolderPath { path }
+        | explorer_model::BookmarkTarget::FilePath { path } => resolve_bookmark_path(path),
+        explorer_model::BookmarkTarget::LuaScript { .. } => {
+            LocationDescriptor::lua_bookmark(bookmark.id)
+        }
+        explorer_model::BookmarkTarget::Separator => {
+            LocationDescriptor::synthetic(explorer_model::SyntheticRoot::Favorites)
+        }
+    }
+}
+
 fn unique_remote_folder_symlink_name(
     base: &str,
     existing: &HashSet<&str>,
@@ -704,6 +732,7 @@ pub(crate) struct BookmarkEditorDraft {
     pub(crate) name: String,
     pub(crate) target: explorer_model::BookmarkTarget,
     pub(crate) parent_id: Option<explorer_model::BookmarkFolderId>,
+    pub(crate) tags: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -804,6 +833,7 @@ pub struct AppViewState {
     quick_access: QuickAccessPins,
     bookmarks: explorer_model::Bookmarks,
     recent_items: RecentItems,
+    run_log: Vec<RunRecord>,
     quick_access_notice: Option<String>,
     bookmark_notice: Option<String>,
     bookmark_overflow_open: bool,
@@ -813,9 +843,13 @@ pub struct AppViewState {
     remote_context_menu: Option<RemoteContextMenuState>,
     remote_properties: Option<RemotePropertiesState>,
     expanded_bookmark_folders: HashSet<explorer_model::BookmarkFolderId>,
+    favorites_nav_collapsed: bool,
     bookmark_folder_delete_confirmation: Option<(explorer_model::BookmarkFolderId, usize)>,
     bookmark_editor: Option<BookmarkEditorDraft>,
     bookmark_folder_editor: Option<BookmarkFolderEditorDraft>,
+    bookmark_undo: Vec<explorer_model::Bookmarks>,
+    bookmark_redo: Vec<explorer_model::Bookmarks>,
+    bookmark_clipboard: Option<explorer_model::Bookmarks>,
     broker_health: BrokerUiHealth,
     session_reset_confirmation: Option<explorer_model::SessionResetScope>,
     confirmed_session_reset: Option<explorer_model::SessionResetScope>,
@@ -1066,7 +1100,8 @@ impl AppViewState {
             thumbnail_cache_notice: None,
             quick_access: QuickAccessPins::default(),
             bookmarks: explorer_model::Bookmarks::default(),
-            recent_items: RecentItems::new(64, 30 * 24 * 60 * 60, Vec::new()),
+            recent_items: load_recent_visits(),
+            run_log: load_run_log(),
             quick_access_notice: None,
             bookmark_notice: None,
             bookmark_overflow_open: false,
@@ -1076,9 +1111,13 @@ impl AppViewState {
             remote_context_menu: None,
             remote_properties: None,
             expanded_bookmark_folders: HashSet::new(),
+            favorites_nav_collapsed: true,
             bookmark_folder_delete_confirmation: None,
             bookmark_editor: None,
             bookmark_folder_editor: None,
+            bookmark_undo: Vec::new(),
+            bookmark_redo: Vec::new(),
+            bookmark_clipboard: None,
             broker_health: BrokerUiHealth::Healthy,
             session_reset_confirmation: None,
             confirmed_session_reset: None,
@@ -1298,6 +1337,68 @@ impl AppViewState {
         self.bookmarks = bookmarks;
     }
 
+    pub(crate) fn push_bookmark_undo(&mut self) {
+        self.bookmark_undo.push(self.bookmarks.clone());
+        self.bookmark_redo.clear();
+        if self.bookmark_undo.len() > 50 {
+            self.bookmark_undo.remove(0);
+        }
+    }
+
+    pub(crate) fn undo_bookmarks(&mut self) -> bool {
+        let Some(previous) = self.bookmark_undo.pop() else {
+            return false;
+        };
+        self.bookmark_redo.push(self.bookmarks.clone());
+        self.bookmarks = previous;
+        true
+    }
+
+    pub(crate) fn redo_bookmarks(&mut self) -> bool {
+        let Some(next) = self.bookmark_redo.pop() else {
+            return false;
+        };
+        self.bookmark_undo.push(self.bookmarks.clone());
+        self.bookmarks = next;
+        true
+    }
+
+    pub(crate) fn can_undo_bookmarks(&self) -> bool {
+        !self.bookmark_undo.is_empty()
+    }
+
+    pub(crate) fn can_redo_bookmarks(&self) -> bool {
+        !self.bookmark_redo.is_empty()
+    }
+
+    pub(crate) fn copy_bookmarks_to_clipboard(&mut self, ids: &[explorer_model::BookmarkId]) {
+        let mut copied = explorer_model::Bookmarks::default();
+        for bookmark in self.bookmarks.entries() {
+            if ids.contains(&bookmark.id) {
+                let _ = copied.begin_add_to(bookmark.name.clone(), bookmark.target.clone(), None);
+            }
+        }
+        self.bookmark_clipboard = Some(copied);
+    }
+
+    pub(crate) fn paste_bookmarked_clipboard(
+        &mut self,
+        parent_id: Option<explorer_model::BookmarkFolderId>,
+    ) -> bool {
+        let Some(copied) = self.bookmark_clipboard.clone() else {
+            return false;
+        };
+        self.push_bookmark_undo();
+        for bookmark in copied.entries() {
+            let _ = self.bookmarks.begin_add_to(
+                bookmark.name.clone(),
+                bookmark.target.clone(),
+                parent_id,
+            );
+        }
+        true
+    }
+
     pub(crate) const fn bookmarks(&self) -> &explorer_model::Bookmarks {
         &self.bookmarks
     }
@@ -1308,6 +1409,20 @@ impl AppViewState {
         parent_id: Option<explorer_model::BookmarkFolderId>,
     ) -> explorer_model::BookmarkMutation {
         self.bookmarks.begin_add_folder(name, parent_id)
+    }
+
+    pub(crate) fn add_bookmark_separator(
+        &mut self,
+        parent_id: Option<explorer_model::BookmarkFolderId>,
+    ) -> explorer_model::BookmarkMutation {
+        self.bookmarks.begin_add_separator(parent_id)
+    }
+
+    pub(crate) fn bookmarks_record_visit(
+        &mut self,
+        id: explorer_model::BookmarkId,
+    ) -> explorer_model::BookmarkMutation {
+        self.bookmarks.record_visit(id)
     }
 
     pub(crate) fn remove_bookmark_folder(
@@ -1359,9 +1474,16 @@ impl AppViewState {
     }
 
     pub(crate) fn navigation_node_expanded(&self, location: &LocationDescriptor) -> bool {
+        if location.synthetic_root() == Some(explorer_model::SyntheticRoot::Favorites) {
+            return self.favorites_nav_expanded();
+        }
         self.navigation_trees
             .get(&self.tabs.active_tab_id())
             .is_some_and(|tree| tree.expanded.contains(location))
+    }
+
+    pub(crate) const fn favorites_nav_expanded(&self) -> bool {
+        !self.favorites_nav_collapsed
     }
 
     pub(crate) fn focused_navigation_location(&self) -> Option<&LocationDescriptor> {
@@ -1415,6 +1537,10 @@ impl AppViewState {
     }
 
     pub(crate) fn toggle_navigation_node(&mut self, location: LocationDescriptor) -> bool {
+        if location.synthetic_root() == Some(explorer_model::SyntheticRoot::Favorites) {
+            self.favorites_nav_collapsed = !self.favorites_nav_collapsed;
+            return self.favorites_nav_expanded();
+        }
         let tab_id = self.tabs.active_tab_id();
         let tree = self.navigation_trees.entry(tab_id).or_default();
         if tree.expanded.remove(&location) {
@@ -1652,20 +1778,110 @@ impl AppViewState {
         else {
             return false;
         };
-        self.recent_items.record(
+        self.record_recent_location(
+            entry.location.clone(),
+            entry.display_name,
+            now_epoch_seconds,
+        )
+    }
+
+    pub(crate) fn record_recent_location(
+        &mut self,
+        location: LocationDescriptor,
+        display_name: String,
+        now_epoch_seconds: u64,
+    ) -> bool {
+        let payload = location.editable_text();
+        if payload.is_empty() || display_name.trim().is_empty() {
+            return false;
+        }
+        let Some(stable_id) = ShellItemId::from_provider_bytes(payload.as_bytes().to_vec()) else {
+            return false;
+        };
+        let changed = self.recent_items.record(
             ShellIdentity {
-                stable_id: entry.id,
-                descriptor: entry.location.clone(),
-                display_name: entry.display_name,
-                parsing_name: match entry.location {
-                    LocationDescriptor::ParsingName(value) => Some(value),
-                    _ => None,
-                },
+                stable_id,
+                descriptor: location,
+                display_name,
+                parsing_name: None,
                 serializable: true,
                 nonserializable_reason: None,
             },
             now_epoch_seconds,
+        );
+        if changed {
+            save_recent_visits(&self.recent_items);
+        }
+        changed
+    }
+
+    pub(crate) fn recent_visits(&self) -> &[explorer_model::RecentNamespaceItem] {
+        self.recent_items.entries()
+    }
+
+    pub(crate) fn record_run_from_row(&mut self, row_index: usize, now_epoch_seconds: u64) -> bool {
+        let Some(entry) = self
+            .tabs
+            .active_tab()
+            .visible_snapshot()
+            .and_then(|snapshot| snapshot.entries().get(row_index))
+            .cloned()
+        else {
+            return false;
+        };
+        if entry.is_container {
+            return false;
+        }
+        self.record_run(
+            entry.display_name,
+            entry.location,
+            entry.metadata.size_bytes,
+            entry.metadata.type_display,
+            now_epoch_seconds,
         )
+    }
+
+    pub(crate) fn record_run(
+        &mut self,
+        display_name: String,
+        location: LocationDescriptor,
+        size_bytes: Option<u64>,
+        type_display: Option<String>,
+        now_epoch_seconds: u64,
+    ) -> bool {
+        let key = location.editable_text();
+        if display_name.trim().is_empty() || key.trim().is_empty() {
+            return false;
+        }
+        let year = 366 * 24 * 60 * 60;
+        let previous = self
+            .run_log
+            .iter()
+            .find(|entry| entry.location.editable_text() == key)
+            .map(|entry| entry.open_count)
+            .unwrap_or(0);
+        self.run_log.retain(|entry| {
+            now_epoch_seconds.saturating_sub(entry.opened_epoch_seconds) <= year
+                && entry.location.editable_text() != key
+        });
+        self.run_log.insert(
+            0,
+            RunRecord {
+                display_name,
+                location,
+                size_bytes,
+                type_display,
+                opened_epoch_seconds: now_epoch_seconds,
+                open_count: previous.saturating_add(1),
+            },
+        );
+        self.run_log.truncate(5000);
+        save_run_log(&self.run_log);
+        true
+    }
+
+    pub(crate) fn run_log(&self) -> &[RunRecord] {
+        &self.run_log
     }
 
     pub(crate) fn synthetic_root_entries(
@@ -1673,6 +1889,9 @@ impl AppViewState {
         root: explorer_model::SyntheticRoot,
         now_epoch_seconds: u64,
     ) -> Vec<explorer_model::FileEntry> {
+        if root == explorer_model::SyntheticRoot::Favorites {
+            return self.favorites_entries(None);
+        }
         let identities: Vec<ShellIdentity> = match root {
             explorer_model::SyntheticRoot::QuickAccess => self
                 .quick_access
@@ -1687,6 +1906,7 @@ impl AppViewState {
             .into_iter()
             .cloned()
             .collect(),
+            explorer_model::SyntheticRoot::Favorites => Vec::new(),
         };
         identities
             .into_iter()
@@ -3609,9 +3829,124 @@ impl AppViewState {
 
     pub(crate) fn toggle_bookmark_folder_menu(&mut self, id: explorer_model::BookmarkFolderId) {
         self.bookmark_folder_menu = (self.bookmark_folder_menu != Some(id)).then_some(id);
+    }
+
+    pub(crate) fn toggle_bookmark_folder_expanded(
+        &mut self,
+        id: explorer_model::BookmarkFolderId,
+    ) -> bool {
         if !self.expanded_bookmark_folders.remove(&id) {
             self.expanded_bookmark_folders.insert(id);
+            true
+        } else {
+            false
         }
+    }
+
+    fn reveal_favorites_navigation(&mut self, location: &LocationDescriptor) {
+        if location.synthetic_root() == Some(explorer_model::SyntheticRoot::Favorites)
+            || location.favorites_folder_id().is_some()
+        {
+            self.favorites_nav_collapsed = false;
+        }
+        let mut current = location.favorites_folder_id();
+        while let Some(id) = current {
+            self.expanded_bookmark_folders.insert(id);
+            current = self
+                .bookmarks
+                .folder(id)
+                .and_then(|folder| folder.parent_id);
+        }
+    }
+
+    pub(crate) fn lua_bookmark_id_for_row(
+        &self,
+        row_index: usize,
+    ) -> Option<explorer_model::BookmarkId> {
+        self.presentation_entry(row_index)
+            .and_then(|entry| entry.location.lua_bookmark_id())
+    }
+
+    fn favorites_parent_location(
+        &self,
+        location: &LocationDescriptor,
+    ) -> Option<LocationDescriptor> {
+        if location.synthetic_root() == Some(explorer_model::SyntheticRoot::Favorites) {
+            return None;
+        }
+        let id = location.favorites_folder_id()?;
+        let parent = self.bookmarks.folder(id)?.parent_id;
+        Some(parent.map_or_else(
+            || LocationDescriptor::synthetic(explorer_model::SyntheticRoot::Favorites),
+            LocationDescriptor::favorites_folder,
+        ))
+    }
+
+    pub(crate) fn favorites_entries(
+        &self,
+        parent_id: Option<explorer_model::BookmarkFolderId>,
+    ) -> Vec<explorer_model::FileEntry> {
+        let mut folders: Vec<_> = self.bookmarks.child_folders(parent_id).collect();
+        folders.sort_by_key(|folder| folder.order);
+        let mut bookmarks: Vec<_> = self.bookmarks.child_entries(parent_id).collect();
+        bookmarks.sort_by_key(|bookmark| bookmark.order);
+        let mut entries = Vec::with_capacity(folders.len() + bookmarks.len());
+        for folder in folders {
+            let Some(id) = ShellItemId::from_provider_bytes(
+                format!("favorites-folder:{}", folder.id).into_bytes(),
+            ) else {
+                continue;
+            };
+            entries.push(explorer_model::FileEntry {
+                id,
+                display_name: folder.name.clone(),
+                location: LocationDescriptor::favorites_folder(folder.id),
+                is_container: true,
+                metadata: explorer_model::FileEntryMetadata {
+                    type_display: Some("Bookmark folder".to_owned()),
+                    namespace_capabilities: explorer_model::NamespaceCapabilities::from_public_bits(
+                        explorer_model::NamespaceCapabilities::OPEN
+                            | explorer_model::NamespaceCapabilities::ENUMERATE
+                            | explorer_model::NamespaceCapabilities::PROPERTIES
+                            | explorer_model::NamespaceCapabilities::CONTEXT_MENU,
+                    ),
+                    ..explorer_model::FileEntryMetadata::default()
+                },
+            });
+        }
+        for bookmark in bookmarks {
+            let Some(id) = ShellItemId::from_provider_bytes(bookmark.id.as_bytes().as_slice())
+            else {
+                continue;
+            };
+            entries.push(explorer_model::FileEntry {
+                id,
+                display_name: bookmark.name.clone(),
+                location: bookmark_entry_location(bookmark),
+                is_container: bookmark.target.is_folder(),
+                metadata: explorer_model::FileEntryMetadata {
+                    type_display: Some(
+                        if matches!(
+                            bookmark.target,
+                            explorer_model::BookmarkTarget::LuaScript { .. }
+                        ) {
+                            "Lua bookmark".to_owned()
+                        } else if bookmark.target.is_folder() {
+                            "Bookmark folder".to_owned()
+                        } else {
+                            "Bookmark".to_owned()
+                        },
+                    ),
+                    namespace_capabilities: explorer_model::NamespaceCapabilities::from_public_bits(
+                        explorer_model::NamespaceCapabilities::OPEN
+                            | explorer_model::NamespaceCapabilities::PROPERTIES
+                            | explorer_model::NamespaceCapabilities::CONTEXT_MENU,
+                    ),
+                    ..explorer_model::FileEntryMetadata::default()
+                },
+            });
+        }
+        entries
     }
 
     pub(crate) fn dismiss_bookmark_browse_menus(&mut self) {
@@ -3797,6 +4132,7 @@ impl AppViewState {
                 name: bookmark.name.clone(),
                 target: bookmark.target.clone(),
                 parent_id: bookmark.parent_id,
+                tags: bookmark.tags.clone(),
             },
             None => BookmarkEditorDraft {
                 id: None,
@@ -3805,6 +4141,7 @@ impl AppViewState {
                     source: "-- current_folder is a read-only string\n".to_owned(),
                 },
                 parent_id: None,
+                tags: String::new(),
             },
         });
     }
@@ -3828,6 +4165,7 @@ impl AppViewState {
             name,
             target,
             parent_id,
+            tags: String::new(),
         });
     }
 
@@ -3901,6 +4239,12 @@ impl AppViewState {
         }
     }
 
+    pub(crate) fn update_bookmark_editor_tags(&mut self, tags: String) {
+        if let Some(editor) = &mut self.bookmark_editor {
+            editor.tags = tags;
+        }
+    }
+
     pub(crate) fn commit_bookmark_editor(&mut self) -> Option<explorer_model::BookmarkMutation> {
         let editor = self.bookmark_editor.take()?;
         if editor.name.trim().is_empty() || editor.target.editable_payload().trim().is_empty() {
@@ -3909,12 +4253,26 @@ impl AppViewState {
         }
         Some(match editor.id {
             Some(id) => {
-                self.bookmarks
-                    .begin_update_in(id, editor.name, editor.target, editor.parent_id)
+                let mutation = self.bookmarks.begin_update_in(
+                    id,
+                    editor.name,
+                    editor.target,
+                    editor.parent_id,
+                );
+                let _ = self.bookmarks.set_entry_tags(id, editor.tags);
+                mutation
             }
-            None => self
-                .bookmarks
-                .begin_add_to(editor.name, editor.target, editor.parent_id),
+            None => {
+                let mutation =
+                    self.bookmarks
+                        .begin_add_to(editor.name, editor.target, editor.parent_id);
+                if mutation.changed()
+                    && let Some(id) = self.bookmarks.entries().last().map(|entry| entry.id)
+                {
+                    let _ = self.bookmarks.set_entry_tags(id, editor.tags);
+                }
+                mutation
+            }
         })
     }
 
@@ -3989,6 +4347,8 @@ impl AppViewState {
         location: LocationDescriptor,
         refresh: bool,
     ) -> Option<ExplorerCommand> {
+        self.reveal_favorites_navigation(&location);
+        self.dismiss_bookmark_browse_menus();
         self.clear_file_view_typeahead();
         self.cancel_permanent_delete_confirmation();
         self.cancel_lock_recovery();
@@ -4143,6 +4503,7 @@ impl AppViewState {
         let parent = location
             .virtual_parent()
             .or(resolved_virtual_parent)
+            .or_else(|| self.favorites_parent_location(location))
             .or_else(|| {
                 location
                     .path()?
@@ -7004,6 +7365,154 @@ fn default_new_items() -> Vec<explorer_model::ShellNewItemDescriptor> {
     ]
 }
 
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+struct PersistedVisit {
+    display_name: String,
+    location: LocationDescriptor,
+    last_opened_epoch_seconds: u64,
+}
+
+fn recent_visits_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(|root| {
+        std::path::PathBuf::from(root).join("RustGpuiExplorer\\history\\v1\\visits.json")
+    })
+}
+
+fn load_recent_visits() -> RecentItems {
+    let mut recents = RecentItems::new(1000, 400 * 24 * 60 * 60, Vec::new());
+    let Some(path) = recent_visits_path() else {
+        return recents;
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return recents;
+    };
+    let Ok(visits) = serde_json::from_str::<Vec<PersistedVisit>>(&text) else {
+        return recents;
+    };
+    recents.replace_entries(
+        visits
+            .into_iter()
+            .filter_map(|visit| {
+                let stable_id =
+                    ShellItemId::from_provider_bytes(visit.location.editable_text().into_bytes())?;
+                Some(explorer_model::RecentNamespaceItem {
+                    identity: ShellIdentity {
+                        stable_id,
+                        descriptor: visit.location,
+                        display_name: visit.display_name,
+                        parsing_name: None,
+                        serializable: true,
+                        nonserializable_reason: None,
+                    },
+                    last_opened_epoch_seconds: visit.last_opened_epoch_seconds,
+                })
+            })
+            .collect(),
+    );
+    recents
+}
+
+fn save_recent_visits(recents: &RecentItems) {
+    let Some(path) = recent_visits_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let visits: Vec<PersistedVisit> = recents
+        .entries()
+        .iter()
+        .map(|entry| PersistedVisit {
+            display_name: entry.identity.display_name.clone(),
+            location: entry.identity.descriptor.clone(),
+            last_opened_epoch_seconds: entry.last_opened_epoch_seconds,
+        })
+        .collect();
+    if let Ok(text) = serde_json::to_string_pretty(&visits) {
+        let _ = std::fs::write(path, text);
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub(crate) struct RunRecord {
+    pub display_name: String,
+    pub location: LocationDescriptor,
+    #[serde(default)]
+    pub size_bytes: Option<u64>,
+    #[serde(default)]
+    pub type_display: Option<String>,
+    pub opened_epoch_seconds: u64,
+    #[serde(default)]
+    pub open_count: u64,
+}
+
+fn run_log_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("LOCALAPPDATA")
+        .map(|root| std::path::PathBuf::from(root).join("RustGpuiExplorer\\history\\v1\\runs.json"))
+}
+
+fn load_run_log() -> Vec<RunRecord> {
+    let Some(path) = run_log_path() else {
+        return Vec::new();
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let text = text.trim_start_matches('\u{feff}');
+    let Ok(mut records) = serde_json::from_str::<Vec<RunRecord>>(text) else {
+        return Vec::new();
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |value| value.as_secs());
+    let year = 366 * 24 * 60 * 60;
+    records.retain(|entry| now.saturating_sub(entry.opened_epoch_seconds) <= year);
+    records.truncate(5000);
+    records
+}
+
+fn save_run_log(records: &[RunRecord]) {
+    let Some(path) = run_log_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(text) = serde_json::to_string_pretty(records) {
+        let _ = std::fs::write(path, text);
+    }
+}
+
+pub(crate) fn run_record_can_launch(location: &LocationDescriptor) -> bool {
+    match location.path() {
+        Some(path) => path.is_file(),
+        None => !location.editable_text().trim().is_empty(),
+    }
+}
+
+pub(crate) fn run_record_parent_location(
+    location: &LocationDescriptor,
+) -> Option<LocationDescriptor> {
+    location
+        .path()
+        .and_then(std::path::Path::parent)
+        .filter(|parent| parent.is_dir())
+        .map(LocationDescriptor::file_system)
+}
+
+pub(crate) fn run_record_fs_details(
+    location: &LocationDescriptor,
+) -> (Option<u64>, Option<String>) {
+    let Some(path) = location.path() else {
+        return (None, None);
+    };
+    let size_bytes = std::fs::metadata(path).ok().map(|metadata| metadata.len());
+    let type_display = path
+        .extension()
+        .map(|ext| format!("{} file", ext.to_string_lossy().to_ascii_uppercase()));
+    (size_bytes, type_display)
+}
+
 fn move_bounded_menu_index(current: usize, direction: i8, last: usize) -> usize {
     match direction {
         i8::MIN..=-2 => 0,
@@ -7456,6 +7965,7 @@ mod tests {
         assert!(state.bookmark_editor().is_some());
         let exact = r#"?:\\offline\future<>"#.to_owned();
         state.update_bookmark_editor_payload(exact.clone());
+        state.update_bookmark_editor_tags("work, remote".into());
         assert!(
             state
                 .commit_bookmark_editor()
@@ -7466,6 +7976,7 @@ mod tests {
             state.bookmarks().entries()[0].target.editable_payload(),
             exact
         );
+        assert_eq!(state.bookmarks().entries()[0].tags, "work, remote");
     }
 
     #[test]
@@ -11400,6 +11911,37 @@ mod tests {
     }
 
     #[test]
+    fn wsl_details_keep_universal_columns_and_hide_local_only_plugins() {
+        let local = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            explorer_model::LocationDescriptor::file_system(r"C:\"),
+            "C",
+        ));
+        assert!(
+            local
+                .view_settings()
+                .details_column_visible(&explorer_model::ColumnId::FileCount)
+        );
+        assert!(
+            local
+                .view_settings()
+                .details_column_visible(&explorer_model::ColumnId::FolderCount)
+        );
+
+        let wsl = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            explorer_model::LocationDescriptor::file_system(r"\\wsl.localhost\Ubuntu-24.04\"),
+            "Ubuntu-24.04",
+        ));
+        let settings = wsl.view_settings();
+        assert!(settings.details_column_visible(&explorer_model::ColumnId::Name));
+        assert!(settings.details_column_visible(&explorer_model::ColumnId::DateModified));
+        assert!(settings.details_column_visible(&explorer_model::ColumnId::Type));
+        assert!(settings.details_column_visible(&explorer_model::ColumnId::Size));
+        assert!(!settings.details_column_visible(&explorer_model::ColumnId::FileCount));
+        assert!(!settings.details_column_visible(&explorer_model::ColumnId::FolderCount));
+        assert!(!settings.details_column_visible(&explorer_model::ColumnId::Permissions));
+    }
+
+    #[test]
     fn cache_budget_apply_reopens_from_committed_value_without_stale_512() {
         let mut state = AppViewState::default();
         state.open_folder_options();
@@ -11894,6 +12436,96 @@ mod tests {
             state.selected_paths_clipboard_text().as_deref(),
             Some("\"C:\\fixture\\folder\"\r\n\"C:\\fixture\\file.txt\"")
         );
+    }
+
+    #[test]
+    fn favorites_parent_defaults_collapsed_and_expands_without_opening_folder_menu() {
+        let mut state = AppViewState::default();
+        let root =
+            explorer_model::LocationDescriptor::synthetic(explorer_model::SyntheticRoot::Favorites);
+        assert!(!state.favorites_nav_expanded());
+        assert!(
+            state.toggle_navigation_node(root.clone()),
+            "first toggle from the default collapsed state expands the parent"
+        );
+        assert!(state.favorites_nav_expanded());
+        assert!(state.bookmark_folder_menu().is_none());
+        assert!(!state.toggle_navigation_node(root));
+        assert!(!state.favorites_nav_expanded());
+    }
+
+    #[test]
+    fn toolbar_folder_menu_does_not_expand_left_nav_folder() {
+        let mut state = AppViewState::default();
+        assert!(state.add_bookmark_folder("super".into(), None).changed());
+        let id = state.bookmarks().folders()[0].id;
+        state.toggle_bookmark_folder_menu(id);
+        assert_eq!(state.bookmark_folder_menu(), Some(id));
+        assert!(!state.bookmark_folder_expanded(id));
+        state.toggle_bookmark_folder_expanded(id);
+        assert!(state.bookmark_folder_expanded(id));
+        assert_eq!(state.bookmark_folder_menu(), Some(id));
+        let _ = state.begin_active_navigation(
+            explorer_model::LocationDescriptor::synthetic(explorer_model::SyntheticRoot::Favorites),
+            false,
+        );
+        assert!(
+            state.bookmark_folder_menu().is_none(),
+            "navigating from the left pane must close the bookmark toolbar dropdown"
+        );
+        assert!(state.bookmark_folder_expanded(id));
+    }
+
+    #[test]
+    fn favorites_listing_and_up_from_nested_folder() {
+        let mut bookmarks = explorer_model::Bookmarks::default();
+        assert!(bookmarks.begin_add_folder("super".into(), None).changed());
+        let folder_id = bookmarks.folders()[0].id;
+        assert!(
+            bookmarks
+                .begin_add(
+                    "portable".into(),
+                    explorer_model::BookmarkTarget::FolderPath {
+                        path: r"C:\portable".into(),
+                    },
+                )
+                .changed()
+        );
+        let nested = explorer_model::LocationDescriptor::favorites_folder(folder_id);
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            nested.clone(),
+            "super",
+        ));
+        state.configure_bookmarks(bookmarks);
+
+        let entries = state.favorites_entries(None);
+        assert_eq!(entries[0].display_name, "super");
+        assert_eq!(
+            entries[0].location,
+            explorer_model::LocationDescriptor::favorites_folder(folder_id)
+        );
+        assert!(entries[0].is_container);
+        assert_eq!(entries[1].display_name, "portable");
+        assert!(entries[1].is_container);
+
+        let _ = state.begin_active_navigation(nested, false);
+        assert!(state.bookmark_folder_expanded(folder_id));
+        assert!(state.favorites_nav_expanded());
+
+        let up = state
+            .begin_up_navigation()
+            .expect("up from nested favorites");
+        match up {
+            explorer_model::ExplorerCommand::Navigate { location, .. } => {
+                assert_eq!(
+                    location,
+                    explorer_model::LocationDescriptor::synthetic(
+                        explorer_model::SyntheticRoot::Favorites
+                    )
+                );
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
