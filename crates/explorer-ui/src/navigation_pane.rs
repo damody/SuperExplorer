@@ -12,6 +12,7 @@ use explorer_model::{LocationDescriptor, ShellIconKey, ShellIconTheme, Synthetic
 pub enum NavigationIcon {
     Home,
     QuickAccess,
+    Favorites,
     Gallery,
     OneDrive,
     Desktop,
@@ -30,6 +31,7 @@ pub enum NavigationIcon {
     Phone,
     Server,
     GoogleDrive,
+    Linux,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,10 +75,21 @@ pub struct GdriveNavigationProfile {
     pub available: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WslNavigationDistribution {
+    pub name: String,
+    pub label: String,
+    pub available: bool,
+}
+
+pub use explorer_model::LINUX_NAMESPACE;
+
 static ADB_NAVIGATION_DEVICES: OnceLock<RwLock<Vec<AdbNavigationDevice>>> = OnceLock::new();
 static SFTP_NAVIGATION_PROFILES: OnceLock<RwLock<Vec<SftpNavigationProfile>>> = OnceLock::new();
 static FTP_NAVIGATION_PROFILES: OnceLock<RwLock<Vec<FtpNavigationProfile>>> = OnceLock::new();
 static GDRIVE_NAVIGATION_PROFILES: OnceLock<RwLock<Vec<GdriveNavigationProfile>>> = OnceLock::new();
+static WSL_NAVIGATION_DISTRIBUTIONS: OnceLock<RwLock<Vec<WslNavigationDistribution>>> =
+    OnceLock::new();
 
 pub fn configure_adb_navigation_devices(devices: Vec<AdbNavigationDevice>) {
     *ADB_NAVIGATION_DEVICES
@@ -104,6 +117,41 @@ pub fn configure_gdrive_navigation_profiles(profiles: Vec<GdriveNavigationProfil
         .get_or_init(|| RwLock::new(Vec::new()))
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = profiles;
+}
+
+pub fn configure_wsl_navigation_distributions(distributions: Vec<WslNavigationDistribution>) {
+    *WSL_NAVIGATION_DISTRIBUTIONS
+        .get_or_init(|| RwLock::new(Vec::new()))
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = distributions;
+}
+
+pub fn wsl_distribution_root_path(name: &str) -> PathBuf {
+    PathBuf::from(format!(r"\\wsl.localhost\{name}\"))
+}
+
+pub fn wsl_distribution_root_name(location: &LocationDescriptor) -> Option<String> {
+    location
+        .path()
+        .and_then(explorer_model::wsl_unc_distribution_name)
+}
+
+fn is_wsl_distribution_root(location: &LocationDescriptor) -> bool {
+    location
+        .path()
+        .is_some_and(explorer_model::is_wsl_distribution_root_path)
+}
+
+fn linux_namespace_location() -> LocationDescriptor {
+    LocationDescriptor::ParsingName(LINUX_NAMESPACE.to_owned())
+}
+
+fn wsl_navigation_distributions() -> Vec<WslNavigationDistribution> {
+    WSL_NAVIGATION_DISTRIBUTIONS
+        .get_or_init(|| RwLock::new(Vec::new()))
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 fn nav_status_label(catalog: Catalog, label: String, key: &str) -> String {
@@ -321,6 +369,22 @@ impl NavigationItem {
             availability: NavigationItemAvailability::Available,
         }
     }
+
+    fn linux_root(catalog: Catalog) -> Self {
+        let location = linux_namespace_location();
+        Self {
+            id: "linux".to_owned(),
+            label: catalog.t("nav-linux"),
+            kind: NavigationItemKind::Section,
+            icon: Some(NavigationIcon::Linux),
+            icon_location: Some(location.clone()),
+            location: Some(location),
+            depth: 0,
+            pinned: false,
+            expanded: true,
+            availability: NavigationItemAvailability::Available,
+        }
+    }
 }
 
 fn navigation_location_hash(location: &LocationDescriptor) -> u64 {
@@ -356,9 +420,34 @@ pub(crate) fn should_render_discovered_child(
         LocationDescriptor::ParsingName(value)
             if value.eq_ignore_ascii_case("shell:MyComputerFolder")
     );
-    !parent_is_this_pc
-        || (filesystem_drive_root(child).is_none()
-            && drive_root_display_letter(display_name).is_none())
+    if parent_is_this_pc {
+        return filesystem_drive_root(child).is_none()
+            && drive_root_display_letter(display_name).is_none()
+            && !is_wsl_distribution_root(child)
+            && !display_name_is_wsl_unc(display_name);
+    }
+    let parent_is_linux = matches!(
+        parent,
+        LocationDescriptor::ParsingName(value)
+            if value.eq_ignore_ascii_case(LINUX_NAMESPACE)
+    );
+    !(parent_is_linux && is_wsl_distribution_root(child))
+}
+
+fn display_name_is_wsl_unc(display_name: &str) -> bool {
+    let normalized = display_name.trim().replace('/', r"\");
+    let rest = match normalized
+        .strip_prefix(r"\\")
+        .or_else(|| normalized.strip_prefix(r"//"))
+    {
+        Some(rest) => rest,
+        None => return false,
+    };
+    rest.split('\\')
+        .find(|part| !part.is_empty())
+        .is_some_and(|server| {
+            server.eq_ignore_ascii_case("wsl.localhost") || server.eq_ignore_ascii_case("wsl$")
+        })
 }
 
 fn drive_root_display_letter(display_name: &str) -> Option<char> {
@@ -547,6 +636,30 @@ pub fn windows_navigation_items_with_pins(
         0,
         false,
     ));
+    let wsl_distributions = wsl_navigation_distributions();
+    if !wsl_distributions.is_empty() {
+        items.push(NavigationItem::linux_root(catalog));
+        for distro in wsl_distributions {
+            items.push(NavigationItem {
+                id: format!("linux-distro-{}", distro.name),
+                label: distro.label,
+                kind: NavigationItemKind::Location,
+                icon: Some(NavigationIcon::Folder),
+                icon_location: None,
+                location: distro.available.then(|| {
+                    LocationDescriptor::file_system(wsl_distribution_root_path(&distro.name))
+                }),
+                depth: 1,
+                pinned: false,
+                expanded: false,
+                availability: if distro.available {
+                    NavigationItemAvailability::Available
+                } else {
+                    NavigationItemAvailability::Unavailable
+                },
+            });
+        }
+    }
     items.push(NavigationItem::separator("phones-separator"));
     items.push(NavigationItem::phone_root(catalog));
     let devices = ADB_NAVIGATION_DEVICES
@@ -696,16 +809,26 @@ pub fn windows_navigation_items_with_pins(
 pub fn is_selected(item: &NavigationItem, current: Option<&LocationDescriptor>) -> bool {
     match (item.location.as_ref(), current) {
         (
-            Some(LocationDescriptor::FileSystem(left)),
-            Some(LocationDescriptor::FileSystem(right)),
+            Some(LocationDescriptor::FileSystem(left_path)),
+            Some(LocationDescriptor::FileSystem(right_path)),
         ) => {
-            let left = left.to_string_lossy();
-            let right = right.to_string_lossy();
+            let left = left_path.to_string_lossy();
+            let right = right_path.to_string_lossy();
             left.eq_ignore_ascii_case(&right)
                 || (item.id.starts_with("drive-")
                     && right
                         .to_ascii_lowercase()
                         .starts_with(&left.to_ascii_lowercase()))
+                || (item.id.starts_with("linux-distro-")
+                    && wsl_distribution_root_name(&LocationDescriptor::FileSystem(
+                        left_path.clone(),
+                    ))
+                    .zip(wsl_distribution_root_name(&LocationDescriptor::FileSystem(
+                        right_path.clone(),
+                    )))
+                    .is_some_and(|(item_distro, current_distro)| {
+                        item_distro.eq_ignore_ascii_case(&current_distro)
+                    }))
         }
         (Some(LocationDescriptor::Virtual(left)), Some(LocationDescriptor::Virtual(right))) => {
             left.provider_id == right.provider_id
@@ -1003,6 +1126,19 @@ mod tests {
             &LocationDescriptor::ParsingName("shell:ThirdPartyProvider".to_owned()),
             "Cloud Provider"
         ));
+        assert!(
+            !should_render_discovered_child(
+                &this_pc,
+                &LocationDescriptor::file_system(r"\\wsl.localhost\Ubuntu-24.04\"),
+                r"\\wsl.localhost\Ubuntu-24.04"
+            ),
+            "WSL distro roots belong under Linux, not This PC"
+        );
+        assert!(!should_render_discovered_child(
+            &this_pc,
+            &LocationDescriptor::file_system(r"\\wsl$\Ubuntu-24.04"),
+            r"\\wsl$\Ubuntu-24.04"
+        ));
     }
 
     #[test]
@@ -1064,5 +1200,123 @@ mod tests {
         assert_eq!(label(&en, "ftp"), "FTP");
         assert_eq!(label(&en, "gdrive"), "Google Drive");
         assert_eq!(label(&en, "gdrive-connect"), "Connect Google Drive");
+    }
+
+    #[test]
+    fn linux_row_is_hidden_until_a_wsl_distribution_exists() {
+        configure_wsl_navigation_distributions(Vec::new());
+        let hidden = windows_navigation_items(zh_tw_catalog());
+        assert!(hidden.iter().all(|item| item.id != "linux"));
+        assert!(
+            hidden
+                .iter()
+                .all(|item| !item.id.starts_with("linux-distro-"))
+        );
+
+        configure_wsl_navigation_distributions(vec![WslNavigationDistribution {
+            name: "Ubuntu-24.04".to_owned(),
+            label: "Ubuntu-24.04".to_owned(),
+            available: true,
+        }]);
+        let items = windows_navigation_items(zh_tw_catalog());
+        let mut ids = std::collections::HashSet::new();
+        assert!(items.iter().all(|item| ids.insert(item.id.as_str())));
+        let position = |id| items.iter().position(|item| item.id == id).unwrap();
+        assert!(position("network") < position("linux"));
+        assert!(position("linux") < position("linux-distro-Ubuntu-24.04"));
+        assert!(position("linux-distro-Ubuntu-24.04") < position("phones"));
+
+        let linux = items
+            .iter()
+            .find(|item| item.id == "linux")
+            .expect("linux row");
+        assert_eq!(linux.label, "Linux");
+        assert_eq!(linux.kind, NavigationItemKind::Section);
+        assert_eq!(linux.icon, Some(NavigationIcon::Linux));
+        assert_eq!(
+            linux.location,
+            Some(LocationDescriptor::ParsingName(LINUX_NAMESPACE.to_owned()))
+        );
+        assert_eq!(linux.icon_location, linux.location);
+        assert_eq!(linux.depth, 0);
+        assert!(linux.expanded);
+        assert_eq!(linux.availability, NavigationItemAvailability::Available);
+
+        let distro = items
+            .iter()
+            .find(|item| item.id == "linux-distro-Ubuntu-24.04")
+            .expect("distro row");
+        assert_eq!(distro.label, "Ubuntu-24.04");
+        assert_eq!(distro.icon, Some(NavigationIcon::Folder));
+        assert_eq!(distro.depth, 1);
+        assert_eq!(
+            distro.location,
+            Some(LocationDescriptor::file_system(
+                r"\\wsl.localhost\Ubuntu-24.04\"
+            ))
+        );
+        assert!(is_selected(
+            distro,
+            Some(&LocationDescriptor::file_system(
+                r"\\wsl.localhost\Ubuntu-24.04\home\user"
+            ))
+        ));
+        assert!(is_selected(
+            distro,
+            Some(&LocationDescriptor::file_system(r"\\wsl$\Ubuntu-24.04\etc"))
+        ));
+        assert!(!is_selected(
+            distro,
+            Some(&LocationDescriptor::file_system(
+                r"\\wsl.localhost\Ubuntu-22.04\"
+            ))
+        ));
+
+        let linux_parent = LocationDescriptor::ParsingName(LINUX_NAMESPACE.to_owned());
+        assert!(!should_render_discovered_child(
+            &linux_parent,
+            &LocationDescriptor::file_system(r"\\wsl.localhost\Ubuntu-24.04\"),
+            "Ubuntu-24.04"
+        ));
+        assert!(should_render_discovered_child(
+            &linux_parent,
+            &LocationDescriptor::file_system(r"\\wsl.localhost\Ubuntu-24.04\home"),
+            "home"
+        ));
+
+        let en = windows_navigation_items(Catalog::new(AppLocale::En));
+        assert_eq!(
+            en.iter()
+                .find(|item| item.id == "linux")
+                .map(|item| item.label.as_str()),
+            Some("Linux")
+        );
+        configure_wsl_navigation_distributions(Vec::new());
+    }
+
+    #[test]
+    fn wsl_unc_identity_accepts_localhost_and_dollar_roots() {
+        assert_eq!(
+            wsl_distribution_root_name(&LocationDescriptor::file_system(
+                r"\\wsl.localhost\Ubuntu-24.04\"
+            ))
+            .as_deref(),
+            Some("Ubuntu-24.04")
+        );
+        assert_eq!(
+            wsl_distribution_root_name(&LocationDescriptor::file_system(
+                r"\\wsl$\Ubuntu-24.04\home"
+            ))
+            .as_deref(),
+            Some("Ubuntu-24.04")
+        );
+        assert_eq!(
+            wsl_distribution_root_path("Ubuntu-24.04"),
+            PathBuf::from(r"\\wsl.localhost\Ubuntu-24.04\")
+        );
+        assert_eq!(
+            wsl_distribution_root_name(&LocationDescriptor::file_system(r"D:\Ubuntu-24.04")),
+            None
+        );
     }
 }

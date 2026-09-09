@@ -375,6 +375,12 @@ pub fn navigation_icon(icon: NavigationIcon, tokens: UiTokens) -> impl IntoEleme
             .bg(color)
     };
     let art = match icon {
+        NavigationIcon::Favorites => div().child(
+            svg()
+                .path("fluent/star.svg")
+                .size(px(size * 0.9))
+                .text_color(tokens.theme.colors.focus.to_gpui()),
+        ),
         NavigationIcon::Home | NavigationIcon::QuickAccess => div()
             .w(px(size * 0.85))
             .h(px(size * 0.75))
@@ -423,7 +429,10 @@ pub fn navigation_icon(icon: NavigationIcon, tokens: UiTokens) -> impl IntoEleme
                     .rounded(px(size * 0.25))
                     .bg(colors.one_drive.to_gpui()),
             ),
-        NavigationIcon::Desktop | NavigationIcon::Computer | NavigationIcon::Network => div()
+        NavigationIcon::Desktop
+        | NavigationIcon::Computer
+        | NavigationIcon::Network
+        | NavigationIcon::Linux => div()
             .w(px(size * 0.9))
             .h(px(size * 0.7))
             .rounded(px(1.0))
@@ -517,6 +526,28 @@ mod tests {
         remote_file_icon_spec,
     };
     use crate::{UiTokens, theme::ThemeTokens};
+
+    #[test]
+    fn favorites_navigation_icon_is_a_filled_star_in_focus_blue() {
+        let source = include_str!("icons.rs");
+        let navigation = source
+            .split("pub fn navigation_icon(")
+            .nth(1)
+            .and_then(|source| source.split("pub fn unavailable_navigation_icon(").next())
+            .expect("navigation_icon");
+        assert!(
+            navigation.contains("NavigationIcon::Favorites"),
+            "favorites must have its own navigation art"
+        );
+        assert!(
+            !navigation.contains(
+                "NavigationIcon::Home | NavigationIcon::QuickAccess | NavigationIcon::Favorites"
+            ),
+            "favorites must not reuse the Home/QuickAccess tile"
+        );
+        assert!(navigation.contains("fluent/star.svg"));
+        assert!(navigation.contains("colors.focus"));
+    }
 
     #[test]
     fn icon_contract_has_unique_stable_names_and_sources() {

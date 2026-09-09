@@ -1206,6 +1206,9 @@ impl ColumnFileSystems {
             crate::FileSystemKind::Sftp => Self::SFTP.0,
             crate::FileSystemKind::Ftp => Self::FTP.0,
             crate::FileSystemKind::Gdrive => Self::GDRIVE.0,
+            // WSL is not NTFS. Only columns that opted into every filesystem (Name/Date/Type/Size)
+            // stay visible; local MFT/plugin columns and remote-only columns stay hidden.
+            crate::FileSystemKind::Wsl => return self.0 == Self::ALL.0,
         };
         self.0 & bit != 0
     }
@@ -3656,6 +3659,9 @@ mod tests {
         assert!(ColumnFileSystems::REMOTE.contains(crate::FileSystemKind::Ftp));
         assert!(ColumnFileSystems::REMOTE.contains(crate::FileSystemKind::Gdrive));
         assert!(!ColumnFileSystems::REMOTE.contains(crate::FileSystemKind::Local));
+        assert!(ColumnFileSystems::ALL.contains(crate::FileSystemKind::Wsl));
+        assert!(!ColumnFileSystems::LOCAL.contains(crate::FileSystemKind::Wsl));
+        assert!(!ColumnFileSystems::REMOTE.contains(crate::FileSystemKind::Wsl));
         assert_eq!(ColumnFileSystems::from_bits(32), None);
     }
 }

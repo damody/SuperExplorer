@@ -1297,6 +1297,9 @@ struct PendingFolderSizeWorkV1 {
     requests: Option<Vec<explorer_ui::folder_size_column::FolderSizeRequestV1>>,
     in_flight: HashMap<FolderSizeWorkIdentityV1, explorer_model::RequestId>,
     cancelled: HashSet<explorer_model::RequestId>,
+    /// Visible folder the UI submitted most recently. Claimed batches prefer
+    /// this generation so C:\ / D:\ scans do not block D:\SuperExplorer.
+    focus: Option<(explorer_model::TabId, explorer_model::Generation)>,
     stopped: bool,
 }
 
@@ -1323,6 +1326,17 @@ fn enqueue_folder_size_requests(
     state: &mut PendingFolderSizeWorkV1,
     requests: Vec<explorer_ui::folder_size_column::FolderSizeRequestV1>,
 ) {
+    if let Some(request) = requests.last() {
+        let focus = (request.context.tab_id, request.context.generation);
+        if state.focus != Some(focus) {
+            for (identity, request_id) in &state.in_flight {
+                if (identity.tab_id, identity.generation) != focus {
+                    state.cancelled.insert(*request_id);
+                }
+            }
+            state.focus = Some(focus);
+        }
+    }
     let pending = state.requests.get_or_insert_with(Vec::new);
     for request in requests {
         let identity = FolderSizeWorkIdentityV1::from(&request);
@@ -1343,11 +1357,28 @@ fn take_folder_size_batch(
     let Some(pending) = state.requests.as_mut() else {
         return Vec::new();
     };
-    let Some(first) = pending.first() else {
+    pending.retain(|request| !state.cancelled.contains(&request.context.request_id));
+    if pending.is_empty() {
         state.requests = None;
         return Vec::new();
+    }
+    let preferred = state.focus.filter(|(tab, generation)| {
+        pending.iter().any(|request| {
+            request.context.tab_id == *tab && request.context.generation == *generation
+        })
+    });
+    let Some(context) = pending
+        .iter()
+        .find(|request| match preferred {
+            Some((tab, generation)) => {
+                request.context.tab_id == tab && request.context.generation == generation
+            }
+            None => true,
+        })
+        .map(|request| request.context.clone())
+    else {
+        return Vec::new();
     };
-    let context = first.context.clone();
     let mut batch = Vec::with_capacity(limit.min(pending.len()));
     let mut index = 0;
     while index < pending.len() && batch.len() < limit {
@@ -2429,6 +2460,22 @@ fn read_code_lines_file_bounded(path: &Path) -> Result<Option<Vec<u8>>, String> 
 
 const CODE_LINES_DIRECTORY_MAGIC_V1: &[u8; 8] = b"SECLDIR1";
 
+fn tokei_language_type_quiet(path: &Path, config: &tokei::Config) -> Option<tokei::LanguageType> {
+    if let Some(extension) = path.extension().and_then(|value| value.to_str()) {
+        let extension = extension.to_ascii_lowercase();
+        let known = tokei::LanguageType::list().iter().any(|(_, extensions)| {
+            extensions
+                .iter()
+                .copied()
+                .any(|candidate| candidate == extension)
+        });
+        if !known {
+            return None;
+        }
+    }
+    tokei::LanguageType::from_path(path, config)
+}
+
 fn read_code_lines_path_bounded(path: &Path) -> Result<Option<Vec<u8>>, String> {
     let metadata = fs::symlink_metadata(path).map_err(|_| "Source unavailable".to_owned())?;
     if metadata.file_type().is_symlink() {
@@ -2469,7 +2516,7 @@ fn read_code_lines_path_bounded(path: &Path) -> Result<Option<Vec<u8>>, String> 
                 return Ok(None);
             }
             let relative = child.strip_prefix(path).unwrap_or(&child);
-            if tokei::LanguageType::from_path(relative, &tokei_config).is_none() {
+            if tokei_language_type_quiet(relative, &tokei_config).is_none() {
                 continue;
             }
             let Some(bytes) = read_code_lines_file_bounded(&child)? else {
@@ -4339,6 +4386,9 @@ impl ApplicationLifecycle {
         );
         explorer_ui::navigation_pane::configure_gdrive_navigation_profiles(
             crate::remote_service::configured_gdrive_navigation_profiles(),
+        );
+        explorer_ui::navigation_pane::configure_wsl_navigation_distributions(
+            crate::remote_service::discover_wsl_navigation_distributions(),
         );
         crate::remote_service::start_adb_navigation_refresh();
         let shell_service: Arc<dyn explorer_model::ExplorerService> =
@@ -6695,7 +6745,7 @@ mod tests {
         lock_owner_cache_store, partition_batch_details_cache_hits,
         partition_code_lines_cache_hits, prepare_code_lines_batch_inputs, project_size_map_plan,
         read_code_lines_file_bounded, read_code_lines_path_bounded, should_restore_saved_tabs,
-        size_map_node_id, size_map_render_key, take_folder_size_batch,
+        size_map_node_id, size_map_render_key, take_folder_size_batch, tokei_language_type_quiet,
     };
 
     struct FakeSafeModePortV1 {
@@ -7376,6 +7426,42 @@ mod tests {
                 .windows("script.py".len())
                 .any(|bytes| bytes == b"script.py")
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn code_lines_language_lookup_skips_unknown_extensions_without_calling_tokei_from_path() {
+        let config = tokei::Config::default();
+        assert!(tokei_language_type_quiet(Path::new("notes.log"), &config).is_none());
+        assert!(tokei_language_type_quiet(Path::new("shot.PNG"), &config).is_none());
+        assert_eq!(
+            tokei_language_type_quiet(Path::new("src/main.rs"), &config),
+            Some(tokei::LanguageType::Rust)
+        );
+        assert_eq!(
+            tokei_language_type_quiet(Path::new("Makefile"), &config),
+            Some(tokei::LanguageType::Makefile)
+        );
+    }
+
+    #[test]
+    fn code_lines_directory_pack_skips_log_and_png_files() {
+        let root = std::env::temp_dir().join(format!(
+            "superexplorer-code-lines-unknown-ext-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("main.rs"), b"fn main() {}\n").unwrap();
+        fs::write(root.join("trace.log"), b"not source\n").unwrap();
+        fs::write(root.join("shot.png"), b"\x89PNG\r\n").unwrap();
+        let packed = read_code_lines_path_bounded(&root).unwrap().unwrap();
+        assert!(packed.windows(7).any(|bytes| bytes == b"main.rs"));
+        assert!(!packed.windows(9).any(|bytes| bytes == b"trace.log"));
+        assert!(!packed.windows(8).any(|bytes| bytes == b"shot.png"));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -8153,6 +8239,70 @@ mod tests {
             pending.requests.as_ref().unwrap()[0].path,
             PathBuf::from(r"C:\fixture\9")
         );
+    }
+
+    #[test]
+    fn focused_folder_size_generation_is_claimed_before_earlier_directories() {
+        let tab = TabId::new();
+        let drive = RequestContext::new(tab, Generation::new(1));
+        let focused = RequestContext::new(tab, Generation::new(2));
+        let request = |context: RequestContext, id: u64| {
+            explorer_ui::folder_size_column::FolderSizeRequestV1 {
+                context,
+                item_id: ShellItemId::from_provider_bytes(id.to_le_bytes()).unwrap(),
+                path: format!(r"C:\fixture\{id}").into(),
+                mft_cache_memory_mb: 512,
+                require_directory_facts: false,
+            }
+        };
+        let mut pending = PendingFolderSizeWorkV1::default();
+        enqueue_folder_size_requests(
+            &mut pending,
+            vec![request(drive.clone(), 1), request(drive, 2)],
+        );
+        enqueue_folder_size_requests(&mut pending, vec![request(focused.clone(), 9)]);
+
+        let batch = take_folder_size_batch(&mut pending, 8);
+        assert_eq!(
+            batch
+                .iter()
+                .map(|request| request
+                    .path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned())
+                .collect::<Vec<_>>(),
+            ["9"]
+        );
+        assert_eq!(batch[0].context, focused);
+        assert_eq!(pending.requests.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn enqueueing_a_focused_folder_preempts_in_flight_drive_scans() {
+        let tab = TabId::new();
+        let drive = RequestContext::new(tab, Generation::new(1));
+        let focused = RequestContext::new(tab, Generation::new(2));
+        let request = |context: RequestContext, id: u64| {
+            explorer_ui::folder_size_column::FolderSizeRequestV1 {
+                context,
+                item_id: ShellItemId::from_provider_bytes(id.to_le_bytes()).unwrap(),
+                path: format!(r"C:\fixture\{id}").into(),
+                mft_cache_memory_mb: 512,
+                require_directory_facts: false,
+            }
+        };
+        let mut pending = PendingFolderSizeWorkV1::default();
+        enqueue_folder_size_requests(&mut pending, vec![request(drive.clone(), 1)]);
+        let in_flight = take_folder_size_batch(&mut pending, 1);
+        assert_eq!(in_flight.len(), 1);
+        enqueue_folder_size_requests(&mut pending, vec![request(focused.clone(), 9)]);
+
+        assert!(pending.cancelled.contains(&drive.request_id));
+        let batch = take_folder_size_batch(&mut pending, 8);
+        assert_eq!(batch[0].context, focused);
+        assert_eq!(batch[0].path, PathBuf::from(r"C:\fixture\9"));
     }
 
     #[test]

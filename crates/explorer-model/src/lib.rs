@@ -59,9 +59,10 @@ pub use context_menu::{
 };
 pub use domain::{
     CancellationRegistration, CancellationSignalReport, CancellationToken, FileSystemKind,
-    Generation, LocationDescriptor, LocationDescriptorValidationError,
+    Generation, LINUX_NAMESPACE, LocationDescriptor, LocationDescriptorValidationError,
     MAX_LOCATION_DESCRIPTOR_BYTES, RequestContext, RequestRejection, ShellItemId, SyntheticRoot,
-    TabId, VirtualLocationDescriptor,
+    TabId, VirtualLocationDescriptor, is_wsl_distribution_root_path, is_wsl_unc_path,
+    wsl_unc_distribution_name,
 };
 pub use drag_drop::{
     AutoScrollDirection, DragButton, DragEffect, DragModifiers, DragSession, DragSessionState,

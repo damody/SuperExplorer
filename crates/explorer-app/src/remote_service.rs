@@ -883,6 +883,169 @@ pub fn configured_sftp_navigation_profiles()
         .collect()
 }
 
+pub fn wsl_navigation_distributions_from_names(
+    names: impl IntoIterator<Item = String>,
+) -> Vec<explorer_ui::navigation_pane::WslNavigationDistribution> {
+    let mut names = names
+        .into_iter()
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .collect::<Vec<_>>();
+    names.sort_by(|left, right| left.to_ascii_lowercase().cmp(&right.to_ascii_lowercase()));
+    names.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    names
+        .into_iter()
+        .map(
+            |name| explorer_ui::navigation_pane::WslNavigationDistribution {
+                label: name.clone(),
+                name,
+                available: true,
+            },
+        )
+        .collect()
+}
+
+pub fn discover_wsl_navigation_distributions()
+-> Vec<explorer_ui::navigation_pane::WslNavigationDistribution> {
+    wsl_navigation_distributions_from_names(lxss_distribution_names())
+}
+
+#[cfg(windows)]
+fn lxss_distribution_names() -> Vec<String> {
+    lxss_distribution_names_from(windows::Win32::System::Registry::HKEY_CURRENT_USER)
+}
+
+#[cfg(not(windows))]
+fn lxss_distribution_names() -> Vec<String> {
+    Vec::new()
+}
+
+#[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "WSL distro names live in the per-user Lxss registry and require Win32 key enumeration"
+)]
+fn lxss_distribution_names_from(root: windows::Win32::System::Registry::HKEY) -> Vec<String> {
+    use windows::{
+        Win32::{
+            Foundation::ERROR_NO_MORE_ITEMS,
+            System::Registry::{
+                HKEY, KEY_READ, REG_VALUE_TYPE, RRF_RT_REG_SZ, RegCloseKey, RegEnumKeyExW,
+                RegGetValueW, RegOpenKeyExW,
+            },
+        },
+        core::{HSTRING, PCWSTR, PWSTR},
+    };
+
+    const LXSS: &str = r"Software\Microsoft\Windows\CurrentVersion\Lxss";
+    const MAX_NAME_BYTES: u32 = 64 * 1024;
+
+    let path = HSTRING::from(LXSS);
+    let mut key = HKEY::default();
+    // SAFETY: `path` is a live NUL-terminated registry path; `key` is a writable out-parameter.
+    if unsafe { RegOpenKeyExW(root, PCWSTR(path.as_ptr()), Some(0), KEY_READ, &raw mut key) }
+        .is_err()
+    {
+        return Vec::new();
+    }
+    struct KeyGuard(HKEY);
+    impl Drop for KeyGuard {
+        fn drop(&mut self) {
+            // SAFETY: `self.0` is an opened HKEY owned exclusively by this guard.
+            unsafe {
+                let _ = RegCloseKey(self.0);
+            }
+        }
+    }
+    let guard = KeyGuard(key);
+    let mut names = Vec::new();
+    let mut index = 0_u32;
+    loop {
+        let mut name_buf = [0_u16; 256];
+        let mut name_len = 256_u32;
+        // SAFETY: `name_buf`/`name_len` describe a writable UTF-16 buffer for the duration of the call.
+        let status = unsafe {
+            RegEnumKeyExW(
+                guard.0,
+                index,
+                Some(PWSTR(name_buf.as_mut_ptr())),
+                &raw mut name_len,
+                None,
+                None,
+                None,
+                None,
+            )
+        };
+        if status == ERROR_NO_MORE_ITEMS {
+            break;
+        }
+        if status.is_err() {
+            break;
+        }
+        index = index.saturating_add(1);
+        let Some(end) = usize::try_from(name_len)
+            .ok()
+            .filter(|end| *end <= name_buf.len())
+        else {
+            continue;
+        };
+        let subkey = String::from_utf16_lossy(&name_buf[..end]);
+        if subkey.is_empty() {
+            continue;
+        }
+        let subpath = format!(r"{LXSS}\{subkey}");
+        let subpath = HSTRING::from(subpath.as_str());
+        let value_name = HSTRING::from("DistributionName");
+        let mut size = 0_u32;
+        let mut kind = REG_VALUE_TYPE::default();
+        // SAFETY: path and value name are live HSTRINGs; size is a writable out-parameter.
+        let probe = unsafe {
+            RegGetValueW(
+                root,
+                PCWSTR(subpath.as_ptr()),
+                PCWSTR(value_name.as_ptr()),
+                RRF_RT_REG_SZ,
+                Some(&raw mut kind),
+                None,
+                Some(&raw mut size),
+            )
+        };
+        if probe.is_err() || size == 0 || size > MAX_NAME_BYTES {
+            continue;
+        }
+        let Ok(byte_len) = usize::try_from(size) else {
+            continue;
+        };
+        let mut bytes = vec![0_u8; byte_len];
+        // SAFETY: `bytes` is sized from the previous probe and remains live for this read.
+        let read = unsafe {
+            RegGetValueW(
+                root,
+                PCWSTR(subpath.as_ptr()),
+                PCWSTR(value_name.as_ptr()),
+                RRF_RT_REG_SZ,
+                Some(&raw mut kind),
+                Some(bytes.as_mut_ptr().cast::<std::ffi::c_void>()),
+                Some(&raw mut size),
+            )
+        };
+        if read.is_err() {
+            continue;
+        }
+        let words = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .take_while(|word| *word != 0)
+            .collect::<Vec<_>>();
+        if let Ok(name) = String::from_utf16(&words)
+            && !name.is_empty()
+        {
+            names.push(name);
+        }
+    }
+    names
+}
+
 pub fn start_adb_navigation_refresh() {
     static STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     STARTED.get_or_init(|| {
@@ -891,6 +1054,9 @@ pub fn start_adb_navigation_refresh() {
                 std::thread::sleep(std::time::Duration::from_secs(5));
                 explorer_ui::navigation_pane::configure_adb_navigation_devices(
                     discover_adb_navigation_devices(),
+                );
+                explorer_ui::navigation_pane::configure_wsl_navigation_distributions(
+                    discover_wsl_navigation_distributions(),
                 );
             }
         });
@@ -3604,5 +3770,70 @@ mod tests {
                 "metadata {name}"
             );
         }
+    }
+
+    #[test]
+    fn wsl_distribution_names_are_trimmed_sorted_and_deduped() {
+        let profiles = wsl_navigation_distributions_from_names([
+            " Ubuntu-24.04 ".to_owned(),
+            String::new(),
+            "alpine".to_owned(),
+            "Ubuntu-24.04".to_owned(),
+            "   ".to_owned(),
+        ]);
+        assert_eq!(
+            profiles
+                .iter()
+                .map(|profile| profile.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpine", "Ubuntu-24.04"]
+        );
+        assert!(profiles.iter().all(|profile| profile.available));
+        assert_eq!(profiles[1].label, "Ubuntu-24.04");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn live_lxss_registry_reports_installed_ubuntu() {
+        let names = lxss_distribution_names();
+        assert!(
+            names
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case("Ubuntu-24.04")),
+            "expected Ubuntu-24.04 in Lxss registry, got {names:?}"
+        );
+        let profiles = discover_wsl_navigation_distributions();
+        assert!(
+            profiles
+                .iter()
+                .any(|profile| profile.name.eq_ignore_ascii_case("Ubuntu-24.04"))
+        );
+        explorer_ui::navigation_pane::configure_wsl_navigation_distributions(profiles);
+        let items = explorer_ui::navigation_pane::windows_navigation_items(
+            explorer_i18n::Catalog::new(explorer_i18n::AppLocale::ZhTw),
+        );
+        let linux = items
+            .iter()
+            .find(|item| item.id == "linux")
+            .expect("Linux navigation row");
+        assert_eq!(linux.label, "Linux");
+        assert_eq!(
+            linux.location,
+            Some(LocationDescriptor::ParsingName(
+                explorer_ui::navigation_pane::LINUX_NAMESPACE.to_owned()
+            ))
+        );
+        let distro = items
+            .iter()
+            .find(|item| item.id == "linux-distro-Ubuntu-24.04")
+            .expect("Ubuntu-24.04 navigation row");
+        assert_eq!(distro.depth, 1);
+        assert_eq!(
+            distro.location,
+            Some(LocationDescriptor::file_system(
+                r"\\wsl.localhost\Ubuntu-24.04\"
+            ))
+        );
+        explorer_ui::navigation_pane::configure_wsl_navigation_distributions(Vec::new());
     }
 }

@@ -98,16 +98,19 @@ pub const MAX_LOCATION_DESCRIPTOR_BYTES: usize = 64 * 1024;
 pub enum SyntheticRoot {
     Home,
     QuickAccess,
+    Favorites,
 }
 
 impl SyntheticRoot {
     const HOME_NAME: &'static str = "super-explorer:home";
     const QUICK_ACCESS_NAME: &'static str = "super-explorer:quick-access";
+    const FAVORITES_NAME: &'static str = "super-explorer:favorites";
 
     const fn parsing_name(self) -> &'static str {
         match self {
             Self::Home => Self::HOME_NAME,
             Self::QuickAccess => Self::QUICK_ACCESS_NAME,
+            Self::Favorites => Self::FAVORITES_NAME,
         }
     }
 
@@ -115,6 +118,7 @@ impl SyntheticRoot {
         match value {
             Self::HOME_NAME => Some(Self::Home),
             Self::QUICK_ACCESS_NAME => Some(Self::QuickAccess),
+            Self::FAVORITES_NAME => Some(Self::Favorites),
             _ => None,
         }
     }
@@ -159,6 +163,39 @@ pub enum FileSystemKind {
     Sftp,
     Ftp,
     Gdrive,
+    Wsl,
+}
+
+/// Windows File Explorer Linux namespace used for WSL distro roots.
+pub const LINUX_NAMESPACE: &str = "shell:::{B2B4A4D1-2754-4140-A2EB-9A76D9D7CDC6}";
+
+/// Returns the WSL distribution name for `\\wsl.localhost\<name>\...` or `\\wsl$\<name>\...`.
+pub fn wsl_unc_distribution_name(path: &Path) -> Option<String> {
+    parse_wsl_unc(path).map(|(name, _)| name)
+}
+
+/// True when `path` is a WSL distro root (`\\wsl.localhost\Ubuntu-24.04\` / `\\wsl$\Ubuntu-24.04\`).
+pub fn is_wsl_distribution_root_path(path: &Path) -> bool {
+    parse_wsl_unc(path).is_some_and(|(_, is_root)| is_root)
+}
+
+pub fn is_wsl_unc_path(path: &Path) -> bool {
+    parse_wsl_unc(path).is_some()
+}
+
+fn parse_wsl_unc(path: &Path) -> Option<(String, bool)> {
+    let value = path.to_string_lossy().replace('/', r"\");
+    let rest = value.strip_prefix(r"\\")?;
+    let parts = rest
+        .split('\\')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    let server = *parts.first()?;
+    let distro = *parts.get(1)?;
+    if !(server.eq_ignore_ascii_case("wsl.localhost") || server.eq_ignore_ascii_case("wsl$")) {
+        return None;
+    }
+    Some((distro.to_owned(), parts.len() == 2))
 }
 
 impl LocationDescriptor {
@@ -188,7 +225,11 @@ impl LocationDescriptor {
 
     pub fn file_system_kind(&self) -> Option<FileSystemKind> {
         match self {
+            Self::FileSystem(path) if is_wsl_unc_path(path) => Some(FileSystemKind::Wsl),
             Self::FileSystem(_) => Some(FileSystemKind::Local),
+            Self::ParsingName(name) if name.eq_ignore_ascii_case(LINUX_NAMESPACE) => {
+                Some(FileSystemKind::Wsl)
+            }
             Self::Virtual(location) if location.provider_id == "adb" => Some(FileSystemKind::Adb),
             Self::Virtual(location) if location.provider_id == "sftp" => Some(FileSystemKind::Sftp),
             Self::Virtual(location) if location.provider_id == "ftp" => Some(FileSystemKind::Ftp),
@@ -239,6 +280,45 @@ impl LocationDescriptor {
     /// Creates a typed project-owned synthetic root descriptor.
     pub fn synthetic(root: SyntheticRoot) -> Self {
         Self::ParsingName(root.parsing_name().to_owned())
+    }
+
+    pub const FAVORITES_FOLDER_PREFIX: &'static str = "super-explorer:favorites/";
+    pub const LUA_BOOKMARK_PREFIX: &'static str = "super-explorer:bookmark/";
+
+    /// Creates a virtual Favorites listing for one bookmark folder.
+    pub fn favorites_folder(id: Uuid) -> Self {
+        Self::ParsingName(format!("{}{id}", Self::FAVORITES_FOLDER_PREFIX))
+    }
+
+    /// Returns the bookmark folder represented by a Favorites listing, if any.
+    pub fn favorites_folder_id(&self) -> Option<Uuid> {
+        match self {
+            Self::ParsingName(value) => value
+                .strip_prefix(Self::FAVORITES_FOLDER_PREFIX)
+                .and_then(|rest| Uuid::parse_str(rest).ok()),
+            Self::FileSystem(_)
+            | Self::ShellNamespace(_)
+            | Self::KnownFolder(_)
+            | Self::Virtual(_) => None,
+        }
+    }
+
+    /// Creates a non-container location that identifies one Lua bookmark.
+    pub fn lua_bookmark(id: Uuid) -> Self {
+        Self::ParsingName(format!("{}{id}", Self::LUA_BOOKMARK_PREFIX))
+    }
+
+    /// Returns the Lua bookmark represented by this descriptor, if any.
+    pub fn lua_bookmark_id(&self) -> Option<Uuid> {
+        match self {
+            Self::ParsingName(value) => value
+                .strip_prefix(Self::LUA_BOOKMARK_PREFIX)
+                .and_then(|rest| Uuid::parse_str(rest).ok()),
+            Self::FileSystem(_)
+            | Self::ShellNamespace(_)
+            | Self::KnownFolder(_)
+            | Self::Virtual(_) => None,
+        }
     }
 
     /// Creates a validated virtual-container location without exposing its filesystem path.
@@ -686,7 +766,7 @@ pub enum RequestRejection {
 mod tests {
     use std::{
         collections::HashSet,
-        path::PathBuf,
+        path::{Path, PathBuf},
         sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
@@ -721,6 +801,28 @@ mod tests {
         assert!(
             LocationDescriptor::try_virtual("rust-7z", [7; 16], 3, None, vec!["..".into()])
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn wsl_unc_and_linux_namespace_are_not_local_ntfs() {
+        let distro = LocationDescriptor::file_system(r"\\wsl.localhost\Ubuntu-24.04\");
+        let nested = LocationDescriptor::file_system(r"\\wsl$\Ubuntu-24.04\home");
+        let linux = LocationDescriptor::ParsingName(LINUX_NAMESPACE.to_owned());
+        let local = LocationDescriptor::file_system(r"C:\Users");
+        assert_eq!(distro.file_system_kind(), Some(FileSystemKind::Wsl));
+        assert_eq!(nested.file_system_kind(), Some(FileSystemKind::Wsl));
+        assert_eq!(linux.file_system_kind(), Some(FileSystemKind::Wsl));
+        assert_eq!(local.file_system_kind(), Some(FileSystemKind::Local));
+        assert!(is_wsl_distribution_root_path(Path::new(
+            r"\\wsl.localhost\Ubuntu-24.04\"
+        )));
+        assert!(!is_wsl_distribution_root_path(Path::new(
+            r"\\wsl.localhost\Ubuntu-24.04\home"
+        )));
+        assert_eq!(
+            wsl_unc_distribution_name(Path::new(r"\\wsl$\Ubuntu-24.04\etc")).as_deref(),
+            Some("Ubuntu-24.04")
         );
     }
 
@@ -778,7 +880,11 @@ mod tests {
 
     #[test]
     fn location_boundaries_validate_synthetic_empty_oversized_and_unknown_data() {
-        for root in [SyntheticRoot::Home, SyntheticRoot::QuickAccess] {
+        for root in [
+            SyntheticRoot::Home,
+            SyntheticRoot::QuickAccess,
+            SyntheticRoot::Favorites,
+        ] {
             let descriptor = LocationDescriptor::synthetic(root);
             assert_eq!(descriptor.synthetic_root(), Some(root));
             let json = serde_json::to_string(&descriptor).expect("serialize synthetic root");
@@ -801,6 +907,31 @@ mod tests {
         }))
         .expect("serialize oversized wire value");
         assert!(serde_json::from_str::<LocationDescriptor>(&oversized).is_err());
+    }
+
+    #[test]
+    fn favorites_and_lua_bookmark_parsing_names_round_trip() {
+        let root = LocationDescriptor::synthetic(SyntheticRoot::Favorites);
+        assert_eq!(root.synthetic_root(), Some(SyntheticRoot::Favorites));
+        assert_eq!(root.editable_text(), "super-explorer:favorites");
+        assert_eq!(root.favorites_folder_id(), None);
+        assert_eq!(root.lua_bookmark_id(), None);
+
+        let folder_id = Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
+        let folder = LocationDescriptor::favorites_folder(folder_id);
+        assert_eq!(folder.synthetic_root(), None);
+        assert_eq!(folder.favorites_folder_id(), Some(folder_id));
+        assert_eq!(
+            folder.editable_text(),
+            "super-explorer:favorites/11111111-1111-1111-1111-111111111111"
+        );
+        assert_eq!(folder.lua_bookmark_id(), None);
+
+        let bookmark_id = Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap();
+        let lua = LocationDescriptor::lua_bookmark(bookmark_id);
+        assert_eq!(lua.lua_bookmark_id(), Some(bookmark_id));
+        assert_eq!(lua.favorites_folder_id(), None);
+        assert_eq!(lua.synthetic_root(), None);
     }
 
     #[test]
