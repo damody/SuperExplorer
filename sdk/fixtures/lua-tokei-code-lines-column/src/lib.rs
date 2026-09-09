@@ -21,6 +21,22 @@ use std::{
 
 const DIRECTORY_MAGIC_V1: &[u8; 8] = b"SECLDIR1";
 
+fn tokei_language_type_quiet(path: &Path, config: &tokei::Config) -> Option<tokei::LanguageType> {
+    if let Some(extension) = path.extension().and_then(|value| value.to_str()) {
+        let extension = extension.to_ascii_lowercase();
+        let known = tokei::LanguageType::list().iter().any(|(_, extensions)| {
+            extensions
+                .iter()
+                .copied()
+                .any(|candidate| candidate == extension)
+        });
+        if !known {
+            return None;
+        }
+    }
+    tokei::LanguageType::from_path(path, config)
+}
+
 const PLUGIN_ID: StableIdV1 = StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 6_101);
 const INTERFACE_ID: StableIdV1 = StableIdV1::new(EXTENSION_ID_NAMESPACE_V1, 6_102);
 pub const MAX_BATCH: usize = 128;
@@ -340,7 +356,7 @@ fn count_source(file_name: &str, bytes: &[u8]) -> Option<CodeRow> {
         return None;
     }
     let config = tokei::Config::default();
-    let language = tokei::LanguageType::from_path(Path::new(file_name), &config)?;
+    let language = tokei_language_type_quiet(Path::new(file_name), &config)?;
     let stats = language.parse_from_slice(bytes, &config).summarise();
     let code = u64::try_from(stats.code).ok()?;
     let comments = u64::try_from(stats.comments).ok()?;

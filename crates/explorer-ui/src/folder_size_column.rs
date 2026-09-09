@@ -3,14 +3,57 @@
 //! The application owns the asynchronous folder walk.  This module owns only
 //! the copied descriptor/value projection consumed by GPUI.
 
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Instant};
+use std::{
+    collections::{HashMap, VecDeque},
+    path::PathBuf,
+    sync::Arc,
+    time::Instant,
+};
 
 pub use explorer_extension_ui_api::{CellRenderContextV1, CellRenderPlanV1};
 
 use explorer_model::{
     ColumnAlignment, ColumnApplicability, ColumnCost, ColumnDescriptor, ColumnId,
-    ColumnSortSemantics, ColumnValueType, Generation, ShellItemId, TabId,
+    ColumnSortSemantics, ColumnValueType, Generation, LocationDescriptor, ShellItemId, TabId,
 };
+
+const DIRECTORY_VALUE_CACHE_LIMIT: usize = 64;
+const ITEM_VALUE_CACHE_LIMIT: usize = 8_192;
+
+/// Stable cache identity so `D:`, `D:\`, and `\\?\D:\` share one entry.
+pub(crate) fn directory_identity_key(location: &LocationDescriptor) -> String {
+    match location {
+        LocationDescriptor::FileSystem(path) => {
+            let mut normalized = path
+                .to_string_lossy()
+                .replace('/', "\\")
+                .to_ascii_lowercase();
+            if let Some(rest) = normalized.strip_prefix("\\\\?\\") {
+                normalized = rest.to_owned();
+            }
+            while normalized.ends_with('\\')
+                && !(normalized.len() == 3 && normalized.as_bytes().get(1) == Some(&b':'))
+            {
+                normalized.pop();
+            }
+            if normalized.len() == 2 && normalized.as_bytes().get(1) == Some(&b':') {
+                normalized.push('\\');
+            }
+            format!("fs:{normalized}")
+        }
+        LocationDescriptor::ParsingName(name) => format!("parse:{}", name.to_ascii_lowercase()),
+        LocationDescriptor::KnownFolder(bytes) => {
+            format!("known:{bytes:02x?}")
+        }
+        LocationDescriptor::ShellNamespace(bytes) => format!("shell:{bytes:02x?}"),
+        LocationDescriptor::Virtual(location) => format!(
+            "virtual:{}:{}:{}",
+            location.provider_id.to_ascii_lowercase(),
+            location.public_authority.clone().unwrap_or_default(),
+            location.components.join("/")
+        ),
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct FolderSizeSnapshotKeyV1 {
@@ -153,11 +196,16 @@ pub trait VisualColumnRuntimePortV1: Send + Sync {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FolderSizeColumnVisuals {
     pub config: VisualColumnConfigV1,
-    /// Values are valid only for this tab generation.  Shell item IDs may be
-    /// stable across F5, so the generation must be tracked independently.
+    /// Values are keyed by tab. A watcher/F5 generation bump on the same tab
+    /// keeps measured aggregates so the Details cells do not flash empty.
     pub context: Option<explorer_model::RequestContext>,
     pub values: HashMap<ShellItemId, FolderSizeValueV1>,
     snapshots: HashMap<FolderSizeSnapshotKeyV1, HashMap<ShellItemId, FolderSizeValueV1>>,
+    location_key: Option<String>,
+    directory_cache: HashMap<String, HashMap<ShellItemId, FolderSizeValueV1>>,
+    directory_lru: VecDeque<String>,
+    item_cache: HashMap<ShellItemId, FolderSizeValueV1>,
+    item_lru: VecDeque<ShellItemId>,
 }
 
 impl FolderSizeColumnVisuals {
@@ -167,6 +215,11 @@ impl FolderSizeColumnVisuals {
             context: None,
             values: HashMap::new(),
             snapshots: HashMap::new(),
+            location_key: None,
+            directory_cache: HashMap::new(),
+            directory_lru: VecDeque::new(),
+            item_cache: HashMap::new(),
+            item_lru: VecDeque::new(),
         }
     }
 
@@ -176,22 +229,123 @@ impl FolderSizeColumnVisuals {
         }) {
             return false;
         }
-        if let Some(current) = self.context.as_ref() {
+        let previous = self.context.clone();
+        if let Some(current) = previous.as_ref() {
             self.snapshots.insert(
                 FolderSizeSnapshotKeyV1::from(current),
                 std::mem::take(&mut self.values),
             );
         }
         self.context = Some(context.clone());
-        self.values = self
-            .snapshots
-            .remove(&FolderSizeSnapshotKeyV1::from(context))
-            .unwrap_or_default();
+        let key = FolderSizeSnapshotKeyV1::from(context);
+        self.values = if previous
+            .as_ref()
+            .is_some_and(|current| current.tab_id == context.tab_id)
+        {
+            previous
+                .as_ref()
+                .and_then(|current| self.snapshots.get(&FolderSizeSnapshotKeyV1::from(current)))
+                .cloned()
+                .or_else(|| self.snapshots.remove(&key))
+                .unwrap_or_default()
+        } else {
+            self.snapshots.remove(&key).unwrap_or_default()
+        };
         true
     }
 
     pub fn retain_snapshots(&mut self, live: &std::collections::HashSet<FolderSizeSnapshotKeyV1>) {
         self.snapshots.retain(|key, _| live.contains(key));
+    }
+
+    pub fn clear_values(&mut self) {
+        if let Some(key) = self.location_key.as_ref() {
+            self.directory_cache.remove(key);
+            self.directory_lru.retain(|cached| cached != key);
+        }
+        for item_id in self.values.keys() {
+            self.item_cache.remove(item_id);
+            self.item_lru.retain(|cached| cached != item_id);
+        }
+        self.values.clear();
+        self.snapshots.clear();
+        self.context = None;
+    }
+
+    pub fn store_current_directory(&mut self) {
+        let Some(key) = self.location_key.clone() else {
+            return;
+        };
+        if self.values.is_empty() {
+            return;
+        }
+        self.remember_directory(key, self.values.clone());
+    }
+
+    pub fn activate_location(&mut self, location: Option<&LocationDescriptor>) -> bool {
+        let new_key = location.map(directory_identity_key);
+        if self.location_key.as_ref() == new_key.as_ref() {
+            return false;
+        }
+        let had_location = self.location_key.is_some();
+        self.store_current_directory();
+        self.location_key = new_key.clone();
+        if let Some(key) = new_key {
+            if let Some(cached) = self.directory_cache.get(&key).cloned() {
+                self.values = cached;
+            } else if had_location {
+                self.values.clear();
+            }
+        } else if had_location {
+            self.values.clear();
+        }
+        true
+    }
+
+    pub fn hydrate_items(&mut self, item_ids: impl IntoIterator<Item = ShellItemId>) -> bool {
+        let mut changed = false;
+        for item_id in item_ids {
+            if self.values.contains_key(&item_id) {
+                continue;
+            }
+            if let Some(cached) = self.item_cache.get(&item_id).cloned() {
+                self.values.insert(item_id, cached);
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    fn remember_directory(&mut self, key: String, values: HashMap<ShellItemId, FolderSizeValueV1>) {
+        if self.directory_cache.contains_key(&key) {
+            self.directory_lru.retain(|cached| cached != &key);
+        } else {
+            while self.directory_lru.len() >= DIRECTORY_VALUE_CACHE_LIMIT {
+                if let Some(oldest) = self.directory_lru.pop_front() {
+                    self.directory_cache.remove(&oldest);
+                } else {
+                    break;
+                }
+            }
+        }
+        self.directory_lru.push_back(key.clone());
+        self.directory_cache.insert(key, values);
+    }
+
+    fn remember_item(&mut self, item_id: ShellItemId, value: FolderSizeValueV1) {
+        if self.item_cache.contains_key(&item_id) {
+            self.item_lru.retain(|cached| cached != &item_id);
+        } else {
+            while self.item_lru.len() >= ITEM_VALUE_CACHE_LIMIT {
+                if let Some(oldest) = self.item_lru.pop_front() {
+                    self.item_cache.remove(&oldest);
+                } else {
+                    break;
+                }
+            }
+        }
+        self.item_lru.push_back(item_id.clone());
+        self.item_cache.insert(item_id, value);
     }
 
     pub fn insert_result(&mut self, result: FolderSizeResultV1) -> bool {
@@ -211,10 +365,11 @@ impl FolderSizeColumnVisuals {
             }),
             retry_after: None,
         };
+        self.remember_item(result.item_id.clone(), value.clone());
         if self
             .context
             .as_ref()
-            .is_some_and(|current| FolderSizeSnapshotKeyV1::from(current) == key)
+            .is_some_and(|current| current.tab_id == result.context.tab_id)
         {
             return self.values.insert(result.item_id, value.clone()) != Some(value);
         }
@@ -428,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn switching_tabs_restores_values_and_generation_change_starts_empty() {
+    fn switching_tabs_restores_values_and_same_tab_refresh_keeps_them() {
         let tab_a = TabId::new();
         let tab_b = TabId::new();
         let context_a = context(tab_a, 1);
@@ -463,7 +618,150 @@ mod tests {
         assert_eq!(visuals.value_for(&item(2)), Some(20));
 
         assert!(visuals.begin_context(&context(tab_b, 2)));
-        assert!(visuals.values.is_empty());
+        assert_eq!(
+            visuals.value_for(&item(2)),
+            Some(20),
+            "a watcher/F5 generation bump on the same tab must not flash empty aggregates"
+        );
+    }
+
+    #[test]
+    fn returning_to_a_directory_restores_cached_aggregates() {
+        let tab = TabId::new();
+        let home = LocationDescriptor::file_system(r"C:\Users\Damody");
+        let downloads = LocationDescriptor::file_system(r"C:\Users\Damody\Downloads");
+        let mut visuals = FolderSizeColumnVisuals::new(VisualColumnConfigV1::default());
+        visuals.begin_context(&context(tab, 1));
+        visuals.activate_location(Some(&home));
+        visuals.insert_result(FolderSizeResultV1 {
+            context: context(tab, 1),
+            item_id: item(1),
+            exact_bytes: Some(24_200_000_000),
+            directory_facts: Some(DirectoryFactsV1 {
+                mft_generation: 1,
+                file_count: 21_888,
+                folder_count: 2_143,
+            }),
+            partial: false,
+            error: None,
+        });
+
+        visuals.begin_context(&context(tab, 2));
+        visuals.activate_location(Some(&downloads));
+        assert_eq!(visuals.value_for(&item(1)), None);
+        visuals.insert_result(FolderSizeResultV1 {
+            context: context(tab, 2),
+            item_id: item(9),
+            exact_bytes: Some(12),
+            directory_facts: None,
+            partial: false,
+            error: None,
+        });
+
+        visuals.begin_context(&context(tab, 3));
+        visuals.activate_location(Some(&home));
+        assert_eq!(visuals.value_for(&item(1)), Some(24_200_000_000));
+        assert_eq!(visuals.file_count_for(&item(1)), Some(21_888));
+        assert_eq!(visuals.value_for(&item(9)), None);
+    }
+
+    #[test]
+    fn drive_root_path_aliases_share_one_cache_entry() {
+        assert_eq!(
+            directory_identity_key(&LocationDescriptor::file_system(r"D:")),
+            directory_identity_key(&LocationDescriptor::file_system(r"D:\"))
+        );
+        assert_eq!(
+            directory_identity_key(&LocationDescriptor::file_system(r"D:\")),
+            directory_identity_key(&LocationDescriptor::file_system(r"\\?\D:\"))
+        );
+        let tab = TabId::new();
+        let mut visuals = FolderSizeColumnVisuals::new(VisualColumnConfigV1::default());
+        visuals.begin_context(&context(tab, 1));
+        visuals.activate_location(Some(&LocationDescriptor::file_system(r"D:\")));
+        visuals.insert_result(FolderSizeResultV1 {
+            context: context(tab, 1),
+            item_id: item(1),
+            exact_bytes: Some(42),
+            directory_facts: Some(DirectoryFactsV1 {
+                mft_generation: 1,
+                file_count: 7,
+                folder_count: 2,
+            }),
+            partial: false,
+            error: None,
+        });
+        visuals.begin_context(&context(tab, 2));
+        visuals.activate_location(Some(&LocationDescriptor::file_system(r"C:\")));
+        assert_eq!(visuals.value_for(&item(1)), None);
+        visuals.begin_context(&context(tab, 3));
+        visuals.activate_location(Some(&LocationDescriptor::file_system(r"D:")));
+        assert_eq!(visuals.value_for(&item(1)), Some(42));
+        assert_eq!(visuals.file_count_for(&item(1)), Some(7));
+    }
+
+    #[test]
+    fn item_cache_restores_values_even_if_the_parent_listing_changed() {
+        let tab = TabId::new();
+        let mut visuals = FolderSizeColumnVisuals::new(VisualColumnConfigV1::default());
+        visuals.begin_context(&context(tab, 1));
+        visuals.activate_location(Some(&LocationDescriptor::file_system(r"D:\")));
+        visuals.begin_context(&context(tab, 2));
+        visuals.activate_location(Some(&LocationDescriptor::file_system(r"C:\")));
+        visuals.insert_result(FolderSizeResultV1 {
+            context: context(tab, 1),
+            item_id: item(3),
+            exact_bytes: Some(99),
+            directory_facts: Some(DirectoryFactsV1 {
+                mft_generation: 1,
+                file_count: 4,
+                folder_count: 1,
+            }),
+            partial: false,
+            error: None,
+        });
+        visuals.begin_context(&context(tab, 3));
+        visuals.activate_location(Some(&LocationDescriptor::file_system(r"D:\")));
+        assert!(visuals.hydrate_items([item(3)]));
+        assert_eq!(visuals.value_for(&item(3)), Some(99));
+        assert_eq!(visuals.file_count_for(&item(3)), Some(4));
+    }
+
+    #[test]
+    fn older_generation_result_updates_current_values_on_the_same_tab() {
+        let tab = TabId::new();
+        let first = context(tab, 1);
+        let refreshed = context(tab, 2);
+        let id = item(2);
+        let mut visuals = FolderSizeColumnVisuals::new(VisualColumnConfigV1::default());
+        visuals.begin_context(&first);
+        visuals.insert_result(FolderSizeResultV1 {
+            context: first,
+            item_id: id.clone(),
+            exact_bytes: Some(20),
+            directory_facts: Some(DirectoryFactsV1 {
+                mft_generation: 1,
+                file_count: 4,
+                folder_count: 1,
+            }),
+            partial: false,
+            error: None,
+        });
+        assert!(visuals.begin_context(&refreshed));
+        assert!(visuals.insert_result(FolderSizeResultV1 {
+            context: context(tab, 1),
+            item_id: id.clone(),
+            exact_bytes: Some(30),
+            directory_facts: Some(DirectoryFactsV1 {
+                mft_generation: 1,
+                file_count: 5,
+                folder_count: 1,
+            }),
+            partial: false,
+            error: None,
+        }));
+        assert_eq!(visuals.value_for(&id), Some(30));
+        assert_eq!(visuals.file_count_for(&id), Some(5));
     }
 
     #[test]

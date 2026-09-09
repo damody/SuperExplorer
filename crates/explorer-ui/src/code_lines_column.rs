@@ -3,13 +3,19 @@
 //! The application owns bounded file I/O and plugin dispatch. This module owns
 //! only copied requests/results and the host-side Details-column projection.
 
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::{HashMap, VecDeque},
+    path::PathBuf,
+    sync::Arc,
+};
 
 pub use explorer_extension_ui_api::{CellRenderContextV1, CellRenderPlanV1};
 use explorer_model::{
     ColumnAlignment, ColumnApplicability, ColumnCost, ColumnDescriptor, ColumnId,
-    ColumnSortSemantics, ColumnValueType, RequestContext, ShellItemId,
+    ColumnSortSemantics, ColumnValueType, LocationDescriptor, RequestContext, ShellItemId,
 };
+
+const DIRECTORY_VALUE_CACHE_LIMIT: usize = 64;
 
 pub const CODE_LINES_COLUMN_PACKAGE_ID: &str = "rust-tokei";
 pub const CODE_LINES_COLUMN_ID: &str = "code-lines";
@@ -165,29 +171,185 @@ pub trait CodeLinesRuntimePortV1: Send + Sync {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CodeLinesColumnVisuals {
     pub config: CodeLinesColumnConfigV1,
-    /// Values are valid only for this host request context. Shell item IDs can
-    /// be reused after refresh/navigation, so they cannot be the cache key by
-    /// themselves.
+    /// Values belong to the current tab. A watcher generation bump on the same
+    /// directory keeps them; navigation to another tab or location starts empty.
     pub context: Option<RequestContext>,
     pub values: HashMap<ShellItemId, CodeLinesValueV1>,
     pub errors: HashMap<ShellItemId, String>,
     pub admissions: HashMap<ShellItemId, FolderAdmissionStateV1>,
+    location_key: Option<String>,
+    directory_cache: HashMap<String, CodeLinesDirectorySnapshotV1>,
+    directory_lru: VecDeque<String>,
+    item_cache: HashMap<ShellItemId, CodeLinesValueV1>,
+    item_error_cache: HashMap<ShellItemId, String>,
+    item_lru: VecDeque<ShellItemId>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct CodeLinesDirectorySnapshotV1 {
+    values: HashMap<ShellItemId, CodeLinesValueV1>,
+    errors: HashMap<ShellItemId, String>,
+    admissions: HashMap<ShellItemId, FolderAdmissionStateV1>,
 }
 
 impl CodeLinesColumnVisuals {
-    /// Starts a new host-owned request context. A Shell item identity alone is
-    /// not sufficient because it can recur after F5 or navigation.
+    pub fn new(config: CodeLinesColumnConfigV1) -> Self {
+        Self {
+            config,
+            context: None,
+            values: HashMap::new(),
+            errors: HashMap::new(),
+            admissions: HashMap::new(),
+            location_key: None,
+            directory_cache: HashMap::new(),
+            directory_lru: VecDeque::new(),
+            item_cache: HashMap::new(),
+            item_error_cache: HashMap::new(),
+            item_lru: VecDeque::new(),
+        }
+    }
+
+    /// Starts a new host-owned request context. Same-tab generation bumps keep
+    /// values; a different tab starts empty.
     pub fn begin_context(&mut self, context: RequestContext) -> bool {
         if self.context.as_ref().is_some_and(|current| {
             current.tab_id == context.tab_id && current.generation == context.generation
         }) {
             return false;
         }
+        let same_tab = self
+            .context
+            .as_ref()
+            .is_some_and(|current| current.tab_id == context.tab_id);
         self.context = Some(context);
-        self.values.clear();
-        self.errors.clear();
-        self.admissions.clear();
+        if !same_tab {
+            self.values.clear();
+            self.errors.clear();
+            self.admissions.clear();
+        }
         true
+    }
+
+    pub fn store_current_directory(&mut self) {
+        let Some(key) = self.location_key.clone() else {
+            return;
+        };
+        if self.values.is_empty() && self.errors.is_empty() && self.admissions.is_empty() {
+            return;
+        }
+        self.remember_directory(
+            key,
+            CodeLinesDirectorySnapshotV1 {
+                values: self.values.clone(),
+                errors: self.errors.clone(),
+                admissions: self.admissions.clone(),
+            },
+        );
+    }
+
+    pub fn activate_location(&mut self, location: Option<&LocationDescriptor>) -> bool {
+        let new_key = location.map(crate::folder_size_column::directory_identity_key);
+        if self.location_key.as_ref() == new_key.as_ref() {
+            return false;
+        }
+        let had_location = self.location_key.is_some();
+        self.store_current_directory();
+        self.location_key = new_key.clone();
+        if let Some(key) = new_key {
+            if let Some(snapshot) = self.directory_cache.get(&key).cloned() {
+                self.values = snapshot.values;
+                self.errors = snapshot.errors;
+                self.admissions = snapshot.admissions;
+            } else if had_location {
+                self.values.clear();
+                self.errors.clear();
+                self.admissions.clear();
+            }
+        } else if had_location {
+            self.values.clear();
+            self.errors.clear();
+            self.admissions.clear();
+        }
+        true
+    }
+
+    pub fn hydrate_items(&mut self, item_ids: impl IntoIterator<Item = ShellItemId>) -> bool {
+        let mut changed = false;
+        for item_id in item_ids {
+            if let Some(cached) = self.item_cache.get(&item_id).cloned()
+                && self.values.insert(item_id.clone(), cached).is_none()
+            {
+                changed = true;
+            }
+            if let Some(cached) = self.item_error_cache.get(&item_id).cloned()
+                && self.errors.insert(item_id, cached).is_none()
+            {
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    pub fn remember_value(&mut self, item_id: ShellItemId, value: CodeLinesValueV1) {
+        self.touch_item(&item_id);
+        self.item_error_cache.remove(&item_id);
+        self.item_cache.insert(item_id, value);
+    }
+
+    pub fn remember_error(&mut self, item_id: ShellItemId, error: String) {
+        self.touch_item(&item_id);
+        self.item_cache.remove(&item_id);
+        self.item_error_cache.insert(item_id, error);
+    }
+
+    pub fn clear_directory_cache(&mut self) {
+        if let Some(key) = self.location_key.as_ref() {
+            self.directory_cache.remove(key);
+            self.directory_lru.retain(|cached| cached != key);
+        }
+        let item_ids = self
+            .values
+            .keys()
+            .chain(self.errors.keys())
+            .cloned()
+            .collect::<Vec<_>>();
+        for item_id in item_ids {
+            self.item_cache.remove(&item_id);
+            self.item_error_cache.remove(&item_id);
+            self.item_lru.retain(|cached| cached != &item_id);
+        }
+    }
+
+    fn touch_item(&mut self, item_id: &ShellItemId) {
+        if self.item_cache.contains_key(item_id) || self.item_error_cache.contains_key(item_id) {
+            self.item_lru.retain(|cached| cached != item_id);
+        } else {
+            while self.item_lru.len() >= 8_192 {
+                if let Some(oldest) = self.item_lru.pop_front() {
+                    self.item_cache.remove(&oldest);
+                    self.item_error_cache.remove(&oldest);
+                } else {
+                    break;
+                }
+            }
+        }
+        self.item_lru.push_back(item_id.clone());
+    }
+
+    fn remember_directory(&mut self, key: String, snapshot: CodeLinesDirectorySnapshotV1) {
+        if self.directory_cache.contains_key(&key) {
+            self.directory_lru.retain(|cached| cached != &key);
+        } else {
+            while self.directory_lru.len() >= DIRECTORY_VALUE_CACHE_LIMIT {
+                if let Some(oldest) = self.directory_lru.pop_front() {
+                    self.directory_cache.remove(&oldest);
+                } else {
+                    break;
+                }
+            }
+        }
+        self.directory_lru.push_back(key.clone());
+        self.directory_cache.insert(key, snapshot);
     }
 
     pub fn set_admission(
@@ -342,11 +504,10 @@ mod tests {
     }
 
     #[test]
-    fn same_shell_item_is_not_reused_after_a_new_generation() {
+    fn same_tab_refresh_generation_keeps_code_line_values() {
         let item = ShellItemId::from_provider_bytes([7]).unwrap();
         let first = RequestContext::new(TabId::new(), Generation::new(1));
         let mut visuals = CodeLinesColumnVisuals {
-            config: CodeLinesColumnConfigV1::default(),
             context: Some(first.clone()),
             values: HashMap::from([(
                 item.clone(),
@@ -358,14 +519,65 @@ mod tests {
                     total: 14,
                 },
             )]),
-            errors: HashMap::new(),
-            admissions: HashMap::new(),
+            ..CodeLinesColumnVisuals::new(CodeLinesColumnConfigV1::default())
         };
 
         assert!(visuals.begin_context(RequestContext::new(first.tab_id, Generation::new(2))));
+        assert_eq!(visuals.values.get(&item).map(|value| value.code), Some(12));
+        assert_eq!(visuals.exact_sort_values().get(&item), Some(&Some(12)));
+    }
+
+    #[test]
+    fn switching_tabs_clears_code_line_values() {
+        let item = ShellItemId::from_provider_bytes([7]).unwrap();
+        let first = RequestContext::new(TabId::new(), Generation::new(1));
+        let mut visuals = CodeLinesColumnVisuals {
+            context: Some(first),
+            values: HashMap::from([(
+                item.clone(),
+                CodeLinesValueV1 {
+                    language: "Rust".to_owned(),
+                    code: 12,
+                    comments: 1,
+                    blanks: 1,
+                    total: 14,
+                },
+            )]),
+            ..CodeLinesColumnVisuals::new(CodeLinesColumnConfigV1::default())
+        };
+
+        assert!(visuals.begin_context(RequestContext::new(TabId::new(), Generation::new(1))));
         assert!(visuals.values.is_empty());
-        assert!(visuals.errors.is_empty());
         assert_eq!(visuals.exact_sort_values().get(&item), None);
+    }
+
+    #[test]
+    fn returning_to_a_directory_restores_cached_code_lines() {
+        let tab = TabId::new();
+        let home = LocationDescriptor::file_system(r"C:\Users\Damody");
+        let other = LocationDescriptor::file_system(r"C:\Temp");
+        let item = ShellItemId::from_provider_bytes([7]).unwrap();
+        let mut visuals = CodeLinesColumnVisuals {
+            context: Some(RequestContext::new(tab, Generation::new(1))),
+            values: HashMap::from([(
+                item.clone(),
+                CodeLinesValueV1 {
+                    language: "Markdown".to_owned(),
+                    code: 14,
+                    comments: 0,
+                    blanks: 0,
+                    total: 14,
+                },
+            )]),
+            ..CodeLinesColumnVisuals::new(CodeLinesColumnConfigV1::default())
+        };
+        visuals.activate_location(Some(&home));
+        visuals.begin_context(RequestContext::new(tab, Generation::new(2)));
+        visuals.activate_location(Some(&other));
+        assert!(visuals.values.is_empty());
+        visuals.begin_context(RequestContext::new(tab, Generation::new(3)));
+        visuals.activate_location(Some(&home));
+        assert_eq!(visuals.values.get(&item).map(|value| value.code), Some(14));
     }
 
     #[test]
@@ -373,7 +585,6 @@ mod tests {
         let item = ShellItemId::from_provider_bytes([8]).unwrap();
         let first = RequestContext::new(TabId::new(), Generation::new(3));
         let mut visuals = CodeLinesColumnVisuals {
-            config: CodeLinesColumnConfigV1::default(),
             context: Some(first.clone()),
             values: HashMap::from([(
                 item.clone(),
@@ -385,8 +596,7 @@ mod tests {
                     total: 4,
                 },
             )]),
-            errors: HashMap::new(),
-            admissions: HashMap::new(),
+            ..CodeLinesColumnVisuals::new(CodeLinesColumnConfigV1::default())
         };
 
         assert!(!visuals.begin_context(RequestContext::new(first.tab_id, first.generation)));

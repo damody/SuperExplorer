@@ -37,6 +37,22 @@ const CONTRIBUTION_ID: &str = "rust-tokei:code-lines";
 const MAX_FILE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_DIRECTORY_PACK_BYTES: usize = 64 * 1024 * 1024;
 const DIRECTORY_MAGIC_V1: &[u8; 8] = b"SECLDIR1";
+
+fn tokei_language_type_quiet(path: &Path, config: &tokei::Config) -> Option<tokei::LanguageType> {
+    if let Some(extension) = path.extension().and_then(|value| value.to_str()) {
+        let extension = extension.to_ascii_lowercase();
+        let known = tokei::LanguageType::list().iter().any(|(_, extensions)| {
+            extensions
+                .iter()
+                .copied()
+                .any(|candidate| candidate == extension)
+        });
+        if !known {
+            return None;
+        }
+    }
+    tokei::LanguageType::from_path(path, config)
+}
 #[cfg(test)]
 const CACHE_SCHEMA_VERSION: u32 = 2;
 
@@ -132,7 +148,7 @@ fn classify(file_name: &str, bytes: &[u8]) -> Option<(String, tokei::CodeStats)>
         return None;
     }
     let config = tokei::Config::default();
-    let language = tokei::LanguageType::from_path(Path::new(file_name), &config)?;
+    let language = tokei_language_type_quiet(Path::new(file_name), &config)?;
     let stats = language.parse_from_slice(bytes, &config).summarise();
     Some((language.name().to_owned(), stats))
 }
@@ -464,6 +480,8 @@ mod tests {
         }
         for (name, source) in [
             ("unknown.data", b"plain text\n".as_slice()),
+            ("trace.log", b"not source\n".as_slice()),
+            ("shot.png", b"not source\n".as_slice()),
             ("binary.rs", b"fn main() {}\0".as_slice()),
         ] {
             assert!(classify(name, source).is_none(), "{name}");
