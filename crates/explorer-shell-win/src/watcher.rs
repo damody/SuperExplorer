@@ -6,6 +6,7 @@
 
 use std::{
     ffi::c_void,
+    fs,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -128,6 +129,58 @@ pub(crate) fn parse_notifications(bytes: &[u8]) -> Result<Vec<WatchAction>, Watc
     Ok(actions)
 }
 
+pub(crate) fn watch_actions_require_listing_refresh(
+    actions: &[WatchAction],
+    is_hidden_or_system: impl Fn(&Path) -> bool,
+) -> bool {
+    actions.iter().any(|action| match action {
+        WatchAction::Modified(_) => false,
+        WatchAction::Added(name) | WatchAction::Removed(name) => !is_hidden_or_system(name),
+        WatchAction::Renamed { old, new } => !is_hidden_or_system(old) || !is_hidden_or_system(new),
+    })
+}
+
+pub(crate) fn directory_changed_from_watch(
+    parsed: Result<Option<Vec<WatchAction>>, WatchParseError>,
+    is_hidden_or_system: impl Fn(&Path) -> bool,
+) -> Option<Vec<DirectoryDelta>> {
+    match parsed {
+        Ok(Some(actions))
+            if watch_actions_require_listing_refresh(&actions, is_hidden_or_system) =>
+        {
+            Some(vec![DirectoryDelta::Overflow])
+        }
+        Ok(Some(_)) => None,
+        Ok(None) | Err(_) => Some(vec![DirectoryDelta::Overflow]),
+    }
+}
+
+fn watch_relative_is_hidden_or_system(directory: &Path, relative: &Path) -> bool {
+    let full = directory.join(relative);
+    if let Ok(metadata) = fs::symlink_metadata(&full) {
+        return metadata_is_hidden_or_system(&metadata);
+    }
+    profile_hive_noise_name(relative)
+}
+
+fn metadata_is_hidden_or_system(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const HIDDEN: u32 = 0x2;
+    const SYSTEM: u32 = 0x4;
+    metadata.file_attributes() & (HIDDEN | SYSTEM) != 0
+}
+
+fn profile_hive_noise_name(relative: &Path) -> bool {
+    let Some(name) = relative.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with("ntuser.")
+        || lower == "ntuser.ini"
+        || lower == "desktop.ini"
+        || lower == "thumbs.db"
+}
+
 fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, WatchParseError> {
     let end = offset
         .checked_add(4)
@@ -204,6 +257,7 @@ fn watch_loop_inner(
     events: &SyncSender<ExplorerEvent>,
     stop: &AtomicBool,
 ) -> windows::core::Result<()> {
+    let directory_path = path.to_path_buf();
     let path = HSTRING::from(path.as_os_str().to_string_lossy().as_ref());
     // SAFETY: path is live and ownership of the directory handle transfers to OwnedHandle.
     let raw_directory = unsafe {
@@ -291,11 +345,19 @@ fn watch_loop_inner(
                 "watcher overflow or malformed notification"
             );
         }
+        // Profile roots such as C:\Users\<name> constantly receive last-write
+        // notifications for NTUSER.DAT and AppData. Those do not change the
+        // visible listing, so they must not restart folder-size work.
+        let Some(changes) = directory_changed_from_watch(parsed, |relative| {
+            watch_relative_is_hidden_or_system(&directory_path, relative)
+        }) else {
+            continue;
+        };
         if events
             .try_send(ExplorerEvent::DirectoryChanged {
                 tab_id,
                 generation,
-                changes: vec![DirectoryDelta::Overflow],
+                changes,
             })
             .is_err()
         {
@@ -308,7 +370,11 @@ fn watch_loop_inner(
 
 #[cfg(test)]
 mod tests {
-    use super::{WatchAction, WatchParseError, parse_notifications};
+    use super::{
+        WatchAction, WatchParseError, directory_changed_from_watch, parse_notifications,
+        watch_actions_require_listing_refresh,
+    };
+    use explorer_model::DirectoryDelta;
     use std::path::PathBuf;
 
     fn record(action: u32, name: &str, terminal: bool) -> Vec<u8> {
@@ -348,6 +414,78 @@ mod tests {
                     new: PathBuf::from("new.txt"),
                 },
             ])
+        );
+    }
+
+    #[test]
+    fn modified_only_watch_actions_do_not_refresh_the_listing() {
+        let actions = vec![
+            WatchAction::Modified(PathBuf::from("NTUSER.DAT")),
+            WatchAction::Modified(PathBuf::from("AppData")),
+        ];
+        assert!(!watch_actions_require_listing_refresh(&actions, |_| false));
+        assert_eq!(
+            directory_changed_from_watch(Ok(Some(actions)), |_| false),
+            None
+        );
+    }
+
+    #[test]
+    fn membership_changes_still_refresh_the_listing() {
+        assert!(watch_actions_require_listing_refresh(
+            &[WatchAction::Added(PathBuf::from("new.txt"))],
+            |_| false
+        ));
+        assert!(watch_actions_require_listing_refresh(
+            &[WatchAction::Removed(PathBuf::from("gone.txt"))],
+            |_| false
+        ));
+        assert!(watch_actions_require_listing_refresh(
+            &[WatchAction::Renamed {
+                old: PathBuf::from("a.txt"),
+                new: PathBuf::from("b.txt"),
+            }],
+            |_| false
+        ));
+        assert_eq!(
+            directory_changed_from_watch(
+                Ok(Some(vec![WatchAction::Added(PathBuf::from("visible.txt"))])),
+                |_| false
+            ),
+            Some(vec![DirectoryDelta::Overflow])
+        );
+    }
+
+    #[test]
+    fn hidden_or_system_membership_changes_do_not_refresh_the_listing() {
+        assert!(!watch_actions_require_listing_refresh(
+            &[WatchAction::Added(PathBuf::from("NTUSER.DAT.LOG1"))],
+            |_| true
+        ));
+        assert!(!watch_actions_require_listing_refresh(
+            &[WatchAction::Removed(PathBuf::from("NTUSER.DAT.LOG1"))],
+            |_| true
+        ));
+        assert_eq!(
+            directory_changed_from_watch(
+                Ok(Some(vec![WatchAction::Added(PathBuf::from(
+                    "NTUSER.DAT.LOG1"
+                ))])),
+                |_| true
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn malformed_or_empty_watch_buffer_still_overflows() {
+        assert_eq!(
+            directory_changed_from_watch(Err(WatchParseError::TruncatedHeader), |_| false),
+            Some(vec![DirectoryDelta::Overflow])
+        );
+        assert_eq!(
+            directory_changed_from_watch(Ok(None), |_| false),
+            Some(vec![DirectoryDelta::Overflow])
         );
     }
 
