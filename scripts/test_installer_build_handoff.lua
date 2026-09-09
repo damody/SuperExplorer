@@ -163,16 +163,22 @@ assert_contains(sdk_version, "2>&1", "sdk_version Git stderr capture")
 assert_not_contains(sdk_version, "2>NUL", "sdk_version Git stderr capture")
 assert_not_contains(batch, "請按任意鍵", "build_install.bat")
 assert_not_contains(batch, "dist\\", "build_install.bat")
-assert_contains(test_batch, '"%LUA_EXE%" "%BUILD_SCRIPT%" --component superexplorer --allow-superexplorer-dirty %*',
+assert_contains(test_batch, '"%LUA_EXE%" "%BUILD_SCRIPT%" --component superexplorer --allow-superexplorer-dirty --auto-install %*',
     "build_test_install.bat")
 assert_contains(test_batch, 'exit /b %BUILD_EXIT_CODE%', "build_test_install.bat")
 assert_contains(test_batch, '"%%~A"=="--check"', "build_test_install.bat")
 assert_contains(test_batch, "SuperExplorer test installer build completed", "build_test_install.bat")
 assert_not_contains(test_batch, "git.exe", "build_test_install.bat")
-assert_contains(test_batch, 'set "KEEP_CONSOLE=0"', "build_test_install.bat")
-assert_contains(test_batch, 'if "%~1"=="" if not defined CI set "KEEP_CONSOLE=1"',
-    "build_test_install.bat interactive console")
-assert_contains(test_batch, "pause >nul", "build_test_install.bat interactive console")
+assert_contains(test_batch, 'set "PAUSE_ON_FAILURE=0"', "build_test_install.bat")
+assert_contains(test_batch, 'if "%~1"=="" if not defined CI set "PAUSE_ON_FAILURE=1"',
+    "build_test_install.bat")
+assert_contains(test_batch, 'if not "%PAUSE_ON_FAILURE%"=="1" goto :report_done',
+    "build_test_install.bat")
+assert_contains(test_batch, "pause >nul", "build_test_install.bat")
+local test_successful_paths = assert(test_batch:match("\n:finish(.-)\n:report_failure"))
+local test_failure_path = assert(test_batch:match("\n:report_failure(.-)\n:report_done"))
+assert_not_contains(test_successful_paths, "pause >nul", "build_test_install.bat success paths")
+assert_contains(test_failure_path, "pause >nul", "build_test_install.bat failure path")
 assert_contains(test_batch, "RustGpuiExplorer\\logs\\error.log", "build_test_install.bat error log hint")
 assert_contains(desktop_test_batch,
     '"%LUA_EXE%" "%BUILD_SCRIPT%" --component superdesktop --allow-superdesktop-dirty %*',

@@ -7,9 +7,9 @@ set "BUILD_SCRIPT=%~dp0build\build_install.lua"
 set "BUILD_EXIT_CODE=1"
 set "CHECK_ONLY=0"
 set "NO_LAUNCH=0"
-set "KEEP_CONSOLE=0"
+set "PAUSE_ON_FAILURE=0"
 
-if "%~1"=="" if not defined CI set "KEEP_CONSOLE=1"
+if "%~1"=="" if not defined CI set "PAUSE_ON_FAILURE=1"
 
 for %%A in (%*) do (
     if /I "%%~A"=="--check" set "CHECK_ONLY=1"
@@ -47,13 +47,13 @@ goto :report_done
 
 :report_failure
 echo [FAILURE] SuperExplorer test installer build failed with exit code %BUILD_EXIT_CODE%. 1>&2
-
-:report_done
+if not "%PAUSE_ON_FAILURE%"=="1" goto :report_done
 echo.
-if not "%KEEP_CONSOLE%"=="1" goto :exit
-echo [DIAGNOSTICS] This test-build console will remain open. Press any key to close it.
+echo [FAILURE] Press any key to close this window. 1>&2
 echo [DIAGNOSTICS] Client errors are also persisted under %LOCALAPPDATA%\RustGpuiExplorer\logs\error.log.
 pause >nul
 
-:exit
+:report_done
+echo.
+
 exit /b %BUILD_EXIT_CODE%
