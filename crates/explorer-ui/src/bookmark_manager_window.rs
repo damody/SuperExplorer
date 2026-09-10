@@ -631,6 +631,7 @@ impl BookmarkManagerWindow {
             return;
         }
         let owner = self.owner;
+        let live_reorder = matches!(action, ExplorerAction::MoveBookmark { .. });
         match owner.update(cx, |root, owner_window, cx| {
             if matches!(action, ExplorerAction::EditBookmark { .. }) {
                 root.clear_bookmark_editor_anchor();
@@ -639,10 +640,14 @@ impl BookmarkManagerWindow {
             root.bookmark_manager_window_snapshot()
         }) {
             Ok(snapshot) => {
+                let bookmarks_changed =
+                    snapshot.state.bookmarks() != self.snapshot.state.bookmarks();
                 self.ui.reconcile(snapshot.state.bookmarks());
                 self.snapshot = snapshot;
-                cx.notify();
-                window.refresh();
+                if bookmarks_changed || !live_reorder {
+                    cx.notify();
+                    window.refresh();
+                }
             }
             Err(error) => {
                 tracing::warn!(%error, "Bookmark manager owner window is unavailable");
@@ -895,6 +900,8 @@ mod tests {
         let source = include_str!("bookmark_manager_window.rs");
         assert!(source.contains("WindowKind::Normal"));
         assert!(source.contains("dispatch_bookmark_manager_action"));
+        assert!(source.contains("live_reorder"));
+        assert!(source.contains("bookmarks_changed"));
         assert!(source.contains("chrome::bookmark_manager("));
         assert!(source.contains("window.remove_window()"));
         assert!(source.contains("size(px(1100.0), px(720.0))"));
