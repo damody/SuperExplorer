@@ -527,6 +527,37 @@ local function main()
     local installer_size = validate_executable(output, "安裝程式")
 
     if options.auto_install and not options.no_launch then
+        local install_dir
+        local queried, resolved = pcall(query_superexplorer_install_directory, logs)
+        if queried and type(resolved) == "string" and not resolved:match("^%s*$") then
+            install_dir = resolved
+        else
+            local program_files = os.getenv("ProgramW6432") or os.getenv("ProgramFiles")
+            if not program_files or program_files:match("^%s*$") then
+                error("無法解析 Program Files 目錄，無法在安裝前關閉 SuperExplorer", 0)
+            end
+            install_dir = path(program_files, "SuperExplorer")
+            print("[資訊] 尚未讀到安裝目錄登錄，改對預設路徑關閉 SuperExplorer：" .. install_dir)
+        end
+        local quiesce_helper = path(root, "installer", "quiesce-superexplorer.ps1")
+        require_file(quiesce_helper, "SuperExplorer quiesce helper")
+        process.run({
+            stage = "封裝完成後關閉已安裝的 SuperExplorer",
+            exe = powershell_exe(),
+            args = {
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                quiesce_helper,
+                "-InstallDirectory",
+                install_dir,
+            },
+            cwd = root,
+            log_path = path(logs, "installer-superexplorer-pre-install-quiesce.log"),
+        })
         process.run({
             stage = "同步安裝 SuperExplorer 測試版本",
             exe = output,

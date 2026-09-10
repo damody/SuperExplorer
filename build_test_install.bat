@@ -28,6 +28,17 @@ if not exist "%BUILD_SCRIPT%" (
     goto :finish
 )
 
+if defined CI goto :run_build
+if "%CHECK_ONLY%"=="1" goto :run_build
+if "%NO_LAUNCH%"=="1" goto :run_build
+if defined SUPEREXPLORER_TEST_INSTALL_BOOTSTRAPPED goto :run_build
+
+set "SUPEREXPLORER_TEST_INSTALL_BOOTSTRAPPED=1"
+echo [INFO] Relaunching SuperExplorer test install in a detached console so SuperExplorer can stay open until packaging finishes.
+start "SuperExplorer Test Install" cmd /d /c call "%~f0" %*
+exit /b 0
+
+:run_build
 "%LUA_EXE%" "%BUILD_SCRIPT%" --component superexplorer --allow-superexplorer-dirty --auto-install %*
 set "BUILD_EXIT_CODE=%ERRORLEVEL%"
 

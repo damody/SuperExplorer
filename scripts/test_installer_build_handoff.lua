@@ -165,6 +165,21 @@ assert_not_contains(batch, "請按任意鍵", "build_install.bat")
 assert_not_contains(batch, "dist\\", "build_install.bat")
 assert_contains(test_batch, '"%LUA_EXE%" "%BUILD_SCRIPT%" --component superexplorer --allow-superexplorer-dirty --auto-install %*',
     "build_test_install.bat")
+assert_contains(test_batch, "SUPEREXPLORER_TEST_INSTALL_BOOTSTRAPPED",
+    "build_test_install.bat detached bootstrap marker")
+assert_contains(test_batch, 'start "SuperExplorer Test Install"',
+    "build_test_install.bat detached console")
+assert_contains(test_batch, 'if defined CI goto :run_build',
+    "build_test_install.bat CI skips bootstrap")
+assert_contains(test_batch, 'if "%CHECK_ONLY%"=="1" goto :run_build',
+    "build_test_install.bat --check skips bootstrap")
+assert_contains(test_batch, 'if "%NO_LAUNCH%"=="1" goto :run_build',
+    "build_test_install.bat --no-launch skips bootstrap")
+local bootstrap = assert(test_batch:find("SUPEREXPLORER_TEST_INSTALL_BOOTSTRAPPED", 1, true),
+    "build_test_install.bat bootstrap marker missing")
+local lua_launch = assert(test_batch:find('"%LUA_EXE%" "%BUILD_SCRIPT%" --component superexplorer --allow-superexplorer-dirty --auto-install %*', 1, true),
+    "build_test_install.bat lua launch missing")
+assert(bootstrap < lua_launch, "build_test_install.bat must detach before invoking lua")
 assert_contains(test_batch, 'exit /b %BUILD_EXIT_CODE%', "build_test_install.bat")
 assert_contains(test_batch, '"%%~A"=="--check"', "build_test_install.bat")
 assert_contains(test_batch, "SuperExplorer test installer build completed", "build_test_install.bat")

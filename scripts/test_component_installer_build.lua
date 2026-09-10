@@ -173,6 +173,21 @@ assert_contains(build, 'options.component == "superdesktop" and "SuperDesktop.ns
 assert_contains(build, 'if options.auto_install and not options.no_launch then',
     "explicit SuperExplorer auto-install branch")
 assert_contains(build, 'args = { "/S" }', "silent installer argument")
+local publish_at = assert(build:find("publish.apk(temporary_output, output)", 1, true),
+    "installer publish missing")
+local auto_install_at = assert(build:find("if options.auto_install and not options.no_launch then", 1, true),
+    "auto-install branch missing")
+assert(publish_at < auto_install_at, "silent install must run after the packaged installer is published")
+local auto_install_block = assert(build:match(
+    "if options%.auto_install and not options%.no_launch then(.-)elseif not options%.no_launch then"
+), "auto-install block missing")
+assert_contains(auto_install_block, "quiesce-superexplorer.ps1",
+    "pre-install SuperExplorer quiesce helper")
+assert_contains(auto_install_block, "ProgramW6432",
+    "pre-install quiesce Program Files fallback")
+local quiesce_at = assert(auto_install_block:find("quiesce-superexplorer.ps1", 1, true))
+local silent_at = assert(auto_install_block:find('args = { "/S" }', 1, true))
+assert(quiesce_at < silent_at, "SuperExplorer must be closed after packaging and before silent install")
 assert_contains(build, 'verify_installed_superexplorer(superexplorer_inputs, logs)',
     "installed binary identity gate")
 assert_contains(build, 'start_verified_superexplorer(installed_executable, logs)',
