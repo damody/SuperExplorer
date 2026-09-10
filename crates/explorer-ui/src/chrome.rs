@@ -871,6 +871,19 @@ impl RenderOnce for ExplorerWindow {
                     ))
                 },
             )
+            .when_some(
+                self.state.navigation_fallback_context_menu().cloned(),
+                |element, menu| {
+                    element.child(navigation_fallback_context_menu(
+                        self.tokens,
+                        self.state.catalog(),
+                        menu,
+                        f32::from(window.bounds().size.width),
+                        f32::from(window.bounds().size.height),
+                        self.on_action.clone(),
+                    ))
+                },
+            )
             .when_some(self.state.remote_context_menu(), |element, menu| {
                 element.child(remote_context_menu(
                     self.tokens,
@@ -1298,6 +1311,7 @@ fn bookmark_bar(
                     div()
                         .id("bookmark-folder-menu")
                         .role(Role::Menu)
+                        .occlude()
                         .aria_label(state.catalog().t("chrome-bookmark-folder-menu"))
                         .absolute()
                         .top(px(BOOKMARK_BAR_HEIGHT - 1.0))
@@ -1310,6 +1324,7 @@ fn bookmark_bar(
                         .border(px(1.0))
                         .border_color(tokens.theme.colors.divider.to_gpui())
                         .bg(tokens.theme.colors.menu_fill.to_gpui())
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .children(entries.into_iter().map(|entry| match entry {
                             BookmarkFolderMenuItem::Folder(folder) => {
                                 let folder_id = folder.id;
@@ -3215,6 +3230,99 @@ fn list_bookmark_history_backups() -> Vec<BookmarkHistoryBackup> {
     items.into_iter().map(|item| item.1).collect()
 }
 
+fn navigation_fallback_context_menu(
+    tokens: UiTokens,
+    catalog: Catalog,
+    menu: crate::state::NavigationFallbackMenuState,
+    window_width: f32,
+    window_height: f32,
+    callback: Option<ActionCallback>,
+) -> impl IntoElement {
+    let close = ExplorerAction::CloseNavigationFallbackContextMenu;
+    let close_cb = callback.clone();
+    let close_right = close.clone();
+    let close_right_cb = callback.clone();
+    let mut commands = Vec::new();
+    if let Some(location) = menu.location.clone() {
+        commands.push((
+            catalog.t("menu-open"),
+            ExplorerAction::ActivateNavigationItem {
+                location: location.clone(),
+            },
+            false,
+        ));
+        commands.push((
+            catalog.t("menu-open-in-new-tab"),
+            ExplorerAction::OpenNavigationInNewTab { location },
+            false,
+        ));
+    } else {
+        commands.push((catalog.t("menu-open"), ExplorerAction::CloseNavigationFallbackContextMenu, false));
+    }
+    let rows = commands
+        .into_iter()
+        .enumerate()
+        .map(|(index, (label, action, danger))| {
+            let callback = callback.clone();
+            div()
+                .id(format!("navigation-fallback-command-{index}"))
+                .role(Role::MenuItem)
+                .aria_label(label.clone())
+                .cursor_pointer()
+                .px(px(12.0))
+                .py(px(7.0))
+                .rounded(px(4.0))
+                .text_color(if danger {
+                    tokens.theme.colors.danger.to_gpui()
+                } else {
+                    tokens.theme.colors.text_primary.to_gpui()
+                })
+                .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
+                .child(label)
+                .when_some(callback, move |element, cb| {
+                    element.on_click(move |_, window, cx| cb(&action, window, cx))
+                })
+        });
+    let left = menu.x.min((window_width - 260.0).max(0.0));
+    let top = menu.y.min((window_height - 160.0).max(0.0));
+    div()
+        .id("navigation-fallback-overlay")
+        .absolute()
+        .inset_0()
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            if let Some(cb) = close_cb.as_ref() {
+                cb(&close, window, cx);
+            }
+        })
+        .on_mouse_down(MouseButton::Right, move |_, window, cx| {
+            if let Some(cb) = close_right_cb.as_ref() {
+                cb(&close_right, window, cx);
+            }
+        })
+        .child(
+            deferred(
+                div()
+                    .id("navigation-fallback-menu")
+                    .role(Role::Menu)
+                    .occlude()
+                    .aria_label(catalog.t("menu-open"))
+                    .absolute()
+                    .left(px(left))
+                    .top(px(top))
+                    .min_w(px(252.0))
+                    .p(px(6.0))
+                    .rounded(px(6.0))
+                    .border(px(1.0))
+                    .border_color(tokens.theme.colors.divider.to_gpui())
+                    .bg(tokens.theme.colors.menu_fill.to_gpui())
+                    .shadow_lg()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .children(rows),
+            )
+            .with_priority(312),
+        )
+}
+
 fn bookmark_toolbar_context_menu(
     tokens: UiTokens,
     catalog: Catalog,
@@ -4011,8 +4119,8 @@ pub(crate) fn bookmark_editor(
                 .flex_col()
                 .gap(px(8.0))
                 .font_family(tokens.typography.family.primary)
-                .text_size(px(tokens.typography.file_row.size.value()))
-                .line_height(px(tokens.typography.file_row.line_height.value()))
+                .text_size(px(tokens.typography.address.size.value()))
+                .line_height(px(tokens.typography.address.line_height.value()))
                 .rounded(px(8.0))
                 .bg(tokens.theme.colors.surface.to_gpui())
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -4029,7 +4137,7 @@ pub(crate) fn bookmark_editor(
                                 .font_family(tokens.typography.family.primary),
                             32.0,
                             1.0,
-                            16.0,
+                            tokens.typography.address.size.value(),
                             tokens.typography.address.line_height.value(),
                         )
                         .bg(colors.control_fill.to_gpui())
@@ -4056,7 +4164,7 @@ pub(crate) fn bookmark_editor(
                                     .px(px(8.0))
                                     .py(px(6.0))
                                     .font_family(tokens.typography.family.primary)
-                                    .text_size(px(16.0))
+                                    .text_size(px(tokens.typography.address.size.value()))
                                     .line_height(px(tokens.typography.address.line_height.value()))
                                     .bg(colors.control_fill.to_gpui())
                                     .text_color(input_text)
@@ -4078,7 +4186,7 @@ pub(crate) fn bookmark_editor(
                                         .font_family(tokens.typography.family.primary),
                                     payload_height,
                                     1.0,
-                                    16.0,
+                                    tokens.typography.address.size.value(),
                                     tokens.typography.address.line_height.value(),
                                 )
                                 .bg(colors.control_fill.to_gpui())
@@ -4108,7 +4216,7 @@ pub(crate) fn bookmark_editor(
                                 .font_family(tokens.typography.family.primary),
                             32.0,
                             1.0,
-                            16.0,
+                            tokens.typography.address.size.value(),
                             tokens.typography.address.line_height.value(),
                         )
                         .bg(colors.control_fill.to_gpui())
@@ -4123,7 +4231,6 @@ pub(crate) fn bookmark_editor(
                 })
                 .child(
                     div()
-                        .text_size(px(12.0))
                         .text_color(colors.text_secondary.to_gpui())
                         .child(catalog.t("dialog-tags-hint")),
                 )
@@ -6975,6 +7082,16 @@ impl RenderOnce for CommandBar {
                     )
                     .into_any_element()
                 }),
+            ))
+            .child(semantic_button(
+                "command-handoff-file-explorer",
+                catalog.t("menu-open-in-file-explorer"),
+                None,
+                Some(catalog.t("menu-open-in-file-explorer").into()),
+                Some(ExplorerAction::HandoffToFileExplorer),
+                true,
+                self.tokens,
+                self.on_action.clone(),
             ))
             .child(div().flex_1())
             .child(
@@ -9977,7 +10094,6 @@ fn bookmark_navigation_rows(
         .map(|entry| entry.location.clone());
     let expanded = state.favorites_nav_expanded();
     let selected = current.as_ref() == Some(&favorites_root);
-    let add_root = ExplorerAction::AddBookmarkFolder { parent_id: None };
     let activate = ExplorerAction::ActivateNavigationItem {
         location: favorites_root.clone(),
     };
@@ -10001,7 +10117,11 @@ fn bookmark_navigation_rows(
         callback.clone(),
         Some(toggle),
         callback.clone(),
-        Some(add_root),
+        Some(ExplorerAction::OpenBookmarkToolbarContextMenu {
+            parent_id: None,
+            x: 0.0,
+            y: 0.0,
+        }),
     )];
     if expanded {
         visit(
@@ -10420,56 +10540,27 @@ fn navigation_item_row(
             })
         },
     )
-    .when_some(
-        available
-            .then_some(())
-            .zip(context_callback)
-            .zip(context_location),
-        |element, (((), callback), location)| {
-            let up_callback = callback.clone();
-            let out_callback = callback;
-            let up_location = location.clone();
-            let out_location = location;
-            element
-                .on_mouse_down(MouseButton::Right, |_, _, cx| {
-                    cx.stop_propagation();
-                })
-                .on_mouse_up(MouseButton::Right, move |event, window, cx| {
-                    cx.stop_propagation();
-                    let (owner_window, x, y) = context_menu_coordinates(event.position, window);
-                    up_callback(
-                        &ExplorerAction::ShowNavigationContextMenu {
-                            location: up_location.clone(),
-                            owner_window,
-                            x,
-                            y,
-                            client_x: f32::from(event.position.x),
-                            client_y: f32::from(event.position.y),
-                            extended_verbs: event.modifiers.shift,
-                        },
-                        window,
-                        cx,
-                    );
-                })
-                .on_mouse_up_out(MouseButton::Right, move |event, window, cx| {
-                    cx.stop_propagation();
-                    let (owner_window, x, y) = context_menu_coordinates(event.position, window);
-                    out_callback(
-                        &ExplorerAction::ShowNavigationContextMenu {
-                            location: out_location.clone(),
-                            owner_window,
-                            x,
-                            y,
-                            client_x: f32::from(event.position.x),
-                            client_y: f32::from(event.position.y),
-                            extended_verbs: event.modifiers.shift,
-                        },
-                        window,
-                        cx,
-                    );
-                })
-        },
-    )
+    .when_some(context_callback, |element, callback| {
+        element
+            .on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                cx.stop_propagation();
+                let (owner_window, x, y) = context_menu_coordinates(event.position, window);
+                callback(
+                    &ExplorerAction::ShowNavigationContextMenu {
+                        location: context_location.clone(),
+                        owner_window,
+                        x,
+                        y,
+                        client_x: f32::from(event.position.x),
+                        client_y: f32::from(event.position.y),
+                        extended_verbs: event.modifiers.shift,
+                    },
+                    window,
+                    cx,
+                );
+            })
+            .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+    })
     .into_any_element()
 }
 
@@ -12259,9 +12350,6 @@ impl RenderOnce for FileViewHost {
                                         cx.stop_propagation();
                                     })
                                     .on_mouse_up(MouseButton::Left, |_, _, cx| {
-                                        cx.stop_propagation();
-                                    })
-                                    .on_mouse_up_out(MouseButton::Left, |_, _, cx| {
                                         cx.stop_propagation();
                                     })
                                     .relative()
@@ -17600,8 +17688,22 @@ mod tests {
         assert!(body.contains("ShowNavigationContextMenu"));
         assert!(body.contains("on_mouse_down(MouseButton::Right"));
         assert!(body.contains("on_mouse_up(MouseButton::Right"));
-        assert!(body.contains("on_mouse_up_out(MouseButton::Right"));
         assert!(body.contains("cx.stop_propagation()"));
+        let down = body
+            .find(".on_mouse_down(MouseButton::Right")
+            .expect("right-button down");
+        let up = body[down..]
+            .find(".on_mouse_up(MouseButton::Right")
+            .map(|offset| down + offset)
+            .expect("right-button up after down");
+        assert!(
+            body[down..up].contains("ShowNavigationContextMenu"),
+            "scrollable navigation pane must open the item menu on right-button down"
+        );
+        assert!(
+            !body.contains("available.then_some(()).zip(context_callback).zip(context_location)"),
+            "right-click must not require an available location"
+        );
     }
 
     #[test]
@@ -20137,6 +20239,35 @@ mod tests {
     }
 
     #[test]
+    fn bookmark_folder_menu_occludes_hits_so_entries_activate_instead_of_falling_through() {
+        let source = include_str!("chrome.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source precedes tests");
+        let start = production
+            .find(".when_some(active_folder_menu")
+            .expect("folder menu");
+        let end = production[start..]
+            .find("enum BookmarkFolderMenuItem")
+            .expect("folder menu end")
+            + start;
+        let menu = &production[start..end];
+        assert!(
+            menu.contains(".occlude()"),
+            "folder menu must block hits through to the dismiss overlay and command bar"
+        );
+        assert!(
+            menu.contains("MouseButton::Left") && menu.contains("cx.stop_propagation()"),
+            "folder menu must own left-button presses so the overlay cannot close it first"
+        );
+        assert!(
+            menu.contains("ActivateBookmark { id }"),
+            "folder entries must still activate the bookmark"
+        );
+    }
+
+    #[test]
     fn bookmark_right_click_uses_the_folder_context_menu_visual_contract() {
         let source = include_str!("chrome.rs");
         let item = source
@@ -20232,9 +20363,9 @@ mod tests {
             "payload_is_multiline",
             "if payload_is_multiline { 220.0 } else { 36.0 }",
             ".w_full()",
-            ".h(px(32.0))",
+            "32.0",
             ".font_family(tokens.typography.family.primary)",
-            ".text_size(px(16.0))",
+            ".text_size(px(tokens.typography.address.size.value()))",
             ".line_height(px(tokens.typography.address.line_height.value()))",
             ".rounded(px(4.0))",
         ] {
@@ -20243,6 +20374,18 @@ mod tests {
                 "missing visible editor control contract: {required}"
             );
         }
+        assert!(
+            !editor.contains(".text_size(px(16.0))"),
+            "bookmark editor inputs must not use a larger ad-hoc size than labels"
+        );
+        assert!(
+            !editor.contains(".text_size(px(tokens.typography.file_row.size.value()))"),
+            "bookmark editor labels must share the address size with inputs"
+        );
+        assert!(
+            !editor.contains(".text_size(px(12.0))"),
+            "bookmark editor hint and labels must not drop to a smaller ad-hoc size"
+        );
     }
 
     #[test]
@@ -20293,6 +20436,19 @@ mod tests {
         assert!(production.contains("OpenBookmarkToolbarContextMenu"));
         assert!(production.contains("favorites-tree-heading"));
         assert!(production.contains("favorite-folder-nav"));
+        let heading = production
+            .split("favorites-tree-heading")
+            .nth(1)
+            .and_then(|source| source.split("if expanded").next())
+            .expect("favorites heading row");
+        assert!(
+            heading.contains("OpenBookmarkToolbarContextMenu"),
+            "favorites heading must open a context menu on right-click"
+        );
+        assert!(
+            !heading.contains("AddBookmarkFolder"),
+            "favorites heading must not treat right-click as an immediate add-folder command"
+        );
     }
 
     #[test]

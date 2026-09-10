@@ -173,13 +173,17 @@ pub enum ExplorerAction {
         location: explorer_model::LocationDescriptor,
     },
     ShowNavigationContextMenu {
-        location: explorer_model::LocationDescriptor,
+        location: Option<explorer_model::LocationDescriptor>,
         owner_window: u64,
         x: i32,
         y: i32,
         client_x: f32,
         client_y: f32,
         extended_verbs: bool,
+    },
+    CloseNavigationFallbackContextMenu,
+    OpenNavigationInNewTab {
+        location: explorer_model::LocationDescriptor,
     },
     FocusSearch,
     ClearSearch,
@@ -668,6 +672,8 @@ impl ExplorerAction {
             Self::ActivateNavigationItem { .. } => "ActivateNavigationItem",
             Self::ToggleNavigationNode { .. } => "ToggleNavigationNode",
             Self::ShowNavigationContextMenu { .. } => "ShowNavigationContextMenu",
+            Self::CloseNavigationFallbackContextMenu => "CloseNavigationFallbackContextMenu",
+            Self::OpenNavigationInNewTab { .. } => "OpenNavigationInNewTab",
             Self::FocusSearch => "FocusSearch",
             Self::ClearSearch => "ClearSearch",
             Self::FocusNext => "FocusNext",
@@ -1375,7 +1381,9 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::ActivateBreadcrumbChild { .. } => true,
         ExplorerAction::ActivateNavigationItem { .. }
         | ExplorerAction::ToggleNavigationNode { .. }
-        | ExplorerAction::ShowNavigationContextMenu { .. } => true,
+        | ExplorerAction::ShowNavigationContextMenu { .. }
+        | ExplorerAction::CloseNavigationFallbackContextMenu
+        | ExplorerAction::OpenNavigationInNewTab { .. } => true,
         ExplorerAction::FocusSearch => availability.is_enabled(CommandKind::FocusSearch),
         ExplorerAction::ClearSearch => !matches!(
             state.tabs().active_tab().search,
@@ -1750,7 +1758,18 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             FocusSurface::NavigationPane
         }
         ExplorerAction::ShowNavigationContextMenu { location, .. } => {
-            state.set_navigation_focus(location);
+            if let Some(location) = location {
+                state.set_navigation_focus(location.clone());
+            }
+            state.focus(FocusSurface::NavigationPane);
+            FocusSurface::NavigationPane
+        }
+        ExplorerAction::CloseNavigationFallbackContextMenu => {
+            state.close_navigation_fallback_context_menu();
+            FocusSurface::NavigationPane
+        }
+        ExplorerAction::OpenNavigationInNewTab { location } => {
+            state.set_navigation_focus(location.clone());
             state.focus(FocusSurface::NavigationPane);
             FocusSurface::NavigationPane
         }

@@ -1587,6 +1587,23 @@ fn should_end_inline_rename(action: &ExplorerAction, source: ActionSource) -> bo
                 | ExplorerAction::CancelInlineRename
         )
         && !is_passive_pointer_action(action)
+        && !should_cancel_inline_rename(action)
+}
+
+fn should_cancel_inline_rename(action: &ExplorerAction) -> bool {
+    matches!(
+        action,
+        ExplorerAction::NewTab
+            | ExplorerAction::CloseActiveTab
+            | ExplorerAction::ActivateTab { .. }
+            | ExplorerAction::CloseTab { .. }
+            | ExplorerAction::ReorderTab { .. }
+            | ExplorerAction::NextTab
+            | ExplorerAction::PreviousTab
+            | ExplorerAction::ActivateBookmark { .. }
+            | ExplorerAction::OpenBookmarkInNewTab { .. }
+            | ExplorerAction::ToggleBookmarkFolderMenu { .. }
+    )
 }
 
 fn file_view_global_command_action(event: &gpui::KeyDownEvent) -> Option<ExplorerAction> {
@@ -6541,6 +6558,10 @@ impl ExplorerRoot {
         if action == ExplorerAction::CloseRemoteContextMenu {
             self.state.close_remote_context_menu();
             cx.notify();
+        }
+        if action == ExplorerAction::CloseNavigationFallbackContextMenu {
+            self.state.close_navigation_fallback_context_menu();
+            cx.notify();
             return;
         }
         if self.state.bookmark_toolbar_context_menu().is_some() {
@@ -6549,6 +6570,16 @@ impl ExplorerRoot {
         }
         if self.state.bookmark_context_menu().is_some() {
             self.state.close_bookmark_context_menu();
+            cx.notify();
+        }
+        if self.state.navigation_fallback_context_menu().is_some()
+            && !matches!(
+                action,
+                ExplorerAction::ShowNavigationContextMenu { .. }
+                    | ExplorerAction::CloseNavigationFallbackContextMenu
+            )
+        {
+            self.state.close_navigation_fallback_context_menu();
             cx.notify();
         }
         if let ExplorerAction::RequestRemoveBookmark { id } = action {
@@ -6560,6 +6591,16 @@ impl ExplorerRoot {
         {
             self.state.close_remote_context_menu();
             cx.notify();
+        }
+        if let ExplorerAction::OpenNavigationInNewTab { location } = action {
+            self.handle_action(ExplorerAction::NewTab, source, window, cx);
+            self.handle_action(
+                ExplorerAction::ActivateNavigationItem { location },
+                source,
+                window,
+                cx,
+            );
+            return;
         }
         if let ExplorerAction::OpenBookmarkInNewTab { id } = action {
             let is_folder = self
@@ -6770,7 +6811,10 @@ impl ExplorerRoot {
         if address_is_editing && should_end_address_edit(&action, source) {
             self.state.cancel_address_edit();
         }
-        if self.state.rename_editor().is_some() && should_end_inline_rename(&action, source) {
+        if self.state.rename_editor().is_some() && should_cancel_inline_rename(&action) {
+            self.cancel_inline_rename();
+            self.rename_input = None;
+        } else if self.state.rename_editor().is_some() && should_end_inline_rename(&action, source) {
             match self
                 .state
                 .commit_inline_rename(explorer_model::RenameCommitTrigger::Blur)
@@ -6984,16 +7028,6 @@ impl ExplorerRoot {
                 } else {
                     self.state
                         .set_bookmark_notice(self.catalog().t("status-bookmark-folder-created"));
-                    if let Some(id) = self
-                        .state
-                        .bookmarks()
-                        .child_folders(parent_id)
-                        .max_by_key(|folder| folder.order)
-                        .map(|folder| folder.id)
-                    {
-                        self.state.begin_bookmark_folder_editor(id);
-                        self.present_bookmark_folder_editor_window(cx);
-                    }
                 }
                 cx.notify();
             }
@@ -10135,7 +10169,7 @@ mod tests {
         is_command_prompt_address, is_passive_pointer_action, lua_bookmark_notice,
         lua_bookmark_request, physical_client_to_logical, prepare_shell_texture_pixels,
         remote_context_menu_command_dismisses, seed_active_visual_tab, should_end_address_edit,
-        should_end_inline_rename, synchronize_theme, thumbnail_texture,
+        should_cancel_inline_rename, should_end_inline_rename, synchronize_theme, thumbnail_texture,
         window_title_for_history_entry,
     };
 
@@ -12177,6 +12211,17 @@ mod tests {
             &ExplorerAction::CommitInlineRename,
             ActionSource::Mouse,
         ));
+        assert!(should_cancel_inline_rename(&ExplorerAction::ActivateTab {
+            tab_id: explorer_model::TabId::new()
+        }));
+        assert!(should_cancel_inline_rename(
+            &ExplorerAction::ActivateBookmark {
+                id: explorer_model::BookmarkId::nil()
+            }
+        ));
+        assert!(!should_cancel_inline_rename(&ExplorerAction::SelectItem {
+            row_index: 0
+        }));
     }
 
     fn key_event(key: &str, control: bool, alt: bool, shift: bool) -> gpui::KeyDownEvent {
@@ -14179,6 +14224,40 @@ mod tests {
         assert!(render.contains("self.state.dismiss_bookmark_browse_menus();"));
         assert!(render.contains("this.state.bookmark_folder_menu().is_some()"));
         assert!(render.contains("event.keystroke.key == \"escape\""));
+    }
+
+    #[test]
+    fn add_bookmark_folder_creates_immediately_without_rename_editor() {
+        let source = include_str!("lib.rs");
+        let add = source
+            .split("if let ExplorerAction::AddBookmarkFolder { parent_id } = action")
+            .nth(1)
+            .expect("AddBookmarkFolder handler")
+            .split("if let ExplorerAction::EditBookmarkFolder { id } = action")
+            .next()
+            .expect("AddBookmarkFolder body");
+        assert!(add.contains("add_bookmark_folder"));
+        assert!(
+            add.contains("status-bookmark-folder-created"),
+            "new folders must be created in place"
+        );
+        assert!(
+            !add.contains("begin_bookmark_folder_editor"),
+            "Add folder must not open the rename dialog"
+        );
+        assert!(
+            !add.contains("present_bookmark_folder_editor_window"),
+            "Add folder must not present the rename window"
+        );
+        let edit = source
+            .split("if let ExplorerAction::EditBookmarkFolder { id } = action")
+            .nth(1)
+            .expect("EditBookmarkFolder handler")
+            .split("if action == ExplorerAction::CancelBookmarkFolderEditor")
+            .next()
+            .expect("EditBookmarkFolder body");
+        assert!(edit.contains("begin_bookmark_folder_editor"));
+        assert!(edit.contains("present_bookmark_folder_editor_window"));
     }
 
     #[test]

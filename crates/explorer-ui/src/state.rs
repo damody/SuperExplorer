@@ -755,6 +755,13 @@ pub(crate) struct BookmarkContextMenuState {
     pub(crate) y: f32,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NavigationFallbackMenuState {
+    pub(crate) location: Option<LocationDescriptor>,
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RemoteContextMenuState {
     pub(crate) x: f32,
@@ -841,6 +848,7 @@ pub struct AppViewState {
     bookmark_toolbar_context_menu: Option<BookmarkToolbarContextMenuState>,
     bookmark_context_menu: Option<BookmarkContextMenuState>,
     remote_context_menu: Option<RemoteContextMenuState>,
+    navigation_fallback_context_menu: Option<NavigationFallbackMenuState>,
     remote_properties: Option<RemotePropertiesState>,
     expanded_bookmark_folders: HashSet<explorer_model::BookmarkFolderId>,
     favorites_nav_collapsed: bool,
@@ -1109,6 +1117,7 @@ impl AppViewState {
             bookmark_toolbar_context_menu: None,
             bookmark_context_menu: None,
             remote_context_menu: None,
+            navigation_fallback_context_menu: None,
             remote_properties: None,
             expanded_bookmark_folders: HashSet::new(),
             favorites_nav_collapsed: true,
@@ -4020,6 +4029,16 @@ impl AppViewState {
         self.remote_context_menu = None;
     }
 
+    pub(crate) const fn navigation_fallback_context_menu(
+        &self,
+    ) -> Option<&NavigationFallbackMenuState> {
+        self.navigation_fallback_context_menu.as_ref()
+    }
+
+    pub(crate) fn close_navigation_fallback_context_menu(&mut self) {
+        self.navigation_fallback_context_menu = None;
+    }
+
     pub(crate) const fn remote_properties(&self) -> Option<&RemotePropertiesState> {
         self.remote_properties.as_ref()
     }
@@ -6126,7 +6145,7 @@ impl AppViewState {
 
     pub(crate) fn begin_navigation_context_menu_request(
         &mut self,
-        location: LocationDescriptor,
+        location: Option<LocationDescriptor>,
         owner_window: u64,
         x: i32,
         y: i32,
@@ -6134,11 +6153,25 @@ impl AppViewState {
         client_y: f32,
         extended_verbs: bool,
     ) -> Option<ExplorerCommand> {
+        let Some(location) = location else {
+            self.navigation_fallback_context_menu = Some(NavigationFallbackMenuState {
+                location: None,
+                x: client_x.max(0.0),
+                y: client_y.max(0.0),
+            });
+            return None;
+        };
         if location.synthetic_root().is_some()
             || location.favorites_folder_id().is_some()
             || location.lua_bookmark_id().is_some()
             || explorer_model::is_gdrive_connect_location(&location)
         {
+            self.set_navigation_focus(location.clone());
+            self.navigation_fallback_context_menu = Some(NavigationFallbackMenuState {
+                location: Some(location),
+                x: client_x.max(0.0),
+                y: client_y.max(0.0),
+            });
             return None;
         }
         self.set_navigation_focus(location.clone());
@@ -7199,6 +7232,7 @@ impl AppViewState {
         self.clear_file_view_typeahead();
         self.cancel_permanent_delete_confirmation();
         self.cancel_lock_recovery();
+        self.cancel_inline_rename();
         let _ = self.end_scrollbar_drag(ScrollbarTerminal::TabSwitch);
         self.end_details_column_resize();
         self.end_side_pane_resize();
@@ -7224,6 +7258,7 @@ impl AppViewState {
 
     pub(crate) fn activate_tab(&mut self, id: TabId) -> bool {
         self.clear_file_view_typeahead();
+        self.cancel_inline_rename();
         self.cancel_permanent_delete_confirmation();
         self.cancel_lock_recovery();
         let _ = self.end_scrollbar_drag(ScrollbarTerminal::TabSwitch);
@@ -7253,6 +7288,7 @@ impl AppViewState {
         self.cancel_permanent_delete_confirmation();
         self.cancel_lock_recovery();
         if id == self.tabs.active_tab_id() {
+            self.cancel_inline_rename();
             let _ = self.end_scrollbar_drag(ScrollbarTerminal::TabSwitch);
             self.end_details_column_resize();
             self.end_side_pane_resize();
@@ -9930,7 +9966,7 @@ mod tests {
         let location = explorer_model::LocationDescriptor::file_system(r"\\122.116.110.30\");
         let command = state
             .begin_navigation_context_menu_request(
-                location.clone(),
+                Some(location.clone()),
                 42,
                 100,
                 200,
@@ -9954,9 +9990,9 @@ mod tests {
         assert!(
             state
                 .begin_navigation_context_menu_request(
-                    explorer_model::LocationDescriptor::synthetic(
+                    Some(explorer_model::LocationDescriptor::synthetic(
                         explorer_model::SyntheticRoot::Home
-                    ),
+                    )),
                     42,
                     1,
                     2,
@@ -9965,6 +10001,21 @@ mod tests {
                     false,
                 )
                 .is_none()
+        );
+        assert_eq!(
+            state.navigation_fallback_context_menu().map(|menu| menu.location.clone()),
+            Some(Some(explorer_model::LocationDescriptor::synthetic(
+                explorer_model::SyntheticRoot::Home
+            )))
+        );
+        assert!(
+            state
+                .begin_navigation_context_menu_request(None, 42, 8, 9, 3.0, 4.0, false)
+                .is_none()
+        );
+        assert_eq!(
+            state.navigation_fallback_context_menu().map(|menu| menu.location.clone()),
+            Some(None)
         );
     }
 
@@ -11450,6 +11501,19 @@ mod tests {
         assert!(state.begin_inline_rename(0));
         assert!(state.cancel_inline_rename());
         assert!(state.rename_editor().is_none());
+    }
+
+    #[test]
+    fn activating_another_tab_cancels_inline_rename_instead_of_keeping_the_editor() {
+        let mut state = state_with_rows();
+        let first = state.tabs().active_tab_id();
+        let second = state.new_tab();
+        assert!(state.activate_tab(first));
+        assert!(state.begin_inline_rename(1));
+        assert!(state.update_inline_rename("folder".to_owned()));
+        assert!(state.activate_tab(second));
+        assert!(state.rename_editor().is_none());
+        assert_eq!(state.tabs().active_tab_id(), second);
     }
 
     #[test]

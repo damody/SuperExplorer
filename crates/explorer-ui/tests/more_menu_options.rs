@@ -52,6 +52,37 @@ fn labeled_other_and_extensions_controls_keep_order_and_popup_contracts() {
 }
 
 #[test]
+fn handoff_command_sits_immediately_after_extensions() {
+    let chrome = include_str!("../src/chrome.rs");
+    let production = chrome
+        .split("#[cfg(test)]")
+        .next()
+        .expect("production source precedes tests");
+    let extensions = production
+        .find("command-extensions-menu")
+        .expect("Extensions command");
+    let handoff = production
+        .find("command-handoff-file-explorer")
+        .expect("Handoff to File Explorer command");
+    let transfers = production
+        .find("command-transfer-center")
+        .expect("Transfer center command");
+    assert!(
+        extensions < handoff && handoff < transfers,
+        "handoff button must sit between Extensions and the transfer-center spacer group"
+    );
+    let button = &production[handoff..transfers];
+    assert!(
+        button.contains("menu-open-in-file-explorer"),
+        "visible handoff label missing"
+    );
+    assert!(
+        button.contains("HandoffToFileExplorer"),
+        "handoff action missing"
+    );
+}
+
+#[test]
 fn folder_options_has_general_and_view_but_deliberately_no_search_page() {
     let chrome = include_str!("../src/chrome.rs");
     assert!(chrome.contains("folder-options-general-tab"));
