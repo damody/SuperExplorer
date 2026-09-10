@@ -558,15 +558,22 @@ local function main()
             cwd = root,
             log_path = path(logs, "installer-superexplorer-pre-install-quiesce.log"),
         })
-        process.run({
-            stage = "同步安裝 SuperExplorer 測試版本",
-            exe = output,
-            args = { "/S" },
-            cwd = dist,
-            log_path = path(logs, "installer-superexplorer-silent-install.log"),
-        })
-        local installed_executable = verify_installed_superexplorer(superexplorer_inputs, logs)
-        start_verified_superexplorer(installed_executable, logs)
+        local ok, failure = pcall(function()
+            process.run({
+                stage = "同步安裝 SuperExplorer 測試版本",
+                exe = output,
+                args = { "/S" },
+                cwd = dist,
+                log_path = path(logs, "installer-superexplorer-silent-install.log"),
+            })
+            local installed_executable = verify_installed_superexplorer(superexplorer_inputs, logs)
+            start_verified_superexplorer(installed_executable, logs)
+        end)
+        if not ok then
+            print("[警告] 安裝或驗證失敗，嘗試重新啟動目前已安裝的 SuperExplorer")
+            pcall(start_verified_superexplorer, path(install_dir, "SuperExplorer.exe"), logs)
+            error(failure, 0)
+        end
     elseif not options.no_launch then
         process.start({
             stage = "啟動安裝程式",

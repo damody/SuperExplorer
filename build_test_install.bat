@@ -12,6 +12,7 @@ set "NO_LAUNCH=0"
 set "PAUSE_ON_FAILURE=0"
 
 if "%~1"=="" if not defined CI set "PAUSE_ON_FAILURE=1"
+if defined SUPEREXPLORER_TEST_INSTALL_BOOTSTRAPPED set "PAUSE_ON_FAILURE=0"
 
 for %%A in (%*) do (
     if /I "%%~A"=="--check" set "CHECK_ONLY=1"
@@ -60,11 +61,11 @@ goto :report_done
 
 :report_failure
 echo [FAILURE] SuperExplorer test installer build failed with exit code %BUILD_EXIT_CODE%. 1>&2
+echo [DIAGNOSTICS] Client errors are also persisted under %LOCALAPPDATA%\RustGpuiExplorer\logs\error.log.
 if not "%PAUSE_ON_FAILURE%"=="1" goto :report_done
 echo.
-echo [FAILURE] Press any key to close this window. 1>&2
-echo [DIAGNOSTICS] Client errors are also persisted under %LOCALAPPDATA%\RustGpuiExplorer\logs\error.log.
-pause >nul
+echo [FAILURE] Window will close in 15 seconds. 1>&2
+timeout /t 15 /nobreak >nul
 
 :report_done
 echo.

@@ -188,6 +188,10 @@ assert_contains(auto_install_block, "ProgramW6432",
 local quiesce_at = assert(auto_install_block:find("quiesce-superexplorer.ps1", 1, true))
 local silent_at = assert(auto_install_block:find('args = { "/S" }', 1, true))
 assert(quiesce_at < silent_at, "SuperExplorer must be closed after packaging and before silent install")
+assert_contains(auto_install_block, "pcall(start_verified_superexplorer",
+    "failed auto-install still restarts SuperExplorer")
+assert_contains(auto_install_block, "error(failure, 0)",
+    "failed auto-install preserves the original error")
 assert_contains(build, 'verify_installed_superexplorer(superexplorer_inputs, logs)',
     "installed binary identity gate")
 assert_contains(build, 'start_verified_superexplorer(installed_executable, logs)',

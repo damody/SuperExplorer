@@ -187,13 +187,18 @@ assert_not_contains(test_batch, "git.exe", "build_test_install.bat")
 assert_contains(test_batch, 'set "PAUSE_ON_FAILURE=0"', "build_test_install.bat")
 assert_contains(test_batch, 'if "%~1"=="" if not defined CI set "PAUSE_ON_FAILURE=1"',
     "build_test_install.bat")
+assert_contains(test_batch, 'if defined SUPEREXPLORER_TEST_INSTALL_BOOTSTRAPPED set "PAUSE_ON_FAILURE=0"',
+    "build_test_install.bat bootstrap does not wait for a key")
 assert_contains(test_batch, 'if not "%PAUSE_ON_FAILURE%"=="1" goto :report_done',
     "build_test_install.bat")
-assert_contains(test_batch, "pause >nul", "build_test_install.bat")
+assert_not_contains(test_batch, "pause >nul", "build_test_install.bat must not block on a keypress")
+assert_contains(test_batch, "timeout /t 15 /nobreak", "build_test_install.bat bounded failure wait")
 local test_successful_paths = assert(test_batch:match("\n:finish(.-)\n:report_failure"))
 local test_failure_path = assert(test_batch:match("\n:report_failure(.-)\n:report_done"))
 assert_not_contains(test_successful_paths, "pause >nul", "build_test_install.bat success paths")
-assert_contains(test_failure_path, "pause >nul", "build_test_install.bat failure path")
+assert_not_contains(test_successful_paths, "timeout /t", "build_test_install.bat success paths")
+assert_contains(test_failure_path, "timeout /t 15 /nobreak", "build_test_install.bat failure path")
+assert_not_contains(test_failure_path, "pause >nul", "build_test_install.bat failure path")
 assert_contains(test_batch, "RustGpuiExplorer\\logs\\error.log", "build_test_install.bat error log hint")
 assert_contains(desktop_test_batch,
     '"%LUA_EXE%" "%BUILD_SCRIPT%" --component superdesktop --allow-superdesktop-dirty %*',
