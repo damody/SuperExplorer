@@ -46,6 +46,7 @@ menu-move-to-gdrive-trash = Google Drive çöp kutusuna taşı…
 menu-permanent-delete = Kalıcı olarak sil…
 
 menu-options = Seçenekler
+menu-open-in-file-explorer = Dosya Gezgini’nde aç
 
 menu-about = Hakkında
 

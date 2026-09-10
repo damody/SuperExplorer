@@ -24,6 +24,7 @@ menu-download-to-downloads = 下載到下載資料夾
 menu-move-to-gdrive-trash = 移到 Google Drive 垃圾桶…
 menu-permanent-delete = 永久刪除…
 menu-options = 選項
+menu-open-in-file-explorer = 轉換回檔案總管
 menu-about = 關於
 menu-new = 新增
 menu-sort = 排序

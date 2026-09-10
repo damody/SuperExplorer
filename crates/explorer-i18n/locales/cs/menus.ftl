@@ -46,6 +46,7 @@ menu-move-to-gdrive-trash = Přesunout do koše Google Drive…
 menu-permanent-delete = Odstranit trvale…
 
 menu-options = Možnosti
+menu-open-in-file-explorer = Otevřít v Průzkumníku souborů
 
 menu-about = O aplikaci
 

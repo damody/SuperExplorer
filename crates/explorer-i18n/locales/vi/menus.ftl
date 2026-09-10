@@ -46,6 +46,7 @@ menu-move-to-gdrive-trash = Chuyển vào thùng rác Google Drive…
 menu-permanent-delete = Xóa vĩnh viễn…
 
 menu-options = Tùy chọn
+menu-open-in-file-explorer = Mở trong File Explorer
 
 menu-about = Giới thiệu
 

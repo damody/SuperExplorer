@@ -46,6 +46,7 @@ menu-move-to-gdrive-trash = Google ドライブのゴミ箱に移動…
 menu-permanent-delete = 完全に削除…
 
 menu-options = オプション
+menu-open-in-file-explorer = エクスプローラーに戻す
 
 menu-about = バージョン情報
 

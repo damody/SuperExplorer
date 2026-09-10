@@ -2590,14 +2590,14 @@ impl AppViewState {
         self.more_menu_index = match direction {
             i8::MIN..=-2 => 0,
             -1 => self.more_menu_index.saturating_sub(1),
-            1 => self.more_menu_index.saturating_add(1).min(9),
-            2..=i8::MAX => 9,
+            1 => self.more_menu_index.saturating_add(1).min(10),
+            2..=i8::MAX => 10,
             _ => self.more_menu_index,
         };
     }
 
     pub(crate) fn set_more_menu_focus(&mut self, index: usize) -> bool {
-        if !self.more_menu_open || index > 9 || self.more_menu_index == index {
+        if !self.more_menu_open || index > 10 || self.more_menu_index == index {
             return false;
         }
         self.more_menu_index = index;
@@ -12312,13 +12312,13 @@ mod tests {
     }
 
     #[test]
-    fn more_menu_keyboard_focus_covers_all_ten_commands() {
+    fn more_menu_keyboard_focus_covers_all_commands() {
         let mut state = AppViewState::default();
         state.toggle_more_menu();
         state.move_more_menu_focus(i8::MAX);
-        assert_eq!(state.more_menu_index(), 9);
+        assert_eq!(state.more_menu_index(), 10);
         state.move_more_menu_focus(-1);
-        assert_eq!(state.more_menu_index(), 8);
+        assert_eq!(state.more_menu_index(), 9);
         state.move_more_menu_focus(i8::MIN);
         assert_eq!(state.more_menu_index(), 0);
     }
@@ -12339,11 +12339,11 @@ mod tests {
         assert!(!state.set_view_menu_focus(12));
 
         state.toggle_more_menu();
-        assert!(state.set_more_menu_focus(9));
-        assert_eq!(state.more_menu_index(), 9);
+        assert!(state.set_more_menu_focus(10));
+        assert_eq!(state.more_menu_index(), 10);
         assert!(state.set_more_menu_focus(2));
         assert_eq!(state.more_menu_index(), 2);
-        assert!(!state.set_more_menu_focus(10));
+        assert!(!state.set_more_menu_focus(11));
     }
 
     #[test]

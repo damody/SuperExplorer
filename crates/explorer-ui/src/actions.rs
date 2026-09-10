@@ -383,6 +383,7 @@ pub enum ExplorerAction {
     CopySelectedPaths,
     OpenAboutDialog,
     CloseAboutDialog,
+    HandoffToFileExplorer,
     OpenFolderOptions,
     CloseFolderOptions,
     SetFolderOptionsPage(FolderOptionsPage),
@@ -768,6 +769,7 @@ impl ExplorerAction {
             Self::MoveBookmarkToFolder { .. } => "MoveBookmarkToFolder",
             Self::CopySelectedPaths => "CopySelectedPaths",
             Self::OpenAboutDialog => "OpenAboutDialog",
+            Self::HandoffToFileExplorer => "HandoffToFileExplorer",
             Self::CloseAboutDialog => "CloseAboutDialog",
             Self::OpenFolderOptions => "OpenFolderOptions",
             Self::CloseFolderOptions => "CloseFolderOptions",
@@ -1160,8 +1162,8 @@ pub fn dispatch_action(
     source: ActionSource,
 ) -> ActionTrace {
     let action_name = action.name();
-    let always_trace = matches!(action, ExplorerAction::UpdateFileDrag { .. });
-    let high_frequency = is_high_frequency_pointer_action(&action);
+    let dispatches_if_handled = action_dispatches_at_info(&action, ActionOutcome::Handled);
+    let dispatches_if_disabled = action_dispatches_at_info(&action, ActionOutcome::Disabled);
     let available = action_available(state, &action);
     let synchronize_command_popup_focus = matches!(
         &action,
@@ -1284,8 +1286,10 @@ pub fn dispatch_action(
     } else {
         ActionOutcome::Disabled
     };
-    let dispatches_at_info =
-        !always_trace && !(outcome == ActionOutcome::Disabled && high_frequency);
+    let dispatches_at_info = match outcome {
+        ActionOutcome::Handled => dispatches_if_handled,
+        ActionOutcome::Disabled => dispatches_if_disabled,
+    };
     let trace = ActionTrace {
         action_name,
         source,
@@ -1563,6 +1567,7 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::UndoCurrentFolder
         | ExplorerAction::OpenFolderOptions
         | ExplorerAction::OpenAboutDialog
+        | ExplorerAction::HandoffToFileExplorer
         | ExplorerAction::CloseAboutDialog
         | ExplorerAction::CloseFolderOptions
         | ExplorerAction::SetFolderOptionsPage(_)
@@ -2162,6 +2167,10 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         }
         ExplorerAction::OpenAboutDialog => {
             state.open_about_dialog();
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::HandoffToFileExplorer => {
+            state.close_more_menu();
             FocusSurface::CommandBar
         }
         ExplorerAction::CloseAboutDialog => {
@@ -2962,14 +2971,14 @@ mod tests {
             ExplorerAction::MoveMoreMenuFocus { direction: i8::MAX },
             ActionSource::Keyboard,
         );
-        assert_eq!(state.more_menu_index(), 9);
+        assert_eq!(state.more_menu_index(), 10);
         assert!(state.more_menu_open());
         dispatch_action(
             &mut state,
             ExplorerAction::MoveMoreMenuFocus { direction: -1 },
             ActionSource::Keyboard,
         );
-        assert_eq!(state.more_menu_index(), 8);
+        assert_eq!(state.more_menu_index(), 9);
         dispatch_action(
             &mut state,
             ExplorerAction::ToggleTheme,

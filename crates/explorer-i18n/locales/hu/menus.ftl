@@ -46,6 +46,7 @@ menu-move-to-gdrive-trash = Áthelyezés a Google Drive lomtárába…
 menu-permanent-delete = Végleges törlés…
 
 menu-options = Beállítások
+menu-open-in-file-explorer = Megnyitás az Intézőben
 
 menu-about = Névjegy
 

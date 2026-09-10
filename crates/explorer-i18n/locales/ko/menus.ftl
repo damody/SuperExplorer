@@ -46,6 +46,7 @@ menu-move-to-gdrive-trash = Google Drive 휴지통으로 이동…
 menu-permanent-delete = 영구 삭제…
 
 menu-options = 옵션
+menu-open-in-file-explorer = 파일 탐색기로 전환
 
 menu-about = 정보
 

@@ -46,6 +46,7 @@ menu-move-to-gdrive-trash = Déplacer vers la corbeille Google Drive…
 menu-permanent-delete = Supprimer définitivement…
 
 menu-options = Options
+menu-open-in-file-explorer = Ouvrir dans l’Explorateur de fichiers
 
 menu-about = À propos
 

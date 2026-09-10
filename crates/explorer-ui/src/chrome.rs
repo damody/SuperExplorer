@@ -7414,11 +7414,20 @@ fn command_more_menu_v2(
         ))
         .child(separator())
         .child(item(
+            "more-handoff-file-explorer",
+            catalog.t("menu-open-in-file-explorer"),
+            ExplorerAction::HandoffToFileExplorer,
+            true,
+            8,
+            on_action.clone(),
+        ))
+        .child(separator())
+        .child(item(
             "more-options",
             catalog.t("menu-options"),
             ExplorerAction::OpenFolderOptions,
             true,
-            8,
+            9,
             on_action.clone(),
         ))
         .child(item(
@@ -7426,7 +7435,7 @@ fn command_more_menu_v2(
             catalog.t("menu-about"),
             ExplorerAction::OpenAboutDialog,
             true,
-            9,
+            10,
             on_action,
         ));
     deferred(
@@ -19386,6 +19395,9 @@ mod tests {
         let source = include_str!("chrome.rs");
         let production = source.split("#[cfg(test)]").next().unwrap();
         for required in [
+            "more-handoff-file-explorer",
+            "HandoffToFileExplorer",
+            "menu-open-in-file-explorer",
             "more-about",
             "about-dialog",
             "dialog-version",

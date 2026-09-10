@@ -1002,6 +1002,28 @@ pub fn window_title_for_history_entry(entry: Option<&explorer_model::HistoryEntr
     }
 }
 
+fn current_tab_locations(
+    state: &AppViewState,
+) -> (Vec<(explorer_model::LocationDescriptor, String)>, usize) {
+    let tabs = state.tabs();
+    let locations = tabs
+        .tabs()
+        .iter()
+        .filter_map(|tab| {
+            tab.history
+                .current()
+                .map(|entry| (entry.location.clone(), entry.display_title.clone()))
+        })
+        .collect::<Vec<_>>();
+    let active = tabs
+        .tabs()
+        .iter()
+        .position(|tab| tab.id == tabs.active_tab_id())
+        .unwrap_or(0)
+        .min(locations.len().saturating_sub(1));
+    (locations, active)
+}
+
 fn default_durable_window_placement() -> explorer_model::PersistedWindowPlacement {
     explorer_model::PersistedWindowPlacement {
         normal_bounds: explorer_model::PersistedRect {
@@ -1157,6 +1179,8 @@ pub struct ExplorerRoot {
     broker_retry_observer: Option<BrokerRetryObserver>,
     command_prompt_launcher: Option<CommandPromptLauncher>,
     bookmark_file_launcher: Option<BookmarkFileLauncher>,
+    live_window_publisher: Option<LiveWindowPublisher>,
+    handoff_to_file_explorer: Option<HandoffToFileExplorer>,
     sftp_address_login: Option<SftpAddressLoginState>,
     ftp_address_login: Option<SftpAddressLoginState>,
     gdrive_address_login: Option<SftpAddressLoginState>,
@@ -1245,6 +1269,13 @@ pub type CommandPromptLauncher =
     Arc<dyn Fn(Option<std::path::PathBuf>) -> Result<(), String> + Send + Sync>;
 pub type BookmarkFileLauncher =
     Arc<dyn Fn(explorer_model::LocationDescriptor) -> Result<(), String> + Send + Sync>;
+pub type LiveWindowPublisher =
+    Arc<dyn Fn(Vec<(explorer_model::LocationDescriptor, String)>, usize) + Send + Sync>;
+pub type HandoffToFileExplorer = Arc<
+    dyn Fn(Vec<(explorer_model::LocationDescriptor, String)>, usize) -> Result<(), String>
+        + Send
+        + Sync,
+>;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum DetailsColumnPopupActivation {
@@ -1715,6 +1746,8 @@ impl ExplorerRoot {
             broker_retry_observer: None,
             command_prompt_launcher: None,
             bookmark_file_launcher: None,
+            live_window_publisher: None,
+            handoff_to_file_explorer: None,
             sftp_address_login: None,
             ftp_address_login: None,
             gdrive_address_login: None,
@@ -3943,6 +3976,8 @@ impl ExplorerRoot {
             broker_retry_observer: None,
             command_prompt_launcher: None,
             bookmark_file_launcher: None,
+            live_window_publisher: None,
+            handoff_to_file_explorer: None,
             sftp_address_login: None,
             ftp_address_login: None,
             gdrive_address_login: None,
@@ -4059,6 +4094,8 @@ impl ExplorerRoot {
             broker_retry_observer: None,
             command_prompt_launcher: None,
             bookmark_file_launcher: None,
+            live_window_publisher: None,
+            handoff_to_file_explorer: None,
             sftp_address_login: None,
             ftp_address_login: None,
             gdrive_address_login: None,
@@ -4182,6 +4219,23 @@ impl ExplorerRoot {
         self.bookmark_file_launcher = Some(launcher);
     }
 
+    pub fn attach_live_window_publisher(&mut self, publisher: LiveWindowPublisher) {
+        self.live_window_publisher = Some(publisher);
+        self.publish_live_window();
+    }
+
+    pub fn attach_handoff_to_file_explorer(&mut self, handoff: HandoffToFileExplorer) {
+        self.handoff_to_file_explorer = Some(handoff);
+    }
+
+    pub fn publish_live_window(&self) {
+        let Some(publisher) = &self.live_window_publisher else {
+            return;
+        };
+        let (tabs, active) = current_tab_locations(&self.state);
+        publisher(tabs, active);
+    }
+
     /// Configures the privacy-safe broker status and its explicit user retry bridge.
     pub fn configure_broker_health(
         &mut self,
@@ -4229,6 +4283,7 @@ impl ExplorerRoot {
     }
 
     fn notify_durable_state(&self) -> bool {
+        self.publish_live_window();
         if let Some(observer) = &self.durable_state_observer {
             return observer(
                 self.state.tabs().clone(),
@@ -6510,6 +6565,15 @@ impl ExplorerRoot {
             }
             return;
         }
+        if action == ExplorerAction::HandoffToFileExplorer {
+            let (tabs, active) = current_tab_locations(&self.state);
+            if let Some(handoff) = self.handoff_to_file_explorer.clone() {
+                match handoff(tabs, active) {
+                    Ok(()) => self.state.request_close(),
+                    Err(error) => tracing::warn!(%error, "converting back to File Explorer failed"),
+                }
+            }
+        }
         if action == ExplorerAction::OpenFolderOptions {
             self.refresh_search_engine_availability();
         }
@@ -8527,7 +8591,8 @@ impl ExplorerRoot {
                 5 => ExplorerAction::SelectAllItems,
                 6 => ExplorerAction::ClearSelection,
                 7 => ExplorerAction::InvertSelection,
-                8 => ExplorerAction::OpenFolderOptions,
+                8 => ExplorerAction::HandoffToFileExplorer,
+                9 => ExplorerAction::OpenFolderOptions,
                 _ => ExplorerAction::OpenAboutDialog,
             }),
             _ => None,

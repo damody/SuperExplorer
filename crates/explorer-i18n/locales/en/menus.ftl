@@ -24,6 +24,7 @@ menu-download-to-downloads = Download to Downloads folder
 menu-move-to-gdrive-trash = Move to Google Drive trash…
 menu-permanent-delete = Permanently delete…
 menu-options = Options
+menu-open-in-file-explorer = Open in File Explorer
 menu-about = About
 menu-new = New
 menu-sort = Sort

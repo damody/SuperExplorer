@@ -46,6 +46,7 @@ menu-move-to-gdrive-trash = ย้ายไปยังถังขยะ Google
 menu-permanent-delete = ลบถาวร…
 
 menu-options = ตัวเลือก
+menu-open-in-file-explorer = เปิดใน File Explorer
 
 menu-about = เกี่ยวกับ
 

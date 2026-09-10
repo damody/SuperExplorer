@@ -46,6 +46,7 @@ menu-move-to-gdrive-trash = 移到 Google Drive 回收站…
 menu-permanent-delete = 永久删除…
 
 menu-options = 选项
+menu-open-in-file-explorer = 转换回文件资源管理器
 
 menu-about = 关于
 

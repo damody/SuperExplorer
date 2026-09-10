@@ -46,6 +46,7 @@ menu-move-to-gdrive-trash = Переместить в корзину Google Driv
 menu-permanent-delete = Удалить безвозвратно…
 
 menu-options = Параметры
+menu-open-in-file-explorer = Открыть в Проводнике
 
 menu-about = О программе
 
