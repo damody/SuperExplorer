@@ -79,6 +79,7 @@ impl BookmarkFolderEditorWindow {
             .bookmark_folder_editor()
             .cloned()
             .expect("bookmark folder editor snapshot requires a draft");
+        let folder_id = draft.id;
         let name_input = Self::create_name_input(owner, draft.name, cx);
         let input_for_focus = name_input.clone();
         window.defer(cx, move |window, cx| {
@@ -86,7 +87,12 @@ impl BookmarkFolderEditorWindow {
         });
         window.on_window_should_close(cx, move |_, cx| {
             let _ = owner.update(cx, |root, owner_window, cx| {
-                if root.bookmark_folder_editor_window_snapshot().is_some() {
+                if root
+                    .bookmark_folder_editor_window_snapshot()
+                    .is_some_and(|snapshot| {
+                        snapshot.state.bookmark_folder_editor().is_some_and(|editor| editor.id == folder_id)
+                    })
+                {
                     root.dispatch_bookmark_folder_editor_action(
                         ExplorerAction::CancelBookmarkFolderEditor,
                         ActionSource::Programmatic,
@@ -213,10 +219,17 @@ impl Render for BookmarkFolderEditorWindow {
 mod tests {
     #[test]
     fn folder_editor_uses_a_normal_dedicated_window_and_shared_reducer() {
-        let source = include_str!("bookmark_folder_editor_window.rs");
+        let source = include_str!("bookmark_folder_editor_window.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source");
         assert!(source.contains("WindowKind::Normal"));
         assert!(source.contains("dispatch_bookmark_folder_editor_action"));
         assert!(source.contains("EditableTextState"));
         assert!(source.contains("window.remove_window()"));
+        assert!(
+            source.contains("editor.id == folder_id"),
+            "closing one editor window must not cancel a newer editor session"
+        );
     }
 }

@@ -5295,17 +5295,12 @@ impl ApplicationLifecycle {
                         }));
                         root.attach_bookmark_folder_editor_window_observer(Rc::new(
                             move |snapshot, cx| {
-                                if let Some(existing) = *bookmark_folder_editor_handle.borrow() {
-                                    if existing
-                                        .update(cx, |editor, window, cx| {
-                                            editor.replace_snapshot(snapshot.clone(), window, cx);
-                                            window.activate_window();
-                                        })
-                                        .is_ok()
-                                    {
-                                        return true;
-                                    }
-                                    *bookmark_folder_editor_handle.borrow_mut() = None;
+                                if let Some(existing) =
+                                    bookmark_folder_editor_handle.borrow_mut().take()
+                                {
+                                    let _ = existing.update(cx, |_, window, _| {
+                                        window.remove_window();
+                                    });
                                 }
                                 let title = owner_window
                                     .update(cx, |root, _, _| {
@@ -6674,6 +6669,26 @@ mod tests {
         JobTerminalV1, LockOwnerApplicationTypeV1, LockOwnerQueryStatusV1, LockOwnerRecordV1,
         PluginItemResultV1, PluginValueV1, SinkSubmitStatusV1,
     };
+
+    #[test]
+    fn bookmark_folder_editor_observer_does_not_reuse_a_closing_window() {
+        let observer = include_str!("application.rs")
+            .split("root.attach_bookmark_folder_editor_window_observer")
+            .nth(1)
+            .expect("folder editor observer")
+            .split("root.attach_bookmark_manager_window_observer")
+            .next()
+            .expect("folder editor observer body");
+        assert!(
+            observer.contains("bookmark_folder_editor_handle.borrow_mut().take()"),
+            "a cancelled folder editor must drop its window handle"
+        );
+        assert!(
+            !observer.contains("replace_snapshot"),
+            "reusing a cancelled folder editor window crashes on the next open"
+        );
+        assert!(observer.contains("open_window"));
+    }
 
     #[test]
     fn folder_options_controller_is_single_instance_retryable_and_idempotently_closed() {
