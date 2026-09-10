@@ -29,6 +29,8 @@ mod everything;
 pub use everything::{IndexedFolderEntryV1, query_folder_index};
 mod bc7_codec;
 mod bc7_pipeline;
+mod explorer_tabs;
+mod explorer_handoff;
 mod extension;
 mod file_operation;
 mod icon;
@@ -68,6 +70,14 @@ pub use drag_drop::{
     dropped_file_operation, modifiers_from_key_state, negotiate_native_effect,
     requested_cross_filesystem_drag_effect, take_last_native_drag_effect,
 };
+pub use explorer_handoff::{
+    ExplorerHandoffWindow, explorer_is_showing_target, explorer_open_target,
+    open_file_explorer_windows,
+};
+pub use explorer_tabs::{
+    ExplorerTabSnapshot, ExplorerWindowSnapshot, close_explorer_windows,
+    location_from_explorer_path, snapshot_open_explorer_windows,
+};
 pub use extension::tortoise_git_is_installed;
 pub use namespace::inspect_namespace_item;
 pub use native::NativeResourceSnapshot;
@@ -86,6 +96,13 @@ pub use sta::{
     StaResourceSnapshot,
 };
 pub use thumbnail::{clear_thumbnail_disk_cache, load_shell_thumbnail, load_shell_thumbnail_rgba};
+
+#[cfg(test)]
+pub(crate) fn live_explorer_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 /// Opens a new Command Prompt, using the current Explorer folder when available.
 pub fn launch_command_prompt(working_directory: Option<&std::path::Path>) -> std::io::Result<()> {
