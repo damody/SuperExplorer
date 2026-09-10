@@ -361,8 +361,7 @@ pub(crate) fn snapshot_from_collected(
         return None;
     }
     let title = window_title(HWND(parent as *mut c_void));
-    let active_index = active_index_for(tab_hwnds, original_active)
-        .min(tabs.len() - 1);
+    let active_index = active_index_for(tab_hwnds, original_active).min(tabs.len() - 1);
     let active_index = index_matching_window_title(&tabs, &title).unwrap_or(active_index);
     Some(ExplorerWindowSnapshot {
         hwnd: parent,
@@ -371,7 +370,10 @@ pub(crate) fn snapshot_from_collected(
     })
 }
 
-pub(crate) fn index_matching_window_title(tabs: &[ExplorerTabSnapshot], title: &str) -> Option<usize> {
+pub(crate) fn index_matching_window_title(
+    tabs: &[ExplorerTabSnapshot],
+    title: &str,
+) -> Option<usize> {
     let prefix = window_title_leaf(title);
     if prefix.is_empty() {
         return None;
@@ -379,7 +381,9 @@ pub(crate) fn index_matching_window_title(tabs: &[ExplorerTabSnapshot], title: &
     tabs.iter().position(|tab| {
         let display = tab.display_title.trim();
         if !display.is_empty()
-            && (prefix.eq_ignore_ascii_case(display) || prefix.contains(display) || display.contains(&prefix))
+            && (prefix.eq_ignore_ascii_case(display)
+                || prefix.contains(display)
+                || display.contains(&prefix))
         {
             return true;
         }
@@ -497,9 +501,7 @@ fn existing_path_from_uia_breadcrumbs(
         return Some(joined);
     }
     let mapped = replace_known_localized_components(&joined);
-    std::path::Path::new(&mapped)
-        .exists()
-        .then_some(mapped)
+    std::path::Path::new(&mapped).exists().then_some(mapped)
 }
 
 pub(crate) fn replace_known_localized_components(path: &str) -> String {
@@ -1129,7 +1131,10 @@ mod tests {
             index_matching_window_title(&tabs, "SuperExplorer - 檔案總管"),
             Some(0)
         );
-        assert_eq!(window_title_leaf("omoba 和 1 個其他索引標籤 - 檔案總管"), "omoba");
+        assert_eq!(
+            window_title_leaf("omoba 和 1 個其他索引標籤 - 檔案總管"),
+            "omoba"
+        );
     }
 
     #[test]
@@ -1171,10 +1176,7 @@ mod tests {
             drive_path_from_breadcrumb_names(&["此電腦".into(), "本機磁碟 (C:)".into()]),
             Some(r"C:\".into())
         );
-        assert_eq!(
-            drive_path_from_breadcrumb_names(&["此電腦".into()]),
-            None
-        );
+        assert_eq!(drive_path_from_breadcrumb_names(&["此電腦".into()]), None);
     }
 
     #[test]

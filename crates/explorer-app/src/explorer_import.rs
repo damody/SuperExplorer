@@ -600,11 +600,14 @@ mod tests {
         expected: &std::path::Path,
     ) -> bool {
         let expected = normalize_prefix(&expected.to_string_lossy());
-        windows.iter().flat_map(|window| window.tabs.iter()).any(|tab| {
-            tab.location.path().is_some_and(|path| {
-                normalize_prefix(&path.to_string_lossy()) == expected
+        windows
+            .iter()
+            .flat_map(|window| window.tabs.iter())
+            .any(|tab| {
+                tab.location
+                    .path()
+                    .is_some_and(|path| normalize_prefix(&path.to_string_lossy()) == expected)
             })
-        })
     }
 
     fn close_prefix_windows(prefix: &str, windows: &[ExplorerWindowSnapshot]) {

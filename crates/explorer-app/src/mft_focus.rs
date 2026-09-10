@@ -7,8 +7,9 @@ use std::{
     ffi::c_void,
     ptr,
     sync::{
+        Arc, Mutex, OnceLock,
         atomic::{AtomicU64, AtomicUsize, Ordering},
-        mpsc, Arc, Mutex, OnceLock,
+        mpsc,
     },
     time::{Duration, Instant},
 };
@@ -20,8 +21,8 @@ use crate::mft_persistence::{FocusLeaseRegistryV1, MonotonicMillis};
 use windows::Win32::{
     Foundation::{CloseHandle as WinCloseHandle, HANDLE, WAIT_OBJECT_0},
     System::{
-        Threading::{CreateEventW, WaitForSingleObject},
         IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
+        Threading::{CreateEventW, WaitForSingleObject},
     },
 };
 

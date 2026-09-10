@@ -2427,7 +2427,10 @@ fn process_ancestry<P: RequiredTerminalPublisher>(
     for segment in &mut enriched {
         if segment.id == BreadcrumbSegmentId(0)
             || segment.icon_hint == BreadcrumbIconHint::Drive
-            || segment.location.path().is_some_and(|path| network_unc_parts(path).is_some())
+            || segment
+                .location
+                .path()
+                .is_some_and(|path| network_unc_parts(path).is_some())
         {
             continue;
         }
@@ -2670,9 +2673,10 @@ fn filesystem_ancestry(location: &LocationDescriptor) -> Vec<BreadcrumbSegment> 
             _ => Vec::new(),
         };
     }
-    let mut segments = if location.path().is_some_and(|path| {
-        network_unc_parts(path).is_some() && !is_wsl_unc_path(path)
-    }) {
+    let mut segments = if location
+        .path()
+        .is_some_and(|path| network_unc_parts(path).is_some() && !is_wsl_unc_path(path))
+    {
         vec![network_places_breadcrumb()]
     } else {
         vec![this_pc_breadcrumb()]

@@ -142,7 +142,10 @@ fn run_handoff() -> Result<(), String> {
     let deadline = Instant::now() + HANDOFF_TIMEOUT;
     while Instant::now() < deadline {
         let _ = unsafe { SetEvent(dump) };
-        if pids.iter().all(|pid| dir.join(format!("window-{pid}.json")).is_file()) {
+        if pids
+            .iter()
+            .all(|pid| dir.join(format!("window-{pid}.json")).is_file())
+        {
             break;
         }
         thread::sleep(Duration::from_millis(100));

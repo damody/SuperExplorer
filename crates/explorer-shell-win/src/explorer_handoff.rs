@@ -299,14 +299,7 @@ fn browser_for_window(parent: isize, tab: Option<isize>) -> Option<IWebBrowser2>
 fn request_new_tab(parent: isize) {
     let tab = first_tab_hwnd(parent).unwrap_or(parent);
     let handle = HWND(tab as *mut c_void);
-    let _ = unsafe {
-        PostMessageW(
-            Some(handle),
-            WM_COMMAND,
-            WPARAM(NEW_TAB_COMMAND),
-            LPARAM(0),
-        )
-    };
+    let _ = unsafe { PostMessageW(Some(handle), WM_COMMAND, WPARAM(NEW_TAB_COMMAND), LPARAM(0)) };
 }
 
 fn select_tab(parent: isize, index: usize) {
@@ -384,7 +377,8 @@ fn is_cabinet(hwnd: HWND) -> bool {
 }
 
 fn shell_window_targets() -> Vec<String> {
-    let Ok(windows) = (unsafe { CoCreateInstance::<_, IShellWindows>(&ShellWindows, None, CLSCTX_ALL) })
+    let Ok(windows) =
+        (unsafe { CoCreateInstance::<_, IShellWindows>(&ShellWindows, None, CLSCTX_ALL) })
     else {
         return Vec::new();
     };
