@@ -1,6 +1,8 @@
 @echo off
 setlocal
-chcp 65001 >nul
+"%SystemRoot%\System32\chcp.com" 65001 >nul 2>&1
+
+set "PATH=%USERPROFILE%\.cargo\bin;%SystemRoot%\System32;%SystemRoot%\System32\WindowsPowerShell\v1.0;%PATH%"
 
 set "LUA_EXE=%~dp0build\tools\lua\lua.exe"
 set "BUILD_SCRIPT=%~dp0build\build_install.lua"
