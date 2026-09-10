@@ -1,11 +1,13 @@
 //! Remote address parsing without credentials or platform I/O.
 
-use std::fmt;
+use std::{fmt, path::Path};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{LocationDescriptor, LocationDescriptorValidationError};
+use crate::{
+    LocationDescriptor, LocationDescriptorValidationError, is_wsl_unc_path, network_unc_parts,
+};
 
 /// Supported remote filesystem families.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -190,6 +192,111 @@ impl SftpProfile {
     pub fn credential_target(&self) -> String {
         format!("SuperExplorer/SFTP/{}", self.public_identity())
     }
+}
+
+/// One remembered SMB/UNC host shown under the navigation Network row.
+///
+/// Passwords stay in Windows Credential Manager / the SMB session; this record
+/// only stores the reconstructible host path.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkPlace {
+    pub host: String,
+    pub last_path: String,
+}
+
+impl NetworkPlace {
+    pub fn from_unc_path(path: &Path) -> Option<Self> {
+        if is_wsl_unc_path(path) {
+            return None;
+        }
+        let parts = network_unc_parts(path)?;
+        let host = parts.into_iter().next()?;
+        Self::from_host(host)
+    }
+
+    pub fn from_host(host: impl Into<String>) -> Option<Self> {
+        let host = host.into();
+        if !is_network_place_host(&host) {
+            return None;
+        }
+        let last_path = format!(r"\\{host}\");
+        Some(Self { host, last_path })
+    }
+
+    pub fn from_location(location: &LocationDescriptor) -> Option<Self> {
+        location.path().and_then(Self::from_unc_path)
+    }
+
+    pub fn location(&self) -> LocationDescriptor {
+        LocationDescriptor::file_system(&self.last_path)
+    }
+
+    pub fn display_label(&self) -> String {
+        format!(r"\\{}\", self.host)
+    }
+
+    pub fn matches_location(&self, location: &LocationDescriptor) -> bool {
+        location
+            .path()
+            .and_then(network_unc_parts)
+            .and_then(|parts| parts.into_iter().next())
+            .is_some_and(|host| host.eq_ignore_ascii_case(&self.host))
+    }
+}
+
+fn is_network_place_host(host: &str) -> bool {
+    !host.is_empty()
+        && host.len() <= 255
+        && !host.contains(['/', '\\', '@', '\0'])
+        && !host.contains(char::is_whitespace)
+        && !host.eq_ignore_ascii_case("wsl.localhost")
+        && !host.eq_ignore_ascii_case("wsl$")
+}
+
+/// How a newly observed UNC host relates to the remembered Network list.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NetworkPlaceChange {
+    Unchanged,
+    Promoted,
+    Inserted,
+}
+
+impl NetworkPlaceChange {
+    /// Windows `WNetAddConnection2` is only safe on first insert. Calling it on
+    /// every listing retriggers Shell/directory-change notifications and loops.
+    pub const fn should_persist_unc_session(self) -> bool {
+        matches!(self, Self::Inserted)
+    }
+}
+
+pub fn classify_network_place_update(
+    places: &[NetworkPlace],
+    incoming: &NetworkPlace,
+) -> NetworkPlaceChange {
+    match places
+        .iter()
+        .position(|place| place.host.eq_ignore_ascii_case(&incoming.host))
+    {
+        Some(0) => NetworkPlaceChange::Unchanged,
+        Some(_) => NetworkPlaceChange::Promoted,
+        None => NetworkPlaceChange::Inserted,
+    }
+}
+
+/// Inserts or updates a remembered UNC host. Existing hosts keep one row; the
+/// latest casing and path win. New hosts are prepended so the most recent visit
+/// appears first under Network.
+pub fn remember_network_place(
+    places: Vec<NetworkPlace>,
+    incoming: NetworkPlace,
+) -> Vec<NetworkPlace> {
+    let mut places = places
+        .into_iter()
+        .filter(|place| !place.host.eq_ignore_ascii_case(&incoming.host))
+        .collect::<Vec<_>>();
+    places.insert(0, incoming);
+    places
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -941,5 +1048,68 @@ mod tests {
     #[test]
     fn gdrive_connect_location_is_a_stable_synthetic_parsing_name() {
         assert_eq!(GDRIVE_CONNECT_LOCATION, "super-explorer:gdrive-connect");
+    }
+
+    #[test]
+    fn network_place_records_host_only_and_rejects_wsl_or_device_paths() {
+        let share = NetworkPlace::from_unc_path(Path::new(r"\\122.116.110.30\Multimedia\folder"))
+            .expect("share path");
+        assert_eq!(share.host, "122.116.110.30");
+        assert_eq!(share.last_path, r"\\122.116.110.30\");
+        assert_eq!(share.display_label(), r"\\122.116.110.30\");
+        assert!(share.matches_location(&LocationDescriptor::file_system(
+            r"\\122.116.110.30\Multimedia"
+        )));
+        assert!(!share.matches_location(&LocationDescriptor::file_system(r"\\other-host\share")));
+        assert_eq!(
+            NetworkPlace::from_unc_path(Path::new(r"\\122.116.110.30\"))
+                .expect("host root")
+                .last_path,
+            r"\\122.116.110.30\"
+        );
+        assert!(NetworkPlace::from_unc_path(Path::new(r"\\wsl.localhost\Ubuntu-24.04\")).is_none());
+        assert!(NetworkPlace::from_unc_path(Path::new(r"\\.\pipe\foo")).is_none());
+        assert!(NetworkPlace::from_unc_path(Path::new(r"C:\Users")).is_none());
+        assert!(NetworkPlace::from_host("").is_none());
+        let encoded = serde_json::to_string(&share).expect("serialize network place");
+        assert!(!encoded.contains("password"));
+        assert!(!encoded.contains("username"));
+        assert!(!encoded.contains("secret"));
+    }
+
+    #[test]
+    fn remember_network_place_keeps_one_row_per_host_and_promotes_latest() {
+        let first = NetworkPlace::from_host("alpha").expect("alpha");
+        let second = NetworkPlace::from_host("122.116.110.30").expect("ip");
+        let updated = NetworkPlace::from_host("ALPHA").expect("alpha casing");
+        let places = remember_network_place(vec![first, second.clone()], updated.clone());
+        assert_eq!(places.len(), 2);
+        assert_eq!(places[0].host, "ALPHA");
+        assert_eq!(places[1], second);
+        assert_eq!(places[0], updated);
+    }
+
+    #[test]
+    fn already_first_network_place_does_not_request_another_session_persist() {
+        let host = NetworkPlace::from_host("122.116.110.30").expect("ip");
+        let other = NetworkPlace::from_host("alpha").expect("alpha");
+        let places = vec![host.clone(), other.clone()];
+        assert_eq!(
+            classify_network_place_update(&places, &host),
+            NetworkPlaceChange::Unchanged
+        );
+        assert_eq!(
+            classify_network_place_update(&places, &other),
+            NetworkPlaceChange::Promoted
+        );
+        assert_eq!(
+            classify_network_place_update(&places, &NetworkPlace::from_host("new").expect("new")),
+            NetworkPlaceChange::Inserted
+        );
+        assert!(!classify_network_place_update(&places, &host).should_persist_unc_session());
+        assert!(
+            classify_network_place_update(&places, &NetworkPlace::from_host("new").expect("new"))
+                .should_persist_unc_session()
+        );
     }
 }

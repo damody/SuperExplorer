@@ -1,9 +1,10 @@
 //! App-owned routing for ADB/SFTP navigation and cross-filesystem transfers.
 
 use std::{
+    collections::HashSet,
     hash::{Hash as _, Hasher as _},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         mpsc::{Receiver, SyncSender, TryRecvError, TrySendError},
     },
 };
@@ -535,6 +536,401 @@ impl ConfiguredRemoteRuntime {
     }
 }
 
+pub fn configured_network_navigation_places()
+-> Vec<explorer_ui::navigation_pane::NetworkNavigationPlace> {
+    let mut places = load_network_places();
+    for discovered in discover_windows_network_places() {
+        places = explorer_model::remember_network_place(places, discovered);
+    }
+    let _ = persist_network_places(&places);
+    network_navigation_places_from(&places)
+}
+
+pub fn remember_resolved_network_location(location: &LocationDescriptor) {
+    let Some(incoming) = explorer_model::NetworkPlace::from_location(location) else {
+        return;
+    };
+    let mut places = load_network_places();
+    let change = explorer_model::classify_network_place_update(&places, &incoming);
+    if change == explorer_model::NetworkPlaceChange::Unchanged {
+        return;
+    }
+    if change.should_persist_unc_session() {
+        persist_unc_session_once(&incoming.host, location);
+    }
+    places = explorer_model::remember_network_place(places, incoming);
+    if persist_network_places(&places).is_ok() {
+        explorer_ui::navigation_pane::configure_network_navigation_places(
+            network_navigation_places_from(&places),
+        );
+    }
+}
+
+fn network_navigation_places_from(
+    places: &[explorer_model::NetworkPlace],
+) -> Vec<explorer_ui::navigation_pane::NetworkNavigationPlace> {
+    places
+        .iter()
+        .map(
+            |place| explorer_ui::navigation_pane::NetworkNavigationPlace {
+                host: place.host.clone(),
+                label: place.display_label(),
+                location: place.location(),
+            },
+        )
+        .collect()
+}
+
+fn load_network_places() -> Vec<explorer_model::NetworkPlace> {
+    let Some(path) = remote_profiles_path("network-places.json") else {
+        return Vec::new();
+    };
+    std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn persist_network_places(places: &[explorer_model::NetworkPlace]) -> Result<(), String> {
+    let path = remote_profiles_path("network-places.json")
+        .ok_or_else(|| "LOCALAPPDATA is unavailable.".to_owned())?;
+    write_remote_profiles(&path, places)
+}
+
+fn persist_unc_session_once(host: &str, location: &LocationDescriptor) {
+    let Some(path) = location.path() else {
+        return;
+    };
+    let key = host.to_ascii_lowercase();
+    let mut persisted = UNC_SESSION_PERSISTED
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !persisted.insert(key) {
+        return;
+    }
+    drop(persisted);
+    persist_windows_unc_session(path);
+}
+
+static UNC_SESSION_PERSISTED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn discover_windows_network_places() -> Vec<explorer_model::NetworkPlace> {
+    let mut places = Vec::new();
+    for host in windows_remembered_unc_hosts() {
+        if let Some(place) = explorer_model::NetworkPlace::from_host(host) {
+            places = explorer_model::remember_network_place(places, place);
+        }
+    }
+    places
+}
+
+#[cfg(windows)]
+fn windows_remembered_unc_hosts() -> Vec<String> {
+    let mut hosts = Vec::new();
+    hosts.extend(mount_points_unc_hosts());
+    hosts.extend(wnet_remembered_unc_hosts());
+    hosts.extend(domain_credential_unc_hosts());
+    hosts
+}
+
+#[cfg(not(windows))]
+fn windows_remembered_unc_hosts() -> Vec<String> {
+    Vec::new()
+}
+
+fn remember_resolved_event(event: &ExplorerEvent) {
+    if let ExplorerEvent::LocationResolved { metadata, .. } = event {
+        remember_resolved_network_location(&metadata.descriptor);
+    }
+}
+
+#[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "WNetAddConnection2 persists the current SMB session and saved credentials"
+)]
+fn persist_windows_unc_session(path: &std::path::Path) {
+    use windows::{
+        Win32::NetworkManagement::WNet::{
+            CONNECT_CMD_SAVECRED, CONNECT_UPDATE_PROFILE, NETRESOURCEW, RESOURCETYPE_DISK,
+            WNetAddConnection2W,
+        },
+        core::{PCWSTR, PWSTR},
+    };
+
+    let Some(parts) = explorer_model::network_unc_parts(path) else {
+        return;
+    };
+    let remote = if parts.len() >= 2 {
+        format!(r"\\{}\{}", parts[0], parts[1])
+    } else {
+        format!(r"\\{}\", parts[0])
+    };
+    let mut remote_wide = remote
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut resource = NETRESOURCEW {
+        dwType: RESOURCETYPE_DISK,
+        lpRemoteName: PWSTR(remote_wide.as_mut_ptr()),
+        ..Default::default()
+    };
+    // SAFETY: `resource` and `remote_wide` stay live for this synchronous WNet call. NULL
+    // username/password reuse the current SMB session so Windows can persist it.
+    let _ = unsafe {
+        WNetAddConnection2W(
+            &raw mut resource,
+            PCWSTR::null(),
+            PCWSTR::null(),
+            CONNECT_UPDATE_PROFILE | CONNECT_CMD_SAVECRED,
+        )
+    };
+}
+
+#[cfg(not(windows))]
+fn persist_windows_unc_session(_path: &std::path::Path) {}
+
+#[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "MountPoints2 stores previously connected UNC shares as registry key names"
+)]
+fn mount_points_unc_hosts() -> Vec<String> {
+    use windows::{
+        Win32::{
+            Foundation::ERROR_NO_MORE_ITEMS,
+            System::Registry::{
+                HKEY, HKEY_CURRENT_USER, KEY_READ, RegCloseKey, RegEnumKeyExW, RegOpenKeyExW,
+            },
+        },
+        core::{HSTRING, PCWSTR, PWSTR},
+    };
+
+    const MOUNT_POINTS2: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\MountPoints2";
+    let path = HSTRING::from(MOUNT_POINTS2);
+    let mut key = HKEY::default();
+    // SAFETY: `path` is a live NUL-terminated registry path; `key` is a writable out-parameter.
+    if unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR(path.as_ptr()),
+            Some(0),
+            KEY_READ,
+            &raw mut key,
+        )
+    }
+    .is_err()
+    {
+        return Vec::new();
+    }
+    struct KeyGuard(HKEY);
+    impl Drop for KeyGuard {
+        fn drop(&mut self) {
+            // SAFETY: `self.0` is an opened HKEY owned exclusively by this guard.
+            unsafe {
+                let _ = RegCloseKey(self.0);
+            }
+        }
+    }
+    let guard = KeyGuard(key);
+    let mut hosts = Vec::new();
+    let mut index = 0_u32;
+    loop {
+        let mut name_buf = [0_u16; 256];
+        let mut name_len = 256_u32;
+        // SAFETY: `name_buf`/`name_len` describe a writable UTF-16 buffer for the duration of the call.
+        let status = unsafe {
+            RegEnumKeyExW(
+                guard.0,
+                index,
+                Some(PWSTR(name_buf.as_mut_ptr())),
+                &raw mut name_len,
+                None,
+                None,
+                None,
+                None,
+            )
+        };
+        if status == ERROR_NO_MORE_ITEMS {
+            break;
+        }
+        index = index.saturating_add(1);
+        if status != windows::Win32::Foundation::ERROR_SUCCESS {
+            continue;
+        }
+        let name = String::from_utf16_lossy(&name_buf[..name_len as usize]);
+        if let Some(host) = mount_points2_host(&name) {
+            hosts.push(host);
+        }
+    }
+    hosts
+}
+
+fn mount_points2_host(key: &str) -> Option<String> {
+    let rest = key.strip_prefix("##")?;
+    let host = rest.split('#').next()?.replace('#', "");
+    let host = host.replace("%5C", r"\").replace("%5c", r"\");
+    if host.contains('\\') {
+        return None;
+    }
+    Some(host)
+}
+
+#[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "WNet remembered connections expose previously mapped or saved UNC paths"
+)]
+fn wnet_remembered_unc_hosts() -> Vec<String> {
+    use windows::Win32::{
+        Foundation::{ERROR_SUCCESS, HANDLE},
+        NetworkManagement::WNet::{
+            NETRESOURCEW, RESOURCE_REMEMBERED, RESOURCETYPE_DISK, RESOURCEUSAGE_NONE,
+            WNetCloseEnum, WNetEnumResourceW, WNetOpenEnumW,
+        },
+    };
+
+    let mut handle = HANDLE::default();
+    // SAFETY: enum handle is written only on success and closed below.
+    if unsafe {
+        WNetOpenEnumW(
+            RESOURCE_REMEMBERED,
+            RESOURCETYPE_DISK,
+            RESOURCEUSAGE_NONE,
+            None,
+            &raw mut handle,
+        )
+    } != ERROR_SUCCESS
+    {
+        return Vec::new();
+    }
+    struct EnumGuard(HANDLE);
+    impl Drop for EnumGuard {
+        fn drop(&mut self) {
+            // SAFETY: handle is a live WNet enum opened by this function.
+            unsafe {
+                let _ = WNetCloseEnum(self.0);
+            }
+        }
+    }
+    let guard = EnumGuard(handle);
+    let mut hosts = Vec::new();
+    loop {
+        let mut buffer = vec![0_u8; 16 * 1024];
+        let mut count = u32::MAX;
+        let mut size = u32::try_from(buffer.len()).unwrap_or(u32::MAX);
+        // SAFETY: buffer/count/size are valid writable storage for this synchronous enum call.
+        let status = unsafe {
+            WNetEnumResourceW(
+                guard.0,
+                &raw mut count,
+                buffer.as_mut_ptr().cast(),
+                &raw mut size,
+            )
+        };
+        if status != ERROR_SUCCESS || count == 0 {
+            break;
+        }
+        let resources = buffer.as_ptr().cast::<NETRESOURCEW>();
+        for index in 0..count as usize {
+            // SAFETY: WNetEnumResourceW wrote `count` NETRESOURCEW entries into `buffer`.
+            let resource = unsafe { *resources.add(index) };
+            if resource.lpRemoteName.is_null() {
+                continue;
+            }
+            // SAFETY: lpRemoteName is a WNet-owned NUL-terminated string for this loop body.
+            let remote = unsafe { resource.lpRemoteName.to_string().unwrap_or_default() };
+            if let Some(place) =
+                explorer_model::NetworkPlace::from_unc_path(std::path::Path::new(&remote))
+            {
+                hosts.push(place.host);
+            }
+        }
+    }
+    hosts
+}
+
+#[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "Windows Credential Manager stores remembered SMB host credentials"
+)]
+fn domain_credential_unc_hosts() -> Vec<String> {
+    use windows::{
+        Win32::Security::Credentials::{
+            CRED_ENUMERATE_ALL_CREDENTIALS, CRED_TYPE_DOMAIN_PASSWORD, CREDENTIALW, CredEnumerateW,
+            CredFree,
+        },
+        core::PCWSTR,
+    };
+
+    let mut count = 0_u32;
+    let mut credentials: *mut *mut CREDENTIALW = std::ptr::null_mut();
+    // SAFETY: count/credentials are writable out-parameters; successful allocations are freed below.
+    if unsafe {
+        CredEnumerateW(
+            PCWSTR::null(),
+            Some(CRED_ENUMERATE_ALL_CREDENTIALS),
+            &raw mut count,
+            &raw mut credentials,
+        )
+    }
+    .is_err()
+        || credentials.is_null()
+    {
+        return Vec::new();
+    }
+    struct CredGuard(*mut *mut CREDENTIALW);
+    impl Drop for CredGuard {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                // SAFETY: pointer was allocated by CredEnumerateW.
+                unsafe { CredFree(self.0.cast()) };
+            }
+        }
+    }
+    let _guard = CredGuard(credentials);
+    let mut hosts = Vec::new();
+    for index in 0..count as usize {
+        // SAFETY: CredEnumerateW wrote `count` credential pointers.
+        let credential = unsafe { *credentials.add(index) };
+        if credential.is_null() {
+            continue;
+        }
+        // SAFETY: credential remains live until CredFree.
+        let credential = unsafe { &*credential };
+        if credential.Type != CRED_TYPE_DOMAIN_PASSWORD || credential.TargetName.is_null() {
+            continue;
+        }
+        // SAFETY: TargetName is a Credential Manager-owned NUL-terminated string.
+        let Ok(target) = (unsafe { credential.TargetName.to_string() }) else {
+            continue;
+        };
+        if let Some(host) = domain_credential_host(&target) {
+            hosts.push(host);
+        }
+    }
+    hosts
+}
+
+fn domain_credential_host(target: &str) -> Option<String> {
+    let host = target
+        .strip_prefix("Domain:target=")
+        .unwrap_or(target)
+        .trim();
+    if host.is_empty()
+        || host.contains(['/', '\\', '@', ':', '*'])
+        || host.contains(char::is_whitespace)
+        || host.contains("TERMSRV")
+        || host.contains("WindowsLive")
+        || host.contains("MicrosoftAccount")
+    {
+        return None;
+    }
+    Some(host.to_owned())
+}
+
 fn persist_sftp_profile(profile: explorer_model::SftpProfile) -> Result<(), String> {
     let local = std::env::var_os("LOCALAPPDATA")
         .ok_or_else(|| "LOCALAPPDATA is unavailable.".to_owned())?;
@@ -1047,7 +1443,7 @@ fn lxss_distribution_names_from(root: windows::Win32::System::Registry::HKEY) ->
 }
 
 pub fn start_adb_navigation_refresh() {
-    static STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    static STARTED: OnceLock<()> = OnceLock::new();
     STARTED.get_or_init(|| {
         std::thread::spawn(|| {
             loop {
@@ -2050,9 +2446,15 @@ impl ExplorerService for RemoteExplorerService {
             .map_err(|_| ExplorerServiceError::Internal)?
             .try_recv()
         {
-            Ok(event) => Ok(Some(event)),
+            Ok(event) => {
+                remember_resolved_event(&event);
+                Ok(Some(event))
+            }
             Err(TryRecvError::Empty) => {
                 let event = self.inner.try_recv()?;
+                if let Some(event) = event.as_ref() {
+                    remember_resolved_event(event);
+                }
                 if let Some(ExplorerEvent::OperationFinished { context, outcome }) = event.as_ref()
                 {
                     let active = self
@@ -3835,5 +4237,28 @@ mod tests {
             ))
         );
         explorer_ui::navigation_pane::configure_wsl_navigation_distributions(Vec::new());
+    }
+
+    #[test]
+    fn mount_points2_and_domain_credential_hosts_parse_unc_servers() {
+        assert_eq!(
+            mount_points2_host("##122.116.110.30#Multimedia"),
+            Some("122.116.110.30".to_owned())
+        );
+        assert_eq!(
+            mount_points2_host("##fileserver#share"),
+            Some("fileserver".to_owned())
+        );
+        assert_eq!(mount_points2_host("{GUID}"), None);
+        assert_eq!(
+            domain_credential_host("122.116.110.30"),
+            Some("122.116.110.30".to_owned())
+        );
+        assert_eq!(
+            domain_credential_host("Domain:target=nas"),
+            Some("nas".to_owned())
+        );
+        assert_eq!(domain_credential_host("TERMSRV/office-pc"), None);
+        assert_eq!(domain_credential_host("MicrosoftAccount:target=user"), None);
     }
 }

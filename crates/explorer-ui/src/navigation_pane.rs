@@ -82,6 +82,13 @@ pub struct WslNavigationDistribution {
     pub available: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkNavigationPlace {
+    pub host: String,
+    pub label: String,
+    pub location: LocationDescriptor,
+}
+
 pub use explorer_model::LINUX_NAMESPACE;
 
 static ADB_NAVIGATION_DEVICES: OnceLock<RwLock<Vec<AdbNavigationDevice>>> = OnceLock::new();
@@ -90,6 +97,7 @@ static FTP_NAVIGATION_PROFILES: OnceLock<RwLock<Vec<FtpNavigationProfile>>> = On
 static GDRIVE_NAVIGATION_PROFILES: OnceLock<RwLock<Vec<GdriveNavigationProfile>>> = OnceLock::new();
 static WSL_NAVIGATION_DISTRIBUTIONS: OnceLock<RwLock<Vec<WslNavigationDistribution>>> =
     OnceLock::new();
+static NETWORK_NAVIGATION_PLACES: OnceLock<RwLock<Vec<NetworkNavigationPlace>>> = OnceLock::new();
 
 pub fn configure_adb_navigation_devices(devices: Vec<AdbNavigationDevice>) {
     *ADB_NAVIGATION_DEVICES
@@ -124,6 +132,21 @@ pub fn configure_wsl_navigation_distributions(distributions: Vec<WslNavigationDi
         .get_or_init(|| RwLock::new(Vec::new()))
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = distributions;
+}
+
+pub fn configure_network_navigation_places(places: Vec<NetworkNavigationPlace>) {
+    *NETWORK_NAVIGATION_PLACES
+        .get_or_init(|| RwLock::new(Vec::new()))
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = places;
+}
+
+fn network_navigation_places() -> Vec<NetworkNavigationPlace> {
+    NETWORK_NAVIGATION_PLACES
+        .get_or_init(|| RwLock::new(Vec::new()))
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 pub fn wsl_distribution_root_path(name: &str) -> PathBuf {
@@ -636,6 +659,16 @@ pub fn windows_navigation_items_with_pins(
         0,
         false,
     ));
+    for place in network_navigation_places() {
+        items.push(NavigationItem::location(
+            format!("network-host-{}", place.host),
+            place.label,
+            NavigationIcon::Network,
+            place.location,
+            1,
+            false,
+        ));
+    }
     let wsl_distributions = wsl_navigation_distributions();
     if !wsl_distributions.is_empty() {
         items.push(NavigationItem::linux_root(catalog));
@@ -829,6 +862,14 @@ pub fn is_selected(item: &NavigationItem, current: Option<&LocationDescriptor>) 
                     .is_some_and(|(item_distro, current_distro)| {
                         item_distro.eq_ignore_ascii_case(&current_distro)
                     }))
+                || (item.id.starts_with("network-host-")
+                    && explorer_model::NetworkPlace::from_unc_path(left_path).is_some_and(
+                        |place| {
+                            place.matches_location(&LocationDescriptor::FileSystem(
+                                right_path.clone(),
+                            ))
+                        },
+                    ))
         }
         (Some(LocationDescriptor::Virtual(left)), Some(LocationDescriptor::Virtual(right))) => {
             left.provider_id == right.provider_id
@@ -933,6 +974,7 @@ mod tests {
 
     #[test]
     fn navigation_contract_has_stable_unique_ids_and_explorer_section_order() {
+        configure_network_navigation_places(Vec::new());
         let items = windows_navigation_items(zh_tw_catalog());
         let mut ids = std::collections::HashSet::new();
         assert!(items.iter().all(|item| ids.insert(item.id.as_str())));
@@ -1203,7 +1245,38 @@ mod tests {
     }
 
     #[test]
+    fn remembered_unc_hosts_appear_under_network_and_select_nested_shares() {
+        configure_network_navigation_places(vec![NetworkNavigationPlace {
+            host: "122.116.110.30".to_owned(),
+            label: r"\\122.116.110.30\".to_owned(),
+            location: LocationDescriptor::file_system(r"\\122.116.110.30\"),
+        }]);
+        let items = windows_navigation_items(zh_tw_catalog());
+        let position = |id| items.iter().position(|item| item.id == id).unwrap();
+        assert!(position("network") < position("network-host-122.116.110.30"));
+        let host = items
+            .iter()
+            .find(|item| item.id == "network-host-122.116.110.30")
+            .expect("network host row");
+        assert_eq!(host.label, r"\\122.116.110.30\");
+        assert_eq!(host.depth, 1);
+        assert_eq!(host.icon, Some(NavigationIcon::Network));
+        assert!(is_selected(
+            host,
+            Some(&LocationDescriptor::file_system(
+                r"\\122.116.110.30\Multimedia"
+            ))
+        ));
+        assert!(!is_selected(
+            host,
+            Some(&LocationDescriptor::file_system(r"\\other-host\share"))
+        ));
+        configure_network_navigation_places(Vec::new());
+    }
+
+    #[test]
     fn linux_row_is_hidden_until_a_wsl_distribution_exists() {
+        configure_network_navigation_places(Vec::new());
         configure_wsl_navigation_distributions(Vec::new());
         let hidden = windows_navigation_items(zh_tw_catalog());
         assert!(hidden.iter().all(|item| item.id != "linux"));

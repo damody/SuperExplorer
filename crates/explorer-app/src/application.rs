@@ -4401,6 +4401,9 @@ impl ApplicationLifecycle {
         explorer_ui::navigation_pane::configure_wsl_navigation_distributions(
             crate::remote_service::discover_wsl_navigation_distributions(),
         );
+        explorer_ui::navigation_pane::configure_network_navigation_places(
+            crate::remote_service::configured_network_navigation_places(),
+        );
         crate::remote_service::start_adb_navigation_refresh();
         let shell_service: Arc<dyn explorer_model::ExplorerService> =
             Arc::new(crate::brokered_service::BrokeredExplorerService::new(

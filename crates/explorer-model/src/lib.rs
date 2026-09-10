@@ -129,10 +129,11 @@ pub use protocol::{
 pub use remote::{
     FtpAddressInput, FtpAuthKind, FtpDataMode, FtpEncoding, FtpProfile, FtpProfileError,
     FtpSecurityMode, GDRIVE_CONNECT_LOCATION, GdriveProfile, GdriveProfileError,
-    HostIdentityCollapse, RemoteAddress, RemoteAddressError, RemoteProviderCapabilities,
-    RemoteProviderKind, SftpAddressInput, SftpProfile, SftpProfileError,
-    collapse_ftp_profiles_to_host, collapse_sftp_profiles_to_host, is_gdrive_connect_location,
-    is_remote_provider_id, new_remote_container_identity, remote_container_identity,
+    HostIdentityCollapse, NetworkPlace, NetworkPlaceChange, RemoteAddress, RemoteAddressError,
+    RemoteProviderCapabilities, RemoteProviderKind, SftpAddressInput, SftpProfile,
+    SftpProfileError, classify_network_place_update, collapse_ftp_profiles_to_host,
+    collapse_sftp_profiles_to_host, is_gdrive_connect_location, is_remote_provider_id,
+    new_remote_container_identity, remember_network_place, remote_container_identity,
 };
 pub use session::{
     PersistedColumn, PersistedColumnLayoutEntry, PersistedColumnWidths, PersistedExtensionSort,
