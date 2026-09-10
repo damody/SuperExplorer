@@ -78,20 +78,32 @@ pub fn parse_address(input: &str) -> Result<LocationDescriptor, AddressParseErro
         && bytes[0].is_ascii_alphabetic()
         && bytes[1] == b':'
         && matches!(bytes[2], b'\\' | b'/');
-    let unc = value.starts_with(r"\\")
-        && value[2..]
-            .split(['\\', '/'])
-            .filter(|part| !part.is_empty())
-            .take(2)
-            .count()
-            == 2;
-    if drive_absolute || unc {
+    if drive_absolute || is_unc_path(value) {
         Ok(LocationDescriptor::FileSystem(PathBuf::from(value)))
     } else {
         Err(AddressParseError {
             message: "地址必須是磁碟機絕對路徑、UNC 路徑或 shell: parsing name".to_owned(),
         })
     }
+}
+
+fn is_unc_path(value: &str) -> bool {
+    let Some(rest) = value
+        .strip_prefix(r"\\")
+        .or_else(|| value.strip_prefix("//"))
+    else {
+        return false;
+    };
+    let rest = rest
+        .strip_prefix(r"?\UNC\")
+        .or_else(|| rest.strip_prefix("?/UNC/"))
+        .unwrap_or(rest);
+    if rest.starts_with('?') || rest.starts_with('.') {
+        return false;
+    }
+    rest.split(['\\', '/'])
+        .find(|part| !part.is_empty())
+        .is_some()
 }
 
 #[cfg(test)]
@@ -103,6 +115,12 @@ mod tests {
     fn address_and_search_parsers_never_fall_through_into_each_other() {
         assert!(parse_address(r"C:\Users\fixture").is_ok());
         assert!(parse_address(r"\\server\share\folder").is_ok());
+        assert!(parse_address(r"\\122.116.110.30\").is_ok());
+        assert!(parse_address(r"\\122.116.110.30").is_ok());
+        assert!(parse_address(r"\\server\").is_ok());
+        assert!(parse_address(r"\\server").is_ok());
+        assert!(parse_address(r"\\").is_err());
+        assert!(parse_address(r"\\\").is_err());
         assert!(parse_address("shell:Downloads").is_ok());
         assert_eq!(
             parse_address("adb://device-123/sdcard/Download").unwrap(),

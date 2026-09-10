@@ -20,7 +20,8 @@ use explorer_common::{
 use explorer_model::{
     BreadcrumbIconHint, BreadcrumbSegment, BreadcrumbSegmentId, BreadcrumbTerminal,
     CancellationToken, ClipboardMode, DataTransferRequest, ExplorerCommand, ExplorerEvent,
-    LocationDescriptor, OpenDisposition, OperationTerminal,
+    LocationDescriptor, OpenDisposition, OperationTerminal, is_wsl_unc_path, location_breadcrumbs,
+    network_unc_parts,
 };
 use thiserror::Error;
 use windows::Win32::{
@@ -2424,7 +2425,10 @@ fn process_ancestry<P: RequiredTerminalPublisher>(
     // Publish Shell display metadata as an identity-preserving update batch.
     let mut enriched = segments;
     for segment in &mut enriched {
-        if segment.id == BreadcrumbSegmentId(0) || segment.icon_hint == BreadcrumbIconHint::Drive {
+        if segment.id == BreadcrumbSegmentId(0)
+            || segment.icon_hint == BreadcrumbIconHint::Drive
+            || segment.location.path().is_some_and(|path| network_unc_parts(path).is_some())
+        {
             continue;
         }
         if let Ok(resolved) = crate::navigation::resolve_location(&segment.location) {
@@ -2469,6 +2473,13 @@ fn shell_ancestry_segments(chain: Vec<(LocationDescriptor, String)>) -> Vec<Brea
                 .map(shell_breadcrumb_segment),
         );
         return segments;
+    }
+    if let Some((unc_location, _)) = chain.iter().rev().find(|(location, _)| {
+        location
+            .path()
+            .is_some_and(|path| network_unc_parts(path).is_some())
+    }) {
+        return filesystem_ancestry(unc_location);
     }
     chain.into_iter().map(shell_breadcrumb_segment).collect()
 }
@@ -2622,59 +2633,51 @@ fn send_child_terminal<P: RequiredTerminalPublisher>(
     Ok(())
 }
 
-fn filesystem_ancestry(location: &LocationDescriptor) -> Vec<BreadcrumbSegment> {
-    let Some(path) = location.path() else {
-        return match location {
-            LocationDescriptor::ParsingName(name)
-                if name.eq_ignore_ascii_case("shell:MyComputerFolder") =>
-            {
-                vec![BreadcrumbSegment {
-                    id: BreadcrumbSegmentId(0),
-                    display_name: "本機".to_owned(),
-                    location: location.clone(),
-                    icon_hint: BreadcrumbIconHint::Computer,
-                    is_container: true,
-                }]
-            }
-            _ => Vec::new(),
-        };
-    };
-    let mut segments = vec![BreadcrumbSegment {
+fn this_pc_breadcrumb() -> BreadcrumbSegment {
+    BreadcrumbSegment {
         id: BreadcrumbSegmentId(0),
         display_name: "本機".to_owned(),
         location: LocationDescriptor::ParsingName("shell:MyComputerFolder".to_owned()),
         icon_hint: BreadcrumbIconHint::Computer,
         is_container: true,
-    }];
-    let mut current = std::path::PathBuf::new();
-    for component in path.components() {
-        current.push(component.as_os_str());
-        let display_name = match component {
-            std::path::Component::RootDir => continue,
-            _ => component.as_os_str().to_string_lossy().into_owned(),
-        };
-        let descriptor = LocationDescriptor::file_system(current.clone());
-        let mut segment = BreadcrumbSegment {
-            id: breadcrumb_id(&descriptor),
-            display_name,
-            location: descriptor,
-            icon_hint: if segments.len() == 1 {
-                BreadcrumbIconHint::Drive
-            } else if current.extension().is_some_and(|extension| {
-                matches!(
-                    extension.to_string_lossy().to_ascii_lowercase().as_str(),
-                    "zip" | "rar" | "7z" | "tar" | "gz"
-                )
-            }) {
-                BreadcrumbIconHint::Archive
-            } else {
-                BreadcrumbIconHint::Folder
-            },
-            is_container: true,
-        };
-        segment.stabilize_display_name();
-        segments.push(segment);
     }
+}
+
+fn network_places_breadcrumb() -> BreadcrumbSegment {
+    let location = LocationDescriptor::ParsingName("shell:NetworkPlacesFolder".to_owned());
+    BreadcrumbSegment {
+        id: breadcrumb_id(&location),
+        display_name: "網路".to_owned(),
+        location,
+        icon_hint: BreadcrumbIconHint::Namespace,
+        is_container: true,
+    }
+}
+
+fn filesystem_ancestry(location: &LocationDescriptor) -> Vec<BreadcrumbSegment> {
+    if location.path().is_none() {
+        return match location {
+            LocationDescriptor::ParsingName(name)
+                if name.eq_ignore_ascii_case("shell:MyComputerFolder") =>
+            {
+                vec![this_pc_breadcrumb()]
+            }
+            LocationDescriptor::ParsingName(name)
+                if name.eq_ignore_ascii_case("shell:NetworkPlacesFolder") =>
+            {
+                vec![network_places_breadcrumb()]
+            }
+            _ => Vec::new(),
+        };
+    }
+    let mut segments = if location.path().is_some_and(|path| {
+        network_unc_parts(path).is_some() && !is_wsl_unc_path(path)
+    }) {
+        vec![network_places_breadcrumb()]
+    } else {
+        vec![this_pc_breadcrumb()]
+    };
+    segments.extend(location_breadcrumbs(location));
     segments
 }
 
@@ -2863,6 +2866,49 @@ mod tests {
     };
 
     static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn network_share_shell_chain_uses_the_same_crumbs_as_clicking_the_share() {
+        let chain = vec![
+            (
+                LocationDescriptor::ParsingName("shell:MyComputerFolder".to_owned()),
+                "本機".to_owned(),
+            ),
+            (
+                LocationDescriptor::ParsingName("shell:NetworkPlacesFolder".to_owned()),
+                "網路".to_owned(),
+            ),
+            (
+                LocationDescriptor::ParsingName(r"\\122.116.110.30".to_owned()),
+                "122.116.110.30".to_owned(),
+            ),
+            (
+                LocationDescriptor::file_system(r"\\122.116.110.30\Multimedia"),
+                r"Multimedia (\\122.116.110.30)".to_owned(),
+            ),
+        ];
+        let from_network = shell_ancestry_segments(chain);
+        let from_share = filesystem_ancestry(&LocationDescriptor::file_system(
+            r"\\122.116.110.30\Multimedia",
+        ));
+        assert_eq!(
+            from_network
+                .iter()
+                .map(|segment| segment.display_name.as_str())
+                .collect::<Vec<_>>(),
+            from_share
+                .iter()
+                .map(|segment| segment.display_name.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            from_network
+                .iter()
+                .map(|segment| segment.display_name.as_str())
+                .collect::<Vec<_>>(),
+            ["網路", r"\\122.116.110.30\", "Multimedia"]
+        );
+    }
 
     #[test]
     fn zip_shell_ancestry_rebuilds_one_filesystem_root_before_namespace_children() {
@@ -3093,8 +3139,45 @@ mod tests {
             r"\\server\共享\Unicode 子資料夾",
         ));
         assert_eq!(
-            unc.last().map(|segment| segment.display_name.as_str()),
-            Some("Unicode 子資料夾")
+            unc.iter()
+                .map(|segment| segment.display_name.as_str())
+                .collect::<Vec<_>>(),
+            ["網路", r"\\server\", "共享", "Unicode 子資料夾"]
+        );
+
+        let share = filesystem_ancestry(&LocationDescriptor::file_system(
+            r"\\122.116.110.30\Multimedia",
+        ));
+        assert_eq!(
+            share
+                .iter()
+                .map(|segment| segment.display_name.as_str())
+                .collect::<Vec<_>>(),
+            ["網路", r"\\122.116.110.30\", "Multimedia"]
+        );
+        assert_eq!(
+            share[1]
+                .location
+                .path()
+                .map(|path| path.to_string_lossy().into_owned())
+                .as_deref(),
+            Some(r"\\122.116.110.30\")
+        );
+        assert_eq!(
+            share[2]
+                .location
+                .path()
+                .map(|path| path.to_string_lossy().into_owned())
+                .as_deref(),
+            Some(r"\\122.116.110.30\Multimedia")
+        );
+
+        let host = filesystem_ancestry(&LocationDescriptor::file_system(r"\\122.116.110.30\"));
+        assert_eq!(
+            host.iter()
+                .map(|segment| segment.display_name.as_str())
+                .collect::<Vec<_>>(),
+            ["網路", r"\\122.116.110.30\"]
         );
 
         let fixture = OwnedTempFixture::new().expect("reparse fixture");

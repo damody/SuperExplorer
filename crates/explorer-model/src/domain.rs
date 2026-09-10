@@ -183,6 +183,30 @@ pub fn is_wsl_unc_path(path: &Path) -> bool {
     parse_wsl_unc(path).is_some()
 }
 
+/// Splits `\\server\share\folder` into `["server", "share", "folder"]`.
+///
+/// Host-only paths (`\\server` / `\\server\`) yield a single component. Device
+/// paths (`\\.\`, `\\?\` except `\\?\UNC\`) and empty `\\` return `None`.
+pub fn network_unc_parts(path: &Path) -> Option<Vec<String>> {
+    let value = path.to_string_lossy().replace('/', r"\");
+    let rest = if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+        rest
+    } else if let Some(rest) = value.strip_prefix(r"\\") {
+        if rest.starts_with('?') || rest.starts_with('.') {
+            return None;
+        }
+        rest
+    } else {
+        return None;
+    };
+    let parts = rest
+        .split('\\')
+        .filter(|part| !part.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    (!parts.is_empty()).then_some(parts)
+}
+
 fn parse_wsl_unc(path: &Path) -> Option<(String, bool)> {
     let value = path.to_string_lossy().replace('/', r"\");
     let rest = value.strip_prefix(r"\\")?;
@@ -802,6 +826,26 @@ mod tests {
             LocationDescriptor::try_virtual("rust-7z", [7; 16], 3, None, vec!["..".into()])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn network_unc_parts_split_host_share_and_reject_device_paths() {
+        assert_eq!(
+            network_unc_parts(Path::new(r"\\122.116.110.30\Multimedia")),
+            Some(vec!["122.116.110.30".into(), "Multimedia".into()])
+        );
+        assert_eq!(
+            network_unc_parts(Path::new(r"\\server\")),
+            Some(vec!["server".into()])
+        );
+        assert_eq!(
+            network_unc_parts(Path::new(r"\\?\UNC\server\share\folder")),
+            Some(vec!["server".into(), "share".into(), "folder".into()])
+        );
+        assert_eq!(network_unc_parts(Path::new(r"D:\Users")), None);
+        assert_eq!(network_unc_parts(Path::new(r"\\.\pipe\foo")), None);
+        assert_eq!(network_unc_parts(Path::new(r"\\?\d:\")), None);
+        assert_eq!(network_unc_parts(Path::new(r"\\")), None);
     }
 
     #[test]

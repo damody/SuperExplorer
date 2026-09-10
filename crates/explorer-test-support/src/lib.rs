@@ -112,7 +112,7 @@ pub fn breadcrumb_contract_fixtures() -> Vec<BreadcrumbContractFixture> {
         BreadcrumbContractFixture {
             name: "unc",
             location: LocationDescriptor::file_system(r"\\server\share\folder"),
-            expected_root_name: "本機",
+            expected_root_name: "網路",
             expected_leaf_name: "folder",
             requires_real_provider: true,
         },

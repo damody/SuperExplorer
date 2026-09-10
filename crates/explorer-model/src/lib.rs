@@ -62,7 +62,7 @@ pub use domain::{
     Generation, LINUX_NAMESPACE, LocationDescriptor, LocationDescriptorValidationError,
     MAX_LOCATION_DESCRIPTOR_BYTES, RequestContext, RequestRejection, ShellItemId, SyntheticRoot,
     TabId, VirtualLocationDescriptor, is_wsl_distribution_root_path, is_wsl_unc_path,
-    wsl_unc_distribution_name,
+    network_unc_parts, wsl_unc_distribution_name,
 };
 pub use drag_drop::{
     AutoScrollDirection, DragButton, DragEffect, DragModifiers, DragSession, DragSessionState,

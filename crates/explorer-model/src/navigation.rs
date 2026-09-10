@@ -2061,12 +2061,23 @@ impl BreadcrumbSegment {
     /// Explorer may expose a volume label elsewhere, but the address ancestry uses the
     /// canonical drive designator so the row cannot change width during navigation.
     pub fn stabilize_display_name(&mut self) {
-        if self.icon_hint != BreadcrumbIconHint::Drive {
-            return;
-        }
         let Some(path) = self.location.path() else {
             return;
         };
+        if let Some(parts) = crate::network_unc_parts(path) {
+            if parts.len() == 1 {
+                self.display_name = format!(r"\\{}\", parts[0]);
+                if self.icon_hint != BreadcrumbIconHint::Namespace {
+                    self.icon_hint = BreadcrumbIconHint::Namespace;
+                }
+            } else if let Some(leaf) = parts.last() {
+                self.display_name = leaf.clone();
+            }
+            return;
+        }
+        if self.icon_hint != BreadcrumbIconHint::Drive {
+            return;
+        }
         let text = path.to_string_lossy();
         let root = text.trim_end_matches(['\\', '/']);
         let canonical_root = root
@@ -2444,6 +2455,9 @@ pub fn location_breadcrumbs(location: &LocationDescriptor) -> Vec<BreadcrumbSegm
     let Some(path) = location.path() else {
         return Vec::new();
     };
+    if let Some(parts) = crate::network_unc_parts(path) {
+        return unc_location_breadcrumbs(parts);
+    }
     let mut current = std::path::PathBuf::new();
     path.components()
         .filter_map(|component| {
@@ -2455,31 +2469,76 @@ pub fn location_breadcrumbs(location: &LocationDescriptor) -> Vec<BreadcrumbSegm
                 std::path::Component::RootDir => return None,
                 _ => component.as_os_str().to_string_lossy().into_owned(),
             };
-            let descriptor = LocationDescriptor::file_system(current.clone());
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            descriptor.hash(&mut hasher);
-            let mut segment = BreadcrumbSegment {
-                id: BreadcrumbSegmentId(hasher.finish()),
+            Some(filesystem_breadcrumb_segment(
+                current.clone(),
                 display_name,
-                location: descriptor,
-                icon_hint: if current.parent().is_none() {
+                if current.parent().is_none() {
                     BreadcrumbIconHint::Drive
-                } else if current.extension().is_some_and(|extension| {
-                    matches!(
-                        extension.to_string_lossy().to_ascii_lowercase().as_str(),
-                        "zip" | "rar" | "7z" | "tar" | "gz"
-                    )
-                }) {
-                    BreadcrumbIconHint::Archive
                 } else {
-                    BreadcrumbIconHint::Folder
+                    archive_or_folder_hint(&current)
                 },
-                is_container: true,
-            };
-            segment.stabilize_display_name();
-            Some(segment)
+            ))
         })
         .collect()
+}
+
+fn unc_location_breadcrumbs(parts: Vec<String>) -> Vec<BreadcrumbSegment> {
+    let server = &parts[0];
+    let host_path = format!(r"\\{server}\");
+    let mut segments = vec![filesystem_breadcrumb_segment(
+        std::path::PathBuf::from(&host_path),
+        host_path,
+        BreadcrumbIconHint::Namespace,
+    )];
+    if parts.len() == 1 {
+        return segments;
+    }
+    let mut current = std::path::PathBuf::from(format!(r"\\{server}\{}", parts[1]));
+    for (index, part) in parts.iter().enumerate().skip(1) {
+        if index > 1 {
+            current.push(part);
+        }
+        segments.push(filesystem_breadcrumb_segment(
+            current.clone(),
+            part.clone(),
+            archive_or_folder_hint(&current),
+        ));
+    }
+    segments
+}
+
+fn archive_or_folder_hint(path: &std::path::Path) -> BreadcrumbIconHint {
+    if path.extension().is_some_and(|extension| {
+        matches!(
+            extension.to_string_lossy().to_ascii_lowercase().as_str(),
+            "zip" | "rar" | "7z" | "tar" | "gz"
+        )
+    }) {
+        BreadcrumbIconHint::Archive
+    } else {
+        BreadcrumbIconHint::Folder
+    }
+}
+
+fn filesystem_breadcrumb_segment(
+    path: std::path::PathBuf,
+    display_name: String,
+    icon_hint: BreadcrumbIconHint,
+) -> BreadcrumbSegment {
+    use std::hash::{Hash, Hasher};
+
+    let descriptor = LocationDescriptor::file_system(path);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    descriptor.hash(&mut hasher);
+    let mut segment = BreadcrumbSegment {
+        id: BreadcrumbSegmentId(hasher.finish()),
+        display_name,
+        location: descriptor,
+        icon_hint,
+        is_container: true,
+    };
+    segment.stabilize_display_name();
+    segment
 }
 
 /// Search state scoped to one tab and independent from its directory snapshot.
@@ -2957,6 +3016,63 @@ mod tests {
     }
 
     #[test]
+    fn unc_breadcrumbs_split_host_from_share_and_nested_folders() {
+        let share = AddressBarState::for_entry(&HistoryEntry::new(
+            LocationDescriptor::file_system(r"\\122.116.110.30\Multimedia"),
+            "Multimedia",
+        ));
+        assert_eq!(
+            share
+                .resolved_ancestry
+                .iter()
+                .map(|segment| segment.display_name.as_str())
+                .collect::<Vec<_>>(),
+            [r"\\122.116.110.30\", "Multimedia"]
+        );
+        assert_eq!(
+            share.resolved_ancestry[0].icon_hint,
+            BreadcrumbIconHint::Namespace
+        );
+        assert_eq!(
+            share.resolved_ancestry[1].icon_hint,
+            BreadcrumbIconHint::Folder
+        );
+        assert_eq!(
+            share.resolved_ancestry[0]
+                .location
+                .path()
+                .map(|path| path.to_string_lossy().into_owned())
+                .as_deref(),
+            Some(r"\\122.116.110.30\")
+        );
+
+        let nested = AddressBarState::for_entry(&HistoryEntry::new(
+            LocationDescriptor::file_system(r"\\server\共享\Unicode 子資料夾"),
+            "Unicode 子資料夾",
+        ));
+        assert_eq!(
+            nested
+                .resolved_ancestry
+                .iter()
+                .map(|segment| segment.display_name.as_str())
+                .collect::<Vec<_>>(),
+            [r"\\server\", "共享", "Unicode 子資料夾"]
+        );
+
+        let host = AddressBarState::for_entry(&HistoryEntry::new(
+            LocationDescriptor::file_system(r"\\122.116.110.30\"),
+            r"\\122.116.110.30\",
+        ));
+        assert_eq!(
+            host.resolved_ancestry
+                .iter()
+                .map(|segment| segment.display_name.as_str())
+                .collect::<Vec<_>>(),
+            [r"\\122.116.110.30\"]
+        );
+    }
+
+    #[test]
     fn filesystem_drive_breadcrumb_name_is_stable_and_does_not_use_the_volume_label() {
         let mut drive = BreadcrumbSegment {
             id: BreadcrumbSegmentId(7),
@@ -2980,6 +3096,29 @@ mod tests {
         };
         folder.stabilize_display_name();
         assert_eq!(folder.display_name, "新增磁碟區 (D:)");
+    }
+
+    #[test]
+    fn unc_breadcrumb_names_are_stable_whether_shell_or_path_labels_arrive() {
+        let mut host = BreadcrumbSegment {
+            id: BreadcrumbSegmentId(1),
+            display_name: "122.116.110.30".to_owned(),
+            location: LocationDescriptor::file_system(r"\\122.116.110.30\"),
+            icon_hint: BreadcrumbIconHint::Namespace,
+            is_container: true,
+        };
+        host.stabilize_display_name();
+        assert_eq!(host.display_name, r"\\122.116.110.30\");
+
+        let mut share = BreadcrumbSegment {
+            id: BreadcrumbSegmentId(2),
+            display_name: r"Multimedia (\\122.116.110.30)".to_owned(),
+            location: LocationDescriptor::file_system(r"\\122.116.110.30\Multimedia"),
+            icon_hint: BreadcrumbIconHint::Folder,
+            is_container: true,
+        };
+        share.stabilize_display_name();
+        assert_eq!(share.display_name, "Multimedia");
     }
 
     #[test]
