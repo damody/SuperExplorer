@@ -1123,6 +1123,15 @@ impl ExplorerEvent {
                     | Self::Failed { .. }
             )
     }
+
+    /// True for folder/search requests the user initiated. Icon, thumbnail, and
+    /// popup terminals complete too often to log at info.
+    pub const fn is_user_facing_request_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::DirectoryFinished { .. } | Self::SearchFinished { .. } | Self::Failed { .. }
+        )
+    }
 }
 
 /// Tracks request starts and rejects missing/duplicate terminal semantics.
@@ -1224,6 +1233,44 @@ mod tests {
             is_container,
             metadata: crate::FileEntryMetadata::default(),
         }
+    }
+
+    #[test]
+    fn user_facing_request_terminals_exclude_icon_and_popup_completions() {
+        let context = RequestContext::new(TabId::new(), Generation::new(1));
+        assert!(
+            ExplorerEvent::DirectoryFinished {
+                context: context.clone()
+            }
+            .is_user_facing_request_terminal()
+        );
+        assert!(
+            ExplorerEvent::Failed {
+                context: context.clone(),
+                error: ExplorerError::new(
+                    explorer_common::ExplorerErrorKind::Availability,
+                    "fixture",
+                    true,
+                    "fixture",
+                    "fixture",
+                ),
+            }
+            .is_user_facing_request_terminal()
+        );
+        assert!(
+            !ExplorerEvent::ContextMenuFinished {
+                context: context.clone(),
+                outcome: crate::ContextMenuOutcome::Cancelled,
+            }
+            .is_user_facing_request_terminal()
+        );
+        assert!(
+            !ExplorerEvent::AncestryFinished {
+                context,
+                outcome: BreadcrumbTerminal::Finished,
+            }
+            .is_user_facing_request_terminal()
+        );
     }
 
     #[test]
