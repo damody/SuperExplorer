@@ -236,6 +236,90 @@ local function sha256(file_path, description, logs, suffix)
     error("無法解析 " .. description .. " SHA-256：" .. file_path, 0)
 end
 
+local function powershell_exe()
+    return path(assert(os.getenv("SystemRoot")), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+end
+
+local function capture_powershell(stage, logs, suffix, command)
+    local log_path = path(logs, "installer-superexplorer-" .. suffix .. ".log")
+    local ok = pcall(process.run, {
+        stage = stage,
+        exe = powershell_exe(),
+        args = {
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            command,
+        },
+        cwd = root,
+        log_path = log_path,
+        echo_output = false,
+    })
+    if not ok then
+        return "", log_path
+    end
+    return read_file(log_path), log_path
+end
+
+local function wait_for_windows_shell(logs)
+    for _ = 1, 20 do
+        local output = capture_powershell(
+            "等待 Windows 桌面 explorer.exe",
+            logs,
+            "windows-shell",
+            "if (Get-CimInstance Win32_Process -Filter \"Name='explorer.exe'\") { 'ready' }"
+        )
+        if output:find("ready", 1, true) then
+            return
+        end
+        os.execute("ping.exe -n 2 127.0.0.1 >nul")
+    end
+    error("Windows 桌面 explorer.exe 尚未就緒，無法啟動 SuperExplorer（常見於 0xc0000142 DLL 初始化失敗）", 0)
+end
+
+local function running_superexplorer_pids(exe_path, logs)
+    local escaped = exe_path:gsub("'", "''")
+    local output = capture_powershell(
+        "查詢已安裝 SuperExplorer 行程",
+        logs,
+        "running-pids",
+        string.format(
+            "$expected = [IO.Path]::GetFullPath('%s'); Get-CimInstance Win32_Process -Filter \"Name='SuperExplorer.exe'\" | ForEach-Object { if ($_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq $expected)) { $_.ProcessId } }",
+            escaped
+        )
+    )
+    local pids = {}
+    for id in output:gmatch("%d+") do
+        pids[#pids + 1] = id
+    end
+    return pids
+end
+
+local function start_verified_superexplorer(exe_path, logs)
+    wait_for_windows_shell(logs)
+    local install_dir = assert(exe_path:match("^(.*)[\\/][^\\/]+$"), "無法解析 SuperExplorer 安裝目錄")
+    local explorer = path(assert(os.getenv("SystemRoot")), "explorer.exe")
+    process.start({
+        stage = "啟動已驗證的 SuperExplorer 安裝版",
+        exe = explorer,
+        args = { exe_path },
+        cwd = install_dir,
+    })
+    for _ = 1, 10 do
+        os.execute("ping.exe -n 2 127.0.0.1 >nul")
+        if #running_superexplorer_pids(exe_path, logs) > 0 then
+            return
+        end
+    end
+    error(
+        "已安裝的 SuperExplorer.exe 啟動後未保持執行。Windows 0xc0000142 通常是 DLL 初始化失敗：請確認桌面 explorer.exe 正常、已安裝 VC++ x64 runtime，再重試。",
+        0
+    )
+end
+
 local function verify_installed_superexplorer(superexplorer_inputs, logs)
     local install_dir = query_superexplorer_install_directory(logs)
     local required = {
@@ -451,11 +535,7 @@ local function main()
             log_path = path(logs, "installer-superexplorer-silent-install.log"),
         })
         local installed_executable = verify_installed_superexplorer(superexplorer_inputs, logs)
-        process.start({
-            stage = "啟動已驗證的 SuperExplorer 安裝版",
-            exe = installed_executable,
-            cwd = installed_executable:match("^(.*)[\\/][^\\/]+$"),
-        })
+        start_verified_superexplorer(installed_executable, logs)
     elseif not options.no_launch then
         process.start({
             stage = "啟動安裝程式",

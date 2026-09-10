@@ -175,6 +175,9 @@ assert_contains(build, 'if options.auto_install and not options.no_launch then',
 assert_contains(build, 'args = { "/S" }', "silent installer argument")
 assert_contains(build, 'verify_installed_superexplorer(superexplorer_inputs, logs)',
     "installed binary identity gate")
+assert_contains(build, 'start_verified_superexplorer(installed_executable, logs)',
+    "installed SuperExplorer launch verification")
+assert_contains(build, "0xc0000142", "DLL initialization failure diagnostic")
 assert_contains(build, 'for _, view in ipairs({ "64", "32" }) do',
     "NSIS registry-view install directory resolver")
 assert_not_contains(formal_batch, "--auto-install", "formal batch auto-install isolation")
