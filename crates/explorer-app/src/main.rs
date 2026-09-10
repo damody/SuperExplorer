@@ -14,7 +14,9 @@ compile_error!("explorer-app supports Windows targets only");
 
 use explorer_app::{
     application::ApplicationLifecycle,
+    explorer_handoff, explorer_import,
     launch_coordination::{LaunchKind, LaunchSession},
+    win_e_hotkey,
 };
 use explorer_common::{
     AppBuildInfo, DiagnosticsConfig, DiagnosticsSession, ErrorSeverity, initialize_diagnostics,
@@ -124,8 +126,25 @@ fn run(
         "Explorer bootstrap composition is ready"
     );
     diagnostics.record_event("composition_ready", &[])?;
-    lifecycle
-        .run_gpui_with_initial_path(repeated_launch.then(|| std::path::PathBuf::from(r"C:\")))?;
+    let import = explorer_import::consume_launch_import(
+        launch_session
+            .as_ref()
+            .is_some_and(|session| !session.is_repeated()),
+    );
+    if std::env::var_os("EXPLORER_VISUAL_FIXTURE").is_none()
+        && std::env::var_os("EXPLORER_AUTO_CLOSE_MS").is_none()
+    {
+        win_e_hotkey::start_win_e_hotkey();
+        explorer_handoff::start_handoff_server();
+    }
+    let initial_path = if import.this_pc {
+        None
+    } else {
+        repeated_launch.then(|| std::path::PathBuf::from(r"C:\"))
+    };
+    lifecycle.run_gpui_with_launch(initial_path, import.this_window, import.this_pc)?;
+    explorer_handoff::stop_handoff_server();
+    win_e_hotkey::stop_win_e_hotkey();
     lifecycle.shutdown()?;
     Ok(())
 }

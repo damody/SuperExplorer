@@ -18,9 +18,12 @@ pub mod application;
 pub mod bookmark_store;
 pub mod branding;
 mod brokered_service;
+pub mod explorer_import;
+pub mod explorer_handoff;
 mod folder_size_service;
 pub mod launch_coordination;
 pub mod locale;
+pub mod win_e_hotkey;
 pub(crate) use explorer_mft::mft_focus;
 #[cfg(windows)]
 pub(crate) use explorer_mft::mft_journal;

@@ -4359,11 +4359,22 @@ impl ApplicationLifecycle {
         reason = "application startup keeps platform, lifecycle, window, fixture, and auto-close ownership visible in one audited path"
     )]
     pub fn run_gpui(&self) -> Result<(), Error> {
-        self.run_gpui_with_initial_path(None)
+        self.run_gpui_with_launch(None, None, false)
     }
 
     /// Runs GPUI with an explicit initial filesystem path overriding restored tabs.
     pub fn run_gpui_with_initial_path(&self, initial_path: Option<PathBuf>) -> Result<(), Error> {
+        self.run_gpui_with_launch(initial_path, None, false)
+    }
+
+    /// Runs GPUI with an optional imported File Explorer window and This PC start.
+    pub fn run_gpui_with_launch(
+        &self,
+        initial_path: Option<PathBuf>,
+        imported_window: Option<explorer_model::ExplorerWindowState>,
+        this_pc: bool,
+    ) -> Result<(), Error> {
+        let activate_on_open = this_pc || imported_window.is_some();
         let launch_error = Arc::new(Mutex::new(None::<String>));
         let mut extension_job_ui_bridge = self.take_extension_job_ui_bridge()?;
         let closure_error = Arc::clone(&launch_error);
@@ -4478,8 +4489,19 @@ impl ApplicationLifecycle {
         let visual_fixture = VisualFixtureConfig::from_environment()?;
         let show_splash =
             crate::branding::should_show_splash(visual_fixture.is_some(), auto_close.is_some());
-        let initial_location = configured_initial_location(initial_path)?;
-        let (restored_tabs, restored_placement) = if visual_fixture.is_none() {
+        let initial_location = if this_pc {
+            Some(crate::explorer_import::this_pc_entry())
+        } else {
+            configured_initial_location(initial_path)?
+        };
+        let (restored_tabs, restored_placement) = if imported_window.is_some() {
+            let (_, placement) = if visual_fixture.is_none() {
+                load_session_restore(&diagnostics, None)
+            } else {
+                (None, None)
+            };
+            (imported_window, placement)
+        } else if visual_fixture.is_none() {
             load_session_restore(&diagnostics, initial_location.clone())
         } else {
             (None, None)
@@ -5490,6 +5512,15 @@ impl ApplicationLifecycle {
                 }) {
                     Ok(handle) => {
                         let _ = diagnostics.record_event("window_ready", &[]);
+                        if activate_on_open {
+                            let _ = handle.update(cx, |_, window, _| {
+                                crate::win_e_hotkey::activate_hwnd(gpui_window_hwnd(window));
+                            });
+                        }
+                        let _ = handle.update(cx, |root, window, _| {
+                            crate::explorer_handoff::set_main_hwnd(gpui_window_hwnd(window));
+                            root.publish_live_window();
+                        });
                         handle
                     }
                     Err(error) => {
@@ -5528,6 +5559,28 @@ impl ApplicationLifecycle {
                     cx.spawn(async move |cx| {
                         cx.background_executor().timer(delay).await;
                         cx.update(|cx| cx.quit());
+                    })
+                    .detach();
+                }
+
+                if let Some(delay) = std::env::var("SUPEREXPLORER_UITEST_HANDOFF_AFTER_MS")
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .map(Duration::from_millis)
+                {
+                    let window = main_window;
+                    cx.spawn(async move |cx| {
+                        cx.background_executor().timer(delay).await;
+                        let _ = cx.update(|cx| {
+                            let _ = window.update(cx, |root, window, cx| {
+                                root.dispatch_action_for_test(
+                                    explorer_ui::actions::ExplorerAction::HandoffToFileExplorer,
+                                    explorer_ui::actions::ActionSource::Programmatic,
+                                    window,
+                                    cx,
+                                );
+                            });
+                        });
                     })
                     .detach();
                 }
@@ -5844,6 +5897,12 @@ fn create_explorer_root(
     }));
     root.attach_bookmark_file_launcher(Arc::new(|location| {
         explorer_shell_win::open_default(&location).map_err(|error| error.to_string())
+    }));
+    root.attach_live_window_publisher(Arc::new(|tabs, active| {
+        crate::explorer_handoff::publish_live_window(tabs, active);
+    }));
+    root.attach_handoff_to_file_explorer(Arc::new(|tabs, active| {
+        crate::explorer_handoff::handoff_all_windows(tabs, active)
     }));
     if let Some(runtime) = visual_column_runtime {
         if visual_column_extension_loaded {
