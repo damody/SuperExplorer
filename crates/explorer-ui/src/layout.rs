@@ -79,7 +79,6 @@ pub mod feature {
     pub const THIS_PC_CAPACITY_BAR_WIDTH: LogicalPx = LogicalPx::new(184.0);
     pub const THIS_PC_CAPACITY_BAR_HEIGHT: LogicalPx = LogicalPx::new(12.0);
     pub const THIS_PC_CONTENT_HEIGHT: LogicalPx = LogicalPx::new(76.0);
-    pub const THIS_PC_CONTENT_BAR_WIDTH: LogicalPx = LogicalPx::new(520.0);
     pub const THIS_PC_CONTENT_TRAILING_WIDTH: LogicalPx = LogicalPx::new(180.0);
     pub const THIS_PC_DETAILS_NAME_WIDTH: LogicalPx = LogicalPx::new(280.0);
     pub const THIS_PC_DETAILS_TYPE_WIDTH: LogicalPx = LogicalPx::new(200.0);

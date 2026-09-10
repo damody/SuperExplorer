@@ -6124,6 +6124,87 @@ impl AppViewState {
         Some(ExplorerCommand::ShowContextMenu { context, request })
     }
 
+    pub(crate) fn begin_navigation_context_menu_request(
+        &mut self,
+        location: LocationDescriptor,
+        owner_window: u64,
+        x: i32,
+        y: i32,
+        client_x: f32,
+        client_y: f32,
+        extended_verbs: bool,
+    ) -> Option<ExplorerCommand> {
+        if location.synthetic_root().is_some()
+            || location.favorites_folder_id().is_some()
+            || location.lua_bookmark_id().is_some()
+            || explorer_model::is_gdrive_connect_location(&location)
+        {
+            return None;
+        }
+        self.set_navigation_focus(location.clone());
+        let tab = self.tabs.active_tab();
+        let context = RequestContext::new(tab.id, tab.generation);
+        let immersive_native_context_menus = tab.view.settings.immersive_native_context_menus;
+        if matches!(location, LocationDescriptor::Virtual(_)) {
+            let allow_create_symlink = !matches!(
+                &location,
+                LocationDescriptor::Virtual(remote)
+                    if matches!(remote.provider_id.as_str(), "ftp" | "gdrive")
+            );
+            let gdrive_trash = matches!(
+                &location,
+                LocationDescriptor::Virtual(remote) if remote.provider_id == "gdrive"
+            );
+            self.remote_context_menu = Some(RemoteContextMenuState {
+                x: client_x.max(0.0),
+                y: client_y.max(0.0),
+                background: true,
+                paste_available: self.paste_available(),
+                item_row_index: None,
+                item_is_container: true,
+                allow_create_symlink,
+                gdrive_trash,
+            });
+            return None;
+        }
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&location, &mut hasher);
+        let id =
+            ShellItemId::from_provider_bytes(std::hash::Hasher::finish(&hasher).to_le_bytes())?;
+        let request = explorer_model::ContextMenuRequest {
+            target: explorer_model::ShellContextMenuTarget::Items {
+                parent: location.clone(),
+                items: vec![ItemDescriptor { id, location }],
+            },
+            owner_window,
+            point: explorer_model::MenuPoint { x, y },
+            keyboard_invoked: false,
+            invocation_profile: if extended_verbs {
+                explorer_model::ContextMenuInvocationProfile::ExplorerExtended
+            } else {
+                explorer_model::ContextMenuInvocationProfile::Explorer
+            },
+            color_scheme: if matches!(self.current_theme, ThemeMode::Dark) {
+                explorer_model::ContextMenuColorScheme::Dark
+            } else {
+                explorer_model::ContextMenuColorScheme::Light
+            },
+            immersive_native_context_menus,
+            paste_available: self.paste_available(),
+            requested_verb: None,
+            deadline_ms: 2_000,
+        };
+        if let Some(pending) = self.pending_context_menu.as_ref() {
+            pending.cancellation.cancel();
+            self.queued_context_menu = None;
+            self.pending_context_menu_command = None;
+            self.pending_context_menu = Some(context.clone());
+            return Some(ExplorerCommand::ShowContextMenu { context, request });
+        }
+        self.pending_context_menu = Some(context.clone());
+        Some(ExplorerCommand::ShowContextMenu { context, request })
+    }
+
     pub(crate) fn pending_context_item_id(&self) -> Option<ShellItemId> {
         self.pending_context_hit.clone()
     }
@@ -9841,6 +9922,50 @@ mod tests {
             explorer_model::WindowEventOutcome::Applied
         );
         assert!(state.context_menu_error().is_none());
+    }
+
+    #[test]
+    fn navigation_context_menu_targets_the_nav_location_without_file_selection() {
+        let mut state = state_with_rows();
+        let location = explorer_model::LocationDescriptor::file_system(r"\\122.116.110.30\");
+        let command = state
+            .begin_navigation_context_menu_request(
+                location.clone(),
+                42,
+                100,
+                200,
+                10.0,
+                20.0,
+                false,
+            )
+            .expect("navigation context menu");
+        assert!(matches!(
+            command,
+            explorer_model::ExplorerCommand::ShowContextMenu {
+                request: explorer_model::ContextMenuRequest {
+                    target: explorer_model::ShellContextMenuTarget::Items { items, .. },
+                    owner_window: 42,
+                    point: explorer_model::MenuPoint { x: 100, y: 200 },
+                    ..
+                },
+                ..
+            } if items.len() == 1 && items[0].location == location
+        ));
+        assert!(
+            state
+                .begin_navigation_context_menu_request(
+                    explorer_model::LocationDescriptor::synthetic(
+                        explorer_model::SyntheticRoot::Home
+                    ),
+                    42,
+                    1,
+                    2,
+                    0.0,
+                    0.0,
+                    false,
+                )
+                .is_none()
+        );
     }
 
     #[test]

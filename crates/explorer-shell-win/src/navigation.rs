@@ -98,7 +98,10 @@ pub(crate) struct OwnedPidl {
 }
 
 impl OwnedPidl {
-    fn from_raw(raw: *mut ITEMIDLIST, operation: &'static str) -> Result<Self, ExplorerError> {
+    pub(crate) fn from_raw(
+        raw: *mut ITEMIDLIST,
+        operation: &'static str,
+    ) -> Result<Self, ExplorerError> {
         if raw.is_null() {
             Err(shell_error(operation, None, "Shell returned a null PIDL"))
         } else {

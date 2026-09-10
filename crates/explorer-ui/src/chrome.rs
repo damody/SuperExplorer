@@ -1688,17 +1688,37 @@ pub(crate) fn bookmark_manager(
                         },
                     )
                     .when_some(drop_cb, move |element, cb| {
-                        element.on_drop(move |drag: &BookmarkDrag, window, cx| {
-                            cb(
-                                &ExplorerAction::MoveBookmark {
-                                    id: drag.id,
-                                    destination: sibling_index,
-                                },
-                                window,
-                                cx,
-                            );
-                            cx.stop_propagation();
-                        })
+                        let move_cb = cb.clone();
+                        element
+                            .on_drag_move::<BookmarkDrag>(move |event, window, cx| {
+                                if !event.bounds.contains(&event.event.position) {
+                                    return;
+                                }
+                                let drag = event.drag(cx);
+                                if drag.id == id {
+                                    return;
+                                }
+                                move_cb(
+                                    &ExplorerAction::MoveBookmark {
+                                        id: drag.id,
+                                        destination: sibling_index,
+                                    },
+                                    window,
+                                    cx,
+                                );
+                                cx.stop_propagation();
+                            })
+                            .on_drop(move |drag: &BookmarkDrag, window, cx| {
+                                cb(
+                                    &ExplorerAction::MoveBookmark {
+                                        id: drag.id,
+                                        destination: sibling_index,
+                                    },
+                                    window,
+                                    cx,
+                                );
+                                cx.stop_propagation();
+                            })
                     })
                     .when_some(context_cb, move |element, cb| {
                         element.on_mouse_down(MouseButton::Right, move |event, window, cx| {
@@ -7557,6 +7577,7 @@ fn command_extensions_menu(
         .aria_label(catalog.t("menu-extensions"))
         .occlude()
         .w(px(400.0))
+        .flex_none()
         .overflow_hidden()
         .p(px(tokens.layout.content_spacing.value()))
         .rounded(px(tokens.layout.corner_radius.value()))
@@ -10263,6 +10284,8 @@ fn navigation_item_row(
             ));
     let toggle_location = item.location.clone();
     let toggle_callback = on_action.clone();
+    let context_location = item.location.clone();
+    let context_callback = on_action.clone();
     let row = div()
         .id(format!("nav-{}", item.id))
         .debug_selector({
@@ -10395,6 +10418,56 @@ fn navigation_item_row(
                     cx,
                 );
             })
+        },
+    )
+    .when_some(
+        available
+            .then_some(())
+            .zip(context_callback)
+            .zip(context_location),
+        |element, (((), callback), location)| {
+            let up_callback = callback.clone();
+            let out_callback = callback;
+            let up_location = location.clone();
+            let out_location = location;
+            element
+                .on_mouse_down(MouseButton::Right, |_, _, cx| {
+                    cx.stop_propagation();
+                })
+                .on_mouse_up(MouseButton::Right, move |event, window, cx| {
+                    cx.stop_propagation();
+                    let (owner_window, x, y) = context_menu_coordinates(event.position, window);
+                    up_callback(
+                        &ExplorerAction::ShowNavigationContextMenu {
+                            location: up_location.clone(),
+                            owner_window,
+                            x,
+                            y,
+                            client_x: f32::from(event.position.x),
+                            client_y: f32::from(event.position.y),
+                            extended_verbs: event.modifiers.shift,
+                        },
+                        window,
+                        cx,
+                    );
+                })
+                .on_mouse_up_out(MouseButton::Right, move |event, window, cx| {
+                    cx.stop_propagation();
+                    let (owner_window, x, y) = context_menu_coordinates(event.position, window);
+                    out_callback(
+                        &ExplorerAction::ShowNavigationContextMenu {
+                            location: out_location.clone(),
+                            owner_window,
+                            x,
+                            y,
+                            client_x: f32::from(event.position.x),
+                            client_y: f32::from(event.position.y),
+                            extended_verbs: event.modifiers.shift,
+                        },
+                        window,
+                        cx,
+                    );
+                })
         },
     )
     .into_any_element()
@@ -12276,6 +12349,7 @@ impl RenderOnce for FileViewHost {
                                             .flex_1()
                                             .flex()
                                             .flex_col()
+                                            .overflow_hidden()
                                             .gap(px(layout.focus_stroke.value() * 2.0))
                                             .child(
                                                 div()
@@ -12290,10 +12364,7 @@ impl RenderOnce for FileViewHost {
                                                 self.tokens,
                                                 catalog,
                                                 drive,
-                                                Some(
-                                                    crate::layout::feature::THIS_PC_CONTENT_BAR_WIDTH
-                                                        .value(),
-                                                ),
+                                                None,
                                             ))
                                         } else {
                                             left
@@ -12313,13 +12384,20 @@ impl RenderOnce for FileViewHost {
                                                             .value(),
                                                     ))
                                                     .flex_none()
+                                                    .overflow_hidden()
                                                     .flex()
                                                     .flex_col()
                                                     .child(drive_filesystem_display.clone())
                                                     .child(
-                                                        drive_capacity_text
-                                                            .clone()
-                                                            .unwrap_or_default(),
+                                                        div()
+                                                            .overflow_hidden()
+                                                            .whitespace_nowrap()
+                                                            .text_ellipsis()
+                                                            .child(
+                                                                drive_capacity_text
+                                                                    .clone()
+                                                                    .unwrap_or_default(),
+                                                            ),
                                                     ),
                                             )
                                             .into_any_element()
@@ -12915,26 +12993,29 @@ fn this_pc_capacity_bar(
     width: Option<f32>,
 ) -> gpui::AnyElement {
     let colors = tokens.theme.colors;
-    let width = width.unwrap_or(crate::layout::feature::THIS_PC_CAPACITY_BAR_WIDTH.value());
-    let used_width = drive.used_fraction().unwrap_or(0.0).clamp(0.0, 1.0) * width;
+    let used_fraction = drive.used_fraction().unwrap_or(0.0).clamp(0.0, 1.0);
     let bar_color = if drive.is_low_space() {
         colors.danger.to_gpui()
     } else {
         colors.accent.to_gpui()
     };
-    div()
+    let bar = div()
         .id("this-pc-capacity-bar")
         .role(Role::Status)
         .aria_label(this_pc_drive_capacity_text(drive, catalog))
-        .w(px(width))
         .h(px(
             crate::layout::feature::THIS_PC_CAPACITY_BAR_HEIGHT.value()
         ))
+        .overflow_hidden()
         .border(px(1.0))
         .border_color(colors.divider.to_gpui())
         .bg(colors.control_fill.to_gpui())
-        .child(div().h_full().w(px(used_width)).bg(bar_color))
-        .into_any_element()
+        .child(div().h_full().w(relative(used_fraction)).bg(bar_color));
+    let bar = match width {
+        Some(width) => bar.w(px(width)),
+        None => bar.w_full().min_w(px(0.0)),
+    };
+    bar.into_any_element()
 }
 
 #[allow(
@@ -17507,6 +17588,23 @@ mod tests {
     }
 
     #[test]
+    fn navigation_item_row_owns_the_same_right_click_shell_menu_gesture() {
+        let source = include_str!("chrome.rs");
+        let start = source
+            .find("fn navigation_item_row(")
+            .expect("navigation item row renderer");
+        let body = source[start..]
+            .split("\nfn ")
+            .next()
+            .expect("navigation item row body");
+        assert!(body.contains("ShowNavigationContextMenu"));
+        assert!(body.contains("on_mouse_down(MouseButton::Right"));
+        assert!(body.contains("on_mouse_up(MouseButton::Right"));
+        assert!(body.contains("on_mouse_up_out(MouseButton::Right"));
+        assert!(body.contains("cx.stop_propagation()"));
+    }
+
+    #[test]
     fn file_row_shell_icon_selection_is_specific_first_and_container_safe() {
         assert_eq!(
             select_file_row_shell_icon(Some("specific"), Some("generic"), true),
@@ -18772,6 +18870,38 @@ mod tests {
     }
 
     #[test]
+    fn this_pc_content_capacity_bar_yields_to_trailing_free_space_text() {
+        let source = include_str!("chrome.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap();
+        assert!(
+            !production.contains("THIS_PC_CONTENT_BAR_WIDTH"),
+            "This PC Content view must not pin the capacity bar to a fixed 520px width; that overflows the reserved trailing free-space text"
+        );
+        assert!(
+            production.contains("THIS_PC_CONTENT_TRAILING_WIDTH"),
+            "This PC Content view must keep a reserved trailing column for filesystem and free-space text"
+        );
+
+        let bar_fn = production
+            .split("fn this_pc_capacity_bar(")
+            .nth(1)
+            .and_then(|rest| rest.split("\nfn ").next())
+            .expect("this_pc_capacity_bar");
+        assert!(
+            bar_fn.contains("relative("),
+            "capacity-bar fill must be a fraction of the bar so a flex-width bar still shows used space"
+        );
+        assert!(
+            bar_fn.contains("overflow_hidden()"),
+            "capacity bar must clip its fill to the allocated width"
+        );
+        assert!(
+            bar_fn.contains("w_full()"),
+            "Content-view capacity bar (width=None) must fill leftover space beside the trailing text"
+        );
+    }
+
+    #[test]
     fn spatial_columns_wrap_row_major_and_compact_height_is_shared() {
         let layout = crate::layout::LayoutTokens::WINDOWS_11;
         let mut settings = explorer_model::ViewSettings {
@@ -19139,6 +19269,10 @@ mod tests {
             .next()
             .expect("extensions menu has a bounded renderer");
         assert!(menu.contains(".w(px(400.0))"));
+        assert!(
+            menu.contains(".flex_none()"),
+            "extensions popup must not shrink to the toolbar button width"
+        );
     }
 
     #[test]
@@ -19848,9 +19982,19 @@ mod tests {
             .and_then(|source| source.split("fn bookmark_editor(").next())
             .expect("bookmark manager source");
         assert!(manager.contains(".on_drag("));
-        assert!(manager.contains("element.on_drop(move |drag: &BookmarkDrag"));
+        assert!(manager.contains("on_drag_move::<BookmarkDrag>"));
+        assert!(manager.contains(".on_drop(move |drag: &BookmarkDrag"));
         assert!(manager.contains("id: drag.id"));
         assert!(manager.contains("destination: sibling_index"));
+        let drag_move = manager
+            .split("on_drag_move::<BookmarkDrag>")
+            .nth(1)
+            .and_then(|source| source.split(".on_drop(").next())
+            .expect("bookmark manager drag-move arm");
+        assert!(
+            drag_move.contains("ExplorerAction::MoveBookmark"),
+            "library rows must apply MoveBookmark while the pointer is still down"
+        );
         for required in [
             "bookmark-manager-toolbar",
             "menu-manage-with-accelerator",

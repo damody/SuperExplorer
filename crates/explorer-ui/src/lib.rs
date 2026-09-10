@@ -6329,13 +6329,23 @@ impl ExplorerRoot {
                 self.service_qos
                     .observations_mut()
                     .record_latency(started.elapsed());
-                tracing::info!(
-                    request_id = ?context.request_id,
-                    tab_id = ?context.tab_id,
-                    generation = context.generation.value(),
-                    terminal_micros = started.elapsed().as_micros(),
-                    "Explorer request reached terminal event"
-                );
+                if event.is_user_facing_request_terminal() {
+                    tracing::info!(
+                        request_id = ?context.request_id,
+                        tab_id = ?context.tab_id,
+                        generation = context.generation.value(),
+                        terminal_micros = started.elapsed().as_micros(),
+                        "Explorer request reached terminal event"
+                    );
+                } else {
+                    tracing::debug!(
+                        request_id = ?context.request_id,
+                        tab_id = ?context.tab_id,
+                        generation = context.generation.value(),
+                        terminal_micros = started.elapsed().as_micros(),
+                        "Explorer request reached terminal event"
+                    );
+                }
             }
         }
     }
@@ -7738,7 +7748,9 @@ impl ExplorerRoot {
                     );
                 }
             }
-            ExplorerAction::ShowContextMenu { .. } | ExplorerAction::CancelFileDrag => {
+            ExplorerAction::ShowContextMenu { .. }
+            | ExplorerAction::ShowNavigationContextMenu { .. }
+            | ExplorerAction::CancelFileDrag => {
                 // TrackPopupMenuEx and OLE must begin without stale GPUI capture ownership.
                 self.pointer_capture.take();
             }
@@ -8331,6 +8343,30 @@ impl ExplorerRoot {
                 *client_x,
                 *client_y,
                 *keyboard_invoked,
+                *extended_verbs,
+            )
+        {
+            cx.on_next_frame(window, move |this, _, cx| {
+                this.submit_command(command);
+                cx.notify();
+            });
+        }
+        if let ExplorerAction::ShowNavigationContextMenu {
+            location,
+            owner_window,
+            x,
+            y,
+            client_x,
+            client_y,
+            extended_verbs,
+        } = &action
+            && let Some(command) = self.state.begin_navigation_context_menu_request(
+                location.clone(),
+                *owner_window,
+                *x,
+                *y,
+                *client_x,
+                *client_y,
                 *extended_verbs,
             )
         {

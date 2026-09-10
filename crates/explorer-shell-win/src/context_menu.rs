@@ -50,7 +50,7 @@ use windows::{
                 CMF_CANRENAME, CMF_EXPLORE, CMF_EXTENDEDVERBS, CMF_ITEMMENU, CMF_NORMAL,
                 CMF_SYNCCASCADEMENU, CMIC_MASK_PTINVOKE, CMINVOKECOMMANDINFO,
                 CMINVOKECOMMANDINFOEX, GCS_VERBA, GCS_VERBW, IContextMenu, IContextMenu3,
-                ILFindLastID, ILIsParent, IShellFolder, SHBindToObject,
+                ILCombine, ILFindLastID, ILIsParent, ILRemoveLastID, IShellFolder, SHBindToObject,
             },
             WindowsAndMessaging::{
                 AppendMenuW, CREATESTRUCTW, CallNextHookEx, CreatePopupMenu, CreateWindowExW,
@@ -1874,6 +1874,9 @@ fn resolve_menu(
         // SAFETY: both PIDLs are complete, live, and owned for this synchronous relationship test.
         !unsafe { ILIsParent(parent_pidl.as_ptr(), child.as_ptr(), true) }.as_bool()
     }) {
+        if children.len() == 1 {
+            return resolve_item_menu_from_child_pidl(&children[0], owner);
+        }
         return Err(menu_error(
             "resolve item context menu",
             "選取項目不屬於同一個位置",
@@ -1888,6 +1891,36 @@ fn resolve_menu(
     // SAFETY: owner, folder and all relative PIDLs remain live through the call.
     unsafe { folder.GetUIObjectOf(owner, &relative, None) }
         .map_err(|error| native_menu_error("get item context menu", &error))
+}
+
+fn resolve_item_menu_from_child_pidl(
+    child: &crate::navigation::OwnedPidl,
+    owner: HWND,
+) -> Result<IContextMenu, ExplorerError> {
+    // SAFETY: `child` is a complete owned PIDL; ILCombine copies it with the task allocator.
+    let parent_raw = unsafe { ILCombine(None, Some(child.as_ptr())) };
+    let parent =
+        crate::navigation::OwnedPidl::from_raw(parent_raw, "clone context menu item PIDL")?;
+    // SAFETY: `parent` is a unique owned copy; ILRemoveLastID mutates only that allocation.
+    let removed = unsafe { ILRemoveLastID(Some(parent.as_ptr().cast_mut())) };
+    if removed.as_bool() {
+        // SAFETY: parent PIDL remains live; returned interface is owned by this STA.
+        let folder: IShellFolder =
+            unsafe { SHBindToObject(None::<&IShellFolder>, parent.as_ptr(), None::<&IBindCtx>) }
+                .map_err(|error| native_menu_error("bind context menu item parent", &error))?;
+        // SAFETY: child PIDL stays live; the last SHITEMID remains valid through GetUIObjectOf.
+        let relative = [unsafe { ILFindLastID(child.as_ptr()) }.cast_const()];
+        return unsafe { folder.GetUIObjectOf(owner, &relative, None) }
+            .map_err(|error| native_menu_error("get navigation item context menu", &error));
+    }
+    // Desktop or other root: fall back to the folder's own view menu.
+    // SAFETY: child PIDL remains live for the synchronous bind.
+    let folder: IShellFolder =
+        unsafe { SHBindToObject(None::<&IShellFolder>, child.as_ptr(), None::<&IBindCtx>) }
+            .map_err(|error| native_menu_error("bind context menu location", &error))?;
+    // SAFETY: owner is a live STA window and folder interface stays apartment-confined.
+    unsafe { folder.CreateViewObject(owner) }
+        .map_err(|error| native_menu_error("create location context menu", &error))
 }
 
 fn query_menu(

@@ -172,6 +172,15 @@ pub enum ExplorerAction {
     ToggleNavigationNode {
         location: explorer_model::LocationDescriptor,
     },
+    ShowNavigationContextMenu {
+        location: explorer_model::LocationDescriptor,
+        owner_window: u64,
+        x: i32,
+        y: i32,
+        client_x: f32,
+        client_y: f32,
+        extended_verbs: bool,
+    },
     FocusSearch,
     ClearSearch,
     FocusNext,
@@ -658,6 +667,7 @@ impl ExplorerAction {
             Self::ActivateBreadcrumbChild { .. } => "ActivateBreadcrumbChild",
             Self::ActivateNavigationItem { .. } => "ActivateNavigationItem",
             Self::ToggleNavigationNode { .. } => "ToggleNavigationNode",
+            Self::ShowNavigationContextMenu { .. } => "ShowNavigationContextMenu",
             Self::FocusSearch => "FocusSearch",
             Self::ClearSearch => "ClearSearch",
             Self::FocusNext => "FocusNext",
@@ -1364,7 +1374,8 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::TypeAheadBreadcrumbMenu { .. }
         | ExplorerAction::ActivateBreadcrumbChild { .. } => true,
         ExplorerAction::ActivateNavigationItem { .. }
-        | ExplorerAction::ToggleNavigationNode { .. } => true,
+        | ExplorerAction::ToggleNavigationNode { .. }
+        | ExplorerAction::ShowNavigationContextMenu { .. } => true,
         ExplorerAction::FocusSearch => availability.is_enabled(CommandKind::FocusSearch),
         ExplorerAction::ClearSearch => !matches!(
             state.tabs().active_tab().search,
@@ -1735,6 +1746,11 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         ExplorerAction::ToggleNavigationNode { location } => {
             state.set_navigation_focus(location.clone());
             let _ = state.toggle_navigation_node(location);
+            state.focus(FocusSurface::NavigationPane);
+            FocusSurface::NavigationPane
+        }
+        ExplorerAction::ShowNavigationContextMenu { location, .. } => {
+            state.set_navigation_focus(location);
             state.focus(FocusSurface::NavigationPane);
             FocusSurface::NavigationPane
         }
