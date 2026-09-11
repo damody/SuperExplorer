@@ -360,8 +360,13 @@ local function main()
         reject_uncommitted_rust(logs)
     end
 
-    local makensis = find_makensis()
-    local nsis_script = require_file(path(root, "installer", options.component == "superdesktop" and "SuperDesktop.nsi" or "SuperExplorer.nsi"), "NSIS 腳本")
+    local makensis, nsis_script
+    if options.component ~= "superexplorer" then
+        makensis = find_makensis()
+        nsis_script = require_file(path(root, "installer", options.component == "superdesktop" and "SuperDesktop.nsi" or "SuperExplorer.nsi"), "NSIS 腳本")
+    else
+        require_file(path(root, "crates", "explorer-setup", "Cargo.toml"), "first-party SuperExplorer setup crate")
+    end
     if options.include_superdesktop then
         require_file(path(root, "installer", "SuperDesktopFiles.nsh"), "SuperDesktop NSIS 共用檔")
         admit_superdesktop(
@@ -402,6 +407,7 @@ local function main()
             MFT_HELPER_EXE = path(root, "target", "release", "superexplorer-mft-helper.exe"),
             MFT_SERVICE_EXE = path(root, "target", "release", "superexplorer-mft-service.exe"),
             WORKER_EXE = path(root, "target", "release", "explorer-extension-worker.exe"),
+            QUIESCE_EXE = path(root, "target", "release", "superexplorer-quiesce.exe"),
             EVERYTHING_DLL = path(root, "target", "release", "Everything64.dll"),
         }
     end
@@ -435,7 +441,11 @@ local function main()
     local temporary_name = assert(os.tmpname():match("[^\\/]+$"))
     local temporary_output = path(dist, "." .. temporary_name .. "-" .. output_stem .. "temporary.exe")
 
-    print("NSIS 執行環境：" .. makensis)
+    if makensis then
+        print("NSIS 執行環境：" .. makensis)
+    else
+        print("測試安裝程式改用 first-party SuperExplorer setup（非 NSIS）")
+    end
 
     if options.check then
         print("[完成] " .. options.component .. " 安裝程式工具、layout 與 admission 皆可使用")
@@ -489,39 +499,84 @@ local function main()
     end
 
     os.remove(temporary_output)
-    local define_lines = {}
-    local function add_define(name, value)
-        value = tostring(value)
-        if value:find('["\r\n]') then error("NSIS define 含有不允許的字元：" .. name, 0) end
-        define_lines[#define_lines + 1] = string.format('!define %s "%s"', name, value)
+    if options.component == "superexplorer" then
+        process.run({
+            stage = "建置 first-party SuperExplorer setup stub",
+            exe = "cargo.exe",
+            args = {
+                "build", "-p", "explorer-setup", "--bin", "superexplorer-setup",
+                "--release", "--locked", "--offline",
+            },
+            cwd = root,
+            log_path = path(logs, "installer-superexplorer-setup-cargo.log"),
+        })
+        local stub = require_file(path(root, "target", "release", "superexplorer-setup.exe"), "SuperExplorer setup stub")
+        local payload = path(logs, "superexplorer-setup-payload")
+        fs.remove_tree(payload)
+        fs.mkdir_p(path(payload, "plugins"))
+        local staged = {
+            { superexplorer_inputs.APP_EXE, "SuperExplorer.exe" },
+            { superexplorer_inputs.BROKER_EXE, "explorer-extension-broker.exe" },
+            { superexplorer_inputs.MFT_HELPER_EXE, "superexplorer-mft-helper.exe" },
+            { superexplorer_inputs.MFT_SERVICE_EXE, "superexplorer-mft-service.exe" },
+            { superexplorer_inputs.WORKER_EXE, "explorer-extension-worker.exe" },
+            { superexplorer_inputs.QUIESCE_EXE, "superexplorer-quiesce.exe" },
+            { superexplorer_inputs.EVERYTHING_DLL, "Everything64.dll" },
+        }
+        for _, item in ipairs(staged) do
+            fs.copy_if_different(item[1], path(payload, item[2]))
+        end
+        for _, plugin in ipairs(plugin_specs) do
+            fs.copy_if_different(plugin.path, path(payload, "plugins", plugin.root .. ".sepack"))
+        end
+        write_file(path(payload, "setup-version.txt"), version .. "\n")
+        process.run({
+            stage = "封裝 SuperExplorer 測試安裝程式",
+            exe = stub,
+            args = {
+                "--create-installer",
+                "--payload-dir",
+                payload,
+                "--output",
+                temporary_output,
+            },
+            cwd = root,
+            log_path = path(logs, "installer-superexplorer-setup-pack.log"),
+        })
+    else
+        local define_lines = {}
+        local function add_define(name, value)
+            value = tostring(value)
+            if value:find('["\r\n]') then error("NSIS define 含有不允許的字元：" .. name, 0) end
+            define_lines[#define_lines + 1] = string.format('!define %s "%s"', name, value)
+        end
+        add_define("APP_VERSION", version)
+        add_define("OUTPUT_FILE", temporary_output)
+        add_define("OUTPUT_BASENAME", output_stem .. version .. "-x64.exe")
+        if options.component == "all" then define_lines[#define_lines + 1] = "!define INCLUDE_SUPERDESKTOP 1" end
+        for define, file_path in pairs(superexplorer_inputs) do add_define(define, file_path) end
+        for _, plugin in ipairs(plugin_specs) do add_define(plugin.define, plugin.path) end
+        for define, file_path in pairs(superdesktop_inputs) do add_define(define, file_path) end
+        for define, file_path in pairs(superdesktop_identity_inputs) do add_define(define, file_path) end
+        local defines_path = path(logs, "installer-defines-" .. options.component .. ".nsh")
+        write_file(defines_path, table.concat(define_lines, "\r\n") .. "\r\n")
+        process.run({
+            stage = "編譯 NSIS 安裝程式",
+            exe = makensis,
+            args = {
+                "/V4",
+                "/WX",
+                "/INPUTCHARSET",
+                "UTF8",
+                "/OUTPUTCHARSET",
+                "UTF8",
+                "/DGENERATED_DEFINES=" .. defines_path,
+                nsis_script,
+            },
+            cwd = root,
+            log_path = path(logs, "installer-nsis-" .. options.component .. ".log"),
+        })
     end
-    add_define("APP_VERSION", version)
-    add_define("OUTPUT_FILE", temporary_output)
-    if options.component == "all" then define_lines[#define_lines + 1] = "!define INCLUDE_SUPERDESKTOP 1" end
-    if options.component == "superexplorer" then define_lines[#define_lines + 1] = "!define TEST_INSTALL 1" end
-    for define, file_path in pairs(superexplorer_inputs) do add_define(define, file_path) end
-    for _, plugin in ipairs(plugin_specs) do add_define(plugin.define, plugin.path) end
-    for define, file_path in pairs(superdesktop_inputs) do add_define(define, file_path) end
-    for define, file_path in pairs(superdesktop_identity_inputs) do add_define(define, file_path) end
-    local defines_path = path(logs, "installer-defines-" .. options.component .. ".nsh")
-    write_file(defines_path, table.concat(define_lines, "\r\n") .. "\r\n")
-    local nsis_args = {
-        "/V4",
-        "/WX",
-        "/INPUTCHARSET",
-        "UTF8",
-        "/OUTPUTCHARSET",
-        "UTF8",
-        "/DGENERATED_DEFINES=" .. defines_path,
-        nsis_script,
-    }
-    process.run({
-        stage = "編譯 NSIS 安裝程式",
-        exe = makensis,
-        args = nsis_args,
-        cwd = root,
-        log_path = path(logs, "installer-nsis-" .. options.component .. ".log"),
-    })
     validate_executable(temporary_output, "暫存安裝程式")
     publish.apk(temporary_output, output)
     local installer_size = validate_executable(output, "安裝程式")

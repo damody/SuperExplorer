@@ -170,14 +170,20 @@ assert_contains(build, '":(exclude)**/utit-results/**"', "generated test-result 
 assert_contains(build, '":(exclude)utit-results/**"', "SuperDesktop test-result status exclusion")
 assert_contains(build, 'options.component == "superdesktop" and "SuperDesktop.nsi" or "SuperExplorer.nsi"',
     "NSIS mode selection")
+assert_contains(build, 'if options.component ~= "superexplorer" then',
+    "test installer skips NSIS")
+assert_contains(build, '"-p", "explorer-setup"', "first-party setup crate build")
+assert_contains(build, '"--create-installer"', "first-party setup pack")
 assert_contains(build, 'if options.auto_install and not options.no_launch then',
     "explicit SuperExplorer auto-install branch")
 assert_contains(build, 'args = { "/S" }', "silent installer argument")
+local pack_at = assert(build:find('"--create-installer"', 1, true), "test installer pack missing")
 local publish_at = assert(build:find("publish.apk(temporary_output, output)", 1, true),
     "installer publish missing")
 local auto_install_at = assert(build:find("if options.auto_install and not options.no_launch then", 1, true),
     "auto-install branch missing")
-assert(publish_at < auto_install_at, "silent install must run after the packaged installer is published")
+assert(pack_at < publish_at and publish_at < auto_install_at,
+    "test installer must be packed before publish and silent install")
 local auto_install_block = assert(build:match(
     "if options%.auto_install and not options%.no_launch then(.-)elseif not options%.no_launch then"
 ), "auto-install block missing")
@@ -213,6 +219,10 @@ assert_contains(explorer_nsis, '!define MUI_FINISHPAGE_RUN_PARAMETERS "--shell"'
 assert_contains(desktop_nsis, 'InstallDir "$PROGRAMFILES64\\${PRODUCT_NAME}"', "desktop install root")
 assert_contains(desktop_nsis, '!insertmacro QuiesceSuperDesktopFiles "$INSTDIR"',
     "desktop process quiescence")
+assert_contains(explorer_nsis, 'superexplorer-quiesce.exe', "embedded SuperExplorer process closer")
+assert_contains(explorer_nsis, 'SetCompressor lzma', "non-solid LZMA for Defender heuristics")
+assert_not_contains(explorer_nsis, 'ExecutionPolicy Bypass', "installer must not drop PowerShell Bypass")
+assert_not_contains(explorer_nsis, 'SetCompressor /SOLID', "installer must not use SOLID compression")
 assert_contains(desktop_include, 'superdesktop-process-closer.exe', "embedded process closer")
 assert_contains(desktop_include, 'quiesce --install-dir "${TARGET}"', "exact install root quiescence")
 assert_contains(desktop_nsis, '!define MUI_FINISHPAGE_RUN "$INSTDIR\\superdesktop-app.exe"',

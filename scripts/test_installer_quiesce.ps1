@@ -22,14 +22,16 @@ try {
     if (-not $targetProcess.HasExited) { throw 'target process remained alive' }
     if ($outsideProcess.HasExited) { throw 'outside process was terminated' }
     $nsi = Get-Content -Raw -LiteralPath $installerSource
-    $invokeIndex = $nsi.IndexOf('quiesce-superexplorer.ps1')
+    $invokeIndex = $nsi.IndexOf('superexplorer-quiesce.exe')
     $initIndex = $nsi.IndexOf('InitPluginsDir')
     $fileIndex = $nsi.IndexOf('File "${APP_EXE}"')
     if ($initIndex -lt 0 -or $invokeIndex -lt 0 -or $initIndex -ge $invokeIndex -or $fileIndex -lt 0 -or $invokeIndex -ge $fileIndex) { throw 'NSIS install quiescence ordering is invalid' }
-    if ([regex]::Matches($nsi, 'quiesce-superexplorer\.ps1').Count -lt 4) { throw 'NSIS install and uninstall do not both package and invoke quiescence' }
+    if ([regex]::Matches($nsi, 'superexplorer-quiesce\.exe').Count -lt 4) { throw 'NSIS install and uninstall do not both package and invoke quiescence' }
+    if ($nsi.Contains('ExecutionPolicy Bypass')) { throw 'NSIS installer must not drop PowerShell Bypass' }
+    if ($nsi.Contains('SetCompressor /SOLID')) { throw 'NSIS installer must not use SOLID compression' }
     $uninstallIndex = $nsi.IndexOf('Section "Uninstall"')
     $deleteIndex = $nsi.IndexOf('Delete "$INSTDIR\SuperExplorer.exe"')
-    $uninstallQuiesceIndex = $nsi.IndexOf('quiesce-superexplorer.ps1', $uninstallIndex)
+    $uninstallQuiesceIndex = $nsi.IndexOf('superexplorer-quiesce.exe', $uninstallIndex)
     if ($uninstallIndex -lt 0 -or $uninstallQuiesceIndex -lt $uninstallIndex -or $deleteIndex -lt 0 -or $uninstallQuiesceIndex -ge $deleteIndex) { throw 'NSIS uninstall quiescence ordering is invalid' }
     if ([regex]::Matches($nsi, '/SD IDOK').Count -lt 2) { throw 'NSIS silent quiescence failures can block on a dialog' }
     if (-not $nsi.Contains('SetErrorLevel 1603') -or -not $nsi.Contains('Abort')) { throw 'NSIS fail-closed contract is missing' }

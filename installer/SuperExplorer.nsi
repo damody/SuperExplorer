@@ -19,6 +19,9 @@ ${Using:StrFunc} UnStrStr
 !ifndef OUTPUT_FILE
     !error "OUTPUT_FILE must be provided by build_install.lua"
 !endif
+!ifndef OUTPUT_BASENAME
+    !error "OUTPUT_BASENAME must be provided by build_install.lua"
+!endif
 !ifndef BROKER_EXE
     !error "BROKER_EXE must be provided by build_install.lua"
 !endif
@@ -30,6 +33,9 @@ ${Using:StrFunc} UnStrStr
 !endif
 !ifndef WORKER_EXE
     !error "WORKER_EXE must be provided by build_install.lua"
+!endif
+!ifndef QUIESCE_EXE
+    !error "QUIESCE_EXE must be provided by build_install.lua"
 !endif
 !ifndef EVERYTHING_DLL
     !error "EVERYTHING_DLL must be provided by build_install.lua"
@@ -64,17 +70,18 @@ OutFile "${OUTPUT_FILE}"
 InstallDir "$PROGRAMFILES64\${PRODUCT_NAME}"
 InstallDirRegKey HKLM "${PRODUCT_REG_KEY}" "InstallDir"
 RequestExecutionLevel admin
-SetCompressor /SOLID lzma
-SetCompressorDictSize 32
+SetCompressor lzma
 ManifestDPIAware true
 
 VIProductVersion "${APP_VERSION}"
 VIAddVersionKey /LANG=1033 "ProductName" "${PRODUCT_NAME}"
-VIAddVersionKey /LANG=1033 "FileDescription" "${PRODUCT_NAME} 安裝程式"
+VIAddVersionKey /LANG=1033 "FileDescription" "${PRODUCT_NAME} installer"
 VIAddVersionKey /LANG=1033 "CompanyName" "${PRODUCT_PUBLISHER}"
 VIAddVersionKey /LANG=1033 "LegalCopyright" "${PRODUCT_PUBLISHER}"
 VIAddVersionKey /LANG=1033 "FileVersion" "${APP_VERSION}"
 VIAddVersionKey /LANG=1033 "ProductVersion" "${APP_VERSION}"
+VIAddVersionKey /LANG=1033 "InternalName" "SuperExplorerSetup"
+VIAddVersionKey /LANG=1033 "OriginalFilename" "${OUTPUT_BASENAME}"
 
 !define MUI_ABORTWARNING
 !ifdef TEST_INSTALL
@@ -110,9 +117,9 @@ Section "SuperExplorer" SEC_MAIN
 
     InitPluginsDir
     SetOutPath "$PLUGINSDIR"
-    File /oname=quiesce-superexplorer.ps1 "quiesce-superexplorer.ps1"
+    File /oname=superexplorer-quiesce.exe "${QUIESCE_EXE}"
     DetailPrint "Closing SuperExplorer processes running from the selected installation directory."
-    nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\quiesce-superexplorer.ps1" -InstallDirectory "$INSTDIR"'
+    nsExec::ExecToStack '"$PLUGINSDIR\superexplorer-quiesce.exe" --install-directory "$INSTDIR"'
     Pop $0
     Pop $1
     DetailPrint "$1"
@@ -295,9 +302,9 @@ Section "Uninstall"
 
     InitPluginsDir
     SetOutPath "$PLUGINSDIR"
-    File /oname=quiesce-superexplorer.ps1 "quiesce-superexplorer.ps1"
+    File /oname=superexplorer-quiesce.exe "${QUIESCE_EXE}"
     DetailPrint "Closing SuperExplorer processes running from the selected installation directory before uninstall."
-    nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\quiesce-superexplorer.ps1" -InstallDirectory "$INSTDIR"'
+    nsExec::ExecToStack '"$PLUGINSDIR\superexplorer-quiesce.exe" --install-directory "$INSTDIR"'
     Pop $0
     Pop $1
     DetailPrint "$1"

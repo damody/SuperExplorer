@@ -17,6 +17,7 @@ members = [
     "crates/explorer-mft",
     "crates/explorer-remote",
     "crates/explorer-search",
+    "crates/explorer-setup",
     "crates/explorer-shell-win",
     "crates/explorer-test-support",
     "crates/explorer-ui",

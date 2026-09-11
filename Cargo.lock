@@ -1987,6 +1987,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "explorer-setup"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "embed-resource",
+ "tempfile",
+ "windows 0.61.3",
+ "zip",
+]
+
+[[package]]
 name = "explorer-shell-win"
 version = "0.1.0"
 dependencies = [

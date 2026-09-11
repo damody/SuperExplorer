@@ -20,6 +20,10 @@ path = "src/bin/mft_helper.rs"
 name = "superexplorer-mft-service"
 path = "src/bin/mft_service.rs"
 
+[[bin]]
+name = "superexplorer-quiesce"
+path = "src/bin/installer_quiesce.rs"
+
 [features]
 # Deliberately non-default: enables only the isolated extension-state seam
 # used by the Windows headful Safe Mode gate.

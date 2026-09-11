@@ -13,6 +13,9 @@ Unicode True
 !ifndef OUTPUT_FILE
     !error "OUTPUT_FILE must be provided by build_install.lua"
 !endif
+!ifndef OUTPUT_BASENAME
+    !error "OUTPUT_BASENAME must be provided by build_install.lua"
+!endif
 
 !include "SuperDesktopFiles.nsh"
 
@@ -24,17 +27,18 @@ OutFile "${OUTPUT_FILE}"
 InstallDir "$PROGRAMFILES64\${PRODUCT_NAME}"
 InstallDirRegKey HKLM "${SUPERDESKTOP_PRODUCT_KEY}" "InstallDir"
 RequestExecutionLevel admin
-SetCompressor /SOLID lzma
-SetCompressorDictSize 32
+SetCompressor lzma
 ManifestDPIAware true
 
 VIProductVersion "${APP_VERSION}"
 VIAddVersionKey /LANG=1033 "ProductName" "${PRODUCT_NAME}"
-VIAddVersionKey /LANG=1033 "FileDescription" "${PRODUCT_NAME} test installer"
+VIAddVersionKey /LANG=1033 "FileDescription" "${PRODUCT_NAME} installer"
 VIAddVersionKey /LANG=1033 "CompanyName" "${PRODUCT_PUBLISHER}"
 VIAddVersionKey /LANG=1033 "LegalCopyright" "${PRODUCT_PUBLISHER}"
 VIAddVersionKey /LANG=1033 "FileVersion" "${APP_VERSION}"
 VIAddVersionKey /LANG=1033 "ProductVersion" "${APP_VERSION}"
+VIAddVersionKey /LANG=1033 "InternalName" "SuperDesktopSetup"
+VIAddVersionKey /LANG=1033 "OriginalFilename" "${OUTPUT_BASENAME}"
 
 !define MUI_ABORTWARNING
 !define MUI_FINISHPAGE_RUN "$INSTDIR\superdesktop-app.exe"
