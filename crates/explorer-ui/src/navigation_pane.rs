@@ -454,7 +454,34 @@ pub(crate) fn should_render_discovered_child(
         LocationDescriptor::ParsingName(value)
             if value.eq_ignore_ascii_case(LINUX_NAMESPACE)
     );
-    !(parent_is_linux && is_wsl_distribution_root(child))
+    if parent_is_linux && is_wsl_distribution_root(child) {
+        return false;
+    }
+    let parent_is_network = matches!(
+        parent,
+        LocationDescriptor::ParsingName(value)
+            if value.eq_ignore_ascii_case("shell:NetworkPlacesFolder")
+    );
+    !(parent_is_network && is_remembered_network_host(child, display_name))
+}
+
+fn is_remembered_network_host(child: &LocationDescriptor, display_name: &str) -> bool {
+    network_navigation_places().iter().any(|place| {
+        explorer_model::NetworkPlace::from_location(child)
+            .is_some_and(|incoming| incoming.host.eq_ignore_ascii_case(&place.host))
+            || display_name_matches_network_host(display_name, &place.host)
+    })
+}
+
+fn display_name_matches_network_host(display_name: &str, host: &str) -> bool {
+    let normalized = display_name.trim().replace('/', r"\");
+    let rest = normalized
+        .strip_prefix(r"\\")
+        .or_else(|| normalized.strip_prefix("//"))
+        .unwrap_or(normalized.as_str());
+    rest.split('\\')
+        .find(|part| !part.is_empty())
+        .is_some_and(|value| value.eq_ignore_ascii_case(host))
 }
 
 fn display_name_is_wsl_unc(display_name: &str) -> bool {
@@ -1271,6 +1298,23 @@ mod tests {
             host,
             Some(&LocationDescriptor::file_system(r"\\other-host\share"))
         ));
+        let network = LocationDescriptor::ParsingName("shell:NetworkPlacesFolder".to_owned());
+        assert!(
+            !should_render_discovered_child(
+                &network,
+                &LocationDescriptor::file_system(r"\\122.116.110.30\"),
+                r"\\122.116.110.30\"
+            ),
+            "remembered UNC hosts already have a static Network row"
+        );
+        assert!(
+            should_render_discovered_child(
+                &network,
+                &LocationDescriptor::file_system(r"\\other-host\"),
+                r"\\other-host\"
+            ),
+            "unremembered computers may still appear from Shell enumeration"
+        );
         configure_network_navigation_places(Vec::new());
     }
 

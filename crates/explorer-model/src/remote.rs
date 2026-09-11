@@ -278,23 +278,27 @@ pub fn classify_network_place_update(
         .iter()
         .position(|place| place.host.eq_ignore_ascii_case(&incoming.host))
     {
-        Some(0) => NetworkPlaceChange::Unchanged,
-        Some(_) => NetworkPlaceChange::Promoted,
+        Some(_) => NetworkPlaceChange::Unchanged,
         None => NetworkPlaceChange::Inserted,
     }
 }
 
-/// Inserts or updates a remembered UNC host. Existing hosts keep one row; the
-/// latest casing and path win. New hosts are prepended so the most recent visit
-/// appears first under Network.
+/// Inserts or updates a remembered UNC host. Existing hosts keep one row and
+/// their current position so clicking a Network path does not reshuffle the
+/// tree. New hosts are prepended.
 pub fn remember_network_place(
     places: Vec<NetworkPlace>,
     incoming: NetworkPlace,
 ) -> Vec<NetworkPlace> {
-    let mut places = places
-        .into_iter()
-        .filter(|place| !place.host.eq_ignore_ascii_case(&incoming.host))
-        .collect::<Vec<_>>();
+    if let Some(index) = places
+        .iter()
+        .position(|place| place.host.eq_ignore_ascii_case(&incoming.host))
+    {
+        let mut places = places;
+        places[index] = incoming;
+        return places;
+    }
+    let mut places = places;
     places.insert(0, incoming);
     places
 }
@@ -1087,6 +1091,9 @@ mod tests {
         assert_eq!(places[0].host, "ALPHA");
         assert_eq!(places[1], second);
         assert_eq!(places[0], updated);
+        let revisited = remember_network_place(places.clone(), second.clone());
+        assert_eq!(revisited[0].host, "ALPHA");
+        assert_eq!(revisited[1], second);
     }
 
     #[test]
@@ -1100,7 +1107,7 @@ mod tests {
         );
         assert_eq!(
             classify_network_place_update(&places, &other),
-            NetworkPlaceChange::Promoted
+            NetworkPlaceChange::Unchanged
         );
         assert_eq!(
             classify_network_place_update(&places, &NetworkPlace::from_host("new").expect("new")),
