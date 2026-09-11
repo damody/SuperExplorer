@@ -13,6 +13,7 @@ pub const SPLASH_HOLD_DURATION: Duration = Duration::from_secs(1);
 pub const SPLASH_FADE_DURATION: Duration = Duration::from_millis(180);
 const SPLASH_FADE_STEPS: u32 = 12;
 const SPLASH_FADE_FRAME: Duration = Duration::from_millis(15);
+const SPLASH_TAKES_FOCUS: bool = false;
 const SPLASH_WIDTH: f32 = 940.0;
 const SPLASH_HEIGHT: f32 = 237.0;
 const SPLASH_ASSET_PATH: &str = "branding/super-explorer-splash.png";
@@ -72,7 +73,7 @@ fn splash_window_options(cx: &App) -> WindowOptions {
             cx,
         ))),
         titlebar: None,
-        focus: true,
+        focus: SPLASH_TAKES_FOCUS,
         show: true,
         kind: WindowKind::PopUp,
         is_movable: false,
@@ -119,6 +120,11 @@ pub fn open_splash(cx: &mut App, main_window: WindowHandle<ExplorerRoot>) -> any
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn splash_does_not_steal_focus_from_the_main_window() {
+        assert!(!SPLASH_TAKES_FOCUS);
+    }
 
     #[test]
     fn splash_timing_is_exact_and_evenly_divisible() {
