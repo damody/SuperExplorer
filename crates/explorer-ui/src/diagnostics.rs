@@ -2,7 +2,10 @@
 
 use std::{collections::BTreeMap, sync::Mutex};
 
-use gpui::{App, Bounds, Global, IntoElement, Pixels, Styled, Window, canvas};
+use gpui::{
+    App, Bounds, Global, InteractiveElement, IntoElement, ParentElement, Pixels, Styled, Window,
+    canvas, div,
+};
 use serde::{Deserialize, Serialize};
 
 pub const REGION_DIAGNOSTICS_SCHEMA_VERSION: u32 = 2;
@@ -217,30 +220,28 @@ pub fn region_probe(
     state: &'static str,
 ) -> impl IntoElement {
     let id = id.into();
-    canvas(
+    let probe_id = format!("{id}-region-probe");
+    div().id(probe_id).absolute().inset_0().child(canvas(
         move |bounds, window: &mut Window, cx: &mut App| {
             if let Some(recorder) = cx.try_global::<RegionDiagnosticsRecorder>() {
                 recorder.record(&id, parent, state, bounds, window.scale_factor());
             }
         },
         |_, (), _, _| {},
-    )
-    .absolute()
-    .inset_0()
+    ))
 }
 
 pub fn icon_probe(region_id: impl Into<String>) -> impl IntoElement {
     let region_id = region_id.into();
-    canvas(
+    let probe_id = format!("{region_id}-icon-probe");
+    div().id(probe_id).absolute().inset_0().child(canvas(
         move |bounds, window: &mut Window, cx: &mut App| {
             if let Some(recorder) = cx.try_global::<RegionDiagnosticsRecorder>() {
                 recorder.record_icon(&region_id, bounds, window.scale_factor());
             }
         },
         |_, (), _, _| {},
-    )
-    .absolute()
-    .inset_0()
+    ))
 }
 
 pub fn typography_probe(
@@ -248,16 +249,15 @@ pub fn typography_probe(
     typography: TypographyObservation,
 ) -> impl IntoElement {
     let region_id = region_id.into();
-    canvas(
+    let probe_id = format!("{region_id}-typography-probe");
+    div().id(probe_id).absolute().inset_0().child(canvas(
         move |_, _, cx: &mut App| {
             if let Some(recorder) = cx.try_global::<RegionDiagnosticsRecorder>() {
                 recorder.record_typography(&region_id, typography.clone());
             }
         },
         |_, (), _, _| {},
-    )
-    .absolute()
-    .inset_0()
+    ))
 }
 
 #[cfg(test)]

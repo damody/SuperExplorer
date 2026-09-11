@@ -305,14 +305,16 @@ pub fn chrome_icon(
     let region_id = region_id.into();
     let size = tokens.layout.maximum_visible_glyph.value().min(16.0);
     div()
+        .id(format!("{region_id}-chrome-icon"))
         .relative()
         .w(px(size))
         .h(px(size))
         .flex_none()
-        .child(icon_probe(region_id))
+        .child(icon_probe(region_id.clone()))
         .child(
             svg()
                 .path(icon.asset_path())
+                .id(format!("{region_id}-svg"))
                 .size_full()
                 .text_color(tokens.theme.colors.text_primary.to_gpui()),
         )
