@@ -1132,7 +1132,10 @@ fn draw_menu_bitmap(
     disabled: bool,
 ) {
     let mut info = BITMAP::default();
-    let bitmap_struct_size = i32::try_from(size_of::<BITMAP>()).expect("BITMAP size fits Win32");
+    let Some(bitmap_struct_size) = i32::try_from(size_of::<BITMAP>()).ok() else {
+        tracing::error!("BITMAP size does not fit Win32 i32");
+        return;
+    };
     let described = unsafe {
         GetObjectW(
             HGDIOBJ(bitmap.0),
@@ -1158,11 +1161,16 @@ fn draw_menu_bitmap(
                     info.bmWidth,
                     info.bmHeight.abs(),
                     BLENDFUNCTION {
-                        BlendOp: u8::try_from(AC_SRC_OVER).expect("AC_SRC_OVER fits BLENDFUNCTION"),
+                        BlendOp: u8::try_from(AC_SRC_OVER).unwrap_or_else(|_| {
+                            tracing::error!("AC_SRC_OVER does not fit BLENDFUNCTION");
+                            0
+                        }),
                         BlendFlags: 0,
                         SourceConstantAlpha: if disabled { 110 } else { 255 },
-                        AlphaFormat: u8::try_from(AC_SRC_ALPHA)
-                            .expect("AC_SRC_ALPHA fits BLENDFUNCTION"),
+                        AlphaFormat: u8::try_from(AC_SRC_ALPHA).unwrap_or_else(|_| {
+                            tracing::error!("AC_SRC_ALPHA does not fit BLENDFUNCTION");
+                            0
+                        }),
                     },
                 )
             }

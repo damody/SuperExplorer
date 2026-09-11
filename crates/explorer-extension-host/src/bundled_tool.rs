@@ -390,14 +390,18 @@ impl AbiToolExecutorV1 for AttestedToolExecutorV1 {
             job.terminate();
             return outcome(ToolExecuteStatusV1::FAILED, -1, Vec::new(), Vec::new());
         }
-        let stdout = bounded_pipe(
-            child.stdout.take().expect("owned stdout pipe"),
-            request.max_output_bytes as usize,
-        );
-        let stderr = bounded_pipe(
-            child.stderr.take().expect("owned stderr pipe"),
-            request.max_output_bytes as usize,
-        );
+        let Some(stdout) = child.stdout.take() else {
+            job.terminate();
+            child.terminate_and_reap();
+            return outcome(ToolExecuteStatusV1::FAILED, -1, Vec::new(), Vec::new());
+        };
+        let Some(stderr) = child.stderr.take() else {
+            job.terminate();
+            child.terminate_and_reap();
+            return outcome(ToolExecuteStatusV1::FAILED, -1, Vec::new(), Vec::new());
+        };
+        let stdout = bounded_pipe(stdout, request.max_output_bytes as usize);
+        let stderr = bounded_pipe(stderr, request.max_output_bytes as usize);
         let deadline = Instant::now() + Duration::from_millis(u64::from(request.timeout_millis));
         loop {
             if !self.authority.revalidate() {

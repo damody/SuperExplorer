@@ -3258,7 +3258,13 @@ fn watch_volume_memory(
                             StartupStoreV1::ReplacementRecoveryCatchupPending => {
                                 StartupStoreV1::ReplacementRecoveryPending
                             }
-                            _ => unreachable!(),
+                            other => {
+                                tracing::error!(
+                                    ?other,
+                                    "MFT startup store left a catch-up pending state"
+                                );
+                                other
+                            }
                         };
                     } else {
                         startup_store = StartupStoreV1::LiveBudgetLimited;
@@ -4030,10 +4036,11 @@ fn watch_volume_memory(
                 {
                     continue;
                 }
-                let _ = store
-                    .as_mut()
-                    .expect("writer admitted above")
-                    .truncate_wal_ready_linearized(
+                let Some(store) = store.as_mut() else {
+                    tracing::error!("MFT WAL truncate ran without an admitted writer");
+                    continue;
+                };
+                let _ = store.truncate_wal_ready_linearized(
                         &LIFECYCLE_BARRIER,
                         || {
                             focus_leases
@@ -4082,10 +4089,11 @@ fn watch_volume_memory(
                     continue;
                 }
                 let next = batch.observed;
-                let result = store
-                    .as_mut()
-                    .expect("writer admitted above")
-                    .commit_changes_focused_linearized(
+                let Some(store) = store.as_mut() else {
+                    tracing::error!("MFT focused commit ran without an admitted writer");
+                    continue;
+                };
+                let result = store.commit_changes_focused_linearized(
                         &batch.changes,
                         next,
                         &LIFECYCLE_BARRIER,

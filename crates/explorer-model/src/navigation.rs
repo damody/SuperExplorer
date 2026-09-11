@@ -757,7 +757,8 @@ impl DirectoryState {
             mut snapshot, seen, ..
         } = std::mem::replace(self, Self::Idle)
         else {
-            unreachable!("state checked above")
+            *self = Self::Idle;
+            return Err(RequestRejection::RequestId);
         };
         snapshot.retain(|entry| seen.contains(&entry.id));
         *self = Self::Ready(snapshot);
@@ -782,7 +783,8 @@ impl DirectoryState {
             snapshot: previous, ..
         } = std::mem::replace(self, Self::Idle)
         else {
-            unreachable!("state checked above")
+            *self = Self::Idle;
+            return Err(RequestRejection::RequestId);
         };
         *self = Self::Error { error, previous };
         Ok(())
@@ -2888,7 +2890,8 @@ impl TabState {
         request.validate_event(event)?;
         let TabSearchState::Loading { input, results, .. } = std::mem::take(&mut self.search)
         else {
-            unreachable!("search state was checked")
+            self.search = TabSearchState::default();
+            return Err(RequestRejection::RequestId);
         };
         self.search = match outcome {
             crate::SearchTerminal::Finished => TabSearchState::Ready { input, results },

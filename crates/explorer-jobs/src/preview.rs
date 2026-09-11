@@ -156,9 +156,7 @@ impl PreviewCoordinator {
                 PreviewEligibility::Unsupported | PreviewEligibility::Error { .. } => {
                     PreviewFallback::Unsupported
                 }
-                PreviewEligibility::SingleEligible(_) => {
-                    unreachable!("eligible case handled above")
-                }
+                PreviewEligibility::SingleEligible(_) => PreviewFallback::Unsupported,
             };
             self.lifecycle.transition(PreviewLifecycle::Fallback {
                 generation: self.generation,

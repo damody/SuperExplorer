@@ -584,7 +584,7 @@ async fn resolve_sftp_symlink(
         };
     }
 
-    unreachable!("bounded SFTP symbolic-link loop always returns")
+    anyhow::bail!("SFTP symbolic-link resolution exceeded its hop bound")
 }
 
 fn ensure_sftp_not_cancelled(cancellation: &CancellationToken) -> Result<()> {

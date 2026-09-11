@@ -369,7 +369,9 @@ impl PluginCallGuardStoreV1 {
                 .remove(&incident_id.0)
                 .ok_or(NativeLifecycleErrorV1::SafeModeIncidentUnknown)?,
             OverlayV1::Clean => return Err(NativeLifecycleErrorV1::SafeModeIncidentUnknown),
-            OverlayV1::Global(_) => unreachable!("global overlay handled above"),
+            OverlayV1::Global(_) => {
+                return Err(NativeLifecycleErrorV1::SafeModeIncidentUnknown);
+            }
         };
         drop(overlay);
         #[cfg(windows)]
@@ -488,7 +490,7 @@ impl PluginCallGuardStoreV1 {
                 continue;
             }
             let NamespaceOwnerStateV1::Dead(owner) = owner else {
-                unreachable!("live namespace handled above");
+                continue;
             };
             #[cfg(all(test, windows))]
             let mut owner = Some(owner);

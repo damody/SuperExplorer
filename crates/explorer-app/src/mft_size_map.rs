@@ -249,8 +249,13 @@ fn add_aggregate(target: &mut MftAggregateV1, source: MftAggregateV1) {
 
 impl MftIndexV1 {
     pub fn from_entries(entries: BTreeMap<u64, MftEntryV1>) -> Self {
-        Self::from_entries_cancelled(entries, || false)
-            .expect("non-cancelled in-memory MFT construction cannot fail")
+        Self::from_entries_cancelled(entries, || false).unwrap_or_else(|error| {
+            tracing::error!(%error, "in-memory MFT construction failed");
+            Self {
+                entries: BTreeMap::new(),
+                children: BTreeMap::new(),
+            }
+        })
     }
 
     fn from_entries_cancelled(
@@ -458,7 +463,9 @@ impl MftIndexV1 {
                 self.entries.remove(&change.reference);
                 self.children.remove(&change.reference);
             }
-            MftChangeKindV2::Invalidate => unreachable!("handled before mutation"),
+            MftChangeKindV2::Invalidate => {
+                tracing::error!("MFT invalidate change reached mutation");
+            }
         }
         affected.sort_unstable();
         affected.dedup();

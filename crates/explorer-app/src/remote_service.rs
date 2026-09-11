@@ -2160,7 +2160,8 @@ impl RemoteExplorerService {
                 let remote_items = items.clone();
                 for item in items {
                     let LocationDescriptor::Virtual(remote) = &item.location else {
-                        unreachable!("remote drag sources were validated above");
+                        tracing::error!("remote drag source was not virtual after validation");
+                        continue;
                     };
                     let name = remote
                         .components

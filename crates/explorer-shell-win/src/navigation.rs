@@ -1126,11 +1126,17 @@ pub fn open_default(descriptor: &LocationDescriptor) -> Result<(), ExplorerError
                         "copy item to open",
                     )?
                 }
-                LocationDescriptor::FileSystem(_) | LocationDescriptor::ParsingName(_) => {
-                    unreachable!("path and parsing-name cases returned above")
-                }
-                LocationDescriptor::Virtual(_) => {
-                    unreachable!("virtual location case returned above")
+                LocationDescriptor::FileSystem(_)
+                | LocationDescriptor::ParsingName(_)
+                | LocationDescriptor::Virtual(_) => {
+                    tracing::error!(
+                        "open_default inner match received a non-namespace location"
+                    );
+                    return Err(shell_error(
+                        "resolve item to open",
+                        None,
+                        "non-namespace location reached namespace open path",
+                    ));
                 }
             };
             name_from_pidl(

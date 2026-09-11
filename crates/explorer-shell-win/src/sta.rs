@@ -1514,7 +1514,16 @@ fn process_command(
                     }),
                     DataTransferRequest::Paste { .. }
                     | DataTransferRequest::DropExternal { .. } => {
-                        unreachable!("background transfers are handled before synchronous dispatch")
+                        tracing::error!(
+                            "background transfer reached synchronous dispatch"
+                        );
+                        Err(ExplorerError::new(
+                            ExplorerErrorKind::Internal,
+                            "data_transfer",
+                            false,
+                            "背景傳輸無法在這個路徑完成。",
+                            "background transfer reached synchronous dispatch",
+                        ))
                     }
                 };
                 let outcome = operation_terminal(result, "data_transfer");
@@ -1658,8 +1667,13 @@ fn process_command(
         }
     }
     if let Err(error) = result {
+        let severity = if error.kind == ExplorerErrorKind::Cancellation {
+            ErrorSeverity::Warning
+        } else {
+            ErrorSeverity::Error
+        };
         record_process_error(
-            ErrorSeverity::Error,
+            severity,
             "shell",
             &error.operation,
             &error,
@@ -2183,7 +2197,7 @@ fn start_brokered_breadcrumb(
                         &worker_gate,
                     );
                 }
-                _ => unreachable!("broker accepts breadcrumb commands only"),
+                _ => tracing::error!("breadcrumb broker received a non-breadcrumb command"),
             },
             Err(error) => send_breadcrumb_broker_failure(
                 &worker_command,
