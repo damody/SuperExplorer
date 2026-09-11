@@ -6974,24 +6974,27 @@ impl AppViewState {
             return None;
         }
         let destination = self.tabs.active_tab().history.current()?.location.clone();
-        let (total_items, mode) = match &self.clipboard {
-            explorer_model::ClipboardState::Owned { items, mode, .. } => (items.len(), *mode),
-            explorer_model::ClipboardState::External { item_count, .. } => {
-                (item_count.unwrap_or(0), explorer_model::ClipboardMode::Copy)
+        let (items, total_items, mode) = match &self.clipboard {
+            explorer_model::ClipboardState::Owned { items, mode, .. } => {
+                (items.clone(), items.len(), *mode)
             }
+            explorer_model::ClipboardState::External { item_count, .. } => (
+                Vec::new(),
+                item_count.unwrap_or(0),
+                explorer_model::ClipboardMode::Copy,
+            ),
             explorer_model::ClipboardState::None { .. }
             | explorer_model::ClipboardState::Unsupported { .. } => return None,
         };
         let tab = self.tabs.active_tab();
         let context = RequestContext::new(tab.id, tab.generation);
-        let items = Vec::new();
         let kind = match mode {
             explorer_model::ClipboardMode::Copy => FileOperationKind::Copy {
                 items,
                 destination: destination.clone(),
             },
             explorer_model::ClipboardMode::Cut => FileOperationKind::Move {
-                items: Vec::new(),
+                items,
                 destination: destination.clone(),
             },
         };
@@ -12318,6 +12321,68 @@ mod tests {
                 .begin_paste_request(explorer_model::ConflictDecision::Prompt)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn owned_adb_clipboard_paste_keeps_device_source_in_operation() {
+        let source = explorer_model::ItemDescriptor {
+            id: explorer_model::ShellItemId::from_provider_bytes([9]).unwrap(),
+            location: cache_test_location(
+                "adb",
+                "emulator-5554",
+                &["sdcard", "Download", "photo.jpg"],
+                1,
+            ),
+        };
+        let mut state = state_with_rows();
+        let _ = state.apply_service_event(explorer_model::ExplorerEvent::ClipboardChanged {
+            state: explorer_model::ClipboardState::Owned {
+                mode: explorer_model::ClipboardMode::Copy,
+                items: vec![source.clone()],
+                effects: explorer_model::TransferEffects::COPY,
+                generation: 1,
+            },
+        });
+        let paste = state
+            .begin_paste_request(explorer_model::ConflictDecision::Prompt)
+            .expect("paste request");
+        let request_id = paste.context().expect("paste context").request_id;
+        match state
+            .operation_center()
+            .get(request_id)
+            .map(|record| &record.request.kind)
+        {
+            Some(explorer_model::FileOperationKind::Copy { items, .. }) => {
+                assert_eq!(items.as_slice(), std::slice::from_ref(&source));
+            }
+            other => panic!("expected owned copy sources, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn external_clipboard_paste_keeps_empty_sources() {
+        let mut state = state_with_rows();
+        let _ = state.apply_service_event(explorer_model::ExplorerEvent::ClipboardChanged {
+            state: explorer_model::ClipboardState::External {
+                effects: explorer_model::TransferEffects::COPY,
+                item_count: Some(1),
+                generation: 1,
+            },
+        });
+        let paste = state
+            .begin_paste_request(explorer_model::ConflictDecision::Prompt)
+            .expect("paste request");
+        let request_id = paste.context().expect("paste context").request_id;
+        match state
+            .operation_center()
+            .get(request_id)
+            .map(|record| &record.request.kind)
+        {
+            Some(explorer_model::FileOperationKind::Copy { items, .. }) => {
+                assert!(items.is_empty());
+            }
+            other => panic!("expected empty external copy sources, got {other:?}"),
+        }
     }
 
     #[test]
