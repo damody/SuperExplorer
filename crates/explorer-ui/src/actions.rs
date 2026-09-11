@@ -393,6 +393,17 @@ pub enum ExplorerAction {
         id: explorer_model::BookmarkId,
         parent_id: Option<explorer_model::BookmarkFolderId>,
     },
+    PlaceBookmark {
+        id: explorer_model::BookmarkId,
+        parent_id: Option<explorer_model::BookmarkFolderId>,
+        destination: usize,
+    },
+    CommitBookmarkDrop {
+        id: explorer_model::BookmarkId,
+    },
+    UpdateBookmarkDropCue {
+        cue: Option<crate::state::BookmarkDropCue>,
+    },
     CopySelectedPaths,
     OpenAboutDialog,
     CloseAboutDialog,
@@ -783,6 +794,9 @@ impl ExplorerAction {
             Self::RemoveBookmark { .. } => "RemoveBookmark",
             Self::MoveBookmark { .. } => "MoveBookmark",
             Self::MoveBookmarkToFolder { .. } => "MoveBookmarkToFolder",
+            Self::PlaceBookmark { .. } => "PlaceBookmark",
+            Self::CommitBookmarkDrop { .. } => "CommitBookmarkDrop",
+            Self::UpdateBookmarkDropCue { .. } => "UpdateBookmarkDropCue",
             Self::CopySelectedPaths => "CopySelectedPaths",
             Self::OpenAboutDialog => "OpenAboutDialog",
             Self::HandoffToFileExplorer => "HandoffToFileExplorer",
@@ -1161,6 +1175,7 @@ fn is_high_frequency_pointer_action(action: &ExplorerAction) -> bool {
             | ExplorerAction::UpdateDetailsColumnResize { .. }
             | ExplorerAction::EndDetailsColumnResize
             | ExplorerAction::UpdateDetailsColumnDragPreview { .. }
+            | ExplorerAction::UpdateBookmarkDropCue { .. }
             | ExplorerAction::CommitDetailsColumnDrag
             | ExplorerAction::CancelDetailsColumnDrag
             | ExplorerAction::UpdateSidePaneResize { .. }
@@ -1681,7 +1696,10 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::ToggleBookmarkFolderExpanded { .. }
         | ExplorerAction::RemoveBookmark { .. }
         | ExplorerAction::MoveBookmark { .. }
-        | ExplorerAction::MoveBookmarkToFolder { .. } => true,
+        | ExplorerAction::MoveBookmarkToFolder { .. }
+        | ExplorerAction::PlaceBookmark { .. }
+        | ExplorerAction::CommitBookmarkDrop { .. }
+        | ExplorerAction::UpdateBookmarkDropCue { .. } => true,
         ExplorerAction::CloseWindow => availability.is_enabled(CommandKind::CloseWindow),
         ExplorerAction::ResizeNavigationPane { .. }
         | ExplorerAction::BeginNavigationPaneResize { .. }
@@ -2195,7 +2213,10 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         | ExplorerAction::ToggleBookmarkFolderMenu { .. }
         | ExplorerAction::RemoveBookmark { .. }
         | ExplorerAction::MoveBookmark { .. }
-        | ExplorerAction::MoveBookmarkToFolder { .. } => FocusSurface::CommandBar,
+        | ExplorerAction::MoveBookmarkToFolder { .. }
+        | ExplorerAction::PlaceBookmark { .. }
+        | ExplorerAction::CommitBookmarkDrop { .. }
+        | ExplorerAction::UpdateBookmarkDropCue { .. } => FocusSurface::CommandBar,
         ExplorerAction::ToggleBookmarkFolderExpanded { .. } => {
             state.focus(FocusSurface::NavigationPane);
             FocusSurface::NavigationPane

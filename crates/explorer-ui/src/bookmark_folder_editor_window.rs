@@ -20,23 +20,32 @@ pub struct BookmarkFolderEditorWindowSnapshotV1 {
     pub state: AppViewState,
 }
 
+impl BookmarkFolderEditorWindowSnapshotV1 {
+    pub fn is_new_folder(&self) -> bool {
+        self.state
+            .bookmark_folder_editor()
+            .is_some_and(|editor| editor.id.is_none())
+    }
+}
+
 pub fn bookmark_folder_editor_window_options(
     cx: &App,
     title: impl Into<SharedString>,
 ) -> WindowOptions {
+    let _ = title;
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
-            size(px(520.0), px(260.0)),
+            size(px(420.0), px(248.0)),
             cx,
         ))),
-        titlebar: Some(gpui::TitlebarOptions {
-            title: Some(title.into()),
-            ..Default::default()
-        }),
-        kind: gpui::WindowKind::Normal,
+        titlebar: None,
+        kind: gpui::WindowKind::PopUp,
+        focus: true,
+        show: true,
         is_resizable: false,
-        window_min_size: Some(size(px(460.0), px(220.0))),
+        is_minimizable: false,
+        window_min_size: Some(size(px(380.0), px(220.0))),
         ..Default::default()
     }
 }
@@ -74,12 +83,18 @@ impl BookmarkFolderEditorWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let draft = snapshot
-            .state
-            .bookmark_folder_editor()
-            .cloned()
-            .expect("bookmark folder editor snapshot requires a draft");
-        let folder_id = draft.id;
+        let draft = snapshot.state.bookmark_folder_editor().cloned();
+        if draft.is_none() {
+            tracing::error!("bookmark folder editor window opened without a draft");
+            window.remove_window();
+        }
+        let draft = draft.unwrap_or(crate::state::BookmarkFolderEditorDraft {
+            id: None,
+            parent_id: None,
+            name: String::new(),
+            token: 0,
+        });
+        let token = draft.token;
         let name_input = Self::create_name_input(owner, draft.name, cx);
         let input_for_focus = name_input.clone();
         window.defer(cx, move |window, cx| {
@@ -90,7 +105,10 @@ impl BookmarkFolderEditorWindow {
                 if root
                     .bookmark_folder_editor_window_snapshot()
                     .is_some_and(|snapshot| {
-                        snapshot.state.bookmark_folder_editor().is_some_and(|editor| editor.id == folder_id)
+                        snapshot
+                            .state
+                            .bookmark_folder_editor()
+                            .is_some_and(|editor| editor.token == token)
                     })
                 {
                     root.dispatch_bookmark_folder_editor_action(
@@ -172,7 +190,17 @@ impl Focusable for BookmarkFolderEditorWindow {
 impl Render for BookmarkFolderEditorWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let catalog = self.snapshot.state.catalog();
-        window.set_window_title(&catalog.t("dialog-rename-bookmark-folder"));
+        let is_new = self
+            .snapshot
+            .state
+            .bookmark_folder_editor()
+            .is_some_and(|editor| editor.id.is_none());
+        let title = catalog.t(if is_new {
+            "dialog-new-bookmark-toolbar-folder"
+        } else {
+            "dialog-rename-bookmark-folder"
+        });
+        window.set_window_title(&title);
         let on_action: ActionCallback =
             Rc::new(cx.listener(|this, action: &ExplorerAction, window, cx| {
                 this.dispatch(action.clone(), ActionSource::Mouse, window, cx);
@@ -210,6 +238,7 @@ impl Render for BookmarkFolderEditorWindow {
                 self.tokens,
                 catalog,
                 Some(gpui::Entity::downgrade(&self.name_input)),
+                is_new,
                 Some(on_action),
             ))
     }
@@ -223,13 +252,26 @@ mod tests {
             .split("#[cfg(test)]")
             .next()
             .expect("production source");
-        assert!(source.contains("WindowKind::Normal"));
+        assert!(source.contains("WindowKind::PopUp"));
+        assert!(source.contains("titlebar: None"));
         assert!(source.contains("dispatch_bookmark_folder_editor_action"));
         assert!(source.contains("EditableTextState"));
         assert!(source.contains("window.remove_window()"));
         assert!(
-            source.contains("editor.id == folder_id"),
+            source.contains("tracing::error!"),
+            "missing drafts must log instead of panicking"
+        );
+        assert!(
+            !source.contains(".expect("),
+            "folder editor must not panic on a missing draft"
+        );
+        assert!(
+            source.contains("editor.token == token"),
             "closing one editor window must not cancel a newer editor session"
+        );
+        assert!(
+            source.contains("size(px(420.0), px(248.0))"),
+            "folder editor must leave room for unclipped save/cancel buttons"
         );
     }
 }

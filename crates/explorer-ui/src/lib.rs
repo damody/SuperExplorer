@@ -1553,6 +1553,7 @@ fn is_passive_pointer_action(action: &ExplorerAction) -> bool {
             | ExplorerAction::UpdateDetailsColumnResize { .. }
             | ExplorerAction::EndDetailsColumnResize
             | ExplorerAction::UpdateDetailsColumnDragPreview { .. }
+            | ExplorerAction::UpdateBookmarkDropCue { .. }
             | ExplorerAction::CommitDetailsColumnDrag
             | ExplorerAction::CancelDetailsColumnDrag
             | ExplorerAction::UpdateSidePaneResize { .. }
@@ -2847,10 +2848,10 @@ impl ExplorerRoot {
             self.size_map_visual_context =
                 Some(explorer_model::RequestContext::new(tab_id, generation));
         }
-        let context = self
-            .size_map_visual_context
-            .clone()
-            .expect("Size Map context was initialized above");
+        let Some(context) = self.size_map_visual_context.clone() else {
+            tracing::error!("Size Map context missing after initialization");
+            return;
+        };
         let requests = entries
             .iter()
             .filter_map(|entry| match &entry.location {
@@ -3012,10 +3013,10 @@ impl ExplorerRoot {
                 Some(explorer_model::RequestContext::new(tab_id, generation));
             self.folder_size_location = location;
         }
-        let request_context = self
-            .folder_size_context
-            .clone()
-            .expect("folder-size context initialized above");
+        let Some(request_context) = self.folder_size_context.clone() else {
+            tracing::error!("folder-size context missing after initialization");
+            return;
+        };
         let require_directory_facts =
             DirectoryFactsDemandV1::from_settings(&self.state.view_settings()).any();
         runtime.set_directory_facts_active(require_directory_facts);
@@ -6564,11 +6565,13 @@ impl ExplorerRoot {
             cx.notify();
             return;
         }
-        if self.state.bookmark_toolbar_context_menu().is_some() {
+        if self.state.bookmark_toolbar_context_menu().is_some()
+            && !is_passive_pointer_action(&action)
+        {
             self.state.close_bookmark_toolbar_context_menu();
             cx.notify();
         }
-        if self.state.bookmark_context_menu().is_some() {
+        if self.state.bookmark_context_menu().is_some() && !is_passive_pointer_action(&action) {
             self.state.close_bookmark_context_menu();
             cx.notify();
         }
@@ -6814,7 +6817,8 @@ impl ExplorerRoot {
         if self.state.rename_editor().is_some() && should_cancel_inline_rename(&action) {
             self.cancel_inline_rename();
             self.rename_input = None;
-        } else if self.state.rename_editor().is_some() && should_end_inline_rename(&action, source) {
+        } else if self.state.rename_editor().is_some() && should_end_inline_rename(&action, source)
+        {
             match self
                 .state
                 .commit_inline_rename(explorer_model::RenameCommitTrigger::Blur)
@@ -7016,21 +7020,12 @@ impl ExplorerRoot {
             cx.notify();
         }
         if let ExplorerAction::AddBookmarkFolder { parent_id } = action {
-            let mutation = self
-                .state
-                .add_bookmark_folder(self.catalog().t("dialog-new-folder-default"), parent_id);
-            if mutation.changed() {
-                if !self.notify_durable_state() {
-                    self.state.rollback_bookmark(mutation);
-                    self.state.set_bookmark_notice(
-                        self.catalog().t("status-bookmark-folder-save-failed"),
-                    );
-                } else {
-                    self.state
-                        .set_bookmark_notice(self.catalog().t("status-bookmark-folder-created"));
-                }
-                cx.notify();
-            }
+            self.state.begin_new_bookmark_folder_editor(
+                parent_id,
+                self.catalog().t("dialog-new-folder-default"),
+            );
+            self.present_bookmark_folder_editor_window(cx);
+            cx.notify();
         }
         if let ExplorerAction::EditBookmarkFolder { id } = action {
             self.state.begin_bookmark_folder_editor(id);
@@ -7043,18 +7038,26 @@ impl ExplorerRoot {
         }
         if action == ExplorerAction::SaveBookmarkFolderEditor {
             let draft = self.state.bookmark_folder_editor().cloned();
+            let creating = draft.as_ref().is_some_and(|editor| editor.id.is_none());
             if let Some(mutation) = self.state.commit_bookmark_folder_editor() {
                 if !self.notify_durable_state() {
                     self.state.rollback_bookmark(mutation);
                     if let Some(draft) = draft {
                         self.state.restore_bookmark_folder_editor(draft);
                     }
-                    self.state.set_bookmark_notice(
-                        self.catalog().t("status-bookmark-folder-rename-failed"),
-                    );
+                    self.state
+                        .set_bookmark_notice(self.catalog().t(if creating {
+                            "status-bookmark-folder-save-failed"
+                        } else {
+                            "status-bookmark-folder-rename-failed"
+                        }));
                 } else {
                     self.state
-                        .set_bookmark_notice(self.catalog().t("status-bookmark-folder-renamed"));
+                        .set_bookmark_notice(self.catalog().t(if creating {
+                            "status-bookmark-folder-created"
+                        } else {
+                            "status-bookmark-folder-renamed"
+                        }));
                 }
             } else {
                 self.state
@@ -7318,7 +7321,13 @@ impl ExplorerRoot {
                 cx.notify();
             }
         }
+        if let ExplorerAction::UpdateBookmarkDropCue { cue } = action {
+            if self.state.update_bookmark_drop_cue(cue) {
+                cx.notify();
+            }
+        }
         if let ExplorerAction::MoveBookmark { id, destination } = action {
+            self.state.update_bookmark_drop_cue(None);
             let mutation = self.state.reorder_bookmark(id, destination);
             if mutation.changed() {
                 self.state
@@ -7331,7 +7340,42 @@ impl ExplorerRoot {
                 cx.notify();
             }
         }
+        if let ExplorerAction::PlaceBookmark {
+            id,
+            parent_id,
+            destination,
+        } = action
+        {
+            self.state.update_bookmark_drop_cue(None);
+            let mutation = self.state.place_bookmark(id, parent_id, destination);
+            if mutation.changed() {
+                self.state
+                    .set_bookmark_notice(self.catalog().t("status-bookmark-order-updated"));
+                if !self.notify_durable_state() {
+                    self.state.rollback_bookmark(mutation);
+                    self.state
+                        .set_bookmark_notice(self.catalog().t("status-bookmark-order-save-failed"));
+                }
+                cx.notify();
+            }
+        }
+        if let ExplorerAction::CommitBookmarkDrop { id } = action {
+            let mutation = self.state.commit_bookmark_drop(id);
+            if mutation.changed() {
+                self.state
+                    .set_bookmark_notice(self.catalog().t("status-bookmark-order-updated"));
+                if !self.notify_durable_state() {
+                    self.state.rollback_bookmark(mutation);
+                    self.state
+                        .set_bookmark_notice(self.catalog().t("status-bookmark-order-save-failed"));
+                }
+                cx.notify();
+            } else {
+                cx.notify();
+            }
+        }
         if let ExplorerAction::MoveBookmarkToFolder { id, parent_id } = action {
+            self.state.update_bookmark_drop_cue(None);
             let mutation = self.state.move_bookmark_to_folder(id, parent_id);
             if mutation.changed() {
                 self.state
@@ -7401,7 +7445,12 @@ impl ExplorerRoot {
                             )
                         }
                         explorer_model::BookmarkTarget::LuaScript { .. }
-                        | explorer_model::BookmarkTarget::Separator => unreachable!(),
+                        | explorer_model::BookmarkTarget::Separator => {
+                            tracing::error!(
+                                "bookmark folder menu tried to edit a Lua or separator target"
+                            );
+                            self.catalog().t("dialog-new-bookmark-default")
+                        }
                     };
                     self.state.begin_new_bookmark_editor(name, target);
                 }
@@ -10168,8 +10217,8 @@ mod tests {
         file_view_navigation_target, folder_admission_for_entry, folder_size_result_is_current,
         is_command_prompt_address, is_passive_pointer_action, lua_bookmark_notice,
         lua_bookmark_request, physical_client_to_logical, prepare_shell_texture_pixels,
-        remote_context_menu_command_dismisses, seed_active_visual_tab, should_end_address_edit,
-        should_cancel_inline_rename, should_end_inline_rename, synchronize_theme, thumbnail_texture,
+        remote_context_menu_command_dismisses, seed_active_visual_tab, should_cancel_inline_rename,
+        should_end_address_edit, should_end_inline_rename, synchronize_theme, thumbnail_texture,
         window_title_for_history_entry,
     };
 
@@ -14214,6 +14263,35 @@ mod tests {
     }
 
     #[test]
+    fn bookmark_drop_cue_and_place_are_handled_without_dismissing_the_open_folder() {
+        let source = include_str!("lib.rs");
+        assert!(
+            source.contains("ExplorerAction::UpdateBookmarkDropCue"),
+            "drag-move must keep the Firefox insert cue in view state"
+        );
+        assert!(
+            source.contains("ExplorerAction::CommitBookmarkDrop"),
+            "dropping on a caret or line must commit the live insert cue"
+        );
+        let cue = source
+            .split("if let ExplorerAction::UpdateBookmarkDropCue")
+            .nth(1)
+            .expect("cue handler");
+        assert!(
+            cue.contains("update_bookmark_drop_cue"),
+            "the cue action must write through the shared reducer"
+        );
+        let commit = source
+            .split("if let ExplorerAction::CommitBookmarkDrop")
+            .nth(1)
+            .expect("commit handler");
+        assert!(
+            commit.contains("commit_bookmark_drop"),
+            "CommitBookmarkDrop must apply the live insert cue from view state"
+        );
+    }
+
+    #[test]
     fn bookmark_folder_menu_dismisses_on_window_blur_and_escape() {
         let source = include_str!("lib.rs");
         let render = source
@@ -14227,7 +14305,23 @@ mod tests {
     }
 
     #[test]
-    fn add_bookmark_folder_creates_immediately_without_rename_editor() {
+    fn bookmark_toolbar_context_menu_ignores_passive_pointer_moves() {
+        let source = include_str!("lib.rs");
+        let dismiss = source
+            .split("if self.state.bookmark_toolbar_context_menu().is_some()")
+            .nth(1)
+            .expect("toolbar context dismiss")
+            .split("if self.state.bookmark_context_menu().is_some()")
+            .next()
+            .expect("toolbar context dismiss body");
+        assert!(
+            dismiss.contains("is_passive_pointer_action"),
+            "file-view mouse moves must not dismiss the toolbar context menu"
+        );
+    }
+
+    #[test]
+    fn add_bookmark_folder_opens_create_editor_without_creating_first() {
         let source = include_str!("lib.rs");
         let add = source
             .split("if let ExplorerAction::AddBookmarkFolder { parent_id } = action")
@@ -14236,18 +14330,14 @@ mod tests {
             .split("if let ExplorerAction::EditBookmarkFolder { id } = action")
             .next()
             .expect("AddBookmarkFolder body");
-        assert!(add.contains("add_bookmark_folder"));
         assert!(
-            add.contains("status-bookmark-folder-created"),
-            "new folders must be created in place"
+            add.contains("begin_new_bookmark_folder_editor"),
+            "Add folder must open the compact create popup"
         );
+        assert!(add.contains("present_bookmark_folder_editor_window"));
         assert!(
-            !add.contains("begin_bookmark_folder_editor"),
-            "Add folder must not open the rename dialog"
-        );
-        assert!(
-            !add.contains("present_bookmark_folder_editor_window"),
-            "Add folder must not present the rename window"
+            !add.contains("add_bookmark_folder("),
+            "Add folder must not create a folder before the user saves"
         );
         let edit = source
             .split("if let ExplorerAction::EditBookmarkFolder { id } = action")

@@ -85,7 +85,10 @@ use crate::{
         is_generic_breadcrumb_folder_icon_key, is_selected, shell_icon_key,
         windows_navigation_items_with_pins,
     },
-    state::{AppViewState, CommandKind, LockRecoveryPhase, LockRecoveryUiState, RunRecord},
+    state::{
+        AppViewState, BookmarkDropCue, CommandKind, LockRecoveryPhase, LockRecoveryUiState,
+        RunRecord, resolve_bookmark_insert_edge,
+    },
     typography::TypographyStyle,
 };
 
@@ -267,6 +270,44 @@ impl Render for BookmarkDragPreview {
             .child(self.label.clone())
     }
 }
+
+fn bookmark_drop_caret(tokens: UiTokens, before: bool) -> gpui::AnyElement {
+    let color = tokens.theme.colors.text_primary.to_gpui();
+    div()
+        .id("bookmark-drop-caret")
+        .absolute()
+        .top(px(2.0))
+        .bottom(px(2.0))
+        .w(px(6.0))
+        .when(before, |element| element.left(px(-3.0)))
+        .when(!before, |element| element.right(px(-3.0)))
+        .flex()
+        .flex_col()
+        .items_center()
+        .child(div().w(px(8.0)).h(px(2.0)).bg(color))
+        .child(div().flex_1().w(px(2.0)).bg(color))
+        .child(div().w(px(8.0)).h(px(2.0)).bg(color))
+        .into_any_element()
+}
+
+fn bookmark_drop_line(tokens: UiTokens, before: bool) -> gpui::AnyElement {
+    let color = tokens.theme.colors.text_primary.to_gpui();
+    div()
+        .id("bookmark-drop-line")
+        .absolute()
+        .left(px(4.0))
+        .right(px(4.0))
+        .h(px(6.0))
+        .when(before, |element| element.top(px(-3.0)))
+        .when(!before, |element| element.bottom(px(-3.0)))
+        .flex()
+        .items_center()
+        .child(div().w(px(2.0)).h(px(8.0)).bg(color))
+        .child(div().flex_1().h(px(2.0)).bg(color))
+        .child(div().w(px(2.0)).h(px(8.0)).bg(color))
+        .into_any_element()
+}
+
 pub const WINDOW_CHROME_ID: &str = "window-chrome";
 pub const WINDOW_DRAG_REGION_ID: &str = "window-drag-region";
 pub const TAB_STRIP_ID: &str = "tab-strip";
@@ -987,8 +1028,10 @@ fn bookmark_bar(
         .cloned()
         .collect::<Vec<_>>();
     let overflow = overflow_entries.len();
+    let drop_cue = state.bookmark_drop_cue();
     let toolbar_context_cb = callback.clone();
     let root_drop_cb = callback.clone();
+    let cue_clear_cb = callback.clone();
     div()
         .id("bookmark-toolbar")
         .debug_selector(|| "bookmark-toolbar".to_owned())
@@ -1020,13 +1063,26 @@ fn bookmark_bar(
         .when_some(root_drop_cb, |element, cb| {
             element.on_drop(move |drag: &BookmarkDrag, window, cx| {
                 cb(
-                    &ExplorerAction::MoveBookmarkToFolder {
-                        id: drag.id,
-                        parent_id: None,
-                    },
+                    &ExplorerAction::CommitBookmarkDrop { id: drag.id },
                     window,
                     cx,
                 );
+            })
+        })
+        .when_some(cue_clear_cb, |element, cb| {
+            element.on_mouse_up(MouseButton::Left, move |_, window, cx| {
+                if !cx.has_active_drag() {
+                    window.defer(cx, {
+                        let cb = cb.clone();
+                        move |window, cx| {
+                            cb(
+                                &ExplorerAction::UpdateBookmarkDropCue { cue: None },
+                                window,
+                                cx,
+                            );
+                        }
+                    });
+                }
             })
         })
         .child({
@@ -1083,6 +1139,10 @@ fn bookmark_bar(
             let context_callback = callback.clone();
             let drop_callback = callback.clone();
             let folder_id = folder.id;
+            let folder_drop_active = matches!(
+                drop_cue,
+                Some(BookmarkDropCue::IntoFolder { folder_id: hovered }) if hovered == folder_id
+            );
             div()
                 .id(("bookmark-folder", folder.id.as_u128() as u64))
                 .role(Role::Button)
@@ -1092,11 +1152,15 @@ fn bookmark_bar(
                     "name",
                     folder.name.clone(),
                 ))
+                .relative()
                 .cursor_pointer()
                 .px(px(8.0))
                 .py(px(4.0))
                 .rounded(px(4.0))
                 .hover(|style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
+                .when(folder_drop_active, |element| {
+                    element.bg(tokens.theme.colors.control_pressed.to_gpui())
+                })
                 .child(format!("📁 {} ▾", folder.name))
                 .when_some(callback, move |element, callback| {
                     element.on_click(move |_, window, cx| callback(&action, window, cx))
@@ -1116,17 +1180,29 @@ fn bookmark_bar(
                     })
                 })
                 .when_some(drop_callback, move |element, cb| {
-                    element.on_drop(move |drag: &BookmarkDrag, window, cx| {
-                        cb(
-                            &ExplorerAction::MoveBookmarkToFolder {
-                                id: drag.id,
-                                parent_id: Some(folder_id),
-                            },
-                            window,
-                            cx,
-                        );
-                        cx.stop_propagation();
-                    })
+                    let move_cb = cb.clone();
+                    element
+                        .on_drag_move::<BookmarkDrag>(move |event, window, cx| {
+                            if !event.bounds.contains(&event.event.position) {
+                                return;
+                            }
+                            move_cb(
+                                &ExplorerAction::UpdateBookmarkDropCue {
+                                    cue: Some(BookmarkDropCue::IntoFolder { folder_id }),
+                                },
+                                window,
+                                cx,
+                            );
+                            cx.stop_propagation();
+                        })
+                        .on_drop(move |drag: &BookmarkDrag, window, cx| {
+                            cb(
+                                &ExplorerAction::CommitBookmarkDrop { id: drag.id },
+                                window,
+                                cx,
+                            );
+                            cx.stop_propagation();
+                        })
                 })
                 .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
         }))
@@ -1145,6 +1221,14 @@ fn bookmark_bar(
             let callback = callback.clone();
             let context_callback = callback.clone();
             let drag_label = bookmark.name.clone();
+            let caret_before = match drop_cue {
+                Some(BookmarkDropCue::ToolbarInsert { target_id, before }) if target_id == id => {
+                    Some(before)
+                }
+                _ => None,
+            };
+            let drag_move_cb = callback.clone();
+            let drop_cb = callback.clone();
             div()
                 .id(("bookmark", id.as_u128() as u64))
                 .role(Role::Button)
@@ -1154,6 +1238,7 @@ fn bookmark_bar(
                     args.set("name", bookmark.name.clone());
                     catalog.t_args("chrome-bookmark-aria", &args)
                 })
+                .relative()
                 .cursor_pointer()
                 .px(px(8.0))
                 .py(px(4.0))
@@ -1170,7 +1255,52 @@ fn bookmark_bar(
                         })
                     },
                 )
+                .when_some(drag_move_cb, move |element, cb| {
+                    let drop_cb = drop_cb.clone();
+                    element
+                        .on_drag_move::<BookmarkDrag>(move |event, window, cx| {
+                            if !event.bounds.contains(&event.event.position) {
+                                return;
+                            }
+                            let drag = event.drag(cx);
+                            if drag.id == id {
+                                return;
+                            }
+                            let Some(edge) = resolve_bookmark_insert_edge(
+                                f32::from(event.event.position.x),
+                                f32::from(event.bounds.left()),
+                                f32::from(event.bounds.right()),
+                            ) else {
+                                return;
+                            };
+                            let before = edge.is_before();
+                            cb(
+                                &ExplorerAction::UpdateBookmarkDropCue {
+                                    cue: Some(BookmarkDropCue::ToolbarInsert {
+                                        target_id: id,
+                                        before,
+                                    }),
+                                },
+                                window,
+                                cx,
+                            );
+                            cx.stop_propagation();
+                        })
+                        .when_some(drop_cb, move |element, cb| {
+                            element.on_drop(move |drag: &BookmarkDrag, window, cx| {
+                                cb(
+                                    &ExplorerAction::CommitBookmarkDrop { id: drag.id },
+                                    window,
+                                    cx,
+                                );
+                                cx.stop_propagation();
+                            })
+                        })
+                })
                 .child(bookmark_label(&bookmark.target, display_name))
+                .when_some(caret_before, |element, before| {
+                    element.child(bookmark_drop_caret(tokens, before))
+                })
                 .when_some(callback, move |element, callback| {
                     element.on_click(move |_, window, cx| callback(&action, window, cx))
                 })
@@ -1305,7 +1435,10 @@ fn bookmark_bar(
                 .with_priority(150),
             )
         })
-        .when_some(active_folder_menu, |element, (_folder, entries)| {
+        .when_some(active_folder_menu, |element, (folder, entries)| {
+            let menu_folder_id = folder.id;
+            let empty_menu = entries.is_empty();
+            let menu_drop_cb = callback.clone();
             element.child(
                 deferred(
                     div()
@@ -1325,6 +1458,34 @@ fn bookmark_bar(
                         .border_color(tokens.theme.colors.divider.to_gpui())
                         .bg(tokens.theme.colors.menu_fill.to_gpui())
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .when_some(menu_drop_cb, |menu, cb| {
+                            let move_cb = cb.clone();
+                            menu.when(empty_menu, |menu| {
+                                menu.on_drag_move::<BookmarkDrag>(move |event, window, cx| {
+                                    if !event.bounds.contains(&event.event.position) {
+                                        return;
+                                    }
+                                    move_cb(
+                                        &ExplorerAction::UpdateBookmarkDropCue {
+                                            cue: Some(BookmarkDropCue::IntoFolder {
+                                                folder_id: menu_folder_id,
+                                            }),
+                                        },
+                                        window,
+                                        cx,
+                                    );
+                                })
+                            })
+                            .on_drop(
+                                move |drag: &BookmarkDrag, window, cx| {
+                                    cb(
+                                        &ExplorerAction::CommitBookmarkDrop { id: drag.id },
+                                        window,
+                                        cx,
+                                    );
+                                },
+                            )
+                        })
                         .children(entries.into_iter().map(|entry| match entry {
                             BookmarkFolderMenuItem::Folder(folder) => {
                                 let folder_id = folder.id;
@@ -1332,14 +1493,24 @@ fn bookmark_bar(
                                     ExplorerAction::ToggleBookmarkFolderMenu { id: folder_id };
                                 let callback = callback.clone();
                                 let context_callback = callback.clone();
+                                let drop_callback = callback.clone();
+                                let nested_drop_active = matches!(
+                                    drop_cue,
+                                    Some(BookmarkDropCue::IntoFolder { folder_id: hovered })
+                                        if hovered == folder_id
+                                );
                                 div()
                                     .id(("bookmark-folder-child", folder_id.as_u128() as u64))
                                     .role(Role::MenuItem)
+                                    .relative()
                                     .cursor_pointer()
                                     .px(px(8.0))
                                     .py(px(5.0))
                                     .flex()
                                     .justify_between()
+                                    .when(nested_drop_active, |item| {
+                                        item.bg(tokens.theme.colors.control_pressed.to_gpui())
+                                    })
                                     .child(format!("📁 {}", folder.name))
                                     .child("›")
                                     .when_some(callback, move |item, cb| {
@@ -1361,6 +1532,38 @@ fn bookmark_bar(
                                     .on_mouse_up(MouseButton::Right, |_, _, cx| {
                                         cx.stop_propagation()
                                     })
+                                    .when_some(drop_callback, move |item, cb| {
+                                        let drop_cb = cb.clone();
+                                        item.on_drag_move::<BookmarkDrag>(
+                                            move |event, window, cx| {
+                                                if !event.bounds.contains(&event.event.position) {
+                                                    return;
+                                                }
+                                                cb(
+                                                    &ExplorerAction::UpdateBookmarkDropCue {
+                                                        cue: Some(BookmarkDropCue::IntoFolder {
+                                                            folder_id,
+                                                        }),
+                                                    },
+                                                    window,
+                                                    cx,
+                                                );
+                                                cx.stop_propagation();
+                                            },
+                                        )
+                                        .on_drop(
+                                            move |drag: &BookmarkDrag, window, cx| {
+                                                drop_cb(
+                                                    &ExplorerAction::CommitBookmarkDrop {
+                                                        id: drag.id,
+                                                    },
+                                                    window,
+                                                    cx,
+                                                );
+                                                cx.stop_propagation();
+                                            },
+                                        )
+                                    })
                                     .into_any_element()
                             }
                             BookmarkFolderMenuItem::Bookmark(bookmark) => {
@@ -1368,6 +1571,19 @@ fn bookmark_bar(
                                 let action = ExplorerAction::ActivateBookmark { id };
                                 let callback = callback.clone();
                                 let context_callback = callback.clone();
+                                let drag_move_cb = callback.clone();
+                                let drop_cb = callback.clone();
+                                let drag_label = bookmark.name.clone();
+                                let line_before = match drop_cue {
+                                    Some(BookmarkDropCue::FolderMenuInsert {
+                                        folder_id,
+                                        target_id,
+                                        before,
+                                    }) if folder_id == menu_folder_id && target_id == id => {
+                                        Some(before)
+                                    }
+                                    _ => None,
+                                };
                                 div()
                                     .id(("bookmark-folder-entry", id.as_u128() as u64))
                                     .role(Role::MenuItem)
@@ -1377,10 +1593,77 @@ fn bookmark_bar(
                                         "name",
                                         bookmark.name.clone(),
                                     ))
+                                    .relative()
                                     .cursor_pointer()
                                     .px(px(8.0))
                                     .py(px(5.0))
+                                    .on_drag(
+                                        BookmarkDrag {
+                                            id,
+                                            label: drag_label,
+                                        },
+                                        |drag, _, _, cx| {
+                                            cx.new(|_| BookmarkDragPreview {
+                                                label: drag.label.clone(),
+                                            })
+                                        },
+                                    )
                                     .child(bookmark_label(&bookmark.target, bookmark.name.clone()))
+                                    .when_some(line_before, |item, before| {
+                                        item.child(bookmark_drop_line(tokens, before))
+                                    })
+                                    .when_some(drag_move_cb, move |item, cb| {
+                                        item.on_drag_move::<BookmarkDrag>(
+                                            move |event, window, cx| {
+                                                if !event.bounds.contains(&event.event.position) {
+                                                    return;
+                                                }
+                                                let drag = event.drag(cx);
+                                                if drag.id == id {
+                                                    return;
+                                                }
+                                                let Some(edge) = resolve_bookmark_insert_edge(
+                                                    f32::from(event.event.position.y),
+                                                    f32::from(event.bounds.top()),
+                                                    f32::from(event.bounds.bottom()),
+                                                ) else {
+                                                    return;
+                                                };
+                                                let before = edge.is_before();
+                                                cb(
+                                                    &ExplorerAction::UpdateBookmarkDropCue {
+                                                        cue: Some(
+                                                            BookmarkDropCue::FolderMenuInsert {
+                                                                folder_id: menu_folder_id,
+                                                                target_id: id,
+                                                                before,
+                                                            },
+                                                        ),
+                                                    },
+                                                    window,
+                                                    cx,
+                                                );
+                                                cx.stop_propagation();
+                                            },
+                                        )
+                                        .when_some(
+                                            drop_cb,
+                                            move |item, cb| {
+                                                item.on_drop(
+                                                    move |drag: &BookmarkDrag, window, cx| {
+                                                        cb(
+                                                            &ExplorerAction::CommitBookmarkDrop {
+                                                                id: drag.id,
+                                                            },
+                                                            window,
+                                                            cx,
+                                                        );
+                                                        cx.stop_propagation();
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    })
                                     .when_some(callback, move |item, cb| {
                                         item.on_click(move |_, window, cx| cb(&action, window, cx))
                                     })
@@ -2441,18 +2724,19 @@ pub(crate) fn bookmark_manager(
         .child(
             div()
                 .id("bookmark-manager-details")
-                .h(px(72.0))
+                .h(px(96.0))
                 .flex_none()
                 .flex()
                 .flex_col()
                 .justify_center()
-                .gap(px(6.0))
+                .gap(px(8.0))
                 .px(px(12.0))
+                .py(px(10.0))
                 .border_t(px(1.0))
                 .border_color(tokens.theme.colors.divider.to_gpui())
                 .bg(tokens.theme.colors.subtle_surface.to_gpui())
                 .child(
-                    div().w_full().h(px(28.0)).flex().items_center().gap(px(8.0)).child(
+                    div().w_full().h(px(34.0)).flex().items_center().gap(px(8.0)).child(
                         div().w(px(72.0)).flex_none().text_size(px(12.0)).child(catalog.t("dialog-name-accelerator"))
                     ).when_some(detail_input, |row, input| {
                     row.child(
@@ -2463,10 +2747,10 @@ pub(crate) fn bookmark_manager(
                                 .caret_blink_interval_500ms()
                                 .flex_1()
                                 .px(px(10.0)),
-                            28.0,
+                            34.0,
                             1.0,
-                            13.0,
-                            18.0,
+                            14.0,
+                            tokens.typography.address.line_height.value(),
                         )
                         .rounded(px(14.0))
                         .border(px(1.0))
@@ -2479,7 +2763,7 @@ pub(crate) fn bookmark_manager(
                     )
                 }))
                 .child(
-                    div().w_full().h(px(28.0)).flex().items_center().gap(px(8.0)).child(
+                    div().w_full().h(px(34.0)).flex().items_center().gap(px(8.0)).child(
                         div().w(px(72.0)).flex_none().text_size(px(12.0)).child(catalog.t("dialog-url-accelerator"))
                     ).when_some(detail_location_input, |row, input| {
                     row.child(
@@ -2490,10 +2774,10 @@ pub(crate) fn bookmark_manager(
                                 .caret_blink_interval_500ms()
                                 .flex_1()
                                 .px(px(10.0)),
-                            28.0,
+                            34.0,
                             1.0,
-                            13.0,
-                            18.0,
+                            14.0,
+                            tokens.typography.address.line_height.value(),
                         )
                         .rounded(px(14.0))
                         .border(px(1.0))
@@ -3257,7 +3541,11 @@ fn navigation_fallback_context_menu(
             false,
         ));
     } else {
-        commands.push((catalog.t("menu-open"), ExplorerAction::CloseNavigationFallbackContextMenu, false));
+        commands.push((
+            catalog.t("menu-open"),
+            ExplorerAction::CloseNavigationFallbackContextMenu,
+            false,
+        ));
     }
     let rows = commands
         .into_iter()
@@ -3409,6 +3697,7 @@ fn bookmark_toolbar_context_menu(
         .id("bookmark-toolbar-context-overlay")
         .absolute()
         .inset_0()
+        .occlude()
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
             if let Some(cb) = close_cb.as_ref() {
                 cb(&close, window, cx);
@@ -3425,6 +3714,7 @@ fn bookmark_toolbar_context_menu(
                     .id("bookmark-toolbar-context-menu")
                     .role(Role::Menu)
                     .aria_label(catalog.t("chrome-bookmark-toolbar-context"))
+                    .occlude()
                     .absolute()
                     .left(px(left))
                     .top(px(top))
@@ -3436,6 +3726,7 @@ fn bookmark_toolbar_context_menu(
                     .bg(tokens.theme.colors.menu_fill.to_gpui())
                     .shadow_lg()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
                     .children(rows),
             )
             .with_priority(310),
@@ -3515,6 +3806,7 @@ fn bookmark_context_menu(
         .id("bookmark-context-overlay")
         .absolute()
         .inset_0()
+        .occlude()
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
             if let Some(cb) = close_cb.as_ref() {
                 cb(&close, window, cx);
@@ -3531,6 +3823,7 @@ fn bookmark_context_menu(
                     .id("bookmark-context-menu")
                     .role(Role::Menu)
                     .aria_label(catalog.t("chrome-bookmark-context"))
+                    .occlude()
                     .absolute()
                     .left(px(left))
                     .top(px(top))
@@ -3542,6 +3835,7 @@ fn bookmark_context_menu(
                     .bg(tokens.theme.colors.menu_fill.to_gpui())
                     .shadow_lg()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
                     .children(rows),
             )
             .with_priority(311),
@@ -4036,10 +4330,14 @@ pub(crate) fn bookmark_editor(
     name_input: Option<gpui::WeakEntity<EditableTextState>>,
     payload_input: Option<gpui::WeakEntity<EditableTextState>>,
     tags_input: Option<gpui::WeakEntity<EditableTextState>>,
+    destination_scroll: gpui::ScrollHandle,
     callback: Option<ActionCallback>,
 ) -> impl IntoElement {
     let catalog = state.catalog();
-    let editor = state.bookmark_editor().expect("editor is open");
+    let Some(editor) = state.bookmark_editor() else {
+        tracing::error!("bookmark editor rendered without a draft");
+        return div().id("bookmark-editor-missing");
+    };
     let is_new = editor.id.is_none();
     let colors = tokens.theme.colors;
     let (input_text, input_selection, input_selection_text, input_caret) =
@@ -4237,24 +4535,37 @@ pub(crate) fn bookmark_editor(
                 .child(catalog.t("dialog-location-accelerator"))
                 .child(
                     div()
-                        .id("bookmark-destination-picker")
-                        .role(Role::List)
-                        .max_h(px(96.0))
-                        .overflow_y_scroll()
-                        .flex()
-                        .flex_col()
-                        .gap(px(4.0))
-                        .p(px(8.0))
-                        .rounded(px(8.0))
-                        .bg(colors.control_fill.to_gpui())
-                        .children(destination_rows),
+                        .relative()
+                        .flex_1()
+                        .min_h(px(140.0))
+                        .child(
+                            div()
+                                .id("bookmark-destination-picker")
+                                .role(Role::List)
+                                .size_full()
+                                .overflow_y_scroll()
+                                .track_scroll(&destination_scroll)
+                                .on_scroll_wheel(|_, _, cx| cx.refresh_windows())
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.0))
+                                .p(px(8.0))
+                                .pr(px(18.0))
+                                .rounded(px(8.0))
+                                .bg(colors.control_fill.to_gpui())
+                                .children(destination_rows),
+                        )
+                        .child(bookmark_destination_scrollbar(&destination_scroll, tokens)),
                 )
-                .child(div().flex_1())
                 .child(
                     div()
+                        .id("bookmark-editor-actions")
+                        .flex_none()
                         .flex()
                         .justify_end()
                         .gap(px(8.0))
+                        .pt(px(8.0))
+                        .pb(px(4.0))
                         .when(!is_new, |row| {
                             row.child({
                                 let remove = ExplorerAction::RemoveEditingBookmark;
@@ -4308,10 +4619,75 @@ pub(crate) fn bookmark_editor(
         )
 }
 
+fn bookmark_destination_scrollbar(
+    handle: &gpui::ScrollHandle,
+    tokens: UiTokens,
+) -> impl IntoElement {
+    let colors = tokens.theme.colors;
+    let bounds = handle.bounds();
+    let viewport = f32::from(bounds.size.height).max(0.0);
+    let maximum = f32::from(handle.max_offset().y).max(0.0);
+    let current = (-f32::from(handle.offset().y)).clamp(0.0, maximum);
+    let track_width = tokens.layout.content_spacing.value() * 1.5;
+    let thumb_width = (track_width - tokens.layout.focus_stroke.value() * 2.0).max(8.0);
+    let minimum_thumb = tokens.layout.minimum_hit_target.value();
+    let thumb_height = crate::interaction::scrollbar_thumb_height(viewport, maximum, minimum_thumb)
+        .unwrap_or(viewport);
+    let thumb_top = if maximum > 0.0 {
+        current / maximum * (viewport - thumb_height)
+    } else {
+        0.0
+    };
+    let click_handle = handle.clone();
+    div()
+        .id("bookmark-destination-scrollbar")
+        .role(Role::ScrollBar)
+        .aria_label("Bookmark folder list scroll bar")
+        .aria_numeric_value(f64::from(current))
+        .aria_min_numeric_value(0.0)
+        .aria_max_numeric_value(f64::from(maximum))
+        .absolute()
+        .top(px(8.0))
+        .right(px(4.0))
+        .bottom(px(8.0))
+        .w(px(track_width))
+        .when(maximum <= 0.0 || viewport <= 0.0, |element| {
+            element.invisible()
+        })
+        .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+            let bounds = click_handle.bounds();
+            let viewport = f32::from(bounds.size.height).max(0.0);
+            let maximum = f32::from(click_handle.max_offset().y).max(0.0);
+            if viewport <= 0.0 || maximum <= 0.0 {
+                return;
+            }
+            let pointer = (f32::from(event.position.y - bounds.top())).clamp(0.0, viewport);
+            let ratio = if viewport <= 0.0 {
+                0.0
+            } else {
+                pointer / viewport
+            };
+            click_handle.set_offset(point(px(0.0), px(-ratio * maximum)));
+            cx.refresh_windows();
+            cx.stop_propagation();
+        })
+        .child(
+            div()
+                .absolute()
+                .top(px(thumb_top))
+                .left(px((track_width - thumb_width) / 2.0))
+                .w(px(thumb_width))
+                .h(px(thumb_height.max(8.0)))
+                .rounded(px(thumb_width / 2.0))
+                .bg(colors.text_secondary.to_gpui()),
+        )
+}
+
 pub(crate) fn bookmark_folder_editor(
     tokens: UiTokens,
     catalog: Catalog,
     input: Option<gpui::WeakEntity<EditableTextState>>,
+    is_new: bool,
     callback: Option<ActionCallback>,
 ) -> impl IntoElement {
     let colors = tokens.theme.colors;
@@ -4319,27 +4695,49 @@ pub(crate) fn bookmark_folder_editor(
     let save = ExplorerAction::SaveBookmarkFolderEditor;
     let cancel = ExplorerAction::CancelBookmarkFolderEditor;
     let save_cb = callback.clone();
+    let title = catalog.t(if is_new {
+        "dialog-new-bookmark-toolbar-folder"
+    } else {
+        "dialog-rename-bookmark-folder"
+    });
+    let aria = catalog.t(if is_new {
+        "chrome-new-bookmark-toolbar-folder"
+    } else {
+        "chrome-rename-bookmark-folder"
+    });
     div()
         .id("bookmark-folder-editor-window-content")
-        .absolute()
-        .inset_0()
+        .size_full()
         .flex()
-        .items_center()
-        .justify_center()
-        .bg(colors.subtle_surface.to_gpui())
+        .flex_col()
+        .bg(colors.surface.to_gpui())
         .child(
             div()
                 .id("bookmark-folder-editor")
                 .role(Role::Dialog)
-                .aria_label(catalog.t("chrome-rename-bookmark-folder"))
-                .w(px(420.0))
-                .p(px(18.0))
+                .aria_label(aria)
+                .flex_1()
+                .p(px(20.0))
                 .flex()
                 .flex_col()
                 .gap(px(10.0))
-                .rounded(px(8.0))
-                .bg(colors.surface.to_gpui())
-                .child(catalog.t("dialog-rename-bookmark-folder"))
+                .font_family(tokens.typography.family.primary)
+                .text_size(px(tokens.typography.address.size.value()))
+                .line_height(px(tokens.typography.address.line_height.value()))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(
+                            div()
+                                .text_size(px(18.0))
+                                .text_color(colors.text_primary.to_gpui())
+                                .child("☆"),
+                        )
+                        .child(div().font_weight(FontWeight::SEMIBOLD).child(title)),
+                )
+                .child(catalog.t("dialog-name-accelerator"))
                 .when_some(input, |element, input| {
                     element.child(
                         center_single_line_text_input(
@@ -4349,7 +4747,7 @@ pub(crate) fn bookmark_folder_editor(
                                 .caret_blink_interval_500ms()
                                 .w_full()
                                 .px(px(8.0)),
-                            34.0,
+                            36.0,
                             1.0,
                             tokens.typography.address.size.value(),
                             tokens.typography.address.line_height.value(),
@@ -4359,40 +4757,50 @@ pub(crate) fn bookmark_folder_editor(
                         .selection_color(selection.into())
                         .selection_text_color(selection_text.into())
                         .caret_color(caret.into())
+                        .rounded(px(6.0))
                         .border(px(1.0))
                         .border_color(colors.focus.to_gpui()),
                     )
                 })
+                .child(div().flex_1())
                 .child(
                     div()
+                        .id("bookmark-folder-editor-actions")
+                        .flex_none()
                         .flex()
                         .justify_end()
                         .gap(px(8.0))
-                        .child(
-                            div()
-                                .id("bookmark-folder-editor-cancel")
-                                .role(Role::Button)
-                                .aria_label(catalog.t("chrome-cancel-bookmark-folder-edit"))
-                                .cursor_pointer()
-                                .px(px(12.0))
-                                .py(px(6.0))
-                                .child(catalog.t("menu-cancel"))
-                                .when_some(callback, move |element, cb| {
-                                    element.on_click(move |_, window, cx| cb(&cancel, window, cx))
-                                }),
-                        )
+                        .pt(px(8.0))
+                        .pb(px(8.0))
                         .child(
                             div()
                                 .id("bookmark-folder-editor-save")
                                 .role(Role::Button)
                                 .aria_label(catalog.t("chrome-save-bookmark-folder"))
                                 .cursor_pointer()
-                                .px(px(12.0))
-                                .py(px(6.0))
+                                .px(px(16.0))
+                                .py(px(8.0))
+                                .rounded(px(16.0))
                                 .bg(colors.accent.to_gpui())
+                                .text_color(colors.surface.to_gpui())
                                 .child(catalog.t("menu-save"))
                                 .when_some(save_cb, move |element, cb| {
                                     element.on_click(move |_, window, cx| cb(&save, window, cx))
+                                }),
+                        )
+                        .child(
+                            div()
+                                .id("bookmark-folder-editor-cancel")
+                                .role(Role::Button)
+                                .aria_label(catalog.t("chrome-cancel-bookmark-folder-edit"))
+                                .cursor_pointer()
+                                .px(px(16.0))
+                                .py(px(8.0))
+                                .rounded(px(16.0))
+                                .bg(colors.control_fill.to_gpui())
+                                .child(catalog.t("menu-cancel"))
+                                .when_some(callback, move |element, cb| {
+                                    element.on_click(move |_, window, cx| cb(&cancel, window, cx))
                                 }),
                         ),
                 ),
@@ -9957,7 +10365,8 @@ impl RenderOnce for NavigationPane {
                     }
                     let parent = item.location.clone();
                     let depth = item.depth;
-                    let suppress_static_drive_roots = item.id == "this-pc" || item.id == "linux";
+                    let suppress_static_drive_roots =
+                        item.id == "this-pc" || item.id == "linux" || item.id == "network";
                     flattened.push(item);
                     if let Some(parent) = parent
                         && self.state.navigation_node_expanded(&parent)
@@ -10521,7 +10930,7 @@ fn navigation_item_row(
         )
         .when(item.pinned, |element| {
             element.child(div().opacity(0.55).child(chrome_icon(
-                "navigation-pin",
+                format!("navigation-pin-{}", item.id),
                 ExplorerIcon::Pin,
                 tokens,
             )))
@@ -11748,31 +12157,39 @@ impl RenderOnce for FileViewHost {
                                 );
                                 continue;
                             }
-                            ordered_detail_cells.push(match (
+                            match (
                                 folder_size_visuals.clone(),
                                 visual_column_runtime.clone(),
                             ) {
-                                (Some(visuals), Some(runtime)) => folder_size_detail_cell(
-                                    visuals,
-                                    runtime,
-                                    &entry.id,
-                                    selected,
-                                    shell_icon_dpi,
-                                    visual_column_theme,
-                                    cell_request_generation,
-                                    &view_settings,
-                                    visible_index,
-                                    layout,
-                                    colors,
-                                ),
-                                (Some(visuals), None) => unavailable_detail_cell(
-                                    &visuals.config.descriptor,
-                                    &view_settings,
-                                    visible_index,
-                                    layout,
-                                ),
-                                _ => unreachable!(),
-                            });
+                                (Some(visuals), Some(runtime)) => {
+                                    ordered_detail_cells.push(folder_size_detail_cell(
+                                        visuals,
+                                        runtime,
+                                        &entry.id,
+                                        selected,
+                                        shell_icon_dpi,
+                                        visual_column_theme,
+                                        cell_request_generation,
+                                        &view_settings,
+                                        visible_index,
+                                        layout,
+                                        colors,
+                                    ));
+                                }
+                                (Some(visuals), None) => {
+                                    ordered_detail_cells.push(unavailable_detail_cell(
+                                        &visuals.config.descriptor,
+                                        &view_settings,
+                                        visible_index,
+                                        layout,
+                                    ));
+                                }
+                                _ => {
+                                    tracing::error!(
+                                        "folder-size column rendered without visual configuration"
+                                    );
+                                }
+                            }
                             continue;
                         }
                         if let Some(column) = code_lines_columns
@@ -17707,6 +18124,19 @@ mod tests {
     }
 
     #[test]
+    fn expanded_network_row_suppresses_discovered_hosts_that_already_have_static_rows() {
+        let production = include_str!("chrome.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source precedes tests");
+        assert!(
+            production
+                .contains(r#"item.id == "this-pc" || item.id == "linux" || item.id == "network""#),
+            "Network must suppress Shell computers that already have remembered host rows"
+        );
+    }
+
+    #[test]
     fn file_row_shell_icon_selection_is_specific_first_and_container_safe() {
         assert_eq!(
             select_file_row_shell_icon(Some("specific"), Some("generic"), true),
@@ -20168,6 +20598,23 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing interactive manager control: {interactive}"));
             assert!(!control.is_empty());
         }
+        let details = manager
+            .split("bookmark-manager-details")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("bookmark manager details");
+        assert!(
+            details.contains(".h(px(96.0))"),
+            "details pane must fit two search-sized textboxes"
+        );
+        assert!(
+            details.contains(".h(px(34.0))"),
+            "detail name and location fields must match the search textbox height"
+        );
+        assert!(
+            !details.contains(".h(px(28.0))") && !details.contains(".h(px(72.0))"),
+            "detail textboxes must not use the cramped 28px/72px metrics"
+        );
         for action in [
             "BookmarkManagerUiAction::Back",
             "BookmarkManagerUiAction::Forward",
@@ -20196,6 +20643,114 @@ mod tests {
         assert!(source.contains("parent_id: None"));
         assert!(source.contains(".on_drag("));
         assert!(source.contains("element.on_drop(move |drag: &BookmarkDrag"));
+    }
+
+    #[test]
+    fn bookmark_toolbar_drag_shows_firefox_caret_opens_folders_and_menu_insert_line() {
+        let production = include_str!("chrome.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source");
+        let toolbar = production
+            .split("fn bookmark_bar(")
+            .nth(1)
+            .and_then(|source| source.split("fn bookmark_visible_count(").next())
+            .expect("bookmark toolbar source");
+        assert!(
+            production.contains("id(\"bookmark-drop-caret\")"),
+            "toolbar must paint a dark I-beam caret at the insert edge"
+        );
+        assert!(
+            production.contains("id(\"bookmark-drop-line\")"),
+            "folder menus must paint a horizontal insert line"
+        );
+        assert!(
+            toolbar.contains("bookmark_drop_caret"),
+            "toolbar chips must attach the I-beam caret"
+        );
+        assert!(
+            toolbar.contains("bookmark_drop_line"),
+            "folder-menu rows must attach the horizontal insert line"
+        );
+        assert!(
+            toolbar.contains("on_drag_move::<BookmarkDrag>"),
+            "toolbar and folder-menu items must track BookmarkDrag while the pointer is down"
+        );
+        assert!(
+            toolbar.contains("UpdateBookmarkDropCue"),
+            "drag-move must publish the live Firefox insert cue"
+        );
+        assert!(
+            toolbar.contains("BookmarkDropCue::IntoFolder"),
+            "hovering a folder during drag must mark it as the drop target and auto-open it"
+        );
+        assert!(
+            toolbar.contains("resolve_bookmark_insert_edge"),
+            "caret and line edges must come from pointer vs item bounds"
+        );
+        assert!(
+            toolbar.contains("ExplorerAction::CommitBookmarkDrop"),
+            "dropping on a caret or line must commit the live insert cue, not append to the toolbar root"
+        );
+        let root_drop = toolbar
+            .split(".when_some(root_drop_cb")
+            .nth(1)
+            .and_then(|source| source.split(".child({").next())
+            .expect("toolbar root drop");
+        assert!(
+            root_drop.contains("CommitBookmarkDrop"),
+            "releasing on the I-beam gap must still honor the caret because the toolbar background receives the drop"
+        );
+        assert!(
+            !root_drop.contains("MoveBookmarkToFolder"),
+            "toolbar background drop must not ignore the caret and append to root"
+        );
+        let folders = toolbar
+            .split(".children(root_folders.into_iter()")
+            .nth(1)
+            .and_then(|source| source.split(".children(visible.into_iter()").next())
+            .expect("toolbar folder buttons");
+        assert!(
+            folders.contains("on_drag_move::<BookmarkDrag>"),
+            "folder buttons must receive drag-move so they can auto-open"
+        );
+        let bookmarks = toolbar
+            .split(".children(visible.into_iter()")
+            .nth(1)
+            .and_then(|source| source.split(".when(overflow > 0").next())
+            .expect("toolbar bookmark chips");
+        assert!(
+            bookmarks.contains("on_drag_move::<BookmarkDrag>"),
+            "bookmark chips must receive drag-move so they can show the I-beam"
+        );
+        assert!(
+            bookmarks.contains("on_drop(move |drag: &BookmarkDrag"),
+            "bookmark chips must accept the drop at the caret"
+        );
+        let menu = toolbar
+            .split(".when_some(active_folder_menu")
+            .nth(1)
+            .expect("folder dropdown");
+        assert!(
+            menu.contains("on_drag_move::<BookmarkDrag>"),
+            "folder-menu rows must track insert position while dragging"
+        );
+        assert!(
+            menu.contains("bookmark_drop_line"),
+            "folder-menu rows must show the horizontal insert line"
+        );
+        let folder_entry = menu
+            .split("bookmark-folder-entry")
+            .nth(1)
+            .expect("folder-menu bookmark rows");
+        assert!(
+            folder_entry.contains(".on_drag("),
+            "bookmarks inside an open folder must be drag sources"
+        );
+        assert!(
+            folder_entry.contains("CommitBookmarkDrop"),
+            "dropping on a folder-menu line must commit the insert cue"
+        );
     }
 
     #[test]
@@ -20265,6 +20820,24 @@ mod tests {
             menu.contains("ActivateBookmark { id }"),
             "folder entries must still activate the bookmark"
         );
+    }
+
+    #[test]
+    fn bookmark_toolbar_context_menu_occludes_file_view_hits() {
+        let source = include_str!("chrome.rs")
+            .split("fn bookmark_toolbar_context_menu(")
+            .nth(1)
+            .and_then(|source| source.split("fn bookmark_context_menu(").next())
+            .expect("toolbar context menu");
+        assert!(
+            source.contains(".occlude()"),
+            "toolbar context overlay must block file-view hover from dismissing the menu"
+        );
+        assert!(
+            source.contains("on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())"),
+            "toolbar context menu must own right-button presses"
+        );
+        assert!(source.contains("menu-delete-folder"));
     }
 
     #[test]
@@ -20468,12 +21041,24 @@ mod tests {
             "bookmark-editor-remove",
             "bookmark-folder-delete-window",
             "dialog-delete-bookmark-folder-note",
+            "dialog-new-bookmark-toolbar-folder",
+            "dialog-name-accelerator",
+            "☆",
         ] {
             assert!(
                 source.contains(required),
                 "missing bookmark folder contract: {required}"
             );
         }
+        let folder_editor = include_str!("chrome.rs")
+            .split("fn bookmark_folder_editor(")
+            .nth(1)
+            .and_then(|source| source.split("fn session_reset_confirmation_dialog(").next())
+            .expect("folder editor source");
+        assert!(
+            !folder_editor.contains("subtle_surface"),
+            "folder editor must not wrap the compact Firefox card in an extra frame"
+        );
     }
 
     #[test]
@@ -20488,6 +21073,22 @@ mod tests {
         assert!(editor.contains("menu-remove-bookmark"));
         assert!(editor.contains("let is_new = editor.id.is_none()"));
         assert!(editor.contains(".when(!is_new"));
+        assert!(
+            !editor.contains(".expect(\"editor is open\")"),
+            "bookmark editor must not panic when the draft is missing"
+        );
+        assert!(
+            editor.contains("bookmark-destination-scrollbar"),
+            "destination picker must expose a visible vertical scrollbar"
+        );
+        assert!(
+            editor.contains(".track_scroll(&destination_scroll)"),
+            "destination picker must track a scroll handle"
+        );
+        assert!(
+            editor.contains("bookmark-editor-actions"),
+            "save/cancel must live in a reserved action row"
+        );
     }
 }
 #[test]

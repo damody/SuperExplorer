@@ -96,7 +96,13 @@ fn configure_mft_budget_snapshot(limits: crate::mft_query::MftCacheBudgetLimitsV
                                     .wait(desired)
                                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                             }
-                            desired.expect("checked above")
+                            let Some(desired) = desired.take() else {
+                                tracing::error!(
+                                    "MFT budget worker woke without a desired snapshot"
+                                );
+                                continue;
+                            };
+                            desired
                         };
                         if crate::mft_query::query_diagnostics().is_ok_and(|diagnostics| {
                             mft_diagnostics_match_limits(&diagnostics, desired)
@@ -5288,7 +5294,7 @@ impl ApplicationLifecycle {
                             match opened {
                                 Ok(_) => true,
                                 Err(error) => {
-                                    tracing::warn!(%error, "Bookmark editor window creation failed");
+                                    tracing::error!(%error, "Bookmark editor window creation failed");
                                     false
                                 }
                             }
@@ -5302,11 +5308,22 @@ impl ApplicationLifecycle {
                                         window.remove_window();
                                     });
                                 }
+                                let creating = snapshot.is_new_folder();
                                 let title = owner_window
                                     .update(cx, |root, _, _| {
-                                        root.catalog().t("dialog-rename-bookmark-folder")
+                                        root.catalog().t(if creating {
+                                            "dialog-new-bookmark-toolbar-folder"
+                                        } else {
+                                            "dialog-rename-bookmark-folder"
+                                        })
                                     })
-                                    .unwrap_or_else(|_| "Rename bookmark folder".into());
+                                    .unwrap_or_else(|_| {
+                                        if creating {
+                                            "New bookmarks toolbar folder".into()
+                                        } else {
+                                            "Rename bookmark folder".into()
+                                        }
+                                    });
                                 let options = explorer_ui::bookmark_folder_editor_window::bookmark_folder_editor_window_options(cx, title);
                                 let opened = cx.open_window(options, move |window, cx| {
                                     cx.new(|cx| {
@@ -5332,17 +5349,10 @@ impl ApplicationLifecycle {
                             },
                         ));
                         root.attach_bookmark_manager_window_observer(Rc::new(move |snapshot, cx| {
-                            if let Some(existing) = *bookmark_manager_handle.borrow() {
-                                if existing
-                                    .update(cx, |manager, window, cx| {
-                                        manager.replace_snapshot(snapshot.clone(), window, cx);
-                                        window.activate_window();
-                                    })
-                                    .is_ok()
-                                {
-                                    return true;
-                                }
-                                *bookmark_manager_handle.borrow_mut() = None;
+                            if let Some(existing) = bookmark_manager_handle.borrow_mut().take() {
+                                let _ = existing.update(cx, |_, window, _| {
+                                    window.remove_window();
+                                });
                             }
                             let title = owner_window
                                 .update(cx, |root, _, _| {
@@ -5367,23 +5377,16 @@ impl ApplicationLifecycle {
                                     true
                                 }
                                 Err(error) => {
-                                    tracing::warn!(%error, "Bookmark manager window creation failed");
+                                    tracing::error!(%error, "Bookmark manager window creation failed");
                                     false
                                 }
                             }
                         }));
                         root.attach_bookmark_action_window_observer(Rc::new(move |snapshot, cx| {
-                            if let Some(existing) = *bookmark_action_handle.borrow() {
-                                if existing
-                                    .update(cx, |action_window, window, cx| {
-                                        action_window.replace_snapshot(snapshot.clone(), window, cx);
-                                        window.activate_window();
-                                    })
-                                    .is_ok()
-                                {
-                                    return true;
-                                }
-                                *bookmark_action_handle.borrow_mut() = None;
+                            if let Some(existing) = bookmark_action_handle.borrow_mut().take() {
+                                let _ = existing.update(cx, |_, window, _| {
+                                    window.remove_window();
+                                });
                             }
                             let title = owner_window
                                 .update(cx, |root, _, _| {
@@ -5408,27 +5411,16 @@ impl ApplicationLifecycle {
                                     true
                                 }
                                 Err(error) => {
-                                    tracing::warn!(%error, "Bookmark action window creation failed");
+                                    tracing::error!(%error, "Bookmark action window creation failed");
                                     false
                                 }
                             }
                         }));
                         root.attach_bookmark_delete_window_observer(Rc::new(move |snapshot, cx| {
-                            if let Some(existing) = *bookmark_delete_handle.borrow() {
-                                if existing
-                                    .update(cx, |delete_window, window, cx| {
-                                        delete_window.replace_snapshot(
-                                            snapshot.clone(),
-                                            window,
-                                            cx,
-                                        );
-                                        window.activate_window();
-                                    })
-                                    .is_ok()
-                                {
-                                    return true;
-                                }
-                                *bookmark_delete_handle.borrow_mut() = None;
+                            if let Some(existing) = bookmark_delete_handle.borrow_mut().take() {
+                                let _ = existing.update(cx, |_, window, _| {
+                                    window.remove_window();
+                                });
                             }
                             let title = owner_window
                                 .update(cx, |root, _, _| {
@@ -5453,28 +5445,19 @@ impl ApplicationLifecycle {
                                     true
                                 }
                                 Err(error) => {
-                                    tracing::warn!(%error, "Bookmark delete window creation failed");
+                                    tracing::error!(%error, "Bookmark delete window creation failed");
                                     false
                                 }
                             }
                         }));
                         root.attach_bookmark_folder_delete_window_observer(Rc::new(
                             move |snapshot, cx| {
-                                if let Some(existing) = *bookmark_folder_delete_handle.borrow() {
-                                    if existing
-                                        .update(cx, |delete_window, window, cx| {
-                                            delete_window.replace_snapshot(
-                                                snapshot.clone(),
-                                                window,
-                                                cx,
-                                            );
-                                            window.activate_window();
-                                        })
-                                        .is_ok()
-                                    {
-                                        return true;
-                                    }
-                                    *bookmark_folder_delete_handle.borrow_mut() = None;
+                                if let Some(existing) =
+                                    bookmark_folder_delete_handle.borrow_mut().take()
+                                {
+                                    let _ = existing.update(cx, |_, window, _| {
+                                        window.remove_window();
+                                    });
                                 }
                                 let title = owner_window
                                     .update(cx, |root, _, _| {
@@ -5499,7 +5482,7 @@ impl ApplicationLifecycle {
                                         true
                                     }
                                     Err(error) => {
-                                        tracing::warn!(%error, "Bookmark folder delete window creation failed");
+                                        tracing::error!(%error, "Bookmark folder delete window creation failed");
                                         false
                                     }
                                 }
@@ -6671,23 +6654,46 @@ mod tests {
     };
 
     #[test]
-    fn bookmark_folder_editor_observer_does_not_reuse_a_closing_window() {
-        let observer = include_str!("application.rs")
-            .split("root.attach_bookmark_folder_editor_window_observer")
-            .nth(1)
-            .expect("folder editor observer")
-            .split("root.attach_bookmark_manager_window_observer")
-            .next()
-            .expect("folder editor observer body");
-        assert!(
-            observer.contains("bookmark_folder_editor_handle.borrow_mut().take()"),
-            "a cancelled folder editor must drop its window handle"
-        );
-        assert!(
-            !observer.contains("replace_snapshot"),
-            "reusing a cancelled folder editor window crashes on the next open"
-        );
-        assert!(observer.contains("open_window"));
+    fn bookmark_child_windows_drop_closing_handles_instead_of_reusing_them() {
+        let source = include_str!("application.rs");
+        for (observer, handle) in [
+            (
+                "root.attach_bookmark_folder_editor_window_observer",
+                "bookmark_folder_editor_handle",
+            ),
+            (
+                "root.attach_bookmark_manager_window_observer",
+                "bookmark_manager_handle",
+            ),
+            (
+                "root.attach_bookmark_action_window_observer",
+                "bookmark_action_handle",
+            ),
+            (
+                "root.attach_bookmark_delete_window_observer",
+                "bookmark_delete_handle",
+            ),
+            (
+                "root.attach_bookmark_folder_delete_window_observer",
+                "bookmark_folder_delete_handle",
+            ),
+        ] {
+            let body = source
+                .split(observer)
+                .nth(1)
+                .unwrap_or_else(|| panic!("missing observer: {observer}"))
+                .split("root.attach_")
+                .next()
+                .unwrap_or_else(|| panic!("observer body: {observer}"));
+            assert!(
+                body.contains(&format!("{handle}.borrow_mut().take()")),
+                "{observer} must drop a closing window handle"
+            );
+            assert!(
+                !body.contains("replace_snapshot"),
+                "{observer} must not reuse a closing window"
+            );
+        }
     }
 
     #[test]

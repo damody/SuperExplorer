@@ -28,6 +28,7 @@ dialog-delete-bookmark-folder-note =
        *[other] This removes the folder and { $count } items inside it. Files on disk are not deleted.
     }
 dialog-rename-bookmark-folder = Rename bookmark folder
+dialog-new-bookmark-toolbar-folder = New bookmarks toolbar folder
 dialog-bookmark-library = Library
 dialog-new-shortcut = New shortcut
 dialog-new-remote-shortcut = New remote shortcut

@@ -71,7 +71,7 @@ fn unique_remote_folder_symlink_name(
     existing: &HashSet<&str>,
     catalog: Catalog,
 ) -> String {
-    for ordinal in 1_u64.. {
+    for ordinal in 1_u64..=1_000_000 {
         let candidate = strip_fluent_isolates(if ordinal == 1 {
             let mut args = explorer_i18n::FluentArgs::new();
             args.set("base", base);
@@ -86,7 +86,8 @@ fn unique_remote_folder_symlink_name(
             return candidate;
         }
     }
-    unreachable!("an unbounded suffix must eventually produce a free child name")
+    tracing::error!(base, "exhausted unique child names");
+    format!("{base}-overflow")
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -737,8 +738,10 @@ pub(crate) struct BookmarkEditorDraft {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BookmarkFolderEditorDraft {
-    pub(crate) id: explorer_model::BookmarkFolderId,
+    pub(crate) id: Option<explorer_model::BookmarkFolderId>,
+    pub(crate) parent_id: Option<explorer_model::BookmarkFolderId>,
     pub(crate) name: String,
+    pub(crate) token: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -845,6 +848,7 @@ pub struct AppViewState {
     bookmark_notice: Option<String>,
     bookmark_overflow_open: bool,
     bookmark_folder_menu: Option<explorer_model::BookmarkFolderId>,
+    bookmark_drop_cue: Option<BookmarkDropCue>,
     bookmark_toolbar_context_menu: Option<BookmarkToolbarContextMenuState>,
     bookmark_context_menu: Option<BookmarkContextMenuState>,
     remote_context_menu: Option<RemoteContextMenuState>,
@@ -855,6 +859,7 @@ pub struct AppViewState {
     bookmark_folder_delete_confirmation: Option<(explorer_model::BookmarkFolderId, usize)>,
     bookmark_editor: Option<BookmarkEditorDraft>,
     bookmark_folder_editor: Option<BookmarkFolderEditorDraft>,
+    bookmark_folder_editor_token: u64,
     bookmark_undo: Vec<explorer_model::Bookmarks>,
     bookmark_redo: Vec<explorer_model::Bookmarks>,
     bookmark_clipboard: Option<explorer_model::Bookmarks>,
@@ -953,6 +958,89 @@ struct DetailsColumnDragPreviewSession {
     original_order: Vec<explorer_model::ColumnId>,
     preview_order: Vec<explorer_model::ColumnId>,
     before: Option<explorer_model::ColumnId>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BookmarkInsertEdge {
+    Before,
+    After,
+}
+
+impl BookmarkInsertEdge {
+    pub const fn is_before(self) -> bool {
+        matches!(self, Self::Before)
+    }
+}
+
+pub(crate) fn resolve_bookmark_insert_edge(
+    pointer: f32,
+    start: f32,
+    end: f32,
+) -> Option<BookmarkInsertEdge> {
+    if !pointer.is_finite() || !start.is_finite() || !end.is_finite() || start >= end {
+        return None;
+    }
+    Some(if pointer < start + (end - start) / 2.0 {
+        BookmarkInsertEdge::Before
+    } else {
+        BookmarkInsertEdge::After
+    })
+}
+
+pub(crate) fn bookmark_reorder_destination(
+    source: usize,
+    target: usize,
+    edge: BookmarkInsertEdge,
+) -> usize {
+    if source == target {
+        return source;
+    }
+    match edge {
+        BookmarkInsertEdge::Before if source < target => target.saturating_sub(1),
+        BookmarkInsertEdge::Before => target,
+        BookmarkInsertEdge::After if source < target => target,
+        BookmarkInsertEdge::After => target.saturating_add(1),
+    }
+}
+
+pub(crate) fn bookmark_place_index(
+    siblings: &[explorer_model::BookmarkId],
+    drag_id: explorer_model::BookmarkId,
+    target_id: explorer_model::BookmarkId,
+    before: bool,
+) -> usize {
+    let remaining = siblings
+        .iter()
+        .copied()
+        .filter(|id| *id != drag_id)
+        .collect::<Vec<_>>();
+    remaining
+        .iter()
+        .position(|id| *id == target_id)
+        .map(|index| {
+            if before {
+                index
+            } else {
+                index.saturating_add(1)
+            }
+        })
+        .unwrap_or(remaining.len())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BookmarkDropCue {
+    ToolbarInsert {
+        target_id: explorer_model::BookmarkId,
+        before: bool,
+    },
+    FolderMenuInsert {
+        folder_id: explorer_model::BookmarkFolderId,
+        target_id: explorer_model::BookmarkId,
+        before: bool,
+    },
+    IntoFolder {
+        folder_id: explorer_model::BookmarkFolderId,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1114,6 +1202,7 @@ impl AppViewState {
             bookmark_notice: None,
             bookmark_overflow_open: false,
             bookmark_folder_menu: None,
+            bookmark_drop_cue: None,
             bookmark_toolbar_context_menu: None,
             bookmark_context_menu: None,
             remote_context_menu: None,
@@ -1124,6 +1213,7 @@ impl AppViewState {
             bookmark_folder_delete_confirmation: None,
             bookmark_editor: None,
             bookmark_folder_editor: None,
+            bookmark_folder_editor_token: 0,
             bookmark_undo: Vec::new(),
             bookmark_redo: Vec::new(),
             bookmark_clipboard: None,
@@ -1463,6 +1553,50 @@ impl AppViewState {
         parent_id: Option<explorer_model::BookmarkFolderId>,
     ) -> explorer_model::BookmarkMutation {
         self.bookmarks.begin_move_to_folder(id, parent_id)
+    }
+
+    pub(crate) fn place_bookmark(
+        &mut self,
+        id: explorer_model::BookmarkId,
+        parent_id: Option<explorer_model::BookmarkFolderId>,
+        destination: usize,
+    ) -> explorer_model::BookmarkMutation {
+        self.bookmarks.begin_place(id, parent_id, destination)
+    }
+
+    pub(crate) fn commit_bookmark_drop(
+        &mut self,
+        id: explorer_model::BookmarkId,
+    ) -> explorer_model::BookmarkMutation {
+        let cue = self.bookmark_drop_cue.take();
+        match cue {
+            Some(BookmarkDropCue::ToolbarInsert { target_id, before }) => {
+                let siblings = self
+                    .bookmarks
+                    .root_entries()
+                    .map(|item| item.id)
+                    .collect::<Vec<_>>();
+                let destination = bookmark_place_index(&siblings, id, target_id, before);
+                self.bookmarks.begin_place(id, None, destination)
+            }
+            Some(BookmarkDropCue::FolderMenuInsert {
+                folder_id,
+                target_id,
+                before,
+            }) => {
+                let siblings = self
+                    .bookmarks
+                    .child_entries(Some(folder_id))
+                    .map(|item| item.id)
+                    .collect::<Vec<_>>();
+                let destination = bookmark_place_index(&siblings, id, target_id, before);
+                self.bookmarks.begin_place(id, Some(folder_id), destination)
+            }
+            Some(BookmarkDropCue::IntoFolder { folder_id }) => {
+                self.bookmarks.begin_move_to_folder(id, Some(folder_id))
+            }
+            None => self.bookmarks.begin_move_to_folder(id, None),
+        }
     }
 
     pub(crate) fn rollback_bookmark(&mut self, mutation: explorer_model::BookmarkMutation) {
@@ -3840,6 +3974,22 @@ impl AppViewState {
         self.bookmark_folder_menu = (self.bookmark_folder_menu != Some(id)).then_some(id);
     }
 
+    pub(crate) const fn bookmark_drop_cue(&self) -> Option<BookmarkDropCue> {
+        self.bookmark_drop_cue
+    }
+
+    pub(crate) fn update_bookmark_drop_cue(&mut self, cue: Option<BookmarkDropCue>) -> bool {
+        let mut changed = self.bookmark_drop_cue != cue;
+        if let Some(BookmarkDropCue::IntoFolder { folder_id }) = cue {
+            if self.bookmark_folder_menu != Some(folder_id) {
+                self.bookmark_folder_menu = Some(folder_id);
+                changed = true;
+            }
+        }
+        self.bookmark_drop_cue = cue;
+        changed
+    }
+
     pub(crate) fn toggle_bookmark_folder_expanded(
         &mut self,
         id: explorer_model::BookmarkFolderId,
@@ -3961,6 +4111,7 @@ impl AppViewState {
     pub(crate) fn dismiss_bookmark_browse_menus(&mut self) {
         self.bookmark_overflow_open = false;
         self.bookmark_folder_menu = None;
+        self.bookmark_drop_cue = None;
     }
 
     pub(crate) const fn bookmark_toolbar_context_menu(
@@ -4208,13 +4359,34 @@ impl AppViewState {
     }
 
     pub(crate) fn begin_bookmark_folder_editor(&mut self, id: explorer_model::BookmarkFolderId) {
+        self.bookmark_folder_editor_token = self.bookmark_folder_editor_token.wrapping_add(1);
+        let token = self.bookmark_folder_editor_token;
         self.bookmark_folder_editor =
             self.bookmarks
                 .folder(id)
                 .map(|folder| BookmarkFolderEditorDraft {
-                    id,
+                    id: Some(id),
+                    parent_id: folder.parent_id,
                     name: folder.name.clone(),
+                    token,
                 });
+    }
+
+    pub(crate) fn begin_new_bookmark_folder_editor(
+        &mut self,
+        parent_id: Option<explorer_model::BookmarkFolderId>,
+        name: String,
+    ) {
+        if parent_id.is_some_and(|id| self.bookmarks.folder(id).is_none()) {
+            return;
+        }
+        self.bookmark_folder_editor_token = self.bookmark_folder_editor_token.wrapping_add(1);
+        self.bookmark_folder_editor = Some(BookmarkFolderEditorDraft {
+            id: None,
+            parent_id,
+            name,
+            token: self.bookmark_folder_editor_token,
+        });
     }
 
     pub(crate) const fn bookmark_folder_editor(&self) -> Option<&BookmarkFolderEditorDraft> {
@@ -4243,7 +4415,10 @@ impl AppViewState {
             self.bookmark_folder_editor = Some(editor);
             return None;
         }
-        Some(self.bookmarks.begin_rename_folder(editor.id, editor.name))
+        Some(match editor.id {
+            Some(id) => self.bookmarks.begin_rename_folder(id, editor.name),
+            None => self.add_bookmark_folder(editor.name, editor.parent_id),
+        })
     }
 
     pub(crate) fn update_bookmark_editor_name(&mut self, name: String) {
@@ -5386,8 +5561,10 @@ impl AppViewState {
         let tab = self.tabs.active_tab();
         let mut identity = b"super-explorer:new-folder-draft:".to_vec();
         identity.extend_from_slice(format!("{:?}", tab.id).as_bytes());
-        let item_id = ShellItemId::from_provider_bytes(identity)
-            .expect("new-folder draft identity is non-empty");
+        let Some(item_id) = ShellItemId::from_provider_bytes(identity) else {
+            tracing::error!("new-folder draft identity was empty");
+            return false;
+        };
         self.pending_new_folder_rename = Some(PendingNewFolderRename {
             tab_id: tab.id,
             generation: tab.generation,
@@ -7401,12 +7578,18 @@ fn external_drop_operation_request(
     let items = sources
         .iter()
         .enumerate()
-        .map(|(index, location)| ItemDescriptor {
-            id: ShellItemId::from_provider_bytes(
+        .filter_map(|(index, location)| {
+            let id = ShellItemId::from_provider_bytes(
                 format!("external-drop-operation-{index}").into_bytes(),
-            )
-            .expect("external drop operation identity is non-empty"),
-            location: location.clone(),
+            );
+            let Some(id) = id else {
+                tracing::error!(index, "external drop operation identity was empty");
+                return None;
+            };
+            Some(ItemDescriptor {
+                id,
+                location: location.clone(),
+            })
         })
         .collect();
     let kind = if effect == explorer_model::DragEffect::Move {
@@ -7687,8 +7870,9 @@ mod tests {
     use explorer_i18n::{AppLocale, Catalog};
 
     use super::{
-        AppViewState, CommandKind, DirectoryCacheKey, DirectorySnapshotCache,
-        bookmark_target_for_current_location, resolve_details_column_insertion,
+        AppViewState, BookmarkDropCue, BookmarkInsertEdge, CommandKind, DirectoryCacheKey,
+        DirectorySnapshotCache, bookmark_reorder_destination, bookmark_target_for_current_location,
+        resolve_bookmark_insert_edge, resolve_details_column_insertion,
         unique_remote_folder_symlink_name,
     };
 
@@ -8126,6 +8310,27 @@ mod tests {
         );
         assert_eq!(state.bookmarks().folders()[0].name, "Projects");
 
+        state.begin_new_bookmark_folder_editor(None, "New folder".into());
+        assert!(
+            state
+                .bookmark_folder_editor()
+                .is_some_and(|editor| editor.id.is_none())
+        );
+        state.update_bookmark_folder_editor_name("Inbox".into());
+        assert!(
+            state
+                .commit_bookmark_folder_editor()
+                .expect("create mutation")
+                .changed()
+        );
+        assert!(
+            state
+                .bookmarks()
+                .folders()
+                .iter()
+                .any(|folder| folder.name == "Inbox")
+        );
+
         state.request_bookmark_folder_delete(folder_id);
         assert_eq!(
             state.bookmark_folder_delete_confirmation(),
@@ -8533,6 +8738,168 @@ mod tests {
             resolve_details_column_insertion(&order, &DateModified, &Type, 0.5, 1.0, 1.0).is_none()
         );
         assert!(resolve_details_column_insertion(&order, &Name, &Type, 0.5, 0.0, 1.0).is_none());
+    }
+
+    #[test]
+    fn bookmark_insert_edge_uses_the_hovered_half_and_rejects_invalid_bounds() {
+        assert_eq!(
+            resolve_bookmark_insert_edge(10.0, 0.0, 100.0),
+            Some(BookmarkInsertEdge::Before)
+        );
+        assert_eq!(
+            resolve_bookmark_insert_edge(60.0, 0.0, 100.0),
+            Some(BookmarkInsertEdge::After)
+        );
+        assert_eq!(
+            resolve_bookmark_insert_edge(50.0, 0.0, 100.0),
+            Some(BookmarkInsertEdge::After)
+        );
+        assert!(resolve_bookmark_insert_edge(f32::NAN, 0.0, 1.0).is_none());
+        assert!(resolve_bookmark_insert_edge(0.5, 1.0, 1.0).is_none());
+    }
+
+    #[test]
+    fn bookmark_reorder_destination_maps_before_after_onto_sibling_indices() {
+        assert_eq!(
+            bookmark_reorder_destination(0, 2, BookmarkInsertEdge::Before),
+            1
+        );
+        assert_eq!(
+            bookmark_reorder_destination(0, 2, BookmarkInsertEdge::After),
+            2
+        );
+        assert_eq!(
+            bookmark_reorder_destination(2, 0, BookmarkInsertEdge::Before),
+            0
+        );
+        assert_eq!(
+            bookmark_reorder_destination(2, 0, BookmarkInsertEdge::After),
+            1
+        );
+        assert_eq!(
+            bookmark_reorder_destination(1, 1, BookmarkInsertEdge::After),
+            1
+        );
+    }
+
+    #[test]
+    fn bookmark_drop_cue_opens_hovered_folder_and_clears_without_toggling_it_closed() {
+        let mut state = AppViewState::default();
+        assert!(state.add_bookmark_folder("Work".into(), None).changed());
+        let folder_id = state.bookmarks().folders()[0].id;
+        assert!(state.update_bookmark_drop_cue(Some(BookmarkDropCue::IntoFolder { folder_id })));
+        assert_eq!(
+            state.bookmark_drop_cue(),
+            Some(BookmarkDropCue::IntoFolder { folder_id })
+        );
+        assert_eq!(state.bookmark_folder_menu(), Some(folder_id));
+        assert!(
+            !state.update_bookmark_drop_cue(Some(BookmarkDropCue::IntoFolder { folder_id })),
+            "holding over the same folder must not toggle the menu closed"
+        );
+        assert_eq!(state.bookmark_folder_menu(), Some(folder_id));
+        assert!(state.update_bookmark_drop_cue(None));
+        assert!(state.bookmark_drop_cue().is_none());
+        assert_eq!(
+            state.bookmark_folder_menu(),
+            Some(folder_id),
+            "clearing the caret must leave the auto-opened folder visible until drop or dismiss"
+        );
+    }
+
+    #[test]
+    fn commit_bookmark_drop_places_at_the_insert_cue_instead_of_appending() {
+        let mut state = AppViewState::default();
+        state.bookmarks.begin_add(
+            "A".into(),
+            explorer_model::BookmarkTarget::LuaScript {
+                source: "return 1".into(),
+            },
+        );
+        state.bookmarks.begin_add(
+            "B".into(),
+            explorer_model::BookmarkTarget::LuaScript {
+                source: "return 2".into(),
+            },
+        );
+        state.bookmarks.begin_add(
+            "C".into(),
+            explorer_model::BookmarkTarget::LuaScript {
+                source: "return 3".into(),
+            },
+        );
+        let ids = state
+            .bookmarks()
+            .root_entries()
+            .map(|item| item.id)
+            .collect::<Vec<_>>();
+        let [a, b, c] = ids.as_slice() else {
+            panic!("expected three root bookmarks");
+        };
+        assert!(
+            state.update_bookmark_drop_cue(Some(BookmarkDropCue::ToolbarInsert {
+                target_id: *c,
+                before: true,
+            }))
+        );
+        assert!(state.commit_bookmark_drop(*a).changed());
+        let names = state
+            .bookmarks()
+            .root_entries()
+            .map(|item| item.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            ["B", "A", "C"],
+            "releasing on the I-beam before C must insert A there, not leave A at the start or append it"
+        );
+        assert!(state.bookmark_drop_cue().is_none());
+        let _ = b;
+
+        assert!(state.add_bookmark_folder("Work".into(), None).changed());
+        let folder_id = state.bookmarks().folders()[0].id;
+        let inside = *c;
+        assert!(
+            state.update_bookmark_drop_cue(Some(BookmarkDropCue::IntoFolder { folder_id }))
+        );
+        assert!(state.commit_bookmark_drop(inside).changed());
+        assert_eq!(
+            state
+                .bookmarks()
+                .child_entries(Some(folder_id))
+                .map(|item| item.name.as_str())
+                .collect::<Vec<_>>(),
+            ["C"]
+        );
+        let root_after = state
+            .bookmarks()
+            .root_entries()
+            .map(|item| item.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(root_after, ["B", "A"]);
+        assert!(state.update_bookmark_drop_cue(Some(
+            BookmarkDropCue::FolderMenuInsert {
+                folder_id,
+                target_id: inside,
+                before: true,
+            }
+        )));
+        let dragged = state
+            .bookmarks()
+            .root_entries()
+            .find(|item| item.name == "A")
+            .unwrap()
+            .id;
+        assert!(state.commit_bookmark_drop(dragged).changed());
+        assert_eq!(
+            state
+                .bookmarks()
+                .child_entries(Some(folder_id))
+                .map(|item| item.name.as_str())
+                .collect::<Vec<_>>(),
+            ["A", "C"],
+            "folder-menu insert line must place the dragged bookmark at the line, not append"
+        );
     }
 
     #[test]
@@ -10003,7 +10370,9 @@ mod tests {
                 .is_none()
         );
         assert_eq!(
-            state.navigation_fallback_context_menu().map(|menu| menu.location.clone()),
+            state
+                .navigation_fallback_context_menu()
+                .map(|menu| menu.location.clone()),
             Some(Some(explorer_model::LocationDescriptor::synthetic(
                 explorer_model::SyntheticRoot::Home
             )))
@@ -10014,7 +10383,9 @@ mod tests {
                 .is_none()
         );
         assert_eq!(
-            state.navigation_fallback_context_menu().map(|menu| menu.location.clone()),
+            state
+                .navigation_fallback_context_menu()
+                .map(|menu| menu.location.clone()),
             Some(None)
         );
     }

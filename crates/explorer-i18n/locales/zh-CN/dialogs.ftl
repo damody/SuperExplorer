@@ -47,6 +47,7 @@ dialog-delete-bookmark-folder-prompt = 删除书签文件夹「{ $name }」？
 dialog-delete-bookmark-folder-note = 这会移除文件夹以及其中 { $count } 个项目，不会删除磁盘上的文件。
 
 dialog-rename-bookmark-folder = 重命名书签文件夹
+dialog-new-bookmark-toolbar-folder = 添加书签工具栏
 
 dialog-bookmark-library = 收藏库
 

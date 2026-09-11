@@ -503,6 +503,48 @@ impl Bookmarks {
         BookmarkMutation::new(previous, changed)
     }
 
+    pub fn begin_place(
+        &mut self,
+        id: BookmarkId,
+        parent_id: Option<BookmarkFolderId>,
+        destination: usize,
+    ) -> BookmarkMutation {
+        let previous = self.clone();
+        if !self.valid_parent(parent_id) || self.entries.iter().all(|item| item.id != id) {
+            return BookmarkMutation::new(previous, false);
+        }
+        let mut siblings = self
+            .child_entries(parent_id)
+            .map(|item| item.id)
+            .filter(|candidate| *candidate != id)
+            .collect::<Vec<_>>();
+        let dest = destination.min(siblings.len());
+        siblings.insert(dest, id);
+        let current = self
+            .child_entries(parent_id)
+            .map(|item| item.id)
+            .collect::<Vec<_>>();
+        let same_parent = self
+            .entries
+            .iter()
+            .find(|item| item.id == id)
+            .is_some_and(|item| item.parent_id == parent_id);
+        if same_parent && current == siblings {
+            return BookmarkMutation::new(previous, false);
+        }
+        if let Some(item) = self.entries.iter_mut().find(|item| item.id == id) {
+            item.parent_id = parent_id;
+        }
+        for (order, sibling) in siblings.into_iter().enumerate() {
+            if let Some(item) = self.entries.iter_mut().find(|item| item.id == sibling) {
+                item.order = u32::try_from(order).unwrap_or(u32::MAX);
+            }
+        }
+        self.normalize_orders();
+        self.legacy_encoding = false;
+        BookmarkMutation::new(previous, true)
+    }
+
     pub fn rollback(&mut self, mutation: BookmarkMutation) {
         if mutation.changed {
             *self = mutation.previous;
@@ -1120,6 +1162,55 @@ mod tests {
         assert_eq!(value.id_for_target(&target), Some(id));
         assert!(value.begin_reorder(id, 1).changed());
         assert!(value.begin_update(id, "Renamed".into(), target).changed());
+    }
+
+    #[test]
+    fn bookmark_place_moves_across_parents_and_inserts_at_the_requested_index() {
+        let mut value = Bookmarks::default();
+        value.begin_add_folder("Folder".into(), None);
+        let folder = value.folders()[0].id;
+        value.begin_add(
+            "RootA".into(),
+            BookmarkTarget::LuaScript {
+                source: "return 1".into(),
+            },
+        );
+        value.begin_add(
+            "RootB".into(),
+            BookmarkTarget::LuaScript {
+                source: "return 2".into(),
+            },
+        );
+        value.begin_add_to(
+            "Inside".into(),
+            BookmarkTarget::LuaScript {
+                source: "return 3".into(),
+            },
+            Some(folder),
+        );
+        let root_a = value
+            .entries()
+            .iter()
+            .find(|item| item.name == "RootA")
+            .unwrap()
+            .id;
+        let inside = value
+            .entries()
+            .iter()
+            .find(|item| item.name == "Inside")
+            .unwrap()
+            .id;
+        assert!(value.begin_place(root_a, Some(folder), 0).changed());
+        let children = value.child_entries(Some(folder)).collect::<Vec<_>>();
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0].id, root_a);
+        assert_eq!(children[1].id, inside);
+        assert_eq!(children[0].parent_id, Some(folder));
+        assert!(!value.begin_place(root_a, Some(folder), 0).changed());
+        assert!(value.begin_place(inside, None, 1).changed());
+        let roots = value.root_entries().collect::<Vec<_>>();
+        assert_eq!(roots[1].id, inside);
+        assert!(roots[1].parent_id.is_none());
     }
 
     #[test]

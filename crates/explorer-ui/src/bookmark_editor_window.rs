@@ -27,7 +27,7 @@ fn bookmark_editor_width(display_width: f32) -> f32 {
 }
 
 const fn bookmark_editor_height(multiline_payload: bool) -> f32 {
-    if multiline_payload { 680.0 } else { 520.0 }
+    if multiline_payload { 720.0 } else { 560.0 }
 }
 
 pub fn bookmark_editor_window_options(
@@ -79,6 +79,7 @@ pub struct BookmarkEditorWindow {
     name_input: gpui::Entity<EditableTextState>,
     payload_input: gpui::Entity<EditableTextState>,
     tags_input: gpui::Entity<EditableTextState>,
+    destination_scroll: gpui::ScrollHandle,
     focus_handle: FocusHandle,
     was_active: bool,
 }
@@ -96,11 +97,20 @@ impl BookmarkEditorWindow {
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
-        let editor = snapshot
-            .state
-            .bookmark_editor()
-            .cloned()
-            .expect("bookmark editor snapshot requires a draft");
+        let editor = snapshot.state.bookmark_editor().cloned();
+        if editor.is_none() {
+            tracing::error!("bookmark editor window opened without a draft");
+            window.remove_window();
+        }
+        let editor = editor.unwrap_or(crate::state::BookmarkEditorDraft {
+            id: None,
+            name: String::new(),
+            target: explorer_model::BookmarkTarget::LuaScript {
+                source: String::new(),
+            },
+            parent_id: None,
+            tags: String::new(),
+        });
         let payload = editor.target.editable_payload();
         let name_input = cx.new(|cx| EditableTextState::new(StringStorage::from(editor.name), cx));
         name_input.update(cx, EditableTextState::select_document);
@@ -131,6 +141,7 @@ impl BookmarkEditorWindow {
             name_input,
             payload_input,
             tags_input,
+            destination_scroll: gpui::ScrollHandle::new(),
             focus_handle,
             was_active: false,
         }
@@ -249,6 +260,7 @@ impl Render for BookmarkEditorWindow {
                 Some(gpui::Entity::downgrade(&self.name_input)),
                 Some(gpui::Entity::downgrade(&self.payload_input)),
                 Some(gpui::Entity::downgrade(&self.tags_input)),
+                self.destination_scroll.clone(),
                 Some(on_action),
             ))
     }
@@ -273,6 +285,10 @@ mod tests {
         assert!(source.contains("chrome::bookmark_editor("));
         assert!(source.contains("CancelBookmarkEditor"));
         assert!(source.contains("window.remove_window()"));
+        assert!(
+            source.contains("tracing::error!"),
+            "missing drafts must log instead of panicking"
+        );
         assert!(source.contains("editor.target.editable_payload()"));
         assert!(source.contains("bookmark_editor_width"));
         assert!(source.contains("is_resizable: true"));
@@ -298,8 +314,8 @@ mod tests {
         assert!(!production.contains("anchor.unwrap_or((0, 0))"));
         assert!(window.contains("WindowBounds::Windowed(bounds)"));
         assert!(window.contains(".min(f32::from(work.right()) - width)"));
-        assert_eq!(bookmark_editor_height(false), 520.0);
-        assert_eq!(bookmark_editor_height(true), 680.0);
+        assert_eq!(bookmark_editor_height(false), 560.0);
+        assert_eq!(bookmark_editor_height(true), 720.0);
         assert!(window.contains("dialog-new-bookmark"));
         assert!(window.contains("dialog-edit-bookmark"));
         assert!(window.contains("set_window_title"));

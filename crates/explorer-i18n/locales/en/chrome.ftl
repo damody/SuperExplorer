@@ -74,6 +74,7 @@ chrome-remove-bookmark = Remove bookmark
 chrome-cancel-bookmark-edit = Cancel bookmark edit
 chrome-save-bookmark = Save bookmark
 chrome-rename-bookmark-folder = Rename bookmark folder
+chrome-new-bookmark-toolbar-folder = New bookmarks toolbar folder
 chrome-cancel-bookmark-folder-edit = Cancel bookmark folder edit
 chrome-save-bookmark-folder = Save bookmark folder
 chrome-save-in = Save in { $name }

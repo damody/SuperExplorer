@@ -24,6 +24,7 @@ dialog-delete-bookmark-folder = 刪除書籤資料夾
 dialog-delete-bookmark-folder-prompt = 刪除書籤資料夾「{ $name }」？
 dialog-delete-bookmark-folder-note = 這會移除資料夾以及其中 { $count } 個項目，不會刪除磁碟上的檔案。
 dialog-rename-bookmark-folder = 重新命名書籤資料夾
+dialog-new-bookmark-toolbar-folder = 新增書籤工具列
 dialog-bookmark-library = 收藏庫
 dialog-new-shortcut = 新增捷徑
 dialog-new-remote-shortcut = 新增遠端捷徑

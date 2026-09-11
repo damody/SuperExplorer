@@ -132,6 +132,7 @@ chrome-cancel-bookmark-edit = Cancel bookmark edit
 chrome-save-bookmark = Save bookmark
 
 chrome-rename-bookmark-folder = 重命名书签文件夹
+chrome-new-bookmark-toolbar-folder = 添加书签工具栏
 
 chrome-cancel-bookmark-folder-edit = Cancel bookmark folder edit
 
