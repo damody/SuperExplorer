@@ -197,8 +197,8 @@ impl AlignedPidl {
 }
 
 pub(crate) struct ResolvedLocation {
-    absolute: OwnedPidl,
-    folder: IShellFolder,
+    pub(crate) absolute: OwnedPidl,
+    pub(crate) folder: IShellFolder,
     descriptor: LocationDescriptor,
     display_title: String,
 }
@@ -1168,7 +1168,7 @@ pub fn open_default(descriptor: &LocationDescriptor) -> Result<(), ExplorerError
     }
 }
 
-fn child_entry(
+pub(crate) fn child_entry(
     resolved: &ResolvedLocation,
     relative: &OwnedPidl,
 ) -> Result<FileEntry, ExplorerError> {

@@ -30,6 +30,7 @@ pub use everything::{IndexedFolderEntryV1, query_folder_index};
 mod bc7_codec;
 mod bc7_pipeline;
 mod explorer_handoff;
+mod explorer_pins;
 mod explorer_tabs;
 mod extension;
 mod file_operation;
@@ -74,6 +75,7 @@ pub use explorer_handoff::{
     ExplorerHandoffWindow, explorer_is_showing_target, explorer_open_target,
     open_file_explorer_windows,
 };
+pub use explorer_pins::snapshot_windows_explorer_pinned_folders;
 pub use explorer_tabs::{
     ExplorerTabSnapshot, ExplorerWindowSnapshot, close_explorer_windows,
     location_from_explorer_path, snapshot_open_explorer_windows,

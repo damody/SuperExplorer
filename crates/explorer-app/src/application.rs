@@ -4523,6 +4523,7 @@ impl ApplicationLifecycle {
             quick_access,
             bookmarks,
             session_locale,
+            session_theme,
         ) = if visual_fixture.is_none() {
             create_session_persistence(restored_placement)
         } else {
@@ -4533,6 +4534,7 @@ impl ApplicationLifecycle {
                 true,
                 Vec::new(),
                 explorer_model::Bookmarks::default(),
+                None,
                 None,
             )
         };
@@ -4698,6 +4700,7 @@ impl ApplicationLifecycle {
                 let restore_preference_for_window = restore_preference;
                 let resolved_locale_for_window = resolved_locale;
                 let session_locale_for_window = session_locale;
+                let session_theme_for_window = session_theme.clone();
                 let windows_negotiated_locale_for_window = windows_negotiated_locale;
                 let quick_access_for_window = quick_access.clone();
                 let bookmarks_for_window = bookmarks.clone();
@@ -4759,6 +4762,7 @@ impl ApplicationLifecycle {
                             restore_preference_for_window,
                             resolved_locale_for_window,
                             session_locale_for_window,
+                            session_theme_for_window,
                             windows_negotiated_locale_for_window,
                             quick_access_for_window,
                             bookmarks_for_window,
@@ -5838,6 +5842,7 @@ fn create_explorer_root(
     restore_preference: bool,
     resolved_locale: explorer_model::AppLocale,
     session_locale: Option<explorer_model::AppLocale>,
+    session_theme: Option<String>,
     windows_negotiated_locale: explorer_model::AppLocale,
     quick_access: Vec<explorer_model::PersistedQuickAccessPin>,
     bookmarks: explorer_model::Bookmarks,
@@ -5868,6 +5873,12 @@ fn create_explorer_root(
     };
     root.configure_restore_previous_session(restore_preference);
     root.configure_locale(resolved_locale, session_locale, windows_negotiated_locale);
+    if let Some(theme) = session_theme
+        .as_deref()
+        .and_then(explorer_ui::theme::ColorTheme::from_id)
+    {
+        root.configure_color_theme(theme);
+    }
     root.configure_quick_access(quick_access);
     root.configure_bookmarks(bookmarks);
     root.configure_extension_desired_states(&extension_desired_states);
@@ -5931,6 +5942,7 @@ fn create_focused_explorer_root(
     restore_preference: bool,
     resolved_locale: explorer_model::AppLocale,
     session_locale: Option<explorer_model::AppLocale>,
+    session_theme: Option<String>,
     windows_negotiated_locale: explorer_model::AppLocale,
     quick_access: Vec<explorer_model::PersistedQuickAccessPin>,
     bookmarks: explorer_model::Bookmarks,
@@ -5963,6 +5975,7 @@ fn create_focused_explorer_root(
         restore_preference,
         resolved_locale,
         session_locale,
+        session_theme,
         windows_negotiated_locale,
         quick_access,
         bookmarks,
@@ -6238,6 +6251,7 @@ fn create_session_persistence(
     Vec<explorer_model::PersistedQuickAccessPin>,
     explorer_model::Bookmarks,
     Option<explorer_model::AppLocale>,
+    Option<String>,
 ) {
     let limits = RoadmapLimits::default();
     let Ok(store) = crate::session_store::WindowsSessionStore::from_environment(limits) else {
@@ -6249,21 +6263,46 @@ fn create_session_persistence(
             Vec::new(),
             explorer_model::Bookmarks::default(),
             None,
+            None,
         );
     };
     let loaded = store.load().ok().and_then(|outcome| outcome.envelope);
     let generation = loaded
         .as_ref()
         .map_or(1, |envelope| envelope.write_generation.saturating_add(1));
-    let quick_access = loaded
+    let stored_quick_access = loaded
         .as_ref()
-        .map_or_else(Vec::new, |envelope| envelope.payload.quick_access.clone());
+        .map(|envelope| envelope.payload.quick_access.clone());
+    let imported_pins = if stored_quick_access.is_none() {
+        match explorer_shell_win::snapshot_windows_explorer_pinned_folders() {
+            Ok(pins) => {
+                if !pins.is_empty() {
+                    tracing::info!(
+                        count = pins.len(),
+                        "Imported Windows Explorer pinned folders into Quick Access"
+                    );
+                }
+                pins
+            }
+            Err(error) => {
+                tracing::warn!(%error, "Windows Explorer pinned-folder import failed");
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    let quick_access = crate::quick_access_import::seed_quick_access_for_first_launch(
+        stored_quick_access,
+        imported_pins,
+    );
     let legacy_bookmarks = loaded
         .as_ref()
         .map_or_else(explorer_model::Bookmarks::default, |envelope| {
             envelope.payload.bookmarks.clone()
         });
     let session_locale = loaded.as_ref().and_then(|envelope| envelope.payload.locale);
+    let session_theme = loaded.as_ref().and_then(|envelope| envelope.payload.theme.clone());
     let bookmark_store = crate::bookmark_store::WindowsBookmarkStore::from_environment(limits).ok();
     let bookmarks = bookmark_store.as_ref().map_or_else(
         || legacy_bookmarks.clone(),
@@ -6293,7 +6332,7 @@ fn create_session_persistence(
     let reset_observer: explorer_ui::SessionResetObserver =
         Arc::new(move |scope| reset_handle.request_reset(scope));
     let observer: explorer_ui::DurableStateObserver = Arc::new(
-        move |window, restore_enabled, quick_access, bookmarks, placement, locale| {
+        move |window, restore_enabled, quick_access, bookmarks, placement, locale, theme| {
             crate::locale::publish_session_locale(locale);
             let write_generation = generation.fetch_add(1, Ordering::AcqRel);
             handle.accepted_runtime(
@@ -6305,6 +6344,7 @@ fn create_session_persistence(
                     bookmarks,
                     restore_enabled,
                     locale,
+                    theme,
                     write_generation,
                     provenance: explorer_model::SessionProvenance {
                         app_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -6324,6 +6364,7 @@ fn create_session_persistence(
         quick_access,
         bookmarks,
         session_locale,
+        session_theme,
     )
 }
 
@@ -6737,6 +6778,7 @@ mod tests {
             settings: explorer_model::ViewSettings::default(),
             restore_previous_session: true,
             locale_choice: LocaleChoice::Explicit(AppLocale::Ja),
+            theme: explorer_ui::theme::ColorTheme::WindowsLight,
             extension_enabled: Vec::new(),
         };
         let mut first_peer = AppViewState::default();
@@ -6757,6 +6799,7 @@ mod tests {
             settings: explorer_model::ViewSettings::default(),
             restore_previous_session: true,
             locale_choice: LocaleChoice::FollowWindows,
+            theme: explorer_ui::theme::ColorTheme::WindowsLight,
             extension_enabled: Vec::new(),
         };
         explorer_ui::adopt_applied_folder_options_on_peers(
