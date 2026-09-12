@@ -496,6 +496,7 @@ pub struct FolderOptionsWindow {
     focus_handle: FocusHandle,
     general_scroll: ScrollHandle,
     view_scroll: ScrollHandle,
+    theme_scroll: ScrollHandle,
     extensions_scroll: ScrollHandle,
     scrollbar_drag: Option<ScrollbarDragV1>,
     snapshot: FolderOptionsWindowSnapshotV1,
@@ -609,6 +610,7 @@ impl FolderOptionsWindow {
             focus_handle,
             general_scroll: ScrollHandle::new(),
             view_scroll: ScrollHandle::new(),
+            theme_scroll: ScrollHandle::new(),
             extensions_scroll: ScrollHandle::new(),
             scrollbar_drag: None,
             snapshot,
@@ -626,6 +628,7 @@ impl FolderOptionsWindow {
         match page {
             FolderOptionsPage::General => &self.general_scroll,
             FolderOptionsPage::View => &self.view_scroll,
+            FolderOptionsPage::Theme => &self.theme_scroll,
             FolderOptionsPage::Extensions => &self.extensions_scroll,
         }
     }

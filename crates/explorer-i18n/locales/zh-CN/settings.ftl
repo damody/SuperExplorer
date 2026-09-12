@@ -8,6 +8,16 @@ language-auto = 自动（{ $name }）
 settings-language = 语言
 
 settings-general = 常规
+settings-theme = 主题
+settings-theme-windows = Windows
+settings-theme-zed = Zed
+settings-theme-windows-light = 浅色
+settings-theme-windows-dark = 深色
+settings-theme-one-dark = One Dark
+settings-theme-one-light = One Light
+settings-theme-ayu-dark = Ayu Dark
+settings-theme-ayu-mirage = Ayu Mirage
+settings-theme-gruvbox-dark = Gruvbox Dark
 
 settings-view = 查看
 

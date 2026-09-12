@@ -1254,6 +1254,7 @@ pub type DurableStateObserver = Arc<
             explorer_model::Bookmarks,
             explorer_model::PersistedWindowPlacement,
             Option<explorer_model::AppLocale>,
+            Option<String>,
         ) -> bool
         + Send
         + Sync,
@@ -1539,6 +1540,7 @@ fn is_durable_action(action: &ExplorerAction) -> bool {
             | ExplorerAction::ConfirmFolderOptions
             | ExplorerAction::ResetFolderOptions
             | ExplorerAction::ToggleRestorePreviousSession
+            | ExplorerAction::ToggleTheme
     )
 }
 
@@ -2018,6 +2020,7 @@ impl ExplorerRoot {
         revision: u64,
     ) {
         self.state.adopt_applied_folder_options(applied, revision);
+        synchronize_theme(&mut self.tokens, &self.state);
     }
 
     pub fn attach_transfer_window_observer(&mut self, observer: TransferWindowObserver) {
@@ -4209,6 +4212,11 @@ impl ExplorerRoot {
             .configure_locale(locale, preference, windows_negotiated);
     }
 
+    pub fn configure_color_theme(&mut self, theme: theme::ColorTheme) {
+        self.state.set_color_theme(theme);
+        synchronize_theme(&mut self.tokens, &self.state);
+    }
+
     /// Updates the live catalog locale; callers should `cx.notify()` for a redraw.
     pub fn set_locale(&mut self, locale: explorer_model::AppLocale) {
         self.state.set_locale(locale);
@@ -4310,6 +4318,7 @@ impl ExplorerRoot {
                 self.state.bookmarks().clone(),
                 self.durable_window_placement,
                 self.state.locale_preference(),
+                Some(self.state.current_color_theme().id().to_owned()),
             );
         }
         false
@@ -4346,6 +4355,7 @@ impl ExplorerRoot {
             self.state.bookmarks().clone(),
             self.durable_window_placement,
             draft.locale_choice.to_preference(),
+            Some(draft.theme.id().to_owned()),
         )
     }
 
@@ -8997,10 +9007,7 @@ fn file_view_navigation_target(
 }
 
 fn synchronize_theme(tokens: &mut UiTokens, state: &AppViewState) {
-    tokens.theme = match state.current_theme() {
-        ThemeMode::Light => ThemeTokens::light(),
-        ThemeMode::Dark => ThemeTokens::dark(),
-    };
+    tokens.theme = state.current_color_theme().tokens();
 }
 
 impl Default for ExplorerRoot {

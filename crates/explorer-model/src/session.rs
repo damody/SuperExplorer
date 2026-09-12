@@ -410,6 +410,9 @@ pub struct PersistedSessionPayload {
     /// Explicit UI language. `None` follows the Windows display language.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locale: Option<AppLocale>,
+    /// Named color theme id (`windows-light`, `one-dark`, …). `None` is Windows Light.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
     pub window: PersistedWindowPlacement,
     pub tabs: Vec<PersistedTab>,
     pub active_tab_id: TabId,
@@ -541,6 +544,7 @@ impl PersistedSessionEnvelope {
             &crate::Bookmarks::default(),
             restore_enabled,
             locale,
+            None,
             write_generation,
             provenance,
             limits,
@@ -561,6 +565,7 @@ impl PersistedSessionEnvelope {
         bookmarks: &crate::Bookmarks,
         restore_enabled: bool,
         locale: Option<AppLocale>,
+        theme: Option<String>,
         write_generation: u64,
         provenance: SessionProvenance,
         limits: RoadmapLimits,
@@ -594,6 +599,7 @@ impl PersistedSessionEnvelope {
         let payload = PersistedSessionPayload {
             restore_enabled,
             locale,
+            theme,
             window: placement,
             tabs,
             active_tab_id: window.active_tab_id(),
@@ -701,6 +707,7 @@ impl PersistedSessionEnvelope {
                 let payload = PersistedSessionPayload {
                     restore_enabled: legacy.payload.restore_enabled,
                     locale: None,
+                    theme: None,
                     window: legacy.payload.window,
                     tabs: legacy.payload.tabs,
                     active_tab_id: legacy.payload.active_tab_id,
@@ -1826,6 +1833,7 @@ mod tests {
             &bookmarks,
             true,
             None,
+            None,
             8,
             provenance(),
             RoadmapLimits::default(),
@@ -1861,6 +1869,7 @@ mod tests {
             &[],
             &bookmarks,
             true,
+            None,
             None,
             9,
             provenance(),
@@ -1973,6 +1982,31 @@ mod tests {
         assert!(performed);
         assert!(migrated.payload.bookmarks.entries().is_empty());
         assert_eq!(migrated.schema_version, SESSION_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn theme_one_dark_round_trips() {
+        let base = projected();
+        let mut payload = base.payload.clone();
+        payload.theme = Some("one-dark".to_owned());
+        let envelope = PersistedSessionEnvelope::new(
+            base.write_generation,
+            base.provenance.clone(),
+            payload,
+            RoadmapLimits::default(),
+        )
+        .expect("envelope with theme");
+        let bytes = envelope
+            .encode_pretty(RoadmapLimits::default())
+            .expect("encode");
+        let decoded =
+            PersistedSessionEnvelope::decode(&bytes, RoadmapLimits::default()).expect("decode");
+        assert_eq!(decoded.payload.theme.as_deref(), Some("one-dark"));
+        assert!(
+            String::from_utf8(bytes)
+                .expect("utf-8")
+                .contains("\"theme\": \"one-dark\"")
+        );
     }
 
     #[test]

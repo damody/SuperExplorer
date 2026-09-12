@@ -41,6 +41,7 @@ fn main() -> Result<()> {
     let payload = PersistedSessionPayload {
         restore_enabled: true,
         locale: None,
+        theme: None,
         window: PersistedWindowPlacement {
             normal_bounds: PersistedRect {
                 left: 96,

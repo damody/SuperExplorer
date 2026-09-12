@@ -9,7 +9,7 @@ use crate::{
     UiTokens,
     actions::{ActionSource, ActionTrace, ExplorerAction, dispatch_action},
     state::AppViewState,
-    theme::{SemanticColorSlot, ThemeMode, ThemeTokens},
+    theme::SemanticColorSlot,
 };
 
 #[derive(Debug, Default)]
@@ -30,10 +30,7 @@ impl UiTestHarness {
 
     pub fn dispatch(&mut self, action: ExplorerAction, source: ActionSource) -> ActionTrace {
         let trace = dispatch_action(&mut self.state, action, source);
-        self.tokens.theme = match self.state.current_theme() {
-            ThemeMode::Light => ThemeTokens::light(),
-            ThemeMode::Dark => ThemeTokens::dark(),
-        };
+        self.tokens.theme = self.state.current_color_theme().tokens();
         self.traces.push(trace);
         trace
     }

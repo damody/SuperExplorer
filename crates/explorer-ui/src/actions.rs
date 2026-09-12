@@ -94,6 +94,7 @@ pub fn gpui_text_input_bindings() -> Vec<gpui::KeyBinding> {
 pub enum FolderOptionsPage {
     General,
     View,
+    Theme,
     Extensions,
 }
 
@@ -445,6 +446,7 @@ pub enum ExplorerAction {
     SetFolderOptionLocaleChoice(LocaleChoice),
     ToggleFolderOptionsLanguagePicker,
     SetFolderOptionSearchEngine(explorer_model::SearchEnginePreference),
+    SetFolderOptionTheme(crate::theme::ColorTheme),
     ToggleRestorePreviousSession,
     ResetSavedSession,
     ResetSavedViewSettings,
@@ -828,6 +830,7 @@ impl ExplorerAction {
             Self::SetFolderOptionLocaleChoice(_) => "SetFolderOptionLocaleChoice",
             Self::ToggleFolderOptionsLanguagePicker => "ToggleFolderOptionsLanguagePicker",
             Self::SetFolderOptionSearchEngine(_) => "SetFolderOptionSearchEngine",
+            Self::SetFolderOptionTheme(_) => "SetFolderOptionTheme",
             Self::ToggleRestorePreviousSession => "ToggleRestorePreviousSession",
             Self::ResetSavedSession => "ResetSavedSession",
             Self::ResetSavedViewSettings => "ResetSavedViewSettings",
@@ -1627,6 +1630,7 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::SetFolderOptionLocaleChoice(_)
         | ExplorerAction::ToggleFolderOptionsLanguagePicker
         | ExplorerAction::SetFolderOptionSearchEngine(_)
+        | ExplorerAction::SetFolderOptionTheme(_)
         | ExplorerAction::ToggleRestorePreviousSession
         | ExplorerAction::ResetSavedSession
         | ExplorerAction::ResetSavedViewSettings
@@ -2362,6 +2366,10 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
         ExplorerAction::ToggleFolderOptionsLanguagePicker => FocusSurface::CommandBar,
         ExplorerAction::SetFolderOptionSearchEngine(engine) => {
             state.set_folder_option_search_engine(engine);
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::SetFolderOptionTheme(theme) => {
+            state.set_folder_option_theme(theme);
             FocusSurface::CommandBar
         }
         ExplorerAction::ToggleRestorePreviousSession => {

@@ -207,6 +207,97 @@ pub enum ThemeMode {
     Dark,
 }
 
+/// Named color theme. Windows Light/Dark stay aligned with Explorer; the rest
+/// map Zed's shipped One / Ayu / Gruvbox palettes onto SuperExplorer slots.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ColorTheme {
+    #[default]
+    WindowsLight,
+    WindowsDark,
+    OneDark,
+    OneLight,
+    AyuDark,
+    AyuMirage,
+    GruvboxDark,
+}
+
+impl ColorTheme {
+    pub const ALL: [Self; 7] = [
+        Self::WindowsLight,
+        Self::WindowsDark,
+        Self::OneDark,
+        Self::OneLight,
+        Self::AyuDark,
+        Self::AyuMirage,
+        Self::GruvboxDark,
+    ];
+
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::WindowsLight => "windows-light",
+            Self::WindowsDark => "windows-dark",
+            Self::OneDark => "one-dark",
+            Self::OneLight => "one-light",
+            Self::AyuDark => "ayu-dark",
+            Self::AyuMirage => "ayu-mirage",
+            Self::GruvboxDark => "gruvbox-dark",
+        }
+    }
+
+    pub const fn label_key(self) -> &'static str {
+        match self {
+            Self::WindowsLight => "settings-theme-windows-light",
+            Self::WindowsDark => "settings-theme-windows-dark",
+            Self::OneDark => "settings-theme-one-dark",
+            Self::OneLight => "settings-theme-one-light",
+            Self::AyuDark => "settings-theme-ayu-dark",
+            Self::AyuMirage => "settings-theme-ayu-mirage",
+            Self::GruvboxDark => "settings-theme-gruvbox-dark",
+        }
+    }
+
+    pub const fn appearance(self) -> ThemeMode {
+        match self {
+            Self::WindowsLight | Self::OneLight => ThemeMode::Light,
+            Self::WindowsDark
+            | Self::OneDark
+            | Self::AyuDark
+            | Self::AyuMirage
+            | Self::GruvboxDark => ThemeMode::Dark,
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|theme| theme.id() == id)
+    }
+
+    pub const fn tokens(self) -> ThemeTokens {
+        match self {
+            Self::WindowsLight => ThemeTokens::light(),
+            Self::WindowsDark => ThemeTokens::dark(),
+            Self::OneDark => ThemeTokens::zed_one_dark(),
+            Self::OneLight => ThemeTokens::zed_one_light(),
+            Self::AyuDark => ThemeTokens::zed_ayu_dark(),
+            Self::AyuMirage => ThemeTokens::zed_ayu_mirage(),
+            Self::GruvboxDark => ThemeTokens::zed_gruvbox_dark(),
+        }
+    }
+
+    pub const fn swatch(self) -> Rgba8 {
+        self.tokens().colors.accent
+    }
+}
+
+const fn hex(rgb: u32) -> Rgba8 {
+    Rgba8::opaque(
+        ((rgb >> 16) & 0xff) as u8,
+        ((rgb >> 8) & 0xff) as u8,
+        (rgb & 0xff) as u8,
+    )
+}
+
 /// Windows semantic system colors used when high contrast is active.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SystemColorRole {
@@ -394,6 +485,169 @@ impl ThemeTokens {
         }
     }
 
+    const fn zed(
+        mode: ThemeMode,
+        surface: u32,
+        subtle: u32,
+        control: u32,
+        hover: u32,
+        pressed: u32,
+        selected: u32,
+        divider: u32,
+        text: u32,
+        muted: u32,
+        disabled: u32,
+        accent: u32,
+        danger: u32,
+        toolbar: u32,
+        selected_text: u32,
+        row_selected_text: u32,
+    ) -> Self {
+        Self {
+            mode,
+            colors: SemanticColors {
+                surface: hex(surface),
+                subtle_surface: hex(subtle),
+                control_fill: hex(control),
+                control_hover: hex(hover),
+                control_pressed: hex(pressed),
+                selected_active: hex(accent),
+                selected_text: hex(selected_text),
+                selected_inactive: hex(selected),
+                divider: hex(divider),
+                text_primary: hex(text),
+                text_secondary: hex(muted),
+                text_disabled: hex(disabled),
+                focus: hex(accent),
+                danger: hex(danger),
+                accent: hex(accent),
+                toolbar_fill: hex(toolbar),
+                address_fill: hex(control),
+                search_fill: hex(control),
+                row_hover: hex(hover),
+                file_row_hover: hex(hover),
+                file_row_selected_active: hex(selected),
+                file_row_selected_inactive: hex(pressed),
+                file_row_focus_outline: hex(accent),
+                file_row_selected_text: hex(row_selected_text),
+                menu_fill: hex(subtle),
+                caption_hover: hex(hover),
+            },
+            high_contrast: HighContrastMappings::WINDOWS,
+            high_contrast_active: false,
+        }
+    }
+
+    /// Zed One Dark (`assets/themes/one/one.json`).
+    pub const fn zed_one_dark() -> Self {
+        Self::zed(
+            ThemeMode::Dark,
+            0x282c33,
+            0x2f343e,
+            0x2e343e,
+            0x363c46,
+            0x454a56,
+            0x454a56,
+            0x464b57,
+            0xdce0e5,
+            0xa9afbc,
+            0x878a98,
+            0x74ade8,
+            0xd07277,
+            0x282c33,
+            0xffffff,
+            0xdce0e5,
+        )
+    }
+
+    /// Zed One Light (`assets/themes/one/one.json`).
+    pub const fn zed_one_light() -> Self {
+        Self::zed(
+            ThemeMode::Light,
+            0xfafafa,
+            0xebebec,
+            0xebebec,
+            0xdfdfe0,
+            0xcacaca,
+            0xcacaca,
+            0xc9c9ca,
+            0x242529,
+            0x58585a,
+            0x7e8086,
+            0x5c78e2,
+            0xd36151,
+            0xfafafa,
+            0xffffff,
+            0x242529,
+        )
+    }
+
+    /// Zed Ayu Dark (`assets/themes/ayu/ayu.json`).
+    pub const fn zed_ayu_dark() -> Self {
+        Self::zed(
+            ThemeMode::Dark,
+            0x0d1016,
+            0x1f2127,
+            0x1f2127,
+            0x2d2f34,
+            0x3e4043,
+            0x3e4043,
+            0x3f4043,
+            0xbfbdb6,
+            0x8a8986,
+            0x696a6a,
+            0x5ac1fe,
+            0xef7177,
+            0x0d1016,
+            0x0d1016,
+            0xbfbdb6,
+        )
+    }
+
+    /// Zed Ayu Mirage (`assets/themes/ayu/ayu.json`).
+    pub const fn zed_ayu_mirage() -> Self {
+        Self::zed(
+            ThemeMode::Dark,
+            0x242835,
+            0x353944,
+            0x353944,
+            0x43464f,
+            0x53565d,
+            0x53565d,
+            0x53565d,
+            0xcccac2,
+            0x9a9a98,
+            0x7b7d7f,
+            0x72cffe,
+            0xf18779,
+            0x242835,
+            0x242835,
+            0xcccac2,
+        )
+    }
+
+    /// Zed Gruvbox Dark (`assets/themes/gruvbox/gruvbox.json`).
+    pub const fn zed_gruvbox_dark() -> Self {
+        Self::zed(
+            ThemeMode::Dark,
+            0x282828,
+            0x3a3735,
+            0x3a3735,
+            0x494340,
+            0x5b524c,
+            0x5b524c,
+            0x5b534d,
+            0xfbf1c7,
+            0xc5b597,
+            0x998b78,
+            0x83a598,
+            0xfb4a35,
+            0x282828,
+            0x282828,
+            0xfbf1c7,
+        )
+    }
+
     /// Resolves every visual slot through the active Windows high-contrast
     /// system-color table. The mode remains light/dark-neutral because the
     /// operating system, rather than the application's theme toggle, owns it.
@@ -437,7 +691,10 @@ impl ThemeTokens {
 
 #[cfg(test)]
 mod tests {
-    use super::{Rgba8, SemanticColorSlot, SemanticColors, SystemColorRole, ThemeTokens};
+    use super::{
+        ColorTheme, Rgba8, SemanticColorSlot, SemanticColors, SystemColorRole, ThemeMode,
+        ThemeTokens,
+    };
 
     const DISTINCT_CONTRACT_COLORS: SemanticColors = SemanticColors {
         surface: Rgba8::opaque(1, 0, 0),
@@ -477,6 +734,42 @@ mod tests {
                 u8::try_from(index + 1).expect("contract index fits in u8")
             );
         }
+    }
+
+    #[test]
+    fn color_themes_cover_windows_and_five_zed_palettes() {
+        assert_eq!(ColorTheme::ALL.len(), 7);
+        assert_eq!(ColorTheme::default(), ColorTheme::WindowsLight);
+        assert_eq!(ColorTheme::WindowsLight.tokens(), ThemeTokens::light());
+        assert_eq!(ColorTheme::WindowsDark.tokens(), ThemeTokens::dark());
+        assert_eq!(ColorTheme::WindowsLight.appearance(), ThemeMode::Light);
+        assert_eq!(ColorTheme::OneLight.appearance(), ThemeMode::Light);
+        for theme in [
+            ColorTheme::WindowsDark,
+            ColorTheme::OneDark,
+            ColorTheme::AyuDark,
+            ColorTheme::AyuMirage,
+            ColorTheme::GruvboxDark,
+        ] {
+            assert_eq!(theme.appearance(), ThemeMode::Dark);
+        }
+        for theme in ColorTheme::ALL {
+            assert_eq!(ColorTheme::from_id(theme.id()), Some(theme));
+            assert_eq!(theme.tokens().mode, theme.appearance());
+        }
+        assert_eq!(ColorTheme::from_id("not-a-theme"), None);
+        assert_ne!(
+            ColorTheme::OneDark.tokens().colors.surface,
+            ThemeTokens::dark().colors.surface
+        );
+        assert_ne!(
+            ColorTheme::AyuDark.tokens().colors.accent,
+            ColorTheme::GruvboxDark.tokens().colors.accent
+        );
+        assert_ne!(
+            ColorTheme::OneLight.tokens().colors.accent,
+            ThemeTokens::light().colors.accent
+        );
     }
 
     #[test]

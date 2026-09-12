@@ -5502,6 +5502,14 @@ pub(crate) fn folder_options_window_content(
                             on_action.clone(),
                         ))
                         .child(folder_option_tab(
+                            "folder-options-theme-tab",
+                            catalog.t("settings-theme"),
+                            page == FolderOptionsPage::Theme,
+                            ExplorerAction::SetFolderOptionsPage(FolderOptionsPage::Theme),
+                            tokens,
+                            on_action.clone(),
+                        ))
+                        .child(folder_option_tab(
                             "folder-options-extensions-tab",
                             catalog.t("settings-extensions"),
                             page == FolderOptionsPage::Extensions,
@@ -5517,6 +5525,7 @@ pub(crate) fn folder_options_window_content(
                         .aria_label(match page {
                             FolderOptionsPage::General => catalog.t("settings-general"),
                             FolderOptionsPage::View => catalog.t("settings-view"),
+                            FolderOptionsPage::Theme => catalog.t("settings-theme"),
                             FolderOptionsPage::Extensions => catalog.t("settings-extensions"),
                         })
                         .flex_1()
@@ -5552,6 +5561,14 @@ pub(crate) fn folder_options_window_content(
                                 on_action.clone(),
                                 cache_budget_inputs.clone(),
                                 cache_usage,
+                            ))
+                        })
+                        .when(page == FolderOptionsPage::Theme, |body| {
+                            body.child(folder_options_theme_page(
+                                tokens,
+                                catalog,
+                                draft.theme,
+                                on_action.clone(),
                             ))
                         })
                         .when(page == FolderOptionsPage::Extensions, |body| {
@@ -5888,6 +5905,115 @@ fn folder_options_general_page(
             ],
             tokens,
         ))
+}
+
+fn folder_options_theme_page(
+    tokens: UiTokens,
+    catalog: Catalog,
+    selected: crate::theme::ColorTheme,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    use crate::theme::ColorTheme;
+
+    let windows = [ColorTheme::WindowsLight, ColorTheme::WindowsDark];
+    let zed = [
+        ColorTheme::OneDark,
+        ColorTheme::OneLight,
+        ColorTheme::AyuDark,
+        ColorTheme::AyuMirage,
+        ColorTheme::GruvboxDark,
+    ];
+    div()
+        .id("folder-options-theme-page")
+        .flex()
+        .flex_col()
+        .gap(px(tokens.layout.maximum_visible_glyph.value()))
+        .child(folder_options_theme_group(
+            "folder-options-theme-windows",
+            catalog.t("settings-theme-windows").into(),
+            &windows,
+            selected,
+            tokens,
+            catalog,
+            on_action.clone(),
+        ))
+        .child(folder_options_theme_group(
+            "folder-options-theme-zed",
+            catalog.t("settings-theme-zed").into(),
+            &zed,
+            selected,
+            tokens,
+            catalog,
+            on_action,
+        ))
+}
+
+fn folder_options_theme_group(
+    id: &'static str,
+    label: SharedString,
+    themes: &[crate::theme::ColorTheme],
+    selected: crate::theme::ColorTheme,
+    tokens: UiTokens,
+    catalog: Catalog,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .role(Role::RadioGroup)
+        .aria_label(label.clone())
+        .flex()
+        .flex_col()
+        .gap(px(tokens.layout.content_spacing.value()))
+        .p(px(tokens.layout.divider_keyboard_step.value()))
+        .border(px(1.0))
+        .border_color(tokens.theme.colors.divider.to_gpui())
+        .child(
+            div()
+                .text_size(px(tokens.typography.address.size.value()))
+                .child(label),
+        )
+        .children(themes.iter().copied().map(|theme| {
+            folder_options_theme_radio(theme, selected, tokens, catalog, on_action.clone())
+        }))
+}
+
+fn folder_options_theme_radio(
+    theme: crate::theme::ColorTheme,
+    selected: crate::theme::ColorTheme,
+    tokens: UiTokens,
+    catalog: Catalog,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let label = catalog.t(theme.label_key());
+    let swatch = theme.swatch().to_gpui();
+    let action = ExplorerAction::SetFolderOptionTheme(theme);
+    let id = format!("folder-option-theme-{}", theme.id());
+    div()
+        .id(SharedString::from(id))
+        .role(Role::RadioButton)
+        .aria_label(label.clone())
+        .aria_selected(selected == theme)
+        .min_h(px(tokens.layout.minimum_hit_target.value()))
+        .flex()
+        .items_center()
+        .gap(px(tokens.layout.content_spacing.value()))
+        .px(px(tokens.layout.content_spacing.value()))
+        .rounded(px(tokens.layout.corner_radius.value()))
+        .hover(move |style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
+        .when_some(on_action, |row, callback| {
+            row.on_click(move |_, window, cx| callback(&action, window, cx))
+        })
+        .child(if selected == theme { "◉" } else { "○" })
+        .child(
+            div()
+                .w(px(16.0))
+                .h(px(16.0))
+                .rounded(px(4.0))
+                .border(px(1.0))
+                .border_color(tokens.theme.colors.divider.to_gpui())
+                .bg(swatch),
+        )
+        .child(label)
 }
 
 fn folder_options_search_engine_group(
@@ -19827,6 +19953,7 @@ mod tests {
         for required in [
             "folder-options-general-tab",
             "folder-options-view-tab",
+            "folder-options-theme-tab",
             "folder-options-extensions-tab",
             "folder-options-ok",
             "folder-options-cancel",

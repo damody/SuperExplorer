@@ -250,7 +250,7 @@ use crate::{
     focus::{FocusCoordinator, FocusDirection, FocusSurface},
     interaction::{DividerInteraction, ScrollbarDragSession, ScrollbarKind, ScrollbarTerminal},
     layout::{LayoutTokens, LogicalPx},
-    theme::ThemeMode,
+    theme::{ColorTheme, ThemeMode},
 };
 
 fn bookmark_target_for_current_location(
@@ -313,6 +313,7 @@ pub struct FolderOptionsDraft {
     pub settings: explorer_model::ViewSettings,
     pub restore_previous_session: bool,
     pub locale_choice: LocaleChoice,
+    pub theme: ColorTheme,
     pub extension_enabled: Vec<bool>,
     pub search_engine_availability: explorer_model::SearchEngineAvailability,
     pub applied_baseline: FolderOptionsAppliedSnapshotV1,
@@ -325,6 +326,7 @@ pub struct FolderOptionsAppliedSnapshotV1 {
     pub settings: explorer_model::ViewSettings,
     pub restore_previous_session: bool,
     pub locale_choice: LocaleChoice,
+    pub theme: ColorTheme,
     pub extension_enabled: Vec<bool>,
 }
 
@@ -347,6 +349,7 @@ impl FolderOptionsDraft {
             settings: self.settings.clone(),
             restore_previous_session: self.restore_previous_session,
             locale_choice: self.locale_choice,
+            theme: self.theme,
             extension_enabled: self.extension_enabled.clone(),
         }
     }
@@ -802,12 +805,19 @@ struct PendingNewFolderRename {
 }
 
 #[derive(Clone, Debug)]
+struct PendingLeaveSelection {
+    tab_id: TabId,
+    generation: explorer_model::Generation,
+    child: LocationDescriptor,
+}
+
+#[derive(Clone, Debug)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "these are independent Explorer overlay, pane, focus, and command-surface states rather than one disguised enum"
 )]
 pub struct AppViewState {
-    current_theme: ThemeMode,
+    current_color_theme: ColorTheme,
     /// Active UI catalog locale. Harness/uitest default is `ZhTw`; production is negotiated.
     locale: AppLocale,
     /// Session preference written on save. `None` means follow Windows.
@@ -828,6 +838,7 @@ pub struct AppViewState {
     cancelling_operations: HashSet<explorer_common::RequestId>,
     rename_editor: Option<explorer_model::RenameEditorState>,
     pending_new_folder_rename: Option<PendingNewFolderRename>,
+    pending_leave_selection: Option<PendingLeaveSelection>,
     permanent_delete_confirmation: Option<PermanentDeleteConfirmation>,
     permanent_delete_confirmation_focus: PermanentDeleteDialogTarget,
     lock_recovery: Option<LockRecoveryUiState>,
@@ -1163,7 +1174,7 @@ impl AppViewState {
         let initial_tab_id = tabs.active_tab_id();
         let tab_focus = HashMap::from([(initial_tab_id, FocusSurface::FileView)]);
         Self {
-            current_theme: ThemeMode::Light,
+            current_color_theme: ColorTheme::WindowsLight,
             // Test/harness default; production windows call `configure_locale` with negotiation.
             locale: AppLocale::ZhTw,
             locale_preference: None,
@@ -1182,6 +1193,7 @@ impl AppViewState {
             cancelling_operations: HashSet::new(),
             rename_editor: None,
             pending_new_folder_rename: None,
+            pending_leave_selection: None,
             permanent_delete_confirmation: None,
             permanent_delete_confirmation_focus: PermanentDeleteDialogTarget::Delete,
             lock_recovery: None,
@@ -2099,7 +2111,11 @@ impl AppViewState {
     }
 
     pub const fn current_theme(&self) -> ThemeMode {
-        self.current_theme
+        self.current_color_theme.appearance()
+    }
+
+    pub const fn current_color_theme(&self) -> ColorTheme {
+        self.current_color_theme
     }
 
     /// Active catalog locale used at render time.
@@ -2421,6 +2437,7 @@ impl AppViewState {
         if !additive {
             self.tabs.active_tab_mut().selection.clear();
         }
+        self.pending_leave_selection = None;
         self.marquee = Some(MarqueeSelectionSession {
             origin_x: x,
             origin_y: y,
@@ -2777,10 +2794,12 @@ impl AppViewState {
             .map(|extension| extension.enabled)
             .collect::<Vec<_>>();
         let locale_choice = LocaleChoice::from_preference(self.locale_preference);
+        let theme = self.current_color_theme;
         let applied_baseline = FolderOptionsAppliedSnapshotV1 {
             settings: settings.clone(),
             restore_previous_session: self.restore_previous_session,
             locale_choice,
+            theme,
             extension_enabled: extension_enabled.clone(),
         };
         self.folder_options = Some(FolderOptionsDraft {
@@ -2792,6 +2811,7 @@ impl AppViewState {
             settings,
             restore_previous_session: self.restore_previous_session,
             locale_choice,
+            theme,
             extension_enabled,
             search_engine_availability: self.search_engine_availability_for_current_location(),
             applied_baseline,
@@ -2953,6 +2973,12 @@ impl AppViewState {
         }
     }
 
+    pub(crate) fn set_folder_option_theme(&mut self, theme: ColorTheme) {
+        if let Some(draft) = &mut self.folder_options {
+            draft.theme = theme;
+        }
+    }
+
     pub const fn restore_previous_session(&self) -> bool {
         self.restore_previous_session
     }
@@ -2995,6 +3021,7 @@ impl AppViewState {
             self.tabs.active_tab_mut().view.settings = applied.settings.clone();
             self.restore_previous_session = applied.restore_previous_session;
             self.apply_locale_choice(applied.locale_choice);
+            self.current_color_theme = applied.theme;
             for (extension, enabled) in self
                 .extensions
                 .iter_mut()
@@ -3058,6 +3085,7 @@ impl AppViewState {
         self.tabs.active_tab_mut().view.settings = applied.settings.clone();
         self.restore_previous_session = applied.restore_previous_session;
         self.apply_locale_choice(applied.locale_choice);
+        self.current_color_theme = applied.theme;
         for (extension, enabled) in self
             .extensions
             .iter_mut()
@@ -3072,6 +3100,7 @@ impl AppViewState {
             draft.settings = applied.settings.clone();
             draft.restore_previous_session = applied.restore_previous_session;
             draft.locale_choice = applied.locale_choice;
+            draft.theme = applied.theme;
             draft.extension_enabled = applied.extension_enabled.clone();
             draft.applied_baseline = applied;
             draft.applied_revision = revision;
@@ -4586,6 +4615,12 @@ impl AppViewState {
         self.cancel_lock_recovery();
         self.clear_external_drag();
         self.close_navigation_history_menu();
+        let child = self
+            .tabs
+            .active_tab()
+            .history
+            .current()
+            .map(|entry| entry.location.clone());
         let location = self
             .tabs
             .active_tab()
@@ -4598,6 +4633,9 @@ impl AppViewState {
             .tabs
             .active_tab_mut()
             .begin_back_request_at_with_snapshot(1, cached)?;
+        if let Some(child) = child {
+            self.queue_leave_selection(child);
+        }
         Some(ExplorerCommand::Navigate { context, location })
     }
 
@@ -4683,28 +4721,30 @@ impl AppViewState {
     }
 
     pub(crate) fn begin_up_navigation(&mut self) -> Option<ExplorerCommand> {
-        let location = &self.tabs.active_tab().history.current()?.location;
-        let resolved_virtual_parent = matches!(location, LocationDescriptor::Virtual(_))
+        let child = self.tabs.active_tab().history.current()?.location.clone();
+        let resolved_virtual_parent = matches!(&child, LocationDescriptor::Virtual(_))
             .then(|| {
                 let ancestry = &self.tabs.active_tab().view.address.resolved_ancestry;
                 (ancestry
                     .last()
-                    .is_some_and(|segment| &segment.location == location)
+                    .is_some_and(|segment| segment.location == child)
                     && ancestry.len() >= 2)
                     .then(|| ancestry[ancestry.len() - 2].location.clone())
             })
             .flatten();
-        let parent = location
+        let parent = child
             .virtual_parent()
             .or(resolved_virtual_parent)
-            .or_else(|| self.favorites_parent_location(location))
+            .or_else(|| self.favorites_parent_location(&child))
             .or_else(|| {
-                location
+                child
                     .path()?
                     .parent()
                     .map(|parent| LocationDescriptor::file_system(parent.to_path_buf()))
             })?;
-        self.begin_active_navigation(parent, false)
+        let command = self.begin_active_navigation(parent, false)?;
+        self.queue_leave_selection(child);
+        Some(command)
     }
 
     pub(crate) fn begin_refresh_navigation(&mut self) -> Option<ExplorerCommand> {
@@ -5531,6 +5571,7 @@ impl AppViewState {
                     self.pending_new_folder_rename = None;
                 }
             }
+            self.apply_pending_leave_selection();
         }
         outcome
     }
@@ -5850,11 +5891,8 @@ impl AppViewState {
     }
 
     pub(crate) fn select_row(&mut self, row_index: usize) -> bool {
-        let Some(id) = self.presentation_entry(row_index).map(|entry| entry.id) else {
-            return false;
-        };
-        self.tabs.active_tab_mut().selection.select_only(id);
-        true
+        self.pending_leave_selection = None;
+        self.select_row_preserving_leave(row_index)
     }
 
     pub(crate) fn select_location(&mut self, location: &LocationDescriptor) -> bool {
@@ -5867,7 +5905,37 @@ impl AppViewState {
         }) else {
             return false;
         };
-        self.select_row(row_index)
+        self.select_row_preserving_leave(row_index)
+    }
+
+    fn select_row_preserving_leave(&mut self, row_index: usize) -> bool {
+        let Some(id) = self.presentation_entry(row_index).map(|entry| entry.id) else {
+            return false;
+        };
+        self.tabs.active_tab_mut().selection.select_only(id);
+        true
+    }
+
+    fn queue_leave_selection(&mut self, child: LocationDescriptor) {
+        let tab = self.tabs.active_tab();
+        self.pending_leave_selection = Some(PendingLeaveSelection {
+            tab_id: tab.id,
+            generation: tab.generation,
+            child,
+        });
+        self.apply_pending_leave_selection();
+    }
+
+    fn apply_pending_leave_selection(&mut self) -> bool {
+        let Some(pending) = self.pending_leave_selection.clone() else {
+            return false;
+        };
+        let tab = self.tabs.active_tab();
+        if tab.id != pending.tab_id || tab.generation != pending.generation {
+            self.pending_leave_selection = None;
+            return false;
+        }
+        self.select_location(&pending.child)
     }
 
     pub(crate) fn typeahead_file_view(&mut self, text: &str, now: Instant) -> Option<usize> {
@@ -5952,6 +6020,7 @@ impl AppViewState {
         let Some(id) = self.presentation_entry(row_index).map(|entry| entry.id) else {
             return false;
         };
+        self.pending_leave_selection = None;
         self.tabs.active_tab_mut().selection.toggle(id);
         true
     }
@@ -5961,6 +6030,7 @@ impl AppViewState {
         let Some(id) = self.presentation_entry(row_index).map(|entry| entry.id) else {
             return false;
         };
+        self.pending_leave_selection = None;
         self.tabs.active_tab_mut().selection.select_additive(id);
         true
     }
@@ -6081,6 +6151,7 @@ impl AppViewState {
             return false;
         };
         let order = self.presentation_ids();
+        self.pending_leave_selection = None;
         self.tabs
             .active_tab_mut()
             .selection
@@ -6092,21 +6163,25 @@ impl AppViewState {
         let Some(id) = self.presentation_entry(row_index).map(|entry| entry.id) else {
             return false;
         };
+        self.pending_leave_selection = None;
         self.tabs.active_tab_mut().selection.focus_only(id);
         true
     }
 
     pub(crate) fn select_all_rows(&mut self) {
         let order = self.presentation_ids();
+        self.pending_leave_selection = None;
         self.tabs.active_tab_mut().selection.select_all(&order);
     }
 
     pub(crate) fn invert_selection(&mut self) {
         let order = self.presentation_ids();
+        self.pending_leave_selection = None;
         self.tabs.active_tab_mut().selection.invert(&order);
     }
 
     pub(crate) fn clear_selection(&mut self) {
+        self.pending_leave_selection = None;
         self.tabs.active_tab_mut().selection.clear();
     }
 
@@ -6120,6 +6195,7 @@ impl AppViewState {
     }
 
     pub(crate) fn prepare_context_selection(&mut self, item_id: Option<&ShellItemId>) {
+        self.pending_leave_selection = None;
         let Some(item_id) = item_id else {
             self.tabs.active_tab_mut().selection.clear();
             return;
@@ -6280,7 +6356,7 @@ impl AppViewState {
             } else {
                 explorer_model::ContextMenuInvocationProfile::Explorer
             },
-            color_scheme: if matches!(self.current_theme, ThemeMode::Dark) {
+            color_scheme: if matches!(self.current_theme(), ThemeMode::Dark) {
                 explorer_model::ContextMenuColorScheme::Dark
             } else {
                 explorer_model::ContextMenuColorScheme::Light
@@ -6394,7 +6470,7 @@ impl AppViewState {
             } else {
                 explorer_model::ContextMenuInvocationProfile::Explorer
             },
-            color_scheme: if matches!(self.current_theme, ThemeMode::Dark) {
+            color_scheme: if matches!(self.current_theme(), ThemeMode::Dark) {
                 explorer_model::ContextMenuColorScheme::Dark
             } else {
                 explorer_model::ContextMenuColorScheme::Light
@@ -7359,7 +7435,14 @@ impl AppViewState {
     }
 
     pub(crate) fn set_theme(&mut self, theme: ThemeMode) {
-        self.current_theme = theme;
+        self.current_color_theme = match theme {
+            ThemeMode::Light => ColorTheme::WindowsLight,
+            ThemeMode::Dark => ColorTheme::WindowsDark,
+        };
+    }
+
+    pub(crate) fn set_color_theme(&mut self, theme: ColorTheme) {
+        self.current_color_theme = theme;
     }
 
     pub(crate) fn set_navigation_pane_width(&mut self, width: LogicalPx) {
@@ -7874,9 +7957,9 @@ mod tests {
 
     use super::{
         AppViewState, BookmarkDropCue, BookmarkInsertEdge, CommandKind, DirectoryCacheKey,
-        DirectorySnapshotCache, bookmark_reorder_destination, bookmark_target_for_current_location,
-        resolve_bookmark_insert_edge, resolve_details_column_insertion,
-        unique_remote_folder_symlink_name,
+        DirectorySnapshotCache, FolderOptionsApplyResultV1, bookmark_reorder_destination,
+        bookmark_target_for_current_location, resolve_bookmark_insert_edge,
+        resolve_details_column_insertion, unique_remote_folder_symlink_name,
     };
 
     #[test]
@@ -7911,7 +7994,7 @@ mod tests {
         assert!(state.folder_options().unwrap().is_dirty());
         assert_eq!(
             state.apply_folder_options(),
-            super::FolderOptionsApplyResultV1::Applied { revision: 1 }
+            FolderOptionsApplyResultV1::Applied { revision: 1 }
         );
         assert_eq!(state.locale(), AppLocale::Ja);
         assert_eq!(state.locale_preference(), Some(AppLocale::Ja));
@@ -7921,7 +8004,7 @@ mod tests {
         assert!(state.folder_options().unwrap().is_dirty());
         assert_eq!(
             state.apply_folder_options(),
-            super::FolderOptionsApplyResultV1::Applied { revision: 2 }
+            FolderOptionsApplyResultV1::Applied { revision: 2 }
         );
         assert_eq!(state.locale_preference(), None);
         assert_eq!(state.locale(), AppLocale::ZhTw);
@@ -7956,7 +8039,7 @@ mod tests {
         state.set_folder_option_locale_choice(super::LocaleChoice::FollowWindows);
         assert_eq!(
             state.apply_folder_options(),
-            super::FolderOptionsApplyResultV1::Applied { revision: 1 }
+            FolderOptionsApplyResultV1::Applied { revision: 1 }
         );
         assert_eq!(state.locale_preference(), None);
         assert_eq!(state.locale(), AppLocale::Ko);
@@ -7997,6 +8080,12 @@ mod tests {
             "Language"
         );
         assert_eq!(Catalog::new(AppLocale::ZhTw).t("settings-language"), "語言");
+        assert_eq!(Catalog::new(AppLocale::En).t("settings-theme"), "Theme");
+        assert_eq!(Catalog::new(AppLocale::ZhTw).t("settings-theme"), "主題");
+        assert_eq!(
+            Catalog::new(AppLocale::En).t("settings-theme-one-dark"),
+            "One Dark"
+        );
     }
 
     #[test]
@@ -8013,7 +8102,11 @@ mod tests {
             "photos - 捷徑"
         );
     }
-    use crate::{focus::FocusSurface, layout::LayoutTokens, theme::ThemeMode};
+    use crate::{
+        focus::FocusSurface,
+        layout::LayoutTokens,
+        theme::{ColorTheme, ThemeMode},
+    };
     use std::{
         collections::HashSet,
         time::{Duration, Instant},
@@ -8462,6 +8555,165 @@ mod tests {
             is_container: true,
             metadata: explorer_model::FileEntryMetadata::default(),
         }
+    }
+
+    fn folder_entry(identity: u8, name: &str, path: &str) -> explorer_model::FileEntry {
+        explorer_model::FileEntry {
+            id: explorer_model::ShellItemId::from_provider_bytes([identity]).unwrap(),
+            display_name: name.to_owned(),
+            location: explorer_model::LocationDescriptor::file_system(path),
+            is_container: true,
+            metadata: explorer_model::FileEntryMetadata::default(),
+        }
+    }
+
+    fn focused_display_name(state: &AppViewState) -> Option<String> {
+        state.focused_row_index().and_then(|index| {
+            state
+                .presentation_entry(index)
+                .map(|entry| entry.display_name)
+        })
+    }
+
+    #[test]
+    fn backspace_selects_the_folder_just_left_so_f2_renames_it() {
+        let parent = explorer_model::LocationDescriptor::file_system(r"C:\fixture");
+        let child = explorer_model::LocationDescriptor::file_system(r"C:\fixture\zzz");
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            parent.clone(),
+            "fixture",
+        ));
+        let parent_load = state.begin_active_location_load().unwrap();
+        complete_cached_directory(
+            &mut state,
+            &parent_load,
+            parent,
+            vec![
+                folder_entry(1, "aaa", r"C:\fixture\aaa"),
+                folder_entry(2, "zzz", r"C:\fixture\zzz"),
+            ],
+        );
+        let child_load = state.begin_active_navigation(child.clone(), false).unwrap();
+        complete_cached_directory(
+            &mut state,
+            &child_load,
+            child,
+            vec![folder_entry(3, "inside", r"C:\fixture\zzz\inside")],
+        );
+
+        let _ = state.begin_back_navigation().expect("Backspace");
+        assert_eq!(focused_display_name(&state).as_deref(), Some("zzz"));
+        assert!(state.begin_focused_inline_rename());
+        assert_eq!(state.rename_editor().unwrap().buffer, "zzz");
+    }
+
+    #[test]
+    fn backspace_rebinds_leave_selection_when_parent_item_ids_change() {
+        let parent = explorer_model::LocationDescriptor::file_system(r"C:\fixture");
+        let child = explorer_model::LocationDescriptor::file_system(r"C:\fixture\zzz");
+        let mut state = AppViewState::with_initial_location(explorer_model::HistoryEntry::new(
+            parent.clone(),
+            "fixture",
+        ));
+        let parent_load = state.begin_active_location_load().unwrap();
+        complete_cached_directory(
+            &mut state,
+            &parent_load,
+            parent.clone(),
+            vec![
+                folder_entry(1, "aaa", r"C:\fixture\aaa"),
+                folder_entry(2, "zzz", r"C:\fixture\zzz"),
+            ],
+        );
+        let child_load = state.begin_active_navigation(child.clone(), false).unwrap();
+        complete_cached_directory(
+            &mut state,
+            &child_load,
+            child,
+            vec![folder_entry(3, "inside", r"C:\fixture\zzz\inside")],
+        );
+
+        let back = state.begin_back_navigation().expect("Backspace");
+        complete_cached_directory(
+            &mut state,
+            &back,
+            parent,
+            vec![
+                folder_entry(11, "aaa", r"C:\fixture\aaa"),
+                folder_entry(12, "zzz", r"C:\fixture\zzz"),
+            ],
+        );
+        assert_eq!(focused_display_name(&state).as_deref(), Some("zzz"));
+        assert!(state.begin_focused_inline_rename());
+        assert_eq!(state.rename_editor().unwrap().buffer, "zzz");
+    }
+
+    #[test]
+    fn up_selects_the_folder_just_left_after_parent_listing_arrives() {
+        let child = explorer_model::LocationDescriptor::file_system(r"C:\fixture\zzz");
+        let mut state =
+            AppViewState::with_initial_location(explorer_model::HistoryEntry::new(child, "zzz"));
+        let up = state.begin_up_navigation().expect("Up");
+        assert_eq!(focused_display_name(&state), None);
+
+        complete_cached_directory(
+            &mut state,
+            &up,
+            explorer_model::LocationDescriptor::file_system(r"C:\fixture"),
+            vec![
+                folder_entry(1, "aaa", r"C:\fixture\aaa"),
+                folder_entry(2, "zzz", r"C:\fixture\zzz"),
+            ],
+        );
+        assert_eq!(focused_display_name(&state).as_deref(), Some("zzz"));
+        assert!(state.begin_focused_inline_rename());
+        assert_eq!(state.rename_editor().unwrap().buffer, "zzz");
+    }
+
+    #[test]
+    fn leave_selection_does_not_override_a_later_user_selection() {
+        let child = explorer_model::LocationDescriptor::file_system(r"C:\fixture\zzz");
+        let parent = explorer_model::LocationDescriptor::file_system(r"C:\fixture");
+        let mut state =
+            AppViewState::with_initial_location(explorer_model::HistoryEntry::new(child, "zzz"));
+        let up = state.begin_up_navigation().expect("Up");
+        let context = up.context().expect("navigation context").clone();
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::LocationResolved {
+                context: context.clone(),
+                metadata: explorer_model::LocationMetadata {
+                    descriptor: parent,
+                    display_title: "fixture".to_owned(),
+                    can_go_up: true,
+                    can_write: true,
+                },
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::DirectoryBatch {
+                context: context.clone(),
+                entries: vec![
+                    folder_entry(1, "aaa", r"C:\fixture\aaa"),
+                    folder_entry(2, "zzz", r"C:\fixture\zzz"),
+                ],
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert_eq!(focused_display_name(&state).as_deref(), Some("zzz"));
+        assert!(state.select_row(0));
+        assert_eq!(focused_display_name(&state).as_deref(), Some("aaa"));
+        assert_eq!(
+            state.apply_service_event(explorer_model::ExplorerEvent::DirectoryBatch {
+                context,
+                entries: vec![
+                    folder_entry(11, "aaa", r"C:\fixture\aaa"),
+                    folder_entry(12, "zzz", r"C:\fixture\zzz"),
+                ],
+            }),
+            explorer_model::WindowEventOutcome::Applied
+        );
+        assert_eq!(focused_display_name(&state).as_deref(), Some("aaa"));
     }
 
     #[test]
@@ -12417,6 +12669,26 @@ mod tests {
     }
 
     #[test]
+    fn folder_options_theme_applies_zed_palette_and_keeps_windows_toggle() {
+        let mut state = AppViewState::default();
+        assert_eq!(state.current_color_theme(), ColorTheme::WindowsLight);
+        assert_eq!(state.current_theme(), ThemeMode::Light);
+        state.open_folder_options();
+        state.set_folder_options_page(crate::actions::FolderOptionsPage::Theme);
+        state.set_folder_option_theme(ColorTheme::OneDark);
+        assert_eq!(state.current_color_theme(), ColorTheme::WindowsLight);
+        assert_eq!(
+            state.apply_folder_options(),
+            FolderOptionsApplyResultV1::Applied { revision: 1 }
+        );
+        assert_eq!(state.current_color_theme(), ColorTheme::OneDark);
+        assert_eq!(state.current_theme(), ThemeMode::Dark);
+        state.set_theme(ThemeMode::Light);
+        assert_eq!(state.current_color_theme(), ColorTheme::WindowsLight);
+        assert_eq!(state.current_theme(), ThemeMode::Light);
+    }
+
+    #[test]
     fn folder_options_search_engine_is_single_select_and_ignores_disabled_rows() {
         let mut state = AppViewState::default();
         state.open_folder_options();
@@ -12442,7 +12714,7 @@ mod tests {
         assert!(state.folder_options().unwrap().is_dirty());
         assert_eq!(
             state.apply_folder_options(),
-            super::FolderOptionsApplyResultV1::Applied { revision: 1 }
+            FolderOptionsApplyResultV1::Applied { revision: 1 }
         );
         assert_eq!(
             state.view_settings().search_engine,
@@ -12486,7 +12758,7 @@ mod tests {
         );
         assert_eq!(
             state.apply_folder_options(),
-            super::FolderOptionsApplyResultV1::Rejected {
+            FolderOptionsApplyResultV1::Rejected {
                 reason: super::FolderOptionsApplyFailureV1::Validation,
             }
         );
@@ -12508,7 +12780,7 @@ mod tests {
         );
         assert_eq!(
             state.apply_folder_options(),
-            super::FolderOptionsApplyResultV1::Applied { revision: 1 }
+            FolderOptionsApplyResultV1::Applied { revision: 1 }
         );
         assert_eq!(
             state.view_settings().search_engine,
@@ -12526,7 +12798,7 @@ mod tests {
         state.update_folder_options(|settings| settings.hidden_items = true);
         assert_eq!(
             state.apply_folder_options(),
-            super::FolderOptionsApplyResultV1::Applied { revision: 1 }
+            FolderOptionsApplyResultV1::Applied { revision: 1 }
         );
         assert!(state.view_settings().hidden_items);
         assert_eq!(
@@ -12598,7 +12870,7 @@ mod tests {
         let mut state = AppViewState::default();
         assert_eq!(
             state.confirm_folder_options(),
-            super::FolderOptionsApplyResultV1::NoDraft
+            FolderOptionsApplyResultV1::NoDraft
         );
         state.open_folder_options();
         assert!(!state.folder_options().unwrap().is_dirty());
@@ -12606,7 +12878,7 @@ mod tests {
         assert!(state.folder_options().unwrap().is_dirty());
         assert_eq!(
             state.apply_folder_options(),
-            super::FolderOptionsApplyResultV1::Applied { revision: 1 }
+            FolderOptionsApplyResultV1::Applied { revision: 1 }
         );
         let draft = state.folder_options().expect("Apply keeps the draft open");
         assert!(!draft.is_dirty());
@@ -12614,7 +12886,7 @@ mod tests {
         state.update_folder_options(|settings| settings.file_name_extensions = false);
         assert_eq!(
             state.confirm_folder_options(),
-            super::FolderOptionsApplyResultV1::Applied { revision: 2 }
+            FolderOptionsApplyResultV1::Applied { revision: 2 }
         );
         assert!(state.folder_options().is_none());
     }
@@ -12657,7 +12929,7 @@ mod tests {
             .applied_snapshot();
         assert_eq!(
             owner.apply_folder_options(),
-            super::FolderOptionsApplyResultV1::Applied { revision: 1 }
+            FolderOptionsApplyResultV1::Applied { revision: 1 }
         );
 
         let mut first_peer = AppViewState::default();
@@ -12676,7 +12948,7 @@ mod tests {
         owner.set_folder_option_locale_choice(super::LocaleChoice::Explicit(AppLocale::Ja));
         assert_eq!(
             owner.apply_folder_options(),
-            super::FolderOptionsApplyResultV1::Applied { revision: 1 }
+            FolderOptionsApplyResultV1::Applied { revision: 1 }
         );
         let (applied, revision) = owner
             .last_applied_folder_options()
@@ -12726,7 +12998,7 @@ mod tests {
                 super::FolderOptionsApplyFailureV1::Persistence,
                 "save failed",
             ),
-            super::FolderOptionsApplyResultV1::Rejected {
+            FolderOptionsApplyResultV1::Rejected {
                 reason: super::FolderOptionsApplyFailureV1::Persistence,
             }
         );
