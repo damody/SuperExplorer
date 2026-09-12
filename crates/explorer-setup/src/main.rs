@@ -1,8 +1,10 @@
 #![cfg(windows)]
 #![expect(
     unsafe_code,
-    reason = "setup uses COM shortcuts, elevation, and Windows message boxes"
+    reason = "setup uses COM shortcuts, elevation, and a native installer wizard"
 )]
+
+mod ui;
 
 use anyhow::{Context, Result, bail};
 use std::{
@@ -18,8 +20,8 @@ use std::{
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 const MAGIC: &[u8; 8] = b"SESETUP1";
-const PRODUCT_NAME: &str = "SuperExplorer";
-const PRODUCT_PUBLISHER: &str = "Damody";
+pub(crate) const PRODUCT_NAME: &str = "SuperExplorer";
+pub(crate) const PRODUCT_PUBLISHER: &str = "Damody";
 const PRODUCT_URL: &str = "https://github.com/damody/SuperExplorer";
 const PRODUCT_REG_KEY: &str = r"Software\SuperExplorer";
 const PRODUCT_UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\SuperExplorer";
@@ -32,7 +34,7 @@ fn main() {
             let text = format!("{error:#}");
             eprintln!("{text}");
             if !is_silent() {
-                message_box("SuperExplorer 安裝程式", &text);
+                message_box("SuperExplorer Setup", &text);
             }
             std::process::exit(1);
         }
@@ -45,9 +47,16 @@ fn run() -> Result<()> {
         return create_installer(&args);
     }
     if is_uninstall_request(&args) {
-        return uninstall(&args);
+        if is_silent() || has_flag(&args, "--skip-service") {
+            return uninstall(&args);
+        }
+        return ui::run_uninstall();
     }
-    install(&args)
+    if is_silent() || has_flag(&args, "--skip-service") || flag_value(&args, "--install-directory").is_some()
+    {
+        return install(&args);
+    }
+    ui::run_install()
 }
 
 fn is_silent() -> bool {
@@ -167,7 +176,22 @@ fn extract_overlay(dest: &Path) -> Result<PathBuf> {
     Ok(dest.to_path_buf())
 }
 
-fn default_install_dir() -> Result<PathBuf> {
+pub(crate) fn payload_version() -> String {
+    let Ok(bytes) = read_overlay() else {
+        return String::new();
+    };
+    let Ok(mut archive) = ZipArchive::new(Cursor::new(bytes)) else {
+        return String::new();
+    };
+    let Ok(mut file) = archive.by_name("setup-version.txt") else {
+        return String::new();
+    };
+    let mut text = String::new();
+    let _ = file.read_to_string(&mut text);
+    text.trim().to_owned()
+}
+
+pub(crate) fn default_install_dir() -> Result<PathBuf> {
     let program_files = env::var("ProgramW6432")
         .or_else(|_| env::var("ProgramFiles"))
         .context("Program Files is unavailable")?;
@@ -179,11 +203,21 @@ fn install(args: &[String]) -> Result<()> {
     let install_dir = flag_value(args, "--install-directory")
         .map(PathBuf::from)
         .unwrap_or(default_install_dir()?);
+    install_to(install_dir, skip_service, |_, _| {})
+}
+
+pub(crate) fn install_to(
+    install_dir: PathBuf,
+    skip_service: bool,
+    mut progress: impl FnMut(&str, u32),
+) -> Result<()> {
     if !skip_service {
         ensure_administrator(&install_dir)?;
     }
+    progress("Preparing files", 8);
     let staging = tempfile::tempdir().context("payload staging")?;
     extract_overlay(staging.path())?;
+    progress("Closing SuperExplorer", 18);
     let quiesce = staging.path().join("superexplorer-quiesce.exe");
     if quiesce.is_file() {
         run_checked(
@@ -192,16 +226,20 @@ fn install(args: &[String]) -> Result<()> {
         )?;
     }
     if !skip_service {
+        progress("Stopping SuperExplorer MFT Service", 32);
         stop_service()?;
     }
+    progress("Copying program files", 55);
     fs::create_dir_all(install_dir.join("plugins"))?;
     copy_tree(staging.path(), &install_dir)?;
     let uninstaller = install_dir.join("Uninstall.exe");
     fs::copy(env::current_exe()?, &uninstaller)
         .with_context(|| format!("write {}", uninstaller.display()))?;
     if !skip_service {
+        progress("Configuring Windows service", 78);
         configure_service(&install_dir)?;
         write_uninstall_registry(&install_dir)?;
+        progress("Creating shortcuts", 90);
         create_shortcut(
             &install_dir.join("SuperExplorer.exe"),
             &desktop_dir()?.join(format!("{PRODUCT_NAME}.lnk")),
@@ -213,19 +251,14 @@ fn install(args: &[String]) -> Result<()> {
             &start_menu.join(format!("{PRODUCT_NAME}.lnk")),
         )?;
     }
+    progress("Finishing", 100);
     let version = fs::read_to_string(install_dir.join("setup-version.txt"))
         .unwrap_or_else(|_| "unknown".to_owned());
     println!("installed SuperExplorer {version} to {}", install_dir.display());
-    if !is_silent() && !skip_service {
-        message_box(
-            "SuperExplorer",
-            &format!("已安裝 SuperExplorer {version} 到\n{}", install_dir.display()),
-        );
-    }
     Ok(())
 }
 
-fn uninstall(args: &[String]) -> Result<()> {
+pub(crate) fn uninstall(args: &[String]) -> Result<()> {
     let skip_service = has_flag(args, "--skip-service");
     let install_dir = flag_value(args, "--install-directory")
         .map(PathBuf::from)
@@ -425,6 +458,10 @@ fn delete_service() -> Result<()> {
         bail!("unable to delete {SERVICE_NAME}: {text}");
     }
     Ok(())
+}
+
+pub(crate) fn ensure_administrator_for_ui() -> Result<()> {
+    ensure_administrator(&default_install_dir()?)
 }
 
 fn ensure_administrator(install_dir: &Path) -> Result<()> {
