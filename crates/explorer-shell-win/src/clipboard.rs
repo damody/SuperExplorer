@@ -25,7 +25,8 @@ use windows::Win32::{
         },
     },
     UI::Shell::{
-        BHID_DataObject, CFSTR_PERFORMEDDROPEFFECT, CFSTR_PREFERREDDROPEFFECT, DragQueryFileW,
+        BHID_DataObject, CFSTR_PASTESUCCEEDED, CFSTR_PERFORMEDDROPEFFECT, CFSTR_PREFERREDDROPEFFECT,
+        DragQueryFileW,
         HDROP, ILFindLastID, SHCreateDataObject, SHCreateShellItemArrayFromIDLists,
     },
 };
@@ -394,16 +395,21 @@ impl ClipboardRuntime {
         let finished = matches!(outcome, OperationTerminal::Finished);
         if finished && mode == ClipboardMode::Cut {
             let _ = set_drop_effect(data, CFSTR_PERFORMEDDROPEFFECT, DROPEFFECT_MOVE.0);
-            // SAFETY: clearing after a completed move prevents stale cut data from being pasted
-            // again; OLE releases the system-held reference.
-            let _ = unsafe { OleSetClipboard(None::<&IDataObject>) };
-            self.owned = None;
-            self.generation = self.generation.saturating_add(1);
-            self.state = ClipboardState::None {
-                generation: self.generation,
-            };
-            // SAFETY: sample the sequence produced by clearing ownership.
-            self.sequence = unsafe { GetClipboardSequenceNumber() };
+            let _ = set_drop_effect(data, CFSTR_PASTESUCCEEDED, DROPEFFECT_MOVE.0);
+            if self.owned.is_some() {
+                // SAFETY: clearing after a completed owned move prevents stale cut data from being
+                // pasted again; OLE releases the system-held reference.
+                let _ = unsafe { OleSetClipboard(None::<&IDataObject>) };
+                self.owned = None;
+                self.generation = self.generation.saturating_add(1);
+                self.state = ClipboardState::None {
+                    generation: self.generation,
+                };
+                // SAFETY: sample the sequence produced by clearing ownership.
+                self.sequence = unsafe { GetClipboardSequenceNumber() };
+            }
+            // Explorer-owned cut data must remain on the clipboard so the source can observe
+            // Performed DropEffect / Paste Succeeded and delete the originals itself.
         } else if let (
             ClipboardState::Owned {
                 mode: ClipboardMode::Cut,
@@ -868,15 +874,16 @@ fn clipboard_error(
 mod tests {
     use std::{process::Command, time::Duration};
 
+    use explorer_common::RequestId;
     use explorer_model::{
         ClipboardMode, ClipboardState, ConflictDecision, ItemDescriptor, LocationDescriptor,
-        ShellItemId, TransferEffects,
+        OperationTerminal, ShellItemId, TransferEffects,
     };
     use windows::Win32::System::Ole::{OleInitialize, OleUninitialize};
 
     use super::{
         CLIPBOARD_TEST_LOCK, ClipboardRuntime, background_paste_still_owns_clipboard,
-        clear_clipboard_with_retry, create_shell_data_object, paste_conflict_for_mode,
+        clear_clipboard_with_retry, create_shell_data_object, drop_effect, paste_conflict_for_mode,
         paste_conflict_for_request, read_binary_clipboard_format, set_binary_clipboard_format,
         set_clipboard_with_retry, set_drop_effect, validate_inspection_duration,
     };
@@ -1030,6 +1037,36 @@ mod tests {
             explorer_model::FileOperationKind::Copy { ref items, .. } if items.len() == 2
         ));
 
+        set_drop_effect(
+            &data,
+            windows::Win32::UI::Shell::CFSTR_PREFERREDDROPEFFECT,
+            windows::Win32::System::Ole::DROPEFFECT_MOVE.0,
+        )
+        .expect("preferred move effect");
+        set_clipboard_with_retry(&data).expect("external cut clipboard object");
+        assert!(matches!(
+            runtime.poll_change(),
+            Some(ClipboardState::External {
+                effects,
+                item_count: Some(2),
+                ..
+            }) if effects == TransferEffects::MOVE
+        ));
+        let cut_destination = fixture
+            .create_dir("cut-destination")
+            .expect("cut destination");
+        let (cut_request, _, cut_mode) = runtime
+            .paste_request(
+                LocationDescriptor::file_system(cut_destination),
+                ConflictDecision::Prompt,
+            )
+            .expect("external cut paste request");
+        assert_eq!(cut_mode, ClipboardMode::Cut);
+        assert!(matches!(
+            cut_request.kind,
+            explorer_model::FileOperationKind::Move { ref items, .. } if items.len() == 2
+        ));
+
         let stale = fixture.create_file("stale.txt", b"stale").expect("stale");
         let stale_item = ItemDescriptor {
             id: ShellItemId::from_provider_bytes([99]).unwrap(),
@@ -1071,6 +1108,63 @@ mod tests {
         ));
         drop(runtime);
         // SAFETY: balances this test's OleInitialize after all COM objects are dropped.
+        unsafe { OleUninitialize() };
+    }
+
+    #[test]
+    fn explorer_cut_paste_notifies_source_and_leaves_clipboard_for_explorer() {
+        let _guard = CLIPBOARD_TEST_LOCK.lock().expect("clipboard lock");
+        unsafe { OleInitialize(None) }.expect("initialize OLE");
+        let fixture = explorer_test_support::OwnedTempFixture::new().expect("fixture");
+        let path = fixture.create_file("cut.txt", b"cut").expect("file");
+        let item = ItemDescriptor {
+            id: ShellItemId::from_provider_bytes([3]).expect("identity"),
+            location: LocationDescriptor::file_system(path),
+        };
+        let data = create_shell_data_object(&[item]).expect("Shell data object");
+        set_drop_effect(
+            &data,
+            windows::Win32::UI::Shell::CFSTR_PREFERREDDROPEFFECT,
+            windows::Win32::System::Ole::DROPEFFECT_MOVE.0,
+        )
+        .expect("preferred move effect");
+        let mut runtime = ClipboardRuntime::new();
+        set_clipboard_with_retry(&data).expect("external cut clipboard");
+        assert!(matches!(
+            runtime.poll_change(),
+            Some(ClipboardState::External {
+                effects,
+                ..
+            }) if effects == TransferEffects::MOVE
+        ));
+        let request_id = RequestId::new();
+        runtime
+            .begin_background_paste(
+                request_id,
+                LocationDescriptor::file_system(fixture.create_dir("destination").expect("dest")),
+                ConflictDecision::Prompt,
+            )
+            .expect("begin external cut paste");
+        let state = runtime
+            .complete_background_paste(request_id, &OperationTerminal::Finished)
+            .expect("complete external cut paste");
+        assert!(matches!(
+            state,
+            ClipboardState::External {
+                effects,
+                ..
+            } if effects == TransferEffects::MOVE
+        ));
+        assert_eq!(
+            drop_effect(&data, windows::Win32::UI::Shell::CFSTR_PERFORMEDDROPEFFECT),
+            Some(windows::Win32::System::Ole::DROPEFFECT_MOVE.0)
+        );
+        assert_eq!(
+            drop_effect(&data, windows::Win32::UI::Shell::CFSTR_PASTESUCCEEDED),
+            Some(windows::Win32::System::Ole::DROPEFFECT_MOVE.0)
+        );
+        drop(data);
+        drop(runtime);
         unsafe { OleUninitialize() };
     }
 
