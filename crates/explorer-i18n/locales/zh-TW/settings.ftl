@@ -8,6 +8,7 @@ settings-general = 一般
 settings-view = 檢視
 settings-theme = 主題
 settings-theme-windows = Windows
+settings-theme-follow-windows = 跟隨 Windows
 settings-theme-zed = Zed
 settings-theme-windows-light = 淺色
 settings-theme-windows-dark = 深色

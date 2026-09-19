@@ -56,6 +56,7 @@ nav-offline = { $label } — Çevrimdışı
 nav-unauthorized = { $label } — Yetkisiz
 nav-unavailable = { $label } — Kullanılamıyor
 nav-favorites = Sık kullanılanlar
+nav-system-bookmarks = Sistem yer imleri
 
 chrome-new-tab = Yeni sekme
 
@@ -94,6 +95,7 @@ chrome-details-pane = Ayrıntılar bölmesi
 chrome-preview-pane = Önizleme bölmesi
 
 chrome-file-view-hscroll = Dosya görünümü yatay kaydırma çubuğu
+chrome-tab-strip-hscroll = Sekme çubuğu yatay kaydırma çubuğu
 
 chrome-choose-details-columns = Ayrıntı sütunlarını seç
 

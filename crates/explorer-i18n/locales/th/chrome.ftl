@@ -56,6 +56,7 @@ nav-offline = { $label } — ออฟไลน์
 nav-unauthorized = { $label } — ไม่ได้รับอนุญาต
 nav-unavailable = { $label } — ไม่พร้อมใช้งาน
 nav-favorites = รายการโปรด
+nav-system-bookmarks = ที่คั่นหน้าของระบบ
 
 chrome-new-tab = แท็บใหม่
 
@@ -94,6 +95,7 @@ chrome-details-pane = บานหน้าต่างรายละเอี�
 chrome-preview-pane = บานหน้าต่างแสดงตัวอย่าง
 
 chrome-file-view-hscroll = แถบเลื่อนแนวนอนของมุมมองไฟล์
+chrome-tab-strip-hscroll = แถบเลื่อนแนวนอนของแถบแท็บ
 
 chrome-choose-details-columns = เลือกคอลัมน์รายละเอียด
 

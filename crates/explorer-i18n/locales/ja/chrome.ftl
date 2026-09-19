@@ -56,6 +56,7 @@ nav-offline = { $label } — オフライン
 nav-unauthorized = { $label } — 未承認
 nav-unavailable = { $label } — 利用できません
 nav-favorites = お気に入り
+nav-system-bookmarks = システムのブックマーク
 
 chrome-new-tab = 新しいタブ
 
@@ -94,6 +95,7 @@ chrome-details-pane = 詳細ウィンドウ
 chrome-preview-pane = プレビュー ウィンドウ
 
 chrome-file-view-hscroll = ファイル ビューの水平スクロール バー
+chrome-tab-strip-hscroll = タブバーの水平スクロール バー
 
 chrome-choose-details-columns = 詳細列の選択
 

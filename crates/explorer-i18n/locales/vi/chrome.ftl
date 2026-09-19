@@ -56,6 +56,7 @@ nav-offline = { $label } — Ngoại tuyến
 nav-unauthorized = { $label } — Chưa được cấp quyền
 nav-unavailable = { $label } — Không khả dụng
 nav-favorites = Yêu thích
+nav-system-bookmarks = Dấu trang hệ thống
 
 chrome-new-tab = Tab mới
 
@@ -94,6 +95,7 @@ chrome-details-pane = Ngăn chi tiết
 chrome-preview-pane = Ngăn xem trước
 
 chrome-file-view-hscroll = Thanh cuộn ngang chế độ xem tệp
+chrome-tab-strip-hscroll = Thanh cuộn ngang dải tab
 
 chrome-choose-details-columns = Chọn cột chi tiết
 

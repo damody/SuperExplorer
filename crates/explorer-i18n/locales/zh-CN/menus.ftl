@@ -56,6 +56,7 @@ menu-sort-with-accelerator = Sort (S)
 menu-sort = 排序
 
 menu-view = 查看
+menu-theme = 主题
 
 menu-other = 其他
 

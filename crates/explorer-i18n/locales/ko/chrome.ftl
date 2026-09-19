@@ -56,6 +56,7 @@ nav-offline = { $label } — 오프라인
 nav-unauthorized = { $label } — 권한 없음
 nav-unavailable = { $label } — 사용할 수 없음
 nav-favorites = 즐겨찾기
+nav-system-bookmarks = 시스템 책갈피
 
 chrome-new-tab = 새 탭
 
@@ -94,6 +95,7 @@ chrome-details-pane = 세부 정보 창
 chrome-preview-pane = 미리 보기 창
 
 chrome-file-view-hscroll = 파일 보기 가로 스크롤 막대
+chrome-tab-strip-hscroll = 탭 표시줄 가로 스크롤 막대
 
 chrome-choose-details-columns = 자세히 열 선택
 

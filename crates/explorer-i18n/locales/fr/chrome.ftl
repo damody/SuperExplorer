@@ -56,6 +56,7 @@ nav-offline = { $label } — Hors connexion
 nav-unauthorized = { $label } — Non autorisé
 nav-unavailable = { $label } — Indisponible
 nav-favorites = Favoris
+nav-system-bookmarks = Signets système
 
 chrome-new-tab = Nouvel onglet
 
@@ -94,6 +95,7 @@ chrome-details-pane = Volet de détails
 chrome-preview-pane = Volet de visualisation
 
 chrome-file-view-hscroll = Barre de défilement horizontale de la vue Fichiers
+chrome-tab-strip-hscroll = Barre de défilement horizontale des onglets
 
 chrome-choose-details-columns = Choisir les colonnes de détails
 

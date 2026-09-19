@@ -8,6 +8,7 @@ settings-general = General
 settings-view = View
 settings-theme = Theme
 settings-theme-windows = Windows
+settings-theme-follow-windows = Follow Windows
 settings-theme-zed = Zed
 settings-theme-windows-light = Light
 settings-theme-windows-dark = Dark

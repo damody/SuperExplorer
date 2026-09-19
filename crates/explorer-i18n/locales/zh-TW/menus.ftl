@@ -30,6 +30,7 @@ menu-new = 新增
 menu-sort = 排序
 menu-sort-with-accelerator = 排序 (S)
 menu-view = 檢視
+menu-theme = 主題
 menu-other = 其它
 menu-extensions = 擴充功能
 menu-more-commands = 更多命令

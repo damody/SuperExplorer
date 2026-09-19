@@ -56,6 +56,7 @@ nav-offline = { $label } — офлайн
 nav-unauthorized = { $label } — нет доступа
 nav-unavailable = { $label } — недоступно
 nav-favorites = Избранное
+nav-system-bookmarks = Системные закладки
 
 chrome-new-tab = Новая вкладка
 
@@ -94,6 +95,7 @@ chrome-details-pane = Область сведений
 chrome-preview-pane = Область просмотра
 
 chrome-file-view-hscroll = Горизонтальная полоса прокрутки списка файлов
+chrome-tab-strip-hscroll = Горизонтальная полоса прокрутки вкладок
 
 chrome-choose-details-columns = Выбрать столбцы сведений
 

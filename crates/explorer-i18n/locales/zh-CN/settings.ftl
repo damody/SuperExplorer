@@ -10,6 +10,7 @@ settings-language = 语言
 settings-general = 常规
 settings-theme = 主题
 settings-theme-windows = Windows
+settings-theme-follow-windows = 跟随 Windows
 settings-theme-zed = Zed
 settings-theme-windows-light = 浅色
 settings-theme-windows-dark = 深色

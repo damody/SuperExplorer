@@ -56,6 +56,7 @@ nav-offline = { $label } — Offline
 nav-unauthorized = { $label } — Neautorizováno
 nav-unavailable = { $label } — Nedostupné
 nav-favorites = Oblíbené
+nav-system-bookmarks = Systémové záložky
 
 chrome-new-tab = Nová karta
 
@@ -94,6 +95,7 @@ chrome-details-pane = Podokno podrobností
 chrome-preview-pane = Podokno náhledu
 
 chrome-file-view-hscroll = Vodorovný posuvník zobrazení souborů
+chrome-tab-strip-hscroll = Vodorovný posuvník panelu karet
 
 chrome-choose-details-columns = Vybrat sloupce podrobností
 

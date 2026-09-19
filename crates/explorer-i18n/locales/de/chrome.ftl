@@ -56,6 +56,7 @@ nav-offline = { $label } — Offline
 nav-unauthorized = { $label } — Nicht autorisiert
 nav-unavailable = { $label } — Nicht verfügbar
 nav-favorites = Favoriten
+nav-system-bookmarks = Systemlesezeichen
 
 chrome-new-tab = Neue Registerkarte
 
@@ -94,6 +95,7 @@ chrome-details-pane = Detailbereich
 chrome-preview-pane = Vorschaubereich
 
 chrome-file-view-hscroll = Horizontale Bildlaufleiste der Dateiansicht
+chrome-tab-strip-hscroll = Horizontale Bildlaufleiste der Registerkartenleiste
 
 chrome-choose-details-columns = Detailspalten auswählen
 

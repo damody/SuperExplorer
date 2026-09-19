@@ -30,6 +30,7 @@ menu-new = New
 menu-sort = Sort
 menu-sort-with-accelerator = Sort (S)
 menu-view = View
+menu-theme = Theme
 menu-other = Other
 menu-extensions = Extensions
 menu-more-commands = More commands

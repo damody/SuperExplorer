@@ -56,6 +56,7 @@ nav-offline = { $label } — Offline
 nav-unauthorized = { $label } — Nincs jogosultság
 nav-unavailable = { $label } — Nem érhető el
 nav-favorites = Kedvencek
+nav-system-bookmarks = Rendszerkönyvjelzők
 
 chrome-new-tab = Új lap
 
@@ -94,6 +95,7 @@ chrome-details-pane = Részletek ablaktábla
 chrome-preview-pane = Előnézeti ablaktábla
 
 chrome-file-view-hscroll = Fájlnézet vízszintes görgetősávja
+chrome-tab-strip-hscroll = Lapcsík vízszintes görgetősávja
 
 chrome-choose-details-columns = Részletoszlopok kiválasztása
 

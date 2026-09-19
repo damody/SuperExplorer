@@ -56,6 +56,7 @@ nav-offline = { $label } — 离线
 nav-unauthorized = { $label } — 未授权
 nav-unavailable = { $label } — 无法使用
 nav-favorites = 收藏夹
+nav-system-bookmarks = 系统的书签
 
 chrome-new-tab = New tab
 
@@ -94,6 +95,7 @@ chrome-details-pane = 详细信息窗格
 chrome-preview-pane = 预览窗格
 
 chrome-file-view-hscroll = File view horizontal scroll bar
+chrome-tab-strip-hscroll = 标签栏水平滚动条
 
 chrome-choose-details-columns = Choose details columns
 
