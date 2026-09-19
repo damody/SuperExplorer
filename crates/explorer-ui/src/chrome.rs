@@ -17466,6 +17466,7 @@ impl RenderOnce for WindowChrome {
             is_generic_breadcrumb_folder_icon_key(key).then(|| Arc::clone(texture))
         });
         let catalog = self.state.catalog();
+        let tab_min_width = tab_min_width_px(&self.state);
         let tabs: Vec<_> = self
             .state
             .tabs()
@@ -17493,12 +17494,17 @@ impl RenderOnce for WindowChrome {
                     shell_icon,
                     generic_shell_icon.clone(),
                     tab.id == active_tab_id,
+                    tab_min_width,
                     self.on_action.clone(),
                 )
             })
             .collect();
-        let overflow_track =
-            tab_strip_overflow_track_height(self.tab_scroll.as_ref(), self.tokens);
+        let overflow_track = tab_overflow_track_for(
+            self.tab_scroll.as_ref(),
+            self.tokens,
+            &self.state,
+            f32::from(window.viewport_size().width),
+        );
 
         div()
             .id(WINDOW_CHROME_ID)
@@ -17592,13 +17598,13 @@ impl RenderOnce for WindowChrome {
                                         Some(WINDOW_CHROME_ID),
                                         "normal",
                                     ))
-                                    .children(tabs)
-                                    .child(new_tab_button(
-                                        self.tokens,
-                                        self.state.catalog(),
-                                        self.on_action.clone(),
-                                    )),
-                            ),
+                                    .children(tabs),
+                            )
+                            .child(new_tab_button(
+                                self.tokens,
+                                self.state.catalog(),
+                                self.on_action.clone(),
+                            )),
                     )
                     .child(caption_button(
                         CAPTION_MINIMIZE_ID,
@@ -17733,6 +17739,7 @@ fn explorer_tab(
     shell_icon: Option<Arc<RenderImage>>,
     generic_shell_icon: Option<Arc<RenderImage>>,
     active: bool,
+    tab_min_width: f32,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     let layout = tokens.layout;
@@ -17771,8 +17778,9 @@ fn explorer_tab(
         .aria_selected(active)
         .h(px(layout.minimum_hit_target.value()))
         .flex_1()
-        .min_w(px(crate::layout::tabs::MIN_WIDTH.value()))
-        .max_w(px(crate::layout::tabs::PREFERRED_WIDTH.value()))
+        .flex_shrink_0()
+        .min_w(px(tab_min_width))
+        .max_w(px(tab_min_width.max(crate::layout::tabs::PREFERRED_WIDTH.value())))
         .overflow_hidden()
         .flex()
         .items_center()
