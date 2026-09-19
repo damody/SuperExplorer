@@ -405,18 +405,67 @@ pub(crate) fn tab_strip_overflow_epsilon(tokens: UiTokens) -> f32 {
         + 1.0
 }
 
+pub(crate) fn tab_strip_needed_width(
+    tab_count: usize,
+    tab_min_width: f32,
+    tokens: UiTokens,
+) -> f32 {
+    let gap = tokens.layout.content_spacing.value();
+    let padding = tokens.layout.control_padding_horizontal.value() * 2.0;
+    tab_count as f32 * tab_min_width
+        + tab_count.saturating_sub(1) as f32 * gap
+        + padding
+}
+
+pub(crate) fn tab_strip_fallback_viewport(window_width: f32, tokens: UiTokens) -> f32 {
+    (window_width
+        - tokens.layout.caption_button_width.value() * 3.0
+        - tokens.layout.minimum_hit_target.value()
+        - tokens.layout.content_spacing.value())
+        .max(0.0)
+}
+
 pub(crate) fn tab_strip_overflow_track_height(
     handle: Option<&gpui::ScrollHandle>,
     tokens: UiTokens,
+    tab_count: usize,
+    tab_min_width: f32,
+    fallback_viewport: f32,
 ) -> f32 {
-    let Some(handle) = handle else {
+    let viewport = handle
+        .map(|handle| f32::from(handle.bounds().size.width))
+        .filter(|width| *width > 1.0)
+        .unwrap_or(fallback_viewport.max(0.0));
+    if viewport <= 1.0 {
         return 0.0;
-    };
-    if f32::from(handle.max_offset().x) > tab_strip_overflow_epsilon(tokens) {
+    }
+    let needed = tab_strip_needed_width(tab_count, tab_min_width, tokens);
+    if needed > viewport + 1.0 {
         tab_strip_scrollbar_track_height(tokens)
     } else {
         0.0
     }
+}
+
+fn tab_min_width_px(state: &AppViewState) -> f32 {
+    f32::from(explorer_model::normalized_tab_min_width(
+        state.view_settings().tab_min_width,
+    ))
+}
+
+fn tab_overflow_track_for(
+    handle: Option<&gpui::ScrollHandle>,
+    tokens: UiTokens,
+    state: &AppViewState,
+    window_width: f32,
+) -> f32 {
+    tab_strip_overflow_track_height(
+        handle,
+        tokens,
+        state.tabs().tabs().len(),
+        tab_min_width_px(state),
+        tab_strip_fallback_viewport(window_width, tokens),
+    )
 }
 
 pub(crate) fn explorer_file_origin_y_with_tab_overflow(
@@ -693,7 +742,12 @@ impl RenderOnce for ExplorerWindow {
             self.state.navigation_pane_width().value() + self.tokens.layout.divider_width.value();
         let file_origin_y = explorer_file_origin_y_with_tab_overflow(
             self.tokens,
-            tab_strip_overflow_track_height(self.tab_scroll.as_ref(), self.tokens),
+            tab_overflow_track_for(
+                self.tab_scroll.as_ref(),
+                self.tokens,
+                &self.state,
+                f32::from(window.viewport_size().width),
+            ),
         );
         let scrollbar_capture_action = self.on_action.clone();
         let folder_size_backend_status = self.visual_column_runtime.as_ref().and_then(|runtime| {

@@ -66,14 +66,14 @@ pub mod lock_recovery {
     pub const OWNER_LIST_MAX_HEIGHT: LogicalPx = LogicalPx::new(240.0);
 }
 
-/// Window tab strip geometry. Tabs share remaining title-bar space and shrink
-/// like Firefox instead of overflowing at the navigation-pane min width.
+/// Window tab strip geometry. Tabs keep a configurable minimum width and
+/// scroll when they cannot all fit beside the caption buttons.
 pub mod tabs {
     use super::LogicalPx;
 
     /// Comfortable width when the strip has room.
-    pub const PREFERRED_WIDTH: LogicalPx = LogicalPx::new(180.0);
-    /// Narrowest tab that still fits icon, faded title, and close control.
+    pub const PREFERRED_WIDTH: LogicalPx = LogicalPx::new(300.0);
+    /// Absolute floor: icon, faded title, and close control still fit.
     pub const MIN_WIDTH: LogicalPx = LogicalPx::new(96.0);
     /// Right-edge fade over clipped title glyphs.
     pub const TITLE_FADE_WIDTH: LogicalPx = LogicalPx::new(24.0);
