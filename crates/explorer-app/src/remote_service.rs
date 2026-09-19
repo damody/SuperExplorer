@@ -1177,6 +1177,180 @@ fn prompt_ftp_login(_: &str, _: &str, _: &str) -> Result<Option<(String, String)
     Err("FTP login is available only on Windows.".to_owned())
 }
 
+/// Returns true when a `WNetAddConnection2W` result means the supplied credentials were rejected
+/// (as opposed to an unreachable host or another unrelated failure).
+pub(crate) const fn network_login_rejected_credentials(code: u32) -> bool {
+    // ERROR_ACCESS_DENIED, ERROR_INVALID_PASSWORD, ERROR_LOGON_FAILURE,
+    // ERROR_ACCOUNT_RESTRICTION, ERROR_BAD_USERNAME, ERROR_LOGON_TYPE_NOT_GRANTED.
+    matches!(code, 5 | 86 | 1326 | 1327 | 2202 | 1385)
+}
+
+#[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "CredUIPromptForCredentialsW and WNetAddConnection2W use raw UTF-16 buffers"
+)]
+pub(crate) fn prompt_network_login(
+    host: &str,
+    remote: &str,
+    message: &str,
+) -> Result<bool, String> {
+    use windows::{
+        Win32::{
+            Foundation::{ERROR_CANCELLED, ERROR_SUCCESS},
+            NetworkManagement::WNet::{
+                CONNECT_CMD_SAVECRED, CONNECT_UPDATE_PROFILE, NETRESOURCEW, RESOURCETYPE_DISK,
+                WNetAddConnection2W, WNetCancelConnection2W,
+            },
+            Security::Credentials::{
+                CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_DOMAIN_PASSWORD, CREDENTIALW,
+                CREDUI_FLAGS_ALWAYS_SHOW_UI, CREDUI_FLAGS_DO_NOT_PERSIST,
+                CREDUI_FLAGS_INCORRECT_PASSWORD, CREDUI_INFOW, CredUIPromptForCredentialsW,
+                CredWriteW,
+            },
+        },
+        core::{PCWSTR, PWSTR},
+    };
+    const ERROR_SESSION_CREDENTIAL_CONFLICT: u32 = 1219;
+
+    fn wide(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+    fn decode(value: &[u16]) -> String {
+        let end = value
+            .iter()
+            .position(|unit| *unit == 0)
+            .unwrap_or(value.len());
+        String::from_utf16_lossy(&value[..end])
+    }
+    // Persist the accepted network logon secret so the SMB redirector can reuse it later. The
+    // `Domain:target=` prefix is the canonical "Windows Credential" form for a server.
+    fn store_credential(host: &str, username: &str, password: &str) {
+        let mut target = wide(&format!("Domain:target={host}"));
+        let mut user = wide(username);
+        let mut blob = password
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<u8>>();
+        let credential = CREDENTIALW {
+            Type: CRED_TYPE_DOMAIN_PASSWORD,
+            TargetName: PWSTR(target.as_mut_ptr()),
+            CredentialBlobSize: u32::try_from(blob.len()).unwrap_or(0),
+            CredentialBlob: blob.as_mut_ptr(),
+            Persist: CRED_PERSIST_LOCAL_MACHINE,
+            UserName: PWSTR(user.as_mut_ptr()),
+            ..Default::default()
+        };
+        // SAFETY: every pointer references a live buffer for this synchronous CredWriteW call.
+        let _ = unsafe { CredWriteW(&raw const credential, 0) };
+        blob.fill(0);
+        std::hint::black_box(&mut blob);
+    }
+    fn connect(remote_wide: &mut [u16], username: &[u16], password: &[u16]) -> u32 {
+        let mut resource = NETRESOURCEW {
+            dwType: RESOURCETYPE_DISK,
+            lpRemoteName: PWSTR(remote_wide.as_mut_ptr()),
+            ..Default::default()
+        };
+        // SAFETY: `resource`, `remote_wide`, `username`, and `password` stay live for this
+        // synchronous WNet call.
+        unsafe {
+            WNetAddConnection2W(
+                &raw mut resource,
+                PCWSTR(password.as_ptr()),
+                PCWSTR(username.as_ptr()),
+                CONNECT_UPDATE_PROFILE | CONNECT_CMD_SAVECRED,
+            )
+        }
+        .0
+    }
+
+    let caption = wide("SuperExplorer Network Sign-in");
+    let message = wide(message);
+    // `Domain:target=` makes Windows treat the saved secret as a network logon credential that the
+    // SMB redirector can reuse for this server.
+    let target = wide(&format!("Domain:target={host}"));
+    let info = CREDUI_INFOW {
+        cbSize: size_of::<CREDUI_INFOW>() as u32,
+        pszMessageText: PCWSTR(message.as_ptr()),
+        pszCaptionText: PCWSTR(caption.as_ptr()),
+        ..Default::default()
+    };
+    let mut remote_wide = wide(remote);
+    let mut incorrect = false;
+    loop {
+        // wincred.h limits exclude the terminating NUL: username 513, password 256.
+        let mut username = vec![0_u16; 514];
+        let mut password = vec![0_u16; 257];
+        let mut flags = CREDUI_FLAGS_ALWAYS_SHOW_UI | CREDUI_FLAGS_DO_NOT_PERSIST;
+        if incorrect {
+            flags |= CREDUI_FLAGS_INCORRECT_PASSWORD;
+        }
+        // SAFETY: the descriptor and target buffers stay live and NUL-terminated, and the mutable
+        // credential buffers retain their full capacity for the synchronous dialog call.
+        let result = unsafe {
+            CredUIPromptForCredentialsW(
+                Some(&raw const info),
+                PCWSTR(target.as_ptr()),
+                None,
+                0,
+                &mut username,
+                &mut password,
+                None,
+                flags,
+            )
+        };
+        if result == ERROR_CANCELLED {
+            password.fill(0);
+            std::hint::black_box(&mut password);
+            return Ok(false);
+        }
+        if result != ERROR_SUCCESS {
+            password.fill(0);
+            std::hint::black_box(&mut password);
+            return Err("Unable to open the network sign-in dialog.".to_owned());
+        }
+        let username_value = decode(&username);
+        let password_value = decode(&password);
+        username.fill(0);
+        password.fill(0);
+        std::hint::black_box(&mut username);
+        std::hint::black_box(&mut password);
+        if username_value.is_empty() || password_value.is_empty() {
+            incorrect = true;
+            continue;
+        }
+        store_credential(host, &username_value, &password_value);
+        let username_wide = wide(&username_value);
+        let password_wide = wide(&password_value);
+        let mut code = connect(&mut remote_wide, &username_wide, &password_wide);
+        if code == ERROR_SESSION_CREDENTIAL_CONFLICT {
+            // An existing session for this server used different credentials. Drop it once and
+            // reconnect with the freshly supplied ones.
+            // SAFETY: `remote_wide` stays live and NUL-terminated for this synchronous call.
+            let _ = unsafe {
+                WNetCancelConnection2W(PCWSTR(remote_wide.as_ptr()), CONNECT_UPDATE_PROFILE, true)
+            }
+            .0;
+            code = connect(&mut remote_wide, &username_wide, &password_wide);
+        }
+        if code == 0 {
+            return Ok(true);
+        }
+        if network_login_rejected_credentials(code) {
+            incorrect = true;
+            continue;
+        }
+        // Unreachable host or provider failure: credentials may still be saved for the retry.
+        return Ok(true);
+    }
+}
+
+#[cfg(not(windows))]
+pub(crate) fn prompt_network_login(_: &str, _: &str, _: &str) -> Result<bool, String> {
+    Err("Network sign-in is available only on Windows.".to_owned())
+}
+
 pub fn discover_adb_navigation_devices() -> Vec<explorer_ui::navigation_pane::AdbNavigationDevice> {
     let Ok(client) = explorer_remote::AdbClient::discover() else {
         return Vec::new();
@@ -3073,6 +3247,22 @@ fn map_send_error<T>(error: TrySendError<T>) -> ExplorerServiceError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn network_login_retries_only_for_rejected_credentials() {
+        for rejected in [5_u32, 86, 1326, 1327, 2202, 1385] {
+            assert!(
+                network_login_rejected_credentials(rejected),
+                "WIN32 code {rejected} must re-prompt"
+            );
+        }
+        for other in [0_u32, 53, 67, 1219, 1222] {
+            assert!(
+                !network_login_rejected_credentials(other),
+                "WIN32 code {other} must not re-prompt"
+            );
+        }
+    }
 
     struct CancelProbeService {
         cancellations: Arc<std::sync::atomic::AtomicUsize>,
