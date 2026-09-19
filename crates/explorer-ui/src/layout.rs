@@ -72,7 +72,7 @@ pub mod tabs {
     use super::LogicalPx;
 
     /// Comfortable width when the strip has room.
-    pub const PREFERRED_WIDTH: LogicalPx = LogicalPx::new(300.0);
+    pub const PREFERRED_WIDTH: LogicalPx = LogicalPx::new(250.0);
     /// Absolute floor: icon, faded title, and close control still fit.
     pub const MIN_WIDTH: LogicalPx = LogicalPx::new(96.0);
     /// Right-edge fade over clipped title glyphs.

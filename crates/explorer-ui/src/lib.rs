@@ -1630,6 +1630,7 @@ fn should_cancel_inline_rename(action: &ExplorerAction) -> bool {
             | ExplorerAction::ActivateTab { .. }
             | ExplorerAction::CloseTab { .. }
             | ExplorerAction::ReorderTab { .. }
+            | ExplorerAction::ReorderTabBeside { .. }
             | ExplorerAction::NextTab
             | ExplorerAction::PreviousTab
             | ExplorerAction::ActivateBookmark { .. }

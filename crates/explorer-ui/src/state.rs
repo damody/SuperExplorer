@@ -1265,7 +1265,7 @@ impl AppViewState {
             remote_properties: None,
             expanded_bookmark_folders: HashSet::new(),
             favorites_nav_collapsed: true,
-            system_bookmarks_nav_collapsed: false,
+            system_bookmarks_nav_collapsed: true,
             bookmark_folder_delete_confirmation: None,
             bookmark_editor: None,
             bookmark_folder_editor: None,
@@ -3180,6 +3180,10 @@ impl AppViewState {
             }
             let applied = draft.applied_snapshot();
             self.tabs.active_tab_mut().view.settings = applied.settings.clone();
+            self.sync_tab_widths(
+                applied.settings.tab_min_width,
+                applied.settings.tab_max_width,
+            );
             self.restore_previous_session = applied.restore_previous_session;
             self.apply_locale_choice(applied.locale_choice);
             self.current_color_theme = applied.theme;
@@ -3244,6 +3248,10 @@ impl AppViewState {
             return;
         }
         self.tabs.active_tab_mut().view.settings = applied.settings.clone();
+        self.sync_tab_widths(
+            applied.settings.tab_min_width,
+            applied.settings.tab_max_width,
+        );
         self.restore_previous_session = applied.restore_previous_session;
         self.apply_locale_choice(applied.locale_choice);
         self.current_color_theme = applied.theme;
@@ -3266,6 +3274,15 @@ impl AppViewState {
             draft.applied_baseline = applied;
             draft.applied_revision = revision;
             draft.apply_error = None;
+        }
+    }
+
+    fn sync_tab_widths(&mut self, tab_min_width: u16, tab_max_width: u16) {
+        let tab_min_width = explorer_model::normalized_tab_min_width(tab_min_width);
+        let tab_max_width = explorer_model::normalized_tab_max_width(tab_max_width, tab_min_width);
+        for tab in self.tabs.tabs_mut() {
+            tab.view.settings.tab_min_width = tab_min_width;
+            tab.view.settings.tab_max_width = tab_max_width;
         }
     }
 
@@ -7808,6 +7825,34 @@ impl AppViewState {
         self.tabs.reorder(id, destination_index)
     }
 
+    pub(crate) fn reorder_tab_beside(
+        &mut self,
+        tab_id: TabId,
+        target_id: TabId,
+        before: bool,
+    ) -> bool {
+        let tabs = self.tabs.tabs();
+        let Some(source) = tabs.iter().position(|tab| tab.id == tab_id) else {
+            return false;
+        };
+        let Some(target) = tabs.iter().position(|tab| tab.id == target_id) else {
+            return false;
+        };
+        let dest = bookmark_reorder_destination(
+            source,
+            target,
+            if before {
+                BookmarkInsertEdge::Before
+            } else {
+                BookmarkInsertEdge::After
+            },
+        );
+        if dest == source || dest >= tabs.len() {
+            return false;
+        }
+        self.tabs.reorder(tab_id, dest)
+    }
+
     pub(crate) fn cycle_tab(&mut self, direction: i8) -> bool {
         let tabs = self.tabs.tabs();
         if tabs.len() < 2 {
@@ -9246,6 +9291,35 @@ mod tests {
         assert_eq!(
             bookmark_reorder_destination(1, 1, BookmarkInsertEdge::After),
             1
+        );
+    }
+
+    #[test]
+    fn reorder_tab_beside_moves_live_like_bookmark_insert_edges() {
+        let mut state = AppViewState::default();
+        let first = state.tabs().active_tab_id();
+        let second = state.new_tab();
+        let third = state.new_tab();
+        assert!(state.reorder_tab_beside(third, first, true));
+        assert_eq!(
+            state
+                .tabs()
+                .tabs()
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>(),
+            vec![third, first, second]
+        );
+        assert!(!state.reorder_tab_beside(third, first, true));
+        assert!(state.reorder_tab_beside(third, second, false));
+        assert_eq!(
+            state
+                .tabs()
+                .tabs()
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>(),
+            vec![first, second, third]
         );
     }
 
@@ -13628,14 +13702,17 @@ mod tests {
     }
 
     #[test]
-    fn system_bookmarks_parent_defaults_expanded_and_toggles_without_shell_enumeration() {
+    fn system_bookmarks_parent_defaults_collapsed_and_toggles_without_shell_enumeration() {
         let mut state = AppViewState::default();
         let root = crate::navigation_pane::system_bookmarks_location();
+        assert!(!state.navigation_node_expanded(&root));
+        assert!(
+            state.toggle_navigation_node(root.clone()),
+            "first toggle from the default collapsed state expands the parent"
+        );
         assert!(state.navigation_node_expanded(&root));
         assert!(!state.toggle_navigation_node(root.clone()));
         assert!(!state.navigation_node_expanded(&root));
-        assert!(state.toggle_navigation_node(root.clone()));
-        assert!(state.navigation_node_expanded(&root));
         assert!(state.begin_navigation_node_request(root).is_none());
     }
 

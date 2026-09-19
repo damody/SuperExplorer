@@ -158,6 +158,16 @@ struct BookmarkDragPreview {
     label: String,
 }
 
+#[derive(Clone)]
+struct TabDrag {
+    tab_id: TabId,
+    label: String,
+}
+
+struct TabDragPreview {
+    label: String,
+}
+
 fn bookmark_icon(target: &explorer_model::BookmarkTarget) -> &'static str {
     use explorer_model::{BookmarkTarget, FileSystemKind};
     match target {
@@ -262,6 +272,17 @@ fn bookmark_toolbar_display_name(
 }
 
 impl Render for BookmarkDragPreview {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(10.0))
+            .py(px(6.0))
+            .rounded(px(4.0))
+            .border(px(1.0))
+            .child(self.label.clone())
+    }
+}
+
+impl Render for TabDragPreview {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .px(px(10.0))
@@ -399,12 +420,6 @@ pub(crate) fn tab_strip_scrollbar_track_height(tokens: UiTokens) -> f32 {
     tokens.layout.content_spacing.value() * 1.5
 }
 
-pub(crate) fn tab_strip_overflow_epsilon(tokens: UiTokens) -> f32 {
-    tokens.layout.control_padding_horizontal.value() * 2.0
-        + tokens.layout.content_spacing.value()
-        + 1.0
-}
-
 pub(crate) fn tab_strip_needed_width(
     tab_count: usize,
     tab_min_width: f32,
@@ -412,9 +427,7 @@ pub(crate) fn tab_strip_needed_width(
 ) -> f32 {
     let gap = tokens.layout.content_spacing.value();
     let padding = tokens.layout.control_padding_horizontal.value() * 2.0;
-    tab_count as f32 * tab_min_width
-        + tab_count.saturating_sub(1) as f32 * gap
-        + padding
+    tab_count as f32 * tab_min_width + tab_count.saturating_sub(1) as f32 * gap + padding
 }
 
 pub(crate) fn tab_strip_fallback_viewport(window_width: f32, tokens: UiTokens) -> f32 {
@@ -422,7 +435,7 @@ pub(crate) fn tab_strip_fallback_viewport(window_width: f32, tokens: UiTokens) -
         - tokens.layout.caption_button_width.value() * 3.0
         - tokens.layout.minimum_hit_target.value()
         - tokens.layout.content_spacing.value())
-        .max(0.0)
+    .max(0.0)
 }
 
 pub(crate) fn tab_strip_overflow_track_height(
@@ -450,6 +463,14 @@ pub(crate) fn tab_strip_overflow_track_height(
 fn tab_min_width_px(state: &AppViewState) -> f32 {
     f32::from(explorer_model::normalized_tab_min_width(
         state.view_settings().tab_min_width,
+    ))
+}
+
+fn tab_max_width_px(state: &AppViewState) -> f32 {
+    let settings = state.view_settings();
+    f32::from(explorer_model::normalized_tab_max_width(
+        settings.tab_max_width,
+        settings.tab_min_width,
     ))
 }
 
@@ -5741,6 +5762,8 @@ pub(crate) fn folder_options_window_content(
                                 draft.theme,
                                 search_engine,
                                 search_engine_availability,
+                                settings.tab_min_width,
+                                settings.tab_max_width,
                                 catalog,
                                 windows_negotiated_locale,
                                 language_picker_open,
@@ -6024,6 +6047,8 @@ fn folder_options_general_page(
     theme: crate::theme::ColorTheme,
     search_engine: explorer_model::SearchEnginePreference,
     search_engine_availability: explorer_model::SearchEngineAvailability,
+    tab_min_width: u16,
+    tab_max_width: u16,
     catalog: Catalog,
     windows_negotiated_locale: explorer_model::AppLocale,
     language_picker_open: bool,
@@ -6056,6 +6081,19 @@ fn folder_options_general_page(
             search_engine,
             search_engine_availability,
             catalog,
+            on_action.clone(),
+        ))
+        .child(folder_option_tab_min_width(
+            tokens,
+            catalog,
+            tab_min_width,
+            on_action.clone(),
+        ))
+        .child(folder_option_tab_max_width(
+            tokens,
+            catalog,
+            tab_min_width,
+            tab_max_width,
             on_action.clone(),
         ))
         .child(folder_option_group(
@@ -7001,6 +7039,141 @@ fn cache_budget_usage_text(
         ),
         _ => format!("\u{2014} / {formatted_limit}"),
     }
+}
+
+fn folder_option_tab_max_width(
+    tokens: UiTokens,
+    catalog: Catalog,
+    min_width: u16,
+    value: u16,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let value = explorer_model::normalized_tab_max_width(value, min_width);
+    let decrease =
+        ExplorerAction::SetFolderOptionTabMaxWidth(explorer_model::normalized_tab_max_width(
+            value.saturating_sub(explorer_model::TAB_MIN_WIDTH_STEP),
+            min_width,
+        ));
+    let increase =
+        ExplorerAction::SetFolderOptionTabMaxWidth(explorer_model::normalized_tab_max_width(
+            value.saturating_add(explorer_model::TAB_MIN_WIDTH_STEP),
+            min_width,
+        ));
+    folder_option_px_stepper(
+        "folder-option-tab-max-width",
+        catalog.t("settings-tab-max-width"),
+        value,
+        decrease,
+        increase,
+        tokens,
+        catalog,
+        on_action,
+    )
+}
+
+fn folder_option_tab_min_width(
+    tokens: UiTokens,
+    catalog: Catalog,
+    value: u16,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let value = explorer_model::normalized_tab_min_width(value);
+    let decrease =
+        ExplorerAction::SetFolderOptionTabMinWidth(explorer_model::normalized_tab_min_width(
+            value.saturating_sub(explorer_model::TAB_MIN_WIDTH_STEP),
+        ));
+    let increase =
+        ExplorerAction::SetFolderOptionTabMinWidth(explorer_model::normalized_tab_min_width(
+            value.saturating_add(explorer_model::TAB_MIN_WIDTH_STEP),
+        ));
+    folder_option_px_stepper(
+        "folder-option-tab-min-width",
+        catalog.t("settings-tab-min-width"),
+        value,
+        decrease,
+        increase,
+        tokens,
+        catalog,
+        on_action,
+    )
+}
+
+fn folder_option_px_stepper(
+    id: &'static str,
+    label: impl Into<SharedString>,
+    value: u16,
+    decrease: ExplorerAction,
+    increase: ExplorerAction,
+    tokens: UiTokens,
+    catalog: Catalog,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    let label = label.into();
+    div()
+        .id(id)
+        .role(Role::Group)
+        .aria_label(label.clone())
+        .h(px(tokens.layout.minimum_hit_target.value()))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(tokens.layout.content_spacing.value()))
+        .px(px(tokens.layout.content_spacing.value()))
+        .child(label)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(tokens.layout.content_spacing.value()))
+                .child(folder_option_stepper_button(
+                    SharedString::from(format!("{id}-decrease")),
+                    "−",
+                    decrease,
+                    tokens,
+                    on_action.clone(),
+                ))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("{id}-value")))
+                        .min_w(px(72.0))
+                        .flex()
+                        .justify_center()
+                        .child(format!("{value} {}", catalog.t("settings-px"))),
+                )
+                .child(folder_option_stepper_button(
+                    SharedString::from(format!("{id}-increase")),
+                    "+",
+                    increase,
+                    tokens,
+                    on_action,
+                )),
+        )
+}
+
+fn folder_option_stepper_button(
+    id: impl Into<gpui::ElementId>,
+    label: &'static str,
+    action: ExplorerAction,
+    tokens: UiTokens,
+    on_action: Option<ActionCallback>,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .role(Role::Button)
+        .aria_label(label)
+        .w(px(tokens.layout.minimum_hit_target.value()))
+        .h(px(tokens.layout.minimum_hit_target.value()))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(tokens.layout.corner_radius.value()))
+        .border(px(1.0))
+        .border_color(tokens.theme.colors.divider.to_gpui())
+        .hover(move |style| style.bg(tokens.theme.colors.control_hover.to_gpui()))
+        .when_some(on_action, |button, callback| {
+            button.on_click(move |_, window, cx| callback(&action, window, cx))
+        })
+        .child(label)
 }
 
 fn folder_option_checkbox(
@@ -10844,7 +11017,7 @@ impl RenderOnce for NavigationPane {
                     self.state.quick_access_navigation_pins(),
                 );
                 let mut flattened = Vec::with_capacity(items.len());
-                let mut system_bookmarks_expanded = true;
+                let mut system_bookmarks_expanded = false;
                 for mut item in items.drain(..) {
                     if let Some(location) = item.location.as_ref() {
                         item.expanded =
@@ -17467,6 +17640,7 @@ impl RenderOnce for WindowChrome {
         });
         let catalog = self.state.catalog();
         let tab_min_width = tab_min_width_px(&self.state);
+        let tab_max_width = tab_max_width_px(&self.state);
         let tabs: Vec<_> = self
             .state
             .tabs()
@@ -17495,6 +17669,7 @@ impl RenderOnce for WindowChrome {
                     generic_shell_icon.clone(),
                     tab.id == active_tab_id,
                     tab_min_width,
+                    tab_max_width,
                     self.on_action.clone(),
                 )
             })
@@ -17740,6 +17915,7 @@ fn explorer_tab(
     generic_shell_icon: Option<Arc<RenderImage>>,
     active: bool,
     tab_min_width: f32,
+    tab_max_width: f32,
     on_action: Option<ActionCallback>,
 ) -> impl IntoElement {
     let layout = tokens.layout;
@@ -17752,6 +17928,7 @@ fn explorer_tab(
     let debug_id = id.clone();
     let activate = on_action.clone();
     let middle_close = on_action.clone();
+    let drag_move = on_action.clone();
     let close = on_action;
     let close_id = if active {
         "active-tab-close".to_owned()
@@ -17780,8 +17957,9 @@ fn explorer_tab(
         .flex_1()
         .flex_shrink_0()
         .min_w(px(tab_min_width))
-        .max_w(px(tab_min_width.max(crate::layout::tabs::PREFERRED_WIDTH.value())))
+        .max_w(px(tab_max_width.max(tab_min_width)))
         .overflow_hidden()
+        .cursor_pointer()
         .flex()
         .items_center()
         .justify_between()
@@ -17807,6 +17985,45 @@ fn explorer_tab(
         })
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
+        .on_drag(
+            TabDrag {
+                tab_id,
+                label: title.clone(),
+            },
+            |drag, _, _, cx| {
+                cx.new(|_| TabDragPreview {
+                    label: drag.label.clone(),
+                })
+            },
+        )
+        .when_some(drag_move, |element, callback| {
+            element.on_drag_move::<TabDrag>(move |event, window, cx| {
+                if !event.bounds.contains(&event.event.position) {
+                    return;
+                }
+                let drag = event.drag(cx);
+                if drag.tab_id == tab_id {
+                    return;
+                }
+                let Some(edge) = resolve_bookmark_insert_edge(
+                    f32::from(event.event.position.x),
+                    f32::from(event.bounds.left()),
+                    f32::from(event.bounds.right()),
+                ) else {
+                    return;
+                };
+                callback(
+                    &ExplorerAction::ReorderTabBeside {
+                        tab_id: drag.tab_id,
+                        target_id: tab_id,
+                        before: edge.is_before(),
+                    },
+                    window,
+                    cx,
+                );
+                cx.stop_propagation();
+            })
+        })
         .when_some(middle_close, |element, callback| {
             element.on_mouse_up(MouseButton::Middle, move |_, window, cx| {
                 cx.stop_propagation();
@@ -20466,10 +20683,13 @@ mod tests {
             !tab_renderer.contains("navigation_pane_min_width"),
             "tabs must not inherit the navigation pane min width"
         );
-        assert!(tab_renderer.contains("layout::tabs::MIN_WIDTH"));
-        assert!(tab_renderer.contains("layout::tabs::PREFERRED_WIDTH"));
+        assert!(tab_renderer.contains("tab_min_width"));
+        assert!(tab_renderer.contains("tab_max_width"));
         assert!(tab_renderer.contains("layout::tabs::TITLE_FADE_WIDTH"));
         assert!(tab_renderer.contains(".flex_1()"));
+        assert!(tab_renderer.contains(".flex_shrink_0()"));
+        assert!(tab_renderer.contains(".on_drag("));
+        assert!(tab_renderer.contains("ReorderTabBeside"));
         assert!(tab_renderer.contains("tab_title_fade"));
         assert!(production.contains("fn tab_title_fade"));
         assert!(production.contains("linear_gradient"));
@@ -20507,16 +20727,24 @@ mod tests {
             production.contains("overflow_track > 0.0"),
             "tab scrollbar must occupy extra chrome height only while tabs overflow"
         );
+        assert!(production.contains("folder_option_tab_min_width"));
+        assert!(production.contains("folder_option_tab_max_width"));
+        assert!(production.contains("SetFolderOptionTabMinWidth"));
+        assert!(production.contains("SetFolderOptionTabMaxWidth"));
+        assert!(production.contains("settings-tab-min-width"));
+        assert!(production.contains("settings-tab-max-width"));
     }
 
     #[test]
     fn tab_strip_overflow_track_stays_hidden_without_overflow() {
         let tokens = UiTokens::default();
-        assert_eq!(super::tab_strip_overflow_track_height(None, tokens), 0.0);
+        assert_eq!(
+            super::tab_strip_overflow_track_height(None, tokens, 1, 300.0, 1_200.0),
+            0.0
+        );
         assert!(
-            super::tab_strip_overflow_epsilon(tokens)
-                > tokens.layout.control_padding_horizontal.value() * 2.0,
-            "padding-only scroll max from overflow_x_scroll must not reveal the tab scrollbar"
+            super::tab_strip_overflow_track_height(None, tokens, 11, 300.0, 1_200.0) > 0.0,
+            "tabs that cannot fit at min width must grow the chrome for a scrollbar"
         );
     }
 

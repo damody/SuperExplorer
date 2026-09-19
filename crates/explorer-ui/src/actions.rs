@@ -205,6 +205,11 @@ pub enum ExplorerAction {
         tab_id: explorer_model::TabId,
         destination_index: usize,
     },
+    ReorderTabBeside {
+        tab_id: explorer_model::TabId,
+        target_id: explorer_model::TabId,
+        before: bool,
+    },
     NextTab,
     PreviousTab,
     OpenItem {
@@ -440,6 +445,8 @@ pub enum ExplorerAction {
     SetFolderOptionThumbnailCacheMemoryMb(u16),
     SetFolderOptionMftCacheMemoryMb(u16),
     SetFolderOptionCacheBudgets(explorer_model::CacheBudgetSettingsV1),
+    SetFolderOptionTabMinWidth(u16),
+    SetFolderOptionTabMaxWidth(u16),
     ClearThumbnailCache,
     ToggleFolderOptionDetailsPane,
     ToggleFolderOptionPreviewPane,
@@ -702,6 +709,7 @@ impl ExplorerAction {
             Self::ActivateTab { .. } => "ActivateTab",
             Self::CloseTab { .. } => "CloseTab",
             Self::ReorderTab { .. } => "ReorderTab",
+            Self::ReorderTabBeside { .. } => "ReorderTabBeside",
             Self::NextTab => "NextTab",
             Self::PreviousTab => "PreviousTab",
             Self::OpenItem { .. } => "OpenItem",
@@ -827,6 +835,8 @@ impl ExplorerAction {
             }
             Self::SetFolderOptionMftCacheMemoryMb(_) => "SetFolderOptionMftCacheMemoryMb",
             Self::SetFolderOptionCacheBudgets(_) => "SetFolderOptionCacheBudgets",
+            Self::SetFolderOptionTabMinWidth(_) => "SetFolderOptionTabMinWidth",
+            Self::SetFolderOptionTabMaxWidth(_) => "SetFolderOptionTabMaxWidth",
             Self::ClearThumbnailCache => "ClearThumbnailCache",
             Self::ToggleFolderOptionDetailsPane => "ToggleFolderOptionDetailsPane",
             Self::ToggleFolderOptionPreviewPane => "ToggleFolderOptionPreviewPane",
@@ -1185,6 +1195,7 @@ fn is_high_frequency_pointer_action(action: &ExplorerAction) -> bool {
             | ExplorerAction::EndDetailsColumnResize
             | ExplorerAction::UpdateDetailsColumnDragPreview { .. }
             | ExplorerAction::UpdateBookmarkDropCue { .. }
+            | ExplorerAction::ReorderTabBeside { .. }
             | ExplorerAction::CommitDetailsColumnDrag
             | ExplorerAction::CancelDetailsColumnDrag
             | ExplorerAction::UpdateSidePaneResize { .. }
@@ -1437,6 +1448,14 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
             *destination_index < state.tabs().tabs().len()
                 && state.tabs().tabs().iter().any(|tab| tab.id == *tab_id)
         }
+        ExplorerAction::ReorderTabBeside {
+            tab_id, target_id, ..
+        } => {
+            *tab_id != *target_id
+                && state.tabs().tabs().len() >= 2
+                && state.tabs().tabs().iter().any(|tab| tab.id == *tab_id)
+                && state.tabs().tabs().iter().any(|tab| tab.id == *target_id)
+        }
         ExplorerAction::NextTab => availability.is_enabled(CommandKind::NextTab),
         ExplorerAction::PreviousTab => availability.is_enabled(CommandKind::PreviousTab),
         ExplorerAction::OpenItem { row_index, .. } => {
@@ -1640,6 +1659,8 @@ fn action_available(state: &AppViewState, action: &ExplorerAction) -> bool {
         | ExplorerAction::SetFolderOptionThumbnailCacheMemoryMb(_)
         | ExplorerAction::SetFolderOptionMftCacheMemoryMb(_)
         | ExplorerAction::SetFolderOptionCacheBudgets(_)
+        | ExplorerAction::SetFolderOptionTabMinWidth(_)
+        | ExplorerAction::SetFolderOptionTabMaxWidth(_)
         | ExplorerAction::ClearThumbnailCache
         | ExplorerAction::ToggleFolderOptionDetailsPane
         | ExplorerAction::ToggleFolderOptionPreviewPane
@@ -1915,6 +1936,14 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
             destination_index,
         } => {
             let _ = state.reorder_tab(tab_id, destination_index);
+            FocusSurface::TabStrip
+        }
+        ExplorerAction::ReorderTabBeside {
+            tab_id,
+            target_id,
+            before,
+        } => {
+            let _ = state.reorder_tab_beside(tab_id, target_id, before);
             FocusSurface::TabStrip
         }
         ExplorerAction::NextTab => {
@@ -2334,6 +2363,23 @@ fn apply_action(state: &mut AppViewState, action: ExplorerAction) -> FocusSurfac
                 settings.mft_folder_cache_memory_mb =
                     explorer_model::normalized_mft_folder_cache_memory_mb(value);
                 settings.cache_budgets.mft_lru_mb = u32::from(value);
+            });
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::SetFolderOptionTabMinWidth(value) => {
+            state.update_folder_options(|settings| {
+                settings.tab_min_width = explorer_model::normalized_tab_min_width(value);
+                settings.tab_max_width = explorer_model::normalized_tab_max_width(
+                    settings.tab_max_width,
+                    settings.tab_min_width,
+                );
+            });
+            FocusSurface::CommandBar
+        }
+        ExplorerAction::SetFolderOptionTabMaxWidth(value) => {
+            state.update_folder_options(|settings| {
+                settings.tab_max_width =
+                    explorer_model::normalized_tab_max_width(value, settings.tab_min_width);
             });
             FocusSurface::CommandBar
         }

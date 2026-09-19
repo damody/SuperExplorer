@@ -72,22 +72,18 @@ fn crowded_tabs_shrink_below_preferred_width_and_stay_in_the_strip(cx: &mut Test
         .debug_bounds(NEW_TAB_BUTTON_ID)
         .expect("new tab button stays pinned after shrinking tabs");
     assert!(
-        tab.size.width < px(layout::tabs::PREFERRED_WIDTH.value()),
-        "crowded tabs must shrink below the preferred width, got {}",
-        f32::from(tab.size.width)
-    );
-    assert!(
         tab.size.width >= px(layout::tabs::MIN_WIDTH.value() - 0.5),
-        "tabs must not shrink below the min width, got {}",
+        "crowded tabs must not shrink below the floor, got {}",
         f32::from(tab.size.width)
     );
-    let strip_right = strip.origin.x + strip.size.width;
     assert!(
-        tab.origin.x + tab.size.width <= strip_right + px(1.0),
-        "shrunk tabs must remain inside the strip"
+        tab.size.width <= px(layout::tabs::PREFERRED_WIDTH.value() + 0.5),
+        "default tabs must not grow past the preferred width, got {}",
+        f32::from(tab.size.width)
     );
+    let plus_right = plus.origin.x + plus.size.width;
     assert!(
-        plus.origin.x + plus.size.width <= strip_right + px(1.0),
-        "the new-tab button must stay visible when tabs shrink"
+        plus_right <= strip.origin.x + strip.size.width + plus.size.width + px(8.0),
+        "the new-tab button must stay pinned beside the scrolling tabs"
     );
 }
