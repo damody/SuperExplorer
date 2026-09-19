@@ -1370,6 +1370,7 @@ mod tests {
             explorer_model::ContextMenuHostCommand::Share,
             explorer_model::ContextMenuHostCommand::PinToStart,
             explorer_model::ContextMenuHostCommand::ToggleQuickAccess,
+            explorer_model::ContextMenuHostCommand::AddBookmark,
             explorer_model::ContextMenuHostCommand::Properties,
         ] {
             assert_eq!(
