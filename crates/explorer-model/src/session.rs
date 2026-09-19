@@ -26,6 +26,10 @@ const fn default_immersive_native_context_menus() -> bool {
     true
 }
 
+const fn default_tab_min_width() -> u16 {
+    crate::DEFAULT_TAB_MIN_WIDTH
+}
+
 /// Current durable session schema.
 pub const SESSION_SCHEMA_VERSION: u16 = 5;
 
@@ -254,6 +258,8 @@ pub struct PersistedViewSettings {
     pub preview_pane_width: u16,
     #[serde(default)]
     pub search_engine: crate::SearchEnginePreference,
+    #[serde(default = "default_tab_min_width")]
+    pub tab_min_width: u16,
 }
 
 impl Default for PersistedViewSettings {
@@ -286,6 +292,7 @@ impl Default for PersistedViewSettings {
             details_pane_width: 320,
             preview_pane_width: 360,
             search_engine: crate::SearchEnginePreference::Everything,
+            tab_min_width: crate::DEFAULT_TAB_MIN_WIDTH,
         }
     }
 }
@@ -1320,6 +1327,7 @@ impl PersistedViewSettings {
             details_pane_width: self.details_pane_width,
             preview_pane_width: self.preview_pane_width,
             search_engine: self.search_engine,
+            tab_min_width: crate::normalized_tab_min_width(self.tab_min_width),
         }
     }
 }
@@ -1600,6 +1608,7 @@ impl From<ViewSettings> for PersistedViewSettings {
             details_pane_width: settings.details_pane_width,
             preview_pane_width: settings.preview_pane_width,
             search_engine: settings.search_engine,
+            tab_min_width: crate::normalized_tab_min_width(settings.tab_min_width),
         }
     }
 }
@@ -2623,6 +2632,32 @@ mod tests {
                 .search_engine,
             crate::SearchEnginePreference::FileEnumeration
         );
+    }
+
+    #[test]
+    fn tab_min_width_defaults_to_300_and_round_trips() {
+        assert_eq!(ViewSettings::default().tab_min_width, crate::DEFAULT_TAB_MIN_WIDTH);
+        let persisted = PersistedViewSettings::from(ViewSettings::default());
+        assert_eq!(persisted.tab_min_width, crate::DEFAULT_TAB_MIN_WIDTH);
+        assert_eq!(
+            persisted.to_runtime().tab_min_width,
+            crate::DEFAULT_TAB_MIN_WIDTH
+        );
+
+        let mut legacy = serde_json::to_value(&persisted).expect("serialize settings");
+        legacy
+            .as_object_mut()
+            .expect("settings object")
+            .remove("tab_min_width");
+        let decoded: PersistedViewSettings =
+            serde_json::from_value(legacy).expect("legacy settings deserialize");
+        assert_eq!(decoded.tab_min_width, crate::DEFAULT_TAB_MIN_WIDTH);
+
+        let mut settings = ViewSettings::default();
+        settings.tab_min_width = 12;
+        let encoded = PersistedViewSettings::from(settings);
+        assert_eq!(encoded.tab_min_width, crate::MIN_TAB_MIN_WIDTH);
+        assert_eq!(encoded.to_runtime().tab_min_width, crate::MIN_TAB_MIN_WIDTH);
     }
 
     #[test]

@@ -1911,6 +1911,8 @@ pub struct ViewSettings {
     pub preview_pane_width: u16,
     /// Folder Options single-select search engine. Default is Everything.
     pub search_engine: crate::SearchEnginePreference,
+    /// Narrowest explorer tab width in logical pixels. Tabs scroll instead of shrinking below this.
+    pub tab_min_width: u16,
 }
 
 impl Default for ViewSettings {
@@ -1936,7 +1938,23 @@ impl Default for ViewSettings {
             details_pane_width: 293,
             preview_pane_width: 293,
             search_engine: crate::SearchEnginePreference::Everything,
+            tab_min_width: DEFAULT_TAB_MIN_WIDTH,
         }
+    }
+}
+
+pub const DEFAULT_TAB_MIN_WIDTH: u16 = 300;
+pub const MIN_TAB_MIN_WIDTH: u16 = 96;
+pub const MAX_TAB_MIN_WIDTH: u16 = 600;
+pub const TAB_MIN_WIDTH_STEP: u16 = 10;
+
+pub const fn normalized_tab_min_width(value: u16) -> u16 {
+    if value < MIN_TAB_MIN_WIDTH {
+        MIN_TAB_MIN_WIDTH
+    } else if value > MAX_TAB_MIN_WIDTH {
+        MAX_TAB_MIN_WIDTH
+    } else {
+        value
     }
 }
 
@@ -3766,6 +3784,14 @@ mod tests {
         assert_eq!(settings.icon_cache_memory_mb, 512);
         assert_eq!(settings.thumbnail_cache_memory_mb, 64);
         assert_eq!(normalized_thumbnail_cache_memory_mb(u16::MAX), 1_024);
+    }
+
+    #[test]
+    fn tab_min_width_defaults_to_300_and_clamps() {
+        assert_eq!(ViewSettings::default().tab_min_width, DEFAULT_TAB_MIN_WIDTH);
+        assert_eq!(normalized_tab_min_width(0), MIN_TAB_MIN_WIDTH);
+        assert_eq!(normalized_tab_min_width(300), 300);
+        assert_eq!(normalized_tab_min_width(u16::MAX), MAX_TAB_MIN_WIDTH);
     }
 
     #[test]
