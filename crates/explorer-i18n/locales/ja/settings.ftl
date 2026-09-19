@@ -121,3 +121,5 @@ settings-search-engine-unsupported-everything = Everything SDK or IPC is unavail
 settings-search-engine-unsupported-mft = This location has no local NTFS MFT index
 settings-search-engine-unsupported-file-enumeration = This location is not a local folder
 settings-search-engine-pick-supported = Choose an available search engine before applying
+settings-enable-mft = Enable MFT
+settings-search-engine-unsupported-mft-disabled = MFT is turned off

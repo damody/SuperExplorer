@@ -57,6 +57,7 @@ chrome-details-pane = Details pane
 chrome-preview-pane = Preview pane
 chrome-file-view-hscroll = File view horizontal scroll bar
 chrome-tab-strip-hscroll = Tab strip horizontal scroll bar
+chrome-tab-strip-vscroll = Tab strip vertical scroll bar
 chrome-choose-details-columns = Choose details columns
 chrome-local-details-columns = This PC details columns: Name, Type, Total size, Free space
 chrome-clear-filter = Clear filter

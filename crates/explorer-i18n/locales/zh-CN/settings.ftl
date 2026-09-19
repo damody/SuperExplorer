@@ -132,3 +132,5 @@ settings-search-engine-unsupported-everything = Everything SDK 或 IPC 不可用
 settings-search-engine-unsupported-mft = 此位置没有本地 NTFS MFT 索引
 settings-search-engine-unsupported-file-enumeration = 此位置不是本地文件夹
 settings-search-engine-pick-supported = 请先选择可用的搜索引擎再应用
+settings-enable-mft = 启用 MFT
+settings-search-engine-unsupported-mft-disabled = 已在常规功能关闭 MFT

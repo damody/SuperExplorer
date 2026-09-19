@@ -57,6 +57,7 @@ chrome-details-pane = 詳細資料窗格
 chrome-preview-pane = 預覽窗格
 chrome-file-view-hscroll = File view horizontal scroll bar
 chrome-tab-strip-hscroll = 分頁列水平捲軸
+chrome-tab-strip-vscroll = 分頁列垂直捲軸
 chrome-choose-details-columns = Choose details columns
 chrome-local-details-columns = 本機詳細資料欄位：名稱、類型、大小總計、可用空間
 chrome-clear-filter = 清除篩選
