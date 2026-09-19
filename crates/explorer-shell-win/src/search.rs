@@ -80,6 +80,7 @@ pub(crate) fn execute_with_terminals<P: RequiredTerminalPublisher>(
         )
     })?;
     let availability = probe_search_engine_availability(location);
+    let engine = availability.resolve(engine);
     if !availability.support(engine).is_available() {
         let backend = engine.as_backend();
         publish_status(

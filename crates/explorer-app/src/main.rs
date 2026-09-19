@@ -148,6 +148,8 @@ fn run(
         import.this_window,
         import.this_pc,
         restore_window_id,
+        import.imported_window_count,
+        import.restore_session_windows,
     )?;
     explorer_handoff::stop_handoff_server();
     win_e_hotkey::stop_win_e_hotkey();

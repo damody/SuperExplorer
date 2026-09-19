@@ -333,6 +333,15 @@ pub fn query_folders_batch(
             requests.len()
         ));
     }
+    if cancelled() {
+        return Ok(());
+    }
+    let connect_deadline = std::time::Instant::now() + Duration::from_millis(150);
+    let pipe = match connect_until_with(&cancelled, connect_deadline) {
+        Ok(pipe) => pipe,
+        Err(_) if cancelled() => return Ok(()),
+        Err(error) => return Err(error),
+    };
     let mut seen = std::collections::HashSet::with_capacity(requests.len());
     let mut prepared = Vec::with_capacity(requests.len());
     for request in requests {
@@ -377,7 +386,6 @@ pub fn query_folders_batch(
     header[20..24].copy_from_slice(&(payload.len() as u32).to_le_bytes());
 
     let deadline = std::time::Instant::now() + AGGREGATE_RESPONSE_TIMEOUT;
-    let pipe = connect_until(deadline)?;
     write_all_until(pipe.0, &header, &cancelled, deadline)?;
     write_all_until(pipe.0, &payload, &cancelled, deadline)?;
     let mut unfinished = prepared
@@ -830,18 +838,28 @@ fn connect(attempts: usize) -> Result<Handle, String> {
     )
 }
 
+fn connect_until(deadline: std::time::Instant) -> Result<Handle, String> {
+    connect_until_with(|| false, deadline)
+}
+
 #[expect(
     unsafe_code,
     reason = "connecting to the MFT query pipe requires Win32 wait, open, and last-error APIs"
 )]
 // SAFETY: The pipe name is NUL-terminated, access flags match CreateFileW, returned handles
 // are checked before ownership, and GetLastError is read immediately after failed calls.
-fn connect_until(deadline: std::time::Instant) -> Result<Handle, String> {
+fn connect_until_with(
+    cancelled: impl Fn() -> bool,
+    deadline: std::time::Instant,
+) -> Result<Handle, String> {
     #[cfg(not(test))]
     let name = wide(PIPE_NAME);
     #[cfg(test)]
     let name = wide(test_pipe_name());
     let pipe = loop {
+        if cancelled() {
+            return Err("MFT query cancelled".to_owned());
+        }
         let _ = unsafe { WaitNamedPipeW(name.as_ptr(), 50) };
         let pipe = unsafe {
             CreateFileW(

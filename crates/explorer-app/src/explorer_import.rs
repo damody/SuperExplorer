@@ -33,10 +33,57 @@ pub struct ImportedTabPayload {
     pub display_title: String,
 }
 
+/// Hard cap on SuperExplorer windows created during an ordinary startup.
+pub const MAX_STARTUP_WINDOWS: usize = 3;
+/// Session-restore windows allowed in addition to converted File Explorer windows.
+pub const MAX_SESSION_WINDOWS_BESIDES_IMPORT: usize = 2;
+
 #[derive(Clone, Debug)]
 pub struct LaunchImport {
     pub this_window: Option<ExplorerWindowState>,
     pub this_pc: bool,
+    pub imported_window_count: usize,
+    pub restore_session_windows: bool,
+}
+
+impl LaunchImport {
+    fn ordinary(this_window: Option<ExplorerWindowState>, imported_window_count: usize) -> Self {
+        Self {
+            this_window,
+            this_pc: false,
+            imported_window_count,
+            restore_session_windows: true,
+        }
+    }
+
+    fn child(this_window: Option<ExplorerWindowState>) -> Self {
+        let imported_window_count = usize::from(this_window.is_some());
+        Self {
+            this_window,
+            this_pc: false,
+            imported_window_count,
+            restore_session_windows: false,
+        }
+    }
+}
+
+#[must_use]
+pub fn session_restore_budget(imported_window_count: usize) -> usize {
+    if imported_window_count == 0 {
+        MAX_STARTUP_WINDOWS
+    } else {
+        MAX_SESSION_WINDOWS_BESIDES_IMPORT
+            .min(MAX_STARTUP_WINDOWS.saturating_sub(imported_window_count))
+    }
+}
+
+#[must_use]
+pub fn extra_file_explorer_import_count(
+    remaining_explorer_windows: usize,
+    this_window_imported: bool,
+) -> usize {
+    remaining_explorer_windows
+        .min(MAX_STARTUP_WINDOWS.saturating_sub(usize::from(this_window_imported)))
 }
 
 pub fn consume_launch_import(first_ordinary_process: bool) -> LaunchImport {
@@ -44,19 +91,15 @@ pub fn consume_launch_import(first_ordinary_process: bool) -> LaunchImport {
         return LaunchImport {
             this_window: None,
             this_pc: true,
+            imported_window_count: 0,
+            restore_session_windows: false,
         };
     }
     if let Some(payload) = read_initial_tabs() {
-        return LaunchImport {
-            this_window: window_from_payload(&payload),
-            this_pc: false,
-        };
+        return LaunchImport::child(window_from_payload(&payload));
     }
     if !first_ordinary_process {
-        return LaunchImport {
-            this_window: None,
-            this_pc: false,
-        };
+        return LaunchImport::child(None);
     }
     match snapshot_open_explorer_windows() {
         Ok(windows) => {
@@ -65,10 +108,7 @@ pub fn consume_launch_import(first_ordinary_process: bool) -> LaunchImport {
                 .filter(window_allowed_for_import)
                 .collect::<Vec<_>>();
             if windows.is_empty() {
-                return LaunchImport {
-                    this_window: None,
-                    this_pc: false,
-                };
+                return LaunchImport::ordinary(None, 0);
             }
             tracing::info!(
                 windows = windows.len(),
@@ -83,19 +123,17 @@ pub fn consume_launch_import(first_ordinary_process: bool) -> LaunchImport {
             if this_window.is_some() {
                 imported_hwnds.push(windows[0].hwnd);
             }
-            imported_hwnds.extend(spawn_extra_windows(&windows[1..]));
+            let extra = extra_file_explorer_import_count(
+                windows.len().saturating_sub(1),
+                this_window.is_some(),
+            );
+            imported_hwnds.extend(spawn_extra_windows(&windows[1..1 + extra]));
             explorer_shell_win::close_explorer_windows(&imported_hwnds);
-            LaunchImport {
-                this_window,
-                this_pc: false,
-            }
+            LaunchImport::ordinary(this_window, imported_hwnds.len())
         }
         Err(error) => {
             tracing::warn!(%error, "File Explorer tab import failed");
-            LaunchImport {
-                this_window: None,
-                this_pc: false,
-            }
+            LaunchImport::ordinary(None, 0)
         }
     }
 }
@@ -291,6 +329,23 @@ fn window_from_payload(payload: &ImportedTabsPayload) -> Option<ExplorerWindowSt
 mod tests {
     use super::*;
     use explorer_shell_win::ExplorerTabSnapshot;
+
+    #[test]
+    fn startup_window_budget_caps_session_restore_beside_file_explorer_import() {
+        assert_eq!(session_restore_budget(0), MAX_STARTUP_WINDOWS);
+        assert_eq!(session_restore_budget(1), 2);
+        assert_eq!(session_restore_budget(2), 1);
+        assert_eq!(session_restore_budget(3), 0);
+        assert_eq!(session_restore_budget(8), 0);
+        assert_eq!(extra_file_explorer_import_count(10, true), 2);
+        assert_eq!(extra_file_explorer_import_count(10, false), 3);
+        assert_eq!(extra_file_explorer_import_count(1, true), 1);
+        assert_eq!(extra_file_explorer_import_count(0, true), 0);
+        assert_eq!(
+            1 + extra_file_explorer_import_count(10, true) + session_restore_budget(3),
+            MAX_STARTUP_WINDOWS
+        );
+    }
 
     #[test]
     fn restore_window_id_env_parses_only_valid_integers() {

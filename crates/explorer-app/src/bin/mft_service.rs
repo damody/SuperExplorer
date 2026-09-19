@@ -4041,14 +4041,14 @@ fn watch_volume_memory(
                     continue;
                 };
                 let _ = store.truncate_wal_ready_linearized(
-                        &LIFECYCLE_BARRIER,
-                        || {
-                            focus_leases
-                                .lock()
-                                .is_ok_and(|mut leases| leases.any_focused(monotonic_now()))
-                        },
-                        || query_activity.load(Ordering::Acquire) != 0,
-                    );
+                    &LIFECYCLE_BARRIER,
+                    || {
+                        focus_leases
+                            .lock()
+                            .is_ok_and(|mut leases| leases.any_focused(monotonic_now()))
+                    },
+                    || query_activity.load(Ordering::Acquire) != 0,
+                );
                 // A maintenance attempt consumes this interval. Pending memory
                 // remains intact for the next focused opportunity.
                 continue;
@@ -4094,15 +4094,15 @@ fn watch_volume_memory(
                     continue;
                 };
                 let result = store.commit_changes_focused_linearized(
-                        &batch.changes,
-                        next,
-                        &LIFECYCLE_BARRIER,
-                        || {
-                            focus_leases
-                                .lock()
-                                .is_ok_and(|mut leases| leases.any_focused(monotonic_now()))
-                        },
-                    );
+                    &batch.changes,
+                    next,
+                    &LIFECYCLE_BARRIER,
+                    || {
+                        focus_leases
+                            .lock()
+                            .is_ok_and(|mut leases| leases.any_focused(monotonic_now()))
+                    },
+                );
                 persisted_reservation.finish(&cache);
                 drop(persisted_guard);
                 if let Ok(mut live) = live_volumes.lock()

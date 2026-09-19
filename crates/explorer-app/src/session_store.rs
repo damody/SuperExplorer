@@ -755,8 +755,11 @@ mod tests {
         let bytes = fs::read(&current).expect("read current");
         let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("value");
         value["payload"]["windows"][0]["unexpected"] = serde_json::json!(true);
-        fs::write(&current, serde_json::to_vec(&value).expect("tampered bytes"))
-            .expect("write tampered current");
+        fs::write(
+            &current,
+            serde_json::to_vec(&value).expect("tampered bytes"),
+        )
+        .expect("write tampered current");
 
         let outcome = store.load().expect("recover");
         assert_eq!(outcome.source, SessionLoadSource::Current);

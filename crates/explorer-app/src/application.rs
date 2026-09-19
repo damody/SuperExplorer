@@ -1298,6 +1298,8 @@ impl HostExtensionColumnCacheValueV1 for u64 {
     }
 }
 
+const MFT_RETRY_BACKOFF: Duration = Duration::from_millis(200);
+
 #[derive(Default)]
 struct PendingFolderSizeWorkV1 {
     requests: Option<Vec<explorer_ui::folder_size_column::FolderSizeRequestV1>>,
@@ -1306,6 +1308,7 @@ struct PendingFolderSizeWorkV1 {
     /// Visible folder the UI submitted most recently. Claimed batches prefer
     /// this generation so C:\ / D:\ scans do not block D:\SuperExplorer.
     focus: Option<(explorer_model::TabId, explorer_model::Generation)>,
+    retry_not_before: Option<Instant>,
     stopped: bool,
 }
 
@@ -1356,10 +1359,25 @@ fn enqueue_folder_size_requests(
     }
 }
 
+fn mft_error_is_retryable(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("pipe unavailable")
+        || error.contains("deadline exceeded")
+        || error.contains("partial aggregate")
+        || error.contains("mft query cancelled")
+}
+
 fn take_folder_size_batch(
     state: &mut PendingFolderSizeWorkV1,
     limit: usize,
 ) -> Vec<explorer_ui::folder_size_column::FolderSizeRequestV1> {
+    if state
+        .retry_not_before
+        .is_some_and(|not_before| not_before > Instant::now())
+    {
+        return Vec::new();
+    }
+    state.retry_not_before = None;
     let Some(pending) = state.requests.as_mut() else {
         return Vec::new();
     };
@@ -1481,6 +1499,20 @@ fn publish_mft_folder_result_v1(
                 )
             })
     });
+    if let Err(error) = &measured
+        && mft_error_is_retryable(error)
+        && !folder_size_request_cancelled(pending, &request)
+    {
+        backend_status.store(2, Ordering::Release);
+        let (lock, ready) = pending;
+        let mut state = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.retry_not_before = Some(Instant::now() + MFT_RETRY_BACKOFF);
+        enqueue_folder_size_requests(&mut state, vec![request]);
+        ready.notify_all();
+        return true;
+    }
     let measured = measured.or_else(|mft_error| {
         let fallback = snapshot_service
             .lock()
@@ -1610,13 +1642,31 @@ impl ApplicationVisualColumnRuntimeV1 {
                         let mut state = lock
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        while state.requests.is_none() && !state.stopped {
+                        loop {
+                            if state.stopped {
+                                return;
+                            }
+                            let now = Instant::now();
+                            if state.requests.is_some()
+                                && state
+                                    .retry_not_before
+                                    .is_none_or(|not_before| not_before <= now)
+                            {
+                                state.retry_not_before = None;
+                                break;
+                            }
+                            if let Some(not_before) = state.retry_not_before.filter(|time| *time > now)
+                            {
+                                let wait = not_before.saturating_duration_since(now);
+                                let (next, _) = ready
+                                    .wait_timeout(state, wait)
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                state = next;
+                                continue;
+                            }
                             state = ready
                                 .wait(state)
                                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        }
-                        if state.stopped {
-                            return;
                         }
                         take_folder_size_batch(&mut state, 256)
                     };
@@ -4365,12 +4415,12 @@ impl ApplicationLifecycle {
         reason = "application startup keeps platform, lifecycle, window, fixture, and auto-close ownership visible in one audited path"
     )]
     pub fn run_gpui(&self) -> Result<(), Error> {
-        self.run_gpui_with_launch(None, None, false, None)
+        self.run_gpui_with_launch(None, None, false, None, 0, true)
     }
 
     /// Runs GPUI with an explicit initial filesystem path overriding restored tabs.
     pub fn run_gpui_with_initial_path(&self, initial_path: Option<PathBuf>) -> Result<(), Error> {
-        self.run_gpui_with_launch(initial_path, None, false, None)
+        self.run_gpui_with_launch(initial_path, None, false, None, 0, true)
     }
 
     /// Runs GPUI with an optional imported File Explorer window and This PC start.
@@ -4380,6 +4430,8 @@ impl ApplicationLifecycle {
         imported_window: Option<explorer_model::ExplorerWindowState>,
         this_pc: bool,
         restore_window_id: Option<explorer_model::PersistedWindowId>,
+        imported_window_count: usize,
+        restore_session_windows: bool,
     ) -> Result<(), Error> {
         let activate_on_open = this_pc || imported_window.is_some();
         let launch_error = Arc::new(Mutex::new(None::<String>));
@@ -4524,29 +4576,31 @@ impl ApplicationLifecycle {
                 (None, None)
             }
         } else if let Some(imported) = imported_window {
-            let restore = if visual_fixture.is_none() {
+            let restore = if visual_fixture.is_none() && restore_session_windows {
                 load_session_restore(&diagnostics, None)
             } else {
                 SessionRestore::default()
             };
-            for planned in &restore.windows {
-                if let Err(error) = crate::explorer_import::spawn_restored_window(planned.window_id)
-                {
-                    tracing::warn!(%error, "restored session window spawn failed");
-                }
-            }
+            let budget = crate::explorer_import::session_restore_budget(imported_window_count);
+            spawn_restored_session_windows(
+                restore
+                    .windows
+                    .iter()
+                    .take(budget)
+                    .map(|planned| planned.window_id),
+            );
             (Some(imported), restore.placement)
-        } else if visual_fixture.is_none() {
+        } else if visual_fixture.is_none() && restore_session_windows {
             let restore = load_session_restore(&diagnostics, initial_location.clone());
             let placement = restore.placement;
+            let budget = crate::explorer_import::session_restore_budget(0);
             let mut windows = restore.windows.into_iter();
             let self_window = windows.next();
-            for planned in windows {
-                if let Err(error) = crate::explorer_import::spawn_restored_window(planned.window_id)
-                {
-                    tracing::warn!(%error, "restored session window spawn failed");
-                }
-            }
+            spawn_restored_session_windows(
+                windows
+                    .take(budget.saturating_sub(1))
+                    .map(|planned| planned.window_id),
+            );
             match self_window {
                 Some(planned) => {
                     session_window_id = planned.window_id;
@@ -6247,6 +6301,16 @@ fn load_session_envelope(
         return None;
     };
     Some((envelope, outcome.source, outcome.migration_performed))
+}
+
+fn spawn_restored_session_windows(
+    windows: impl IntoIterator<Item = explorer_model::PersistedWindowId>,
+) {
+    for window_id in windows {
+        if let Err(error) = crate::explorer_import::spawn_restored_window(window_id) {
+            tracing::warn!(%error, "restored session window spawn failed");
+        }
+    }
 }
 
 fn plan_session_window(
@@ -8410,6 +8474,49 @@ mod tests {
         );
         assert_eq!(result.error, None);
         assert_eq!(backend_status.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn retryable_mft_init_does_not_scan_recursively() {
+        let fixture = tempfile::tempdir().unwrap();
+        fs::write(fixture.path().join("root.txt"), b"abc").unwrap();
+
+        let context = RequestContext::new(TabId::new(), Generation::new(3));
+        let item_id = ShellItemId::from_provider_bytes([2]).unwrap();
+        let request = explorer_ui::folder_size_column::FolderSizeRequestV1 {
+            context: context.clone(),
+            item_id: item_id.clone(),
+            path: fixture.path().to_path_buf(),
+            mft_cache_memory_mb: 512,
+            require_directory_facts: true,
+        };
+        let pending = (
+            Mutex::new(PendingFolderSizeWorkV1::default()),
+            std::sync::Condvar::new(),
+        );
+        let backend_status = std::sync::atomic::AtomicU8::new(0);
+        let snapshots = Arc::new(Mutex::new(
+            crate::folder_size_service::FolderSizeServiceV1::with_capacity(8),
+        ));
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+
+        assert!(super::publish_mft_folder_result_v1(
+            &pending,
+            &backend_status,
+            &snapshots,
+            &sender,
+            request,
+            Instant::now(),
+            Err("MFT query pipe unavailable (2)".to_owned()),
+        ));
+        assert!(receiver.try_recv().is_err(), "listing paints before MFT");
+        assert_eq!(backend_status.load(Ordering::Acquire), 2);
+        let queued = pending
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(queued.requests.as_ref().map(Vec::len), Some(1));
+        assert!(queued.retry_not_before.is_some());
     }
 
     #[test]
