@@ -1911,10 +1911,16 @@ pub struct ViewSettings {
     pub preview_pane_width: u16,
     /// Folder Options single-select search engine. Default is Everything.
     pub search_engine: crate::SearchEnginePreference,
+    /// General-page MFT feature. Related plugins follow this switch.
+    pub mft_enabled: bool,
     /// Narrowest explorer tab width in logical pixels. Tabs scroll instead of shrinking below this.
     pub tab_min_width: u16,
     /// Widest explorer tab width in logical pixels when the strip has room.
     pub tab_max_width: u16,
+    /// Wrap overflowing tabs onto additional rows instead of scrolling horizontally.
+    pub multi_row_tabs: bool,
+    /// Maximum visible tab rows when `multi_row_tabs` is enabled.
+    pub tab_row_count: u16,
 }
 
 impl Default for ViewSettings {
@@ -1940,8 +1946,11 @@ impl Default for ViewSettings {
             details_pane_width: 293,
             preview_pane_width: 293,
             search_engine: crate::SearchEnginePreference::Everything,
+            mft_enabled: true,
             tab_min_width: DEFAULT_TAB_MIN_WIDTH,
             tab_max_width: DEFAULT_TAB_MAX_WIDTH,
+            multi_row_tabs: false,
+            tab_row_count: DEFAULT_TAB_ROW_COUNT,
         }
     }
 }
@@ -1953,6 +1962,19 @@ pub const MAX_TAB_MIN_WIDTH: u16 = 600;
 pub const MIN_TAB_MAX_WIDTH: u16 = 96;
 pub const MAX_TAB_MAX_WIDTH: u16 = 600;
 pub const TAB_MIN_WIDTH_STEP: u16 = 10;
+pub const DEFAULT_TAB_ROW_COUNT: u16 = 3;
+pub const MIN_TAB_ROW_COUNT: u16 = 1;
+pub const MAX_TAB_ROW_COUNT: u16 = 8;
+
+pub const fn normalized_tab_row_count(value: u16) -> u16 {
+    if value < MIN_TAB_ROW_COUNT {
+        MIN_TAB_ROW_COUNT
+    } else if value > MAX_TAB_ROW_COUNT {
+        MAX_TAB_ROW_COUNT
+    } else {
+        value
+    }
+}
 
 pub const fn normalized_tab_min_width(value: u16) -> u16 {
     if value < MIN_TAB_MIN_WIDTH {
@@ -3818,6 +3840,14 @@ mod tests {
         assert_eq!(normalized_tab_max_width(100, 150), 150);
         assert_eq!(normalized_tab_max_width(250, 150), 250);
         assert_eq!(normalized_tab_max_width(u16::MAX, 150), MAX_TAB_MAX_WIDTH);
+        assert!(!ViewSettings::default().multi_row_tabs);
+        assert_eq!(
+            ViewSettings::default().tab_row_count,
+            DEFAULT_TAB_ROW_COUNT
+        );
+        assert_eq!(normalized_tab_row_count(0), MIN_TAB_ROW_COUNT);
+        assert_eq!(normalized_tab_row_count(3), 3);
+        assert_eq!(normalized_tab_row_count(u16::MAX), MAX_TAB_ROW_COUNT);
     }
 
     #[test]

@@ -914,6 +914,46 @@ impl SearchEngineAvailability {
     pub const fn can_apply(self, engine: SearchEnginePreference) -> bool {
         self.support(engine).is_available() || !self.any_available()
     }
+
+    /// Turns MFT search off when the General MFT feature is disabled.
+    #[must_use]
+    pub const fn with_mft_feature(self, enabled: bool) -> Self {
+        Self {
+            everything: self.everything,
+            mft: if enabled {
+                self.mft
+            } else {
+                SearchEngineSupport::Unavailable
+            },
+            file_enumeration: self.file_enumeration,
+        }
+    }
+
+    /// Preference order when the selected engine is unavailable: Everything, MFT, file enumeration.
+    #[must_use]
+    pub const fn preferred(self) -> Option<SearchEnginePreference> {
+        if self.everything.is_available() {
+            Some(SearchEnginePreference::Everything)
+        } else if self.mft.is_available() {
+            Some(SearchEnginePreference::Mft)
+        } else if self.file_enumeration.is_available() {
+            Some(SearchEnginePreference::FileEnumeration)
+        } else {
+            None
+        }
+    }
+
+    /// Keeps `selected` when it works; otherwise picks the first available engine.
+    #[must_use]
+    pub const fn resolve(self, selected: SearchEnginePreference) -> SearchEnginePreference {
+        if self.support(selected).is_available() {
+            selected
+        } else if let Some(engine) = self.preferred() {
+            engine
+        } else {
+            selected
+        }
+    }
 }
 
 #[must_use]

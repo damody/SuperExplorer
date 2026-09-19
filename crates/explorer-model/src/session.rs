@@ -34,6 +34,14 @@ const fn default_tab_max_width() -> u16 {
     crate::DEFAULT_TAB_MAX_WIDTH
 }
 
+const fn default_tab_row_count() -> u16 {
+    crate::DEFAULT_TAB_ROW_COUNT
+}
+
+const fn default_mft_enabled() -> bool {
+    true
+}
+
 /// Current durable session schema.
 pub const SESSION_SCHEMA_VERSION: u16 = 5;
 
@@ -262,10 +270,16 @@ pub struct PersistedViewSettings {
     pub preview_pane_width: u16,
     #[serde(default)]
     pub search_engine: crate::SearchEnginePreference,
+    #[serde(default = "default_mft_enabled")]
+    pub mft_enabled: bool,
     #[serde(default = "default_tab_min_width")]
     pub tab_min_width: u16,
     #[serde(default = "default_tab_max_width")]
     pub tab_max_width: u16,
+    #[serde(default)]
+    pub multi_row_tabs: bool,
+    #[serde(default = "default_tab_row_count")]
+    pub tab_row_count: u16,
 }
 
 impl Default for PersistedViewSettings {
@@ -298,8 +312,11 @@ impl Default for PersistedViewSettings {
             details_pane_width: 320,
             preview_pane_width: 360,
             search_engine: crate::SearchEnginePreference::Everything,
+            mft_enabled: true,
             tab_min_width: crate::DEFAULT_TAB_MIN_WIDTH,
             tab_max_width: crate::DEFAULT_TAB_MAX_WIDTH,
+            multi_row_tabs: false,
+            tab_row_count: crate::DEFAULT_TAB_ROW_COUNT,
         }
     }
 }
@@ -1331,8 +1348,11 @@ impl PersistedViewSettings {
             details_pane_width: self.details_pane_width,
             preview_pane_width: self.preview_pane_width,
             search_engine: self.search_engine,
+            mft_enabled: self.mft_enabled,
             tab_min_width: crate::normalized_tab_min_width(self.tab_min_width),
             tab_max_width: crate::normalized_tab_max_width(self.tab_max_width, self.tab_min_width),
+            multi_row_tabs: self.multi_row_tabs,
+            tab_row_count: crate::normalized_tab_row_count(self.tab_row_count),
         }
     }
 }
@@ -1613,11 +1633,14 @@ impl From<ViewSettings> for PersistedViewSettings {
             details_pane_width: settings.details_pane_width,
             preview_pane_width: settings.preview_pane_width,
             search_engine: settings.search_engine,
+            mft_enabled: settings.mft_enabled,
             tab_min_width: crate::normalized_tab_min_width(settings.tab_min_width),
             tab_max_width: crate::normalized_tab_max_width(
                 settings.tab_max_width,
                 settings.tab_min_width,
             ),
+            multi_row_tabs: settings.multi_row_tabs,
+            tab_row_count: crate::normalized_tab_row_count(settings.tab_row_count),
         }
     }
 }
@@ -2678,6 +2701,29 @@ mod tests {
         assert_eq!(encoded.tab_max_width, crate::MIN_TAB_MAX_WIDTH);
         assert_eq!(encoded.to_runtime().tab_min_width, crate::MIN_TAB_MIN_WIDTH);
         assert_eq!(encoded.to_runtime().tab_max_width, crate::MIN_TAB_MAX_WIDTH);
+        assert!(!persisted.multi_row_tabs);
+        assert_eq!(persisted.tab_row_count, crate::DEFAULT_TAB_ROW_COUNT);
+
+        let mut legacy_rows = serde_json::to_value(&persisted).expect("serialize settings");
+        let object = legacy_rows.as_object_mut().expect("settings object");
+        object.remove("multi_row_tabs");
+        object.remove("tab_row_count");
+        let decoded_rows: PersistedViewSettings =
+            serde_json::from_value(legacy_rows).expect("legacy tab row settings deserialize");
+        assert!(!decoded_rows.multi_row_tabs);
+        assert_eq!(decoded_rows.tab_row_count, crate::DEFAULT_TAB_ROW_COUNT);
+
+        let mut wrapped = ViewSettings::default();
+        wrapped.multi_row_tabs = true;
+        wrapped.tab_row_count = 99;
+        let encoded_rows = PersistedViewSettings::from(wrapped);
+        assert!(encoded_rows.multi_row_tabs);
+        assert_eq!(encoded_rows.tab_row_count, crate::MAX_TAB_ROW_COUNT);
+        assert!(encoded_rows.to_runtime().multi_row_tabs);
+        assert_eq!(
+            encoded_rows.to_runtime().tab_row_count,
+            crate::MAX_TAB_ROW_COUNT
+        );
     }
 
     #[test]
@@ -2707,6 +2753,47 @@ mod tests {
             local_without_everything.support(crate::SearchEnginePreference::Everything),
             crate::SearchEngineSupport::Unavailable
         );
+        assert_eq!(
+            local_without_everything.resolve(crate::SearchEnginePreference::Everything),
+            crate::SearchEnginePreference::Mft
+        );
+        assert_eq!(
+            crate::search_engine_availability(crate::SearchEngineFacts {
+                has_local_filesystem_path: true,
+                everything_available: false,
+                mft_index_available: false,
+            })
+            .resolve(crate::SearchEnginePreference::Everything),
+            crate::SearchEnginePreference::FileEnumeration
+        );
+        assert_eq!(
+            local_without_everything
+                .with_mft_feature(false)
+                .resolve(crate::SearchEnginePreference::Everything),
+            crate::SearchEnginePreference::FileEnumeration
+        );
+    }
+
+    #[test]
+    fn mft_enabled_defaults_on_and_round_trips() {
+        assert!(ViewSettings::default().mft_enabled);
+        let persisted = PersistedViewSettings::from(ViewSettings::default());
+        assert!(persisted.mft_enabled);
+        assert!(persisted.to_runtime().mft_enabled);
+
+        let mut legacy = serde_json::to_value(&persisted).expect("serialize settings");
+        legacy
+            .as_object_mut()
+            .expect("settings object")
+            .remove("mft_enabled");
+        let decoded: PersistedViewSettings =
+            serde_json::from_value(legacy).expect("legacy settings deserialize");
+        assert!(decoded.mft_enabled);
+        assert!(decoded.to_runtime().mft_enabled);
+
+        let mut settings = ViewSettings::default();
+        settings.mft_enabled = false;
+        assert!(!PersistedViewSettings::from(settings).to_runtime().mft_enabled);
     }
 
     #[test]
