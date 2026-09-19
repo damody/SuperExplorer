@@ -76,6 +76,11 @@ impl ExplorerWindowState {
         &self.tabs
     }
 
+    /// Returns tabs in stable presentation order for window-wide settings.
+    pub fn tabs_mut(&mut self) -> &mut [TabState] {
+        &mut self.tabs
+    }
+
     /// Returns the active tab identity.
     pub const fn active_tab_id(&self) -> TabId {
         self.active_tab_id

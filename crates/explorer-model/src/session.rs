@@ -30,6 +30,10 @@ const fn default_tab_min_width() -> u16 {
     crate::DEFAULT_TAB_MIN_WIDTH
 }
 
+const fn default_tab_max_width() -> u16 {
+    crate::DEFAULT_TAB_MAX_WIDTH
+}
+
 /// Current durable session schema.
 pub const SESSION_SCHEMA_VERSION: u16 = 5;
 
@@ -260,6 +264,8 @@ pub struct PersistedViewSettings {
     pub search_engine: crate::SearchEnginePreference,
     #[serde(default = "default_tab_min_width")]
     pub tab_min_width: u16,
+    #[serde(default = "default_tab_max_width")]
+    pub tab_max_width: u16,
 }
 
 impl Default for PersistedViewSettings {
@@ -293,6 +299,7 @@ impl Default for PersistedViewSettings {
             preview_pane_width: 360,
             search_engine: crate::SearchEnginePreference::Everything,
             tab_min_width: crate::DEFAULT_TAB_MIN_WIDTH,
+            tab_max_width: crate::DEFAULT_TAB_MAX_WIDTH,
         }
     }
 }
@@ -936,10 +943,7 @@ impl PersistedSessionEnvelope {
     /// This never bypasses a checksum mismatch; callers must fail closed on that case.
     /// Returns the recovered envelope and the number of dropped windows, or `None`
     /// when the header, provenance, or every window is unusable.
-    pub fn recover_window_set(
-        bytes: &[u8],
-        limits: RoadmapLimits,
-    ) -> Option<(Self, usize)> {
+    pub fn recover_window_set(bytes: &[u8], limits: RoadmapLimits) -> Option<(Self, usize)> {
         if bytes.len() > limits.max_state_payload_bytes {
             return None;
         }
@@ -1328,6 +1332,7 @@ impl PersistedViewSettings {
             preview_pane_width: self.preview_pane_width,
             search_engine: self.search_engine,
             tab_min_width: crate::normalized_tab_min_width(self.tab_min_width),
+            tab_max_width: crate::normalized_tab_max_width(self.tab_max_width, self.tab_min_width),
         }
     }
 }
@@ -1609,6 +1614,10 @@ impl From<ViewSettings> for PersistedViewSettings {
             preview_pane_width: settings.preview_pane_width,
             search_engine: settings.search_engine,
             tab_min_width: crate::normalized_tab_min_width(settings.tab_min_width),
+            tab_max_width: crate::normalized_tab_max_width(
+                settings.tab_max_width,
+                settings.tab_min_width,
+            ),
         }
     }
 }
@@ -2635,13 +2644,21 @@ mod tests {
     }
 
     #[test]
-    fn tab_min_width_defaults_to_300_and_round_trips() {
-        assert_eq!(ViewSettings::default().tab_min_width, crate::DEFAULT_TAB_MIN_WIDTH);
+    fn tab_min_width_defaults_to_150_and_round_trips() {
+        assert_eq!(
+            ViewSettings::default().tab_min_width,
+            crate::DEFAULT_TAB_MIN_WIDTH
+        );
         let persisted = PersistedViewSettings::from(ViewSettings::default());
         assert_eq!(persisted.tab_min_width, crate::DEFAULT_TAB_MIN_WIDTH);
+        assert_eq!(persisted.tab_max_width, crate::DEFAULT_TAB_MAX_WIDTH);
         assert_eq!(
             persisted.to_runtime().tab_min_width,
             crate::DEFAULT_TAB_MIN_WIDTH
+        );
+        assert_eq!(
+            persisted.to_runtime().tab_max_width,
+            crate::DEFAULT_TAB_MAX_WIDTH
         );
 
         let mut legacy = serde_json::to_value(&persisted).expect("serialize settings");
@@ -2655,9 +2672,12 @@ mod tests {
 
         let mut settings = ViewSettings::default();
         settings.tab_min_width = 12;
+        settings.tab_max_width = 12;
         let encoded = PersistedViewSettings::from(settings);
         assert_eq!(encoded.tab_min_width, crate::MIN_TAB_MIN_WIDTH);
+        assert_eq!(encoded.tab_max_width, crate::MIN_TAB_MAX_WIDTH);
         assert_eq!(encoded.to_runtime().tab_min_width, crate::MIN_TAB_MIN_WIDTH);
+        assert_eq!(encoded.to_runtime().tab_max_width, crate::MIN_TAB_MAX_WIDTH);
     }
 
     #[test]

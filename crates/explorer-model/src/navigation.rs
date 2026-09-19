@@ -1913,6 +1913,8 @@ pub struct ViewSettings {
     pub search_engine: crate::SearchEnginePreference,
     /// Narrowest explorer tab width in logical pixels. Tabs scroll instead of shrinking below this.
     pub tab_min_width: u16,
+    /// Widest explorer tab width in logical pixels when the strip has room.
+    pub tab_max_width: u16,
 }
 
 impl Default for ViewSettings {
@@ -1939,13 +1941,17 @@ impl Default for ViewSettings {
             preview_pane_width: 293,
             search_engine: crate::SearchEnginePreference::Everything,
             tab_min_width: DEFAULT_TAB_MIN_WIDTH,
+            tab_max_width: DEFAULT_TAB_MAX_WIDTH,
         }
     }
 }
 
-pub const DEFAULT_TAB_MIN_WIDTH: u16 = 300;
+pub const DEFAULT_TAB_MIN_WIDTH: u16 = 150;
+pub const DEFAULT_TAB_MAX_WIDTH: u16 = 250;
 pub const MIN_TAB_MIN_WIDTH: u16 = 96;
 pub const MAX_TAB_MIN_WIDTH: u16 = 600;
+pub const MIN_TAB_MAX_WIDTH: u16 = 96;
+pub const MAX_TAB_MAX_WIDTH: u16 = 600;
 pub const TAB_MIN_WIDTH_STEP: u16 = 10;
 
 pub const fn normalized_tab_min_width(value: u16) -> u16 {
@@ -1955,6 +1961,22 @@ pub const fn normalized_tab_min_width(value: u16) -> u16 {
         MAX_TAB_MIN_WIDTH
     } else {
         value
+    }
+}
+
+pub const fn normalized_tab_max_width(value: u16, min_width: u16) -> u16 {
+    let min_width = normalized_tab_min_width(min_width);
+    let max_width = if value < MIN_TAB_MAX_WIDTH {
+        MIN_TAB_MAX_WIDTH
+    } else if value > MAX_TAB_MAX_WIDTH {
+        MAX_TAB_MAX_WIDTH
+    } else {
+        value
+    };
+    if max_width < min_width {
+        min_width
+    } else {
+        max_width
     }
 }
 
@@ -3787,11 +3809,15 @@ mod tests {
     }
 
     #[test]
-    fn tab_min_width_defaults_to_300_and_clamps() {
+    fn tab_min_width_defaults_to_150_and_clamps() {
         assert_eq!(ViewSettings::default().tab_min_width, DEFAULT_TAB_MIN_WIDTH);
+        assert_eq!(ViewSettings::default().tab_max_width, DEFAULT_TAB_MAX_WIDTH);
         assert_eq!(normalized_tab_min_width(0), MIN_TAB_MIN_WIDTH);
-        assert_eq!(normalized_tab_min_width(300), 300);
+        assert_eq!(normalized_tab_min_width(150), 150);
         assert_eq!(normalized_tab_min_width(u16::MAX), MAX_TAB_MIN_WIDTH);
+        assert_eq!(normalized_tab_max_width(100, 150), 150);
+        assert_eq!(normalized_tab_max_width(250, 150), 250);
+        assert_eq!(normalized_tab_max_width(u16::MAX, 150), MAX_TAB_MAX_WIDTH);
     }
 
     #[test]
